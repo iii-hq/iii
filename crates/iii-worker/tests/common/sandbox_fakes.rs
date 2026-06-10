@@ -287,10 +287,10 @@ impl VmLauncher for FakeVmLauncher {
             )
         });
         match mode {
-            LaunchMode::Ok { vm_pid } => Ok(BootHandle { vm_pid }),
+            LaunchMode::Ok { vm_pid } => Ok(BootHandle { vm_pid, lifeline: None }),
             LaunchMode::Err(e) => Err(e),
             LaunchMode::Block { release } => match release.await {
-                Ok(LaunchMode::Ok { vm_pid }) => Ok(BootHandle { vm_pid }),
+                Ok(LaunchMode::Ok { vm_pid }) => Ok(BootHandle { vm_pid, lifeline: None }),
                 Ok(LaunchMode::Err(e)) => Err(e),
                 Ok(LaunchMode::Block { .. }) => Err(SandboxError::BootFailed(
                     "FakeVmLauncher: nested Block is not supported".into(),

@@ -59,6 +59,7 @@ mod tests {
             workdir: PathBuf::new(),
             shell_sock: PathBuf::new(),
             vm_pid: Some(1),
+            lifeline: None,
             created_at: Instant::now(),
             last_exec_at: Instant::now(),
             exec_in_progress: false,

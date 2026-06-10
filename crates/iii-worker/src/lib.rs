@@ -11,6 +11,7 @@
 
 pub mod cli;
 pub mod core;
+pub mod daemon_exit;
 pub mod sandbox_daemon;
 
 pub use cli::app::{

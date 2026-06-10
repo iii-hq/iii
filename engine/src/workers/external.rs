@@ -183,6 +183,13 @@ pub struct ExternalWorker {
     config: Option<Value>,
     child: Arc<Mutex<Option<Child>>>,
     config_file: Arc<Mutex<Option<PathBuf>>>,
+    /// Write end of the child's lifeline pipe (see the spawn path). Held for
+    /// the child's lifetime; the kernel closes it when THIS engine dies —
+    /// any death, SIGKILL included — and the daemon's lifeline watch sees
+    /// EOF instantly and self-exits. Dropped explicitly on shutdown/destroy
+    /// so graceful teardown signals the child the same way.
+    #[cfg(unix)]
+    lifeline: Arc<Mutex<Option<std::os::fd::OwnedFd>>>,
 }
 
 impl ExternalWorker {
@@ -197,8 +204,51 @@ impl ExternalWorker {
             config,
             child: Arc::new(Mutex::new(None)),
             config_file: Arc::new(Mutex::new(None)),
+            #[cfg(unix)]
+            lifeline: Arc::new(Mutex::new(None)),
         }
     }
+}
+
+/// Pipe with both ends CLOEXEC. macOS has no `pipe2`, so there the CLOEXEC
+/// fcntls leave a tiny window where a concurrent spawn on another thread can
+/// inherit the fds; the daemon's PID-watch backstop covers that case (keep
+/// in sync with iii-worker's `daemon_exit::new_cloexec_pipe`).
+#[cfg(unix)]
+fn new_cloexec_pipe() -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0i32; 2];
+    #[cfg(target_os = "linux")]
+    {
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        for fd in fds {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
+            {
+                let err = std::io::Error::last_os_error();
+                unsafe {
+                    libc::close(fds[0]);
+                    libc::close(fds[1]);
+                }
+                return Err(err);
+            }
+        }
+    }
+    // SAFETY: fresh fds from pipe(2), owned exclusively here.
+    Ok(unsafe {
+        (
+            std::os::fd::OwnedFd::from_raw_fd(fds[0]),
+            std::os::fd::OwnedFd::from_raw_fd(fds[1]),
+        )
+    })
 }
 
 #[async_trait::async_trait]
@@ -275,18 +325,84 @@ impl Worker for ExternalWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Declare this engine's pid so daemons can watch ENGINE liveness
+        // directly and self-exit when we die without running kill_child
+        // (SIGKILL/OOM/crash). getppid() alone can't prove the parent is the
+        // engine — wrappers and debugger reparenting break it — so iii-worker's
+        // daemon_exit module prefers this handshake when present.
+        cmd.env("III_ENGINE_PID", std::process::id().to_string());
+
+        // Lifeline pipe: we hold the write end (never written) for the
+        // child's lifetime; the kernel closes it the instant this engine
+        // dies — ANY death, SIGKILL included — and the daemon's lifeline
+        // watch sees EOF immediately. Env name + protocol live in
+        // iii-worker's daemon_exit module (III_LIFELINE_FD); keep in sync.
+        #[cfg(unix)]
+        let lifeline_read = match new_cloexec_pipe() {
+            Ok((read, write)) => {
+                use std::os::fd::AsRawFd;
+                cmd.env("III_LIFELINE_FD", read.as_raw_fd().to_string());
+                *self.lifeline.lock().await = Some(write);
+                Some(read)
+            }
+            Err(e) => {
+                // Non-fatal: the daemon's PID handshake still covers engine
+                // death, just with poll latency instead of instant EOF.
+                tracing::warn!("lifeline pipe for '{}' failed: {e}", self.name);
+                None
+            }
+        };
+
         // Detach process group on Unix for clean termination
         #[cfg(unix)]
-        // SAFETY: setsid() is async-signal-safe per POSIX and safe to call in
-        // pre_exec (which runs in the forked-but-not-yet-execed child). We create
-        // a new session so the child process group can be cleanly terminated via
-        // killpg() in kill_child().
-        unsafe {
-            cmd.pre_exec(|| {
-                nix::unistd::setsid()
-                    .map_err(|e| std::io::Error::other(format!("setsid failed: {e}")))?;
-                Ok(())
-            });
+        {
+            use std::os::fd::AsRawFd;
+            let lifeline_raw = lifeline_read.as_ref().map(|fd| fd.as_raw_fd());
+            // Captured pre-fork: in the child, "my parent is still the
+            // engine" must compare against the ENGINE's pid, not against 1 —
+            // in the standard container deployment the engine IS PID 1
+            // (engine/Dockerfile has no init shim), so a `getppid()==1 →
+            // exit` check would deterministically kill every worker spawn.
+            let engine_pid = std::process::id() as i32;
+            // SAFETY: everything in this hook is async-signal-safe per POSIX
+            // (setsid, fcntl, prctl, getppid, _exit) and runs in the
+            // forked-but-not-yet-execed child. setsid() gives the child its
+            // own session so kill_child() can killpg() the whole group.
+            unsafe {
+                cmd.pre_exec(move || {
+                    nix::unistd::setsid()
+                        .map_err(|e| std::io::Error::other(format!("setsid failed: {e}")))?;
+                    // Un-CLOEXEC the lifeline read end for THIS child only
+                    // (the parent-side fds stay CLOEXEC so no other spawn
+                    // inherits them).
+                    if let Some(fd) = lifeline_raw {
+                        let flags = libc::fcntl(fd, libc::F_GETFD);
+                        if flags < 0
+                            || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    // Linux belt-and-suspenders: kernel-delivered SIGKILL on
+                    // parent death, covering even a wedged child that never
+                    // polls its watches. Tied to the spawning THREAD — a
+                    // tokio core worker thread, which lives as long as the
+                    // runtime ≈ the engine process. If the engine died
+                    // between fork and prctl, we were already reparented
+                    // (getppid no longer the engine); exit now instead of
+                    // leaking unprotected.
+                    #[cfg(target_os = "linux")]
+                    {
+                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                        if libc::getppid() != engine_pid {
+                            libc::_exit(125);
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = engine_pid;
+                    Ok(())
+                });
+            }
         }
 
         let mut child = cmd.spawn().map_err(|e| {
@@ -320,13 +436,23 @@ impl Worker for ExternalWorker {
         // Watch for shutdown signal
         let child_for_shutdown = self.child.clone();
         let name_for_shutdown = self.name.clone();
+        #[cfg(unix)]
+        let lifeline_for_shutdown = self.lifeline.clone();
         tokio::spawn(async move {
             let _ = shutdown_rx.changed().await;
             tracing::info!(
                 "External worker '{}' received shutdown signal",
                 name_for_shutdown
             );
+            // SIGTERM first, lifeline-drop after: the daemon races its exit
+            // arms, and an already-pending EOF beats the signal — which
+            // would make every GRACEFUL shutdown take the "engine-gone"
+            // path and write the abnormal-death breadcrumb. Dropping after
+            // kill_child keeps EOF as a true engine-death signal (and is a
+            // no-op for the already-dead child).
             kill_child(&child_for_shutdown).await;
+            #[cfg(unix)]
+            drop(lifeline_for_shutdown.lock().await.take());
         });
 
         Ok(())
@@ -335,6 +461,9 @@ impl Worker for ExternalWorker {
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying external worker '{}'", self.name);
         kill_child(&self.child).await;
+        // After kill_child for breadcrumb accuracy — see the shutdown task.
+        #[cfg(unix)]
+        drop(self.lifeline.lock().await.take());
 
         if let Some(path) = self.config_file.lock().await.take()
             && let Err(e) = std::fs::remove_file(&path)
@@ -905,5 +1034,22 @@ mod tests {
             argv.starts_with("first-arg second-arg --config "),
             "expected extra args before --config, got: {argv:?}"
         );
+
+        // Engine-attachment contract: the child must receive this engine's
+        // pid AND an OPEN lifeline pipe fd (the probe checks /dev/fd/N from
+        // inside the child — proving the pre_exec un-CLOEXEC actually made
+        // the fd survive exec).
+        #[cfg(unix)]
+        {
+            let env_line = argv.lines().nth(1).unwrap_or_default();
+            assert!(
+                env_line.contains(&format!("engine_pid={}", std::process::id())),
+                "child must see this engine's pid; got: {env_line:?}"
+            );
+            assert!(
+                env_line.contains("lifeline_open=yes"),
+                "child's lifeline fd must be open after exec; got: {env_line:?}"
+            );
+        }
     }
 }

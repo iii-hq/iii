@@ -7,8 +7,20 @@
 use clap::{CommandFactory, FromArgMatches};
 use iii_worker::{Cli, Commands};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // FIRST, before the tokio runtime spawns worker threads: capture (and
+    // scrub from the env) any inherited lifeline facts. The capture mutates
+    // the process environment, which is only sound while single-threaded —
+    // see daemon_exit::capture_early.
+    iii_worker::daemon_exit::capture_early();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

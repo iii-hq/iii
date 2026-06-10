@@ -39,6 +39,12 @@ use crate::cli::worker_trigger::{
 use crate::core::add::CallerMode;
 
 pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
+    // FIRST statement, before any await: snapshot spawn-time facts (current
+    // ppid + III_ENGINE_PID). The exit-watch is polled only after SDK init +
+    // ~10 registrations; if the engine died in that window we'd baseline
+    // against the ADOPTER and never notice (cross-model review finding).
+    let exit_watch = crate::daemon_exit::ExitWatch::arm_at_startup();
+
     let project_root = args
         .project_root
         .or_else(|| std::env::var_os("IIIWORKER_PROJECT_ROOT").map(Into::into))
@@ -85,12 +91,13 @@ pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
     register_all(&iii, project_root, event_sink);
 
     tracing::info!("worker-manager-daemon ready");
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %e, "ctrl_c handler failed");
-        iii.shutdown_async().await;
-        return 1;
-    }
-    tracing::info!("worker-manager-daemon shutting down");
+
+    // Exit on SIGINT/SIGTERM/SIGHUP or engine death — see crate::daemon_exit
+    // for the full design (PID handshake + hardened reparent fallback).
+    // shutdown_async is a best-effort flush; the connection thread is not
+    // joined before exit.
+    let reason = exit_watch.wait("worker-manager-daemon").await;
+    tracing::info!(reason, "worker-manager-daemon shutting down");
     iii.shutdown_async().await;
     0
 }
@@ -503,3 +510,4 @@ fn register_clear(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
         ),
     );
 }
+

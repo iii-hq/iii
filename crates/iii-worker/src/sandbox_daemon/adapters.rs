@@ -215,6 +215,13 @@ impl VmLauncher for IiiWorkerLauncher {
             ))
         })?;
 
+        // Lifeline: the registry entry will hold the write end; if this
+        // daemon dies (any way, SIGKILL included) or the sandbox entry is
+        // dropped, the VM's __vm-boot watcher sees EOF and self-terminates —
+        // VMs no longer outlive the daemon as orphaned session leaders.
+        let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)
+            .map_err(|e| SandboxError::BootFailed(format!("lifeline pipe: {e}")))?;
+
         let t_spawn = Instant::now();
         let child = cmd
             .stdout(std::process::Stdio::null())
@@ -309,7 +316,10 @@ impl VmLauncher for IiiWorkerLauncher {
             "boot_phase: shell_sock_wait (boot total)"
         );
 
-        Ok(BootHandle { vm_pid })
+        Ok(BootHandle {
+            vm_pid,
+            lifeline: Some(std::sync::Arc::new(lifeline)),
+        })
     }
 }
 

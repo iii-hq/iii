@@ -81,6 +81,12 @@ pub struct BootParams {
 
 pub struct BootHandle {
     pub vm_pid: u32,
+    /// Spawner-side write end of the VM's lifeline pipe. Held by the
+    /// sandbox's registry entry: if this daemon dies (any way, SIGKILL
+    /// included) or the entry is dropped, the kernel/Drop closes it and the
+    /// `__vm-boot` process self-terminates instead of living on as an
+    /// orphaned session leader holding a multi-GB VM.
+    pub lifeline: Option<std::sync::Arc<crate::daemon_exit::Lifeline>>,
 }
 
 pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 'static>(
@@ -197,6 +203,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         workdir,
         shell_sock,
         vm_pid: Some(boot.vm_pid),
+        lifeline: boot.lifeline,
         created_at: Instant::now(),
         last_exec_at: Instant::now(),
         exec_in_progress: false,
@@ -236,6 +243,7 @@ mod tests {
         async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
             Ok(BootHandle {
                 vm_pid: self.vm_pid,
+                lifeline: None,
             })
         }
     }
