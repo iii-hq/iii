@@ -4,7 +4,14 @@ import { pathToFileURL } from "node:url";
 export const CHECKBOX_TEXT =
   "I license my contributions to this repository under Apache 2.0, and I have all necessary rights over the code I am contributing.";
 export const STATUS_CONTEXT = "license-agreement";
-const BOT_LOGINS = new Set(["github-actions[bot]"]);
+
+// The workflow posts as whatever identity mints its token: github-actions[bot]
+// under GITHUB_TOKEN, or <app-slug>[bot] under a GitHub App installation token.
+// Match any bot login so the sticky comment is recognized and updated in place
+// regardless of which identity is in use.
+function isBotLogin(login = "") {
+  return login.endsWith("[bot]");
+}
 
 export function hasCheckedCheckbox(prBody = "") {
   const escaped = CHECKBOX_TEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -63,7 +70,7 @@ export function buildSatisfiedComment(prAuthor) {
 export function findStickyComment(comments = []) {
   return comments.find(
     (comment) =>
-      BOT_LOGINS.has(comment.user?.login) &&
+      isBotLogin(comment.user?.login ?? "") &&
       (comment.body?.includes("## License agreement required") ||
         comment.body?.includes("## License agreement recorded")),
   );

@@ -94,6 +94,14 @@ test('finds the pending comment when authored by the workflow bot', () => {
   assert.deepEqual(findStickyComment(comments), comments[1]);
 });
 
+test('recognizes the sticky comment under a GitHub App bot login', () => {
+  const comments = [
+    { body: '## License agreement required', user: { login: 'iii-cla[bot]' }, id: 789 },
+  ];
+
+  assert.deepEqual(findStickyComment(comments), comments[0]);
+});
+
 test('finds the satisfied comment when authored by the workflow bot', () => {
   const comments = [
     { body: '## License agreement recorded', user: { login: 'github-actions[bot]' }, id: 456 },

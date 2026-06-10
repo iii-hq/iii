@@ -5,10 +5,7 @@ on:
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
-  contents: write
-  pull-requests: read
-  issues: write
-  statuses: write
+  contents: read
 
 concurrency:
   group: license-agreement-${{ github.event.pull_request.number }}
@@ -25,6 +22,12 @@ jobs:
       github.event.pull_request.user.type != 'Bot' &&
       !contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
+    # SECURITY: this is a `pull_request_target` job, so it runs in the base repo
+    # context with access to secrets (APP_PRIVATE_KEY). It is safe ONLY because it
+    # checks out the base branch and runs our own trusted script against the PR as
+    # data. NEVER check out the PR head or execute fork-provided code (npm install,
+    # build, PR-supplied actions) in this job, doing so would expose the secret to
+    # untrusted contributors. Run untrusted PR code in a separate `pull_request` job.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,7 +38,16 @@ jobs:
         with:
           node-version: '22'
 
+      # Mint a short-lived installation token. Unlike GITHUB_TOKEN, an App
+      # installation token can write to the base repo on fork PRs, which is the
+      # only kind of PR this workflow ever processes.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: 2828066
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Check license agreement
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: node .github/scripts/license-agreement-check.mjs
