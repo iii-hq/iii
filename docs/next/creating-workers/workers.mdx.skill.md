@@ -332,7 +332,7 @@ as they happen. This is particularly useful for continuing work when a Worker co
         "discovery::on-workers",
         async (data: { event: string; worker_id: string }) => {
           if (data.event === "worker_connected") {
-            // A Worker just joined the registry; its Functions are callable now.
+            // A Worker joined the registry; its Functions are callable now.
           }
         },
       );
@@ -360,7 +360,7 @@ as they happen. This is particularly useful for continuing work when a Worker co
       ```python
       async def on_workers(data: dict) -> None:
           if data["event"] == "worker_connected":
-              # A Worker just joined the registry; its Functions are callable now.
+              # A Worker joined the registry; its Functions are callable now.
               pass
 
       worker.register_function("discovery::on-workers", on_workers)
@@ -399,7 +399,7 @@ as they happen. This is particularly useful for continuing work when a Worker co
           "discovery::on-workers",
           |input: WorkersAvailable| async move {
               if input.event == "worker_connected" {
-                  // A Worker just joined the registry; its Functions are callable now.
+                  // A Worker joined the registry; its Functions are callable now.
               }
               Ok::<_, String>(())
           },
@@ -453,7 +453,7 @@ scripts:
 `description` is an optional one-line, human/LLM-readable summary of what the worker does; the
 iii CLI displays it when installing or inspecting the worker.
 
-`scripts.install` runs once to fetch dependencies and `scripts.start` launches the worker — here
+`scripts.install` runs once to fetch dependencies and `scripts.start` launches the worker. Here,
 `watchfiles` reloads it whenever you edit a source file. `runtime.base_image` selects the OCI image
 iii uses as the worker's rootfs.
 
@@ -508,8 +508,8 @@ dropped socket; graceful shutdown makes it deterministic and faster.
 </Tabs>
 
 <Note>
-  Shutdown is very useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless
-  containers, or scheduled scripts can connect just like any other Worker, do their work, and
+  Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless
+  containers, or scheduled scripts can connect like any other Worker, do their work, and
   `shutdown()` (`shutdown_async().await` in Rust).
 </Note>
 

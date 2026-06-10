@@ -70,12 +70,10 @@ language or runtime.
 `link/iii.worker.yaml` is the manifest that describes how the worker builds and runs itself: the
 command to install dependencies and the command to start. Update it so it looks like the below.
 
-```yaml {6-8} iii.worker.yaml
+```yaml {4-6} iii.worker.yaml
 name: link
 runtime:
-  kind: typescript
-  package_manager: npm
-  entry: src/index.ts
+  base_image: docker.io/iiidev/node:latest
 scripts:
   install: "npm install"
   start: "npm run start"

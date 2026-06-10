@@ -162,7 +162,10 @@ fn init_typescript_creates_node_scaffold_with_sdk() {
         "package.json must pin iii-sdk, got: {pkg}"
     );
     // TS scaffold carries the TypeScript toolchain.
-    assert!(pkg.contains("typescript"), "ts package.json needs typescript: {pkg}");
+    assert!(
+        pkg.contains("typescript"),
+        "ts package.json needs typescript: {pkg}"
+    );
     assert!(pkg.contains("tsx"), "ts package.json needs tsx: {pkg}");
     // The language-tagged source must be renamed away.
     assert!(
@@ -182,7 +185,14 @@ fn init_javascript_creates_node_scaffold() {
     // A JS worker must NOT inherit the TypeScript toolchain or tsconfig.
     let parent = tempdir().unwrap();
     let out = worker_bin()
-        .args(["init", "js-wkr", "--language", "js", "--skip-iii", "--template-dir"])
+        .args([
+            "init",
+            "js-wkr",
+            "--language",
+            "js",
+            "--skip-iii",
+            "--template-dir",
+        ])
         .arg(fixtures())
         .current_dir(parent.path())
         .output()
@@ -190,10 +200,22 @@ fn init_javascript_creates_node_scaffold() {
     assert!(out.status.success());
     let root = parent.path().join("js-wkr");
     let pkg = std::fs::read_to_string(root.join("package.json")).unwrap();
-    assert!(pkg.contains("iii-sdk"), "js package.json must pin iii-sdk: {pkg}");
-    assert!(!pkg.contains("typescript"), "js package.json must not include typescript: {pkg}");
-    assert!(!pkg.contains("tsx"), "js package.json must not include tsx: {pkg}");
-    assert!(!root.join("tsconfig.json").exists(), "js scaffold must not include tsconfig.json");
+    assert!(
+        pkg.contains("iii-sdk"),
+        "js package.json must pin iii-sdk: {pkg}"
+    );
+    assert!(
+        !pkg.contains("typescript"),
+        "js package.json must not include typescript: {pkg}"
+    );
+    assert!(
+        !pkg.contains("tsx"),
+        "js package.json must not include tsx: {pkg}"
+    );
+    assert!(
+        !root.join("tsconfig.json").exists(),
+        "js scaffold must not include tsconfig.json"
+    );
     assert!(
         !root.join("package.ts.json").exists() && !root.join("package.js.json").exists(),
         "tagged package.<lang>.json should be renamed to package.json"
