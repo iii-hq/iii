@@ -2,215 +2,144 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  ACKNOWLEDGEMENT_PHRASE,
-  STICKY_COMMENT_MARKER,
+  CHECKBOX_TEXT,
+  buildCommitMessage,
+  buildPendingComment,
+  buildSatisfiedComment,
   evaluateAgreement,
   findStickyComment,
-  hasAgreementComment,
-  isAgreementComment,
-  isTeamPermission,
-  touchesEnginePaths,
+  hasCheckedCheckbox,
+  isInContributorsFile,
 } from './license-agreement-check.mjs';
 
-test('accepts the exact acknowledgement phrase from the PR author', () => {
-  const comment = {
-    body: ACKNOWLEDGEMENT_PHRASE,
-    user: { login: 'external-user' },
-  };
+// ── hasCheckedCheckbox ────────────────────────────────────────────────────────
 
-  assert.equal(isAgreementComment(comment, 'external-user'), true);
+test('detects a checked checkbox in the PR body', () => {
+  assert.equal(hasCheckedCheckbox(`- [x] ${CHECKBOX_TEXT}`), true);
 });
 
-test('rejects the acknowledgement phrase when embedded in a longer comment', () => {
-  const comment = {
-    body: `No, ${ACKNOWLEDGEMENT_PHRASE}`,
-    user: { login: 'external-user' },
-  };
-
-  assert.equal(isAgreementComment(comment, 'external-user'), false);
+test('detects a checked checkbox regardless of case', () => {
+  assert.equal(hasCheckedCheckbox(`- [X] ${CHECKBOX_TEXT}`), true);
 });
 
-test('ignores acknowledgement comments from other users', () => {
-  const comment = {
-    body: ACKNOWLEDGEMENT_PHRASE,
-    user: { login: 'reviewer' },
-  };
-
-  assert.equal(isAgreementComment(comment, 'external-user'), false);
+test('does not treat an unchecked checkbox as checked', () => {
+  assert.equal(hasCheckedCheckbox(`- [ ] ${CHECKBOX_TEXT}`), false);
 });
 
-test('ignores bot-authored acknowledgement comments', () => {
-  const comment = {
-    body: ACKNOWLEDGEMENT_PHRASE,
-    user: { login: 'github-actions[bot]' },
-  };
-
-  assert.equal(isAgreementComment(comment, 'github-actions[bot]'), false);
+test('returns false when the PR body is empty', () => {
+  assert.equal(hasCheckedCheckbox(''), false);
 });
 
-test('ignores the sticky comment marker as acknowledgement', () => {
-  const comment = {
-    body: `${STICKY_COMMENT_MARKER}\n${ACKNOWLEDGEMENT_PHRASE}`,
-    user: { login: 'external-user' },
-  };
+// ── isInContributorsFile ──────────────────────────────────────────────────────
 
-  assert.equal(isAgreementComment(comment, 'external-user'), false);
+test('finds a username that appears as a list entry', () => {
+  const content = '# Contributors\n\n- @alice\n- @bob\n';
+  assert.equal(isInContributorsFile('alice', content), true);
+  assert.equal(isInContributorsFile('bob', content), true);
 });
 
-test('finds an author acknowledgement among comments', () => {
+test('does not match a partial username', () => {
+  const content = '# Contributors\n\n- @alice-bot\n';
+  assert.equal(isInContributorsFile('alice', content), false);
+});
+
+test('returns false when the file is empty', () => {
+  assert.equal(isInContributorsFile('alice', ''), false);
+});
+
+test('returns false when the username is not present', () => {
+  assert.equal(isInContributorsFile('carol', '# Contributors\n\n- @alice\n'), false);
+});
+
+// ── evaluateAgreement ─────────────────────────────────────────────────────────
+
+test('passes contributors already in contributors.md', () => {
+  const result = evaluateAgreement({ prBody: '', inContributorsFile: true });
+
+  assert.deepEqual(result, {
+    acknowledged: true,
+    checkboxChecked: false,
+    inContributorsFile: true,
+  });
+});
+
+test('passes contributors who have checked the checkbox', () => {
+  const result = evaluateAgreement({ prBody: `- [x] ${CHECKBOX_TEXT}`, inContributorsFile: false });
+
+  assert.deepEqual(result, {
+    acknowledged: true,
+    checkboxChecked: true,
+    inContributorsFile: false,
+  });
+});
+
+test('fails contributors without acknowledgement', () => {
+  const result = evaluateAgreement({ prBody: '', inContributorsFile: false });
+
+  assert.deepEqual(result, {
+    acknowledged: false,
+    checkboxChecked: false,
+    inContributorsFile: false,
+  });
+});
+
+// ── findStickyComment ─────────────────────────────────────────────────────────
+
+test('finds the pending comment when authored by the workflow bot', () => {
   const comments = [
-    { body: ACKNOWLEDGEMENT_PHRASE, user: { login: 'reviewer' } },
-    { body: ACKNOWLEDGEMENT_PHRASE, user: { login: 'external-user' } },
-  ];
-
-  assert.equal(hasAgreementComment(comments, 'external-user'), true);
-});
-
-test('finds sticky comments only when authored by the workflow bot', () => {
-  const comments = [
-    { body: STICKY_COMMENT_MARKER, user: { login: 'external-user' } },
-    { body: STICKY_COMMENT_MARKER, user: { login: 'github-actions[bot]' }, id: 123 },
+    { body: '## License agreement required', user: { login: 'external-user' } },
+    { body: '## License agreement required', user: { login: 'github-actions[bot]' }, id: 123 },
   ];
 
   assert.deepEqual(findStickyComment(comments), comments[1]);
 });
 
-test('classifies write, maintain, and admin permissions as team members', () => {
-  assert.equal(isTeamPermission('write'), true);
-  assert.equal(isTeamPermission('maintain'), true);
-  assert.equal(isTeamPermission('admin'), true);
+test('recognizes the sticky comment under a GitHub App bot login', () => {
+  const comments = [
+    { body: '## License agreement required', user: { login: 'iii-cla[bot]' }, id: 789 },
+  ];
+
+  assert.deepEqual(findStickyComment(comments), comments[0]);
 });
 
-test('classifies read, triage, and none permissions as external contributors', () => {
-  assert.equal(isTeamPermission('read'), false);
-  assert.equal(isTeamPermission('triage'), false);
-  assert.equal(isTeamPermission('none'), false);
+test('finds the satisfied comment when authored by the workflow bot', () => {
+  const comments = [
+    { body: '## License agreement recorded', user: { login: 'github-actions[bot]' }, id: 456 },
+  ];
+
+  assert.deepEqual(findStickyComment(comments), comments[0]);
 });
 
-test('touchesEnginePaths returns true for engine src changes', () => {
-  assert.equal(touchesEnginePaths([{ filename: 'engine/src/foo.rs' }]), true);
+test('returns undefined when no bot comment exists', () => {
+  const comments = [
+    { body: '## License agreement required', user: { login: 'external-user' } },
+  ];
+
+  assert.equal(findStickyComment(comments), undefined);
 });
 
-test('touchesEnginePaths returns true for top-level engine files', () => {
-  assert.equal(touchesEnginePaths([{ filename: 'engine/Cargo.toml' }]), true);
+// ── buildCommitMessage ────────────────────────────────────────────────────────
+
+test('buildCommitMessage includes the username', () => {
+  const msg = buildCommitMessage('alice');
+  assert.ok(msg.includes('@alice'));
+  assert.ok(msg.startsWith('docs:'));
 });
 
-test('touchesEnginePaths returns false for non-engine changes', () => {
-  assert.equal(
-    touchesEnginePaths([{ filename: 'console/x.ts' }, { filename: 'docs/y.md' }]),
-    false,
-  );
+// ── buildPendingComment ───────────────────────────────────────────────────────
+
+test('buildPendingComment includes the checkbox text as a copyable code sample', () => {
+  const comment = buildPendingComment('alice');
+  assert.ok(comment.includes('@alice'));
+  assert.ok(comment.includes('docs: add @alice to contributors.md'));
+  assert.ok(comment.includes('```markdown'));
+  assert.ok(comment.includes(`- [ ] ${CHECKBOX_TEXT}`));
 });
 
-test('touchesEnginePaths returns false for empty list', () => {
-  assert.equal(touchesEnginePaths([]), false);
-});
+// ── buildSatisfiedComment ─────────────────────────────────────────────────────
 
-test('touchesEnginePaths accepts plain string entries', () => {
-  assert.equal(touchesEnginePaths(['engine/src/foo.rs']), true);
-  assert.equal(touchesEnginePaths(['console/foo.ts']), false);
-});
-
-test('touchesEnginePaths does not match unrelated paths that contain "engine"', () => {
-  assert.equal(touchesEnginePaths([{ filename: 'docs/engine-overview.md' }]), false);
-  assert.equal(touchesEnginePaths([{ filename: 'crates/engine-utils/src/lib.rs' }]), false);
-});
-
-test('touchesEnginePaths detects files renamed out of engine/', () => {
-  assert.equal(
-    touchesEnginePaths([
-      { filename: 'other/x.rs', previous_filename: 'engine/x.rs', status: 'renamed' },
-    ]),
-    true,
-  );
-});
-
-test('touchesEnginePaths detects files renamed into engine/', () => {
-  assert.equal(
-    touchesEnginePaths([
-      { filename: 'engine/x.rs', previous_filename: 'other/x.rs', status: 'renamed' },
-    ]),
-    true,
-  );
-});
-
-test('passes any PR that does not touch engine code regardless of permission', () => {
-  const result = evaluateAgreement({
-    comments: [],
-    permission: 'none',
-    prAuthor: 'external-user',
-    changedFiles: [{ filename: 'docs/intro.md' }],
-  });
-
-  assert.deepEqual(result, {
-    acknowledged: true,
-    engineTouched: false,
-    commentAcknowledged: false,
-    teamMember: false,
-  });
-});
-
-test('passes team members touching engine code without an acknowledgement', () => {
-  const result = evaluateAgreement({
-    comments: [],
-    permission: 'write',
-    prAuthor: 'team-member',
-    changedFiles: [{ filename: 'engine/src/lib.rs' }],
-  });
-
-  assert.deepEqual(result, {
-    acknowledged: true,
-    engineTouched: true,
-    commentAcknowledged: false,
-    teamMember: true,
-  });
-});
-
-test('passes external contributors touching engine code with an acknowledgement comment', () => {
-  const result = evaluateAgreement({
-    comments: [{ body: ACKNOWLEDGEMENT_PHRASE, user: { login: 'external-user' } }],
-    permission: 'read',
-    prAuthor: 'external-user',
-    changedFiles: [{ filename: 'engine/src/lib.rs' }],
-  });
-
-  assert.deepEqual(result, {
-    acknowledged: true,
-    engineTouched: true,
-    commentAcknowledged: true,
-    teamMember: false,
-  });
-});
-
-test('accepts acknowledgement with normalized case and whitespace', () => {
-  const result = evaluateAgreement({
-    comments: [
-      {
-        body: `  ${ACKNOWLEDGEMENT_PHRASE.toUpperCase()}  `,
-        user: { login: 'external-user' },
-      },
-    ],
-    permission: 'read',
-    prAuthor: 'external-user',
-    changedFiles: [{ filename: 'engine/src/lib.rs' }],
-  });
-
-  assert.equal(result.acknowledged, true);
-  assert.equal(result.commentAcknowledged, true);
-});
-
-test('fails external contributors touching engine code without acknowledgement', () => {
-  const result = evaluateAgreement({
-    comments: [],
-    permission: 'none',
-    prAuthor: 'external-user',
-    changedFiles: [{ filename: 'engine/src/lib.rs' }],
-  });
-
-  assert.deepEqual(result, {
-    acknowledged: false,
-    engineTouched: true,
-    commentAcknowledged: false,
-    teamMember: false,
-  });
+test('buildSatisfiedComment includes the username and contributors.md reference', () => {
+  const comment = buildSatisfiedComment('alice');
+  assert.ok(comment.includes('@alice'));
+  assert.ok(comment.includes('contributors.md'));
 });
