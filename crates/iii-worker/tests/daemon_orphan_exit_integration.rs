@@ -479,10 +479,14 @@ fn daemon_reaps_managed_workers_on_engine_gone() {
         }
         std::thread::sleep(PROBE_INTERVAL);
     }
-    let final_log = std::fs::read_to_string(&logfile).unwrap_or_default();
+    // Post-detection output is redirected to the durable exit log under
+    // $HOME/.iii/logs (the engine that owned stdout is dead), so the reap
+    // pass is asserted there, not in the spawn-time logfile.
+    let exit_log = std::fs::read_to_string(tmp.path().join(".iii/logs/worker-manager-daemon.log"))
+        .unwrap_or_default();
     assert!(
-        final_log.contains("reaping managed workers"),
-        "engine-gone exit must run the reaper; log:\n{final_log}"
+        exit_log.contains("reaping managed workers"),
+        "engine-gone exit must run the reaper (exit log):\n{exit_log}"
     );
 }
 

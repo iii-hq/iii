@@ -520,14 +520,105 @@ fn reaper_kills_running_binary_worker_on_engine_gone() {
         "daemon exit after reap must be graceful"
     );
 
-    let final_log = std::fs::read_to_string(&logfile).unwrap_or_default();
+    // Post-detection output is redirected to the durable exit log (the
+    // engine that owned stdout is dead), so the reap pass is asserted THERE.
+    let exit_log = std::fs::read_to_string(breadcrumb_path(tmp.path(), "worker-manager-daemon"))
+        .unwrap_or_default();
     assert!(
-        final_log.contains("reaping managed workers"),
-        "reaper pass must be observable; log:\n{final_log}"
+        exit_log.contains("reaping managed workers"),
+        "reaper pass must be observable in the exit log; got:\n{exit_log}"
     );
     assert!(
         !worker_pidfile.exists(),
-        "stop path must clean up the worker pidfile; log:\n{final_log}"
+        "stop path must clean up the worker pidfile; exit log:\n{exit_log}"
+    );
+}
+
+/// THE field bug behind "killall -9 iii didn't reap anything": the engine
+/// spawns the daemon with stdout/stderr PIPED INTO ITSELF, so engine death
+/// breaks both fds. The first post-detection log write then EPIPEs, the fmt
+/// layer's internal-error `eprintln!` fallback panics on the equally-broken
+/// stderr, and the main task unwinds BEFORE the breadcrumb and the reaper —
+/// silent exit 101, nothing reaped. The fix re-points fds 1/2 at the
+/// durable exit log the instant engine death is detected, which also makes
+/// the reap pass visible there. File-backed stdio (every other test in
+/// this suite) can never catch this.
+#[test]
+fn daemon_survives_its_stdio_dying_with_the_engine() {
+    use std::io::BufRead;
+
+    let tmp = tempfile::tempdir().unwrap();
+
+    let mut fake_engine = KillOnDrop(spawn_fake_engine());
+    let engine_pid = fake_engine.0.id() as i32;
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_iii-worker"));
+    cmd.args(["worker-manager-daemon", "--engine", "ws://127.0.0.1:1"])
+        .current_dir(tmp.path())
+        .env("RUST_LOG", "info")
+        .env("HOME", tmp.path())
+        .env("III_ENGINE_PID", engine_pid.to_string())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let lifeline = iii_worker::daemon_exit::attach_lifeline_std(&mut cmd).expect("attach lifeline");
+    let mut daemon = KillOnDrop(cmd.spawn().expect("spawn daemon"));
+
+    // Readiness gate: scan the piped stdout for the armed line, then hand
+    // the handle back so this test can break the pipe at "engine death".
+    let stdout = daemon.0.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        let mut armed = false;
+        while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+            if line.contains("lifeline exit-watch armed") {
+                armed = true;
+                break;
+            }
+            line.clear();
+        }
+        let _ = tx.send((armed, reader.into_inner()));
+    });
+    let (armed, stdout) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("daemon produced no armed line on its piped stdout");
+    assert!(armed, "daemon never armed the lifeline watch");
+
+    // Engine death, production-shaped: the process dies AND every pipe it
+    // held dies with it — lifeline EOF plus broken stdout/stderr.
+    let _ = fake_engine.0.kill();
+    let _ = fake_engine.0.wait();
+    drop(lifeline);
+    drop(stdout);
+    drop(daemon.0.stderr.take());
+
+    let crumb_file = breadcrumb_path(tmp.path(), "worker-manager-daemon");
+    let deadline = Instant::now() + EXIT_DEADLINE;
+    let status = loop {
+        if let Some(s) = daemon.0.try_wait().expect("try_wait") {
+            break s;
+        }
+        if Instant::now() >= deadline {
+            panic!("daemon never exited after engine death with broken stdio");
+        }
+        std::thread::sleep(PROBE_INTERVAL);
+    };
+    let crumb = std::fs::read_to_string(&crumb_file).unwrap_or_default();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "broken stdio must not panic the daemon (101 = the EPIPE panic regressed); exit log:\n{crumb}"
+    );
+    assert!(
+        crumb.contains("reason=engine-gone"),
+        "breadcrumb must still be written with broken stdio: {crumb}"
+    );
+    // The redirect points the daemon's remaining output at the exit log, so
+    // the reap pass is durable forensics instead of EPIPE fodder.
+    assert!(
+        crumb.contains("reaping managed workers"),
+        "reaper output must land in the exit log after the stdio redirect: {crumb}"
     );
 }
 

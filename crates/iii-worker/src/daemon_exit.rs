@@ -419,6 +419,7 @@ impl ExitWatch {
             tokio::select! {
                 eof = tokio::task::spawn_blocking(move || blocking_wait_lifeline_eof(dup)) => {
                     if matches!(eof, Ok(true)) {
+                        redirect_stdio_to_exit_log(daemon);
                         tracing::warn!(daemon, "lifeline closed: spawner gone");
                         return;
                     }
@@ -429,6 +430,49 @@ impl ExitWatch {
             }
         }
         backstop.await;
+    }
+}
+
+/// The engine that consumed this daemon's stdout/stderr just died, so fds
+/// 1/2 are broken pipes. The very next write would panic the daemon: the
+/// fmt layer swallows its own EPIPE, but its internal-error fallback is an
+/// `eprintln!`, which panics when stderr is also broken — unwinding the
+/// main task BETWEEN engine-death detection and the breadcrumb/reaper. A
+/// real `killall -9 iii` left every managed worker running because the
+/// reaper died to exactly this before stopping anything.
+///
+/// Re-point fds 1/2 at the durable exit log (same file as the breadcrumb)
+/// so post-mortem writes succeed AND the reap pass becomes visible
+/// forensics; fall back to /dev/null. Must run BEFORE the first
+/// engine-is-gone log line. Best-effort: on total failure the panic risk
+/// simply remains, which is no worse than before.
+#[cfg(unix)]
+fn redirect_stdio_to_exit_log(daemon: &str) {
+    use std::os::fd::IntoRawFd;
+    let log = exit_log_path(daemon)
+        .and_then(|p| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .ok()
+        })
+        .or_else(|| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/null")
+                .ok()
+        });
+    let Some(log) = log else { return };
+    // Leak the fd deliberately: it must outlive this call as the process's
+    // stdout/stderr for the remaining (short) life of the daemon.
+    let fd = log.into_raw_fd();
+    unsafe {
+        libc::dup2(fd, 1);
+        libc::dup2(fd, 2);
+        if fd > 2 {
+            libc::close(fd);
+        }
     }
 }
 
@@ -472,6 +516,7 @@ async fn wait_for_pid_exit(pid: i32, daemon: &'static str) {
     loop {
         tokio::time::sleep(ENGINE_POLL_INTERVAL).await;
         if process_is_gone(pid) {
+            redirect_stdio_to_exit_log(daemon);
             tracing::warn!(engine_pid = pid, daemon, "declared engine pid exited");
             return;
         }
@@ -499,6 +544,7 @@ async fn wait_for_reparent(initial: i32, daemon: &'static str) {
         tokio::time::sleep(ENGINE_POLL_INTERVAL).await;
         let current = nix::unistd::getppid().as_raw();
         if reparented_away(initial, current) && process_is_gone(initial) {
+            redirect_stdio_to_exit_log(daemon);
             tracing::warn!(was = initial, now = current, daemon, "spawn parent exited");
             return;
         }
@@ -528,17 +574,25 @@ fn process_is_gone(pid: i32) -> bool {
     )
 }
 
+/// The durable per-daemon exit log: `~/.iii/logs/<daemon>.log`. Holds the
+/// engine-gone breadcrumb and, post-redirect, the daemon's final output
+/// (the reap pass). Creates the parent directory as a side effect.
+#[cfg(unix)]
+fn exit_log_path(daemon: &str) -> Option<std::path::PathBuf> {
+    let dir = dirs::home_dir()?.join(".iii/logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(format!("{daemon}.log")))
+}
+
 /// Best-effort durable trace of an engine-gone self-exit (appends to
 /// `~/.iii/logs/<daemon>.log`). Every failure mode is silently ignored — the
 /// daemon is exiting either way.
 #[cfg(unix)]
 fn write_exit_breadcrumb(daemon: &str, engine_pid: Option<i32>, spawn_parent: i32) {
     use std::io::Write;
-    let Some(home) = dirs::home_dir() else { return };
-    let dir = home.join(".iii/logs");
-    if std::fs::create_dir_all(&dir).is_err() {
+    let Some(path) = exit_log_path(daemon) else {
         return;
-    }
+    };
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -550,7 +604,7 @@ fn write_exit_breadcrumb(daemon: &str, engine_pid: Option<i32>, spawn_parent: i3
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join(format!("{daemon}.log")))
+        .open(path)
     {
         let _ = f.write_all(line.as_bytes());
     }
