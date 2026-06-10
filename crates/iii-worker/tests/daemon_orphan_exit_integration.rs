@@ -476,13 +476,14 @@ fn daemon_reaps_managed_workers_on_engine_gone() {
     );
 }
 
-/// The engine's kill_child sends SIGTERM; SIGINT is the hand-run Ctrl-C path.
-/// Both must exit GRACEFULLY through wait_for_exit (process exits with code
-/// 0). Pre-fix, SIGTERM killed via default disposition: terminated-by-signal,
+/// The engine's kill_child sends SIGTERM; SIGINT is the hand-run Ctrl-C
+/// path; SIGHUP is the terminal closing on a hand-launched daemon. All three
+/// must exit GRACEFULLY through wait_for_exit (process exits with code 0).
+/// Pre-fix, each killed via default disposition: terminated-by-signal,
 /// status.code() == None — which is exactly what this asserts against.
 #[test]
 fn daemon_exits_gracefully_on_sigterm_and_sigint() {
-    for sig in [Signal::SIGTERM, Signal::SIGINT] {
+    for sig in [Signal::SIGTERM, Signal::SIGINT, Signal::SIGHUP] {
         let bin = env!("CARGO_BIN_EXE_iii-worker");
         let tmp = tempfile::tempdir().unwrap();
         let logfile = tmp.path().join("daemon.log");
@@ -504,10 +505,13 @@ fn daemon_exits_gracefully_on_sigterm_and_sigint() {
             .expect("spawn daemon");
         let pid = daemon.id() as i32;
 
-        // Signal only after the handlers are demonstrably installed — the
-        // "armed" line is logged from the same select that owns the signal
-        // arms, so its presence means a too-early default-disposition death
-        // can no longer happen.
+        // Signal only after the daemon has demonstrably reached the exit
+        // select: the "armed" line is logged while select polls its arms,
+        // and the signal arms install their handlers in that same first
+        // poll pass. select gives no strict ordering between the arms, so
+        // an instructions-wide pre-handler window remains — but gating on
+        // the armed line shrinks "daemon not ready yet" from whole startup
+        // (SDK init, registrations) to that sliver.
         let (armed, log) =
             wait_for_log_line(&logfile, "parent exit-watch armed", Duration::from_secs(10));
         if !armed {
