@@ -278,7 +278,6 @@ jobs:
 
       - name: Dispatch templates version bump
         if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.templates_token.outputs.token }}
           VERSION: ${{ steps.versions.outputs.version }}
