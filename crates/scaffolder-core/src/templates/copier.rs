@@ -38,6 +38,16 @@ pub async fn copy_template(
 
     let mut copied_files = Vec::new();
 
+    // Per-template renames: a source file is fetched under its tagged name but
+    // written to its canonical destination. Only the selected language's source
+    // is ever included (gated by `language_files`), so collisions between
+    // sources sharing a destination can't occur within one scaffold.
+    let rename_map: std::collections::HashMap<&str, &str> = manifest
+        .renames
+        .iter()
+        .map(|r| (r.source.as_str(), r.destination()))
+        .collect();
+
     for file_path in &manifest.files {
         // Check if this file should be included based on language selection
         if should_include_file(file_path, selected_languages, language_files) {
@@ -47,21 +57,32 @@ pub async fn copy_template(
                     file_path
                 );
             }
+            // Resolve the on-disk destination, applying a rename when configured.
+            let dest_rel = rename_map
+                .get(file_path.as_str())
+                .copied()
+                .unwrap_or(file_path);
+            if !is_safe_relative_path(dest_rel) {
+                anyhow::bail!(
+                    "Unsafe rename destination in template manifest: {} (must be relative and must not contain '..')",
+                    dest_rel
+                );
+            }
             // Ensure parent directories exist
-            let target_path = target_dir.join(file_path);
+            let target_path = target_dir.join(dest_rel);
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent)
                     .await
                     .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
             }
 
-            // Fetch and write the file
+            // Fetch under the tagged source name, write to the destination.
             let content = fetcher.fetch_file_bytes(template_name, file_path).await?;
             fs::write(&target_path, &content)
                 .await
                 .with_context(|| format!("Failed to write file: {}", target_path.display()))?;
 
-            copied_files.push(file_path.clone());
+            copied_files.push(dest_rel.to_string());
         }
     }
 

@@ -336,7 +336,7 @@ as they happen. This is particularly useful for continuing work when a Worker co
         "discovery::on-workers",
         async (data: { event: string; worker_id: string }) => {
           if (data.event === "worker_connected") {
-            // A Worker just joined the registry; its Functions are callable now.
+            // A Worker joined the registry; its Functions are callable now.
           }
         },
       );
@@ -364,7 +364,7 @@ as they happen. This is particularly useful for continuing work when a Worker co
       ```python
       async def on_workers(data: dict) -> None:
           if data["event"] == "worker_connected":
-              # A Worker just joined the registry; its Functions are callable now.
+              # A Worker joined the registry; its Functions are callable now.
               pass
 
       worker.register_function("discovery::on-workers", on_workers)
@@ -403,7 +403,7 @@ as they happen. This is particularly useful for continuing work when a Worker co
           "discovery::on-workers",
           |input: WorkersAvailable| async move {
               if input.event == "worker_connected" {
-                  // A Worker just joined the registry; its Functions are callable now.
+                  // A Worker joined the registry; its Functions are callable now.
               }
               Ok::<_, String>(())
           },
@@ -447,16 +447,19 @@ that iii starts automatically when they're specified in iii's
 name: math-worker
 description: Evaluate math expressions over iii functions.
 runtime:
-  kind: python
-  package_manager: pip
-  entry: math_worker.py
+  # Base OCI image used as the worker rootfs. Override to pin a version.
+  base_image: docker.io/iiidev/python:latest
 scripts:
-  install: "pip install -r requirements.txt"
-  start: "python math_worker.py"
+  install: "pip install -e ."
+  start: "watchfiles 'python src/math_worker.py'"
 ```
 
 `description` is an optional one-line, human/LLM-readable summary of what the worker does; the
 iii CLI displays it when installing or inspecting the worker.
+
+`scripts.install` runs once to fetch dependencies and `scripts.start` launches the worker. Here,
+`watchfiles` reloads it whenever you edit a source file. `runtime.base_image` selects the OCI image
+iii uses as the worker's rootfs.
 
 The manifest is metadata about _starting_ the Worker. Once the Worker is running iii treats them all
 the same. A Worker started by `iii` via its `config.yaml`, via `iii worker start`, or a manually run
@@ -509,8 +512,8 @@ dropped socket; graceful shutdown makes it deterministic and faster.
 </Tabs>
 
 <Note>
-  Shutdown is very useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless
-  containers, or scheduled scripts can connect just like any other Worker, do their work, and
+  Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless
+  containers, or scheduled scripts can connect like any other Worker, do their work, and
   `shutdown()` (`shutdown_async().await` in Rust).
 </Note>
 
