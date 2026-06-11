@@ -19,9 +19,10 @@ use std::sync::{Arc, Mutex};
 use crate::core::{
     AddOptions, AddOutcome, ClearOptions, ClearOutcome, EventSink, ListOptions, ListOutcome,
     LogsOptions, LogsOutcome, NullSink, ProjectCtx, RemoveOptions, RemoveOutcome, StartOptions,
-    StartOutcome, StopOptions, StopOutcome, UpdateOptions, UpdateOutcome, WorkerOpError,
-    WorkerOpErrorKind, add as core_add, clear as core_clear, list as core_list, logs as core_logs,
-    remove as core_remove, start as core_start, stop as core_stop, update as core_update,
+    StartOutcome, StatusOptions, StatusOutcome, StopOptions, StopOutcome, UpdateOptions,
+    UpdateOutcome, WorkerOpError, WorkerOpErrorKind, add as core_add, clear as core_clear,
+    list as core_list, logs as core_logs, remove as core_remove, start as core_start,
+    stop as core_stop, update as core_update,
 };
 use iii_observability::OtelConfig;
 use iii_sdk::{
@@ -33,6 +34,11 @@ use serde_json::{Value, json};
 
 use crate::cli::app::WorkerManagerDaemonArgs;
 use crate::cli::host_shim::CliHostShim;
+use crate::cli::project::{MAX_LOCAL_MANIFEST_BYTES, WORKER_MANIFEST};
+use crate::cli::worker_manifest::{
+    ManifestReport, ValidateOptions, hello_world_example_json, manifest_schema_json,
+    report_from_str,
+};
 use crate::cli::worker_trigger::{
     IIIEventSink, Subscriptions, WorkerCallRequest, WorkerTriggerConfig, WorkerTriggerHandler,
 };
@@ -61,8 +67,9 @@ pub async fn run(args: WorkerManagerDaemonArgs) -> i32 {
                 name: "iii-worker-ops".to_string(),
                 description: Some(
                     "Manages installed workers: add/remove/update/start/stop/list/clear/logs, \
-                     plus worker::schema introspection and the `worker` lifecycle \
-                     trigger type."
+                     plus worker::schema introspection (including the iii.worker.yaml \
+                     manifest schema), worker::validate manifest dry-runs, and the \
+                     `worker` lifecycle trigger type."
                         .to_string(),
                 ),
                 ..Default::default()
@@ -183,12 +190,37 @@ fn schema_for_value<T: JsonSchema>() -> Option<Value> {
 #[doc(hidden)]
 pub fn op_description(function_id: &str) -> &'static str {
     match function_id {
-        "worker::add" => "Install a worker from registry name or OCI ref",
+        "worker::add" => {
+            "Install a worker from a registry slug, an OCI image ref, or a LOCAL \
+             project directory (one containing an iii.worker.yaml). Call \
+             worker::schema to see each source shape, and worker::validate to \
+             dry-run an iii.worker.yaml before installing. LOCAL installs run \
+             the project directory LIVE and start a source watcher: code edits \
+             auto-restart the worker, so do NOT re-add after changing source \
+             files — re-add (force: true) only when iii.worker.yaml itself \
+             changes. Installs can outlive a bus invocation timeout and \
+             CONTINUE server-side — on timeout, poll worker::status instead of \
+             re-issuing (the project lock stays held until the in-flight \
+             install finishes)."
+        }
         "worker::remove" => "Uninstall workers and clear their artifacts",
-        "worker::update" => "Reinstall workers preserving config",
+        "worker::update" => {
+            "Reinstall REGISTRY-installed workers preserving config (re-resolves \
+             iii.lock pins). LOCAL-path workers are NOT touched by this: their \
+             source watcher already auto-restarts them on code edits; only an \
+             iii.worker.yaml change needs worker::add with force: true. Like \
+             worker::add, updates can outlive a bus timeout and continue \
+             server-side — poll worker::status."
+        }
         "worker::start" => "Start a configured worker",
         "worker::stop" => "Stop a running worker",
         "worker::list" => "List installed workers",
+        "worker::status" => {
+            "Install/runtime status for ONE worker: installed?, running?, pid, \
+             version, a sanitized recent log tail, and a next-step hint. THE poll \
+             target after worker::add { wait: false } or after an add/update call \
+             hit a bus timeout (the install keeps running server-side)."
+        }
         "worker::clear" => "Wipe worker artifacts",
         "worker::logs" => {
             "Read a worker's recent stdout/stderr log lines from the engine host. \
@@ -196,7 +228,23 @@ pub fn op_description(function_id: &str) -> &'static str {
         }
         "worker::schema" => {
             "Introspect request/response schemas for worker::* triggers. \
-             Optional `function_id` filters to a single trigger."
+             Optional `function_id` filters to a single trigger. Also serves \
+             the iii.worker.yaml manifest schema under the pseudo-id \
+             \"iii.worker.yaml\"."
+        }
+        "worker::validate" => {
+            "Dry-run validation of an iii.worker.yaml WITHOUT installing \
+             anything. Pass `manifest` (inline YAML text) or `path` (host \
+             file/dir). Returns errors, unknown keys, deprecated keys, and \
+             warnings — author, validate, then worker::add."
+        }
+        "iii.worker.yaml" => {
+            "JSON Schema for the iii.worker.yaml manifest file (not a callable \
+             trigger). Fetch via worker::schema { function_id: \
+             \"iii.worker.yaml\" }: `request` = the manifest schema, `response` \
+             = a complete minimal Node hello-world worker as { path: file \
+             contents } ready to write to disk (uses the `iii-sdk` npm \
+             package). Check a concrete manifest with worker::validate."
         }
         _ => "",
     }
@@ -226,6 +274,8 @@ fn register_all(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     register_clear(iii, project_root, sink);
     register_logs(iii);
     register_schema(iii);
+    register_status(iii);
+    register_validate(iii);
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -269,6 +319,11 @@ pub fn op_metadata(function_id: &str) -> (u64, bool) {
         "worker::clear" => (30_000, true),
         "worker::logs" => (10_000, true),
         "worker::schema" => (10_000, true),
+        "worker::status" => (10_000, true),
+        "worker::validate" => (10_000, true),
+        // Pseudo-id for the manifest schema served by worker::schema; not a
+        // callable trigger, but the SchemaEntry row still carries metadata.
+        "iii.worker.yaml" => (10_000, true),
         _ => (30_000, false),
     }
 }
@@ -278,9 +333,11 @@ struct SchemaResponse {
     schemas: Vec<SchemaEntry>,
 }
 
-/// The 9 worker::* (function_id, request, response) schema triples, built
-/// once via schemars reflection and reused on every `worker::schema` call.
-/// Regenerating all 16 schemas per invocation was wasted CPU/allocation on
+/// The 10 worker::* (function_id, request, response) schema triples plus the
+/// `iii.worker.yaml` pseudo-entry (the manifest file's own JSON Schema, so
+/// LLMs can author a manifest from the real contract), built once via
+/// schemars reflection and reused on every `worker::schema` call.
+/// Regenerating every schema per invocation was wasted CPU/allocation on
 /// an endpoint LLM/automation callers hit repeatedly; only the matched
 /// entries are cloned per request.
 fn schema_table() -> &'static [(&'static str, Option<Value>, Option<Value>)] {
@@ -332,6 +389,26 @@ fn schema_table() -> &'static [(&'static str, Option<Value>, Option<Value>)] {
                     schema_for_value::<SchemaRequest>(),
                     schema_for_value::<SchemaResponse>(),
                 ),
+                (
+                    "worker::status",
+                    schema_for_value::<StatusOptions>(),
+                    schema_for_value::<StatusOutcome>(),
+                ),
+                (
+                    "worker::validate",
+                    schema_for_value::<ValidateOptions>(),
+                    schema_for_value::<ManifestReport>(),
+                ),
+                // Pseudo-entry: the iii.worker.yaml authoring contract.
+                // request = the manifest's own JSON Schema; response = a
+                // complete minimal Node hello-world worker as { path → file
+                // contents }, ready to write to disk. Fetch via
+                // worker::schema { function_id: "iii.worker.yaml" }.
+                (
+                    "iii.worker.yaml",
+                    Some(manifest_schema_json()),
+                    Some(hello_world_example_json()),
+                ),
             ]
         });
     &TABLE
@@ -377,6 +454,157 @@ fn register_schema(iii: &III) {
         |e| bad_request_error("worker::schema", &e),
     );
     let _ = iii.register_function("worker::schema", describe_op(rf, "worker::schema"));
+}
+
+/// Compose one worker's status from host-side observables: config.yaml
+/// declaration, process liveness, lockfile version, and a sanitized log
+/// tail. Born from a harness session where, after `worker::add` timed out at
+/// the bus gate, the caller had NO way to tell "still installing" from
+/// "crashed" (worker::list only says running:false) and went spelunking with
+/// shell commands instead.
+async fn build_status(name: &str) -> Result<StatusOutcome, WorkerOpError> {
+    use crate::cli::config_file::{self, ResolvedWorkerType};
+    use crate::cli::managed::{find_worker_pid_from_ps, is_engine_running, is_worker_running};
+
+    crate::core::types::validate_worker_name(name).map_err(|reason| {
+        WorkerOpError::BadRequest {
+            function_id: "worker::status".into(),
+            reason,
+        }
+    })?;
+
+    let installed = config_file::worker_exists(name);
+    let worker_type = if !installed {
+        "not-installed".to_string()
+    } else {
+        match config_file::resolve_worker_type(name) {
+            ResolvedWorkerType::Oci { .. } => "oci".to_string(),
+            ResolvedWorkerType::Local { .. } => "local".to_string(),
+            ResolvedWorkerType::Binary { .. } => "binary".to_string(),
+            ResolvedWorkerType::Bundle { .. } => "bundle".to_string(),
+            ResolvedWorkerType::Config => "builtin".to_string(),
+        }
+    };
+
+    let worker_running = is_worker_running(name);
+    // Engine builtins run inside the engine process; count them as running
+    // when the engine is up (mirrors CliHostShim::list / `iii worker list`).
+    let running =
+        worker_running || (installed && worker_type == "builtin" && is_engine_running());
+    let pid = find_worker_pid_from_ps(name);
+    let version = crate::cli::lockfile::WorkerLockfile::read_from(
+        crate::cli::lockfile::lockfile_path(),
+    )
+    .ok()
+    .and_then(|lf| lf.workers.get(name).map(|w| w.version.clone()));
+
+    let logs = core_logs::run(LogsOptions {
+        name: name.to_string(),
+        tail: 20,
+        raw: false,
+    })
+    .await?;
+
+    let hint = if !installed {
+        "not in config.yaml — install with worker::add (dry-run the manifest first \
+         with worker::validate)"
+            .to_string()
+    } else if running {
+        format!(
+            "running; see its functions with engine::functions::list {{ search: {name:?} }}"
+        )
+    } else if logs.stderr.is_empty() && logs.stdout.is_empty() {
+        "installed but not running and no logs yet — likely still provisioning; \
+         poll again shortly, or worker::start to boot it"
+            .to_string()
+    } else {
+        "installed but not running — check stderr_tail/stdout_tail for the failure \
+         (e.g. a dependency install error), fix the worker source, then \
+         worker::add { force: true } to reinstall or worker::start to retry"
+            .to_string()
+    };
+
+    Ok(StatusOutcome {
+        name: name.to_string(),
+        installed,
+        worker_type,
+        running,
+        pid,
+        version,
+        logs_dir: logs.logs_dir,
+        stderr_tail: logs.stderr,
+        stdout_tail: logs.stdout,
+        hint,
+    })
+}
+
+fn register_status(iii: &III) {
+    let rf = RegisterFunction::new_async_with_bad_request(
+        |opts: StatusOptions| async move {
+            build_status(&opts.name).await.map_err(|e| op_error(&e))
+        },
+        |e| bad_request_error("worker::status", &e),
+    );
+    let _ = iii.register_function("worker::status", describe_op(rf, "worker::status"));
+}
+
+/// `worker::validate` — dry-run an `iii.worker.yaml` without installing.
+/// Read-only and side-effect free: the LLM/automation loop is author →
+/// validate → fix → `worker::add`. Accepts exactly one of `manifest` (inline
+/// YAML text, preferred for authoring) or `path` (host file or worker dir,
+/// resolved like `worker::add { kind: "local" }`).
+fn register_validate(iii: &III) {
+    let rf = RegisterFunction::new_async_with_bad_request(
+        |opts: ValidateOptions| async move {
+            let report: ManifestReport = match (opts.manifest, opts.path) {
+                (Some(_), Some(_)) | (None, None) => {
+                    return Err(op_error(&WorkerOpError::BadRequest {
+                        function_id: "worker::validate".into(),
+                        reason: "pass exactly one of `manifest` (inline YAML) or `path` \
+                                 (host file or worker directory)"
+                            .into(),
+                    }));
+                }
+                (Some(text), None) => report_from_str(&text),
+                (None, Some(p)) => {
+                    let file = if p.is_dir() { p.join(WORKER_MANIFEST) } else { p };
+                    // Stat-first so a huge file is rejected without reading it
+                    // into memory (same cap the add path enforces).
+                    match std::fs::metadata(&file) {
+                        Ok(meta) if meta.len() > MAX_LOCAL_MANIFEST_BYTES => {
+                            let mut r = ManifestReport::default();
+                            r.errors.push(format!(
+                                "{} is {} bytes; iii.worker.yaml is capped at \
+                                 {MAX_LOCAL_MANIFEST_BYTES} bytes",
+                                file.display(),
+                                meta.len(),
+                            ));
+                            r
+                        }
+                        Ok(_) => match std::fs::read_to_string(&file) {
+                            Ok(content) => report_from_str(&content),
+                            Err(e) => {
+                                let mut r = ManifestReport::default();
+                                r.errors.push(format!("cannot read {}: {e}", file.display()));
+                                r
+                            }
+                        },
+                        Err(e) => {
+                            let mut r = ManifestReport::default();
+                            r.errors.push(format!(
+                                "cannot stat {} on the engine/daemon host: {e}",
+                                file.display(),
+                            ));
+                            r
+                        }
+                    }
+                }
+            };
+            Ok::<_, IIIError>(report)
+        },
+        |e| bad_request_error("worker::validate", &e),
+    );
+    let _ = iii.register_function("worker::validate", describe_op(rf, "worker::validate"));
 }
 
 fn sink_ref<'a>(sink: &'a Arc<IIIEventSink>) -> &'a dyn EventSink {

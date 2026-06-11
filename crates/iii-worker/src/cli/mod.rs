@@ -38,5 +38,6 @@ pub(crate) mod test_support;
 pub mod vm_boot;
 pub mod worker_manager;
 pub mod worker_manager_daemon;
+pub mod worker_manifest;
 pub mod worker_manifest_deps;
 pub mod worker_trigger;

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use smoltcp::wire::{
-    EthernetAddress, EthernetFrame, EthernetProtocol, EthernetRepr, IpProtocol, Ipv4Packet,
-    UdpPacket,
+    EthernetAddress, EthernetFrame, EthernetProtocol, EthernetRepr, IpAddress, IpProtocol,
+    Ipv4Packet, UdpPacket,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -25,6 +25,10 @@ const RECV_BUF_SIZE: usize = 4096;
 const ETH_HDR_LEN: usize = 14;
 const IPV4_HDR_LEN: usize = 20;
 const UDP_HDR_LEN: usize = 8;
+/// Largest UDP payload an IPv4 datagram can carry: the IP total-length
+/// field is 16-bit, minus the IP and UDP headers. Anything bigger would
+/// silently truncate in the `as u16` header writes below.
+const MAX_UDP_PAYLOAD: usize = u16::MAX as usize - IPV4_HDR_LEN - UDP_HDR_LEN;
 
 /// Relays non-DNS UDP traffic between the guest and the real network.
 ///
@@ -168,8 +172,13 @@ async fn udp_relay_task(
                             gateway_mac,
                             guest_mac,
                         );
-                        let _ = shared.rx_ring.push(frame);
-                        shared.rx_wake.wake();
+                        // Empty = construction refused (non-IPv4 addrs or
+                        // oversized payload); don't inject a zero-length
+                        // frame into the guest's rx ring.
+                        if !frame.is_empty() {
+                            let _ = shared.rx_ring.push(frame);
+                            shared.rx_wake.wake();
+                        }
                     }
                     Err(e) => {
                         tracing::debug!(error = %e, "UDP relay recv failed");
@@ -202,6 +211,9 @@ fn construct_udp_response_v4(
         std::net::IpAddr::V4(v4) => v4,
         _ => return Vec::new(),
     };
+    if payload.len() > MAX_UDP_PAYLOAD {
+        return Vec::new();
+    }
 
     let udp_len = UDP_HDR_LEN + payload.len();
     let ip_total_len = IPV4_HDR_LEN + udp_len;
@@ -234,8 +246,12 @@ fn construct_udp_response_v4(
     udp_pkt.set_src_port(src.port());
     udp_pkt.set_dst_port(dst.port());
     udp_pkt.set_len(udp_len as u16);
-    udp_pkt.set_checksum(0);
     udp_pkt.payload_mut()[..payload.len()].copy_from_slice(payload);
+    // Real checksum, not the "no checksum" zero sentinel: strict guest
+    // stacks drop zero-checksum UDP, and the pseudo-header sum catches
+    // corruption between the relay and the guest. Must run AFTER the
+    // payload write — the sum covers it.
+    udp_pkt.fill_checksum(&IpAddress::from(src_ip), &IpAddress::from(dst_ip));
 
     buf
 }
@@ -305,5 +321,64 @@ mod tests {
         );
         let payload = extract_udp_payload(&frame).unwrap();
         assert_eq!(payload, b"test data");
+    }
+
+    /// Injected response frames must carry a REAL UDP checksum, not the
+    /// "no checksum" zero sentinel — guests with strict UDP validation
+    /// drop zero-checksum datagrams, and a real checksum catches
+    /// corruption between the relay and the guest stack.
+    #[test]
+    fn construct_v4_response_fills_udp_checksum() {
+        let src_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let dst_ip = Ipv4Addr::new(100, 96, 0, 2);
+        let src: SocketAddr = (src_ip, 53).into();
+        let dst: SocketAddr = (dst_ip, 12345).into();
+        let frame = construct_udp_response_v4(
+            src,
+            dst,
+            b"checksummed payload",
+            EthernetAddress([0x02, 0, 0, 0, 0, 1]),
+            EthernetAddress([0x02, 0, 0, 0, 0, 2]),
+        );
+
+        let eth = EthernetFrame::new_checked(&frame).unwrap();
+        let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+        assert!(ipv4.verify_checksum(), "IPv4 header checksum invalid");
+
+        let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+        assert_ne!(udp.checksum(), 0, "UDP checksum left as the zero sentinel");
+        assert!(
+            udp.verify_checksum(&IpAddress::from(src_ip), &IpAddress::from(dst_ip)),
+            "UDP checksum does not verify against the pseudo-header"
+        );
+    }
+
+    /// A payload that would overflow the 16-bit IP/UDP length fields must
+    /// be rejected, not silently truncated into a corrupt header.
+    #[test]
+    fn construct_v4_response_rejects_oversized_payload() {
+        let src: SocketAddr = (Ipv4Addr::new(8, 8, 8, 8), 53).into();
+        let dst: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 12345).into();
+        let oversized = vec![0u8; MAX_UDP_PAYLOAD + 1];
+        let frame = construct_udp_response_v4(
+            src,
+            dst,
+            &oversized,
+            EthernetAddress([0; 6]),
+            EthernetAddress([0; 6]),
+        );
+        assert!(frame.is_empty(), "oversized payload must yield no frame");
+
+        // The largest legal payload still produces a well-formed frame.
+        let max = vec![0u8; MAX_UDP_PAYLOAD];
+        let frame = construct_udp_response_v4(
+            src,
+            dst,
+            &max,
+            EthernetAddress([0; 6]),
+            EthernetAddress([0; 6]),
+        );
+        assert_eq!(frame.len(), ETH_HDR_LEN + IPV4_HDR_LEN + UDP_HDR_LEN + max.len());
+        assert_eq!(extract_udp_payload(&frame).unwrap(), &max[..]);
     }
 }

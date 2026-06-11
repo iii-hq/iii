@@ -55,7 +55,15 @@ impl ProjectOperationLock {
                         .find_map(|l| l.strip_prefix("pid="))
                         .and_then(|p| p.trim().parse::<u32>().ok())
                 });
-                Err(WorkerOpError::LockBusy { holder_pid })
+                // flock ownership is per open-file-description, so a second
+                // acquire in the SAME process (a concurrent op in this daemon)
+                // also lands here — flag it so the error can tell the caller
+                // the holder is the daemon itself, not a stale process.
+                let holder_is_self = holder_pid == Some(std::process::id());
+                Err(WorkerOpError::LockBusy {
+                    holder_pid,
+                    holder_is_self,
+                })
             }
             Err((_, errno)) => Err(WorkerOpError::LockIo {
                 path,

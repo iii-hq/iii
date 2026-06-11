@@ -723,8 +723,7 @@ async fn client_session(
 
 /// Read one full frame (length prefix + body). `Ok(None)` on EOF at
 /// a frame boundary. Returned buffer includes the 4-byte length
-/// prefix so callers forward verbatim. Skips zero-fill of the body
-/// via `set_len` + `read_exact` (SAFETY below).
+/// prefix so callers forward verbatim.
 async fn read_frame<R: AsyncReadExt + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Option<FrameBytes>> {
@@ -740,16 +739,12 @@ async fn read_frame<R: AsyncReadExt + Unpin>(
         ));
     }
     let total = 4 + frame_len;
-    let mut buf: FrameBytes = Vec::with_capacity(total);
-    // SAFETY: `u8` has no invalid bit patterns. The uninit capacity
-    // is fully overwritten by `copy_from_slice` + `read_exact` before
-    // any read; on error we truncate + drop without observing.
-    unsafe { buf.set_len(total) };
+    // Zero-init then overwrite via copy_from_slice + read_exact. The
+    // memset is noise next to the socket read, and it keeps the buffer
+    // free of uninit bytes (clippy::uninit_vec is deny-by-default).
+    let mut buf: FrameBytes = vec![0u8; total];
     buf[..4].copy_from_slice(&len_buf);
-    if let Err(e) = reader.read_exact(&mut buf[4..]).await {
-        buf.truncate(0);
-        return Err(e);
-    }
+    reader.read_exact(&mut buf[4..]).await?;
     Ok(Some(buf))
 }
 

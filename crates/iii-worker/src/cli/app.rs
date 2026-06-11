@@ -13,8 +13,10 @@ pub const DEFAULT_PORT: u16 = 49134;
 /// Shared arguments for `add` and `reinstall` commands.
 #[derive(Args, Debug)]
 pub struct AddArgs {
-    /// Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
-    #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
+    /// Worker names, OCI image references, or local project paths — e.g.
+    /// "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag", or "./my-worker"
+    /// (a directory containing iii.worker.yaml).
+    #[arg(value_name = "WORKER[@VERSION]|PATH", required = true, num_args = 1..)]
     pub worker_names: Vec<String>,
 
     /// Reset config: also remove config.yaml entry before re-adding (requires --force on add)
@@ -36,8 +38,10 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install an EXISTING worker from the registry or by OCI image reference.
-    /// To create a NEW worker from scratch, use `iii worker init`.
+    /// Install an EXISTING worker from the registry, an OCI image reference, or
+    /// a local project directory (a path starting with `./`, `/`, or `~` that
+    /// contains an `iii.worker.yaml`). To create a NEW worker from scratch, use
+    /// `iii worker init`.
     Add {
         #[command(flatten)]
         args: AddArgs,

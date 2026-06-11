@@ -38,6 +38,21 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStdout {
     }
 }
 
+/// Print a failed worker op's error — unless it is the bare rc wrapper, in
+/// which case the underlying handler already wrote its real, colored error
+/// to this terminal (or to the tailed log file) and a second "[W900]
+/// internal: iii worker X exited with rc N" line would only mislabel a user
+/// error as internal. The suppression assumes handlers always print before
+/// returning nonzero (true today for every shim-reachable path); the debug
+/// line keeps a silent-failure regression diagnosable via RUST_LOG=debug.
+fn report_op_error(e: &iii_worker::core::WorkerOpError) {
+    if iii_worker::cli::host_shim::is_bare_rc_wrapper(e) {
+        tracing::debug!(error = %e, "suppressed bare rc wrapper (handler reported directly)");
+        return;
+    }
+    eprintln!("error: [{}] {}", e.kind().code(), e);
+}
+
 fn main() -> anyhow::Result<()> {
     // FIRST, before the tokio runtime spawns worker threads: capture (and
     // scrub from the env) any inherited lifeline facts. The capture mutates
@@ -134,7 +149,7 @@ async fn async_main() -> anyhow::Result<()> {
                 let result = core_add::run(opts, &ctx, &sink, &CliHostShim).await;
 
                 if let Err(e) = result {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     fail_count += 1;
                 }
             }
@@ -184,7 +199,7 @@ async fn async_main() -> anyhow::Result<()> {
             match core_remove::run(opts, &ctx, &sink, &CliHostShim).await {
                 Ok(_) => 0,
                 Err(e) => {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     1
                 }
             }
@@ -217,7 +232,7 @@ async fn async_main() -> anyhow::Result<()> {
                 // the inner handler's progress output.
                 let sink = StderrSink::new(true);
                 if let Err(e) = core_add::run(opts, &ctx, &sink, &CliHostShim).await {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     fail_count += 1;
                 }
             }
@@ -240,7 +255,7 @@ async fn async_main() -> anyhow::Result<()> {
             match core_update::run(opts, &ctx, &sink, &CliHostShim).await {
                 Ok(_) => 0,
                 Err(e) => {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     1
                 }
             }
@@ -297,7 +312,7 @@ async fn async_main() -> anyhow::Result<()> {
             match core_clear::run(opts, &ctx, &sink, &CliHostShim).await {
                 Ok(_) => 0,
                 Err(e) => {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     1
                 }
             }
@@ -328,7 +343,7 @@ async fn async_main() -> anyhow::Result<()> {
             match core_start::run(opts, &ctx, &sink, &CliHostShim).await {
                 Ok(_) => 0,
                 Err(e) => {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     1
                 }
             }
@@ -360,7 +375,7 @@ async fn async_main() -> anyhow::Result<()> {
             match core_stop::run(opts, &ctx, &sink, &CliHostShim).await {
                 Ok(_) => 0,
                 Err(e) => {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     1
                 }
             }
@@ -436,7 +451,7 @@ async fn async_main() -> anyhow::Result<()> {
                     0
                 }
                 Err(e) => {
-                    eprintln!("error: [{}] {}", e.kind().code(), e);
+                    report_op_error(&e);
                     1
                 }
             }

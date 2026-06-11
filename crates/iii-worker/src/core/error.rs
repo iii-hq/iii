@@ -116,8 +116,15 @@ pub enum WorkerOpError {
     #[error("worker {name:?} is already running (pid {pid})")]
     AlreadyRunning { name: String, pid: u32 },
 
-    #[error("project lock busy{}", match holder_pid { Some(p) => format!(" (held by pid {})", p), None => String::new() })]
-    LockBusy { holder_pid: Option<u32> },
+    #[error("{}", lock_busy_message(holder_pid, *holder_is_self))]
+    LockBusy {
+        holder_pid: Option<u32>,
+        /// True when the lock holder is THIS process — i.e. another worker
+        /// operation is already running in the same worker-ops daemon.
+        /// Surfaced so callers (especially LLMs) don't "fix" a busy lock by
+        /// killing the holder pid, which kills the daemon serving worker::*.
+        holder_is_self: bool,
+    },
 
     #[error("lock I/O failed at {path:?}: {source}")]
     LockIo {
@@ -194,6 +201,30 @@ pub enum WorkerOpError {
     Internal { message: String },
 }
 
+/// W120 message, written for the caller who has to decide what to do next —
+/// including LLM callers whose instinct on "lock held by pid N" is to kill
+/// pid N. In a real session that pid was the worker-ops daemon itself (an
+/// in-flight `worker::add` held the project flock), and killing it took the
+/// whole worker::* API down. Say what the holder is and forbid the footgun.
+fn lock_busy_message(holder_pid: &Option<u32>, holder_is_self: bool) -> String {
+    match (holder_pid, holder_is_self) {
+        (Some(p), true) => format!(
+            "project lock busy: another worker operation is already running in this \
+             worker-ops daemon (pid {p}). The lock clears when that operation finishes — \
+             retry shortly, or poll worker::status / worker::list. Do NOT kill pid {p}: \
+             it is the daemon serving the worker::* API."
+        ),
+        (Some(p), false) => format!(
+            "project lock busy (held by pid {p}, likely an in-flight worker operation). \
+             The lock dies with that process, so a crashed holder never strands it — \
+             just retry shortly. Do NOT kill pid {p} to free the lock."
+        ),
+        (None, _) => "project lock busy; an in-flight worker operation holds it. \
+             Retry shortly."
+            .to_string(),
+    }
+}
+
 impl WorkerOpError {
     pub fn kind(&self) -> WorkerOpErrorKind {
         use WorkerOpErrorKind as K;
@@ -260,7 +291,10 @@ impl WorkerOpError {
             | Self::NotInstalled { name }
             | Self::NotRunning { name } => json!({ "name": name }),
             Self::AlreadyRunning { name, pid } => json!({ "name": name, "pid": pid }),
-            Self::LockBusy { holder_pid } => json!({ "holder_pid": holder_pid }),
+            Self::LockBusy {
+                holder_pid,
+                holder_is_self,
+            } => json!({ "holder_pid": holder_pid, "holder_is_self": holder_is_self }),
             Self::LockIo { path, .. } => json!({ "path": path.display().to_string() }),
             Self::ConfigIo { path, .. } => json!({ "path": path.display().to_string() }),
             Self::ConfigParse { path, message } => {
@@ -353,6 +387,46 @@ mod tests {
     fn local_path_not_allowed_via_trigger_is_w102() {
         let err = WorkerOpError::local_path_not_allowed_via_trigger("./my-worker");
         assert_eq!(err.to_payload()["code"], "W102");
+    }
+
+    // W120 messages must steer the caller away from killing the lock holder
+    // — a real LLM session killed the worker-ops daemon to "free" the lock,
+    // taking the whole worker::* API down.
+    #[test]
+    fn lock_busy_self_holder_names_the_daemon_and_forbids_kill() {
+        let err = WorkerOpError::LockBusy {
+            holder_pid: Some(4242),
+            holder_is_self: true,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("worker-ops daemon"), "got: {msg}");
+        assert!(msg.contains("Do NOT kill pid 4242"), "got: {msg}");
+        assert!(msg.contains("worker::status"), "got: {msg}");
+        let payload = err.to_payload();
+        assert_eq!(payload["code"], "W120");
+        assert_eq!(payload["details"]["holder_pid"], 4242);
+        assert_eq!(payload["details"]["holder_is_self"], true);
+    }
+
+    #[test]
+    fn lock_busy_foreign_holder_still_warns_against_kill() {
+        let err = WorkerOpError::LockBusy {
+            holder_pid: Some(99),
+            holder_is_self: false,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Do NOT kill pid 99"), "got: {msg}");
+        assert!(msg.contains("retry"), "got: {msg}");
+        assert_eq!(err.to_payload()["details"]["holder_is_self"], false);
+    }
+
+    #[test]
+    fn lock_busy_unknown_holder_has_guidance() {
+        let err = WorkerOpError::LockBusy {
+            holder_pid: None,
+            holder_is_self: false,
+        };
+        assert!(err.to_string().contains("Retry shortly"));
     }
 
     #[test]

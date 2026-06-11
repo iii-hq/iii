@@ -84,27 +84,23 @@ pub fn restore_terminal_cooked_mode() {
     }
 }
 
+/// Best-effort read of `resources.cpus`/`resources.memory` for VM sizing.
+/// Lenient by design: any read/parse/shape failure falls back to the defaults
+/// (2 vCPUs, 2048 MiB) — strictness lives in the add/start validation and
+/// `worker::validate`, not in this sizing probe. Backed by the typed
+/// [`super::worker_manifest::WorkerManifest`] so add, start, and validate all
+/// read resources through one schema (previously this used the `serde_yml`
+/// fork while everything else used `serde_yaml`).
 pub fn parse_manifest_resources(manifest_path: &Path) -> (u32, u32) {
     let default = (2, 2048);
-    let content = match std::fs::read_to_string(manifest_path) {
-        Ok(c) => c,
-        Err(_) => return default,
+    let Ok(Some(doc)) = super::project::read_manifest_doc(manifest_path) else {
+        return default;
     };
-    let yaml: serde_yml::Value = match serde_yml::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return default,
+    let Ok(manifest) = super::worker_manifest::WorkerManifest::from_value(&doc) else {
+        return default;
     };
-    let cpus = yaml
-        .get("resources")
-        .and_then(|r| r.get("cpus"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(2) as u32;
-    let memory = yaml
-        .get("resources")
-        .and_then(|r| r.get("memory"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(2048) as u32;
-    (cpus, memory)
+    let r = manifest.resources.unwrap_or_default();
+    (r.cpus.unwrap_or(2), r.memory.unwrap_or(2048))
 }
 
 /// Remove workspace contents except installed dependency directories.
@@ -397,6 +393,56 @@ pub async fn handle_local_add(
         return 1;
     }
 
+    // 3a. Read the manifest ONCE, size-capped. The parsed doc is threaded
+    //     through key validation, dependency resolution, and config extraction
+    //     below so the file is read a single time, an oversize manifest can't
+    //     be slurped whole into memory, and a malformed one fails fast instead
+    //     of being silently skipped.
+    let manifest_path = project_path.join(WORKER_MANIFEST);
+    let manifest_doc = match super::project::read_manifest_doc(&manifest_path) {
+        Ok(doc) => doc,
+        Err(e) => {
+            eprintln!(
+                "{} {}\n  \
+                 Fix: ensure iii.worker.yaml is valid YAML and within the size limit.",
+                "error:".red(),
+                e
+            );
+            return 1;
+        }
+    };
+
+    // 3b. Strict manifest key/shape validation + deprecation warnings, BEFORE
+    //     project detection so a typo'd or malformed manifest gets the precise
+    //     validator error instead of a misleading "No project manifest
+    //     detected". Unknown keys fail the add before anything is persisted;
+    //     deprecated keys warn but proceed. Skipped when there's no
+    //     iii.worker.yaml (auto-detected workers have nothing to validate).
+    if let Some(doc) = &manifest_doc {
+        if let Err(msg) = super::project::validate_manifest_keys(doc, &manifest_path) {
+            eprintln!(
+                "{} {}\n  \
+                 Fix: remove or correct the offending key(s). Dry-run with \
+                 `worker::validate`, or see \
+                 https://motia.dev/docs/iii/worker-manifest for the supported schema.",
+                "error:".red(),
+                msg
+            );
+            return 1;
+        }
+        if let Err(msg) = super::project::require_manifest_name(doc, &manifest_path) {
+            eprintln!(
+                "{} {}\n  \
+                 Fix: add `name: <worker-name>` to iii.worker.yaml — it becomes \
+                 the config.yaml entry and the artifact directory name.",
+                "error:".red(),
+                msg
+            );
+            return 1;
+        }
+        super::project::warn_deprecated_manifest_keys(doc, &manifest_path);
+    }
+
     // 3. Detect language / project type
     let project = match load_project_info(&project_path) {
         Some(p) => p,
@@ -406,9 +452,8 @@ pub async fn handle_local_add(
                  Looked for: iii.worker.yaml, package.json, Cargo.toml, pyproject.toml.\n  \
                  Fix: run from inside your worker project, or create iii.worker.yaml:\n      \
                      name: my-worker\n      \
-                     runtime:\n        \
-                       kind: typescript\n      \
-                     command: [\"node\", \"src/index.js\"]",
+                     scripts:\n        \
+                       start: \"node src/index.js\"",
                 "error:".red(),
                 project_path.display()
             );
@@ -426,8 +471,25 @@ pub async fn handle_local_add(
         return 1;
     }
 
-    // 4. Resolve worker name
-    let worker_name = resolve_worker_name(&project_path);
+    // 4. Resolve worker name from the already-parsed manifest doc (no
+    //    re-read); fall back to the directory name like resolve_worker_name.
+    //    Trimmed to match `worker::validate`, which reports the trimmed name
+    //    as valid — without it `name: " w "` validated clean but failed here
+    //    on the embedded space.
+    let worker_name = manifest_doc
+        .as_ref()
+        .and_then(|d| d.get("name"))
+        .and_then(|n| n.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            project_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("worker")
+                .to_string()
+        });
 
     // Defense in depth: the manifest's `name:` field is attacker-
     // reachable via a hand-edited or copy-pasted iii.worker.yaml, and
@@ -480,27 +542,29 @@ pub async fn handle_local_add(
         }
     }
 
-    let manifest_path = project_path.join(WORKER_MANIFEST);
-
     // 5b. Resolve + install declared manifest dependencies BEFORE we touch
     //     config.yaml. A failure here leaves the local worker NOT in
     //     config.yaml and iii.lock unchanged — retry is just retry, no
     //     `--force` dance required. This is load-bearing: reversing this
     //     order recreates the "already in config.yaml" rerun trap.
-    let declared_deps = match super::project::load_manifest_dependencies(&manifest_path) {
-        Ok(deps) => deps,
-        Err(e) => {
-            eprintln!(
-                "{} {} in {}\n  \
-                 Fix: correct the `dependencies:` block and rerun \
-                 `iii worker add {}`.",
-                "error:".red(),
-                e,
-                manifest_path.display(),
-                path,
-            );
-            return 1;
-        }
+    //     Parsed from the single manifest doc read in step 3a.
+    let declared_deps = match manifest_doc.as_ref() {
+        Some(doc) => match super::project::manifest_dependencies_from_doc(doc) {
+            Ok(deps) => deps,
+            Err(e) => {
+                eprintln!(
+                    "{} {} in {}\n  \
+                     Fix: correct the `dependencies:` block and rerun \
+                     `iii worker add {}`.",
+                    "error:".red(),
+                    e,
+                    manifest_path.display(),
+                    path,
+                );
+                return 1;
+            }
+        },
+        None => std::collections::BTreeMap::new(),
     };
     if !declared_deps.is_empty()
         && let Err(e) = super::managed::install_manifest_dependencies(&declared_deps, brief).await
@@ -516,16 +580,12 @@ pub async fn handle_local_add(
         return 1;
     }
 
-    // 6. Extract default config from iii.worker.yaml
-    let config_yaml = if manifest_path.exists() {
-        std::fs::read_to_string(&manifest_path)
-            .ok()
-            .and_then(|content| serde_yaml::from_str::<serde_yaml::Value>(&content).ok())
-            .and_then(|doc| doc.get("config").cloned())
-            .and_then(|v| serde_yaml::to_string(&v).ok())
-    } else {
-        None
-    };
+    // 6. Extract default config from the single manifest doc read in step 3a
+    //     (no re-read — also closes the read-then-write window for `config:`).
+    let config_yaml = manifest_doc
+        .as_ref()
+        .and_then(|doc| doc.get("config").cloned())
+        .and_then(|v| serde_yaml::to_string(&v).ok());
 
     // 7. Append to config.yaml with worker_path
     let abs_path_str = project_path.to_string_lossy();
@@ -763,6 +823,29 @@ async fn start_worker_impl(
             e,
         );
         return 1;
+    }
+
+    // 1b. Local (non-bundle) workers: strict key validation at start too, so a
+    // manifest hand-edited or swapped after `add` can't smuggle unknown keys
+    // (or an oversize/billion-laughs YAML) past the engine via the permissive
+    // load_project_info path below. Deprecation warnings are intentionally NOT
+    // re-emitted here — they fired at add time; repeating them on every engine
+    // boot would be noise.
+    if !is_bundle {
+        let manifest_path = project_path.join(WORKER_MANIFEST);
+        match super::project::read_manifest_doc(&manifest_path) {
+            Ok(Some(doc)) => {
+                if let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path) {
+                    eprintln!("{} manifest validation failed at start: {}", "error:".red(), e);
+                    return 1;
+                }
+            }
+            Ok(None) => {} // auto-detected worker, no manifest to validate
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                return 1;
+            }
+        }
     }
 
     // 2. Detect language

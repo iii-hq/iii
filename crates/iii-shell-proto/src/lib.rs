@@ -490,15 +490,12 @@ pub fn read_frame_blocking<R: std::io::Read>(
     let frame_len = validate_frame_len(frame_len)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // SAFETY: read_exact fills every byte of the uninit body before
-    // decode_frame_body sees it; on error we truncate + drop. u8 has
-    // no invalid bit patterns. Matches shell_relay::read_frame.
-    let mut body: Vec<u8> = Vec::with_capacity(frame_len);
-    unsafe { body.set_len(frame_len) };
-    if let Err(e) = reader.read_exact(&mut body) {
-        body.truncate(0);
-        return Err(e);
-    }
+    // Zero-init then overwrite via read_exact. The memset is noise next
+    // to the socket read, and it keeps the buffer free of uninit bytes
+    // (clippy::uninit_vec is deny-by-default). Matches
+    // shell_relay::read_frame.
+    let mut body = vec![0u8; frame_len];
+    reader.read_exact(&mut body)?;
     let parsed = decode_frame_body(&body)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     Ok(Some(parsed))
