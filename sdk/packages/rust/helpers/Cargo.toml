@@ -1,0 +1,18 @@
+[package]
+name = "iii-helpers"
+version = "0.19.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["Motia LLC"]
+description = "Shared helper primitives across iii SDKs."
+repository = "https://github.com/iii-hq/iii"
+homepage = "https://github.com/iii-hq/iii"
+keywords = ["iii", "helpers"]
+categories = ["api-bindings", "asynchronous", "development-tools"]
+
+[lib]
+name = "iii_helpers"
+path = "src/lib.rs"
+
+[dependencies]

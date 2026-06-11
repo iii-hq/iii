@@ -6,6 +6,7 @@ members = [
   "sdk/packages/rust/iii",
   "sdk/packages/rust/iii-example",
   "sdk/packages/rust/observability",
+  "sdk/packages/rust/helpers",
   "console/packages/console-rust",
   "crates/iii-init",
   "crates/iii-filesystem",
