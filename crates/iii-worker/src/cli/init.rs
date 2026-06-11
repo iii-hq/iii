@@ -17,9 +17,12 @@
 //!   3. Hand off to `scaffolder_core::run` -- that drives the cliclack TUI
 //!      when interactive, or a non-interactive single-language scaffold
 //!      when languages are pre-set.
-//!   4. Post-process: rename the scaffolded `iii.worker.<lang>.yaml` to
-//!      `iii.worker.yaml`, substitute `{{worker_name}}`, persist
-//!      `.iii/worker.ini`, print worker-specific success message.
+//!   4. Post-process: substitute `{{worker_name}}` in the scaffolded
+//!      `iii.worker.yaml`, persist `.iii/worker.ini`, print worker-specific
+//!      success message. The language-tagged-to-canonical rename
+//!      (`iii.worker.<lang>.yaml` -> `iii.worker.yaml`, `package.<lang>.json`
+//!      -> `package.json`) is declared in the template's `renames` block and
+//!      performed by the scaffolder at copy time, not here.
 
 use clap::Args;
 use colored::Colorize;
@@ -291,7 +294,7 @@ pub async fn run(args: InitArgs) -> i32 {
         }
     };
 
-    if let Err(e) = finalize_worker_manifest(&root, &worker_name, final_lang) {
+    if let Err(e) = finalize_worker_manifest(&root, &worker_name) {
         return print_err(
             "could not write iii.worker.yaml",
             &e.to_string(),
@@ -394,47 +397,16 @@ fn restore_snapshots(
     Ok(())
 }
 
-/// Finalize the scaffolded manifest: rename the language-specific
-/// `iii.worker.<lang>.yaml` to `iii.worker.yaml`, then substitute the
-/// `{{worker_name}}` placeholder.
+/// Substitute the `{{worker_name}}` placeholder in the scaffolded
+/// `iii.worker.yaml`.
 ///
-/// Some template files differ per language but share a destination name, so
-/// they ship language-tagged (`iii.worker.<lang>.yaml`, and for node
-/// `package.<lang>.json` — TS needs tsx/typescript, JS doesn't). The
-/// scaffolder's language filter copies exactly one of each; renaming it here
-/// is what turns the tagged source into the canonical file the tooling reads.
-///
-/// Idempotent re-init: if a user-owned destination file was restored after
-/// scaffolding, it wins — the freshly-scaffolded tagged file is discarded
-/// rather than clobbering the edited one.
-fn finalize_worker_manifest(
-    root: &Path,
-    worker_name: &str,
-    lang: WorkerLanguage,
-) -> std::io::Result<()> {
-    let short = lang.short();
-    // (tagged source, canonical destination). Sources that weren't scaffolded
-    // for this language (e.g. package.<lang>.json for py/rust) simply don't
-    // exist and are skipped.
-    let renames = [
-        (format!("iii.worker.{short}.yaml"), "iii.worker.yaml"),
-        (format!("package.{short}.json"), "package.json"),
-    ];
-    for (tagged, canonical) in &renames {
-        let src = root.join(tagged);
-        if !src.exists() {
-            continue;
-        }
-        let dst = root.join(canonical);
-        if dst.exists() {
-            // A restored user file takes precedence; drop the stray tagged
-            // source so it doesn't linger in the worker dir.
-            std::fs::remove_file(&src)?;
-        } else {
-            std::fs::rename(&src, &dst)?;
-        }
-    }
-
+/// The language-tagged-to-canonical rename (`iii.worker.<lang>.yaml` ->
+/// `iii.worker.yaml`, `package.<lang>.json` -> `package.json`) is declared in
+/// the template's `renames` block and performed by the scaffolder at copy time,
+/// so the file already arrives under its canonical name. On idempotent re-init
+/// a user-owned `iii.worker.yaml` is restored over the freshly-scaffolded one
+/// before this runs, so the substitution is a no-op (the placeholder is gone).
+fn finalize_worker_manifest(root: &Path, worker_name: &str) -> std::io::Result<()> {
     // Substitute the worker name in the manifest. No-op when the file is absent
     // (test short-circuit) or the placeholder is gone (idempotent re-run).
     let manifest = root.join("iii.worker.yaml");
@@ -448,31 +420,16 @@ fn finalize_worker_manifest(
     std::fs::write(&manifest, contents.replace("{{worker_name}}", worker_name))
 }
 
-/// Detect the language the scaffolder picked. Two strategies:
-///
-/// 1. Look for the per-language manifest the scaffolder dropped
-///    (`iii.worker.<lang>.yaml`). The language filter copies exactly one,
-///    so its suffix names the language directly.
-/// 2. Sniff language-specific files the scaffolder dropped: `Cargo.toml`
-///    -> Rust, `pyproject.toml` -> Python, `tsconfig.json` -> TypeScript,
-///    `package.json` (without `tsconfig.json`) -> JavaScript. Fallback for
-///    when the manifest has already been renamed (idempotent re-run).
+/// Detect the language the scaffolder picked by sniffing the language-specific
+/// files it dropped: `Cargo.toml` -> Rust, `pyproject.toml` -> Python,
+/// `tsconfig.json` -> TypeScript, `package.json` (without `tsconfig.json`) ->
+/// JavaScript. The scaffolder renames the manifest to its canonical
+/// `iii.worker.yaml` at copy time, so it no longer carries a language tag;
+/// these sibling files are the reliable signal.
 fn detect_language_from_yaml(root: &Path) -> Option<WorkerLanguage> {
-    // Strategy 1: the surviving per-language manifest names the language.
-    for (lang, short) in [
-        (WorkerLanguage::Ts, "ts"),
-        (WorkerLanguage::Js, "js"),
-        (WorkerLanguage::Py, "py"),
-        (WorkerLanguage::Rust, "rust"),
-    ] {
-        if root.join(format!("iii.worker.{short}.yaml")).exists() {
-            return Some(lang);
-        }
-    }
-
-    // Strategy 2: file-presence heuristic. The scaffolder only drops the
-    // files matching the selected language (gated by root manifest's
-    // `language_files`), so file presence is a reliable proxy.
+    // File-presence heuristic. The scaffolder only drops the files matching
+    // the selected language (gated by the root manifest's `language_files`),
+    // so file presence is a reliable proxy.
     if root.join("Cargo.toml").exists() {
         return Some(WorkerLanguage::Rust);
     }
