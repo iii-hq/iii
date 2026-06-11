@@ -67,7 +67,7 @@ pub struct InitArgs {
     /// Allow scaffolding into a non-empty directory. Without this flag, init
     /// errors out if the target dir contains anything other than hidden
     /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An
-    /// existing `.iii/project.ini` is always rejected — delete the marker
+    /// existing `.iii/project.ini` is always rejected; delete the marker
     /// or pick a different directory.
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,

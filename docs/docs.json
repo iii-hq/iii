@@ -145,6 +145,14 @@
                   "next/sdk-reference/rust-sdk",
                   "next/sdk-reference/browser-sdk"
                 ]
+              },
+              {
+                "group": "CLI reference",
+                "pages": [
+                  "next/cli-reference/iii",
+                  "next/cli-reference/iii-worker",
+                  "next/cli-reference/iii-console"
+                ]
               }
             ]
           },

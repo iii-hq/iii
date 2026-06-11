@@ -114,7 +114,7 @@ pub enum Commands {
     },
 
     /// Stop a managed worker container. Stop is treated as a routine,
-    /// reversible action — running `iii worker start <name>` brings it
+    /// reversible action; running `iii worker start <name>` brings it
     /// back from the same config entry, so the CLI no longer prompts
     /// for confirmation.
     Stop {
@@ -127,8 +127,8 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Restart a managed worker: stop if running, then start. Idempotent --
-    /// running workers get a clean cycle, stopped workers just start.
+    /// Restart a managed worker: stop if running, then start. Idempotent:
+    /// running workers get a clean cycle, stopped workers start.
     /// By default waits up to 120s for the worker to report ready.
     Restart {
         /// Worker name to restart
@@ -231,6 +231,15 @@ pub enum Commands {
     /// Internal: host-side source watcher sidecar for local-path workers
     #[command(name = "__watch-source", hide = true)]
     WatchSource(WatchSourceArgs),
+
+    /// Generate the committed MDX CLI reference page from this binary's
+    /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
+    #[command(name = "gen-docs", hide = true)]
+    GenDocs {
+        /// Write the page to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
 }
 
 /// Arguments for `iii worker exec`. Mirrors `msb exec`'s shape so
@@ -451,7 +460,7 @@ pub enum SandboxCmd {
 
     /// Copy a local file into a running sandbox.
     ///
-    /// Streams bytes through an iii data channel — no JSON-envelope size cap.
+    /// Streams bytes through an iii data channel; no JSON-envelope size cap.
     /// Reads `LOCAL_PATH` from disk (or stdin when `LOCAL_PATH` is `-`) and
     /// writes atomically (temp file + fsync + rename) to `REMOTE_PATH` inside
     /// the sandbox.

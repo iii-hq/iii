@@ -167,6 +167,15 @@ enum Commands {
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
+    /// Generate the committed MDX CLI reference page from this binary's
+    /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
+    #[command(name = "gen-docs", hide = true)]
+    GenDocs {
+        /// Write the page to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+    },
+
     /// Update iii and managed binaries to their latest versions
     Update {
         /// Specific command or binary to update (e.g., "console", "self").
@@ -212,6 +221,7 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
+        Some(Commands::GenDocs { .. }) => "gen-docs".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
         }) => "update list-targets".to_string(),
@@ -263,6 +273,13 @@ async fn main() -> anyhow::Result<()> {
         },
     };
 
+    // Docs generation is offline build tooling: handle it before telemetry
+    // and any engine setup so the output stays deterministic.
+    if let Some(Commands::GenDocs { out }) = &cli_args.command {
+        cli::gen_docs::run(Cli::command(), out.as_deref())?;
+        return Ok(());
+    }
+
     cli::telemetry::send_cli_usage(&cli_usage_command_path(&cli_args));
 
     if cli_args.version {
@@ -310,6 +327,8 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
+        // Handled before telemetry above.
+        Some(Commands::GenDocs { .. }) => unreachable!("gen-docs returns early"),
         Some(Commands::Update {
             target,
             list_targets,

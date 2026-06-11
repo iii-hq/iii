@@ -117,6 +117,17 @@ jobs:
           python3 .github/scripts/pin_docs.py validate \
             --docs-dir docs
 
+          # The generated CLI reference rotates into the release docs with
+          # the rest of docs/next/. It is regenerated and drift-gated by the
+          # cli-docs-drift CI job on every PR; here we only require that the
+          # pages exist so a stable release can't ship without them.
+          for page in iii iii-worker iii-console; do
+            if [[ ! -s "docs/next/cli-reference/${page}.mdx" ]]; then
+              echo "::error::docs/next/cli-reference/${page}.mdx is missing or empty. Run scripts/generate-cli-docs.sh (or 'make cli-docs') and commit the result."
+              exit 1
+            fi
+          done
+
       - name: Notify Slack — release blocked (missing docs)
         if: always() && steps.docs_check.outcome == 'failure'
         continue-on-error: true
@@ -131,7 +142,7 @@ jobs:
               - type: "section"
                 text:
                   type: "mrkdwn"
-                  text: ":no_entry: *Release blocked* — Next docs not ready for `iii v${{ steps.versions.outputs.version }}`.\nExpected a `Next` block in `docs/docs.json` and a non-empty `docs/next/` folder before tagging. Prepare the docs, then re-run."
+                  text: ":no_entry: *Release blocked* — Next docs not ready for `iii v${{ steps.versions.outputs.version }}`.\nExpected a `Next` block in `docs/docs.json`, a non-empty `docs/next/` folder, and the generated `docs/next/cli-reference/` pages before tagging. Prepare the docs, then re-run."
               - type: "context"
                 elements:
                   - type: "mrkdwn"

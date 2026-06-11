@@ -1,0 +1,30 @@
+---
+title: "iii console CLI reference"
+description: "Every flag and option of iii console, generated from the CLI definitions in the console source."
+owner: "devrel"
+type: "reference"
+---
+
+{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
+
+Reference for the `iii console` command. The `iii` binary dispatches `iii console ...` to the separately installed `iii-console` binary (downloaded on first use); the same binary can also be invoked directly as `iii-console`. The dispatcher itself is covered by the [iii CLI reference](./iii).
+
+## `iii console`
+
+Developer console for the iii engine
+
+```bash
+iii console [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-p, --port <PORT>` | Port to run the console server on [default: 3113] |
+| `--host <HOST>` | Host to bind the console server to [default: 127.0.0.1] |
+| `--engine-host <ENGINE_HOST>` | Host where the iii engine is running [default: 127.0.0.1] |
+| `--engine-port <ENGINE_PORT>` | Port for the iii engine REST API [default: 3111] |
+| `--ws-port <WS_PORT>` | Port for the iii engine WebSocket [default: 3112] |
+| `--bridge-port <BRIDGE_PORT>` | Engine WebSocket port the console registers its worker functions on [default: 49134] |
+| `--no-otel` | Disable OpenTelemetry tracing, metrics, and logs export [env: OTEL_DISABLED] |
+| `--otel-service-name <OTEL_SERVICE_NAME>` | OpenTelemetry service name (default: iii-console) [default: iii-console] [env: OTEL_SERVICE_NAME] |
+| `--enable-flow` | Enable the experimental flow visualization page [env: III_ENABLE_FLOW] |

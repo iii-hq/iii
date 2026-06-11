@@ -11,6 +11,7 @@ pub mod bundle_download;
 pub mod config_file;
 pub mod download;
 pub mod firmware;
+pub mod gen_docs;
 pub mod host_shim;
 pub mod init;
 pub mod lifecycle;

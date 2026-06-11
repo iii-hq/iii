@@ -32,7 +32,7 @@ struct Args {
     #[arg(long, default_value = "3112")]
     ws_port: u16,
 
-    /// Port for the iii engine bridge WebSocket
+    /// Engine WebSocket port the console registers its worker functions on
     #[arg(long, default_value = "49134")]
     bridge_port: u16,
 
@@ -47,6 +47,46 @@ struct Args {
     /// Enable the experimental flow visualization page
     #[arg(long, env = "III_ENABLE_FLOW")]
     enable_flow: bool,
+
+    #[command(subcommand)]
+    command: Option<ConsoleCommand>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum ConsoleCommand {
+    /// Generate the committed MDX CLI reference page from this binary's
+    /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
+    #[command(name = "gen-docs", hide = true)]
+    GenDocs {
+        /// Write the page to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+    },
+}
+
+/// Render this binary's clap tree as the committed MDX CLI reference
+/// (docs/next/cli-reference/iii-console.mdx). CI regenerates the page and
+/// fails on diff, so the published reference can never drift from the CLI.
+fn gen_docs(out: Option<&std::path::Path>) -> Result<()> {
+    use clap::CommandFactory;
+    // Users reach this binary as `iii console`; document that path rather
+    // than the package name.
+    let cmd = Args::command().bin_name("iii console");
+    let meta = iii_clap_docs::PageMeta {
+        title: "iii console CLI reference".to_string(),
+        description: "Every flag and option of iii console, generated from the CLI \
+                      definitions in the console source."
+            .to_string(),
+        owner: "devrel".to_string(),
+        intro: "Reference for the `iii console` command. The `iii` binary dispatches `iii \
+                console ...` to the separately installed `iii-console` binary (downloaded on \
+                first use); the same binary can also be invoked directly as `iii-console`. \
+                The dispatcher itself is covered by the [iii CLI reference](./iii)."
+            .to_string(),
+        delegated: std::collections::BTreeMap::new(),
+    };
+    iii_clap_docs::write_page(cmd, &meta, out)?;
+    Ok(())
 }
 
 async fn shutdown_signal() {
@@ -83,6 +123,12 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Offline build tooling: render the docs page and exit before any
+    // server or engine-bridge setup.
+    if let Some(ConsoleCommand::GenDocs { out }) = &args.command {
+        return gen_docs(out.as_deref());
+    }
 
     info!("Starting iii-console on {}:{}", args.host, args.port);
     info!(

@@ -35,6 +35,8 @@ oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 clap = { version = "4", features = ["derive"] }
+# MDX CLI reference generation for the hidden `gen-docs` subcommand.
+iii-clap-docs = { path = "../iii-clap-docs" }
 colored = "3.0.0"
 cliclack = "0.3"
 console = "0.16"

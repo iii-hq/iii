@@ -57,6 +57,11 @@ async fn async_main() -> anyhow::Result<()> {
         Cli::from_arg_matches(&matches).map_err(|e| anyhow::anyhow!("cli parse: {e}"))?;
 
     let exit_code = match cli_args.command {
+        // Offline build tooling: render the committed MDX CLI reference.
+        Commands::GenDocs { out } => {
+            iii_worker::cli::gen_docs::run(Cli::command(), out.as_deref())?;
+            0
+        }
         Commands::Add {
             args,
             force,

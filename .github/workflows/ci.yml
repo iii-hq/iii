@@ -226,6 +226,44 @@ jobs:
       #   run: cargo clippy -p iii -p function-macros -p iii-sdk --all-targets --all-features -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
+  # CLI Docs Drift — regenerate docs/next/cli-reference/ from the
+  # clap definitions (hidden `gen-docs` subcommands) and fail when
+  # the committed pages don't match. Guarantees the published CLI
+  # reference can never go stale relative to the CLI source.
+  # ──────────────────────────────────────────────────────────────
+
+  cli-docs-drift:
+    name: CLI Docs Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cli-docs
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
+      # iii-skill-render is absent on the runner; the script skips the
+      # .skill.md step (the skill-check workflow owns those artifacts).
+      - name: Regenerate CLI reference pages
+        run: ./scripts/generate-cli-docs.sh
+
+      - name: Fail on drift
+        run: |
+          if [[ -n "$(git status --porcelain -- docs/next/cli-reference)" ]]; then
+            git status --porcelain -- docs/next/cli-reference
+            git diff -- docs/next/cli-reference | head -200
+            echo "::error::docs/next/cli-reference is stale. Run scripts/generate-cli-docs.sh (or 'make cli-docs') and commit the result."
+            exit 1
+          fi
+
+  # ──────────────────────────────────────────────────────────────
   # Engine RabbitMQ Integration Tests
   # ──────────────────────────────────────────────────────────────
 

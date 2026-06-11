@@ -8,6 +8,7 @@ pub mod advisory;
 pub mod download;
 pub mod error;
 pub mod exec;
+pub mod gen_docs;
 pub mod github;
 pub mod platform;
 pub mod project;

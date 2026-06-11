@@ -29,6 +29,9 @@ rust-embed = "8"
 # CLI argument parsing
 clap = { version = "4", features = ["derive", "env"] }
 
+# MDX CLI reference generation for the hidden `gen-docs` subcommand.
+iii-clap-docs = { path = "../../../crates/iii-clap-docs" }
+
 # Serialization
 serde_json = "1"
 

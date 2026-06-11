@@ -24,7 +24,7 @@ export III_TELEMETRY_ENABLED := false
         build-node build-sdk-node build-console build \
         fix fix-lint fix-fmt \
         check ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust \
-        ci-console ci-local
+        ci-console ci-local cli-docs
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -193,6 +193,9 @@ ci-console:
 	$(MAKE) lint-console build-console
 
 # ── Convenience ───────────────────────────────────────────────────────────────
+
+cli-docs: ## Regenerate docs/next/cli-reference/ from the clap CLI definitions
+	./scripts/generate-cli-docs.sh
 
 fix: fix-fmt fix-lint
 

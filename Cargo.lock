@@ -2704,6 +2704,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "iana-time-zone",
+ "iii-clap-docs",
  "iii-observability",
  "iii-sdk",
  "iii-worker",
@@ -2757,6 +2758,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-clap-docs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "iii-console"
 version = "0.19.2"
 dependencies = [
@@ -2764,6 +2772,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
+ "iii-clap-docs",
  "iii-observability",
  "iii-sdk",
  "mime_guess",
@@ -2933,6 +2942,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime",
+ "iii-clap-docs",
  "iii-filesystem",
  "iii-network",
  "iii-observability",
