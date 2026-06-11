@@ -16,3 +16,5 @@ name = "iii_helpers"
 path = "src/lib.rs"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"

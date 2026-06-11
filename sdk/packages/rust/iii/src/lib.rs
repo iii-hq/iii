@@ -66,8 +66,8 @@ pub use iii::{
 };
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
 pub use protocol::{
-    EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
-    Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
+    ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod, Message,
+    RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
     RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream_provider::IStream;

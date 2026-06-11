@@ -432,16 +432,6 @@ class OnFunctionRegistrationResult(BaseModel):
     metadata: dict[str, Any] | None = Field(default=None, description="Mapped metadata.")
 
 
-class EnqueueResult(BaseModel):
-    """Result returned when a function is invoked with ``TriggerAction.Enqueue``.
-
-    Attributes:
-        messageReceiptId: UUID assigned by the engine to the enqueued job.
-    """
-
-    messageReceiptId: str = Field(description="UUID assigned by the engine to the enqueued job.")
-
-
 class TriggerRequest(BaseModel):
     """Request object for ``trigger()``.
 

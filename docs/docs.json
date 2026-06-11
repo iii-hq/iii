@@ -144,6 +144,12 @@
                   "next/sdk-reference/rust-sdk",
                   "next/sdk-reference/browser-sdk"
                 ]
+              },
+              {
+                "group": "Helpers",
+                "pages": [
+                  "next/sdk-reference/helpers-lib"
+                ]
               }
             ]
           },

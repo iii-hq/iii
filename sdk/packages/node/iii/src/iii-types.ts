@@ -290,14 +290,6 @@ export type OnFunctionRegistrationResult = {
 }
 
 /**
- * Result returned when a function is invoked with `TriggerAction.Enqueue`.
- */
-export type EnqueueResult = {
-  /** Unique receipt ID for the enqueued message. */
-  messageReceiptId: string
-}
-
-/**
  * Request object passed to {@link ISdk.trigger}.
  *
  * @typeParam TInput - Type of the payload.

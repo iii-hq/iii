@@ -1,0 +1,60 @@
+---
+title: "Helpers Library"
+description: "Shared helper primitives across the iii SDKs (`@iii-dev/helpers`, `iii-helpers`)."
+owner: "engineering"
+type: "reference"
+---
+
+<Note>
+  This page is a hand-authored snapshot of the planned public surface. The final reference will be
+  generated from the SDK source.
+</Note>
+
+The helpers library holds primitives that are shared across the language SDKs and have no dependency
+on the root SDK package. It is published per language and organized into submodules. This page
+documents the `queue` submodule. Other submodules (`http`, `stream`, `worker-connection-manager`)
+are documented as they are populated.
+
+| Language | Package | Queue import path |
+| --- | --- | --- |
+| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` |
+| Python | `iii-helpers` | `iii_helpers.queue` |
+| Rust | `iii-helpers` | `iii_helpers::queue` |
+
+The root SDK depends on the helpers package and imports these primitives internally where needed.
+They are not re-exported from the root SDK public surface; import them from the helpers submodule.
+
+## queue
+
+The `queue` submodule defines the types used for queue-routed invocations.
+
+### `EnqueueResult`
+
+Result returned when a function is invoked with the `enqueue` action. The engine acknowledges the
+enqueue and returns a receipt identifier. `EnqueueResult` is provided by the `queue` submodule and
+must be imported from there (`@iii-dev/helpers/queue`, `iii_helpers.queue`, `iii_helpers::queue`).
+
+<CodeGroup>
+
+```typescript Node
+export type EnqueueResult = {
+  messageReceiptId: string
+}
+```
+
+```python Python
+class EnqueueResult(BaseModel):
+    messageReceiptId: str
+```
+
+```rust Rust
+pub struct EnqueueResult {
+    #[serde(rename = "messageReceiptId")]
+    pub message_receipt_id: String,
+}
+```
+
+</CodeGroup>
+
+The wire field is `messageReceiptId` in all three languages. The Rust struct renames it to
+`message_receipt_id` for the idiomatic field name and keeps the wire name through serde.

@@ -29,6 +29,7 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 iii-observability = { workspace = true }
+iii-helpers = { workspace = true }
 
 # HTTP client (non-traced; traced variant lives in iii-observability)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

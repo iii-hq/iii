@@ -2804,6 +2804,10 @@ dependencies = [
 [[package]]
 name = "iii-helpers"
 version = "0.19.0"
+dependencies = [
+ "schemars 0.8.22",
+ "serde",
+]
 
 [[package]]
 name = "iii-init"
@@ -2863,6 +2867,7 @@ dependencies = [
  "ctor",
  "futures-util",
  "hostname",
+ "iii-helpers",
  "iii-observability",
  "opentelemetry",
  "opentelemetry_sdk",

@@ -16,7 +16,6 @@ from .iii_constants import (
 from .iii_types import (
     AuthInput,
     AuthResult,
-    EnqueueResult,
     HttpAuthConfig,
     HttpInvocationConfig,
     MessageType,
@@ -88,7 +87,6 @@ __all__ = [
     "OnTriggerTypeRegistrationInput",
     "OnTriggerTypeRegistrationResult",
     # Message types
-    "EnqueueResult",
     "HttpAuthConfig",
     "HttpInvocationConfig",
     "MessageType",

@@ -14,7 +14,6 @@ export { EngineFunctions, EngineTriggers } from './iii-constants'
 export type {
   AuthInput,
   AuthResult,
-  EnqueueResult,
   HttpAuthConfig,
   HttpInvocationConfig,
   MessageType,

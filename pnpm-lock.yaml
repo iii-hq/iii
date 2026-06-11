@@ -181,6 +181,9 @@ importers:
 
   sdk/packages/node/iii:
     dependencies:
+      '@iii-dev/helpers':
+        specifier: workspace:*
+        version: link:../helpers
       '@iii-dev/observability':
         specifier: workspace:*
         version: link:../observability
@@ -245,6 +248,9 @@ importers:
 
   sdk/packages/node/iii-example:
     dependencies:
+      '@iii-dev/helpers':
+        specifier: workspace:*
+        version: link:../helpers
       iii-sdk:
         specifier: workspace:*
         version: link:../iii
