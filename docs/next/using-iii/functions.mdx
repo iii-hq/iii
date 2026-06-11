@@ -137,9 +137,9 @@ Some common actions are:
   queue with retries; the call returns once the message is enqueued.
 
 <Note>
-  Functions can also run when a trigger is satisfied — an `http` request, a `cron` schedule, a
-  `state` change, and so on. To bind a function to an event source, see [Triggers / Register a
-  trigger](./triggers#register-a-trigger).
+  Functions can also be registered (or bound) to Triggers such as an `http` request, a `cron`
+  schedule, a `state` change, and so on. To bind a function to an event source, see [Triggers /
+  Register a trigger](./triggers#register-a-trigger).
 </Note>
 
 <Note>
@@ -189,14 +189,13 @@ The engine itself registers a small set of introspection and lifecycle functions
 response schemas are in the
 [engine protocol reference](../sdk-reference/engine-sdk#engine-discovery-functions).
 
-| Function                      | What it does                                                                                                                            |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::functions::list`     | List every registered function. Pass `{ include_internal: true }` to include engine internals.                                          |
-| `engine::workers::list`       | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                            |
-| `engine::triggers::list`      | List every registered trigger binding.                                                                                                  |
-| `engine::trigger-types::list` | List every advertised trigger type along with its config and call-request schemas.                                                      |
-| `engine::channels::create`    | Allocate a streaming channel reader / writer pair. The SDK wraps this as `worker.createChannel()`; rarely called directly.              |
-| `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, optional `description`). The SDK calls this automatically on connect. |
+| Function                    | What it does                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::functions::list`   | List every registered function. Pass `{ include_internal: true }` to include engine internals.                                          |
+| `engine::workers::list`     | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                            |
+| `engine::triggers::list`    | List every registered trigger binding.                                                                                                  |
+| `engine::channels::create`  | Allocate a streaming channel reader / writer pair. The SDK wraps this as `worker.createChannel()`; rarely called directly.              |
+| `engine::workers::register` | Publish the calling worker's metadata (runtime, version, OS, PID, optional `description`). The SDK calls this automatically on connect. |
 
 The engine also publishes two subscription triggers in the same family. Bind a function to one of
 these to react to the registry changing:
