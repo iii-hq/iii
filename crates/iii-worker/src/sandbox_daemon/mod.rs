@@ -110,6 +110,12 @@ use crate::sandbox_daemon::config::SandboxConfig;
 use crate::sandbox_daemon::errors::SandboxErrorWire;
 
 pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()> {
+    // FIRST statement, before any await: snapshot spawn-time facts for the
+    // engine-death watch (see crate::daemon_exit). Without it this daemon had
+    // the same orphan leak as worker-manager-daemon — worse, an orphaned
+    // sandbox-daemon keeps live libkrun VMs around.
+    let exit_watch = crate::daemon_exit::ExitWatch::arm_at_startup();
+
     tracing::info!(url = %engine_url, "connecting to III engine");
     // Identify ourselves as `iii-sandbox` so the engine surfaces this
     // worker by its config-yaml name (and not the auto-detected
@@ -178,8 +184,14 @@ pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()
     }
 
     tracing::info!("sandbox-daemon ready");
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("sandbox-daemon shutting down");
+    // Exit on SIGINT/SIGTERM/SIGHUP or engine death — see crate::daemon_exit.
+    // Previously this parked on bare ctrl_c(): the engine's kill_child SIGTERM
+    // killed it via default disposition, and an abnormal engine exit leaked it
+    // as a reconnect-looping orphan holding live VMs. VM teardown on exit is
+    // unchanged (the reaper/registry semantics are their own concern); this
+    // closes the daemon-leak layer.
+    let reason = exit_watch.wait("sandbox-daemon").await;
+    tracing::info!(reason, "sandbox-daemon shutting down");
     iii.shutdown_async().await;
     Ok(())
 }

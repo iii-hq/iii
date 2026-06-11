@@ -18,6 +18,11 @@ pub struct SandboxState {
     pub workdir: PathBuf,
     pub shell_sock: PathBuf,
     pub vm_pid: Option<u32>,
+    /// Write end of the VM's lifeline pipe (see `daemon_exit::Lifeline`).
+    /// While any clone of this state is alive the VM keeps running; once the
+    /// entry is dropped — or this whole daemon dies, however abruptly — the
+    /// pipe closes and `__vm-boot` self-terminates.
+    pub lifeline: Option<std::sync::Arc<crate::daemon_exit::Lifeline>>,
     pub created_at: Instant,
     pub last_exec_at: Instant,
     pub exec_in_progress: bool,
@@ -120,6 +125,7 @@ mod tests {
             workdir: PathBuf::from("/tmp/work"),
             shell_sock: PathBuf::from("/tmp/sock"),
             vm_pid: Some(1234),
+            lifeline: None,
             created_at: Instant::now(),
             last_exec_at: Instant::now(),
             exec_in_progress: false,
