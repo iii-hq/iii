@@ -16,8 +16,6 @@ from .iii_constants import (
 from .iii_types import (
     AuthInput,
     AuthResult,
-    HttpAuthConfig,
-    HttpInvocationConfig,
     MessageType,
     MiddlewareFunctionInput,
     OnFunctionRegistrationInput,
@@ -48,18 +46,13 @@ from .stream import (
 )
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
-    ApiRequest,
-    ApiResponse,
     Channel,
-    HttpRequest,
-    HttpResponse,
     IIIClient,
     InternalHttpRequest,
     RemoteFunctionHandler,
     StreamRequest,
     StreamResponse,
 )
-from .utils import http
 
 __all__ = [
     # Channels
@@ -87,8 +80,6 @@ __all__ = [
     "OnTriggerTypeRegistrationInput",
     "OnTriggerTypeRegistrationResult",
     # Message types
-    "HttpAuthConfig",
-    "HttpInvocationConfig",
     "MessageType",
     "RegisterFunctionFormat",
     "RegisterFunctionMessage",
@@ -106,11 +97,7 @@ __all__ = [
     "TriggerHandler",
     "TriggerTypeRef",
     # Types
-    "ApiRequest",
-    "ApiResponse",
     "Channel",
-    "HttpRequest",
-    "HttpResponse",
     "IIIClient",
     "InternalHttpRequest",
     "RemoteFunctionHandler",
@@ -124,8 +111,6 @@ __all__ = [
     "StreamJoinLeaveEvent",
     "StreamJoinLeaveTriggerConfig",
     "StreamTriggerConfig",
-    # Utilities
-    "http",
     # Format extraction
     "extract_request_format",
     "extract_response_format",

@@ -1,3 +1,5 @@
+import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
+
 export enum MessageType {
   RegisterFunction = 'registerfunction',
   UnregisterFunction = 'unregisterfunction',
@@ -49,35 +51,6 @@ export type RegisterTriggerMessage = {
   function_id: string
   config: unknown
   metadata?: Record<string, unknown>
-}
-
-/**
- * Authentication configuration for HTTP-invoked functions.
- *
- * - `hmac` -- HMAC signature verification using a shared secret.
- * - `bearer` -- Bearer token authentication.
- * - `api_key` -- API key sent via a custom header.
- */
-export type HttpAuthConfig =
-  | { type: 'hmac'; secret_key: string }
-  | { type: 'bearer'; token_key: string }
-  | { type: 'api_key'; header: string; value_key: string }
-
-/**
- * Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
- * Workers, etc.) instead of a local handler.
- */
-export type HttpInvocationConfig = {
-  /** URL to invoke. */
-  url: string
-  /** HTTP method. Defaults to `POST`. */
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-  /** Timeout in milliseconds. */
-  timeout_ms?: number
-  /** Custom headers to send with the request. */
-  headers?: Record<string, string>
-  /** Authentication configuration. */
-  auth?: HttpAuthConfig
 }
 
 export type RegisterFunctionFormat = {

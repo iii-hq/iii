@@ -3,59 +3,8 @@
 from enum import Enum
 from typing import Any, Literal
 
+from iii_helpers.http import HttpInvocationConfig
 from pydantic import BaseModel, ConfigDict, Field
-
-
-class HttpAuthHmac(BaseModel):
-    """HMAC signature verification using a shared secret."""
-
-    type: Literal["hmac"] = "hmac"
-    secret_key: str = Field(description="Environment variable name containing the HMAC shared secret.")
-
-
-class HttpAuthBearer(BaseModel):
-    """Bearer token authentication."""
-
-    type: Literal["bearer"] = "bearer"
-    token_key: str = Field(description="Environment variable name containing the bearer token.")
-
-
-class HttpAuthApiKey(BaseModel):
-    """API key sent via a custom header."""
-
-    type: Literal["api_key"] = "api_key"
-    header: str = Field(description="HTTP header name for the API key.")
-    value_key: str = Field(description="Environment variable name containing the API key value.")
-
-
-HttpAuthConfig = HttpAuthHmac | HttpAuthBearer | HttpAuthApiKey
-"""Authentication configuration for HTTP-invoked functions."""
-
-
-class HttpInvocationConfig(BaseModel):
-    """Config for HTTP external function invocation.
-
-    Attributes:
-        url: Target URL for the HTTP invocation.
-        method: HTTP method. Defaults to ``'POST'``.
-        timeout_ms: Request timeout in milliseconds.
-        headers: Additional HTTP headers to include in the request.
-        auth: Authentication configuration (bearer, HMAC, or API key).
-    """
-
-    url: str = Field(description="Target URL for the HTTP invocation.")
-    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = Field(
-        default="POST", description="HTTP method. Defaults to ``'POST'``."
-    )
-    timeout_ms: int | None = Field(default=None, description="Request timeout in milliseconds.")
-    headers: dict[str, str] | None = Field(
-        default=None,
-        description="Additional HTTP headers to include in the request.",
-    )
-    auth: HttpAuthConfig | None = Field(
-        default=None,
-        description="Authentication configuration (bearer, HMAC, or API key).",
-    )
 
 
 class MessageType(str, Enum):

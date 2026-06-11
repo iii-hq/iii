@@ -66,9 +66,8 @@ pub use iii::{
 };
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
 pub use protocol::{
-    ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod, Message,
-    RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
-    RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
+    ErrorBody, FunctionMessage, Message, RegisterFunctionMessage, RegisterTriggerInput,
+    RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream_provider::IStream;
 pub use structs::{
@@ -81,10 +80,9 @@ pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use types::Channel;
 pub use types::{
-    ApiRequest, ApiResponse, DeleteResult, SetResult, StreamAuthInput, StreamAuthResult,
-    StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput, StreamListInput,
-    StreamRequest, StreamResponse, StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError,
-    UpdateResult,
+    DeleteResult, SetResult, StreamAuthInput, StreamAuthResult, StreamDeleteInput, StreamGetInput,
+    StreamJoinResult, StreamListGroupsInput, StreamListInput, StreamRequest, StreamResponse,
+    StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError, UpdateResult,
 };
 
 /// Configuration options passed to [`register_worker`].

@@ -11,8 +11,8 @@ import {
   type IIIConnectionState,
   type IIIReconnectionConfig,
 } from './iii-constants'
+import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import {
-  type HttpInvocationConfig,
   type IIIMessage,
   type InvocationResultMessage,
   type InvokeFunctionMessage,

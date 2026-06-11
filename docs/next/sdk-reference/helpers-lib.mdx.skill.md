@@ -10,14 +10,14 @@
 
 The helpers library holds primitives that are shared across the language SDKs and have no dependency
 on the root SDK package. It is published per language and organized into submodules. This page
-documents the `queue` submodule. Other submodules (`http`, `stream`, `worker-connection-manager`)
-are documented as they are populated.
+documents the `queue` and `http` submodules. Other submodules (`stream`,
+`worker-connection-manager`) are documented as they are populated.
 
-| Language | Package | Queue import path |
-| --- | --- | --- |
-| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` |
-| Python | `iii-helpers` | `iii_helpers.queue` |
-| Rust | `iii-helpers` | `iii_helpers::queue` |
+| Language | Package | Queue import path | HTTP import path |
+| --- | --- | --- | --- |
+| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` | `@iii-dev/helpers/http` |
+| Python | `iii-helpers` | `iii_helpers.queue` | `iii_helpers.http` |
+| Rust | `iii-helpers` | `iii_helpers::queue` | `iii_helpers::http` |
 
 The root SDK depends on the helpers package and imports these primitives internally where needed.
 They are not re-exported from the root SDK public surface; import them from the helpers submodule.
@@ -56,3 +56,140 @@ pub struct EnqueueResult {
 
 The wire field is `messageReceiptId` in all three languages. The Rust struct renames it to
 `message_receipt_id` for the idiomatic field name and keeps the wire name through serde.
+
+## http
+
+The `http` submodule defines the configuration, authentication, method, and request/response types
+for HTTP-invoked functions, plus the `http` handler helper. These symbols live only in the `http`
+submodule. The root SDK does not re-export them; import them from the submodule. The buffered
+request and response types are described under [Buffered request and response types](#buffered-request-and-response-types) below.
+
+### `HttpAuthConfig`
+
+Authentication configuration for HTTP-invoked functions. It is a tagged union with three variants:
+`hmac` (HMAC signature verification using a shared secret), `bearer` (bearer token), and `api_key`
+(API key sent via a custom header). The shape matches the engine `HttpAuthConfig` in
+`engine/src/invocation/auth.rs` variant for variant.
+
+<CodeGroup>
+
+```typescript Node
+export type HttpAuthConfig =
+  | { type: 'hmac'; secret_key: string }
+  | { type: 'bearer'; token_key: string }
+  | { type: 'api_key'; header: string; value_key: string }
+```
+
+```python Python
+HttpAuthConfig = HttpAuthHmac | HttpAuthBearer | HttpAuthApiKey
+```
+
+```rust Rust
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum HttpAuthConfig {
+    Hmac { secret_key: String },
+    Bearer { token_key: String },
+    #[serde(rename = "api_key")]
+    ApiKey { header: String, value_key: String },
+}
+```
+
+</CodeGroup>
+
+In Python the union members `HttpAuthHmac`, `HttpAuthBearer`, and `HttpAuthApiKey` are also defined in
+the `http` submodule.
+
+### `HttpInvocationConfig`
+
+Configuration for registering an HTTP-invoked function instead of a local handler. The `method` field
+defaults to `POST`.
+
+<CodeGroup>
+
+```typescript Node
+export type HttpInvocationConfig = {
+  url: string
+  method?: HttpMethod
+  timeout_ms?: number
+  headers?: Record<string, string>
+  auth?: HttpAuthConfig
+}
+```
+
+```python Python
+class HttpInvocationConfig(BaseModel):
+    url: str
+    method: HttpMethod = "POST"
+    timeout_ms: int | None = None
+    headers: dict[str, str] | None = None
+    auth: HttpAuthConfig | None = None
+```
+
+```rust Rust
+pub struct HttpInvocationConfig {
+    pub url: String,
+    #[serde(default = "default_http_method")]
+    pub method: HttpMethod,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<HttpAuthConfig>,
+}
+```
+
+</CodeGroup>
+
+### `HttpMethod`
+
+Named HTTP method accepted by `HttpInvocationConfig`. It covers `GET`, `POST`, `PUT`, `PATCH`, and
+`DELETE`.
+
+<CodeGroup>
+
+```typescript Node
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+```
+
+```python Python
+HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+```
+
+```rust Rust
+#[serde(rename_all = "UPPERCASE")]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+}
+```
+
+</CodeGroup>
+
+This `HttpMethod` is distinct from the `HttpMethod` enum in the core SDK `builtin_triggers` module,
+which also covers `HEAD` and `OPTIONS` and stays in the core SDK. The `builtin_triggers` enum is not
+affected by this submodule.
+
+### `http`
+
+Handler helper that wraps a streaming `(request, response)` callback into the handler format the SDK
+expects. It is defined in the `http` submodule in Node and Python; Rust has no equivalent helper.
+
+### Buffered request and response types
+
+The buffered request and response types are named `HttpRequest` and `HttpResponse` and are
+defined in the `http` submodule. They reclaim the `Http*` names from the streaming types.
+
+| Kind | Node and Python | Rust |
+| --- | --- | --- |
+| Buffered | `HttpRequest`, `HttpResponse` | `HttpRequest`, `HttpResponse` |
+| Streaming | `StreamRequest`, `StreamResponse` | aliases of `HttpRequest`, `HttpResponse` |
+
+The previous `Http*` aliases that pointed at the streaming `Stream*` types (introduced when the
+streaming types were renamed) are removed. The buffered request and response types now carry the
+`HttpRequest` and `HttpResponse` names directly. In Node and Python the streaming `Stream*` types and
+the buffered `Http*` types are distinct. In Rust `StreamRequest` and `StreamResponse` are aliases of
+`HttpRequest` and `HttpResponse`.
