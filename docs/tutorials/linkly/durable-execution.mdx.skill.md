@@ -38,9 +38,11 @@ workers:
 ```
 
 You already wrote `link::record_click` in Chapter 3, where `http::redirect` triggers it directly.
-Nothing about the function changes. You only change how it's invoked. First import `TriggerAction`:
+Nothing about the function changes. You only change how it's invoked.
 
-```typescript src/index.ts
+**First import `TriggerAction`** into `link/src/index.ts`:
+
+```typescript {1} src/index.ts
 import { registerWorker, TriggerAction } from "iii-sdk";
 import { Logger } from "@iii-dev/observability";
 ```
@@ -48,14 +50,16 @@ import { Logger } from "@iii-dev/observability";
 Then add an `action` to the existing `link::record_click` call in `http::redirect` so the
 `iii-queue` worker enqueues it instead of running it inline:
 
-```typescript src/index.ts {5}
-// Enqueue the click and return right away; the consumer drains it later.
-await worker.trigger({
-  function_id: "link::record_click",
-  payload: { code, clicked_at: new Date().toISOString() },
-  action: TriggerAction.Enqueue({ queue: "clicks" }),
+```typescript src/index.ts {6}
+worker.registerFunction("http::redirect", async (req) => {
+  // ...previous code...
+  await worker.trigger({
+    function_id: "link::record_click",
+    payload: { code, clicked_at: new Date().toISOString() },
+    action: TriggerAction.Enqueue({ queue: "clicks" }),
+  });
+  return { status_code: 302, headers: { Location: url } };
 });
-return { status_code: 302, headers: { Location: url } };
 ```
 
 The redirect now returns as soon as the click is accepted onto the queue. `link::record_click`
@@ -86,11 +90,15 @@ don't have link updating functionality yet, so we'll add that and an HTTP endpoi
 Publish an event whenever a link is created or its target changes. Inside `link::create`, after the
 database write and `state::set`, trigger the built-in `publish` function:
 
-```typescript src/index.ts
-// ...inside link::create, after the database write and state::set:
-await worker.trigger({
-  function_id: "publish",
-  payload: { topic: "link.created", data: { code, url } },
+```typescript {3-6} src/index.ts
+worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
+  // ...previous code...
+  await worker.trigger({
+    function_id: "publish",
+    payload: { topic: "link.created", data: { code, url } },
+  });
+  logger.info("link created", { code, url });
+  return { code, url };
 });
 ```
 
@@ -202,9 +210,9 @@ iii worker init analytics --language python
 Replace the example `main.py` with this one that subscribes to `link.created` events and keeps count
 of every time that a new short link is created:
 
-<Accordion title="analytics/main.py">
+<Accordion title="analytics/src/main.py">
 
-```python analytics/main.py
+```python analytics/src/main.py
 import os
 from datetime import datetime, timezone
 
@@ -266,12 +274,13 @@ print("Analytics worker started")
 
 ### Configure the worker's manifest
 
-The generated manifest has no run scripts yet, so give it an install and start script:
+The generated manifest has no run scripts yet, so give it an install and start script by modifying
+`iii.worker.yaml`:
 
 ```yaml iii.worker.yaml
 scripts:
-  install: "pip install ."
-  start: "watchfiles 'python main.py'"
+  install: "pip install watchfiles && pip install ."
+  start: "watchfiles 'python src/main.py'"
 ```
 
 Analytics keeps its counts in its own database, so the `link` worker never has to know it exists.
