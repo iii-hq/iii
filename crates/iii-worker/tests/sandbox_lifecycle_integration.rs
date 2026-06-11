@@ -55,6 +55,7 @@ fn make_state(id: Uuid) -> SandboxState {
         workdir: std::path::PathBuf::from("/tmp/work"),
         shell_sock: std::path::PathBuf::from("/tmp/shell.sock"),
         vm_pid: Some(4321),
+        lifeline: None,
         created_at: Instant::now(),
         last_exec_at: Instant::now(),
         exec_in_progress: false,

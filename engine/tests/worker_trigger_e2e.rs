@@ -57,6 +57,14 @@ fn set_test_env(project_root: &std::path::Path) {
             // local port so the 2s timeout fails immediately and never
             // touches the network.
             std::env::set_var("III_API_URL", "http://127.0.0.1:1");
+            // The in-process daemon arms its engine-death watch from env at
+            // startup (daemon_exit::ExitWatch). If this TEST process was
+            // itself launched by an iii-managed parent (dogfooding, CI
+            // wrappers), ambient values would make the daemon poll a foreign
+            // pid and self-exit mid-test when it dies. Scrub them.
+            std::env::remove_var("III_ENGINE_PID");
+            std::env::remove_var("III_LIFELINE_FD");
+            std::env::remove_var("III_LIFELINE_SPAWNER_PID");
         }
     });
     // `IIIWORKER_PROJECT_ROOT` is read per-run by the daemon, so we set it

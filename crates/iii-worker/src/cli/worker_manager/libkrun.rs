@@ -129,6 +129,11 @@ pub async fn run_dev(
 
     let mut cmd = tokio::process::Command::new(&self_exe);
     cmd.arg("__vm-boot");
+    // Managed-worker VMs are DETACHED by design (adopt-orphan semantics);
+    // scrub any ambient lifeline inheritance so a VM spawned by a process
+    // that itself carries a lifeline can never wrongly die with it.
+    cmd.env_remove(crate::daemon_exit::LIFELINE_FD_ENV);
+    cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
     for boot_arg in vm_boot_args_dev(
         &rootfs,
         exec_path,
@@ -696,6 +701,9 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
 
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");
+        // Detached by design — see the matching scrub in run_dev above.
+        cmd.env_remove(crate::daemon_exit::LIFELINE_FD_ENV);
+        cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
         for boot_arg in vm_boot_args_oci(
             &worker_rootfs,
             &exec_path,

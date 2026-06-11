@@ -27,7 +27,10 @@ struct FakeLauncher {
 impl VmLauncher for FakeLauncher {
     async fn boot(&self, _p: &BootParams) -> Result<BootHandle, SandboxError> {
         let n = self.boot_count.fetch_add(1, Ordering::SeqCst) + 1;
-        Ok(BootHandle { vm_pid: 10_000 + n })
+        Ok(BootHandle {
+            vm_pid: 10_000 + n,
+            lifeline: None,
+        })
     }
 }
 
