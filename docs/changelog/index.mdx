@@ -5,6 +5,27 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.19.2" description="June 2026">
+  ## Conflicting HTTP routes are rejected instead of crashing the worker
+
+  Registering two HTTP routes with identical structure but different path-parameter names — e.g. `GET users/:id` and `GET users/:userId` — used to panic axum's matcher and take down the entire `iii-http` worker thread. `register_router` now detects the structural conflict up front and rejects the second registration with a descriptive error:
+
+  ```
+  Route 'GET users/:userId' conflicts with already-registered route 'GET users/:id':
+  routes with identical structure but different path-parameter names are not supported
+  ```
+
+  The first route keeps serving; only the conflicting registration fails, and the worker stays up. Route conflict tests were added across the Go, Node, Python, and Rust SDKs.
+
+  ## HTTP trigger unregister is owner-aware
+
+  When two workers registered the same `method` + `path` — during a rolling deploy or a reconnect — a departing worker's route cleanup could delete the route the new worker had just taken over, dropping the endpoint to a 404. `unregister` now checks ownership (`trigger_id` + `worker_id`) and skips the removal when the route already belongs to a different owner, so the live worker's route keeps resolving. Removal by the actual owner is unchanged.
+
+  ## Install script retries transient download failures
+
+  `install.sh` now wraps every GitHub API call and binary download (`iii`, `iii-init`, `iii-worker`) in a retry (`--retry 5`, `--retry-delay 2`, `--connect-timeout 10`). Transient 5xx responses and connection timeouts are retried instead of failing the install on the first hiccup. Only widely-supported curl flags are used, so older curl builds keep working.
+</Update>
+
 <Update label="0.19.0" description="June 2026">
   ## `worker::*` management API is self-describing — and `kind: "local"` now works over the trigger
 
@@ -53,6 +74,121 @@ type: "reference"
 
   - Unregistering a trigger bound to a **custom** trigger type now invokes the provider’s `unregisterTrigger` callback instead of leaving stale bindings server-side.
   - When the **provider worker reconnects**, the engine re-sends `registertrigger` for existing bindings (unchanged); cleanup on consumer disconnect now correctly pairs with `unregisterTrigger` on the provider.
+
+  ## SDK surface trimming — deprecated and unused exports removed
+
+  **Breaking (import-time only).** A cleanup pass across all three SDKs removed re-exports and aliases that were back-compat shims, orphaned types, or thin wrappers over upstream crates. None change runtime behavior — each is a mechanical import swap.
+
+  ### Observability re-exports dropped (Node + Python)
+
+  The `Logger` and OTel re-exports that `iii-sdk` kept for back-compat when the observability surface moved to `iii-observability` in 0.16.0 are now removed. Import from the observability package directly:
+
+  ```typescript
+  // Node — before
+  import { Logger } from 'iii-sdk'
+  // after
+  import { Logger } from '@iii-dev/observability'
+  ```
+
+  ```python
+  # Python — before
+  from iii import Logger, init_otel, with_span, OtelConfig
+  # after
+  from iii_observability import Logger, init_otel, with_span, OtelConfig
+  ```
+
+  The full set removed from the Python `iii` package: `Logger`, `init_otel`, `shutdown_otel`, `flush_otel`, `with_span`, `execute_traced_request`, `OtelConfig`, `ReconnectionConfig`, `BaggageSpanProcessor`, `current_span_id` / `current_trace_id`, `current_span_is_recording`, `record_span_event`, `set_current_span_attribute` / `set_current_span_error`, the baggage and traceparent inject/extract helpers, `redact` / `redact_and_truncate` / `resolve_max_bytes_from_env`, `DEFAULT_ALLOWLIST`, and `REDACTED_PLACEHOLDER`. All live in `iii_observability`.
+
+  ### Rust SDK: crate-root re-exports and dead types removed
+
+  | Removed from `iii_sdk` | Replacement |
+  |---|---|
+  | `Value` (re-export of `serde_json::Value`) | depend on `serde_json` and use `serde_json::Value` |
+  | `UpdateBuilder` | build a `Vec<UpdateOp>` with `UpdateOp::set` / `increment` / `decrement` / `append` / `remove` / `merge` |
+  | `FieldPath` | `UpdateOp` path fields now take `impl Into<String>` — pass `String` / `&str` directly |
+  | `MergePath` (crate root) | still available at `iii_sdk::types::MergePath` |
+  | `TriggerTypeInfo` | none — it was orphaned and never wired to anything |
+
+  ### Node SDK: `TriggerActionType` alias removed
+
+  The `TriggerActionType` type alias is gone — use `TriggerAction` directly. The `TriggerAction.Enqueue()` / `TriggerAction.Void()` runtime helpers are unchanged.
+
+  ### Python SDK: `IIIForbiddenError` / `IIITimeoutError` removed
+
+  Both exception subclasses are deleted. All rejections — including timeouts and RBAC denials — now raise `IIIInvocationError`; branch on its `.code` (`"FORBIDDEN"`, `"TIMEOUT"`) instead of catching distinct types.
+
+  ```python
+  # before
+  try:
+      result = iii.trigger(...)
+  except IIITimeoutError:
+      ...
+
+  # after
+  try:
+      result = iii.trigger(...)
+  except IIIInvocationError as e:
+      if e.code == "TIMEOUT":
+          ...
+  ```
+</Update>
+
+<Update label="0.18.0" description="June 2026">
+  ## Channel and stream helpers moved to a `helpers` submodule
+
+  **Breaking.** `createChannel` / `createStream` (and the channel utility types) are no longer instance methods or crate-root exports — they moved to a dedicated `helpers` submodule across all three SDKs. This keeps the core `iii` client surface focused on registration and invocation, and groups the channel/stream plumbing in one importable place.
+
+  ```typescript
+  // Node — before
+  const ch = iii.createChannel(bufferSize)
+  iii.createStream(name, stream)
+  // after
+  import { createChannel, createStream } from 'iii-sdk/helpers'
+  const ch = createChannel(iii, bufferSize)
+  createStream(iii, name, stream)
+  ```
+
+  ```python
+  # Python — before
+  ch = iii.create_channel()
+  # after
+  from iii.helpers import create_channel, create_channel_async, create_stream
+  ch = create_channel(iii)
+  ```
+
+  ```rust
+  // Rust — before
+  let ch = iii.create_channel(buffer_size);
+  // after
+  let ch = iii_sdk::helpers::create_channel(&iii, buffer_size);
+  ```
+
+  The same submodule now also carries the channel utilities — `ChannelDirection`, `ChannelItem`, `extractChannelRefs` / `extract_channel_refs`, and `isChannelRef` / `is_channel_ref` — which were previously top-level exports. `ChannelReader`, `ChannelWriter`, and `StreamChannelRef` stay at the package root.
+
+  ## `iii-worker` warns when `scripts.install` is omitted
+
+  A worker manifest with no `scripts.install` now emits a warning at load time instead of silently skipping the install step, so a missing setup phase is visible during local runs and CI rather than surfacing later as a runtime failure.
+</Update>
+
+<Update label="0.17.0" description="June 2026">
+  ## Observability: `getTracer` / `getMeter` / `SpanKind` dropped from the public Node API
+
+  **Breaking.** `@iii-dev/observability` no longer exports `getTracer`, `getMeter`, or `SpanKind` from its main entry point. `getTracer` / `getMeter` moved to a first-party-only `@iii-dev/observability/internal` subpath; they were never intended for application code. External consumers should:
+
+  - instrument with `withSpan` / `initOtel`, and
+  - import `SpanKind` from `@opentelemetry/api` directly.
+
+  ```typescript
+  // before
+  import { getTracer, SpanKind } from '@iii-dev/observability'
+  // after
+  import { SpanKind } from '@opentelemetry/api'
+  // (getTracer is internal — instrument via withSpan)
+  ```
+
+  ## Stored logs are stripped of ANSI escape codes
+
+  Log lines captured by the observability pipeline now have terminal color/formatting escape sequences removed before storage, so persisted logs render as clean text in the dashboard and downstream consumers instead of leaking raw `\x1b[...m` codes.
 </Update>
 
 <Update label="0.16.0" description="May 2026">
@@ -125,6 +261,20 @@ type: "reference"
   ```
 
   The new packages publish in lock-step with the rest of the monorepo on the same `iii/v*` release tag, so versions stay aligned with `iii-sdk`.
+
+  ## `register_service` removed from all SDKs
+
+  **Breaking.** `register_service` / `registerService`, along with the `RegisterServiceInput` and `RegisterServiceMessage` types, are removed from the Node, Browser, Python, and Rust SDKs, and the engine no longer handles the message. Services were an organizational-only grouping that never affected invocation or routing, so there is no replacement — drop all `register_service` calls.
+
+  ## Unused telemetry accessors removed
+
+  **Breaking.** Alongside the observability move, low-level telemetry accessors that were exported but unused are gone:
+
+  - **Node** (`iii-sdk`): `getTracer`, `getMeter`, `SpanStatusCode` — import `SpanStatusCode` from `@opentelemetry/api`; tracer and meter are internal.
+  - **Python** (`iii`): `get_tracer`, `get_meter`, `is_initialized` are now private (`_get_tracer`, `_get_meter`, `_is_initialized`) — use the `opentelemetry` API directly.
+  - **Rust** (`iii_sdk`): the `get_tracer`, `get_meter`, `is_initialized`, `SpanKind`, and `SpanStatus` re-exports — obtain meters via `opentelemetry::global::meter(...)` and import `SpanKind` from `opentelemetry::trace`.
+
+  For custom metrics, use the OpenTelemetry global meter directly rather than the SDK's `getMeter` / `get_meter`.
 </Update>
 
 <Update label="0.13.0" description="May 2026">
