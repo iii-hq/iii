@@ -1189,6 +1189,25 @@ resources:
     }
 
     #[test]
+    fn warn_returns_silently_when_manifest_shape_is_invalid() {
+        let _g = DEPRECATION_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // SAFETY: serialized via DEPRECATION_ENV_LOCK; the env gate must be
+        // open or the function returns before reaching the typed-parse branch.
+        unsafe { std::env::remove_var("III_NO_DEPRECATION_WARN") };
+        let d = doc("name: w\nruntime: node\n");
+        assert!(
+            crate::cli::worker_manifest::WorkerManifest::from_value(&d).is_err(),
+            "precondition: `runtime: node` must fail the typed parse"
+        );
+
+        // Shape errors are validate_manifest_keys' job: the warn helper must
+        // bail out of the let-else without panicking or classifying keys.
+        warn_deprecated_manifest_keys(&d, &dummy_manifest_path());
+    }
+
+    #[test]
     fn validate_keys_sanitizes_control_chars_in_echoed_keys() {
         // A hostile third-party manifest must not inject terminal escapes
         // through an unknown key name. Build the key programmatically so the

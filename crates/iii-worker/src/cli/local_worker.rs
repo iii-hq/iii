@@ -1480,6 +1480,133 @@ resources:
         assert_eq!(memory, 4096);
     }
 
+    #[test]
+    fn parse_manifest_resources_defaults_when_shape_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join(WORKER_MANIFEST);
+        // Valid YAML, but `resources` is a scalar where the typed manifest
+        // requires a mapping — WorkerManifest::from_value fails and the
+        // lenient sizing probe must fall back to defaults.
+        std::fs::write(&manifest_path, "name: w\nresources: lots\n").unwrap();
+
+        let (cpus, memory) = parse_manifest_resources(&manifest_path);
+
+        assert_eq!(cpus, 2);
+        assert_eq!(memory, 2048);
+    }
+
+    #[tokio::test]
+    async fn local_add_rejects_invalid_dependency_semver_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "name: iii-cov-test-dep-range\n\
+                    scripts:\n  install: \"npm install\"\n  start: \"node server.js\"\n\
+                    dependencies:\n  other-worker: \"not a semver range\"\n";
+        std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
+
+        let code = handle_local_add(
+            dir.path().to_str().unwrap(),
+            /*force=*/ false,
+            /*reset_config=*/ false,
+            /*brief=*/ false,
+            /*wait=*/ false,
+        )
+        .await;
+
+        // Fails at dependency resolution, BEFORE config.yaml is touched.
+        assert_eq!(code, 1);
+    }
+
+    #[tokio::test]
+    async fn start_rejects_manifest_with_unknown_keys_before_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "name: w\nscripts:\n  start: \"node server.js\"\ntypo_key: 1\n";
+        std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
+
+        let code = start_local_worker(
+            "iii-cov-test-start-unknown-key",
+            dir.path().to_str().unwrap(),
+            49134,
+        )
+        .await;
+
+        assert_eq!(code, 1);
+    }
+
+    #[tokio::test]
+    async fn start_rejects_oversized_manifest_before_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut yaml = String::from("name: w\nscripts:\n  start: \"node server.js\"\n");
+        let cap = super::super::project::MAX_LOCAL_MANIFEST_BYTES as usize;
+        yaml.push_str(&"# pad\n".repeat(cap / 6 + 16));
+        assert!(yaml.len() as u64 > super::super::project::MAX_LOCAL_MANIFEST_BYTES);
+        std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
+
+        let code = start_local_worker(
+            "iii-cov-test-start-oversize",
+            dir.path().to_str().unwrap(),
+            49134,
+        )
+        .await;
+
+        assert_eq!(code, 1);
+    }
+
+    #[tokio::test]
+    async fn start_skips_manifest_validation_when_manifest_absent() {
+        // Empty dir: read_manifest_doc returns Ok(None) (nothing to validate),
+        // then start fails at project detection — never at the validator.
+        let dir = tempfile::tempdir().unwrap();
+
+        let code = start_local_worker(
+            "iii-cov-test-start-no-manifest",
+            dir.path().to_str().unwrap(),
+            49134,
+        )
+        .await;
+
+        assert_eq!(code, 1);
+    }
+
+    #[tokio::test]
+    async fn start_passes_key_validation_then_rejects_unrecognized_kind() {
+        // Keys are all known (runtime.kind is deprecated, not unknown), so the
+        // strict start-time validator falls through; the run then fails at
+        // ProjectInfo::validate on the unsupported kind — still pre-boot.
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "name: w\nruntime:\n  kind: cobol\n\
+                    scripts:\n  install: \"true\"\n  start: \"node server.js\"\n";
+        std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
+
+        let code = start_local_worker(
+            "iii-cov-test-start-bad-kind",
+            dir.path().to_str().unwrap(),
+            49134,
+        )
+        .await;
+
+        assert_eq!(code, 1);
+    }
+
+    #[tokio::test]
+    async fn bundle_start_skips_local_validation_then_rejects_unrecognized_kind() {
+        // is_bundle=true takes validate_bundle_manifest (which allows the
+        // deprecated runtime.kind) and skips the local strict-validation
+        // block; the run then fails pre-boot at ProjectInfo::validate.
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "name: iii-cov-test-bundle-kind\nruntime:\n  kind: cobol\n\
+                    scripts:\n  start: \"node bundle.js\"\n";
+        std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
+
+        let code = start_bundle_worker(
+            "iii-cov-test-bundle-kind",
+            dir.path().to_str().unwrap(),
+            49134,
+        )
+        .await;
+
+        assert_eq!(code, 1);
+    }
+
     // Symlink-defense + 0o600 mode tests moved to super::pidfile where
     // the shared implementation lives.
 

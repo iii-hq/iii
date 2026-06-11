@@ -844,6 +844,91 @@ mod tests {
     }
 
     #[test]
+    fn shape_errors_describe_bool_mapping_and_tagged_values() {
+        let r = report("name: true\nscripts:\n  start: x\n");
+        assert!(
+            r.errors.iter().any(|e| e.contains("`name` must be a string, got the boolean true")),
+            "got: {r:?}"
+        );
+
+        let r = report("name:\n  nested: 1\nscripts:\n  start: x\n");
+        assert!(
+            r.errors.iter().any(|e| e.contains("`name` must be a string, got a mapping")),
+            "got: {r:?}"
+        );
+
+        // serde_yaml accessors untag, so a tagged STRING still reads as a
+        // string; only a tagged non-string reaches the Tagged description.
+        let r = report("name: !custom [w]\nscripts:\n  start: x\n");
+        assert!(
+            r.errors.iter().any(|e| e.contains("`name` must be a string, got a tagged value")),
+            "got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn shape_errors_flag_non_string_top_level_keys() {
+        let r = report("name: w\nscripts:\n  start: x\n1: y\n");
+        assert!(!r.valid);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("manifest keys must be strings, got the number 1")),
+            "got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn scripts_scalar_shape_error_omits_list_hint() {
+        let r = report("name: w\nscripts:\n  start: 5\n");
+        assert!(!r.valid);
+        let err = r.errors.iter().find(|e| e.contains("`scripts.start`")).expect("scripts error");
+        assert!(err.contains("must be a command string, got the number 5"), "got: {err}");
+        assert!(!err.contains("use one command string"), "list hint only fits lists: {err}");
+    }
+
+    #[test]
+    fn env_list_value_shape_error_omits_quoting_hint() {
+        let r = report("name: w\nscripts:\n  start: x\nenv:\n  FOO:\n    - a\n");
+        assert!(!r.valid);
+        let err = r.errors.iter().find(|e| e.contains("`env.FOO`")).expect("env error");
+        assert!(err.contains("must be a string, got a list"), "got: {err}");
+        assert!(
+            !err.contains("quote it") && !err.contains("write `"),
+            "scalar hints must not apply to lists: {err}"
+        );
+    }
+
+    #[test]
+    fn report_rejects_manifest_over_size_cap() {
+        let content = "x".repeat(MAX_LOCAL_MANIFEST_BYTES as usize + 1);
+        let r = report(&content);
+        assert!(!r.valid);
+        assert_eq!(r.errors.len(), 1, "size cap short-circuits all other checks");
+        assert!(
+            r.errors[0]
+                .contains(&format!("capped at {MAX_LOCAL_MANIFEST_BYTES} bytes")),
+            "got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn report_rejects_path_escaping_name() {
+        let r = report("name: \"../escape\"\nscripts:\n  start: x\n");
+        assert!(!r.valid);
+        assert_eq!(r.name.as_deref(), Some("../escape"));
+        assert!(r.errors.iter().any(|e| e.contains("'..'")), "got: {r:?}");
+    }
+
+    #[test]
+    fn from_value_rejects_non_mapping_document_via_serde_backstop() {
+        let doc: YamlValue = serde_yaml::from_str("just-a-string").unwrap();
+        let err = WorkerManifest::from_value(&doc).expect_err("non-mapping must fail");
+        assert!(err.starts_with("invalid manifest shape:"), "got: {err}");
+    }
+
+    #[test]
     fn classify_keys_matches_legacy_validator_semantics() {
         let doc: YamlValue =
             serde_yaml::from_str("name: w\nruntime:\n  kind: bun\n  foo: 1\nconfig: {}\nbad: 2\n")

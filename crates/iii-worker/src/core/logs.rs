@@ -277,6 +277,27 @@ mod tests {
     }
 
     #[test]
+    fn strip_terminal_controls_terminates_osc_on_st_terminator() {
+        assert_eq!(
+            strip_terminal_controls("\u{1b}]0;set title\u{1b}\\visible"),
+            "visible"
+        );
+    }
+
+    #[test]
+    fn strip_terminal_controls_consumes_single_char_escapes() {
+        // ESC M (reverse index) and ESC 7 (save cursor): the char after
+        // ESC is swallowed, surrounding text survives.
+        assert_eq!(strip_terminal_controls("\u{1b}Mup"), "up");
+        assert_eq!(strip_terminal_controls("a\u{1b}7b"), "ab");
+    }
+
+    #[test]
+    fn strip_terminal_controls_drops_trailing_escape() {
+        assert_eq!(strip_terminal_controls("tail\u{1b}"), "tail");
+    }
+
+    #[test]
     fn sanitize_lines_drops_spinner_residue_and_blanks() {
         let lines = vec![
             "⠙\u{1b}[1G\u{1b}[0K⠹\u{1b}[1G\u{1b}[0K".to_string(), // pure spinner
@@ -301,5 +322,95 @@ mod tests {
         assert!(outcome.logs_dir.is_none());
         assert!(outcome.stdout.is_empty());
         assert!(outcome.stderr.is_empty());
+    }
+
+    /// Restores the original `HOME` on drop so the override can't leak
+    /// into sibling tests. Mirrors `cli::status::tests::ProbeEnvGuard`;
+    /// callers must hold `test_support::lock_home` for the whole body.
+    struct HomeGuard {
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl HomeGuard {
+        fn set(home: &Path) -> Self {
+            let original = std::env::var_os("HOME");
+            // SAFETY: test-only, serialized via test_support::lock_home.
+            unsafe { std::env::set_var("HOME", home) };
+            Self { original }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: test-only, serialized via test_support::lock_home.
+            unsafe {
+                match &self.original {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    // lock_home is intentionally held across run().await: it serializes the
+    // process-global HOME mutation against sibling tests.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn run_sanitizes_logs_from_best_dir_by_default() {
+        let _g = crate::cli::test_support::lock_home();
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        let logs_dir = tmp.path().join(".iii/logs/sanitize-target");
+        write(
+            &logs_dir,
+            "stdout.log",
+            "\u{1b}[32mready\u{1b}[0m\n⠙\u{1b}[1G\u{1b}[0K\n",
+        );
+        write(&logs_dir, "stderr.log", "\u{1b}[31moops\u{1b}[39m\n");
+
+        let outcome = run(LogsOptions {
+            name: "sanitize-target".to_string(),
+            tail: 10,
+            raw: false,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.stdout, vec!["ready".to_string()]);
+        assert_eq!(outcome.stderr, vec!["oops".to_string()]);
+        assert_eq!(outcome.logs_dir, Some(logs_dir.display().to_string()));
+        assert_eq!(outcome.name, "sanitize-target");
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn run_raw_preserves_escapes_and_spinner_frames() {
+        let _g = crate::cli::test_support::lock_home();
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        let logs_dir = tmp.path().join(".iii/logs/raw-target");
+        write(
+            &logs_dir,
+            "stdout.log",
+            "\u{1b}[32mready\u{1b}[0m\n⠙\u{1b}[1G\u{1b}[0K\n",
+        );
+
+        let outcome = run(LogsOptions {
+            name: "raw-target".to_string(),
+            tail: 10,
+            raw: true,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome.stdout,
+            vec![
+                "\u{1b}[32mready\u{1b}[0m".to_string(),
+                "⠙\u{1b}[1G\u{1b}[0K".to_string(),
+            ]
+        );
+        assert!(outcome.stderr.is_empty());
+        assert_eq!(outcome.logs_dir, Some(logs_dir.display().to_string()));
     }
 }

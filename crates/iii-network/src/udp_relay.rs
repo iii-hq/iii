@@ -271,6 +271,28 @@ fn extract_udp_payload(frame: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv6Addr;
+
+    fn wake_signaled(pipe: &crate::wake_pipe::WakePipe) -> bool {
+        let mut buf = [0u8; 16];
+        // SAFETY: as_raw_fd() is a valid non-blocking pipe read end; reading
+        // into a local stack buffer of matching length is sound.
+        let n = unsafe { libc::read(pipe.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+        n > 0
+    }
+
+    async fn wait_for_rx_frame(shared: &SharedState) -> Vec<u8> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(frame) = shared.rx_ring.pop() {
+                    return frame;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("relay task never injected a response frame into rx_ring")
+    }
 
     #[test]
     fn construct_v4_response_has_correct_structure() {
@@ -295,11 +317,8 @@ mod tests {
         );
 
         let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
-        assert_eq!(Ipv4Addr::from(ipv4.src_addr()), Ipv4Addr::new(8, 8, 8, 8));
-        assert_eq!(
-            Ipv4Addr::from(ipv4.dst_addr()),
-            Ipv4Addr::new(100, 96, 0, 2)
-        );
+        assert_eq!(ipv4.src_addr(), Ipv4Addr::new(8, 8, 8, 8));
+        assert_eq!(ipv4.dst_addr(), Ipv4Addr::new(100, 96, 0, 2));
         assert_eq!(ipv4.next_header(), IpProtocol::Udp);
 
         let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
@@ -380,5 +399,104 @@ mod tests {
         );
         assert_eq!(frame.len(), ETH_HDR_LEN + IPV4_HDR_LEN + UDP_HDR_LEN + max.len());
         assert_eq!(extract_udp_payload(&frame).unwrap(), &max[..]);
+    }
+
+    /// A response received on the relay socket must be injected into
+    /// `rx_ring` as a well-formed frame and signal `rx_wake` so the
+    /// NetWorker delivers it to the guest.
+    #[tokio::test]
+    async fn relay_task_injects_response_frame_into_rx_ring_and_wakes() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let guest_src: SocketAddr = (Ipv4Addr::new(100, 96, 0, 2), 40000).into();
+        let gateway_mac = EthernetAddress([0x02, 0, 0, 0, 0, 1]);
+        let guest_mac = EthernetAddress([0x02, 0, 0, 0, 0, 2]);
+        let shared = Arc::new(SharedState::new(64));
+        shared.rx_wake.drain();
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
+
+        let task = tokio::spawn(udp_relay_task(
+            outbound_rx,
+            guest_src,
+            server_addr,
+            shared.clone(),
+            gateway_mac,
+            guest_mac,
+        ));
+
+        outbound_tx
+            .send(Bytes::from_static(b"ping"))
+            .await
+            .unwrap();
+        let mut buf = [0u8; 64];
+        let (n, peer) = server.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        server.send_to(b"pong", peer).await.unwrap();
+
+        let frame = wait_for_rx_frame(&shared).await;
+
+        assert!(
+            wake_signaled(&shared.rx_wake),
+            "rx_wake must be signaled after injecting a frame"
+        );
+        let eth = EthernetFrame::new_checked(&frame).unwrap();
+        assert_eq!(eth.src_addr(), gateway_mac);
+        assert_eq!(eth.dst_addr(), guest_mac);
+        let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+        assert_eq!(ipv4.src_addr(), Ipv4Addr::LOCALHOST);
+        assert_eq!(ipv4.dst_addr(), Ipv4Addr::new(100, 96, 0, 2));
+        let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+        assert_eq!(udp.src_port(), server_addr.port());
+        assert_eq!(udp.dst_port(), 40000);
+        assert_eq!(udp.payload(), b"pong");
+
+        drop(outbound_tx);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("relay task must exit once the outbound channel closes")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// When frame construction refuses (here: non-IPv4 guest address), no
+    /// zero-length frame may be injected into `rx_ring` and `rx_wake` must
+    /// stay silent.
+    #[tokio::test]
+    async fn relay_task_skips_injection_when_frame_construction_refuses() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let guest_src: SocketAddr = (Ipv6Addr::LOCALHOST, 40000).into();
+        let shared = Arc::new(SharedState::new(64));
+        shared.rx_wake.drain();
+        let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
+
+        let _task = tokio::spawn(udp_relay_task(
+            outbound_rx,
+            guest_src,
+            server_addr,
+            shared.clone(),
+            EthernetAddress([0x02, 0, 0, 0, 0, 1]),
+            EthernetAddress([0x02, 0, 0, 0, 0, 2]),
+        ));
+
+        outbound_tx
+            .send(Bytes::from_static(b"ping"))
+            .await
+            .unwrap();
+        let mut buf = [0u8; 64];
+        let (_, peer) = server.recv_from(&mut buf).await.unwrap();
+        server.send_to(b"pong", peer).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        assert!(
+            shared.rx_ring.pop().is_none(),
+            "refused frame must not be injected into rx_ring"
+        );
+        assert!(
+            !wake_signaled(&shared.rx_wake),
+            "rx_wake must not fire when no frame was injected"
+        );
+        drop(outbound_tx);
     }
 }

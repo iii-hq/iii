@@ -1081,4 +1081,23 @@ mod tests {
             "worker name must be a single path segment, got {name}"
         );
     }
+
+    /// OCI re-adds have no manifest dir or registry slug to resolve a name
+    /// from, so the only safe answer is the raw reference label (the
+    /// lockfile version lookup returns None cleanly for it).
+    #[test]
+    fn post_install_worker_name_oci_readd_falls_back_to_reference_label() {
+        let reference = "ghcr.io/iii-hq/node:latest";
+        let source = crate::core::WorkerSource::Oci {
+            reference: reference.to_string(),
+        };
+        let pre: std::collections::HashSet<String> =
+            crate::cli::config_file::list_worker_names().into_iter().collect();
+
+        let name = post_install_worker_name(&source, &pre, reference);
+        assert_eq!(
+            name, reference,
+            "OCI re-add must fall back to the reference label"
+        );
+    }
 }

@@ -772,3 +772,289 @@ fn register_clear(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
         ),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::lock_home;
+    use super::*;
+
+    #[test]
+    fn op_description_documents_the_manifest_pseudo_id() {
+        let desc = op_description("iii.worker.yaml");
+
+        assert!(desc.contains("JSON Schema"));
+        assert!(desc.contains("worker::schema"));
+        assert!(desc.contains("worker::validate"));
+    }
+
+    fn schema_entry(id: &str) -> &'static (&'static str, Option<Value>, Option<Value>) {
+        schema_table()
+            .iter()
+            .find(|(entry_id, _, _)| *entry_id == id)
+            .unwrap_or_else(|| panic!("schema_table is missing {id}"))
+    }
+
+    #[test]
+    fn schema_table_serves_status_and_validate_entries() {
+        let (_, status_req, status_resp) = schema_entry("worker::status");
+        let (_, validate_req, validate_resp) = schema_entry("worker::validate");
+
+        let status_props = status_req.as_ref().unwrap()["properties"]
+            .as_object()
+            .unwrap();
+        assert!(status_props.contains_key("name"));
+        assert!(status_resp.as_ref().unwrap()["properties"]["hint"].is_object());
+
+        let validate_props = validate_req.as_ref().unwrap()["properties"]
+            .as_object()
+            .unwrap();
+        assert!(validate_props.contains_key("manifest"));
+        assert!(validate_props.contains_key("path"));
+        assert!(validate_resp.as_ref().unwrap()["properties"]["errors"].is_object());
+    }
+
+    #[test]
+    fn schema_table_manifest_pseudo_entry_carries_schema_and_example() {
+        let (_, req, resp) = schema_entry("iii.worker.yaml");
+
+        assert_eq!(req.as_ref().unwrap(), &manifest_schema_json());
+        assert_eq!(resp.as_ref().unwrap(), &hello_world_example_json());
+    }
+
+    // `III` exposes no registry listing, so the duplicate-registration
+    // panic is the only externally observable proof that `register_all`
+    // claimed a function id.
+    fn offline_iii_with_sink() -> (III, Arc<IIIEventSink>) {
+        let iii = III::new("ws://127.0.0.1:9");
+        let subs: Subscriptions = Arc::new(Mutex::new(HashMap::new()));
+        let sink = Arc::new(IIIEventSink::new(iii.clone(), subs, CallerMode::Trigger));
+        (iii, sink)
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "function id 'worker::status' already registered")]
+    async fn register_all_claims_the_worker_status_id() {
+        let (iii, sink) = offline_iii_with_sink();
+        register_all(&iii, PathBuf::from("."), sink);
+
+        iii.register_function(
+            "worker::status",
+            RegisterFunction::new_async(|input: Value| async move { Ok::<_, IIIError>(input) }),
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "function id 'worker::validate' already registered")]
+    async fn register_all_claims_the_worker_validate_id() {
+        let (iii, sink) = offline_iii_with_sink();
+        register_all(&iii, PathBuf::from("."), sink);
+
+        iii.register_function(
+            "worker::validate",
+            RegisterFunction::new_async(|input: Value| async move { Ok::<_, IIIError>(input) }),
+        );
+    }
+
+    struct EnvGuard {
+        home: Option<std::ffi::OsString>,
+        cwd: Option<PathBuf>,
+    }
+
+    impl EnvGuard {
+        fn new(home: &std::path::Path) -> Self {
+            let original_home = std::env::var_os("HOME");
+            let original_cwd = std::env::current_dir().ok();
+            // SAFETY: test-only, serialized via test_support::lock_home.
+            unsafe { std::env::set_var("HOME", home) };
+            std::env::set_current_dir(home).unwrap();
+            Self {
+                home: original_home,
+                cwd: original_cwd,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(cwd) = &self.cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
+            // SAFETY: test-only, serialized via test_support::lock_home.
+            unsafe {
+                match &self.home {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn build_status_rejects_traversal_worker_name() {
+        let err = build_status("../evil").await.unwrap_err();
+
+        assert_eq!(err.kind(), WorkerOpErrorKind::BadRequest);
+        assert!(matches!(
+            err,
+            WorkerOpError::BadRequest { ref function_id, .. }
+                if function_id == "worker::status"
+        ));
+    }
+
+    #[tokio::test]
+    async fn build_status_reports_not_installed_worker() {
+        let _g = lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::new(tmp.path());
+
+        let s = build_status("wmd-ghost").await.unwrap();
+
+        assert!(!s.installed);
+        assert_eq!(s.worker_type, "not-installed");
+        assert!(!s.running);
+        assert!(s.pid.is_none());
+        assert!(s.version.is_none());
+        assert!(s.logs_dir.is_none());
+        assert!(s.hint.contains("worker::add"));
+    }
+
+    #[tokio::test]
+    async fn build_status_reports_running_binary_worker() {
+        let _g = lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::new(tmp.path());
+
+        let name = "wmd-bin";
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            format!("workers:\n  - name: {name}\n"),
+        )
+        .unwrap();
+        let workers_dir = tmp.path().join(".iii/workers");
+        std::fs::create_dir_all(&workers_dir).unwrap();
+        std::fs::write(workers_dir.join(name), b"").unwrap();
+        let pids = tmp.path().join(".iii/pids");
+        std::fs::create_dir_all(&pids).unwrap();
+        // Our own pid makes the kill(pid, 0) liveness check succeed.
+        std::fs::write(
+            pids.join(format!("{name}.pid")),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        let s = build_status(name).await.unwrap();
+
+        assert!(s.installed);
+        assert_eq!(s.worker_type, "binary");
+        assert!(s.running);
+        assert!(s.hint.contains("engine::functions::list"));
+    }
+
+    #[tokio::test]
+    async fn build_status_hints_provisioning_for_local_worker_without_logs() {
+        let _g = lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::new(tmp.path());
+
+        let name = "wmd-local";
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            format!("workers:\n  - name: {name}\n    worker_path: /tmp/{name}\n"),
+        )
+        .unwrap();
+
+        let s = build_status(name).await.unwrap();
+
+        assert!(s.installed);
+        assert_eq!(s.worker_type, "local");
+        assert!(!s.running);
+        assert!(s.hint.contains("still provisioning"));
+    }
+
+    #[tokio::test]
+    async fn build_status_surfaces_stderr_tail_and_version_for_failed_oci_worker() {
+        let _g = lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::new(tmp.path());
+
+        let name = "wmd-oci";
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            format!("workers:\n  - name: {name}\n    image: ghcr.io/acme/{name}:1\n"),
+        )
+        .unwrap();
+        let logs = tmp.path().join(".iii/logs").join(name);
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("stderr.log"), "npm ERR! boom\n").unwrap();
+        let digest = "a".repeat(64);
+        std::fs::write(
+            tmp.path().join("iii.lock"),
+            format!(
+                "version: 1\nworkers:\n  {name}:\n    version: 9.9.9\n    type: image\n    \
+                 source:\n      kind: image\n      image: ghcr.io/acme/{name}@sha256:{digest}\n"
+            ),
+        )
+        .unwrap();
+
+        let s = build_status(name).await.unwrap();
+
+        assert!(s.installed);
+        assert_eq!(s.worker_type, "oci");
+        assert!(!s.running);
+        assert_eq!(s.version.as_deref(), Some("9.9.9"));
+        assert!(s.logs_dir.is_some());
+        assert_eq!(s.stderr_tail, vec!["npm ERR! boom".to_string()]);
+        assert!(s.hint.contains("stderr_tail"));
+    }
+
+    #[tokio::test]
+    async fn build_status_classifies_bundle_worker() {
+        let _g = lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::new(tmp.path());
+
+        let name = "wmd-bundle";
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            format!("workers:\n  - name: {name}\n"),
+        )
+        .unwrap();
+        let bundle = tmp.path().join(".iii/workers-bundle").join(name);
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("iii.worker.yaml"), format!("name: {name}\n")).unwrap();
+
+        let s = build_status(name).await.unwrap();
+
+        assert!(s.installed);
+        assert_eq!(s.worker_type, "bundle");
+        assert!(!s.running);
+    }
+
+    #[tokio::test]
+    async fn build_status_counts_builtin_as_running_when_engine_port_listens() {
+        let _g = lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::new(tmp.path());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let name = "wmd-builtin";
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            format!(
+                "workers:\n  - name: iii-worker-manager\n    config:\n      port: {port}\n  - name: {name}\n"
+            ),
+        )
+        .unwrap();
+
+        let s = build_status(name).await.unwrap();
+
+        assert!(s.installed);
+        assert_eq!(s.worker_type, "builtin");
+        assert!(
+            s.running,
+            "builtin worker must count as running while the engine port is up"
+        );
+        drop(listener);
+    }
+}
