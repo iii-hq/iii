@@ -199,7 +199,7 @@ runtimes. So this time we'll create an analytics worker in Python to count links
 ### Create a new worker
 
 Scaffold a Python worker the same way you scaffolded the `link` worker in Chapter 1. That generates
-an `analytics/` worker with a `main.py` example, and a `iii.worker.yaml` manifest.
+an `analytics/` worker with a `src/main.py` example, and a `iii.worker.yaml` manifest.
 
 ```bash
 iii worker init analytics --language python
@@ -207,7 +207,7 @@ iii worker init analytics --language python
 
 ### Subscribe to link.created events
 
-Replace the example `main.py` with this one that subscribes to `link.created` events and keeps count
+Replace the example `src/main.py` with this one that subscribes to `link.created` events and keeps count
 of every time that a new short link is created:
 
 <Accordion title="analytics/src/main.py">
@@ -279,7 +279,7 @@ The generated manifest has no run scripts yet, so give it an install and start s
 
 ```yaml iii.worker.yaml
 scripts:
-  install: "pip install watchfiles && pip install ."
+  install: "pip install watchfiles && pip install -e ."
   start: "watchfiles 'python src/main.py'"
 ```
 

@@ -39,7 +39,7 @@ through the iii engine.
 ```
 workers/
   math-worker/
-    math_worker.py      # Python worker
+    src/math_worker.py  # Python worker
   caller-worker/
     src/worker.ts       # TypeScript worker
 ```
@@ -132,7 +132,7 @@ From the folder containing iii's `config.yaml` run:
 iii worker add iii-state
 ```
 
-Now open `workers/math-worker/math_worker.py` in your code editor and uncomment the state block so
+Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block so
 the handler looks like this:
 
 ```python

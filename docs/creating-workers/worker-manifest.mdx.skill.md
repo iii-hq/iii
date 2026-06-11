@@ -101,7 +101,7 @@ scripts:
 
 ```yaml Rust
 scripts:
-  install: "cargo build"
+  install: "cargo install cargo-watch && cargo build"
 ```
 
 </CodeGroup>
@@ -140,11 +140,6 @@ env:
   LOG_LEVEL: info
   MY_API_KEY: replace-me
 ```
-
-<Note>
-  Worker environment variables are set here, not under the worker's `config.yaml` entry. See [Worker
-  environment variables](../using-iii/workers).
-</Note>
 
 ## `dependencies`
 
