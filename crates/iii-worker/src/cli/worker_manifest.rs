@@ -138,7 +138,9 @@ pub struct RuntimeSection {
     )]
     pub entry: Option<String>,
 
-    #[schemars(description = "DEPRECATED — rename to `runtime.kind` (itself deprecated; prefer explicit `scripts`).")]
+    #[schemars(
+        description = "DEPRECATED — rename to `runtime.kind` (itself deprecated; prefer explicit `scripts`)."
+    )]
     pub language: Option<String>,
 
     #[serde(flatten)]
@@ -177,7 +179,9 @@ pub struct ResourcesSection {
     #[schemars(description = "Optional integer vCPUs. Default 2; bundle workers are capped at 4.")]
     pub cpus: Option<u32>,
 
-    #[schemars(description = "Optional memory in MiB. Default 2048; bundle workers are capped at 4096.")]
+    #[schemars(
+        description = "Optional memory in MiB. Default 2048; bundle workers are capped at 4096."
+    )]
     pub memory: Option<u32>,
 
     #[serde(flatten)]
@@ -232,7 +236,10 @@ fn shape_problems(doc: &YamlValue) -> Vec<String> {
         if let Some(v) = present(doc.get(field))
             && v.as_str().is_none()
         {
-            problems.push(format!("`{field}` must be a string, got {}", yaml_value_desc(v)));
+            problems.push(format!(
+                "`{field}` must be a string, got {}",
+                yaml_value_desc(v)
+            ));
         }
     }
 
@@ -450,7 +457,9 @@ pub struct ManifestReport {
         description = "Deprecated keys: still honored, warned at add time, scheduled for removal in a future version. Prefer migrating to explicit `scripts`."
     )]
     pub deprecated_keys: Vec<String>,
-    #[schemars(description = "Non-blocking advice (e.g. omitted scripts.install, implausible base_image).")]
+    #[schemars(
+        description = "Non-blocking advice (e.g. omitted scripts.install, implausible base_image)."
+    )]
     pub warnings: Vec<String>,
 }
 
@@ -484,13 +493,15 @@ pub fn report_from_str(content: &str) -> ManifestReport {
     };
 
     if matches!(doc, YamlValue::Null) {
-        report.errors.push("manifest is empty; at least `name` and `scripts.start` are required".into());
+        report
+            .errors
+            .push("manifest is empty; at least `name` and `scripts.start` are required".into());
         return report;
     }
     if doc.as_mapping().is_none() {
-        report
-            .errors
-            .push("manifest top level must be a YAML mapping of fields, e.g. `name: my-worker`".into());
+        report.errors.push(
+            "manifest top level must be a YAML mapping of fields, e.g. `name: my-worker`".into(),
+        );
         return report;
     }
 
@@ -515,16 +526,21 @@ pub fn report_from_str(content: &str) -> ManifestReport {
     report.unknown_keys = unknown;
     report.deprecated_keys = deprecated;
 
-    match manifest.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    match manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(name) => {
             report.name = Some(name.to_string());
             if let Err(e) = crate::core::types::validate_worker_name(name) {
                 report.errors.push(e);
             }
         }
-        None => report
-            .errors
-            .push("missing required field `name` (a single path segment, e.g. `name: my-worker`)".into()),
+        None => report.errors.push(
+            "missing required field `name` (a single path segment, e.g. `name: my-worker`)".into(),
+        ),
     }
 
     let has_explicit_start = manifest
@@ -553,7 +569,10 @@ pub fn report_from_str(content: &str) -> ManifestReport {
                 .into(),
         );
     }
-    if let Some(img) = manifest.runtime.as_ref().and_then(|r| r.base_image.as_deref())
+    if let Some(img) = manifest
+        .runtime
+        .as_ref()
+        .and_then(|r| r.base_image.as_deref())
         && !is_plausible_image_ref(img.trim())
     {
         report.warnings.push(format!(
@@ -662,7 +681,11 @@ mod tests {
     fn report_requires_name_and_start() {
         let r = report("scripts:\n  setup: \"true\"\n");
         assert!(!r.valid);
-        assert!(r.errors.iter().any(|e| e.contains("missing required field `name`")));
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("missing required field `name`"))
+        );
         assert!(r.errors.iter().any(|e| e.contains("scripts.start")));
     }
 
@@ -679,7 +702,10 @@ mod tests {
     fn report_rejects_duplicate_keys() {
         let r = report("name: w\nname: x\nscripts:\n  start: y\n");
         assert!(!r.valid);
-        assert!(r.errors.iter().any(|e| e.contains("invalid YAML")), "got: {r:?}");
+        assert!(
+            r.errors.iter().any(|e| e.contains("invalid YAML")),
+            "got: {r:?}"
+        );
     }
 
     #[test]
@@ -688,14 +714,23 @@ mod tests {
         // English — never serde's "expected struct RuntimeSection".
         let r = report("name: w\nruntime: node\nscripts:\n  start: x\n");
         assert!(!r.valid);
-        let err = r.errors.iter().find(|e| e.contains("invalid manifest shape")).expect("shape error");
+        let err = r
+            .errors
+            .iter()
+            .find(|e| e.contains("invalid manifest shape"))
+            .expect("shape error");
         assert!(err.contains("`runtime` must be a mapping"), "got: {err}");
-        assert!(!err.contains("RuntimeSection"), "Rust internals must not leak: {err}");
+        assert!(
+            !err.contains("RuntimeSection"),
+            "Rust internals must not leak: {err}"
+        );
 
         let r = report("name: w\nscripts:\n  start: x\nresources:\n  cpus: \"four\"\n");
         assert!(!r.valid, "non-integer cpus must be a shape error: {r:?}");
         assert!(
-            r.errors.iter().any(|e| e.contains("`resources.cpus` must be a non-negative integer")),
+            r.errors
+                .iter()
+                .any(|e| e.contains("`resources.cpus` must be a non-negative integer")),
             "got: {r:?}"
         );
     }
@@ -732,9 +767,9 @@ mod tests {
         let r = report("name: w\nscripts:\n  start: x\nresources:\n  memory: 4294967296\n");
         assert!(!r.valid);
         assert!(
-            r.errors
-                .iter()
-                .any(|e| e.contains("`resources.memory` must be at most 4294967295, got 4294967296")),
+            r.errors.iter().any(
+                |e| e.contains("`resources.memory` must be at most 4294967295, got 4294967296")
+            ),
             "got: {r:?}"
         );
     }
@@ -749,8 +784,15 @@ mod tests {
 
         // End-to-end through the env-key echo path in shape_problems.
         let r = report("name: w\nscripts:\n  start: x\nenv:\n  \"P\u{202e}ORT\": 1\n");
-        let err = r.errors.iter().find(|e| e.contains("must be a string")).expect("env error");
-        assert!(!err.contains('\u{202e}'), "bidi override must be stripped: {err:?}");
+        let err = r
+            .errors
+            .iter()
+            .find(|e| e.contains("must be a string"))
+            .expect("env error");
+        assert!(
+            !err.contains('\u{202e}'),
+            "bidi override must be stripped: {err:?}"
+        );
         assert!(err.contains("PORT"), "printable key text survives: {err}");
     }
 
@@ -765,13 +807,17 @@ mod tests {
     fn shape_errors_for_scalar_env_and_non_string_keys() {
         let r = report("name: w\nscripts:\n  start: x\nenv: production\n");
         assert!(
-            r.errors.iter().any(|e| e.contains("`env` must be a mapping of string values")),
+            r.errors
+                .iter()
+                .any(|e| e.contains("`env` must be a mapping of string values")),
             "got: {r:?}"
         );
 
         let r = report("name: w\nscripts:\n  start: x\nenv:\n  1: x\n");
         assert!(
-            r.errors.iter().any(|e| e.contains("`env` keys must be strings")),
+            r.errors
+                .iter()
+                .any(|e| e.contains("`env` keys must be strings")),
             "got: {r:?}"
         );
     }
@@ -820,10 +866,10 @@ mod tests {
             );
         }
         // Deprecation is conveyed via descriptions the LLM reads.
-        let runtime_kind_desc = s["definitions"]["RuntimeSection"]["properties"]["kind"]
-            ["description"]
-            .as_str()
-            .unwrap_or("");
+        let runtime_kind_desc =
+            s["definitions"]["RuntimeSection"]["properties"]["kind"]["description"]
+                .as_str()
+                .unwrap_or("");
         assert!(runtime_kind_desc.contains("DEPRECATED"));
     }
 
@@ -835,7 +881,10 @@ mod tests {
         let manifest = bundle["iii.worker.yaml"].as_str().expect("manifest text");
         let r = report_from_str(manifest);
         assert!(r.valid, "example manifest must validate: {r:?}");
-        assert!(r.deprecated_keys.is_empty(), "example must not use deprecated keys");
+        assert!(
+            r.deprecated_keys.is_empty(),
+            "example must not use deprecated keys"
+        );
         // And the code example must name the real npm package.
         let code = bundle["src/index.js"].as_str().unwrap();
         assert!(code.contains("from \"iii-sdk\""));
@@ -847,13 +896,17 @@ mod tests {
     fn shape_errors_describe_bool_mapping_and_tagged_values() {
         let r = report("name: true\nscripts:\n  start: x\n");
         assert!(
-            r.errors.iter().any(|e| e.contains("`name` must be a string, got the boolean true")),
+            r.errors
+                .iter()
+                .any(|e| e.contains("`name` must be a string, got the boolean true")),
             "got: {r:?}"
         );
 
         let r = report("name:\n  nested: 1\nscripts:\n  start: x\n");
         assert!(
-            r.errors.iter().any(|e| e.contains("`name` must be a string, got a mapping")),
+            r.errors
+                .iter()
+                .any(|e| e.contains("`name` must be a string, got a mapping")),
             "got: {r:?}"
         );
 
@@ -861,7 +914,9 @@ mod tests {
         // string; only a tagged non-string reaches the Tagged description.
         let r = report("name: !custom [w]\nscripts:\n  start: x\n");
         assert!(
-            r.errors.iter().any(|e| e.contains("`name` must be a string, got a tagged value")),
+            r.errors
+                .iter()
+                .any(|e| e.contains("`name` must be a string, got a tagged value")),
             "got: {r:?}"
         );
     }
@@ -882,16 +937,30 @@ mod tests {
     fn scripts_scalar_shape_error_omits_list_hint() {
         let r = report("name: w\nscripts:\n  start: 5\n");
         assert!(!r.valid);
-        let err = r.errors.iter().find(|e| e.contains("`scripts.start`")).expect("scripts error");
-        assert!(err.contains("must be a command string, got the number 5"), "got: {err}");
-        assert!(!err.contains("use one command string"), "list hint only fits lists: {err}");
+        let err = r
+            .errors
+            .iter()
+            .find(|e| e.contains("`scripts.start`"))
+            .expect("scripts error");
+        assert!(
+            err.contains("must be a command string, got the number 5"),
+            "got: {err}"
+        );
+        assert!(
+            !err.contains("use one command string"),
+            "list hint only fits lists: {err}"
+        );
     }
 
     #[test]
     fn env_list_value_shape_error_omits_quoting_hint() {
         let r = report("name: w\nscripts:\n  start: x\nenv:\n  FOO:\n    - a\n");
         assert!(!r.valid);
-        let err = r.errors.iter().find(|e| e.contains("`env.FOO`")).expect("env error");
+        let err = r
+            .errors
+            .iter()
+            .find(|e| e.contains("`env.FOO`"))
+            .expect("env error");
         assert!(err.contains("must be a string, got a list"), "got: {err}");
         assert!(
             !err.contains("quote it") && !err.contains("write `"),
@@ -904,10 +973,13 @@ mod tests {
         let content = "x".repeat(MAX_LOCAL_MANIFEST_BYTES as usize + 1);
         let r = report(&content);
         assert!(!r.valid);
-        assert_eq!(r.errors.len(), 1, "size cap short-circuits all other checks");
+        assert_eq!(
+            r.errors.len(),
+            1,
+            "size cap short-circuits all other checks"
+        );
         assert!(
-            r.errors[0]
-                .contains(&format!("capped at {MAX_LOCAL_MANIFEST_BYTES} bytes")),
+            r.errors[0].contains(&format!("capped at {MAX_LOCAL_MANIFEST_BYTES} bytes")),
             "got: {:?}",
             r.errors
         );

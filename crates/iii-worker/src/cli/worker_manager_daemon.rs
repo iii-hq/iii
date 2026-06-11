@@ -466,11 +466,9 @@ async fn build_status(name: &str) -> Result<StatusOutcome, WorkerOpError> {
     use crate::cli::config_file::{self, ResolvedWorkerType};
     use crate::cli::managed::{find_worker_pid_from_ps, is_engine_running, is_worker_running};
 
-    crate::core::types::validate_worker_name(name).map_err(|reason| {
-        WorkerOpError::BadRequest {
-            function_id: "worker::status".into(),
-            reason,
-        }
+    crate::core::types::validate_worker_name(name).map_err(|reason| WorkerOpError::BadRequest {
+        function_id: "worker::status".into(),
+        reason,
     })?;
 
     let installed = config_file::worker_exists(name);
@@ -489,14 +487,12 @@ async fn build_status(name: &str) -> Result<StatusOutcome, WorkerOpError> {
     let worker_running = is_worker_running(name);
     // Engine builtins run inside the engine process; count them as running
     // when the engine is up (mirrors CliHostShim::list / `iii worker list`).
-    let running =
-        worker_running || (installed && worker_type == "builtin" && is_engine_running());
+    let running = worker_running || (installed && worker_type == "builtin" && is_engine_running());
     let pid = find_worker_pid_from_ps(name);
-    let version = crate::cli::lockfile::WorkerLockfile::read_from(
-        crate::cli::lockfile::lockfile_path(),
-    )
-    .ok()
-    .and_then(|lf| lf.workers.get(name).map(|w| w.version.clone()));
+    let version =
+        crate::cli::lockfile::WorkerLockfile::read_from(crate::cli::lockfile::lockfile_path())
+            .ok()
+            .and_then(|lf| lf.workers.get(name).map(|w| w.version.clone()));
 
     let logs = core_logs::run(LogsOptions {
         name: name.to_string(),
@@ -510,9 +506,7 @@ async fn build_status(name: &str) -> Result<StatusOutcome, WorkerOpError> {
          with worker::validate)"
             .to_string()
     } else if running {
-        format!(
-            "running; see its functions with engine::functions::list {{ search: {name:?} }}"
-        )
+        format!("running; see its functions with engine::functions::list {{ search: {name:?} }}")
     } else if logs.stderr.is_empty() && logs.stdout.is_empty() {
         "installed but not running and no logs yet — likely still provisioning; \
          poll again shortly, or worker::start to boot it"
@@ -540,9 +534,7 @@ async fn build_status(name: &str) -> Result<StatusOutcome, WorkerOpError> {
 
 fn register_status(iii: &III) {
     let rf = RegisterFunction::new_async_with_bad_request(
-        |opts: StatusOptions| async move {
-            build_status(&opts.name).await.map_err(|e| op_error(&e))
-        },
+        |opts: StatusOptions| async move { build_status(&opts.name).await.map_err(|e| op_error(&e)) },
         |e| bad_request_error("worker::status", &e),
     );
     let _ = iii.register_function("worker::status", describe_op(rf, "worker::status"));
@@ -567,7 +559,11 @@ fn register_validate(iii: &III) {
                 }
                 (Some(text), None) => report_from_str(&text),
                 (None, Some(p)) => {
-                    let file = if p.is_dir() { p.join(WORKER_MANIFEST) } else { p };
+                    let file = if p.is_dir() {
+                        p.join(WORKER_MANIFEST)
+                    } else {
+                        p
+                    };
                     // Stat-first so a huge file is rejected without reading it
                     // into memory (same cap the add path enforces).
                     match std::fs::metadata(&file) {
@@ -585,7 +581,8 @@ fn register_validate(iii: &III) {
                             Ok(content) => report_from_str(&content),
                             Err(e) => {
                                 let mut r = ManifestReport::default();
-                                r.errors.push(format!("cannot read {}: {e}", file.display()));
+                                r.errors
+                                    .push(format!("cannot read {}: {e}", file.display()));
                                 r
                             }
                         },

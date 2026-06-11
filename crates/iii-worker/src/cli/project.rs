@@ -353,11 +353,7 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     // Prefer `runtime.kind`; fall back to the legacy `runtime.language` so
     // older manifests keep working. Deprecation warnings come from
     // `warn_deprecated_manifest_keys` on the `worker add` path.
-    let kind = rt
-        .kind
-        .as_deref()
-        .or(rt.language.as_deref())
-        .unwrap_or("");
+    let kind = rt.kind.as_deref().or(rt.language.as_deref()).unwrap_or("");
     let package_manager = rt.package_manager.as_deref().unwrap_or("");
     let entry = rt.entry.as_deref().unwrap_or("");
     let base_image = rt
@@ -404,7 +400,11 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
                 "error:".red(),
                 kind,
                 manifest_path.display(),
-                if entry.is_empty() { "src/index.ts" } else { entry },
+                if entry.is_empty() {
+                    "src/index.ts"
+                } else {
+                    entry
+                },
             );
             return None;
         }
@@ -570,7 +570,10 @@ scripts:
             serde_yaml::from_str(yaml).unwrap()
         }
 
-        assert_eq!(resolve_install(&scripts("start: run")), (String::new(), true));
+        assert_eq!(
+            resolve_install(&scripts("start: run")),
+            (String::new(), true)
+        );
         assert_eq!(
             resolve_install(&scripts("install: \"\"")),
             (String::new(), false)
@@ -989,8 +992,7 @@ dependencies:
 
     #[test]
     fn validate_keys_accepts_fully_documented_manifest() {
-        let d = doc(
-            r#"
+        let d = doc(r#"
 name: my-worker
 description: A worker that does things.
 runtime:
@@ -1006,8 +1008,7 @@ dependencies:
 resources:
   cpus: 2
   memory: 2048
-"#,
-        );
+"#);
         assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
     }
 
@@ -1019,7 +1020,10 @@ resources:
         assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
         let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
         let (unknown, deprecated) = m.classify_keys();
-        assert!(unknown.is_empty(), "description must not be unknown: {unknown:?}");
+        assert!(
+            unknown.is_empty(),
+            "description must not be unknown: {unknown:?}"
+        );
         assert!(
             !deprecated.iter().any(|d| d == "description"),
             "description must not be deprecated: {deprecated:?}"
@@ -1067,9 +1071,18 @@ resources:
         // concern (warn_deprecated_manifest_keys).
         for (manifest, expect_dep) in [
             ("name: w\nruntime:\n  kind: bun\n", "runtime.kind"),
-            ("name: w\nruntime:\n  package_manager: npm\n", "runtime.package_manager"),
-            ("name: w\nruntime:\n  entry: src/index.ts\n", "runtime.entry"),
-            ("name: w\nruntime:\n  language: typescript\n", "runtime.language"),
+            (
+                "name: w\nruntime:\n  package_manager: npm\n",
+                "runtime.package_manager",
+            ),
+            (
+                "name: w\nruntime:\n  entry: src/index.ts\n",
+                "runtime.entry",
+            ),
+            (
+                "name: w\nruntime:\n  language: typescript\n",
+                "runtime.language",
+            ),
             ("name: w\nconfig:\n  port: 3000\n", "config"),
             ("name: w\nlanguage: typescript\n", "language"),
             ("name: w\nentry: src/index.ts\n", "entry"),
@@ -1081,7 +1094,10 @@ resources:
             );
             let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
             let (unknown, deprecated) = m.classify_keys();
-            assert!(unknown.is_empty(), "no unknowns expected for {manifest}: {unknown:?}");
+            assert!(
+                unknown.is_empty(),
+                "no unknowns expected for {manifest}: {unknown:?}"
+            );
             assert!(
                 deprecated.iter().any(|x| x == expect_dep),
                 "expected `{expect_dep}` deprecated for {manifest}: {deprecated:?}"
@@ -1093,10 +1109,8 @@ resources:
 
     #[test]
     fn validate_keys_treats_env_and_dependencies_as_opaque() {
-        let d = doc(
-            "name: w\nenv:\n  MY_WEIRD_KEY: v\n  ANYTHING_GOES: w\n\
-             dependencies:\n  some-worker: \"^1\"\n  another-one: \"~2\"\n",
-        );
+        let d = doc("name: w\nenv:\n  MY_WEIRD_KEY: v\n  ANYTHING_GOES: w\n\
+             dependencies:\n  some-worker: \"^1\"\n  another-one: \"~2\"\n");
         assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
     }
 
@@ -1134,8 +1148,8 @@ resources:
         // silently waved through to a confusing downstream failure.
         let err = validate_manifest_keys(&doc("- a\n- b\n"), &dummy_manifest_path()).unwrap_err();
         assert!(err.contains("mapping"), "got: {err}");
-        let err = validate_manifest_keys(&doc("\"just a string\""), &dummy_manifest_path())
-            .unwrap_err();
+        let err =
+            validate_manifest_keys(&doc("\"just a string\""), &dummy_manifest_path()).unwrap_err();
         assert!(err.contains("mapping"), "got: {err}");
     }
 
@@ -1175,7 +1189,10 @@ resources:
         unsafe { std::env::set_var("III_NO_DEPRECATION_WARN", "1") };
         // warn path is a no-op under the gate (can't observe stderr in-process,
         // but it must run without panicking).
-        warn_deprecated_manifest_keys(&doc("name: w\nconfig:\n  port: 1\n"), &dummy_manifest_path());
+        warn_deprecated_manifest_keys(
+            &doc("name: w\nconfig:\n  port: 1\n"),
+            &dummy_manifest_path(),
+        );
         // The hard error is independent of the env var.
         let unknown_err =
             validate_manifest_keys(&doc("name: w\nruntimee:\n  x: 1\n"), &dummy_manifest_path())
@@ -1213,7 +1230,10 @@ resources:
         // through an unknown key name. Build the key programmatically so the
         // ESC byte is exact regardless of YAML escaping rules.
         let mut m = serde_yaml::Mapping::new();
-        m.insert(serde_yaml::Value::from("name"), serde_yaml::Value::from("w"));
+        m.insert(
+            serde_yaml::Value::from("name"),
+            serde_yaml::Value::from("w"),
+        );
         m.insert(
             serde_yaml::Value::from("ev\u{1b}\u{7}il"),
             serde_yaml::Value::from(1),
@@ -1260,7 +1280,10 @@ resources:
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(WORKER_MANIFEST);
         // Valid YAML, but larger than the cap.
-        let big = format!("name: w\nbloat: \"{}\"\n", "a".repeat(MAX_LOCAL_MANIFEST_BYTES as usize));
+        let big = format!(
+            "name: w\nbloat: \"{}\"\n",
+            "a".repeat(MAX_LOCAL_MANIFEST_BYTES as usize)
+        );
         std::fs::write(&path, big).unwrap();
         let err = read_manifest_doc(&path).unwrap_err();
         assert!(err.contains("capped at"), "got: {err}");

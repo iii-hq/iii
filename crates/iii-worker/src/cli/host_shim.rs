@@ -1045,8 +1045,9 @@ mod tests {
         };
         // Snapshot the CURRENT config names as `pre` so the diff finds
         // nothing new — the forced re-add shape.
-        let pre: std::collections::HashSet<String> =
-            crate::cli::config_file::list_worker_names().into_iter().collect();
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
         let label = dir.path().display().to_string();
 
         let name = post_install_worker_name(&source, &pre, &label);
@@ -1064,8 +1065,9 @@ mod tests {
         let source = crate::core::WorkerSource::Local {
             path: dir.path().to_path_buf(),
         };
-        let pre: std::collections::HashSet<String> =
-            crate::cli::config_file::list_worker_names().into_iter().collect();
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
         let label = dir.path().display().to_string();
 
         let name = post_install_worker_name(&source, &pre, &label);
@@ -1091,8 +1093,9 @@ mod tests {
         let source = crate::core::WorkerSource::Oci {
             reference: reference.to_string(),
         };
-        let pre: std::collections::HashSet<String> =
-            crate::cli::config_file::list_worker_names().into_iter().collect();
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
 
         let name = post_install_worker_name(&source, &pre, reference);
         assert_eq!(

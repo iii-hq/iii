@@ -546,9 +546,10 @@ fn status_outcome_every_field_has_description() {
 
 #[test]
 fn validate_options_every_field_has_description() {
-    let schema =
-        serde_json::to_value(schema_for!(iii_worker::cli::worker_manifest::ValidateOptions))
-            .unwrap();
+    let schema = serde_json::to_value(schema_for!(
+        iii_worker::cli::worker_manifest::ValidateOptions
+    ))
+    .unwrap();
     let missing = fields_missing_description(&schema);
     assert!(
         missing.is_empty(),
@@ -558,9 +559,10 @@ fn validate_options_every_field_has_description() {
 
 #[test]
 fn manifest_report_every_field_has_description() {
-    let schema =
-        serde_json::to_value(schema_for!(iii_worker::cli::worker_manifest::ManifestReport))
-            .unwrap();
+    let schema = serde_json::to_value(schema_for!(
+        iii_worker::cli::worker_manifest::ManifestReport
+    ))
+    .unwrap();
     let missing = fields_missing_description(&schema);
     assert!(
         missing.is_empty(),

@@ -836,7 +836,11 @@ async fn start_worker_impl(
         match super::project::read_manifest_doc(&manifest_path) {
             Ok(Some(doc)) => {
                 if let Err(e) = super::project::validate_manifest_keys(&doc, &manifest_path) {
-                    eprintln!("{} manifest validation failed at start: {}", "error:".red(), e);
+                    eprintln!(
+                        "{} manifest validation failed at start: {}",
+                        "error:".red(),
+                        e
+                    );
                     return 1;
                 }
             }

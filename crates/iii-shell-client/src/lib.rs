@@ -1222,8 +1222,7 @@ mod tests {
     #[tokio::test]
     async fn read_frame_async_errors_on_truncated_body() {
         let (mut client, mut server) = tokio::io::duplex(1024);
-        let frame =
-            encode_frame(3, 0, &ShellMessage::Exited { code: 0 }).expect("encode");
+        let frame = encode_frame(3, 0, &ShellMessage::Exited { code: 0 }).expect("encode");
         server
             .write_all(&frame[..frame.len() - 1])
             .await
@@ -1281,8 +1280,7 @@ mod tests {
     async fn read_one_frame_errors_on_truncated_body() {
         let (a, mut b) = UnixStream::pair().expect("socketpair");
         let (mut read_half, _keep_write) = a.into_split();
-        let frame =
-            encode_frame(5, 0, &ShellMessage::Exited { code: 1 }).expect("encode");
+        let frame = encode_frame(5, 0, &ShellMessage::Exited { code: 1 }).expect("encode");
         b.write_all(&frame[..frame.len() - 1])
             .await
             .expect("write truncated");

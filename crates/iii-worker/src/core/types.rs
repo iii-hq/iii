@@ -297,7 +297,9 @@ pub struct StatusOutcome {
         description = "True when the worker's process is alive (or, for engine builtins, when the engine itself is running). False during install/boot AND after a crash — check stderr_tail to tell which."
     )]
     pub running: bool,
-    #[schemars(description = "Worker process pid when one is observable; null for engine builtins.")]
+    #[schemars(
+        description = "Worker process pid when one is observable; null for engine builtins."
+    )]
     pub pid: Option<u32>,
     #[schemars(description = "Installed version from iii.lock; null when not lockfile-tracked.")]
     pub version: Option<String>,
@@ -307,7 +309,9 @@ pub struct StatusOutcome {
         description = "Last stderr lines (terminal escapes stripped) — host-side boot/install progress and errors live here (e.g. npm install failures)."
     )]
     pub stderr_tail: Vec<String>,
-    #[schemars(description = "Last stdout lines (terminal escapes stripped) — the worker/guest console.")]
+    #[schemars(
+        description = "Last stdout lines (terminal escapes stripped) — the worker/guest console."
+    )]
     pub stdout_tail: Vec<String>,
     #[schemars(
         description = "Suggested next step derived from the state above (e.g. retry guidance, which trigger to call). Advisory, not machine-stable."

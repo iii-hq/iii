@@ -397,7 +397,10 @@ mod tests {
             EthernetAddress([0; 6]),
             EthernetAddress([0; 6]),
         );
-        assert_eq!(frame.len(), ETH_HDR_LEN + IPV4_HDR_LEN + UDP_HDR_LEN + max.len());
+        assert_eq!(
+            frame.len(),
+            ETH_HDR_LEN + IPV4_HDR_LEN + UDP_HDR_LEN + max.len()
+        );
         assert_eq!(extract_udp_payload(&frame).unwrap(), &max[..]);
     }
 
@@ -424,10 +427,7 @@ mod tests {
             guest_mac,
         ));
 
-        outbound_tx
-            .send(Bytes::from_static(b"ping"))
-            .await
-            .unwrap();
+        outbound_tx.send(Bytes::from_static(b"ping")).await.unwrap();
         let mut buf = [0u8; 64];
         let (n, peer) = server.recv_from(&mut buf).await.unwrap();
         assert_eq!(&buf[..n], b"ping");
@@ -479,10 +479,7 @@ mod tests {
             EthernetAddress([0x02, 0, 0, 0, 0, 2]),
         ));
 
-        outbound_tx
-            .send(Bytes::from_static(b"ping"))
-            .await
-            .unwrap();
+        outbound_tx.send(Bytes::from_static(b"ping")).await.unwrap();
         let mut buf = [0u8; 64];
         let (_, peer) = server.recv_from(&mut buf).await.unwrap();
         server.send_to(b"pong", peer).await.unwrap();
