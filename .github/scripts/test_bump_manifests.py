@@ -121,16 +121,19 @@ def test_rewrite_all_updates_every_target_file(tmp_path: Path):
     _write(root / "sdk/packages/rust/iii/Cargo.toml", '[package]\nname = "iii-sdk"\nversion = "0.15.0-next.1"\n')
     _write(root / "sdk/packages/rust/observability/Cargo.toml", '[package]\nname = "iii-observability"\nversion = "0.13.0-next.1"\n')
     _write(root / "sdk/packages/rust/queue/Cargo.toml", '[package]\nname = "iii-queue"\nversion = "0.13.0-next.1"\n')
+    _write(root / "sdk/packages/rust/http/Cargo.toml", '[package]\nname = "iii-http"\nversion = "0.13.0-next.1"\n')
     _write(root / "sdk/packages/node/iii/package.json", '{\n  "name": "iii-sdk",\n  "version": "0.15.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/iii-browser/package.json", '{\n  "name": "iii-browser",\n  "version": "0.15.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/observability/package.json", '{\n  "name": "@iii-dev/observability",\n  "version": "0.13.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/queue/package.json", '{\n  "name": "@iii-dev/queue",\n  "version": "0.13.0-next.1"\n}\n')
+    _write(root / "sdk/packages/node/http/package.json", '{\n  "name": "@iii-dev/http",\n  "version": "0.13.0-next.1"\n}\n')
     _write(root / "sdk/packages/python/iii/pyproject.toml", (
         '[project]\nname = "iii-sdk"\nversion = "0.15.0.dev1"\n'
         'dependencies = [\n    "iii-observability==0.13.0.dev1",\n]\n'
     ))
     _write(root / "sdk/packages/python/observability/pyproject.toml", '[project]\nname = "iii-observability"\nversion = "0.13.0.dev1"\n')
     _write(root / "sdk/packages/python/queue/pyproject.toml", '[project]\nname = "iii-queue"\nversion = "0.13.0.dev1"\n')
+    _write(root / "sdk/packages/python/http/pyproject.toml", '[project]\nname = "iii-http"\nversion = "0.13.0.dev1"\n')
     _write(root / "console/packages/console-rust/Cargo.toml", '[package]\nname = "console-rust"\nversion = "0.15.0-next.1"\n')
 
     rewrite_all(root=root, new_version="0.16.0-next.2", new_py_version="0.16.0.dev2")
@@ -141,15 +144,18 @@ def test_rewrite_all_updates_every_target_file(tmp_path: Path):
     assert 'version = "0.16.0-next.2"' in (root / "sdk/packages/rust/iii/Cargo.toml").read_text()
     assert 'version = "0.16.0-next.2"' in (root / "sdk/packages/rust/observability/Cargo.toml").read_text()
     assert 'version = "0.16.0-next.2"' in (root / "sdk/packages/rust/queue/Cargo.toml").read_text()
+    assert 'version = "0.16.0-next.2"' in (root / "sdk/packages/rust/http/Cargo.toml").read_text()
     assert '"version": "0.16.0-next.2"' in (root / "sdk/packages/node/iii/package.json").read_text()
     assert '"version": "0.16.0-next.2"' in (root / "sdk/packages/node/iii-browser/package.json").read_text()
     assert '"version": "0.16.0-next.2"' in (root / "sdk/packages/node/observability/package.json").read_text()
     assert '"version": "0.16.0-next.2"' in (root / "sdk/packages/node/queue/package.json").read_text()
+    assert '"version": "0.16.0-next.2"' in (root / "sdk/packages/node/http/package.json").read_text()
     py_iii = (root / "sdk/packages/python/iii/pyproject.toml").read_text()
     assert 'version = "0.16.0.dev2"' in py_iii
     assert '"iii-observability==0.16.0.dev2"' in py_iii
     assert 'version = "0.16.0.dev2"' in (root / "sdk/packages/python/observability/pyproject.toml").read_text()
     assert 'version = "0.16.0.dev2"' in (root / "sdk/packages/python/queue/pyproject.toml").read_text()
+    assert 'version = "0.16.0.dev2"' in (root / "sdk/packages/python/http/pyproject.toml").read_text()
     assert 'version = "0.16.0-next.2"' in (root / "console/packages/console-rust/Cargo.toml").read_text()
 
 
@@ -165,16 +171,19 @@ def test_cli_invokes_rewrite_all(tmp_path: Path):
     _write(root / "sdk/packages/rust/iii/Cargo.toml", 'version = "0.15.0-next.1"\n')
     _write(root / "sdk/packages/rust/observability/Cargo.toml", 'version = "0.13.0-next.1"\n')
     _write(root / "sdk/packages/rust/queue/Cargo.toml", 'version = "0.13.0-next.1"\n')
+    _write(root / "sdk/packages/rust/http/Cargo.toml", 'version = "0.13.0-next.1"\n')
     _write(root / "sdk/packages/node/iii/package.json", '{\n  "version": "0.15.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/iii-browser/package.json", '{\n  "version": "0.15.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/observability/package.json", '{\n  "version": "0.13.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/queue/package.json", '{\n  "version": "0.13.0-next.1"\n}\n')
+    _write(root / "sdk/packages/node/http/package.json", '{\n  "version": "0.13.0-next.1"\n}\n')
     _write(root / "sdk/packages/python/iii/pyproject.toml", (
         'version = "0.15.0.dev1"\n'
         'dependencies = [\n    "iii-observability==0.13.0.dev1",\n]\n'
     ))
     _write(root / "sdk/packages/python/observability/pyproject.toml", 'version = "0.13.0.dev1"\n')
     _write(root / "sdk/packages/python/queue/pyproject.toml", 'version = "0.13.0.dev1"\n')
+    _write(root / "sdk/packages/python/http/pyproject.toml", 'version = "0.13.0.dev1"\n')
     _write(root / "console/packages/console-rust/Cargo.toml", 'version = "0.15.0-next.1"\n')
 
     script = Path(__file__).parent / "bump_manifests.py"

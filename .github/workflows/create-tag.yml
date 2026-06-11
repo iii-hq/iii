@@ -75,13 +75,16 @@ jobs:
                      sdk/packages/rust/iii/Cargo.toml \
                      sdk/packages/rust/observability/Cargo.toml \
                      sdk/packages/rust/queue/Cargo.toml \
+                     sdk/packages/rust/http/Cargo.toml \
                      sdk/packages/node/iii/package.json \
                      sdk/packages/node/iii-browser/package.json \
                      sdk/packages/node/observability/package.json \
                      sdk/packages/node/queue/package.json \
+                     sdk/packages/node/http/package.json \
                      sdk/packages/python/iii/pyproject.toml \
                      sdk/packages/python/observability/pyproject.toml \
                      sdk/packages/python/queue/pyproject.toml \
+                     sdk/packages/python/http/pyproject.toml \
                      console/packages/console-rust/Cargo.toml \
                      crates/scaffolder-core/Cargo.toml \
                      crates/motia-tools/Cargo.toml; do
@@ -221,13 +224,16 @@ jobs:
             check_cargo "sdk/packages/rust/iii/Cargo.toml" "$VERSION"
             check_cargo "sdk/packages/rust/observability/Cargo.toml" "$VERSION"
             check_cargo "sdk/packages/rust/queue/Cargo.toml" "$VERSION"
+            check_cargo "sdk/packages/rust/http/Cargo.toml" "$VERSION"
             check_json "sdk/packages/node/iii/package.json" "$VERSION"
             check_json "sdk/packages/node/iii-browser/package.json" "$VERSION"
             check_json "sdk/packages/node/observability/package.json" "$VERSION"
             check_json "sdk/packages/node/queue/package.json" "$VERSION"
+            check_json "sdk/packages/node/http/package.json" "$VERSION"
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/observability/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/queue/pyproject.toml" "$PY_VERSION"
+            check_cargo "sdk/packages/python/http/pyproject.toml" "$PY_VERSION"
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
             check_cargo "Cargo.toml" "$VERSION"
             check_workspace_dep "Cargo.toml" "$VERSION"

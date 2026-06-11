@@ -4,6 +4,7 @@ packages:
   - sdk/packages/node/iii-browser
   - sdk/packages/node/observability
   - sdk/packages/node/queue
+  - sdk/packages/node/http
   - console/packages/*
   - docs
   - website

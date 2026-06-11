@@ -459,6 +459,23 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  http-npm:
+    name: HTTP Node Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/http
+      npm_tag: ${{ needs.setup.outputs.npm_tag }}
+      build_filter: "@iii-dev/http"
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: HTTP Node (npm)
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
   sdk-py:
     name: SDK Python Publish
     needs: [setup, create-iii-release, observability-py]
@@ -499,6 +516,21 @@ jobs:
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Queue Python (pypi)
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  http-py:
+    name: HTTP Python Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/http
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: HTTP Python (pypi)
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -563,6 +595,21 @@ jobs:
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Queue Rust (cargo)
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  http-rust:
+    name: HTTP Rust Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/http
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: HTTP Rust (cargo)
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -717,6 +764,9 @@ jobs:
       - queue-npm
       - queue-py
       - queue-rust
+      - http-npm
+      - http-py
+      - http-rust
       - docker-engine
       - homebrew-engine
       - homebrew-console
@@ -747,6 +797,9 @@ jobs:
           QUEUE_NPM_RESULT: ${{ needs.queue-npm.result }}
           QUEUE_PY_RESULT: ${{ needs.queue-py.result }}
           QUEUE_RUST_RESULT: ${{ needs.queue-rust.result }}
+          HTTP_NPM_RESULT: ${{ needs.http-npm.result }}
+          HTTP_PY_RESULT: ${{ needs.http-py.result }}
+          HTTP_RUST_RESULT: ${{ needs.http-rust.result }}
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
@@ -780,6 +833,9 @@ jobs:
           LINES="$LINES$(icon "$QUEUE_NPM_RESULT") Queue Node\n"
           LINES="$LINES$(icon "$QUEUE_PY_RESULT") Queue Python\n"
           LINES="$LINES$(icon "$QUEUE_RUST_RESULT") Queue Rust\n"
+          LINES="$LINES$(icon "$HTTP_NPM_RESULT") HTTP Node\n"
+          LINES="$LINES$(icon "$HTTP_PY_RESULT") HTTP Python\n"
+          LINES="$LINES$(icon "$HTTP_RUST_RESULT") HTTP Rust\n"
           LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
           LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
@@ -789,7 +845,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$QUEUE_NPM_RESULT" "$QUEUE_PY_RESULT" "$QUEUE_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$QUEUE_NPM_RESULT" "$QUEUE_PY_RESULT" "$QUEUE_RUST_RESULT" "$HTTP_NPM_RESULT" "$HTTP_PY_RESULT" "$HTTP_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 
