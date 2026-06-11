@@ -68,28 +68,42 @@ event-source workers like iii-http, iii-cron, iii-queue, iii-state, and iii-stre
 the handler unchanged.
 
 The two most common ways to invoke a function directly are from worker code with `worker.trigger` or
-from the terminal with the command `iii trigger`:
+from the terminal with the command `iii trigger`. The engine routes the call to whatever worker
+registered the function; no trigger registration is involved. The `action` field controls delivery:
+by default the call waits for the function to return its result, or for the configured timeout to
+fire. Pass a different `TriggerAction` to change that.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { TriggerAction } from "iii-sdk";
+
     const result = await worker.trigger({
       function_id: "math::add",
       payload: { a: 2, b: 3 },
+      // action: TriggerAction.Void(),                       // fire-and-forget
+      // action: TriggerAction.Enqueue({ queue: "math" }),   // route through iii-queue
     });
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
+    from iii import TriggerAction
+
     result = worker.trigger({
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
+        # "action": TriggerAction.Void(),                    # fire-and-forget
+        # "action": TriggerAction.Enqueue(queue="math"),     # route through iii-queue
     })
+    # result = await worker.trigger_async({...})             # awaitable form for asyncio callers
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerRequest;
+    use iii_sdk::{TriggerAction, TriggerRequest};
     use serde_json::json;
 
     let result = worker
@@ -97,6 +111,8 @@ from the terminal with the command `iii trigger`:
             function_id: "math::add".into(),
             payload: json!({ "a": 2, "b": 3 }),
             action: None,
+            // action: Some(TriggerAction::Void),                                  // fire-and-forget
+            // action: Some(TriggerAction::Enqueue { queue: "math".to_string() }), // route through iii-queue
             timeout_ms: None,
         })
         .await?;
@@ -110,11 +126,31 @@ from the terminal with the command `iii trigger`:
   </Tab>
 </Tabs>
 
+Some common actions are:
+
+- **Default (synchronous)**. No `action` set. The call waits for the function to return its result
+  or for the configured timeout to fire.
+- **`TriggerAction.Void()`**. Fire-and-forget. The call returns immediately; the function still runs
+  but the caller doesn't see the result.
+- **`TriggerAction.Enqueue({ queue })`**. Provided by
+  [iii-queue](https://workers.iii.dev/workers/iii-queue). Routes the invocation through a named
+  queue with retries; the call returns once the message is enqueued.
+
 <Note>
-  Both calls are synchronous by default; they wait for the function to return. For fire-and-forget
-  (`TriggerAction.Void`), queue-routed delivery (`TriggerAction.Enqueue`), per-worker custom
-  actions, condition gating, and binding to event-source triggers, see [Triggers / Call a function
-  directly](./triggers#call-a-function-directly).
+  Functions can also run when a trigger is satisfied — an `http` request, a `cron` schedule, a
+  `state` change, and so on. To bind a function to an event source, see [Triggers / Register a
+  trigger](./triggers#register-a-trigger).
+</Note>
+
+<Note>
+  Workers can provide their own `TriggerAction`s. Check each [worker's
+  documentation](https://workers.iii.dev) for the action types it offers.
+</Note>
+
+<Note>
+  In Python, every blocking method has an awaitable twin (`trigger_async`, `shutdown_async`,
+  `create_channel_async`) for use inside `asyncio`. See the [Python SDK
+  reference](../sdk-reference/python-sdk).
 </Note>
 
 ## Trigger functions from the CLI
@@ -144,9 +180,8 @@ tool for development and debugging.
 
 A handful of functions ship with the iii engine and the standard workers. You'll likely call them
 from almost every iii project. They look like any function you'd register yourself and are invoked
-the same way (via [`iii trigger`](./cli) or
-[`worker.trigger`](./triggers#call-a-function-directly)). The only thing special about them is that
-you didn't have to register them.
+the same way (via [`iii trigger`](./cli) or [`worker.trigger`](#triggering-invoking-functions)). The
+only thing special about them is that you didn't have to register them.
 
 ### Engine functions (`engine::*`)
 
