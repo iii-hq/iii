@@ -213,8 +213,11 @@ fn render_command(
 
     render_args_tables(out, cmd);
 
-    // Subcommands table.
-    let subs: Vec<(String, String)> = cmd
+    // Subcommands table, sorted alphabetically (clap iterates in
+    // declaration order, which reads as arbitrary in a reference). The
+    // recursion below shares this vec, so child sections render in the
+    // same order as the table rows.
+    let mut subs: Vec<(String, String)> = cmd
         .get_subcommands()
         .filter(|s| !s.is_hide_set() && s.get_name() != "help")
         .map(|s| {
@@ -224,7 +227,16 @@ fn render_command(
             )
         })
         .collect();
-    if !subs.is_empty() {
+    subs.sort_by(|a, b| a.0.cmp(&b.0));
+    // Only root sections (`## iii`, `## iii worker`) get the table: it
+    // serves as that binary's index. For nested commands the child
+    // sections follow immediately below, so a table would just duplicate
+    // their headings.
+    if !subs.is_empty() && level == 2 {
+        // Bold label rather than a real heading: a `### Subcommands` per
+        // section would litter the TOC with duplicate entries and produce
+        // unstable -1/-2 anchor suffixes.
+        out.push_str("**Subcommands:**\n\n");
         out.push_str("| Command | Description |\n| ------- | ----------- |\n");
         for (name, about) in &subs {
             let row = if let Some(d) = meta.delegated.get(name) {
@@ -537,10 +549,53 @@ mod tests {
     }
 
     #[test]
-    fn subcommand_table_links_to_anchors() {
+    fn subcommands_labeled_and_sorted_alphabetically() {
+        let cmd = Command::new("iii")
+            .subcommand(Command::new("update").about("u"))
+            .subcommand(Command::new("console").about("c"))
+            .subcommand(Command::new("trigger").about("t"))
+            .subcommand(Command::new("cloud").about("k"));
+        let mdx = render_mdx(cmd, &meta());
+        assert!(mdx.contains("**Subcommands:**\n\n| Command |"));
+        // Table rows sorted a-z regardless of declaration order.
+        let rows: Vec<usize> = ["[`cloud`]", "[`console`]", "[`trigger`]", "[`update`]"]
+            .iter()
+            .map(|n| mdx.find(*n).unwrap())
+            .collect();
+        assert!(
+            rows.windows(2).all(|w| w[0] < w[1]),
+            "rows not sorted:\n{mdx}"
+        );
+        // Child sections follow the same order.
+        let sections: Vec<usize> = [
+            "### `iii cloud`",
+            "### `iii console`",
+            "### `iii trigger`",
+            "### `iii update`",
+        ]
+        .iter()
+        .map(|n| mdx.find(*n).unwrap())
+        .collect();
+        assert!(
+            sections.windows(2).all(|w| w[0] < w[1]),
+            "sections not sorted:\n{mdx}"
+        );
+    }
+
+    #[test]
+    fn subcommand_table_only_on_root_section() {
         let mdx = render_mdx(sample_cli(), &meta());
+        // Root table links to section anchors.
         assert!(mdx.contains("[`trigger`](#iii-trigger)"));
-        assert!(mdx.contains("[`init`](#iii-project-init)"));
+        assert!(mdx.contains("[`project`](#iii-project)"));
+        // Nested commands get no table (their child sections follow
+        // directly), but the child sections still render.
+        assert!(
+            !mdx.contains("[`init`](#iii-project-init)"),
+            "nested table should be gone:\n{mdx}"
+        );
+        assert_eq!(mdx.matches("**Subcommands:**").count(), 1);
+        assert!(mdx.contains("#### `iii project init`"));
     }
 
     #[test]

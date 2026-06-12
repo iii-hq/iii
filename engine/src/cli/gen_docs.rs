@@ -24,18 +24,14 @@ fn delegated() -> BTreeMap<String, Delegated> {
         "worker".to_string(),
         Delegated {
             link: Some("#iii-worker".to_string()),
-            note: "Manage workers (add, remove, list, info). Dispatches to the `iii-worker` \
-                   binary; see the linked section for its full surface."
-                .to_string(),
+            note: "Manage workers (add, remove, list, info).".to_string(),
         },
     );
     map.insert(
         "console".to_string(),
         Delegated {
             link: Some("#iii-console".to_string()),
-            note: "Launch the iii web console. Dispatches to the `iii-console` binary; see the \
-                   linked section for its full surface."
-                .to_string(),
+            note: "Launch the iii web console.".to_string(),
         },
     );
     map.insert(
@@ -43,7 +39,7 @@ fn delegated() -> BTreeMap<String, Delegated> {
         Delegated {
             link: None,
             note: "Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, \
-                   which is maintained outside this repository; run `iii cloud --help` for its \
+                   which is temporarily maintained outside this repository; run `iii cloud --help` for its \
                    current surface."
                 .to_string(),
         },

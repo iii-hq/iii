@@ -96,11 +96,11 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to the config file
+    /// Path to the config file.
     #[arg(short, long, default_value = "config.yaml")]
     config: String,
 
-    /// Print version and exit
+    /// Print version and exit.
     #[arg(short = 'v', long)]
     version: bool,
 
@@ -109,7 +109,7 @@ struct Cli {
     #[arg(long, conflicts_with = "config")]
     use_default_config: bool,
 
-    /// Disable background update and advisory checks
+    /// Disable background update and security advisory checks.
     #[arg(long)]
     no_update_check: bool,
 

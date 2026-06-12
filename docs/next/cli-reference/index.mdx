@@ -22,16 +22,60 @@ iii [OPTIONS] [COMMAND]
 | `-c, --config <CONFIG>` | Path to the config file [default: config.yaml] |
 | `-v, --version` | Print version and exit |
 | `--use-default-config` | Run with built-in defaults instead of a config file. Cannot be combined with --config |
-| `--no-update-check` | Disable background update and advisory checks |
+| `--no-update-check` | Disable background update and security advisory checks |
+
+**Subcommands:**
 
 | Command | Description |
 | ------- | ----------- |
-| [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
-| [`console`](#iii-console) | Launch the iii web console. Dispatches to the `iii-console` binary; see the linked section for its full surface. |
-| `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is maintained outside this repository; run `iii cloud --help` for its current surface. |
-| [`worker`](#iii-worker) | Manage workers (add, remove, list, info). Dispatches to the `iii-worker` binary; see the linked section for its full surface. |
+| `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
+| [`console`](#iii-console) | Launch the iii web console. |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
+| [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
+| [`worker`](#iii-worker) | Manage workers (add, remove, list, info). |
+
+### `iii project`
+
+Manage iii projects (init, generate-docker)
+
+```bash
+iii project <COMMAND>
+```
+
+#### `iii project generate-docker`
+
+Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project
+
+```bash
+iii project generate-docker [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory) |
+| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
+
+#### `iii project init`
+
+Initialize a new iii project in the current directory
+
+```bash
+iii project init [OPTIONS] [NAME]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[NAME]` | Project directory (positional). Equivalent to --directory |
+
+| Option | Description |
+| ------ | ----------- |
+| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
+| `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env) |
+| `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
+| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
+| `--skip-iii` | Skip the iii-engine version compatibility check |
+| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An existing `.iii/project.ini` is always rejected; delete the marker or pick a different directory |
 
 ### `iii trigger`
 
@@ -56,53 +100,6 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 <Note>
   `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Functions](../using-iii/functions).
 </Note>
-
-### `iii project`
-
-Manage iii projects (init, generate-docker)
-
-```bash
-iii project <COMMAND>
-```
-
-| Command | Description |
-| ------- | ----------- |
-| [`init`](#iii-project-init) | Initialize a new iii project in the current directory |
-| [`generate-docker`](#iii-project-generate-docker) | Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project |
-
-#### `iii project init`
-
-Initialize a new iii project in the current directory
-
-```bash
-iii project init [OPTIONS] [NAME]
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `[NAME]` | Project directory (positional). Equivalent to --directory |
-
-| Option | Description |
-| ------ | ----------- |
-| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
-| `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env) |
-| `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
-| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
-| `--skip-iii` | Skip the iii-engine version compatibility check |
-| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An existing `.iii/project.ini` is always rejected; delete the marker or pick a different directory |
-
-#### `iii project generate-docker`
-
-Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project
-
-```bash
-iii project generate-docker [OPTIONS]
-```
-
-| Option | Description |
-| ------ | ----------- |
-| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory) |
-| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 
 ### `iii update`
 
@@ -130,24 +127,26 @@ The `iii` binary dispatches `iii worker ...` to the separately installed `iii-wo
 iii worker <COMMAND>
 ```
 
+**Subcommands:**
+
 | Command | Description |
 | ------- | ----------- |
 | [`add`](#iii-worker-add) | Install an EXISTING worker from the registry or by OCI image reference. To create a NEW worker from scratch, use `iii worker init` |
-| [`remove`](#iii-worker-remove) | Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them |
-| [`reinstall`](#iii-worker-reinstall) | Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml) |
-| [`update`](#iii-worker-update) | Re-resolve locked workers and update iii.lock |
 | [`clear`](#iii-worker-clear) | Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed) |
-| [`start`](#iii-worker-start) | Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready |
-| [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings it back from the same config entry, so the CLI no longer prompts for confirmation |
-| [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start. Idempotent: running workers get a clean cycle, stopped workers start. By default waits up to 120s for the worker to report ready |
-| [`list`](#iii-worker-list) | List all workers and their status |
-| [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock. Pass --frozen in CI to verify without mutating local files |
-| [`verify`](#iii-worker-verify) | Verify config.yaml is represented in iii.lock without mutating files |
-| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass --no-watch for a one-shot snapshot |
-| [`logs`](#iii-worker-logs) | Show logs from a managed worker container |
-| [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
 | [`exec`](#iii-worker-exec) | Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY |
+| [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
+| [`list`](#iii-worker-list) | List all workers and their status |
+| [`logs`](#iii-worker-logs) | Show logs from a managed worker container |
+| [`reinstall`](#iii-worker-reinstall) | Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml) |
+| [`remove`](#iii-worker-remove) | Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them |
+| [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start. Idempotent: running workers get a clean cycle, stopped workers start. By default waits up to 120s for the worker to report ready |
 | [`sandbox`](#iii-worker-sandbox) | Manage ephemeral sandboxes (create/exec/stop short-lived VMs) |
+| [`start`](#iii-worker-start) | Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready |
+| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass --no-watch for a one-shot snapshot |
+| [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings it back from the same config entry, so the CLI no longer prompts for confirmation |
+| [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock. Pass --frozen in CI to verify without mutating local files |
+| [`update`](#iii-worker-update) | Re-resolve locked workers and update iii.lock |
+| [`verify`](#iii-worker-verify) | Verify config.yaml is represented in iii.lock without mutating files |
 
 ### `iii worker add`
 
@@ -167,50 +166,6 @@ iii worker add [OPTIONS] <WORKER[@VERSION]>...
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
 | `--no-wait` | Don't block waiting for the engine to finish booting the sandbox. By default `add` waits up to 120s for the worker to report ready |
 
-### `iii worker remove`
-
-Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them
-
-```bash
-iii worker remove [OPTIONS] <WORKER>...
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<WORKER>...` | Worker names to remove (e.g., "pdfkit") |
-
-| Option | Description |
-| ------ | ----------- |
-| `-y, --yes` | Skip the confirmation prompt when a worker is currently running |
-
-### `iii worker reinstall`
-
-Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
-
-```bash
-iii worker reinstall [OPTIONS] <WORKER[@VERSION]>...
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<WORKER[@VERSION]>...` | Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag") |
-
-| Option | Description |
-| ------ | ----------- |
-| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires --force on add) |
-
-### `iii worker update`
-
-Re-resolve locked workers and update iii.lock
-
-```bash
-iii worker update [WORKER]
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `[WORKER]` | Optional worker name to update. If omitted, updates every worker in iii.lock |
-
 ### `iii worker clear`
 
 Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
@@ -226,144 +181,6 @@ iii worker clear [OPTIONS] [WORKER]
 | Option | Description |
 | ------ | ----------- |
 | `-y, --yes` | Skip confirmation prompt |
-
-### `iii worker start`
-
-Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready
-
-```bash
-iii worker start [OPTIONS] <WORKER>
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<WORKER>` | Worker name to start |
-
-| Option | Description |
-| ------ | ----------- |
-| `--no-wait` | Don't block waiting for the worker to report ready |
-| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Defaults to DEFAULT_PORT; the engine passes its configured iii-worker-manager port when auto-spawning external workers so non-default manager ports don't silently break connectivity [default: 49134] |
-| `--config <PATH>` | YAML config forwarded to the spawned worker binary as `--config <path>`. Binary workers only; OCI workers warn and ignore |
-
-### `iii worker stop`
-
-Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings it back from the same config entry, so the CLI no longer prompts for confirmation
-
-```bash
-iii worker stop [OPTIONS] <WORKER>
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<WORKER>` | Worker name to stop |
-
-| Option | Description |
-| ------ | ----------- |
-| `-y, --yes` | Backward-compat no-op. Stop never prompts; the flag is kept so scripts that already pass `-y` keep working |
-
-### `iii worker restart`
-
-Restart a managed worker: stop if running, then start. Idempotent: running workers get a clean cycle, stopped workers start. By default waits up to 120s for the worker to report ready
-
-```bash
-iii worker restart [OPTIONS] <WORKER>
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<WORKER>` | Worker name to restart |
-
-| Option | Description |
-| ------ | ----------- |
-| `--no-wait` | Don't block waiting for the worker to report ready |
-| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Same semantics as `start --port` [default: 49134] |
-| `--config <PATH>` | Same as `start --config` |
-
-### `iii worker list`
-
-List all workers and their status
-
-```bash
-iii worker list
-```
-
-### `iii worker sync`
-
-Install registry-managed workers exactly from iii.lock. Pass --frozen in CI to verify without mutating local files
-
-```bash
-iii worker sync [OPTIONS]
-```
-
-| Option | Description |
-| ------ | ----------- |
-| `--frozen` | Verify the lockfile without mutating local files |
-
-### `iii worker verify`
-
-Verify config.yaml is represented in iii.lock without mutating files
-
-```bash
-iii worker verify [OPTIONS]
-```
-
-| Option | Description |
-| ------ | ----------- |
-| `--strict` | Also check dependency declarations against locked versions |
-
-### `iii worker status`
-
-Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass --no-watch for a one-shot snapshot
-
-```bash
-iii worker status [OPTIONS] <WORKER>
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<WORKER>` | Worker name |
-
-| Option | Description |
-| ------ | ----------- |
-| `--no-watch` | Print a one-shot snapshot and exit immediately (no live refresh) |
-
-### `iii worker logs`
-
-Show logs from a managed worker container
-
-```bash
-iii worker logs [OPTIONS] <WORKER>
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<WORKER>` | Worker name |
-
-| Option | Description |
-| ------ | ----------- |
-| `-f, --follow` | Follow log output |
-| `--address <ADDRESS>` | Engine host address [default: localhost] |
-| `--port <PORT>` | Engine WebSocket port [default: 49134] |
-
-### `iii worker init`
-
-Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add`
-
-```bash
-iii worker init [OPTIONS] [NAME]
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `[NAME]` | Worker directory (positional). Equivalent to --directory |
-
-| Option | Description |
-| ------ | ----------- |
-| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
-| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
-| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Re-running init in a directory with `.iii/worker.ini` is always allowed (idempotent re-init) |
-| `-l, --language <LANG>` | Worker language (typescript \| javascript \| python \| rust). Accepts short aliases (`ts`, `js`, `py`, `rust`, `rs`). When omitted, the user is prompted interactively. Providing this flag fully scripts the scaffold |
-| `--skip-iii` | Skip the iii-engine version compatibility check enforced by the scaffolder. Mirrors the flag on `iii project init` |
 
 ### `iii worker exec`
 
@@ -386,6 +203,102 @@ iii worker exec [OPTIONS] <WORKER> [-- <COMMAND>...]
 | `--no-tty` | Disable TTY auto-detection and force pipe mode. Use when you want byte-exact output in a terminal session (e.g. capturing structured output from an otherwise-interactive tool) |
 | `--timeout <TIMEOUT>` | Kill the child after this long (e.g. `30s`, `5m`, `500ms`). Parsed by the standard `humantime` syntax. On expiry the client sends SIGKILL to the guest session and exits with code 124 (matches coreutils `timeout(1)`), so shell scripts can distinguish a timeout from an ordinary nonzero exit |
 
+### `iii worker init`
+
+Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add`
+
+```bash
+iii worker init [OPTIONS] [NAME]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[NAME]` | Worker directory (positional). Equivalent to --directory |
+
+| Option | Description |
+| ------ | ----------- |
+| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
+| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
+| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Re-running init in a directory with `.iii/worker.ini` is always allowed (idempotent re-init) |
+| `-l, --language <LANG>` | Worker language (typescript \| javascript \| python \| rust). Accepts short aliases (`ts`, `js`, `py`, `rust`, `rs`). When omitted, the user is prompted interactively. Providing this flag fully scripts the scaffold |
+| `--skip-iii` | Skip the iii-engine version compatibility check enforced by the scaffolder. Mirrors the flag on `iii project init` |
+
+### `iii worker list`
+
+List all workers and their status
+
+```bash
+iii worker list
+```
+
+### `iii worker logs`
+
+Show logs from a managed worker container
+
+```bash
+iii worker logs [OPTIONS] <WORKER>
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<WORKER>` | Worker name |
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --follow` | Follow log output |
+| `--address <ADDRESS>` | Engine host address [default: localhost] |
+| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+
+### `iii worker reinstall`
+
+Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
+
+```bash
+iii worker reinstall [OPTIONS] <WORKER[@VERSION]>...
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<WORKER[@VERSION]>...` | Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag") |
+
+| Option | Description |
+| ------ | ----------- |
+| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires --force on add) |
+
+### `iii worker remove`
+
+Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them
+
+```bash
+iii worker remove [OPTIONS] <WORKER>...
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<WORKER>...` | Worker names to remove (e.g., "pdfkit") |
+
+| Option | Description |
+| ------ | ----------- |
+| `-y, --yes` | Skip the confirmation prompt when a worker is currently running |
+
+### `iii worker restart`
+
+Restart a managed worker: stop if running, then start. Idempotent: running workers get a clean cycle, stopped workers start. By default waits up to 120s for the worker to report ready
+
+```bash
+iii worker restart [OPTIONS] <WORKER>
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<WORKER>` | Worker name to restart |
+
+| Option | Description |
+| ------ | ----------- |
+| `--no-wait` | Don't block waiting for the worker to report ready |
+| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Same semantics as `start --port` [default: 49134] |
+| `--config <PATH>` | Same as `start --config` |
+
 ### `iii worker sandbox`
 
 Manage ephemeral sandboxes (create/exec/stop short-lived VMs)
@@ -393,35 +306,6 @@ Manage ephemeral sandboxes (create/exec/stop short-lived VMs)
 ```bash
 iii worker sandbox <COMMAND>
 ```
-
-| Command | Description |
-| ------- | ----------- |
-| [`run`](#iii-worker-sandbox-run) | Create a one-shot sandbox, run a command inside it, and stop it. For multi-step workflows (agent loops, REPLs) use `create` + `exec` + `stop` instead |
-| [`create`](#iii-worker-sandbox-create) | Create a long-lived sandbox and print its id to stdout. Pair with `iii worker sandbox exec <id>` and `iii worker sandbox stop <id>` |
-| [`exec`](#iii-worker-sandbox-exec) | Run a command inside an already-running sandbox |
-| [`list`](#iii-worker-sandbox-list) | List every sandbox the daemon knows about |
-| [`stop`](#iii-worker-sandbox-stop) | Stop a sandbox by id, waiting for the reaper to finish |
-| [`upload`](#iii-worker-sandbox-upload) | Copy a local file into a running sandbox |
-| [`download`](#iii-worker-sandbox-download) | Copy a file out of a running sandbox to a local path |
-
-#### `iii worker sandbox run`
-
-Create a one-shot sandbox, run a command inside it, and stop it. For multi-step workflows (agent loops, REPLs) use `create` + `exec` + `stop` instead
-
-```bash
-iii worker sandbox run [OPTIONS] <IMAGE> [COMMAND]...
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `<IMAGE>` | OCI image reference (must match the engine's sandbox allowlist) |
-| `[COMMAND]...` | Program and arguments to exec inside the sandbox |
-
-| Option | Description |
-| ------ | ----------- |
-| `--cpus <CPUS>` | vCPUs allocated to the sandbox VM [default: 1] |
-| `--memory <MEMORY>` | Memory in MiB allocated to the sandbox VM [default: 512] |
-| `--port <PORT>` | Engine WebSocket port [default: 49134] |
 
 #### `iii worker sandbox create`
 
@@ -445,6 +329,28 @@ iii worker sandbox create [OPTIONS] <IMAGE>
 | `--name <NAME>` | Human-readable label for the sandbox (shown in `list`) |
 | `--network` | Enable guest network access. Default follows the engine's sandbox policy (typically disabled) |
 | `-e, --env <KEY=VALUE>` | Set an environment variable inside the guest. Repeatable, `KEY=VALUE` form; entries without `=` are silently skipped |
+| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+
+#### `iii worker sandbox download`
+
+Copy a file out of a running sandbox to a local path.
+
+Streams bytes through an iii data channel. Writes to `LOCAL_PATH` on disk (or stdout when `LOCAL_PATH` is `-`).
+
+Examples: iii worker sandbox download \<SB> /workspace/output.json ./output.json iii worker sandbox download \<SB> /workspace/build.tar - | tar -tf -
+
+```bash
+iii worker sandbox download [OPTIONS] <SANDBOX_ID> <REMOTE_PATH> <LOCAL_PATH>
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<SANDBOX_ID>` | Sandbox id from `iii worker sandbox create` / `iii worker sandbox list` |
+| `<REMOTE_PATH>` | Source path inside the sandbox |
+| `<LOCAL_PATH>` | Destination path on the host. Use `-` to write to stdout |
+
+| Option | Description |
+| ------ | ----------- |
 | `--port <PORT>` | Engine WebSocket port [default: 49134] |
 
 #### `iii worker sandbox exec`
@@ -480,6 +386,25 @@ iii worker sandbox list [OPTIONS]
 
 | Option | Description |
 | ------ | ----------- |
+| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+
+#### `iii worker sandbox run`
+
+Create a one-shot sandbox, run a command inside it, and stop it. For multi-step workflows (agent loops, REPLs) use `create` + `exec` + `stop` instead
+
+```bash
+iii worker sandbox run [OPTIONS] <IMAGE> [COMMAND]...
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<IMAGE>` | OCI image reference (must match the engine's sandbox allowlist) |
+| `[COMMAND]...` | Program and arguments to exec inside the sandbox |
+
+| Option | Description |
+| ------ | ----------- |
+| `--cpus <CPUS>` | vCPUs allocated to the sandbox VM [default: 1] |
+| `--memory <MEMORY>` | Memory in MiB allocated to the sandbox VM [default: 512] |
 | `--port <PORT>` | Engine WebSocket port [default: 49134] |
 
 #### `iii worker sandbox stop`
@@ -522,27 +447,91 @@ iii worker sandbox upload [OPTIONS] <SANDBOX_ID> <LOCAL_PATH> <REMOTE_PATH>
 | `--parents` | Create parent directories of `REMOTE_PATH` if they're missing |
 | `--port <PORT>` | Engine WebSocket port [default: 49134] |
 
-#### `iii worker sandbox download`
+### `iii worker start`
 
-Copy a file out of a running sandbox to a local path.
-
-Streams bytes through an iii data channel. Writes to `LOCAL_PATH` on disk (or stdout when `LOCAL_PATH` is `-`).
-
-Examples: iii worker sandbox download \<SB> /workspace/output.json ./output.json iii worker sandbox download \<SB> /workspace/build.tar - | tar -tf -
+Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready
 
 ```bash
-iii worker sandbox download [OPTIONS] <SANDBOX_ID> <REMOTE_PATH> <LOCAL_PATH>
+iii worker start [OPTIONS] <WORKER>
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `<SANDBOX_ID>` | Sandbox id from `iii worker sandbox create` / `iii worker sandbox list` |
-| `<REMOTE_PATH>` | Source path inside the sandbox |
-| `<LOCAL_PATH>` | Destination path on the host. Use `-` to write to stdout |
+| `<WORKER>` | Worker name to start |
 
 | Option | Description |
 | ------ | ----------- |
-| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+| `--no-wait` | Don't block waiting for the worker to report ready |
+| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Defaults to DEFAULT_PORT; the engine passes its configured iii-worker-manager port when auto-spawning external workers so non-default manager ports don't silently break connectivity [default: 49134] |
+| `--config <PATH>` | YAML config forwarded to the spawned worker binary as `--config <path>`. Binary workers only; OCI workers warn and ignore |
+
+### `iii worker status`
+
+Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass --no-watch for a one-shot snapshot
+
+```bash
+iii worker status [OPTIONS] <WORKER>
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<WORKER>` | Worker name |
+
+| Option | Description |
+| ------ | ----------- |
+| `--no-watch` | Print a one-shot snapshot and exit immediately (no live refresh) |
+
+### `iii worker stop`
+
+Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings it back from the same config entry, so the CLI no longer prompts for confirmation
+
+```bash
+iii worker stop [OPTIONS] <WORKER>
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `<WORKER>` | Worker name to stop |
+
+| Option | Description |
+| ------ | ----------- |
+| `-y, --yes` | Backward-compat no-op. Stop never prompts; the flag is kept so scripts that already pass `-y` keep working |
+
+### `iii worker sync`
+
+Install registry-managed workers exactly from iii.lock. Pass --frozen in CI to verify without mutating local files
+
+```bash
+iii worker sync [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--frozen` | Verify the lockfile without mutating local files |
+
+### `iii worker update`
+
+Re-resolve locked workers and update iii.lock
+
+```bash
+iii worker update [WORKER]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[WORKER]` | Optional worker name to update. If omitted, updates every worker in iii.lock |
+
+### `iii worker verify`
+
+Verify config.yaml is represented in iii.lock without mutating files
+
+```bash
+iii worker verify [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--strict` | Also check dependency declarations against locked versions |
 
 ## `iii console`
 
