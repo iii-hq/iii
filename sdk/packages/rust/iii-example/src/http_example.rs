@@ -1,6 +1,7 @@
 use iii_observability::{Logger, execute_traced_request};
 use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
-use iii_sdk::{ApiRequest, ApiResponse, III, IIIError, IIITrigger, RegisterFunction};
+use iii_sdk::trigger::IIITrigger;
+use iii_sdk::{ApiRequest, ApiResponse, Error, III, RegisterFunction};
 use serde_json::json;
 
 pub fn setup(iii: &III) {
@@ -19,11 +20,11 @@ pub fn setup(iii: &III) {
                 let request = client
                     .get("https://jsonplaceholder.typicode.com/todos/1")
                     .build()
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let response = execute_traced_request(&client, request)
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let status = response.status().as_u16();
                 logger.info(
@@ -34,7 +35,7 @@ pub fn setup(iii: &III) {
                 let data: serde_json::Value = response
                     .json::<serde_json::Value>()
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let api_response = ApiResponse {
                     status_code: 200,
@@ -76,11 +77,11 @@ pub fn setup(iii: &III) {
                     .header("Content-Type", "application/json")
                     .json(&payload)
                     .build()
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let response = execute_traced_request(&client, request)
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let status = response.status().as_u16();
                 logger.info("Post completed", Some(json!({ "status": status })));
@@ -88,7 +89,7 @@ pub fn setup(iii: &III) {
                 let data: serde_json::Value = response
                     .json::<serde_json::Value>()
                     .await
-                    .map_err(|e| IIIError::Handler(e.to_string()))?;
+                    .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let api_response = ApiResponse {
                     status_code: status,

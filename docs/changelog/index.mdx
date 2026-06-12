@@ -5,6 +5,35 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.20.0" description="June 2026">
+  ## SDK: public exports grouped into submodules
+
+  The flat root export surface of the Node, Python, and Rust SDKs is being reorganized into named submodules. This first slice moves four groups and renames the invocation error types. Every old import path keeps working as a deprecated re-export, so this release is backward compatible at runtime.
+
+  | Group | Node | Python | Rust |
+  | --- | --- | --- | --- |
+  | errors | `iii-sdk/errors` | `iii.errors` | `iii_sdk::errors` |
+  | channel | `iii-sdk/channel` | `iii.channel` | `iii_sdk::channel` |
+  | trigger | `iii-sdk/trigger` | `iii.trigger` | `iii_sdk::trigger` |
+  | runtime | `iii-sdk/runtime` | `iii.runtime` | `iii_sdk::runtime` |
+
+  ### Errors renamed (the `III` prefix is dropped)
+
+  - Node: `IIIInvocationError` becomes `InvocationError` (and `IIIInvocationErrorInit` becomes `InvocationErrorInit`), exported from `iii-sdk/errors`. The thrown error's `name` is now `InvocationError`.
+  - Python: `IIIInvocationError` becomes `InvocationError`, exported from `iii.errors`. Importing the old name from the package root emits a `DeprecationWarning`.
+  - Rust: the `IIIError` enum becomes `Error`, at `iii_sdk::errors::Error`.
+
+  The former names stay available at the package root as deprecated aliases.
+
+  ### Submodule grouping
+
+  - **channel**: `ChannelReader`, `ChannelWriter`, `StreamChannelRef`, `Channel`.
+  - **trigger**: `Trigger`, `TriggerConfig`, `TriggerHandler` (Rust also groups the built-in `IIITrigger` factory here).
+  - **runtime**: `FunctionRef` and `TriggerTypeRef` in all SDKs; Rust additionally groups `IIIConnectionState`, `WorkerMetadata`, `FunctionInfo`, `TriggerInfo`, and `WorkerInfo`.
+
+  Prefer the new submodule paths. The root re-exports are deprecated and will be removed in a future breaking release. See [the migration entry](./0-20-0/organize-sdk-imports) for the full per-symbol detail and before/after imports.
+</Update>
+
 <Update label="0.19.5" description="June 2026">
   ## `iii-pubsub` runtime settings live in the configuration worker
 

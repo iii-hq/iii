@@ -1,4 +1,5 @@
-use iii_sdk::{III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, TriggerRequest};
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{Error, III, RegisterTriggerType, TriggerRequest};
 use serde::Deserialize;
 
 /// Minimal deserialization target for `engine::triggers::list` rows used
@@ -41,7 +42,7 @@ struct WebhookHandler;
 
 #[async_trait::async_trait]
 impl TriggerHandler for WebhookHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         println!(
             "[webhook] Registered trigger {} for function {} with config: {}",
             config.id, config.function_id, config.config
@@ -49,7 +50,7 @@ impl TriggerHandler for WebhookHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         println!("[webhook] Unregistered trigger {}", config.id);
         Ok(())
     }
@@ -81,7 +82,7 @@ pub fn setup(iii: &III) {
         .expect("failed to register webhook trigger");
 }
 
-fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, IIIError> {
+fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, Error> {
     Ok(serde_json::json!({
         "processed": true,
         "method": input.method,

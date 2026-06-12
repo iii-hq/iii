@@ -4,7 +4,7 @@ use thiserror::Error;
 
 /// Errors returned by the III SDK.
 #[derive(Debug, Error, Clone, Serialize, JsonSchema)]
-pub enum IIIError {
+pub enum Error {
     #[error("iii is not connected")]
     NotConnected,
     #[error("invocation timed out")]
@@ -25,26 +25,26 @@ pub enum IIIError {
     WebSocket(String),
 }
 
-impl From<serde_json::Error> for IIIError {
+impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
-        IIIError::Serde(err.to_string())
+        Error::Serde(err.to_string())
     }
 }
 
-impl From<String> for IIIError {
+impl From<String> for Error {
     fn from(msg: String) -> Self {
-        IIIError::Handler(msg)
+        Error::Handler(msg)
     }
 }
 
-impl From<&str> for IIIError {
+impl From<&str> for Error {
     fn from(msg: &str) -> Self {
-        IIIError::Handler(msg.to_string())
+        Error::Handler(msg.to_string())
     }
 }
 
-impl From<tokio_tungstenite::tungstenite::Error> for IIIError {
+impl From<tokio_tungstenite::tungstenite::Error> for Error {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
-        IIIError::WebSocket(err.to_string())
+        Error::WebSocket(err.to_string())
     }
 }

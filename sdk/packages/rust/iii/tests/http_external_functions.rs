@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use iii_sdk::runtime::FunctionInfo;
 use iii_sdk::{
-    FunctionInfo, HttpInvocationConfig, HttpMethod, RegisterFunction, RegisterTriggerInput,
-    TriggerRequest,
+    HttpInvocationConfig, HttpMethod, RegisterFunction, RegisterTriggerInput, TriggerRequest,
 };
 
 fn unique_function_id(prefix: &str) -> String {
