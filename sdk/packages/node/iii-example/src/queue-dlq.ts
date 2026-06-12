@@ -1,4 +1,5 @@
-import { type EnqueueResult, Logger, TriggerAction } from 'iii-sdk'
+import type { EnqueueResult } from '@iii-dev/helpers/queue'
+import { Logger, TriggerAction } from 'iii-sdk'
 import { useApi } from './hooks'
 import { iii } from './iii'
 

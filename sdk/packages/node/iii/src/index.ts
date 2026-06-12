@@ -12,19 +12,8 @@ export { type InitOptions, registerWorker, type TelemetryOptions, TriggerAction 
 export { EngineFunctions, EngineTriggers } from './iii-constants'
 
 export type {
-  AuthInput,
-  AuthResult,
-  EnqueueResult,
-  HttpAuthConfig,
-  HttpInvocationConfig,
   MessageType,
   MiddlewareFunctionInput,
-  OnFunctionRegistrationInput,
-  OnFunctionRegistrationResult,
-  OnTriggerRegistrationInput,
-  OnTriggerRegistrationResult,
-  OnTriggerTypeRegistrationInput,
-  OnTriggerTypeRegistrationResult,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
@@ -35,8 +24,6 @@ export type {
 export type { Trigger, TriggerConfig, TriggerHandler } from './trigger'
 
 export type {
-  ApiRequest,
-  ApiResponse,
   IIIClient,
   InternalHttpRequest,
   RegisterFunctionInput,
@@ -51,10 +38,5 @@ export type {
 /** @deprecated Renamed to `IIIClient`. */
 export type { ISdk } from './types'
 
-/** @deprecated `HttpRequest`/`HttpResponse` renamed to `StreamRequest`/`StreamResponse`. */
-export type { HttpRequest, HttpResponse } from './types'
-
 /** @deprecated Import runtime types from `iii-sdk/runtime`. */
 export type { FunctionRef, TriggerTypeRef } from './runtime'
-
-export { http } from './utils'

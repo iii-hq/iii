@@ -1,59 +1,8 @@
-use std::collections::HashMap;
-
+use iii_helpers::http::HttpInvocationConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum HttpMethod {
-    Get,
-    Post,
-    Put,
-    Patch,
-    Delete,
-}
-
-/// Authentication configuration for HTTP-invoked functions.
-///
-/// - `Hmac` -- HMAC signature verification using a shared secret.
-/// - `Bearer` -- Bearer token authentication.
-/// - `ApiKey` -- API key sent via a custom header.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum HttpAuthConfig {
-    Hmac {
-        secret_key: String,
-    },
-    Bearer {
-        token_key: String,
-    },
-    #[serde(rename = "api_key")]
-    ApiKey {
-        header: String,
-        value_key: String,
-    },
-}
-
-/// Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
-/// Workers, etc.) instead of a local handler.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpInvocationConfig {
-    pub url: String,
-    #[serde(default = "default_http_method")]
-    pub method: HttpMethod,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth: Option<HttpAuthConfig>,
-}
-
-fn default_http_method() -> HttpMethod {
-    HttpMethod::Post
-}
 
 /// Routing action for [`TriggerRequest`]. Determines how the engine handles
 /// the invocation.
@@ -67,13 +16,6 @@ pub enum TriggerAction {
     Enqueue { queue: String },
     /// Fire-and-forget routing.
     Void,
-}
-
-/// Result returned by the engine when a message is successfully enqueued.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct EnqueueResult {
-    #[serde(rename = "messageReceiptId")]
-    pub message_receipt_id: String,
 }
 
 /// Request object for `trigger()`. Matches the Node/Python SDK signature:
@@ -333,6 +275,8 @@ pub struct ErrorBody {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]
@@ -365,7 +309,7 @@ mod tests {
 
     #[test]
     fn register_http_function_serializes_invocation() {
-        use super::{HttpInvocationConfig, HttpMethod};
+        use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
 
         let msg = RegisterFunctionMessage {
             id: "external::my_lambda".to_string(),

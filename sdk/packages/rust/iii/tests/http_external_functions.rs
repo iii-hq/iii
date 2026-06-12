@@ -11,10 +11,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
 use iii_sdk::runtime::FunctionInfo;
-use iii_sdk::{
-    HttpInvocationConfig, HttpMethod, RegisterFunction, RegisterTriggerInput, TriggerRequest,
-};
+use iii_sdk::{RegisterFunction, RegisterTriggerInput, TriggerRequest};
 
 fn unique_function_id(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

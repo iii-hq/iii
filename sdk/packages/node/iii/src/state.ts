@@ -1,4 +1,4 @@
-import type { UpdateOp, UpdateOpError } from './stream'
+import type { UpdateOp, UpdateOpError } from '@iii-dev/helpers/stream'
 
 /** Input for retrieving a state value. */
 export type StateGetInput = {

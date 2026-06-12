@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ApiResponse, HttpRequest } from '../src'
+import type { HttpRequest, HttpResponse } from '@iii-dev/helpers/http'
 import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
 
 describe('HTTP Middleware', () => {
@@ -13,7 +13,7 @@ describe('HTTP Middleware', () => {
 
     const handlerFn = iii.registerFunction(
       'test.mw.continue.handler',
-      async (_req: HttpRequest): Promise<ApiResponse> => ({
+      async (_req: HttpRequest): Promise<HttpResponse> => ({
         status_code: 200,
         body: { message: 'handler reached' },
       }),
@@ -55,7 +55,7 @@ describe('HTTP Middleware', () => {
 
     const handlerFn = iii.registerFunction(
       'test.mw.block.handler',
-      async (_req: HttpRequest): Promise<ApiResponse> => {
+      async (_req: HttpRequest): Promise<HttpResponse> => {
         handlerCalled = true
         return { status_code: 200, body: { message: 'should not reach' } }
       },
@@ -99,7 +99,7 @@ describe('HTTP Middleware', () => {
 
     const handlerFn = iii.registerFunction(
       'test.mw.order.handler',
-      async (_req: HttpRequest): Promise<ApiResponse> => {
+      async (_req: HttpRequest): Promise<HttpResponse> => {
         callOrder.push('handler')
         return { status_code: 200, body: { order: callOrder } }
       },
@@ -138,7 +138,7 @@ describe('HTTP Middleware', () => {
 
     const handlerFn = iii.registerFunction(
       'test.mw.meta.handler',
-      async (_req: HttpRequest): Promise<ApiResponse> => ({
+      async (_req: HttpRequest): Promise<HttpResponse> => ({
         status_code: 200,
         body: { ok: true },
       }),
@@ -174,7 +174,7 @@ describe('HTTP Middleware', () => {
   it('should work without middleware (regression)', async () => {
     const fn = iii.registerFunction(
       'test.mw.none',
-      async (_req: HttpRequest): Promise<ApiResponse> => ({
+      async (_req: HttpRequest): Promise<HttpResponse> => ({
         status_code: 200,
         body: { message: 'no middleware' },
       }),

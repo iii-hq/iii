@@ -1,7 +1,8 @@
+use iii_helpers::http::{HttpRequest, HttpResponse};
 use iii_observability::{Logger, execute_traced_request};
 use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
 use iii_sdk::trigger::IIITrigger;
-use iii_sdk::{ApiRequest, ApiResponse, Error, IIIClient, RegisterFunction};
+use iii_sdk::{Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 pub fn setup(iii: &IIIClient) {
@@ -37,7 +38,7 @@ pub fn setup(iii: &IIIClient) {
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
-                let api_response = ApiResponse {
+                let api_response = HttpResponse {
                     status_code: 200,
                     body: json!({ "upstream_status": status, "data": data }),
                     headers: [("Content-Type".into(), "application/json".into())].into(),
@@ -61,7 +62,7 @@ pub fn setup(iii: &IIIClient) {
             let client = post_client.clone();
             async move {
                 let logger = Logger::new();
-                let req: ApiRequest = serde_json::from_value(input)
+                let req: HttpRequest = serde_json::from_value(input)
                     .unwrap_or_else(|_| serde_json::from_value(json!({})).unwrap());
 
                 logger.info("Posting to httpbin", Some(json!({ "body": req.body })));
@@ -91,7 +92,7 @@ pub fn setup(iii: &IIIClient) {
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
-                let api_response = ApiResponse {
+                let api_response = HttpResponse {
                     status_code: status,
                     body: json!({ "upstream_status": status, "data": data }),
                     headers: [("Content-Type".into(), "application/json".into())].into(),

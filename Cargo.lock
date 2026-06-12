@@ -2887,6 +2887,7 @@ name = "iii-example"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "iii-helpers",
  "iii-observability",
  "iii-sdk",
  "reqwest 0.12.28",
@@ -2904,6 +2905,15 @@ dependencies = [
  "libc",
  "msb_krun",
  "tempfile",
+]
+
+[[package]]
+name = "iii-helpers"
+version = "0.19.1-next.1"
+dependencies = [
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2964,6 +2974,7 @@ dependencies = [
  "ctor",
  "futures-util",
  "hostname",
+ "iii-helpers",
  "iii-observability",
  "opentelemetry",
  "opentelemetry_sdk",

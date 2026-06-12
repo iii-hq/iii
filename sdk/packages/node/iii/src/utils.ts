@@ -1,7 +1,6 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { StreamChannelRef } from './iii-types'
-import type { ApiResponse, InternalHttpRequest, StreamRequest, StreamResponse } from './types'
 
 /**
  * Returns a project identifier for telemetry, derived from the current working
@@ -28,48 +27,6 @@ export function detectProjectName(cwd: string = process.cwd()): string | undefin
 
   const base = path.basename(cwd).trim()
   return base || undefined
-}
-
-/**
- * Helper that wraps an HTTP-style handler (with separate `req`/`res` arguments)
- * into the function handler format expected by the SDK.
- *
- * @param callback - Async handler receiving a {@link StreamRequest} and {@link StreamResponse}.
- * @returns A function handler compatible with {@link IIIClient.registerFunction}.
- *
- * @example
- * ```typescript
- * import { http } from 'iii-sdk'
- *
- * iii.registerFunction(
- *   'my-api',
- *   http(async (req, res) => {
- *     res.status(200)
- *     res.headers({ 'content-type': 'application/json' })
- *     res.stream.end(JSON.stringify({ hello: 'world' }))
- *     res.close()
- *   }),
- * )
- * ```
- */
-export const http = (
-  // biome-ignore lint/suspicious/noConfusingVoidType: void is necessary here
-  callback: (req: StreamRequest, res: StreamResponse) => Promise<void | ApiResponse>,
-) => {
-  return async (req: InternalHttpRequest) => {
-    const { response, ...request } = req
-
-    const httpResponse: StreamResponse = {
-      status: (status_code: number) =>
-        response.sendMessage(JSON.stringify({ type: 'set_status', status_code })),
-      headers: (headers: Record<string, string>) =>
-        response.sendMessage(JSON.stringify({ type: 'set_headers', headers })),
-      stream: response.stream,
-      close: () => response.close(),
-    }
-
-    return callback(request, httpResponse)
-  }
 }
 
 /**

@@ -74,11 +74,14 @@ jobs:
                      engine/Cargo.toml \
                      sdk/packages/rust/iii/Cargo.toml \
                      sdk/packages/rust/observability/Cargo.toml \
+                     sdk/packages/rust/helpers/Cargo.toml \
                      sdk/packages/node/iii/package.json \
                      sdk/packages/node/iii-browser/package.json \
                      sdk/packages/node/observability/package.json \
+                     sdk/packages/node/helpers/package.json \
                      sdk/packages/python/iii/pyproject.toml \
                      sdk/packages/python/observability/pyproject.toml \
+                     sdk/packages/python/helpers/pyproject.toml \
                      console/packages/console-rust/Cargo.toml \
                      crates/scaffolder-core/Cargo.toml \
                      crates/motia-tools/Cargo.toml; do
@@ -226,11 +229,14 @@ jobs:
             check_cargo "engine/Cargo.toml" "$VERSION"
             check_cargo "sdk/packages/rust/iii/Cargo.toml" "$VERSION"
             check_cargo "sdk/packages/rust/observability/Cargo.toml" "$VERSION"
+            check_cargo "sdk/packages/rust/helpers/Cargo.toml" "$VERSION"
             check_json "sdk/packages/node/iii/package.json" "$VERSION"
             check_json "sdk/packages/node/iii-browser/package.json" "$VERSION"
             check_json "sdk/packages/node/observability/package.json" "$VERSION"
+            check_json "sdk/packages/node/helpers/package.json" "$VERSION"
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
             check_cargo "sdk/packages/python/observability/pyproject.toml" "$PY_VERSION"
+            check_cargo "sdk/packages/python/helpers/pyproject.toml" "$PY_VERSION"
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
             check_cargo "Cargo.toml" "$VERSION"
             check_workspace_dep "Cargo.toml" "$VERSION"
