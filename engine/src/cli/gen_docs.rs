@@ -16,25 +16,25 @@ use iii_clap_docs::{Delegated, PageMeta};
 
 /// The `console`, `cloud`, and `worker` subcommands are passthrough stubs
 /// here (a bare `Vec<String>`); their real command trees live in the
-/// dispatched binaries. Link to those binaries' own generated pages instead
-/// of rendering an empty `[ARGS]...` section.
+/// dispatched binaries. Link to those binaries' own sections of the
+/// combined page instead of rendering an empty `[ARGS]...` section.
 fn delegated() -> BTreeMap<String, Delegated> {
     let mut map = BTreeMap::new();
     map.insert(
         "worker".to_string(),
         Delegated {
-            link: Some("./iii-worker".to_string()),
+            link: Some("#iii-worker".to_string()),
             note: "Manage workers (add, remove, list, info). Dispatches to the `iii-worker` \
-                   binary; see the linked page for its full surface."
+                   binary; see the linked section for its full surface."
                 .to_string(),
         },
     );
     map.insert(
         "console".to_string(),
         Delegated {
-            link: Some("./iii-console".to_string()),
+            link: Some("#iii-console".to_string()),
             note: "Launch the iii web console. Dispatches to the `iii-console` binary; see the \
-                   linked page for its full surface."
+                   linked section for its full surface."
                 .to_string(),
         },
     );
@@ -70,14 +70,15 @@ fn mdx_only_notes() -> BTreeMap<String, String> {
 
 pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
     let meta = PageMeta {
-        title: "iii CLI reference".to_string(),
-        description: "Every flag, argument, and subcommand of the iii binary, generated from \
-                      the CLI definitions in the engine source."
+        title: "CLI reference".to_string(),
+        description: "Every flag, argument, and subcommand of the iii CLI, including iii \
+                      worker and iii console, generated from the CLI definitions in source."
             .to_string(),
         owner: "devrel".to_string(),
-        intro: "Reference for the `iii` binary. Running `iii` with no subcommand starts the \
-                engine. The same information is available from the binary itself via `iii \
-                --help` and `iii <subcommand> --help`. For a guided overview, see \
+        intro: "Reference for the `iii` binary and the `iii worker` and `iii console` \
+                runtimes it dispatches to. Running `iii` with no subcommand starts the \
+                engine. The same information is available from the binaries themselves via \
+                `iii --help` and `iii <subcommand> --help`. For a guided overview, see \
                 [CLI](../using-iii/cli)."
             .to_string(),
         delegated: delegated(),

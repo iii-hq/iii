@@ -1,17 +1,130 @@
 ---
-title: "iii worker CLI reference"
-description: "Every flag, argument, and subcommand of iii worker, generated from the CLI definitions in the worker runtime source."
+title: "CLI reference"
+description: "Every flag, argument, and subcommand of the iii CLI, including iii worker and iii console, generated from the CLI definitions in source."
 owner: "devrel"
 type: "reference"
 ---
 
 {/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
 
-Reference for the `iii worker` command surface. The `iii` binary dispatches `iii worker ...` to the separately installed `iii-worker` runtime; this page documents that runtime's full tree. The dispatcher itself is covered by the [iii CLI reference](./iii). The same information is available from the binary via `iii worker --help` and `iii worker <subcommand> --help`.
+Reference for the `iii` binary and the `iii worker` and `iii console` runtimes it dispatches to. Running `iii` with no subcommand starts the engine. The same information is available from the binaries themselves via `iii --help` and `iii <subcommand> --help`. For a guided overview, see [CLI](../using-iii/cli).
+
+## `iii`
+
+Process communication engine
+
+```bash
+iii [OPTIONS] [COMMAND]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-c, --config <CONFIG>` | Path to the config file [default: config.yaml] |
+| `-v, --version` | Print version and exit |
+| `--use-default-config` | Run with built-in defaults instead of a config file. Cannot be combined with --config |
+| `--no-update-check` | Disable background update and advisory checks |
+
+| Command | Description |
+| ------- | ----------- |
+| [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
+| [`console`](#iii-console) | Launch the iii web console. Dispatches to the `iii-console` binary; see the linked section for its full surface. |
+| `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is maintained outside this repository; run `iii cloud --help` for its current surface. |
+| [`worker`](#iii-worker) | Manage workers (add, remove, list, info). Dispatches to the `iii-worker` binary; see the linked section for its full surface. |
+| [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
+| [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
+
+### `iii trigger`
+
+Invoke a function on a running iii engine
+
+```bash
+iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[FUNCTION_PATH]` | Function path (e.g. `my::fn`, `sandbox::create`). Positional |
+| `[KV]...` | Key=value payload tokens (`a=10 b="hello world"`). Combinable with `--json`: kv pairs override individual keys of the json object |
+
+| Option | Description |
+| ------ | ----------- |
+| `--json <JSON>` | JSON payload (`--json '{"a":1}'`). When combined with kv pairs the json must be an object; kv pairs override its keys (shallow merge) |
+| `--address <ADDRESS>` | Engine host address [default: localhost] |
+| `--port <PORT>` | Engine WebSocket port [default: 49134] |
+| `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
+
+<Note>
+  `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Functions](../using-iii/functions).
+</Note>
+
+### `iii project`
+
+Manage iii projects (init, generate-docker)
+
+```bash
+iii project <COMMAND>
+```
+
+| Command | Description |
+| ------- | ----------- |
+| [`init`](#iii-project-init) | Initialize a new iii project in the current directory |
+| [`generate-docker`](#iii-project-generate-docker) | Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project |
+
+#### `iii project init`
+
+Initialize a new iii project in the current directory
+
+```bash
+iii project init [OPTIONS] [NAME]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[NAME]` | Project directory (positional). Equivalent to --directory |
+
+| Option | Description |
+| ------ | ----------- |
+| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
+| `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env) |
+| `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
+| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
+| `--skip-iii` | Skip the iii-engine version compatibility check |
+| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An existing `.iii/project.ini` is always rejected; delete the marker or pick a different directory |
+
+#### `iii project generate-docker`
+
+Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project
+
+```bash
+iii project generate-docker [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory) |
+| `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
+
+### `iii update`
+
+Update iii and managed binaries to their latest versions
+
+```bash
+iii update [OPTIONS] [command]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[command]` | Specific command or binary to update (e.g., "console", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
+
+| Option | Description |
+| ------ | ----------- |
+| `--list-targets` | List the targets you can pass to `iii update <target>` and exit |
 
 ## `iii worker`
 
 iii managed worker runtime
+
+The `iii` binary dispatches `iii worker ...` to the separately installed `iii-worker` runtime; this section documents that runtime's full tree.
 
 ```bash
 iii worker <COMMAND>
@@ -430,3 +543,25 @@ iii worker sandbox download [OPTIONS] <SANDBOX_ID> <REMOTE_PATH> <LOCAL_PATH>
 | Option | Description |
 | ------ | ----------- |
 | `--port <PORT>` | Engine WebSocket port [default: 49134] |
+
+## `iii console`
+
+Developer console for the iii engine
+
+The `iii` binary dispatches `iii console ...` to the separately installed `iii-console` binary (downloaded on first use); the same binary can also be invoked directly as `iii-console`.
+
+```bash
+iii console [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-p, --port <PORT>` | Port to run the console server on [default: 3113] |
+| `--host <HOST>` | Host to bind the console server to [default: 127.0.0.1] |
+| `--engine-host <ENGINE_HOST>` | Host where the iii engine is running [default: 127.0.0.1] |
+| `--engine-port <ENGINE_PORT>` | Port for the iii engine REST API [default: 3111] |
+| `--ws-port <WS_PORT>` | Port for the iii engine WebSocket [default: 3112] |
+| `--bridge-port <BRIDGE_PORT>` | Engine WebSocket port the console registers its worker functions on [default: 49134] |
+| `--no-otel` | Disable OpenTelemetry tracing, metrics, and logs export [env: OTEL_DISABLED] |
+| `--otel-service-name <OTEL_SERVICE_NAME>` | OpenTelemetry service name (default: iii-console) [default: iii-console] [env: OTEL_SERVICE_NAME] |
+| `--enable-flow` | Enable the experimental flow visualization page [env: III_ENABLE_FLOW] |

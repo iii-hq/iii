@@ -50,17 +50,10 @@ pub struct PageMeta {
     pub mdx_only_notes: BTreeMap<String, String>,
 }
 
-/// Render the full MDX page for `cmd`.
+/// Render the full MDX page for `cmd`: frontmatter, generated-file banner,
+/// page intro, then the command tree.
 pub fn render_mdx(cmd: Command, meta: &PageMeta) -> String {
-    let mut cmd = cmd;
-    cmd.build();
-    // Root path: prefer an explicit bin_name ("iii worker") over the package
-    // name ("iii-worker") so headings show what users actually type.
-    let root_path = cmd
-        .get_bin_name()
-        .unwrap_or_else(|| cmd.get_name())
-        .to_string();
-    let mut cmd = set_bin_names(cmd, &root_path);
+    let (mut cmd, root_path) = prepare(cmd);
 
     let mut out = String::new();
     out.push_str("---\n");
@@ -81,8 +74,42 @@ pub fn render_mdx(cmd: Command, meta: &PageMeta) -> String {
         out.push_str("\n\n");
     }
 
-    render_command(&mut out, &mut cmd, &root_path, 2, meta);
-    // Normalize trailing whitespace to one newline.
+    render_command(&mut out, &mut cmd, &root_path, 2, meta, None);
+    finish(out)
+}
+
+/// Render `cmd` as a page fragment: no frontmatter, no banner. The intro is
+/// emitted INSIDE the root section (after the about line) as a lead-in
+/// instead of above the heading. Fragments are concatenated under another
+/// binary's full page to build the combined CLI reference.
+pub fn render_mdx_fragment(cmd: Command, meta: &PageMeta) -> String {
+    let (mut cmd, root_path) = prepare(cmd);
+    let lead_in = if meta.intro.is_empty() {
+        None
+    } else {
+        Some(meta.intro.as_str())
+    };
+    let mut out = String::new();
+    render_command(&mut out, &mut cmd, &root_path, 2, meta, lead_in);
+    finish(out)
+}
+
+/// Build the command tree and resolve the root display path: prefer an
+/// explicit bin_name ("iii worker") over the package name ("iii-worker") so
+/// headings show what users actually type.
+fn prepare(cmd: Command) -> (Command, String) {
+    let mut cmd = cmd;
+    cmd.build();
+    let root_path = cmd
+        .get_bin_name()
+        .unwrap_or_else(|| cmd.get_name())
+        .to_string();
+    let cmd = set_bin_names(cmd, &root_path);
+    (cmd, root_path)
+}
+
+/// Normalize trailing whitespace to one newline.
+fn finish(out: String) -> String {
     let trimmed = out.trim_end().to_string();
     trimmed + "\n"
 }
@@ -94,7 +121,20 @@ pub fn write_page(
     meta: &PageMeta,
     out: Option<&std::path::Path>,
 ) -> std::io::Result<()> {
-    let mdx = render_mdx(cmd, meta);
+    write_str(render_mdx(cmd, meta), out)
+}
+
+/// Like [`write_page`] but renders a concatenable fragment (see
+/// [`render_mdx_fragment`]).
+pub fn write_fragment(
+    cmd: Command,
+    meta: &PageMeta,
+    out: Option<&std::path::Path>,
+) -> std::io::Result<()> {
+    write_str(render_mdx_fragment(cmd, meta), out)
+}
+
+fn write_str(mdx: String, out: Option<&std::path::Path>) -> std::io::Result<()> {
     match out {
         Some(path) => {
             if let Some(dir) = path.parent() {
@@ -127,7 +167,14 @@ fn set_bin_names(cmd: Command, path: &str) -> Command {
     cmd
 }
 
-fn render_command(out: &mut String, cmd: &mut Command, path: &str, level: usize, meta: &PageMeta) {
+fn render_command(
+    out: &mut String,
+    cmd: &mut Command,
+    path: &str,
+    level: usize,
+    meta: &PageMeta,
+    lead_in: Option<&str>,
+) {
     let hashes = "#".repeat(level.min(5));
     out.push_str(&format!("{hashes} `{path}`\n\n"));
 
@@ -138,6 +185,13 @@ fn render_command(out: &mut String, cmd: &mut Command, path: &str, level: usize,
         .unwrap_or_default();
     if !about.is_empty() {
         out.push_str(&esc_mdx(&about));
+        out.push_str("\n\n");
+    }
+
+    // Fragment lead-in: contextual prose for this binary's section of the
+    // combined page (raw MDX, only ever set on the root node).
+    if let Some(text) = lead_in {
+        out.push_str(text.trim_end());
         out.push_str("\n\n");
     }
 
@@ -216,7 +270,7 @@ fn render_command(out: &mut String, cmd: &mut Command, path: &str, level: usize,
             .find(|s| s.get_name() == name)
             .expect("subcommand listed above")
             .clone();
-        render_command(out, &mut child, &child_path, level + 1, meta);
+        render_command(out, &mut child, &child_path, level + 1, meta, None);
     }
 }
 
@@ -567,6 +621,28 @@ mod tests {
         );
         let mdx = render_mdx(explicit, &meta());
         assert!(mdx.contains("`-v, --version`"));
+    }
+
+    #[test]
+    fn fragment_has_no_page_chrome_and_inlines_intro_as_lead_in() {
+        let cmd = Command::new("iii-worker")
+            .bin_name("iii worker")
+            .about("iii managed worker runtime")
+            .subcommand(Command::new("add").about("Install a worker"));
+        let mdx = render_mdx_fragment(cmd, &meta());
+        assert!(
+            mdx.starts_with("## `iii worker`\n"),
+            "fragment must start at the root heading:\n{mdx}"
+        );
+        assert!(!mdx.contains("---\n"), "no frontmatter in fragments");
+        assert!(!mdx.contains("AUTO-GENERATED"), "no banner in fragments");
+        // Intro renders inside the section, after the about line.
+        let about_pos = mdx.find("iii managed worker runtime").unwrap();
+        let intro_pos = mdx.find("Intro line.").unwrap();
+        let usage_pos = mdx.find("```bash").unwrap();
+        assert!(about_pos < intro_pos && intro_pos < usage_pos);
+        // Children render normally.
+        assert!(mdx.contains("### `iii worker add`"));
     }
 
     #[test]

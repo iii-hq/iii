@@ -149,9 +149,7 @@
               {
                 "group": "CLI reference",
                 "pages": [
-                  "next/cli-reference/iii",
-                  "next/cli-reference/iii-worker",
-                  "next/cli-reference/iii-console"
+                  "next/cli-reference/index"
                 ]
               }
             ]

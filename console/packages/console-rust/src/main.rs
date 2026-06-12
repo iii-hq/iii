@@ -64,9 +64,11 @@ enum ConsoleCommand {
     },
 }
 
-/// Render this binary's clap tree as the committed MDX CLI reference
-/// (docs/next/cli-reference/iii-console.mdx). CI regenerates the page and
-/// fails on diff, so the published reference can never drift from the CLI.
+/// Render this binary's clap tree as a page fragment that
+/// scripts/generate-cli-docs.sh concatenates into the combined CLI
+/// reference (docs/next/cli-reference/index.mdx). CI regenerates the page
+/// and fails on diff, so the published reference can never drift from the
+/// CLI.
 fn gen_docs(out: Option<&std::path::Path>) -> Result<()> {
     use clap::CommandFactory;
     // Users reach this binary as `iii console`; document that path rather
@@ -78,15 +80,14 @@ fn gen_docs(out: Option<&std::path::Path>) -> Result<()> {
                       definitions in the console source."
             .to_string(),
         owner: "devrel".to_string(),
-        intro: "Reference for the `iii console` command. The `iii` binary dispatches `iii \
-                console ...` to the separately installed `iii-console` binary (downloaded on \
-                first use); the same binary can also be invoked directly as `iii-console`. \
-                The dispatcher itself is covered by the [iii CLI reference](./iii)."
+        intro: "The `iii` binary dispatches `iii console ...` to the separately installed \
+                `iii-console` binary (downloaded on first use); the same binary can also be \
+                invoked directly as `iii-console`."
             .to_string(),
         delegated: std::collections::BTreeMap::new(),
         mdx_only_notes: std::collections::BTreeMap::new(),
     };
-    iii_clap_docs::write_page(cmd, &meta, out)?;
+    iii_clap_docs::write_fragment(cmd, &meta, out)?;
     Ok(())
 }
 
