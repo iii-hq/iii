@@ -96,7 +96,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to the config file (default: config.yaml)
+    /// Path to the config file
     #[arg(short, long, default_value = "config.yaml")]
     config: String,
 

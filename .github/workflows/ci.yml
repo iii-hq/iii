@@ -251,7 +251,7 @@ jobs:
       - name: Regenerate CLI reference pages
         run: ./scripts/generate-cli-docs.sh
 
-      - name: Fail on drift
+      - name: Verify committed pages match
         run: |
           if [[ -n "$(git status --porcelain -- docs/next/cli-reference)" ]]; then
             git status --porcelain -- docs/next/cli-reference
