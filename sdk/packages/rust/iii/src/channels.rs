@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
-use crate::error::IIIError;
+use crate::error::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -85,7 +85,7 @@ impl ChannelWriter {
         }
     }
 
-    async fn ensure_connected(&self) -> Result<(), IIIError> {
+    async fn ensure_connected(&self) -> Result<(), Error> {
         let mut guard = self.ws.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -98,25 +98,25 @@ impl ChannelWriter {
 
     const MAX_FRAME_SIZE: usize = 64 * 1024;
 
-    pub async fn write(&self, data: &[u8]) -> Result<(), IIIError> {
+    pub async fn write(&self, data: &[u8]) -> Result<(), Error> {
         self.ensure_connected().await?;
         let mut guard = self.ws.lock().await;
-        let ws = guard.as_mut().ok_or(IIIError::NotConnected)?;
+        let ws = guard.as_mut().ok_or(Error::NotConnected)?;
         for chunk in data.chunks(Self::MAX_FRAME_SIZE) {
             ws.send(WsMessage::Binary(chunk.to_vec().into())).await?;
         }
         Ok(())
     }
 
-    pub async fn send_message(&self, msg: &str) -> Result<(), IIIError> {
+    pub async fn send_message(&self, msg: &str) -> Result<(), Error> {
         self.ensure_connected().await?;
         let mut guard = self.ws.lock().await;
-        let ws = guard.as_mut().ok_or(IIIError::NotConnected)?;
+        let ws = guard.as_mut().ok_or(Error::NotConnected)?;
         ws.send(WsMessage::Text(msg.to_string().into())).await?;
         Ok(())
     }
 
-    pub async fn close(&self) -> Result<(), IIIError> {
+    pub async fn close(&self) -> Result<(), Error> {
         // Delay the close frame slightly to allow the TCP stack to flush
         // all buffered send() data. Without this, the close frame can arrive
         // at the engine before all data frames, causing data truncation.
@@ -154,7 +154,7 @@ impl ChannelReader {
         }
     }
 
-    async fn ensure_connected(&self) -> Result<(), IIIError> {
+    async fn ensure_connected(&self) -> Result<(), Error> {
         let mut guard = self.ws.lock().await;
         if guard.is_some() {
             return Ok(());
@@ -176,12 +176,12 @@ impl ChannelReader {
     /// Read the next binary chunk from the channel.
     /// Text messages are dispatched to registered callbacks.
     /// Returns `None` when the stream is closed.
-    pub async fn next_binary(&self) -> Result<Option<Vec<u8>>, IIIError> {
+    pub async fn next_binary(&self) -> Result<Option<Vec<u8>>, Error> {
         self.ensure_connected().await?;
 
         loop {
             let mut guard = self.ws.lock().await;
-            let mut reader = guard.take().ok_or(IIIError::NotConnected)?;
+            let mut reader = guard.take().ok_or(Error::NotConnected)?;
             drop(guard);
 
             let msg = reader.next().await;
@@ -200,13 +200,13 @@ impl ChannelReader {
                 }
                 Some(Ok(WsMessage::Close(_))) | None => return Ok(None),
                 Some(Ok(_)) => continue,
-                Some(Err(e)) => return Err(IIIError::WebSocket(e.to_string())),
+                Some(Err(e)) => return Err(Error::WebSocket(e.to_string())),
             }
         }
     }
 
     /// Read the entire stream into a single `Vec<u8>`.
-    pub async fn read_all(&self) -> Result<Vec<u8>, IIIError> {
+    pub async fn read_all(&self) -> Result<Vec<u8>, Error> {
         let mut buffer = Vec::new();
         while let Some(chunk) = self.next_binary().await? {
             buffer.extend_from_slice(&chunk);
@@ -214,7 +214,7 @@ impl ChannelReader {
         Ok(buffer)
     }
 
-    pub async fn close(&self) -> Result<(), IIIError> {
+    pub async fn close(&self) -> Result<(), Error> {
         let mut guard = self.ws.lock().await;
         *guard = None;
         Ok(())

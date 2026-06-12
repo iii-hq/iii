@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
-class IIIInvocationError(Exception):
+class InvocationError(Exception):
     """Raised when an invocation dispatched by the SDK fails.
 
     Inspect ``err.code`` to react to a specific category (e.g.
     ``'FORBIDDEN'`` for RBAC denials, ``'TIMEOUT'`` for timeouts). Catch
     this class to handle every rejection. ``except Exception`` continues to
-    work because ``IIIInvocationError`` inherits from ``Exception``.
+    work because ``InvocationError`` inherits from ``Exception``.
 
     Attributes are read-only after construction. ``stacktrace`` is the
     engine-side trace when the remote handler raised; it may include
@@ -38,8 +38,8 @@ def _wrap_wire_error(
     *,
     function_id: str | None,
     invocation_id: str | None,
-) -> IIIInvocationError:
-    """Convert a wire ``ErrorBody``-shaped dict into an ``IIIInvocationError``.
+) -> InvocationError:
+    """Convert a wire ``ErrorBody``-shaped dict into an ``InvocationError``.
 
     The ``code`` field distinguishes categories (e.g. ``'FORBIDDEN'``,
     ``'TIMEOUT'``). Malformed shapes (non-dict, missing fields, non-string
@@ -56,7 +56,7 @@ def _wrap_wire_error(
         raw_stacktrace = error.get("stacktrace")
         stacktrace = raw_stacktrace if isinstance(raw_stacktrace, str) else None
 
-        return IIIInvocationError(
+        return InvocationError(
             code=code,
             message=message,
             function_id=function_id,
@@ -64,9 +64,13 @@ def _wrap_wire_error(
             invocation_id=invocation_id,
         )
 
-    return IIIInvocationError(
+    return InvocationError(
         code="UNKNOWN",
         message=str(error),
         function_id=function_id,
         invocation_id=invocation_id,
     )
+
+
+# Back-compat alias; renamed to InvocationError in Stage 1. Deprecated.
+IIIInvocationError = InvocationError

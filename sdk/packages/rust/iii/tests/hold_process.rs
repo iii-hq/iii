@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use iii_sdk::{IIIConnectionState, InitOptions, register_worker};
+use iii_sdk::runtime::IIIConnectionState;
+use iii_sdk::{InitOptions, register_worker};
 
 #[test]
 fn shutdown_stops_connection_thread() {
