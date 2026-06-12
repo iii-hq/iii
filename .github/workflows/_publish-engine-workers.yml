@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ''
+      release_tag:
+        description: 'Exact release tag to install the engine from (e.g. iii-alpha/v0.19.2-alpha.1). When set, the CLI is pinned to this tag via III_RELEASE_TAG instead of the iii/v<version> default. Used by the isolated alpha flow.'
+        required: false
+        type: string
+        default: ''
       registry_tag:
         description: 'Registry tag (latest, next, ...)'
         required: false
@@ -52,18 +57,26 @@ jobs:
       - name: Install iii CLI
         env:
           VERSION_INPUT: ${{ inputs.version }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          expected="$VERSION_INPUT"
-          if [[ -z "$expected" && "${GITHUB_REF_NAME:-}" == iii/v* ]]; then
-            expected="${GITHUB_REF_NAME#iii/v}"
-          fi
-          install_args=()
-          if [[ "$expected" == *-* ]]; then
-            install_args+=("--next")
-          fi
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          VERSION="$expected" sh /tmp/install-iii.sh "${install_args[@]}"
+          if [[ -n "$RELEASE_TAG_INPUT" ]]; then
+            # Isolated alpha: install the exact tag from its own namespace
+            # (e.g. iii-alpha/v0.19.2-alpha.1), which the iii/v<version>
+            # default cannot resolve.
+            III_RELEASE_TAG="$RELEASE_TAG_INPUT" sh /tmp/install-iii.sh
+          else
+            expected="$VERSION_INPUT"
+            if [[ -z "$expected" && "${GITHUB_REF_NAME:-}" == iii/v* ]]; then
+              expected="${GITHUB_REF_NAME#iii/v}"
+            fi
+            install_args=()
+            if [[ "$expected" == *-* ]]; then
+              install_args+=("--next")
+            fi
+            VERSION="$expected" sh /tmp/install-iii.sh "${install_args[@]}"
+          fi
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
