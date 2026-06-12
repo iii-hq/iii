@@ -13,7 +13,6 @@ from iii import InitOptions
 from iii.iii import III
 from iii.iii_types import RegisterFunctionFormat
 
-
 # ---------------------------------------------------------------------------
 # FakeWs helpers
 # ---------------------------------------------------------------------------
@@ -165,7 +164,7 @@ def test_register_function_str_with_http_invocation_and_format(monkeypatch: pyte
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
-    from iii import HttpInvocationConfig
+    from iii_helpers.http import HttpInvocationConfig
 
     req_fmt = RegisterFunctionFormat(
         name="input",
@@ -346,7 +345,7 @@ def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.Monke
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
-    from iii import HttpInvocationConfig
+    from iii_helpers.http import HttpInvocationConfig
 
     client.register_function(
         "demo.http",

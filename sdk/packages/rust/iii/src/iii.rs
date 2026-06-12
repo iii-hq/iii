@@ -31,13 +31,15 @@ use uuid::Uuid;
 
 const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+use iii_helpers::http::HttpInvocationConfig;
+
 use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::Error,
     protocol::{
-        ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterTriggerInput,
-        RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
-        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
+        ErrorBody, Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
+        RegisterTriggerTypeMessage, TriggerAction, TriggerRequest, UnregisterTriggerMessage,
+        UnregisterTriggerTypeMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
@@ -852,7 +854,8 @@ impl IIIClient {
     ///
     /// HTTP-invoked function:
     /// ```rust,no_run
-    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction, HttpInvocationConfig, HttpMethod};
+    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    /// # use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
     /// # use std::collections::HashMap;
     /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
     /// let config = HttpInvocationConfig {
@@ -1840,12 +1843,10 @@ mod tests {
 
     use serde_json::json;
 
+    use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
+
     use super::*;
-    use crate::{
-        InitOptions,
-        protocol::{HttpInvocationConfig, HttpMethod, RegisterTriggerInput},
-        register_worker,
-    };
+    use crate::{InitOptions, protocol::RegisterTriggerInput, register_worker};
 
     #[tokio::test]
     async fn register_trigger_unregister_removes_entry() {

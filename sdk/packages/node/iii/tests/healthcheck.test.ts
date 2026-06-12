@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { ApiRequest, ApiResponse } from '../src'
+import type { HttpRequest, HttpResponse } from '@iii-dev/helpers/http'
 import { execute, httpRequest, iii } from './utils'
 
 describe('Healthcheck Endpoint', () => {
   it('should register a healthcheck function and trigger', async () => {
     const fn = iii.registerFunction(
       'test.healthcheck',
-      async (_req: ApiRequest): Promise<ApiResponse> => {
+      async (_req: HttpRequest): Promise<HttpResponse> => {
         return {
           status_code: 200,
           body: {

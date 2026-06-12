@@ -11,12 +11,14 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use serial_test::serial;
 
+use iii_helpers::worker_connection_manager::{
+    AuthInput, AuthResult, OnFunctionRegistrationInput, OnFunctionRegistrationResult,
+    OnTriggerRegistrationInput, OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput,
+    OnTriggerTypeRegistrationResult,
+};
 use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{
-    AuthInput, AuthResult, InitOptions, MiddlewareFunctionInput, OnFunctionRegistrationInput,
-    OnFunctionRegistrationResult, OnTriggerRegistrationInput, OnTriggerRegistrationResult,
-    OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult, RegisterFunction,
-    TriggerRequest, register_worker,
+    InitOptions, MiddlewareFunctionInput, RegisterFunction, TriggerRequest, register_worker,
 };
 use serde::Deserialize;
 
