@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from .types import HttpRequest, HttpResponse, InternalHttpRequest
+from .types import InternalHttpRequest, StreamRequest, StreamResponse
 from .types import is_channel_ref as is_channel_ref  # noqa: F401 - re-exported from types
 
 if TYPE_CHECKING:
@@ -13,14 +13,14 @@ if TYPE_CHECKING:
 
 
 def http(
-    callback: Callable[[HttpRequest, HttpResponse], Awaitable[ApiResponse[Any] | None]],
+    callback: Callable[[StreamRequest, StreamResponse], Awaitable[ApiResponse[Any] | None]],
 ) -> Callable[[Any], Awaitable[ApiResponse[Any] | None]]:
-    """Wrap an HTTP handler so it receives typed HttpRequest and HttpResponse.
+    """Wrap a streaming handler so it receives typed StreamRequest and StreamResponse.
 
     Takes a callback ``(req, res) -> ApiResponse | None`` and returns a
     function the iii engine can invoke directly.  The wrapper converts the
     raw dict (or ``InternalHttpRequest``) delivered by the engine into the
-    typed ``HttpRequest`` / ``HttpResponse`` pair that the callback expects.
+    typed ``StreamRequest`` / ``StreamResponse`` pair that the callback expects.
     """
 
     async def wrapper(req: Any) -> ApiResponse[Any] | None:
@@ -39,8 +39,8 @@ def http(
         else:
             internal = req
 
-        http_response = HttpResponse(internal.response)
-        http_request = HttpRequest(
+        http_response = StreamResponse(internal.response)
+        http_request = StreamRequest(
             path_params=internal.path_params,
             query_params=internal.query_params,
             body=internal.body,

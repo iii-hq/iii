@@ -12,6 +12,12 @@ describe('Package Exports', () => {
     expect(typeof registerWorker).toBe('function')
   })
 
+  it('registerWorker returns an IIIClient-shaped object', () => {
+    expect(typeof iii.registerFunction).toBe('function')
+    expect(typeof iii.trigger).toBe('function')
+    void iii.shutdown()
+  })
+
   it('should import stream module', async () => {
     await expect(import('../src/stream')).resolves.toBeDefined()
   })
@@ -38,5 +44,10 @@ describe('Package Exports', () => {
 
   it('should import the runtime subpath module', async () => {
     await expect(import('../src/runtime')).resolves.toBeDefined()
+  })
+
+  it('exposes the TelemetryOptions type via the barrel', async () => {
+    // Type-only; presence is enforced by tsc. This asserts the module resolves.
+    await expect(import('../src/index')).resolves.toBeDefined()
   })
 })

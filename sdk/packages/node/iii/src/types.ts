@@ -67,7 +67,7 @@ export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
 
-export interface ISdk {
+export interface IIIClient {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
    * @param trigger - The trigger to register
@@ -213,8 +213,11 @@ export interface ISdk {
   shutdown(): Promise<void>
 }
 
+/** @deprecated Renamed to `IIIClient`. */
+export type ISdk = IIIClient
+
 /**
- * Handle returned by {@link ISdk.registerTrigger}. Use `unregister()` to
+ * Handle returned by {@link IIIClient.registerTrigger}. Use `unregister()` to
  * remove the trigger from the engine.
  */
 export type Trigger = {
@@ -223,7 +226,7 @@ export type Trigger = {
 }
 
 /**
- * Handle returned by {@link ISdk.registerFunction}. Contains the function's
+ * Handle returned by {@link IIIClient.registerFunction}. Contains the function's
  * `id` and an `unregister()` method.
  */
 export type FunctionRef = {
@@ -234,7 +237,7 @@ export type FunctionRef = {
 }
 
 /**
- * Typed handle returned by {@link ISdk.registerTriggerType}.
+ * Typed handle returned by {@link IIIClient.registerTriggerType}.
  *
  * Provides convenience methods to register triggers and functions scoped
  * to this trigger type, so callers don't need to repeat the `type` field.
@@ -320,11 +323,11 @@ export type InternalHttpRequest<TBody = unknown> = {
 }
 
 /**
- * Response object passed to HTTP function handlers. Use `status()` and
+ * Response object passed to streaming function handlers. Use `status()` and
  * `headers()` to set response metadata, write to `stream` for streaming
  * responses, and call `close()` when done.
  */
-export type HttpResponse = {
+export type StreamResponse = {
   /** Set the HTTP status code. */
   status: (statusCode: number) => void
   /** Set response headers. */
@@ -335,19 +338,25 @@ export type HttpResponse = {
   close: () => void
 }
 
-/**
- * Incoming HTTP request received by a function registered with an HTTP trigger.
- *
- * @typeParam TBody - Type of the parsed request body.
- */
-export type HttpRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>
+/** @deprecated Renamed to `StreamResponse`. */
+export type HttpResponse = StreamResponse
 
 /**
- * Alias for {@link HttpRequest}. Represents an incoming API request.
+ * Incoming streaming request received by a function registered with a stream trigger.
  *
  * @typeParam TBody - Type of the parsed request body.
  */
-export type ApiRequest<TBody = unknown> = HttpRequest<TBody>
+export type StreamRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>
+
+/** @deprecated Renamed to `StreamRequest`. */
+export type HttpRequest<TBody = unknown> = StreamRequest<TBody>
+
+/**
+ * Alias for {@link StreamRequest}. Represents an incoming API request.
+ *
+ * @typeParam TBody - Type of the parsed request body.
+ */
+export type ApiRequest<TBody = unknown> = StreamRequest<TBody>
 
 /**
  * Structured API response returned from HTTP function handlers.

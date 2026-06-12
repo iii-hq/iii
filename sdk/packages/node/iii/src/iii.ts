@@ -47,8 +47,8 @@ import {
 import type { TriggerHandler } from './triggers'
 import type {
   FunctionRef,
+  IIIClient,
   Invocation,
-  ISdk,
   RegisterFunctionOptions,
   RemoteFunctionData,
   RemoteFunctionHandler,
@@ -69,7 +69,7 @@ function getDefaultWorkerName(): string {
   return `${os.hostname()}:${process.pid}`
 }
 
-/** @internal */
+/** Telemetry labels reported by the worker (language, framework, project). */
 export type TelemetryOptions = {
   language?: string
   project_name?: string
@@ -114,7 +114,7 @@ export type InitOptions = {
   telemetry?: TelemetryOptions
 }
 
-class Sdk implements ISdk {
+class Sdk implements IIIClient {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
   private invocations = new Map<string, Invocation & { timeout?: NodeJS.Timeout }>()
@@ -396,7 +396,7 @@ class Sdk implements ISdk {
 
   /**
    * @internal Implementation backing the `createChannel` helper in the
-   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   * `iii-sdk/helpers` submodule. Not part of the public `IIIClient` surface.
    *
    * Creates a streaming channel pair for worker-to-worker data transfer.
    * Returns a {@link Channel} with a local writer/reader and serializable refs
@@ -543,7 +543,7 @@ class Sdk implements ISdk {
 
   /**
    * @internal Implementation backing the `createStream` helper in the
-   * `iii-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   * `iii-sdk/helpers` submodule. Not part of the public `IIIClient` surface.
    *
    * Registers a custom stream implementation, overriding the engine default
    * for the given stream name. Registers 5 of the 6 `IStream` methods
@@ -1031,7 +1031,7 @@ class Sdk implements ISdk {
 }
 
 /**
- * Factory object that constructs routing actions for {@link ISdk.trigger}.
+ * Factory object that constructs routing actions for {@link IIIClient.trigger}.
  *
  * @example
  * ```typescript
@@ -1075,7 +1075,7 @@ export const TriggerAction = {
  *
  * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
  * @param options - Optional {@link InitOptions} for worker name, timeouts, reconnection, and OTel.
- * @returns A connected {@link ISdk} instance.
+ * @returns A connected {@link IIIClient} instance.
  *
  * @example
  * ```typescript
@@ -1086,4 +1086,4 @@ export const TriggerAction = {
  * })
  * ```
  */
-export const registerWorker = (address: string, options?: InitOptions): ISdk => new Sdk(address, options)
+export const registerWorker = (address: string, options?: InitOptions): IIIClient => new Sdk(address, options)
