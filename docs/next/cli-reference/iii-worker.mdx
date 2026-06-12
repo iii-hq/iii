@@ -284,7 +284,7 @@ iii worker sandbox <COMMAND>
 | Command | Description |
 | ------- | ----------- |
 | [`run`](#iii-worker-sandbox-run) | Create a one-shot sandbox, run a command inside it, and stop it. For multi-step workflows (agent loops, REPLs) use `create` + `exec` + `stop` instead |
-| [`create`](#iii-worker-sandbox-create) | Create a long-lived sandbox and print its id to stdout. Pair with `iii sandbox exec <id>` and `iii sandbox stop <id>` |
+| [`create`](#iii-worker-sandbox-create) | Create a long-lived sandbox and print its id to stdout. Pair with `iii worker sandbox exec <id>` and `iii worker sandbox stop <id>` |
 | [`exec`](#iii-worker-sandbox-exec) | Run a command inside an already-running sandbox |
 | [`list`](#iii-worker-sandbox-list) | List every sandbox the daemon knows about |
 | [`stop`](#iii-worker-sandbox-stop) | Stop a sandbox by id, waiting for the reaper to finish |
@@ -312,9 +312,9 @@ iii worker sandbox run [OPTIONS] <IMAGE> [COMMAND]...
 
 #### `iii worker sandbox create`
 
-Create a long-lived sandbox and print its id to stdout. Pair with `iii sandbox exec <id>` and `iii sandbox stop <id>`.
+Create a long-lived sandbox and print its id to stdout. Pair with `iii worker sandbox exec <id>` and `iii worker sandbox stop <id>`.
 
-Pipe-friendly: the sandbox id is the only thing on stdout, so you can do `SB=$(iii sandbox create python)` in a shell.
+Pipe-friendly: the sandbox id is the only thing on stdout, so you can do `SB=$(iii worker sandbox create python)` in a shell.
 
 ```bash
 iii worker sandbox create [OPTIONS] <IMAGE>
@@ -338,7 +338,7 @@ iii worker sandbox create [OPTIONS] <IMAGE>
 
 Run a command inside an already-running sandbox.
 
-Pipe-mode only. Pair with `iii sandbox create` for the sandbox id. For interactive TTY sessions, use `iii worker exec` against a managed worker instead.
+Pipe-mode only. Pair with `iii worker sandbox create` for the sandbox id. For interactive TTY sessions, use `iii worker exec` against a managed worker instead.
 
 ```bash
 iii worker sandbox exec [OPTIONS] <SANDBOX_ID> [COMMAND]...
@@ -346,8 +346,8 @@ iii worker sandbox exec [OPTIONS] <SANDBOX_ID> [COMMAND]...
 
 | Argument | Description |
 | -------- | ----------- |
-| `<SANDBOX_ID>` | Sandbox id from `iii sandbox create` / `iii sandbox list` |
-| `[COMMAND]...` | Program and arguments to exec inside the sandbox. Comes after `--`: `iii sandbox exec <id> -- python3 -c 'print(2+2)'` |
+| `<SANDBOX_ID>` | Sandbox id from `iii worker sandbox create` / `iii worker sandbox list` |
+| `[COMMAND]...` | Program and arguments to exec inside the sandbox. Comes after `--`: `iii worker sandbox exec <id> -- python3 -c 'print(2+2)'` |
 
 | Option | Description |
 | ------ | ----------- |
@@ -359,7 +359,7 @@ iii worker sandbox exec [OPTIONS] <SANDBOX_ID> [COMMAND]...
 
 List every sandbox the daemon knows about.
 
-The daemon's list RPC is owner-scoped for multi-tenant SDK callers, but `iii sandbox` is a local admin tool with no authenticated identity, so the CLI always requests the unscoped view. The `--all` flag is a silent no-op, kept so scripts that pass it from earlier releases keep working.
+The daemon's list RPC is owner-scoped for multi-tenant SDK callers, but `iii worker sandbox` is a local admin tool with no authenticated identity, so the CLI always requests the unscoped view. The `--all` flag is a silent no-op, kept so scripts that pass it from earlier releases keep working.
 
 ```bash
 iii worker sandbox list [OPTIONS]
@@ -391,7 +391,7 @@ Copy a local file into a running sandbox.
 
 Streams bytes through an iii data channel; no JSON-envelope size cap. Reads `LOCAL_PATH` from disk (or stdin when `LOCAL_PATH` is `-`) and writes atomically (temp file + fsync + rename) to `REMOTE_PATH` inside the sandbox.
 
-Examples: iii sandbox upload \<SB> ./script.js /workspace/script.js tar -cf - ./srcdir | iii sandbox upload \<SB> - /workspace/src.tar
+Examples: iii worker sandbox upload \<SB> ./script.js /workspace/script.js tar -cf - ./srcdir | iii worker sandbox upload \<SB> - /workspace/src.tar
 
 ```bash
 iii worker sandbox upload [OPTIONS] <SANDBOX_ID> <LOCAL_PATH> <REMOTE_PATH>
@@ -399,7 +399,7 @@ iii worker sandbox upload [OPTIONS] <SANDBOX_ID> <LOCAL_PATH> <REMOTE_PATH>
 
 | Argument | Description |
 | -------- | ----------- |
-| `<SANDBOX_ID>` | Sandbox id from `iii sandbox create` / `iii sandbox list` |
+| `<SANDBOX_ID>` | Sandbox id from `iii worker sandbox create` / `iii worker sandbox list` |
 | `<LOCAL_PATH>` | Source path on the host. Use `-` to read from stdin |
 | `<REMOTE_PATH>` | Destination path inside the sandbox |
 
@@ -415,7 +415,7 @@ Copy a file out of a running sandbox to a local path.
 
 Streams bytes through an iii data channel. Writes to `LOCAL_PATH` on disk (or stdout when `LOCAL_PATH` is `-`).
 
-Examples: iii sandbox download \<SB> /workspace/output.json ./output.json iii sandbox download \<SB> /workspace/build.tar - | tar -tf -
+Examples: iii worker sandbox download \<SB> /workspace/output.json ./output.json iii worker sandbox download \<SB> /workspace/build.tar - | tar -tf -
 
 ```bash
 iii worker sandbox download [OPTIONS] <SANDBOX_ID> <REMOTE_PATH> <LOCAL_PATH>
@@ -423,7 +423,7 @@ iii worker sandbox download [OPTIONS] <SANDBOX_ID> <REMOTE_PATH> <LOCAL_PATH>
 
 | Argument | Description |
 | -------- | ----------- |
-| `<SANDBOX_ID>` | Sandbox id from `iii sandbox create` / `iii sandbox list` |
+| `<SANDBOX_ID>` | Sandbox id from `iii worker sandbox create` / `iii worker sandbox list` |
 | `<REMOTE_PATH>` | Source path inside the sandbox |
 | `<LOCAL_PATH>` | Destination path on the host. Use `-` to write to stdout |
 
