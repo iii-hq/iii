@@ -41,18 +41,13 @@ jobs:
       npm_tag: ${{ steps.versions.outputs.npm_tag }}
       dry_run: ${{ inputs.dry_run }}
     steps:
-      - name: Generate token
-        id: generate_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.III_CI_APP_ID }}
-          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-
       - name: Checkout selected branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ steps.generate_token.outputs.token }}
+          # Default GITHUB_TOKEN (contents: write) is persisted in git config
+          # and reused by the tag push below. No app token needed: we only
+          # push a tag in the fresh iii-alpha/* namespace, never a branch.
 
       - name: Refuse to run on main
         run: |
@@ -105,47 +100,60 @@ jobs:
           git push origin "$TAG"
           echo "Pushed alpha tag: $TAG"
 
-  observability-npm:
-    name: Observability Node (npm)
+  sdk-node:
+    name: SDK Node (npm)
     needs: prepare
     if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_npm.yml
-    with:
-      package_path: sdk/packages/node/observability
-      npm_tag: ${{ needs.prepare.outputs.npm_tag }}
-      build_filter: "@iii-dev/observability"
-      ref: ${{ needs.prepare.outputs.tag }}
-      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
-  sdk-npm:
-    name: SDK Node (npm)
-    needs: [prepare, observability-npm]
-    if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_npm.yml
-    with:
-      package_path: sdk/packages/node/iii
-      npm_tag: ${{ needs.prepare.outputs.npm_tag }}
-      build_filter: iii-sdk
-      ref: ${{ needs.prepare.outputs.tag }}
-      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
 
-  sdk-npm-browser:
-    name: SDK Browser (npm)
-    needs: [prepare, observability-npm]
-    if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_npm.yml
-    with:
-      package_path: sdk/packages/node/iii-browser
-      npm_tag: ${{ needs.prepare.outputs.npm_tag }}
-      build_filter: iii-browser-sdk
-      ref: ${{ needs.prepare.outputs.tag }}
-      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build node SDK packages
+        run: >-
+          pnpm
+          --filter "@iii-dev/observability"
+          --filter iii-sdk
+          --filter iii-browser-sdk
+          build
+
+      - name: Setup NPM authentication
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+
+      # Recursive publish: pnpm resolves topological order (observability
+      # before iii / iii-browser) and rewrites `workspace:*` deps to the
+      # concrete alpha version automatically — no manual ordering needed.
+      - name: Publish node SDK packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >-
+          pnpm
+          --filter "@iii-dev/observability"
+          --filter iii-sdk
+          --filter iii-browser-sdk
+          -r publish
+          --no-git-checks
+          --tag "${{ needs.prepare.outputs.npm_tag }}"
+          --access public
+          ${{ needs.prepare.outputs.dry_run == 'true' && '--dry-run' || '' }}
 
   observability-py:
     name: Observability Python (pypi)
