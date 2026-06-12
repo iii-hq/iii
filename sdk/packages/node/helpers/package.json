@@ -1,0 +1,42 @@
+{
+  "name": "@iii-dev/helpers",
+  "version": "0.19.0",
+  "private": false,
+  "publishConfig": { "access": "public" },
+  "type": "module",
+  "author": "III",
+  "license": "Apache-2.0",
+  "description": "Shared helper primitives across iii SDKs.",
+  "keywords": ["iii", "helpers"],
+  "files": ["dist", "README.md"],
+  "exports": {
+    "./http": {
+      "import": { "types": "./dist/http/index.d.mts", "default": "./dist/http/index.mjs" },
+      "require": { "types": "./dist/http/index.d.cts", "default": "./dist/http/index.cjs" }
+    },
+    "./queue": {
+      "import": { "types": "./dist/queue/index.d.mts", "default": "./dist/queue/index.mjs" },
+      "require": { "types": "./dist/queue/index.d.cts", "default": "./dist/queue/index.cjs" }
+    },
+    "./stream": {
+      "import": { "types": "./dist/stream/index.d.mts", "default": "./dist/stream/index.mjs" },
+      "require": { "types": "./dist/stream/index.d.cts", "default": "./dist/stream/index.cjs" }
+    },
+    "./worker-connection-manager": {
+      "import": { "types": "./dist/worker-connection-manager/index.d.mts", "default": "./dist/worker-connection-manager/index.mjs" },
+      "require": { "types": "./dist/worker-connection-manager/index.d.cts", "default": "./dist/worker-connection-manager/index.cjs" }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@vitest/coverage-v8": "^2.1.0",
+    "tsdown": "^0.21.4",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.0"
+  }
+}
