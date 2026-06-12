@@ -8,15 +8,15 @@ pub use crate::channels::{ChannelDirection, ChannelItem, extract_channel_refs, i
 
 use std::sync::Arc;
 
+use iii_helpers::stream::{
+    StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput, StreamSetInput,
+};
 use serde_json::Value;
 
 use crate::error::Error;
 use crate::iii::{IIIClient, RegisterFunction};
 use crate::stream_provider::IStream;
-use crate::types::{
-    Channel, StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput,
-    StreamSetInput,
-};
+use crate::types::Channel;
 
 /// Create a streaming channel pair for worker-to-worker data transfer.
 ///

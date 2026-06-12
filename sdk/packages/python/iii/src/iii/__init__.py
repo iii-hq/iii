@@ -14,16 +14,8 @@ from .iii_constants import (
     TelemetryOptions,
 )
 from .iii_types import (
-    AuthInput,
-    AuthResult,
     MessageType,
     MiddlewareFunctionInput,
-    OnFunctionRegistrationInput,
-    OnFunctionRegistrationResult,
-    OnTriggerRegistrationInput,
-    OnTriggerRegistrationResult,
-    OnTriggerTypeRegistrationInput,
-    OnTriggerTypeRegistrationResult,
     RegisterFunctionFormat,
     RegisterFunctionMessage,
     RegisterTriggerInput,
@@ -35,15 +27,7 @@ from .iii_types import (
     TriggerActionVoid,
     TriggerRequest,
 )
-from .stream import (
-    IStream,
-    StreamChangeEvent,
-    StreamChangeEventDetail,
-    StreamContext,
-    StreamJoinLeaveEvent,
-    StreamJoinLeaveTriggerConfig,
-    StreamTriggerConfig,
-)
+from .stream import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
     Channel,
@@ -70,15 +54,7 @@ __all__ = [
     "EngineFunctions",
     "EngineTriggers",
     # RBAC types
-    "AuthInput",
-    "AuthResult",
     "MiddlewareFunctionInput",
-    "OnFunctionRegistrationInput",
-    "OnFunctionRegistrationResult",
-    "OnTriggerRegistrationInput",
-    "OnTriggerRegistrationResult",
-    "OnTriggerTypeRegistrationInput",
-    "OnTriggerTypeRegistrationResult",
     # Message types
     "MessageType",
     "RegisterFunctionFormat",
@@ -105,12 +81,6 @@ __all__ = [
     "StreamResponse",
     # Stream
     "IStream",
-    "StreamChangeEvent",
-    "StreamChangeEventDetail",
-    "StreamContext",
-    "StreamJoinLeaveEvent",
-    "StreamJoinLeaveTriggerConfig",
-    "StreamTriggerConfig",
     # Format extraction
     "extract_request_format",
     "extract_response_format",

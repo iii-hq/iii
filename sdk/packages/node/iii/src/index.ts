@@ -12,16 +12,8 @@ export { type InitOptions, registerWorker, type TelemetryOptions, TriggerAction 
 export { EngineFunctions, EngineTriggers } from './iii-constants'
 
 export type {
-  AuthInput,
-  AuthResult,
   MessageType,
   MiddlewareFunctionInput,
-  OnFunctionRegistrationInput,
-  OnFunctionRegistrationResult,
-  OnTriggerRegistrationInput,
-  OnTriggerRegistrationResult,
-  OnTriggerTypeRegistrationInput,
-  OnTriggerTypeRegistrationResult,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,

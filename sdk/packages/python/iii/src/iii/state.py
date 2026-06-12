@@ -9,9 +9,8 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Generic, TypeVar
 
+from iii_helpers.stream import UpdateOp
 from pydantic import BaseModel
-
-from .stream import UpdateOp
 
 TData = TypeVar("TData")
 
