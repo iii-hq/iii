@@ -11,7 +11,7 @@
 use serde_json::json;
 
 use iii::builtins::kv::BuiltinKvStore;
-use iii_sdk::{UpdateOp, UpdateOpError, types::MergePath};
+use iii_helpers::stream::{MergePath, UpdateOp, UpdateOpError};
 
 const SCOPE: &str = "audio::transcripts";
 
