@@ -346,7 +346,8 @@ pub async fn dynamic_handler(
 
             // Global middleware (from rest_api_config, sorted by priority at config load time)
             // These run before channel creation, so on short-circuit we return directly.
-            let rest_api_config = &api_handler.config;
+            // One snapshot per request: hot-reloads never mix old and new values mid-request.
+            let rest_api_config = api_handler.config_snapshot();
             for mw_config in &rest_api_config.middleware {
                 if mw_config.phase != "preHandler" {
                     continue;

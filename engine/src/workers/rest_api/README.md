@@ -18,7 +18,13 @@ Install the `iii-http` agent skill for Claude Code, Cursor, and 30+ other agents
 npx skills add iii-hq/iii --full-depth --skill iii-http
 ```
 
-## Sample Configuration
+## Configure
+
+Runtime settings live in the **`configuration` worker** under id **`iii-http`**. The worker registers its JSON Schema at startup, reads the live value via `configuration::get` (so `${VAR:default}` placeholders in string fields expand against the process env), and hot-applies changes when the value updates.
+
+The config.yaml block below is **seed-only**: it is installed as the initial value on first boot, when no value is stored yet. After that, the configuration worker entry is the source of truth — change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-http.yaml` with the default `fs` adapter); both propagate without an engine restart. Edits to the config.yaml block are ignored once a value is stored.
+
+### Sample Seed Configuration
 
 ```yaml
 - name: iii-http
@@ -37,6 +43,16 @@ npx skills add iii-hq/iii --full-depth --skill iii-http
         - OPTIONS
 ```
 
+### Hot Reload
+
+When the `iii-http` configuration changes, the worker re-reads the authoritative value and applies it in place:
+
+- `cors`, `default_timeout`, `concurrency_request_limit`, and `middleware` are swapped without dropping the listener.
+- A `host`/`port` change binds the new address first and tears the old listener down only once the new one is live; in-flight requests on the old listener are aborted. If the new address cannot be bound, the change is rejected and the previous server keeps running.
+- Invalid values are rejected by schema validation at `configuration::set` time; a stored value that fails to deserialize is logged and the previous config is kept.
+
+Note: `${VAR:default}` placeholders only work in string fields (e.g. `host`) — integer fields like `port` are validated as integers against the schema.
+
 ## Configuration
 
 | Field | Type | Description |
@@ -47,11 +63,7 @@ npx skills add iii-hq/iii --full-depth --skill iii-http
 | `concurrency_request_limit` | number | Maximum number of concurrent requests. Defaults to `1024`. |
 | `cors.allowed_origins` | string[] | Allowed CORS origins. |
 | `cors.allowed_methods` | string[] | Allowed CORS methods. |
-| `body_limit` | number | Maximum request body size in bytes. Defaults to `1048576` (1 MB). |
-| `trust_proxy` | boolean | Trust proxy headers such as `X-Forwarded-For`. Defaults to `false`. |
-| `request_id_header` | string | Header name for request ID propagation. Defaults to `x-request-id`. |
-| `ignore_trailing_slash` | boolean | Treat routes with/without trailing slash as equivalent. Defaults to `false`. |
-| `not_found_function` | string | Function ID to invoke when no route matches. |
+| `middleware` | Middleware[] | Global middleware run on every route (see [Middleware](#middleware)). |
 
 ## Trigger Type: `http`
 

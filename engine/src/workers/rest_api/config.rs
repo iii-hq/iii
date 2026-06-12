@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 fn default_port() -> u16 {
@@ -22,7 +23,7 @@ fn default_concurrency_request_limit() -> usize {
     1024
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestApiConfig {
     #[serde(default = "default_port")]
@@ -44,6 +45,16 @@ pub struct RestApiConfig {
     pub middleware: Vec<MiddlewareConfig>,
 }
 
+impl RestApiConfig {
+    /// Sort global middleware by priority. Views iterate the list in stored
+    /// order, so this must run on every config load (static block, seed, or a
+    /// value read back from the configuration worker).
+    pub fn normalized(mut self) -> Self {
+        self.middleware.sort_by_key(|m| m.priority);
+        self
+    }
+}
+
 impl Default for RestApiConfig {
     fn default() -> Self {
         Self {
@@ -57,7 +68,7 @@ impl Default for RestApiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct MiddlewareConfig {
     pub function_id: String,
     #[serde(default = "default_phase")]
@@ -70,7 +81,7 @@ fn default_phase() -> String {
     "preHandler".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CorsConfig {
     #[serde(default)]
