@@ -1,15 +1,15 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type {
   AuthInput,
   AuthResult,
-  MiddlewareFunctionInput,
   OnFunctionRegistrationInput,
   OnFunctionRegistrationResult,
   OnTriggerRegistrationInput,
   OnTriggerRegistrationResult,
   OnTriggerTypeRegistrationInput,
   OnTriggerTypeRegistrationResult,
-} from '../src/index'
+} from '@iii-dev/helpers/worker-connection-manager'
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import type { MiddlewareFunctionInput } from '../src/index'
 import { InvocationError, registerWorker } from '../src/index'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'

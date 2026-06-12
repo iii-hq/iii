@@ -14,6 +14,14 @@ from importlib.metadata import version
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
 import websockets
+from iii_helpers.http import HttpInvocationConfig
+from iii_helpers.stream import (
+    StreamDeleteInput,
+    StreamGetInput,
+    StreamListGroupsInput,
+    StreamListInput,
+    StreamSetInput,
+)
 from iii_observability import OtelConfig
 from websockets.asyncio.client import ClientConnection
 
@@ -28,7 +36,6 @@ from .iii_constants import (
     InitOptions,
 )
 from .iii_types import (
-    HttpInvocationConfig,
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
@@ -47,14 +54,7 @@ from .iii_types import (
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
 )
-from .stream import (
-    IStream,
-    StreamDeleteInput,
-    StreamGetInput,
-    StreamListGroupsInput,
-    StreamListInput,
-    StreamSetInput,
-)
+from .stream import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
 

@@ -7,7 +7,7 @@ import type {
   StreamUpdateResult,
   UpdateAppend,
   UpdateOp,
-} from '../src/stream'
+} from '@iii-dev/helpers/stream'
 
 type TestData = {
   name?: string

@@ -1,11 +1,11 @@
 use async_trait::async_trait;
-use serde_json::Value;
-
-use crate::error::Error;
-use crate::types::{
+use iii_helpers::stream::{
     DeleteResult, SetResult, StreamDeleteInput, StreamGetInput, StreamListGroupsInput,
     StreamListInput, StreamSetInput, StreamUpdateInput, UpdateResult,
 };
+use serde_json::Value;
+
+use crate::error::Error;
 
 /// Custom stream-provider trait. Implementors override the engine's built-in
 /// stream storage for a specific stream name when registered through

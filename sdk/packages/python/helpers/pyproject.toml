@@ -19,7 +19,9 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "pydantic>=2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/iii-hq/iii"

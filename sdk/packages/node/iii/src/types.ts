@@ -1,6 +1,6 @@
+import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import type { ChannelReader, ChannelWriter } from './channels'
 import type {
-  HttpInvocationConfig,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
@@ -338,46 +338,9 @@ export type StreamResponse = {
   close: () => void
 }
 
-/** @deprecated Renamed to `StreamResponse`. */
-export type HttpResponse = StreamResponse
-
 /**
  * Incoming streaming request received by a function registered with a stream trigger.
  *
  * @typeParam TBody - Type of the parsed request body.
  */
 export type StreamRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>
-
-/** @deprecated Renamed to `StreamRequest`. */
-export type HttpRequest<TBody = unknown> = StreamRequest<TBody>
-
-/**
- * Alias for {@link StreamRequest}. Represents an incoming API request.
- *
- * @typeParam TBody - Type of the parsed request body.
- */
-export type ApiRequest<TBody = unknown> = StreamRequest<TBody>
-
-/**
- * Structured API response returned from HTTP function handlers.
- *
- * @typeParam TStatus - HTTP status code literal type.
- * @typeParam TBody - Type of the response body.
- *
- * @example
- * ```typescript
- * const response: ApiResponse = {
- *   status_code: 200,
- *   headers: { 'content-type': 'application/json' },
- *   body: { message: 'ok' },
- * }
- * ```
- */
-export type ApiResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
-  /** HTTP status code. */
-  status_code: TStatus
-  /** Response headers. */
-  headers?: Record<string, string>
-  /** Response body. */
-  body?: TBody
-}
