@@ -49,8 +49,8 @@ use std::time::Duration;
 
 use base64::Engine;
 use iii_shell_proto::{
-    FRAME_HEADER_SIZE, MAX_FRAME_SIZE, ShellMessage, decode_frame_body, encode_frame,
-    flags::FLAG_TERMINAL,
+    FRAME_HEADER_SIZE, FRAME_READ_INITIAL_CAP, MAX_FRAME_SIZE, ShellMessage, decode_frame_body,
+    encode_frame, flags::FLAG_TERMINAL,
 };
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -947,11 +947,19 @@ where
             "frame length {frame_len} out of range"
         )));
     }
-    let mut body = vec![0u8; frame_len];
-    reader
-        .read_exact(&mut body)
+    // Incremental read with a capped initial allocation (no uninit memory,
+    // no full-size zero-fill): memory grows only as payload arrives, so a
+    // peer sending a max-size length prefix and stalling costs at most
+    // FRAME_READ_INITIAL_CAP, not MAX_FRAME_SIZE.
+    let mut body: Vec<u8> = Vec::with_capacity(frame_len.min(FRAME_READ_INITIAL_CAP));
+    let read = (&mut *reader)
+        .take(frame_len as u64)
+        .read_to_end(&mut body)
         .await
         .map_err(|e| VmClientError::Io(format!("short read on frame body: {e}")))?;
+    if read != frame_len {
+        return Err(VmClientError::Io("short read on frame body".to_string()));
+    }
     decode_frame_body(&body)
         .map(Some)
         .map_err(|e| VmClientError::ProtocolViolation(e.to_string()))
@@ -1000,13 +1008,16 @@ async fn read_one_frame(
             "frame length {frame_len} out of range"
         )));
     }
-    // Zero-init then overwrite via read_exact — memset is noise next to
-    // the socket read (clippy::uninit_vec is deny-by-default).
-    let mut body = vec![0u8; frame_len];
-    reader
-        .read_exact(&mut body)
+    // Incremental capped read: see read_frame_async above.
+    let mut body: Vec<u8> = Vec::with_capacity(frame_len.min(FRAME_READ_INITIAL_CAP));
+    let read = (&mut *reader)
+        .take(frame_len as u64)
+        .read_to_end(&mut body)
         .await
         .map_err(|e| VmClientError::Io(format!("short read on frame body: {e}")))?;
+    if read != frame_len {
+        return Err(VmClientError::Io("short read on frame body".to_string()));
+    }
     decode_frame_body(&body)
         .map(Some)
         .map_err(|e| VmClientError::ProtocolViolation(e.to_string()))
