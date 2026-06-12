@@ -11,7 +11,7 @@ pub mod otel;
 pub(crate) mod otlp_exporter;
 mod sampler;
 
-pub(crate) mod config;
+pub mod config;
 
 use std::{
     collections::{HashMap, HashSet},
