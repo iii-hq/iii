@@ -356,6 +356,16 @@ pub struct ApiResponse<T = Value> {
     pub body: T,
 }
 
+/// Streaming request type, mirroring the Node and Python `StreamRequest`.
+///
+/// Alias of [`ApiRequest`]; added for cross-language parity.
+pub type StreamRequest<T = Value> = ApiRequest<T>;
+
+/// Streaming response type, mirroring the Node and Python `StreamResponse`.
+///
+/// Alias of [`ApiResponse`]; added for cross-language parity.
+pub type StreamResponse<T = Value> = ApiResponse<T>;
+
 /// A streaming channel pair for worker-to-worker data transfer.
 pub struct Channel {
     pub writer: ChannelWriter,
