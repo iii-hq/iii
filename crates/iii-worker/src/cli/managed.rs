@@ -39,10 +39,13 @@ use std::path::{Path, PathBuf};
 
 pub use super::local_worker::{handle_local_add, is_local_path, start_local_worker};
 
-/// Fire `GET /download/{name}` for an engine worker so the registry increments
-/// its telemetry counters. The endpoint returns 204 (no artifact); errors are
+/// Fire `GET /download/{name}` for a resolved worker so the registry increments
+/// its telemetry counters. Used for every worker type installed via `/resolve`
+/// (engine workers have no artifact; binary/image/bundle workers fetch their
+/// artifacts from external URLs the registry never sees, so this is the only
+/// install signal it gets). The endpoint returns 204 (no artifact); errors are
 /// logged as warnings and never block the install.
-async fn fire_engine_telemetry(name: &str, version: &str) {
+async fn fire_worker_telemetry(name: &str, version: &str) {
     use super::registry::HTTP_CLIENT;
 
     let api_url =
@@ -1462,8 +1465,9 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
     for node in &graph.graph {
         let rc = match node.worker_type.as_str() {
             "engine" => {
-                // Engine workers are baked into the iii binary — nothing to download.
-                // Fire GET /download/{name} anyway so the registry can count installs.
+                // Engine workers are baked into the iii binary — nothing to
+                // download. Telemetry still fires for them below, alongside
+                // every other resolved worker type.
                 let config_yaml = binary_config_yaml(&node.config);
                 if let Err(e) =
                     super::config_file::append_worker(&node.name, config_yaml.as_deref())
@@ -1472,7 +1476,6 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
                     config_snapshot.restore_after_failure();
                     return 1;
                 }
-                fire_engine_telemetry(&node.name, &node.version).await;
                 if !brief {
                     eprintln!("  {} {} (engine, built-in)", "✓".green(), node.name.bold());
                 }
@@ -1550,6 +1553,12 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
             config_snapshot.restore_after_failure();
             return rc;
         }
+
+        // Every successfully-installed resolved node increments the registry's
+        // per-worker download counter. Engine workers have no artifact; binary/
+        // image/bundle workers fetch artifacts from external URLs the registry
+        // never sees, so this GET /download/{name} is the only install signal.
+        fire_worker_telemetry(&node.name, &node.version).await;
     }
 
     for (name, worker) in graph_lockfile.workers {
@@ -1828,7 +1837,7 @@ pub async fn handle_managed_add(
         // or binary to watch. The Phase machinery would loop on Queued until
         // timeout, so skip wait_for_ready for builtins even when wait=true.
         // Fire telemetry so the registry can count this activation.
-        fire_engine_telemetry(&name, builtin_version).await;
+        fire_worker_telemetry(&name, builtin_version).await;
         return 0;
     }
 
@@ -5003,7 +5012,7 @@ workers:
     }
 
     #[tokio::test]
-    async fn fire_engine_telemetry_percent_encodes_version_query() {
+    async fn fire_worker_telemetry_percent_encodes_version_query() {
         let _env_guard = crate::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -5032,11 +5041,125 @@ workers:
                 .await;
         });
 
-        fire_engine_telemetry("iii-http", "1.2.3+build.5").await;
+        fire_worker_telemetry("iii-http", "1.2.3+build.5").await;
 
         let path = rx.await.expect("request captured");
         assert_eq!(path, "/download/iii-http?version=1.2.3%2Bbuild.5");
         server.abort();
+    }
+
+    /// Regression: a `binary` node installed via the `/resolve` path must fire
+    /// `GET /download/{name}` telemetry, not just engine workers. Before the
+    /// fix this only ran for the `"engine"` arm, so binary/image/bundle installs
+    /// were invisible to the registry's per-worker counter. Drives a real
+    /// binary install against a recording server and asserts the download
+    /// endpoint was hit.
+    #[tokio::test]
+    async fn handle_resolved_graph_add_binary_node_fires_download_telemetry() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            use std::sync::{Arc, Mutex};
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let worker_name = "telemetry-binary";
+            let archive = binary_archive(worker_name);
+            let archive_sha = sha256_hex(&archive);
+            let target = binary_download::current_target();
+
+            // Recording TCP server: serves the binary artifact + the /download
+            // telemetry endpoint, and records every request path so the test
+            // can assert GET /download/{name} was actually hit.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind test server");
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let recorded: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let recorded_srv = Arc::clone(&recorded);
+            let archive_srv = archive.clone();
+            let download_path = format!("/download/{worker_name}");
+            let archive_path = format!("/{worker_name}.tar.gz");
+            let server = tokio::spawn(async move {
+                loop {
+                    let Ok((mut stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let recorded = Arc::clone(&recorded_srv);
+                    let archive = archive_srv.clone();
+                    let download_path = download_path.clone();
+                    let archive_path = archive_path.clone();
+                    tokio::spawn(async move {
+                        let mut buf = [0_u8; 4096];
+                        let Ok(n) = stream.read(&mut buf).await else {
+                            return;
+                        };
+                        let request = String::from_utf8_lossy(&buf[..n]);
+                        let path = request
+                            .lines()
+                            .next()
+                            .and_then(|line| line.split_whitespace().nth(1))
+                            .unwrap_or_default()
+                            .to_string();
+                        recorded.lock().unwrap().push(path.clone());
+
+                        let path_only = path.split('?').next().unwrap_or(path.as_str());
+                        if path_only == archive_path {
+                            let headers = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: application/gzip\r\nconnection: close\r\n\r\n",
+                                archive.len()
+                            );
+                            let _ = stream.write_all(headers.as_bytes()).await;
+                            let _ = stream.write_all(&archive).await;
+                        } else if path_only == download_path {
+                            let _ = stream
+                                .write_all(
+                                    b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                                )
+                                .await;
+                        } else {
+                            let _ = stream
+                                .write_all(
+                                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                                )
+                                .await;
+                        }
+                    });
+                }
+            });
+
+            let _api_guard = set_env_var_for_test("III_API_URL", &base_url);
+
+            let mut binaries = StdHashMap::new();
+            binaries.insert(
+                target.to_string(),
+                cli_registry::BinaryInfo {
+                    url: format!("{base_url}/{worker_name}.tar.gz"),
+                    sha256: archive_sha,
+                },
+            );
+            let graph = graph_with(resolved_binary_worker(worker_name, "1.0.0", binaries));
+
+            let rc = handle_resolved_graph_add(&graph, true).await;
+
+            assert_eq!(rc, 0, "binary resolve add should succeed");
+            assert!(
+                home.join(".iii/workers").join(worker_name).exists(),
+                "binary worker should be installed on disk"
+            );
+            let hits = recorded.lock().unwrap().clone();
+            let expected = format!("/download/{worker_name}?version=1.0.0");
+            assert!(
+                hits.iter().any(|p| p == &expected),
+                "expected GET {expected} telemetry hit, got: {hits:?}"
+            );
+            server.abort();
+        })
+        .await;
     }
 
     #[tokio::test]

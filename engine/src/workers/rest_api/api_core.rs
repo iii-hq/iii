@@ -43,6 +43,8 @@ pub struct PathRouter {
     pub function_id: String,
     pub condition_function_id: Option<String>,
     pub middleware_function_ids: Vec<String>,
+    pub trigger_id: String,
+    pub worker_id: Option<uuid::Uuid>,
 }
 
 impl PathRouter {
@@ -59,7 +61,16 @@ impl PathRouter {
             function_id,
             condition_function_id,
             middleware_function_ids,
+            trigger_id: String::new(),
+            worker_id: None,
         }
+    }
+
+    /// Set the trigger/worker that owns this route.
+    pub fn with_owner(mut self, trigger_id: String, worker_id: Option<uuid::Uuid>) -> Self {
+        self.trigger_id = trigger_id;
+        self.worker_id = worker_id;
+        self
     }
 }
 
@@ -407,14 +418,28 @@ impl HttpWorker {
         &self,
         http_method: &str,
         http_path: &str,
+        trigger_id: &str,
+        worker_id: Option<uuid::Uuid>,
     ) -> anyhow::Result<bool> {
         let key = Self::build_router_key(http_method, http_path);
         tracing::info!("Unregistering router {}", key.purple());
-        let removed = self.routers_registry.remove(&key).is_some();
+
+        let removed = self
+            .routers_registry
+            .remove_if(&key, |_, entry| {
+                entry.trigger_id == trigger_id && entry.worker_id == worker_id
+            })
+            .is_some();
 
         if removed {
             // Update routes after unregistering
             self.update_routes().await?;
+        } else if self.routers_registry.contains_key(&key) {
+            tracing::info!(
+                "Skipping unregister for {}: owner changed (trigger {} no longer owns this route)",
+                key.purple(),
+                trigger_id.purple()
+            );
         } else {
             tracing::warn!("No router found for key: {}", key.purple());
         }
@@ -466,7 +491,8 @@ impl TriggerRegistrator for HttpWorker {
                 trigger.function_id.clone(),
                 condition_function_id,
                 middleware_function_ids,
-            );
+            )
+            .with_owner(trigger.id.clone(), trigger.worker_id);
 
             adapter.register_router(router).await?;
             Ok(())
@@ -492,7 +518,9 @@ impl TriggerRegistrator for HttpWorker {
                 .and_then(|v| v.as_str())
                 .unwrap_or("GET");
 
-            adapter.unregister_router(http_method, api_path).await?;
+            adapter
+                .unregister_router(http_method, api_path, &trigger.id, trigger.worker_id)
+                .await?;
             Ok(())
         })
     }
@@ -1098,6 +1126,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unregister_stale_worker_keeps_route_owned_by_newer_worker() {
+        // Repro for #1796: rolling deploy / reconnect.
+        let module = make_worker_with_cors(None);
+
+        let worker_a = uuid::Uuid::new_v4();
+        let worker_b = uuid::Uuid::new_v4();
+
+        let trigger_a = Trigger {
+            id: "http-accounts-a".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn::accounts_a".to_string(),
+            config: json!({
+                "api_path": "/api/platform-accounts",
+                "http_method": "GET"
+            }),
+            worker_id: Some(worker_a),
+            metadata: None,
+        };
+
+        let trigger_b = Trigger {
+            id: "http-accounts-b".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn::accounts_b".to_string(),
+            config: json!({
+                "api_path": "/api/platform-accounts",
+                "http_method": "GET"
+            }),
+            worker_id: Some(worker_b),
+            metadata: None,
+        };
+
+        // 1. Worker A registers the route.
+        module
+            .register_trigger(trigger_a.clone())
+            .await
+            .expect("A registration should succeed");
+
+        // 2. Worker B re-registers the same method/path during reconnect.
+        module
+            .register_trigger(trigger_b)
+            .await
+            .expect("B registration should succeed");
+
+        // 3. Worker A's stale cleanup unregisters its trigger.
+        module
+            .unregister_trigger(trigger_a)
+            .await
+            .expect("A unregistration should succeed");
+
+        // 4. Route must still resolve to Worker B's function.
+        let router = module
+            .get_router("GET", "/api/platform-accounts")
+            .expect("route should still exist after stale unregister");
+        assert_eq!(router.function_id, "fn::accounts_b");
+    }
+
+    #[tokio::test]
+    async fn unregister_stale_worker_keeps_parameterized_route_owned_by_newer_worker() {
+        // Repro for #1796, parameterized route variant.
+        let module = make_worker_with_cors(None);
+
+        let worker_a = uuid::Uuid::new_v4();
+        let worker_b = uuid::Uuid::new_v4();
+
+        let trigger_a = Trigger {
+            id: "http-connect-a".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn::connect_a".to_string(),
+            config: json!({
+                "api_path": "/api/platforms/:platform/connect",
+                "http_method": "POST"
+            }),
+            worker_id: Some(worker_a),
+            metadata: None,
+        };
+
+        let trigger_b = Trigger {
+            id: "http-connect-b".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn::connect_b".to_string(),
+            config: json!({
+                "api_path": "/api/platforms/:platform/connect",
+                "http_method": "POST"
+            }),
+            worker_id: Some(worker_b),
+            metadata: None,
+        };
+
+        module
+            .register_trigger(trigger_a.clone())
+            .await
+            .expect("A registration should succeed");
+        module
+            .register_trigger(trigger_b)
+            .await
+            .expect("B registration should succeed");
+
+        // Stale cleanup for Worker A must not remove Worker B's route.
+        let removed_a = module
+            .unregister_router(
+                "POST",
+                "/api/platforms/:platform/connect",
+                &trigger_a.id,
+                trigger_a.worker_id,
+            )
+            .await
+            .expect("A unregistration should succeed");
+        assert!(!removed_a, "stale owner should not remove the route");
+
+        let router = module
+            .get_router("POST", "/api/platforms/:platform/connect")
+            .expect("parameterized route should still exist after stale unregister");
+        assert_eq!(router.function_id, "fn::connect_b");
+    }
+
+    #[tokio::test]
+    async fn unregister_router_removes_route_when_owner_matches() {
+        // Owner-aware unregister still removes the route for the real owner.
+        let module = make_worker_with_cors(None);
+
+        let worker = uuid::Uuid::new_v4();
+        let trigger = Trigger {
+            id: "http-owned".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn::owned".to_string(),
+            config: json!({
+                "api_path": "/api/owned",
+                "http_method": "GET"
+            }),
+            worker_id: Some(worker),
+            metadata: None,
+        };
+
+        module
+            .register_trigger(trigger.clone())
+            .await
+            .expect("registration should succeed");
+
+        module
+            .unregister_trigger(trigger)
+            .await
+            .expect("unregistration should succeed");
+
+        assert!(module.get_router("GET", "/api/owned").is_none());
+    }
+
+    #[tokio::test]
     async fn register_trigger_requires_api_path() {
         let module = make_worker_with_cors(None);
         let trigger = Trigger {
@@ -1121,7 +1296,7 @@ mod tests {
         let module = make_worker_with_cors(None);
 
         let removed = module
-            .unregister_router("GET", "/missing")
+            .unregister_router("GET", "/missing", "missing-trigger", None)
             .await
             .expect("unregister should succeed");
 

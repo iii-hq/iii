@@ -20,8 +20,8 @@ iii console
 ```
 
 Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Every worker you added is listed with the
-functions and triggers it registered. Create a link and follow it a few times, and watch the
-invocations stream in live:
+functions and triggers it registered. Navigate to the traces tab and run the below command to watch
+the invocations stream live:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
@@ -51,15 +51,6 @@ For most teams the console (or your own OTel backend) is all you need day to day
 chapter is an optional deep dive: reading the same logs and traces directly from the engine, which
 is how you'd wire observability into scripts, CI, or an agent.
 
-<CardGroup cols={2}>
-  <Card title="Use the console" icon="gauge" href="/tutorials/linkly/persistence">
-    The common path. Watch logs and traces in the console and continue to Chapter 3.
-  </Card>
-  <Card title="Go deeper" icon="terminal" href="#log-the-resolve">
-    Read on to pull the same logs and traces from the engine with `iii trigger`.
-  </Card>
-</CardGroup>
-
 ## Log the resolve
 
 `link::create` already logs. Add a matching line to `link::resolve` so every lookup is recorded.
@@ -76,7 +67,7 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
 });
 ```
 
-Save the file (the worker reloads), then drive some traffic:
+Save the file, then drive some traffic:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
@@ -91,7 +82,10 @@ curl -s -o /dev/null http://127.0.0.1:3111/s/missing
 iii trigger engine::logs::list limit=100 \
   | jq '.logs[]
       | select(.body == "link resolved")
-      | { body, "log.data": .attributes["log.data"], trace_id, service_name }'
+      | { body,
+          data: (.attributes | with_entries(select(.key | IN("trace_id","span_id","service.name") | not))),
+          trace_id,
+          service_name }'
 ```
 
 <Info>
@@ -102,14 +96,15 @@ iii trigger engine::logs::list limit=100 \
 ```json
 {
   "body": "link resolved",
-  "log.data": { "code": "iii", "found": true },
+  "data": { "code": "iii", "found": true },
   "trace_id": "6b20e1fe001742c25bb7dc570b57fe42",
   "service_name": "iii-node"
 }
 ```
 
-`log.data` is exactly what you passed to `logger.info`. The `trace_id` ties the log to the trace it
-came from, which is where you look next.
+`data` is exactly what you passed to `logger.info`; the engine stores those fields as individual log
+attributes, so the `jq` above gathers everything except the OTel metadata keys. The `trace_id` ties
+the log to the trace it came from, which is where you look next.
 
 ## Follow a redirect across workers
 
