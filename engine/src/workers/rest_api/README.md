@@ -115,13 +115,13 @@ iii.registerTrigger({
 
 ### Error Envelope
 
-Errors the server generates itself (handler invocation failure, middleware failure or timeout, unmet route condition) use one stable JSON shape, so clients and AI agents can parse it without guessing:
+Errors the server generates itself (handler invocation failure, middleware failure or timeout, unmet route condition, route-miss 404s — including URLs that match no route at all — and response-stream build failures) use one stable JSON shape, so clients and AI agents can parse it without guessing:
 
 ```json
 { "error": { "code": "HANDLER_ERROR", "message": "human-readable detail", "error_id": "a1b2c3d4e5f6" } }
 ```
 
-- `code` — machine-readable identifier. Engine-generated codes include `MIDDLEWARE_TIMEOUT`, `CONDITION_NOT_MET`, `INTERNAL_ERROR`; handler/condition failures surface the function's own error `code`.
+- `code` — machine-readable identifier. Engine-generated codes include `MIDDLEWARE_TIMEOUT`, `CONDITION_NOT_MET`, `INTERNAL_ERROR`, `NOT_FOUND`; handler/condition failures surface the function's own error `code`.
 - `message` — human-facing detail.
 - `error_id` — present on 5xx responses; correlates the response with server logs. Omitted where there is no log correlation (e.g. timeouts).
 - Unmet conditions return `422` with `"skipped": true` alongside the `error` object.
@@ -133,7 +133,7 @@ Bodies you return from your own handler or middleware pass through unchanged —
 The HTTP module supports middleware functions that run before the handler.
 
 - **Per-route middleware** — attached to a specific trigger via `middleware_function_ids`
-- **Global middleware** — configured in `iii-config.yaml`, runs on all HTTP routes
+- **Global middleware** — set in the `middleware` field of the `iii-http` configuration (seeded from the config.yaml block on first boot, hot-applied via the configuration worker afterwards), runs on all HTTP routes
 
 ### Global Middleware Configuration
 

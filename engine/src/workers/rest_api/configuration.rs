@@ -40,6 +40,10 @@ const APPLY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5)
 /// every boot; `initial_value` (the config.yaml seed, or built-in defaults) is
 /// included only when nothing is stored yet, so runtime edits survive engine
 /// restarts.
+///
+/// Makes unbounded bus calls — callers must wrap the call in
+/// `tokio::time::timeout(CONFIG_BUS_TIMEOUT, ...)` (see
+/// `HttpWorker::start_background_tasks`).
 pub async fn register_config(engine: &Engine, seed: Option<&RestApiConfig>) -> anyhow::Result<()> {
     let mut payload = json!({
         "id": CONFIG_ID,
@@ -69,6 +73,10 @@ pub async fn register_config(engine: &Engine, seed: Option<&RestApiConfig>) -> a
 /// expanded by `configuration::get`. A missing or null value falls back to the
 /// supplied config; a malformed stored value is an error so the caller keeps
 /// its previous config.
+///
+/// Makes an unbounded bus call — callers must wrap the call in
+/// `tokio::time::timeout(CONFIG_BUS_TIMEOUT, ...)` (see
+/// `HttpWorker::start_background_tasks` and `HttpWorker::apply_config`).
 pub async fn fetch_config(
     engine: &Engine,
     fallback: &RestApiConfig,
@@ -78,7 +86,11 @@ pub async fn fetch_config(
             "no `{}` configuration value stored; using static configuration",
             CONFIG_ID
         );
-        return Ok(fallback.clone());
+        // Normalized as invariant hardening: every current caller already
+        // passes an already-normalized snapshot, but a future caller handing
+        // in a raw config must not bypass the middleware sort / limit clamp.
+        // Idempotent, so a no-op for today's callers.
+        return Ok(fallback.clone().normalized());
     };
 
     let config: RestApiConfig = serde_json::from_value(value)
@@ -260,6 +272,14 @@ mod tests {
             payload["schema"]["properties"]["concurrency_request_limit"]["minimum"],
             json!(1.0),
             "concurrency_request_limit must carry minimum 1: {payload}"
+        );
+        // Middleware entries must reject unknown keys at set time too — a
+        // typo'd "priorty" silently running auth middleware at priority 0 is
+        // a security-relevant ordering bug.
+        assert_eq!(
+            payload["schema"]["definitions"]["MiddlewareConfig"]["additionalProperties"],
+            json!(false),
+            "MiddlewareConfig schema must deny unknown fields: {payload}"
         );
     }
 

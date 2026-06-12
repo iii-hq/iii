@@ -99,6 +99,7 @@ impl Default for RestApiConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MiddlewareConfig {
     /// ID of the function to invoke as middleware (e.g. `middleware::auth`).
     pub function_id: String,
@@ -214,6 +215,24 @@ mod tests {
         let cors = deserialized.cors.unwrap();
         assert_eq!(cors.allowed_origins, vec!["*"]);
         assert_eq!(cors.allowed_methods, vec!["GET"]);
+    }
+
+    #[test]
+    fn middleware_config_deny_unknown_fields() {
+        // A typo'd key inside a middleware object (e.g. "priorty") must fail
+        // loudly instead of silently running the middleware at priority 0 —
+        // global middleware is the auth/rate-limit chain, so ordering typos
+        // are security-relevant.
+        let json = r#"{
+            "middleware": [
+                {"function_id": "fn::auth", "priorty": 5}
+            ]
+        }"#;
+        let result: Result<RestApiConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in middleware entries"
+        );
     }
 
     #[test]

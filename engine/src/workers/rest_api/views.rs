@@ -709,8 +709,21 @@ pub async fn dynamic_handler(
                 return match response_builder.body(Body::from_stream(stream)) {
                     Ok(resp) => resp.into_response(),
                     Err(err) => {
-                        tracing::error!(error = ?err, "Failed to build streaming response");
-                        (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+                        let error_id = generate_error_id();
+                        tracing::error!(
+                            error = ?err,
+                            error_id = %error_id,
+                            "Failed to build streaming response"
+                        );
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(error_body(
+                                "INTERNAL_ERROR",
+                                "internal server error",
+                                Some(&error_id),
+                            )),
+                        )
+                            .into_response()
                     }
                 };
             }
@@ -781,10 +794,26 @@ pub async fn dynamic_handler(
             "Route not found: {} {}", method, actual_path
         );
 
-        (StatusCode::NOT_FOUND, "Not Found").into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(error_body("NOT_FOUND", "Not Found", None)),
+        )
+            .into_response()
     }
     .instrument(span)
     .await
+}
+
+/// Router-level fallback for requests that match no registered route at all.
+/// Without this, axum's default fallback returns an empty-body 404, breaking
+/// the stable error envelope that every other engine-generated error uses.
+/// No `error_id`: it is documented as 5xx-only (log correlation).
+pub async fn not_found_handler(method: axum::http::Method, uri: Uri) -> impl IntoResponse {
+    tracing::debug!(method = %method, path = %uri.path(), "No route matched");
+    (
+        StatusCode::NOT_FOUND,
+        Json(error_body("NOT_FOUND", "Not Found", None)),
+    )
 }
 
 #[cfg(test)]

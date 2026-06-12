@@ -577,6 +577,10 @@ impl HttpWorker {
             &self.routers_registry,
         );
 
+        // Unmatched URLs get the same stable error envelope as every other
+        // engine-generated error (axum's default fallback is an empty body).
+        new_router = new_router.fallback(super::views::not_found_handler);
+
         new_router = new_router.layer(cors_layer);
 
         new_router = new_router.layer(TimeoutLayer::with_status_code(

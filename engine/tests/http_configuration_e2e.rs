@@ -247,10 +247,16 @@ async fn port_change_rebinds_the_listener() {
 
 #[tokio::test]
 async fn env_placeholders_expand_on_read() {
+    // Scrub ambient state so the `${VAR:default}` default branch is what we
+    // actually exercise. SAFETY: runs before the harness spawns any task;
+    // remove_var is unsafe in edition 2024 because concurrent env access
+    // is UB.
+    unsafe { std::env::remove_var("HTTP_CFG_E2E_HOST") };
+
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
-    // HTTP_CFG_E2E_HOST is unset, so the default expands.
+    // HTTP_CFG_E2E_HOST was scrubbed above, so the default expands.
     let worker = start_http_worker(
         &harness,
         json!({ "host": "${HTTP_CFG_E2E_HOST:127.0.0.1}", "port": 0 }),
