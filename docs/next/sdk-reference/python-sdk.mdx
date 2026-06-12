@@ -59,6 +59,10 @@ def register_function(
 `request_format` / `response_format` accept either a JSON Schema dict or a `RegisterFunctionFormat`
 helper. They are stored alongside the function for the iii console and the agent-readable skills.
 
+The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii.runtime` submodule
+(`from iii.runtime import FunctionRef`). They stay importable from the package root as deprecated
+re-exports.
+
 ### `register_trigger`
 
 Bind a registered function to a configured trigger instance.
@@ -69,6 +73,10 @@ def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Tr
 
 Drop the trigger with `trigger.unregister()` on the returned handle. There is no top-level
 `unregister_trigger` method.
+
+The `Trigger`, `TriggerConfig`, and `TriggerHandler` types are exported from the `iii.trigger`
+submodule (`from iii.trigger import TriggerHandler`). They stay importable from the package root as
+deprecated re-exports.
 
 ### `register_trigger_type`
 
@@ -129,8 +137,8 @@ TriggerAction.Enqueue(queue="math")   # route through iii-queue; returns Trigger
 
 ## Error types
 
-Every invocation failure raises `IIIInvocationError`. Inspect its `code` attribute to
-distinguish categories:
+Every invocation failure raises `InvocationError`, imported from the `iii.errors` submodule
+(`from iii.errors import InvocationError`). Inspect its `code` attribute to distinguish categories:
 
 | `code`        | When raised                       |
 | ------------- | --------------------------------- |
@@ -138,9 +146,14 @@ distinguish categories:
 | `"TIMEOUT"`   | The invocation timed out.         |
 | other         | Any other engine-side rejection.  |
 
-`IIIInvocationError` has `code`, `message`, `function_id`, and `stacktrace` attributes.
+`InvocationError` has `code`, `message`, `function_id`, and `stacktrace` attributes. The former
+name `IIIInvocationError` stays importable from the package root as a deprecated alias.
 
 ## Channels
+
+Import channel types from the `iii.channel` submodule
+(`from iii.channel import ChannelReader, ChannelWriter`). They stay importable from the package root
+as deprecated re-exports.
 
 `ChannelReader` and `ChannelWriter` wrap the engine's stream WebSockets. `StreamChannelRef`
 identifies a channel:

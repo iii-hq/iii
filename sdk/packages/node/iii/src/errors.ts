@@ -11,21 +11,21 @@
  * prefix in the message, and `function_id` field together make a rejection
  * self-describing.
  */
-export type IIIInvocationErrorInit = {
+export type InvocationErrorInit = {
   code: string
   message: string
   function_id?: string
   stacktrace?: string
 }
 
-export class IIIInvocationError extends Error {
+export class InvocationError extends Error {
   public readonly code: string
   public readonly function_id?: string
   public readonly stacktrace?: string
 
-  constructor(init: IIIInvocationErrorInit) {
+  constructor(init: InvocationErrorInit) {
     super(`${init.code}: ${init.message}`)
-    this.name = 'IIIInvocationError'
+    this.name = 'InvocationError'
     this.code = init.code
     this.function_id = init.function_id
     this.stacktrace = init.stacktrace
@@ -36,7 +36,7 @@ export class IIIInvocationError extends Error {
  * True when `value` looks like the wire `ErrorBody` the engine sends in
  * `InvocationResult.error`: `{ code: string, message: string, stacktrace?: string }`.
  * Used to distinguish an engine rejection (which we wrap in
- * {@link IIIInvocationError}) from a JS `Error` thrown elsewhere.
+ * {@link InvocationError}) from a JS `Error` thrown elsewhere.
  */
 export function isErrorBody(value: unknown): value is {
   code: string
@@ -51,3 +51,16 @@ export function isErrorBody(value: unknown): value is {
     (v.stacktrace === undefined || typeof v.stacktrace === 'string')
   )
 }
+
+/**
+ * @deprecated Renamed to {@link InvocationError}; import from `iii-sdk/errors`.
+ */
+export const IIIInvocationError = InvocationError
+/**
+ * @deprecated Renamed to {@link InvocationError}.
+ */
+export type IIIInvocationError = InvocationError
+/**
+ * @deprecated Renamed to {@link InvocationErrorInit}.
+ */
+export type IIIInvocationErrorInit = InvocationErrorInit
