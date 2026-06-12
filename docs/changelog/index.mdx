@@ -102,6 +102,16 @@ type: "reference"
   - The VM UDP relay now writes a real pseudo-header checksum on response packets (strict guest stacks drop zero-checksum UDP), bounds payloads to the 16-bit IP length limit instead of silently truncating, and no longer injects empty frames into the guest's rx ring.
   - Shell frame readers (proto, client, relay) zero-initialize their buffers instead of using uninitialized memory before the socket read.
 
+  ## `iii-observability` is fully configurable through the configuration worker
+
+  The engine's observability worker registers its complete configuration surface — trace/metric/log exporters, sampling (ratio, per-operation rules, rate limits), in-memory store limits and retention, alert rules, span-collapse rules, and the engine log level/format — under the `iii-observability` configuration entry. The config.yaml block seeds the entry on first boot and is ignored afterwards; runtime edits survive restarts.
+
+  Changes hot-apply per field tier: ingest gates, `logs_console_output`, and `logs_sampling_ratio` are read live; store limits retune on the next insert/sweep; the sampler, alert rules (with cooldown/firing continuity for surviving rules), span-collapse cache, and engine log level rebuild and swap in place; the OTLP logs exporter and log-retention tasks restart with new settings. Restart-tier fields (trace exporter wiring, resource identity, log format) are warned about and apply at the next engine start — the persisted entry is read at boot, before logging init, so they genuinely take effect.
+
+  The schema rejects invalid values at `configuration::set` time (unknown fields, sampling ratios outside `0..=1`, zero counts), and out-of-range values that predate a schema tightening are clamped on read.
+
+  This work also fixed three latent dead-config bugs: `metrics_max_count`/`metrics_retention_seconds` and `logs_max_count` were silently shadowed by defaults claimed before the worker booted, and advanced `sampling` rules never reached the engine tracer because the sampler was built before the global config existed. All three now apply — and the first two are live-tunable.
+
   ## `iii-http` runtime settings live in the configuration worker
 
   The HTTP worker now registers its config schema under the `iii-http` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — CORS, timeout, concurrency limit, and global middleware swap without dropping the listener; a `host`/`port` change binds the new address before tearing down the old one, and a failed bind keeps the previous server running. `${VAR:default}` placeholders expand in string fields. The schema carries per-field descriptions and rejects invalid values (including `concurrency_request_limit: 0`) at set time.
