@@ -768,7 +768,7 @@ impl ObservabilityWorker {
         severity_number: i32,
     ) {
         // Respect logs_enabled: if explicitly disabled, skip storage/emit entirely.
-        if !otel::logs_enabled(otel::get_otel_config()) {
+        if !otel::logs_enabled(otel::get_otel_config().as_deref()) {
             return;
         }
 

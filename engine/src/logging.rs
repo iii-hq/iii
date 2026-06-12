@@ -526,7 +526,7 @@ fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
         let otel_trace_layer = init_otel(otel_cfg);
 
         // Initialize OTEL logs layer if enabled
-        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config()) {
+        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config().as_deref()) {
             // Get max logs from global config (if set) or use default
             let max_logs = get_otel_config()
                 .and_then(|cfg| cfg.logs_max_count)
@@ -562,7 +562,7 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
         let otel_trace_layer = init_otel(otel_cfg);
 
         // Initialize OTEL logs layer if enabled
-        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config()) {
+        let otel_logs_layer = if otel_cfg.enabled && logs_enabled(get_otel_config().as_deref()) {
             // Get max logs from global config (if set) or use default
             let max_logs = get_otel_config()
                 .and_then(|cfg| cfg.logs_max_count)

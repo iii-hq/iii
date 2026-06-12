@@ -42,15 +42,21 @@ use tracing_subscriber::registry::LookupSpan;
 /// Default maximum number of spans to keep in memory.
 const DEFAULT_MEMORY_MAX_SPANS: usize = 1000;
 
-/// Global OTEL configuration set from YAML config
-static GLOBAL_OTEL_CONFIG: OnceLock<ObservabilityWorkerConfig> = OnceLock::new();
+/// Global OTEL configuration. Seeded from YAML config (or the persisted
+/// configuration entry) at boot, and swappable at runtime by the
+/// configuration-worker apply path.
+static GLOBAL_OTEL_CONFIG: RwLock<Option<Arc<ObservabilityWorkerConfig>>> = RwLock::new(None);
 
-/// Set the global OTEL configuration from the module.
+/// Set the global OTEL configuration (first-set only).
 /// This should be called during module initialization, before logging is set up.
 ///
 /// Returns true if the config was set, false if it was already initialized.
 pub fn set_otel_config(config: ObservabilityWorkerConfig) -> bool {
-    if GLOBAL_OTEL_CONFIG.set(config).is_ok() {
+    let mut slot = GLOBAL_OTEL_CONFIG
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if slot.is_none() {
+        *slot = Some(Arc::new(config));
         true
     } else {
         // Config already set - this can happen if module is re-initialized
@@ -60,9 +66,27 @@ pub fn set_otel_config(config: ObservabilityWorkerConfig) -> bool {
     }
 }
 
+/// Unconditionally replace the global OTEL configuration (the authoritative
+/// configuration-worker apply path). Per-use readers (ingest gates,
+/// `logs_console_output`, `logs_sampling_ratio`, ...) observe the new value
+/// immediately; state built from the previous snapshot (providers, layers,
+/// spawned tasks) is updated by the caller's apply logic. Returns the
+/// previous value.
+pub fn update_otel_config(
+    config: ObservabilityWorkerConfig,
+) -> Option<Arc<ObservabilityWorkerConfig>> {
+    let mut slot = GLOBAL_OTEL_CONFIG
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.replace(Arc::new(config))
+}
+
 /// Get the global OTEL configuration if set.
-pub fn get_otel_config() -> Option<&'static ObservabilityWorkerConfig> {
-    GLOBAL_OTEL_CONFIG.get()
+pub fn get_otel_config() -> Option<Arc<ObservabilityWorkerConfig>> {
+    GLOBAL_OTEL_CONFIG
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// Decide whether OTEL logs storage / emission should be active, given an
@@ -109,6 +133,7 @@ impl Default for OtelConfig {
     fn default() -> Self {
         // First check global config from YAML, then fall back to environment variables
         let global_cfg = get_otel_config();
+        let global_cfg = global_cfg.as_deref();
 
         let enabled = global_cfg
             .and_then(|c| c.enabled)
@@ -2740,7 +2765,7 @@ pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
     // disabled at config time. Otherwise a Node/Python SDK worker posting
     // logs would lazily revive the storage that `initialize()` deliberately
     // did not create.
-    if !logs_enabled(get_otel_config()) {
+    if !logs_enabled(get_otel_config().as_deref()) {
         return Ok(());
     }
 

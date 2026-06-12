@@ -50,6 +50,7 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         // Check global config from YAML first, then fall back to environment variables
         let global_cfg = super::otel::get_otel_config();
+        let global_cfg = global_cfg.as_deref();
 
         let enabled = global_cfg
             .and_then(|c| c.metrics_enabled)
