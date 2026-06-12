@@ -102,6 +102,24 @@ async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
     }
 }
 
+/// Async-predicate variant of `wait_for`.
+async fn wait_for_async<F, Fut>(mut predicate: F, what: &str)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if predicate().await {
+            return;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("timed out waiting for {what}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// Reserve a free TCP port by binding to port 0 and dropping the listener.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -318,10 +336,69 @@ async fn restart_falls_back_to_seed_when_stored_address_unbindable() {
     // unbindable address; the worker must fall back to the seed instead of
     // failing to start — a bad runtime edit must not become an HTTP outage.
     worker.destroy().await.expect("destroy");
+    // destroy() aborts the server task; wait until the aborted task has
+    // actually dropped the port_a listener so the restart's fixed-port
+    // fallback bind can't race it on a loaded scheduler.
+    wait_for_async(
+        || async {
+            tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+                .await
+                .is_err()
+        },
+        "old listener to release port_a",
+    )
+    .await;
     let restarted = start_http_worker(&harness, seed).await;
 
     tokio::net::TcpStream::connect(("127.0.0.1", port_a))
         .await
         .expect("restarted server falls back to the seed address");
     assert_eq!(restarted.config_snapshot().port, port_a);
+}
+
+#[tokio::test]
+async fn restart_refuses_seed_fallback_that_widens_loopback() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let port_a = free_port();
+    let port_b = free_port();
+    assert_ne!(port_a, port_b);
+    // Non-loopback seed; the runtime edit restricts the listener to loopback.
+    let seed = json!({ "host": "0.0.0.0", "port": port_a });
+
+    let worker = start_http_worker(&harness, seed.clone()).await;
+
+    let _blocker = std::net::TcpListener::bind(("127.0.0.1", port_b)).expect("occupy port_b");
+    set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
+    harness
+        .engine
+        .call("iii-http::on-config-change", json!({}))
+        .await
+        .expect("config-change handler is invocable");
+
+    worker.destroy().await.expect("destroy");
+    wait_for_async(
+        || async {
+            tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+                .await
+                .is_err()
+        },
+        "old listener to release port_a",
+    )
+    .await;
+
+    // Restart: the stored loopback address cannot bind, and the 0.0.0.0 seed
+    // would WIDEN the listen surface — the worker must refuse and fail to
+    // start rather than silently exposing every interface.
+    let restarted = HttpWorker::for_test(harness.engine.clone(), Some(seed)).expect("worker");
+    restarted.initialize().await.expect("initialize");
+    Worker::register_functions(&restarted, harness.engine.clone());
+    let result = restarted
+        .start_background_tasks(harness.shutdown_rx.clone(), harness.shutdown_tx.clone())
+        .await;
+    assert!(
+        result.is_err(),
+        "loopback-widening fallback must be refused, got: {result:?}"
+    );
 }

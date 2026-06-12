@@ -745,7 +745,7 @@ pub async fn dynamic_handler(
                     );
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": err.message, "error_id": error_id})),
+                        Json(error_body(&err.code, &err.message, Some(&error_id))),
                     ).into_response()
                 }
                 Err(join_err) => {
@@ -762,7 +762,11 @@ pub async fn dynamic_handler(
                     );
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": "internal server error", "error_id": error_id})),
+                        Json(error_body(
+                            "INTERNAL_ERROR",
+                            "internal server error",
+                            Some(&error_id),
+                        )),
                     ).into_response()
                 }
             };

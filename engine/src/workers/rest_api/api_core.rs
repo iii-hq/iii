@@ -184,17 +184,33 @@ impl Worker for HttpWorker {
         // Bind after the fetch so a runtime-edited host/port survives restarts.
         // If the stored address cannot be bound (e.g. a bad host/port was
         // persisted by a runtime edit whose rebind failed), fall back to the
-        // seed/static address instead of failing the whole worker start —
-        // otherwise one bad configuration edit turns into an HTTP outage on
-        // the next engine restart.
+        // seed address instead of failing the whole worker start — otherwise
+        // one bad configuration edit turns into an HTTP outage on the next
+        // engine restart. The fallback is GUARDED: it requires an explicit
+        // config.yaml seed (never the built-in 0.0.0.0 default), and it must
+        // not widen a loopback-restricted stored host to a non-loopback
+        // interface — an occupied local port must not be able to force the
+        // API onto every interface.
         let config = self.config_snapshot();
         let addr = format!("{}:{}", config.host, config.port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(listener) => listener,
             Err(err) => {
-                let fallback = self.seed.clone().unwrap_or_default();
+                let Some(fallback) = self.seed.clone() else {
+                    return Err(crate::workers::traits::bind_address_error(&addr, err));
+                };
                 let fallback_addr = format!("{}:{}", fallback.host, fallback.port);
-                if fallback_addr == addr {
+                let widens_loopback =
+                    is_loopback_host(&config.host) && !is_loopback_host(&fallback.host);
+                if fallback_addr == addr || widens_loopback {
+                    if widens_loopback {
+                        tracing::error!(
+                            stored = %addr,
+                            seed = %fallback_addr,
+                            "iii-http: refusing seed fallback that would widen a \
+                             loopback-only address to a non-loopback interface"
+                        );
+                    }
                     return Err(crate::workers::traits::bind_address_error(&addr, err));
                 }
                 tracing::error!(
@@ -202,7 +218,7 @@ impl Worker for HttpWorker {
                     stored = %addr,
                     fallback = %fallback_addr,
                     "iii-http: stored configuration address cannot be bound; serving on the \
-                     seed/static address — fix the stored `iii-http` configuration value"
+                     seed address — fix the stored `iii-http` configuration value"
                 );
                 self.set_config(fallback);
                 TcpListener::bind(&fallback_addr).await.map_err(|err| {
@@ -248,15 +264,15 @@ impl Worker for HttpWorker {
                 error = %err,
                 "iii-http: failed to watch configuration changes; hot-reload disabled"
             );
-        } else if let Err(err) = self.apply_config().await {
+        } else {
             // Catch-up pass: replay any `configuration::set` that landed
             // between the boot fetch above and the trigger subscription —
             // without it that window's updates would be dropped until the
-            // next edit. Same-address values are a cheap snapshot swap.
-            tracing::warn!(
-                error = %err,
-                "iii-http: post-subscribe configuration catch-up failed; serving boot config"
-            );
+            // next edit. Routed through `on_config_change` so a timed-out
+            // catch-up (slow configuration backend during boot) gets the
+            // same one-shot delayed retry as a trigger-driven apply instead
+            // of leaving the boot config stale until the next edit.
+            super::configuration::on_config_change(self).await;
         }
 
         Ok(())
@@ -296,6 +312,17 @@ impl Worker for HttpWorker {
 }
 
 const ALLOW_ORIGIN_ANY: &str = "*";
+
+/// True for hosts that restrict the listener to the local machine
+/// ("localhost", 127.0.0.0/8, ::1). Used by the boot bind fallback to refuse
+/// widening a loopback-only stored address to a non-loopback seed.
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
 
 impl HttpWorker {
     fn from_config(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
@@ -455,6 +482,19 @@ impl HttpWorker {
             return Ok(());
         }
 
+        // Resolve every fallible prerequisite before mutating the live config,
+        // so a failed rebind leaves the previous config and server untouched.
+        // The shutdown_rx check comes FIRST: it doubles as the destroyed-worker
+        // guard (destroy() clears it), and checking it before binding means a
+        // post-destroy retry can never transiently bind the stored address
+        // while a replacement worker is booting.
+        let shutdown_rx = self
+            .shutdown_rx
+            .lock()
+            .expect("shutdown_rx mutex poisoned")
+            .clone()
+            .ok_or_else(|| anyhow!("server was never started; cannot rebind"))?;
+
         let listener = TcpListener::bind(&new_addr).await.map_err(|err| {
             anyhow!(
                 "failed to bind {}; keeping server on {}: {}",
@@ -463,15 +503,6 @@ impl HttpWorker {
                 err
             )
         })?;
-
-        // Resolve every fallible prerequisite before mutating the live config,
-        // so a failed rebind leaves the previous config and server untouched.
-        let shutdown_rx = self
-            .shutdown_rx
-            .lock()
-            .expect("shutdown_rx mutex poisoned")
-            .clone()
-            .ok_or_else(|| anyhow!("server was never started; cannot rebind"))?;
 
         self.set_config(new_config);
         self.update_routes().await?;
@@ -1080,6 +1111,17 @@ mod tests {
             ..RestApiConfig::default()
         };
         HttpWorker::new_for_tests(engine, config)
+    }
+
+    #[test]
+    fn is_loopback_host_classification() {
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("127.5.4.3"));
+        assert!(is_loopback_host("::1"));
+        assert!(!is_loopback_host("0.0.0.0"));
+        assert!(!is_loopback_host("192.168.1.10"));
+        assert!(!is_loopback_host("example.com"));
     }
 
     #[test]
