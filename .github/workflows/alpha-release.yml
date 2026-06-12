@@ -1,0 +1,208 @@
+name: Alpha Release
+
+# Publishes an isolated alpha prerelease of every SDK + engine-internal lib
+# from ANY feature branch, without touching main. The version anchors on the
+# latest stable tag and appends an accumulating -alpha.N suffix
+# (0.19.2-alpha.1, .2, .3 ...).
+#
+# Isolation guarantees:
+#   * Tags live under the iii-alpha/v* namespace, so release-iii.yml
+#     (trigger iii/v*) never fires.
+#   * No commit or push to main or to the feature branch — the version bump
+#     lives only in an ephemeral commit that the alpha tag points at.
+#   * Publishes ONLY npm + pypi + crates + go. No engine binaries, worker
+#     images, worker skills, homebrew or docker.
+#
+# Run from: Actions -> Alpha Release -> "Use workflow from: <feature-branch>".
+# Note: dry_run still creates the iii-alpha tag (publishers need it to check
+# out the bumped commit) and increments the counter; it just skips uploads.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and validate without publishing (still pushes the iii-alpha tag)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Bump & tag alpha
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.versions.outputs.tag }}
+      version: ${{ steps.versions.outputs.version }}
+      python_version: ${{ steps.versions.outputs.python_version }}
+      npm_tag: ${{ steps.versions.outputs.npm_tag }}
+      dry_run: ${{ inputs.dry_run }}
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Refuse to run on main
+        run: |
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          if [[ "$BRANCH" == "main" ]]; then
+            echo "::error::alpha-release is for feature branches; use create-tag for main releases"
+            exit 1
+          fi
+          echo "Alpha release from branch: $BRANCH"
+
+      - name: Calculate alpha version
+        id: versions
+        run: |
+          python3 .github/scripts/calculate_release_version.py \
+            --target iii \
+            --bump none \
+            --prerelease alpha \
+            --counter-tag-prefix iii-alpha \
+            --current-version-file engine/Cargo.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure git identity
+        run: |
+          git config user.name "iii-ci[bot]"
+          git config user.email "iii-ci[bot]@users.noreply.github.com"
+
+      - name: Bump all manifests in lockstep
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+          PY_VERSION: ${{ steps.versions.outputs.python_version }}
+        run: |
+          python3 .github/scripts/bump_manifests.py \
+            --root . \
+            --version "$VERSION" \
+            --python-version "$PY_VERSION"
+
+      - name: Sync Cargo.lock
+        run: cargo update --workspace
+
+      - name: Commit bump (ephemeral) and push the alpha tag only
+        env:
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          git add -A
+          git commit -m "chore(alpha): $TAG [skip ci]"
+          git tag -a "$TAG" -m "Alpha release $TAG"
+          # Push ONLY the tag. The branch (and main) are never modified on
+          # the remote — the bump commit is reachable solely via this tag.
+          git push origin "$TAG"
+          echo "Pushed alpha tag: $TAG"
+
+  observability-npm:
+    name: Observability Node (npm)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/observability
+      npm_tag: ${{ needs.prepare.outputs.npm_tag }}
+      build_filter: "@iii-dev/observability"
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  sdk-npm:
+    name: SDK Node (npm)
+    needs: [prepare, observability-npm]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/iii
+      npm_tag: ${{ needs.prepare.outputs.npm_tag }}
+      build_filter: iii-sdk
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  sdk-npm-browser:
+    name: SDK Browser (npm)
+    needs: [prepare, observability-npm]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/iii-browser
+      npm_tag: ${{ needs.prepare.outputs.npm_tag }}
+      build_filter: iii-browser-sdk
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  observability-py:
+    name: Observability Python (pypi)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/observability
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  sdk-py:
+    name: SDK Python (pypi)
+    needs: [prepare, observability-py]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/iii
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  observability-rust:
+    name: Observability Rust (cargo)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/observability
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  sdk-rust:
+    name: SDK Rust (cargo)
+    needs: [prepare, observability-rust]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/iii
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  sdk-go:
+    name: SDK Go (module)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_go.yml
+    with:
+      package_path: sdk/packages/go/iii
+      module_path: github.com/iii-hq/iii/sdk/packages/go/iii
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
