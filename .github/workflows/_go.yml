@@ -26,6 +26,11 @@ on:
         description: 'Semantic version without the v prefix (e.g., 0.1.0)'
         required: true
         type: string
+      ref:
+        description: 'Git ref to checkout (default: the triggering ref)'
+        required: false
+        type: string
+        default: ''
       dry_run:
         description: 'Build and validate without pushing the tag'
         required: false
@@ -70,6 +75,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # full history so we can tag
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-go@v5
         with:
