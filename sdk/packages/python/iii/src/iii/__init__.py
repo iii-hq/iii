@@ -14,16 +14,8 @@ from .iii_constants import (
     TelemetryOptions,
 )
 from .iii_types import (
-    AuthInput,
-    AuthResult,
     MessageType,
     MiddlewareFunctionInput,
-    OnFunctionRegistrationInput,
-    OnFunctionRegistrationResult,
-    OnTriggerRegistrationInput,
-    OnTriggerRegistrationResult,
-    OnTriggerTypeRegistrationInput,
-    OnTriggerTypeRegistrationResult,
     RegisterFunctionFormat,
     RegisterFunctionMessage,
     RegisterTriggerInput,
@@ -70,15 +62,7 @@ __all__ = [
     "EngineFunctions",
     "EngineTriggers",
     # RBAC types
-    "AuthInput",
-    "AuthResult",
     "MiddlewareFunctionInput",
-    "OnFunctionRegistrationInput",
-    "OnFunctionRegistrationResult",
-    "OnTriggerRegistrationInput",
-    "OnTriggerRegistrationResult",
-    "OnTriggerTypeRegistrationInput",
-    "OnTriggerTypeRegistrationResult",
     # Message types
     "MessageType",
     "RegisterFunctionFormat",

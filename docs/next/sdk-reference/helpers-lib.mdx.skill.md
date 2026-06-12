@@ -10,14 +10,14 @@
 
 The helpers library holds primitives that are shared across the language SDKs and have no dependency
 on the root SDK package. It is published per language and organized into submodules. This page
-documents the `queue` and `http` submodules. Other submodules (`stream`,
-`worker-connection-manager`) are documented as they are populated.
+documents the `queue`, `http`, and `worker-connection-manager` submodules. The remaining submodule
+(`stream`) is documented as it is populated.
 
-| Language | Package | Queue import path | HTTP import path |
-| --- | --- | --- | --- |
-| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` | `@iii-dev/helpers/http` |
-| Python | `iii-helpers` | `iii_helpers.queue` | `iii_helpers.http` |
-| Rust | `iii-helpers` | `iii_helpers::queue` | `iii_helpers::http` |
+| Language | Package | Queue import path | HTTP import path | Worker connection manager import path |
+| --- | --- | --- | --- | --- |
+| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` | `@iii-dev/helpers/http` | `@iii-dev/helpers/worker-connection-manager` |
+| Python | `iii-helpers` | `iii_helpers.queue` | `iii_helpers.http` | `iii_helpers.worker_connection_manager` |
+| Rust | `iii-helpers` | `iii_helpers::queue` | `iii_helpers::http` | `iii_helpers::worker_connection_manager` |
 
 The root SDK depends on the helpers package and imports these primitives internally where needed.
 They are not re-exported from the root SDK public surface; import them from the helpers submodule.
@@ -193,3 +193,319 @@ streaming types were renamed) are removed. The buffered request and response typ
 `HttpRequest` and `HttpResponse` names directly. In Node and Python the streaming `Stream*` types and
 the buffered `Http*` types are distinct. In Rust `StreamRequest` and `StreamResponse` are aliases of
 `HttpRequest` and `HttpResponse`.
+
+## worker-connection-manager
+
+The `worker-connection-manager` submodule defines the RBAC types exchanged with the worker
+connection manager: the auth input and result, and the input and result for the function, trigger,
+and trigger type registration hooks. These eight types are defined only in the
+`worker-connection-manager` submodule. The root SDK does not re-export them; import them from the
+submodule (`@iii-dev/helpers/worker-connection-manager`, `iii_helpers.worker_connection_manager`,
+`iii_helpers::worker_connection_manager`).
+
+<Note>
+  `MiddlewareFunctionInput` stays in the root SDK. It references the core `TriggerAction` type, so it
+  remains alongside the rest of the core surface and is imported from the root SDK package.
+</Note>
+
+### `AuthInput`
+
+Input passed to the RBAC auth function during the WebSocket upgrade. It carries the HTTP headers,
+query parameters, and client IP from the connecting worker's upgrade request.
+
+<CodeGroup>
+
+```typescript Node
+export type AuthInput = {
+  headers: Record<string, string>
+  query_params: Record<string, string[]>
+  ip_address: string
+}
+```
+
+```python Python
+class AuthInput(BaseModel):
+    headers: dict[str, str]
+    query_params: dict[str, list[str]]
+    ip_address: str
+```
+
+```rust Rust
+pub struct AuthInput {
+    pub headers: HashMap<String, String>,
+    pub query_params: HashMap<String, Vec<String>>,
+    pub ip_address: String,
+}
+```
+
+</CodeGroup>
+
+### `AuthResult`
+
+Return value from the RBAC auth function. It controls which functions the authenticated worker can
+invoke and what context is forwarded to the middleware.
+
+<CodeGroup>
+
+```typescript Node
+export type AuthResult = {
+  allowed_functions: string[]
+  forbidden_functions: string[]
+  allowed_trigger_types?: string[]
+  allow_trigger_type_registration: boolean
+  allow_function_registration?: boolean
+  context: Record<string, unknown>
+  function_registration_prefix?: string
+}
+```
+
+```python Python
+class AuthResult(BaseModel):
+    allowed_functions: list[str]
+    forbidden_functions: list[str]
+    allowed_trigger_types: list[str] | None = None
+    allow_trigger_type_registration: bool
+    allow_function_registration: bool = True
+    function_registration_prefix: str | None = None
+    context: dict[str, Any]
+```
+
+```rust Rust
+pub struct AuthResult {
+    #[serde(default)]
+    pub allowed_functions: Vec<String>,
+    #[serde(default)]
+    pub forbidden_functions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_trigger_types: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    pub allow_trigger_type_registration: bool,
+    #[serde(default = "default_true")]
+    pub allow_function_registration: bool,
+    #[serde(default = "default_context")]
+    pub context: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_registration_prefix: Option<String>,
+}
+```
+
+</CodeGroup>
+
+### `OnFunctionRegistrationInput`
+
+Input passed to the function registration hook when a worker attempts to register a function through
+the RBAC port. The hook returns an `OnFunctionRegistrationResult` with the possibly mapped fields, or
+denies the registration.
+
+<CodeGroup>
+
+```typescript Node
+export type OnFunctionRegistrationInput = {
+  function_id: string
+  description?: string
+  metadata?: Record<string, unknown>
+  context: Record<string, unknown>
+}
+```
+
+```python Python
+class OnFunctionRegistrationInput(BaseModel):
+    function_id: str
+    description: str | None = None
+    metadata: dict[str, Any] | None = None
+    context: dict[str, Any]
+```
+
+```rust Rust
+pub struct OnFunctionRegistrationInput {
+    pub function_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    pub context: Value,
+}
+```
+
+</CodeGroup>
+
+### `OnFunctionRegistrationResult`
+
+Result returned from the function registration hook. Omitted fields keep the original value from the
+registration request.
+
+<CodeGroup>
+
+```typescript Node
+export type OnFunctionRegistrationResult = {
+  function_id?: string
+  description?: string
+  metadata?: Record<string, unknown>
+}
+```
+
+```python Python
+class OnFunctionRegistrationResult(BaseModel):
+    function_id: str | None = None
+    description: str | None = None
+    metadata: dict[str, Any] | None = None
+```
+
+```rust Rust
+pub struct OnFunctionRegistrationResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+```
+
+</CodeGroup>
+
+### `OnTriggerRegistrationInput`
+
+Input passed to the trigger registration hook when a worker attempts to register a trigger through
+the RBAC port. The hook returns an `OnTriggerRegistrationResult` with the possibly mapped fields, or
+denies the registration.
+
+<CodeGroup>
+
+```typescript Node
+export type OnTriggerRegistrationInput = {
+  trigger_id: string
+  trigger_type: string
+  function_id: string
+  config: unknown
+  metadata?: Record<string, unknown>
+  context: Record<string, unknown>
+}
+```
+
+```python Python
+class OnTriggerRegistrationInput(BaseModel):
+    trigger_id: str
+    trigger_type: str
+    function_id: str
+    config: Any = None
+    metadata: dict[str, Any] | None = None
+    context: dict[str, Any]
+```
+
+```rust Rust
+pub struct OnTriggerRegistrationInput {
+    pub trigger_id: String,
+    pub trigger_type: String,
+    pub function_id: String,
+    pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    pub context: Value,
+}
+```
+
+</CodeGroup>
+
+### `OnTriggerRegistrationResult`
+
+Result returned from the trigger registration hook. Omitted fields keep the original value from the
+registration request.
+
+<CodeGroup>
+
+```typescript Node
+export type OnTriggerRegistrationResult = {
+  trigger_id?: string
+  trigger_type?: string
+  function_id?: string
+  config?: unknown
+}
+```
+
+```python Python
+class OnTriggerRegistrationResult(BaseModel):
+    trigger_id: str | None = None
+    trigger_type: str | None = None
+    function_id: str | None = None
+    config: Any = None
+```
+
+```rust Rust
+pub struct OnTriggerRegistrationResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
+}
+```
+
+</CodeGroup>
+
+### `OnTriggerTypeRegistrationInput`
+
+Input passed to the trigger type registration hook when a worker attempts to register a new trigger
+type through the RBAC port. The hook returns an `OnTriggerTypeRegistrationResult` with the possibly
+mapped fields, or denies the registration.
+
+<CodeGroup>
+
+```typescript Node
+export type OnTriggerTypeRegistrationInput = {
+  trigger_type_id: string
+  description: string
+  context: Record<string, unknown>
+}
+```
+
+```python Python
+class OnTriggerTypeRegistrationInput(BaseModel):
+    trigger_type_id: str
+    description: str
+    context: dict[str, Any]
+```
+
+```rust Rust
+pub struct OnTriggerTypeRegistrationInput {
+    pub trigger_type_id: String,
+    pub description: String,
+    pub context: Value,
+}
+```
+
+</CodeGroup>
+
+### `OnTriggerTypeRegistrationResult`
+
+Result returned from the trigger type registration hook. Omitted fields keep the original value from
+the registration request.
+
+<CodeGroup>
+
+```typescript Node
+export type OnTriggerTypeRegistrationResult = {
+  trigger_type_id?: string
+  description?: string
+}
+```
+
+```python Python
+class OnTriggerTypeRegistrationResult(BaseModel):
+    trigger_type_id: str | None = None
+    description: str | None = None
+```
+
+```rust Rust
+pub struct OnTriggerTypeRegistrationResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_type_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+```
+
+</CodeGroup>

@@ -70,11 +70,7 @@ pub use protocol::{
     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream_provider::IStream;
-pub use structs::{
-    AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
-    OnFunctionRegistrationResult, OnTriggerRegistrationInput, OnTriggerRegistrationResult,
-    OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
-};
+pub use structs::MiddlewareFunctionInput;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
