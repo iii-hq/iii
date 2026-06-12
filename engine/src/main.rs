@@ -181,10 +181,14 @@ enum Commands {
         /// Specific command or binary to update (e.g., "console", "self").
         /// Use "self" or "iii" to update only iii.
         /// If omitted, updates iii and all installed binaries.
-        #[arg(name = "command", conflicts_with = "list_targets")]
+        #[arg(
+            name = "command",
+            value_name = "COMMAND",
+            conflicts_with = "list_targets"
+        )]
         target: Option<String>,
 
-        /// List the targets you can pass to `iii update <target>` and exit.
+        /// List the targets you can pass to `iii update [COMMAND]` and exit.
         #[arg(long = "list-targets")]
         list_targets: bool,
     },

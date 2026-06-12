@@ -2762,6 +2762,7 @@ name = "iii-clap-docs"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "regex",
 ]
 
 [[package]]

@@ -21,7 +21,7 @@ iii [OPTIONS] [COMMAND]
 | ------ | ----------- |
 | `-c, --config <CONFIG>` | Path to the config file [default: config.yaml] |
 | `-v, --version` | Print version and exit |
-| `--use-default-config` | Run with built-in defaults instead of a config file. Cannot be combined with --config |
+| `--use-default-config` | Run with built-in defaults instead of a config file. Cannot be combined with `--config` |
 | `--no-update-check` | Disable background update and security advisory checks |
 
 **Subcommands:**
@@ -45,7 +45,7 @@ iii project <COMMAND>
 
 #### `iii project generate-docker`
 
-Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project
+Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing iii project
 
 ```bash
 iii project generate-docker [OPTIONS]
@@ -66,16 +66,16 @@ iii project init [OPTIONS] [NAME]
 
 | Argument | Description |
 | -------- | ----------- |
-| `[NAME]` | Project directory (positional). Equivalent to --directory |
+| `[NAME]` | Project name (positional). Also used for directory when `--directory` is not specified |
 
 | Option | Description |
 | ------ | ----------- |
 | `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
-| `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env) |
+| `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env). Equivalent to running `iii project generate-docker` separately |
 | `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 | `--skip-iii` | Skip the iii-engine version compatibility check |
-| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An existing `.iii/project.ini` is always rejected; delete the marker or pick a different directory |
+| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
 
 ### `iii trigger`
 
@@ -98,7 +98,7 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 | `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
 
 <Note>
-  `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Functions](../using-iii/functions).
+  `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
 </Note>
 
 ### `iii update`
@@ -106,16 +106,16 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 Update iii and managed binaries to their latest versions
 
 ```bash
-iii update [OPTIONS] [command]
+iii update [OPTIONS] [COMMAND]
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `[command]` | Specific command or binary to update (e.g., "console", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
+| `[COMMAND]` | Specific command or binary to update (e.g., "console", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
 
 | Option | Description |
 | ------ | ----------- |
-| `--list-targets` | List the targets you can pass to `iii update <target>` and exit |
+| `--list-targets` | List the targets you can pass to `iii update [COMMAND]` and exit |
 
 ## `iii worker`
 
@@ -131,7 +131,7 @@ iii worker <COMMAND>
 
 | Command | Description |
 | ------- | ----------- |
-| [`add`](#iii-worker-add) | Install an EXISTING worker from the registry or by OCI image reference. To create a NEW worker from scratch, use `iii worker init` |
+| [`add`](#iii-worker-add) | Install a worker from the iii registry, a local directory, or by OCI image reference |
 | [`clear`](#iii-worker-clear) | Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed) |
 | [`exec`](#iii-worker-exec) | Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY |
 | [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
@@ -142,15 +142,15 @@ iii worker <COMMAND>
 | [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start. Idempotent: running workers get a clean cycle, stopped workers start. By default waits up to 120s for the worker to report ready |
 | [`sandbox`](#iii-worker-sandbox) | Manage ephemeral sandboxes (create/exec/stop short-lived VMs) |
 | [`start`](#iii-worker-start) | Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready |
-| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass --no-watch for a one-shot snapshot |
+| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass `--no-watch` for a one-shot snapshot |
 | [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings it back from the same config entry, so the CLI no longer prompts for confirmation |
-| [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock. Pass --frozen in CI to verify without mutating local files |
+| [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock. Pass `--frozen` in CI to verify without mutating local files |
 | [`update`](#iii-worker-update) | Re-resolve locked workers and update iii.lock |
 | [`verify`](#iii-worker-verify) | Verify config.yaml is represented in iii.lock without mutating files |
 
 ### `iii worker add`
 
-Install an EXISTING worker from the registry or by OCI image reference. To create a NEW worker from scratch, use `iii worker init`
+Install a worker from the iii registry, a local directory, or by OCI image reference
 
 ```bash
 iii worker add [OPTIONS] <WORKER[@VERSION]>...
@@ -162,7 +162,7 @@ iii worker add [OPTIONS] <WORKER[@VERSION]>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires --force on add) |
+| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires `--force` on add) |
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
 | `--no-wait` | Don't block waiting for the engine to finish booting the sandbox. By default `add` waits up to 120s for the worker to report ready |
 
@@ -213,7 +213,7 @@ iii worker init [OPTIONS] [NAME]
 
 | Argument | Description |
 | -------- | ----------- |
-| `[NAME]` | Worker directory (positional). Equivalent to --directory |
+| `[NAME]` | Worker name (positional). Also used for directory when `--directory` is not specified |
 
 | Option | Description |
 | ------ | ----------- |
@@ -263,7 +263,7 @@ iii worker reinstall [OPTIONS] <WORKER[@VERSION]>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires --force on add) |
+| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires `--force` on add) |
 
 ### `iii worker remove`
 
@@ -467,7 +467,7 @@ iii worker start [OPTIONS] <WORKER>
 
 ### `iii worker status`
 
-Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass --no-watch for a one-shot snapshot
+Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass `--no-watch` for a one-shot snapshot
 
 ```bash
 iii worker status [OPTIONS] <WORKER>
@@ -499,7 +499,7 @@ iii worker stop [OPTIONS] <WORKER>
 
 ### `iii worker sync`
 
-Install registry-managed workers exactly from iii.lock. Pass --frozen in CI to verify without mutating local files
+Install registry-managed workers exactly from iii.lock. Pass `--frozen` in CI to verify without mutating local files
 
 ```bash
 iii worker sync [OPTIONS]

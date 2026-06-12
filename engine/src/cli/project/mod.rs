@@ -32,13 +32,13 @@ pub struct ProjectArgs {
 pub enum ProjectAction {
     /// Initialize a new iii project in the current directory
     Init(InitArgs),
-    /// Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project
+    /// Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing iii project
     GenerateDocker(GenerateDockerArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
-    /// Project directory (positional). Equivalent to --directory.
+    /// Project name (positional). Also used for directory when --directory is not specified.
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
 
@@ -46,7 +46,8 @@ pub struct InitArgs {
     #[arg(short, long)]
     pub directory: Option<String>,
 
-    /// Also generate Docker assets (Dockerfile, docker-compose.yml, .env)
+    /// Also generate Docker assets (Dockerfile, docker-compose.yml, .env).
+    /// Equivalent to running `iii project generate-docker` separately.
     #[arg(long)]
     pub docker: bool,
 
@@ -66,9 +67,8 @@ pub struct InitArgs {
 
     /// Allow scaffolding into a non-empty directory. Without this flag, init
     /// errors out if the target dir contains anything other than hidden
-    /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An
-    /// existing `.iii/project.ini` is always rejected; delete the marker
-    /// or pick a different directory.
+    /// dotfiles (e.g. `.git/`). Re-running init in a directory with
+    /// `.iii/project.ini` is always allowed (idempotent re-init).
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
 }

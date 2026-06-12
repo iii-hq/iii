@@ -57,8 +57,8 @@ fn mdx_only_notes() -> BTreeMap<String, String> {
         "iii trigger".to_string(),
         "<Note>\n  `iii trigger <function> --help` additionally queries a running engine for \
          the function's description and request schema. That output depends on which workers \
-         are registered and is not part of this page; see \
-         [Functions](../using-iii/functions).\n</Note>"
+         are registered and is not part of this page; see [Creating Workers / \
+         Functions](../creating-workers/functions#attach-request-and-response-schemas).\n</Note>"
             .to_string(),
     );
     map

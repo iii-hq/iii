@@ -104,8 +104,30 @@ fn prepare(cmd: Command) -> (Command, String) {
         .get_bin_name()
         .unwrap_or_else(|| cmd.get_name())
         .to_string();
+    validate_value_names(&cmd, &root_path);
     let cmd = set_bin_names(cmd, &root_path);
     (cmd, root_path)
+}
+
+/// Enforce the placeholder standard: value names render as `<VALUE>` /
+/// `[VALUE]` in usage lines and tables, so they must not contain lowercase
+/// ASCII (a lowercase name means someone set `value_name` or `name` by
+/// hand). Panics so the gen-cli-docs run, and with it the CLI Docs Built
+/// job, fails loudly instead of publishing an inconsistent page.
+fn validate_value_names(cmd: &Command, path: &str) {
+    for arg in cmd.get_arguments().filter(|a| !a.is_hide_set()) {
+        for name in arg.get_value_names().unwrap_or_default() {
+            assert!(
+                !name.as_str().chars().any(|c| c.is_ascii_lowercase()),
+                "value name `{name}` on `{path}` arg `{}` contains lowercase; \
+                 placeholders are rendered in caps (e.g. value_name = \"COMMAND\")",
+                arg.get_id()
+            );
+        }
+    }
+    for sub in cmd.get_subcommands().filter(|s| !s.is_hide_set()) {
+        validate_value_names(sub, &format!("{path} {}", sub.get_name()));
+    }
 }
 
 /// Normalize trailing whitespace to one newline.
@@ -440,16 +462,34 @@ fn esc_mdx(s: &str) -> String {
         .enumerate()
         .map(|(i, seg)| {
             if i % 2 == 0 {
-                seg.replace('\\', "\\\\")
+                let escaped = seg
+                    .replace('\\', "\\\\")
                     .replace('<', "\\<")
                     .replace('{', "\\{")
-                    .replace('}', "\\}")
+                    .replace('}', "\\}");
+                backtick_flags(&escaped)
             } else {
                 seg.to_string()
             }
         })
         .collect::<Vec<_>>()
         .join("`")
+}
+
+/// Wrap bare `--flag` mentions in backticks. MDX smart typography turns a
+/// plain double hyphen into an en/em dash ("--directory" renders as
+/// "–directory"); inside a code span it stays literal, and flags read as
+/// code anyway. Only called on text OUTSIDE existing code spans, so
+/// already-backticked flags are never double-wrapped.
+fn backtick_flags(s: &str) -> String {
+    use std::sync::LazyLock;
+    // A flag starts at the beginning of the text or after whitespace/an
+    // opening paren, and runs while [A-Za-z0-9-]; trailing punctuation
+    // (".", ";", ":") naturally falls outside the match.
+    static FLAG: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(^|[\s(])(--[A-Za-z][A-Za-z0-9-]*)").expect("static pattern")
+    });
+    FLAG.replace_all(s, "$1`$2`").into_owned()
 }
 
 /// Escape a markdown table cell: MDX escapes plus pipe escaping, newlines
@@ -736,6 +776,33 @@ mod tests {
         );
         // Not duplicated into other sections.
         assert_eq!(mdx.matches("<Warning>").count(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "contains lowercase")]
+    fn lowercase_value_names_fail_generation() {
+        let cmd = Command::new("iii")
+            .subcommand(Command::new("update").arg(Arg::new("target").value_name("command")));
+        render_mdx(cmd, &meta());
+    }
+
+    #[test]
+    fn bare_flags_get_backticked_against_smart_dashes() {
+        let cmd = Command::new("iii")
+            .about("Pass --no-watch for a snapshot. Equivalent to --directory.")
+            .arg(
+                Arg::new("frozen")
+                    .long("frozen")
+                    .action(ArgAction::SetTrue)
+                    .help("Pass --frozen in CI (see `add --force` and non-empty dirs)"),
+            );
+        let mdx = render_mdx(cmd, &meta());
+        // Bare flags wrapped, trailing punctuation left outside.
+        assert!(mdx.contains("Pass `--no-watch` for a snapshot. Equivalent to `--directory`."));
+        // Wrapped in cells too; already-backticked spans untouched (no
+        // double wrap), hyphenated words untouched.
+        assert!(mdx.contains("Pass `--frozen` in CI (see `add --force` and non-empty dirs)"));
+        assert!(!mdx.contains("``--"), "double-wrapped flag:\n{mdx}");
     }
 
     #[test]

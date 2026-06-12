@@ -36,8 +36,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install an EXISTING worker from the registry or by OCI image reference.
-    /// To create a NEW worker from scratch, use `iii worker init`.
+    /// Install a worker from the iii registry, a local directory, or by OCI image reference.
     Add {
         #[command(flatten)]
         args: AddArgs,

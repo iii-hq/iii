@@ -76,7 +76,7 @@ impl WorkerLanguage {
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
-    /// Worker directory (positional). Equivalent to --directory.
+    /// Worker name (positional). Also used for directory when --directory is not specified.
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
 

@@ -11,3 +11,6 @@ description = "Renders a clap::Command tree as a Mintlify MDX CLI reference page
 # on every node so render_usage prints complete command paths. "env" exposes
 # Arg::get_env so env-var-backed flags (console uses them) are documented.
 clap = { version = "4", features = ["string", "env"] }
+# Wraps bare `--flag` mentions in help prose in backticks; Mintlify's smart
+# typography otherwise renders the double hyphen as an en/em dash.
+regex = "1"
