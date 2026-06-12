@@ -545,8 +545,8 @@ jobs:
       #- name: Lint
       #  run: npx @biomejs/biome check sdk/packages/node
 
-      - name: Build observability (prerequisite for type check)
-        run: pnpm --filter @iii-dev/observability build
+      - name: Build helper packages (prerequisite for type check)
+        run: pnpm --filter @iii-dev/observability build && pnpm --filter @iii-dev/helpers build
 
       - name: Type check
         run: pnpm --filter iii-sdk exec tsc --noEmit

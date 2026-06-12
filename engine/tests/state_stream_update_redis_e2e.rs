@@ -19,7 +19,7 @@
 use serde_json::json;
 
 use iii::workers::state::adapters::{StateAdapter, redis_adapter::StateRedisAdapter};
-use iii_sdk::UpdateOp;
+use iii_helpers::stream::UpdateOp;
 
 const SCOPE: &str = "audio::transcripts";
 
