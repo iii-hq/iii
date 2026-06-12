@@ -328,7 +328,7 @@ pub struct SandboxDaemonArgs {
     pub engine: String,
 }
 
-/// Subcommands for `iii sandbox`. Each one talks to the engine's
+/// Subcommands for `iii worker sandbox`. Each one talks to the engine's
 /// `sandbox::*` trigger handlers via the iii-sdk WebSocket client.
 #[derive(Subcommand, Debug)]
 pub enum SandboxCmd {
@@ -358,10 +358,10 @@ pub enum SandboxCmd {
     },
 
     /// Create a long-lived sandbox and print its id to stdout. Pair with
-    /// `iii sandbox exec <id>` and `iii sandbox stop <id>`.
+    /// `iii worker sandbox exec <id>` and `iii worker sandbox stop <id>`.
     ///
     /// Pipe-friendly: the sandbox id is the only thing on stdout, so you
-    /// can do `SB=$(iii sandbox create python)` in a shell.
+    /// can do `SB=$(iii worker sandbox create python)` in a shell.
     Create {
         /// OCI image reference (must match the engine's sandbox allowlist).
         #[arg(value_name = "IMAGE")]
@@ -401,11 +401,11 @@ pub enum SandboxCmd {
 
     /// Run a command inside an already-running sandbox.
     ///
-    /// Pipe-mode only. Pair with `iii sandbox create` for the sandbox id.
+    /// Pipe-mode only. Pair with `iii worker sandbox create` for the sandbox id.
     /// For interactive TTY sessions, use `iii worker exec` against a managed
     /// worker instead.
     Exec {
-        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        /// Sandbox id from `iii worker sandbox create` / `iii worker sandbox list`.
         #[arg(value_name = "SANDBOX_ID")]
         id: String,
 
@@ -424,7 +424,7 @@ pub enum SandboxCmd {
         port: u16,
 
         /// Program and arguments to exec inside the sandbox. Comes after `--`:
-        /// `iii sandbox exec <id> -- python3 -c 'print(2+2)'`.
+        /// `iii worker sandbox exec <id> -- python3 -c 'print(2+2)'`.
         #[arg(trailing_var_arg = true, value_name = "COMMAND")]
         cmd: Vec<String>,
     },
@@ -432,7 +432,7 @@ pub enum SandboxCmd {
     /// List every sandbox the daemon knows about.
     ///
     /// The daemon's list RPC is owner-scoped for multi-tenant SDK
-    /// callers, but `iii sandbox` is a local admin tool with no
+    /// callers, but `iii worker sandbox` is a local admin tool with no
     /// authenticated identity, so the CLI always requests the unscoped
     /// view. The `--all` flag is a silent no-op, kept so scripts that
     /// pass it from earlier releases keep working.
@@ -466,10 +466,10 @@ pub enum SandboxCmd {
     /// the sandbox.
     ///
     /// Examples:
-    ///   iii sandbox upload <SB> ./script.js /workspace/script.js
-    ///   tar -cf - ./srcdir | iii sandbox upload <SB> - /workspace/src.tar
+    ///   iii worker sandbox upload <SB> ./script.js /workspace/script.js
+    ///   tar -cf - ./srcdir | iii worker sandbox upload <SB> - /workspace/src.tar
     Upload {
-        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        /// Sandbox id from `iii worker sandbox create` / `iii worker sandbox list`.
         #[arg(value_name = "SANDBOX_ID")]
         id: String,
 
@@ -500,10 +500,10 @@ pub enum SandboxCmd {
     /// disk (or stdout when `LOCAL_PATH` is `-`).
     ///
     /// Examples:
-    ///   iii sandbox download <SB> /workspace/output.json ./output.json
-    ///   iii sandbox download <SB> /workspace/build.tar - | tar -tf -
+    ///   iii worker sandbox download <SB> /workspace/output.json ./output.json
+    ///   iii worker sandbox download <SB> /workspace/build.tar - | tar -tf -
     Download {
-        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        /// Sandbox id from `iii worker sandbox create` / `iii worker sandbox list`.
         #[arg(value_name = "SANDBOX_ID")]
         id: String,
 

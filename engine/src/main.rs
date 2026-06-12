@@ -666,7 +666,8 @@ mod tests {
 
     #[test]
     fn sandbox_is_no_longer_a_valid_subcommand() {
-        // `iii sandbox` was removed in favor of `iii trigger sandbox::<op>`.
+        // `iii sandbox` was moved to `iii worker sandbox` for managing ephemeral VMs.
+        // As well as `iii trigger sandbox::<op>` for working with the sandbox through the sandbox worker.
         // Bare `iii sandbox` should now fail to parse.
         let result = Cli::try_parse_from(["iii", "sandbox"]);
         assert!(
