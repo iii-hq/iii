@@ -25,7 +25,6 @@ export type { Trigger, TriggerConfig, TriggerHandler } from './trigger'
 
 export type {
   IIIClient,
-  InternalHttpRequest,
   RegisterFunctionInput,
   RegisterFunctionOptions,
   RegisterTriggerInput,

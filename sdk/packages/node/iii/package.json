@@ -61,6 +61,11 @@
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.mjs",
       "require": "./dist/errors.cjs"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.mjs",
+      "require": "./dist/internal.cjs"
     }
   },
   "dependencies": {

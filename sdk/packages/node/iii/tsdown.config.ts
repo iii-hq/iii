@@ -10,6 +10,7 @@ export default defineConfig({
     './src/trigger.ts',
     './src/runtime.ts',
     './src/errors.ts',
+    './src/internal.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,

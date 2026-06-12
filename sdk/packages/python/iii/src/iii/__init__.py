@@ -32,7 +32,6 @@ from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
     Channel,
     IIIClient,
-    InternalHttpRequest,
     RemoteFunctionHandler,
     StreamRequest,
     StreamResponse,
@@ -75,7 +74,6 @@ __all__ = [
     # Types
     "Channel",
     "IIIClient",
-    "InternalHttpRequest",
     "RemoteFunctionHandler",
     "StreamRequest",
     "StreamResponse",

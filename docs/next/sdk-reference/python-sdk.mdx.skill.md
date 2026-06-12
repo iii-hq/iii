@@ -61,6 +61,9 @@ The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii.r
 (`from iii.runtime import FunctionRef`). They stay importable from the package root as deprecated
 re-exports.
 
+The `InternalHttpRequest` type is provided only by the `iii.internal` submodule
+(`from iii.internal import InternalHttpRequest`). It is not importable from the package root.
+
 ### `register_trigger`
 
 Bind a registered function to a configured trigger instance.
