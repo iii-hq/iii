@@ -260,6 +260,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.tag }}
+          # Build runs checked-out code; uploads go through softprops (token
+          # via env), so the write token never needs to sit in git config.
+          persist-credentials: false
 
       - name: Install cross-compilation tools
         run: |
@@ -369,7 +372,8 @@ jobs:
       version: ${{ needs.prepare.outputs.version }}
       release_tag: ${{ needs.prepare.outputs.tag }}
       registry_tag: alpha
-    secrets: inherit
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
 
   publish-worker-skills:
     name: Publish worker skills (alpha)
@@ -378,4 +382,5 @@ jobs:
     uses: ./.github/workflows/_publish-worker-skills.yml
     with:
       registry_tag: alpha
-    secrets: inherit
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}

@@ -76,6 +76,10 @@ jobs:
         with:
           fetch-depth: 0 # full history so we can tag
           ref: ${{ inputs.ref }}
+          # Don't leave the write-scoped token in git config: the caller
+          # controls `ref` and we run go build/test before pushing. Auth is
+          # supplied only to the tag-push step below.
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:
@@ -96,12 +100,14 @@ jobs:
         if: ${{ inputs.dry_run == false }}
         env:
           TAG: ${{ inputs.package_path }}/v${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             echo "Tag $TAG already exists, nothing to push."
           else
             git tag "$TAG"
-            git push origin "$TAG"
+            # Auth scoped to this push only (checkout used persist-credentials: false).
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$TAG"
           fi
 
       - name: Verify the proxy resolves the published version
