@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use iii::workers::state::adapters::{StateAdapter, kv_store::BuiltinKvStoreAdapter};
-use iii_sdk::UpdateOp;
+use iii_helpers::stream::UpdateOp;
 use serde_json::json;
 use tokio::runtime::Runtime;
 
