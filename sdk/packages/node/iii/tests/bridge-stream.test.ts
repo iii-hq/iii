@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { StreamSetInput, StreamSetResult } from '../src/stream'
+import type { StreamSetInput, StreamSetResult } from '@iii-dev/helpers/stream'
 import { bridgeIII } from './bridge-utils'
 
 type TestData = {

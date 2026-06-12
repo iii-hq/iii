@@ -2,7 +2,7 @@
 
 import json
 
-from iii.stream import StreamUpdateResult, UpdateAppend, UpdateMerge, UpdateOpError
+from iii_helpers.stream import StreamUpdateResult, UpdateAppend, UpdateMerge, UpdateOpError
 
 
 def test_update_append_model_serializes() -> None:

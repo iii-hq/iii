@@ -1,8 +1,9 @@
 use async_trait::async_trait;
-use iii_sdk::{
-    DeleteResult, IStream, SetResult, StreamDeleteInput, StreamGetInput, StreamListGroupsInput,
+use iii_helpers::stream::{
+    DeleteResult, SetResult, StreamDeleteInput, StreamGetInput, StreamListGroupsInput,
     StreamListInput, StreamSetInput, StreamUpdateInput, UpdateResult,
 };
+use iii_sdk::IStream;
 use serde_json::Value;
 
 struct DummyStream;

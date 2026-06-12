@@ -37,14 +37,6 @@ pub mod errors {
 
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
 pub use builtin_triggers::IIITrigger;
-#[deprecated(since = "0.20.0", note = "renamed to StreamChangeEvent")]
-pub use builtin_triggers::StreamChangeEvent as StreamCallRequest;
-#[deprecated(since = "0.20.0", note = "renamed to StreamJoinLeaveEvent")]
-pub use builtin_triggers::StreamJoinLeaveEvent as StreamJoinLeaveCallRequest;
-pub use builtin_triggers::{
-    StreamChangeEvent, StreamEventDetail, StreamEventType, StreamJoinLeaveEvent,
-    StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
-};
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
 pub use engine::{EngineFunctions, EngineTriggers};
@@ -75,11 +67,7 @@ pub use structs::MiddlewareFunctionInput;
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use types::Channel;
-pub use types::{
-    DeleteResult, SetResult, StreamAuthInput, StreamAuthResult, StreamDeleteInput, StreamGetInput,
-    StreamJoinResult, StreamListGroupsInput, StreamListInput, StreamRequest, StreamResponse,
-    StreamSetInput, StreamUpdateInput, UpdateOp, UpdateOpError, UpdateResult,
-};
+pub use types::{StreamRequest, StreamResponse};
 
 /// Configuration options passed to [`register_worker`].
 ///
@@ -236,12 +224,35 @@ fn _ensure_channel_submodule_path() {}
 #[allow(dead_code)]
 fn _ensure_errors_submodule_path() {}
 
-/// ```rust,no_run
+// ---------------------------------------------------------------------------
+// Stream types relocated to `iii_helpers::stream`: they are no longer reachable
+// at the crate root, and are reachable from the helpers submodule.
+// ---------------------------------------------------------------------------
+
+/// ```compile_fail
 /// use iii_sdk::{StreamChangeEvent, StreamJoinLeaveEvent};
+/// ```
+#[allow(dead_code)]
+fn _ensure_stream_events_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::{StreamTriggerConfig, StreamJoinLeaveTriggerConfig};
+/// ```
+#[allow(dead_code)]
+fn _ensure_stream_trigger_configs_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::{UpdateOp, StreamGetInput};
+/// ```
+#[allow(dead_code)]
+fn _ensure_stream_io_types_not_top_level() {}
+
+/// ```rust,no_run
+/// use iii_helpers::stream::{StreamChangeEvent, StreamJoinLeaveEvent};
 /// fn _takes(_a: StreamChangeEvent, _b: StreamJoinLeaveEvent) {}
 /// ```
 #[allow(dead_code)]
-fn _ensure_stream_event_names() {}
+fn _ensure_stream_events_helpers_path() {}
 
 /// ```rust,no_run
 /// use iii_sdk::{EngineFunctions, EngineTriggers};
