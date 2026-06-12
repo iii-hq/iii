@@ -400,6 +400,14 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
         None => return OtelConfig::default(),
     };
 
+    otel_config_from_module(module_config)
+}
+
+/// Map the observability worker's config block onto the boot-time
+/// `OtelConfig` consumed by `init_otel`.
+fn otel_config_from_module(
+    module_config: crate::workers::observability::config::ObservabilityWorkerConfig,
+) -> OtelConfig {
     let mut otel_cfg = OtelConfig::default();
 
     if let Some(enabled) = module_config.enabled {
@@ -428,8 +436,147 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
     otel_cfg
 }
 
+/// Resolve the authoritative boot configuration for the `iii-observability`
+/// worker:
+///
+/// 1. yaml entry with a config block → that block;
+/// 2. yaml entry without a config block → built-in defaults (enabled);
+/// 3. no yaml entry → `None` (observability stays off unless env-enabled,
+///    exactly as before — a stray persisted file must not switch it on).
+///
+/// When the configuration worker uses the file-backed adapter and a
+/// persisted `iii-observability` entry exists, its value REPLACES the yaml
+/// block (the stored entry is the runtime source of truth; config.yaml is
+/// seed-only after first boot). This is what lets restart-tier fields
+/// (trace exporter wiring, resource identity, log format) edited through
+/// `configuration::set` take effect at the next engine start.
+///
+/// Runs before any tracing subscriber exists, so diagnostics use stdio.
+fn resolve_boot_observability_config(
+    cfg: &EngineConfig,
+) -> Option<crate::workers::observability::config::ObservabilityWorkerConfig> {
+    use crate::workers::observability::config::ObservabilityWorkerConfig;
+
+    let entry = cfg
+        .modules
+        .iter()
+        .chain(cfg.workers.iter())
+        .find(|m| m.name == "iii-observability")?;
+
+    let yaml_base: ObservabilityWorkerConfig = match &entry.config {
+        Some(value) => match serde_json::from_value(value.clone()) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!(
+                    "iii-observability config block in config.yaml is invalid ({err});                      using built-in defaults"
+                );
+                ObservabilityWorkerConfig::default()
+            }
+        },
+        None => ObservabilityWorkerConfig::default(),
+    };
+
+    let merged = match read_persisted_observability_value(cfg) {
+        Some(stored) => match serde_json::from_value::<ObservabilityWorkerConfig>(stored) {
+            Ok(stored_cfg) => {
+                println!(
+                    "Using persisted iii-observability configuration entry                      (config.yaml block is seed-only)"
+                );
+                stored_cfg
+            }
+            Err(err) => {
+                eprintln!(
+                    "persisted iii-observability configuration is invalid ({err});                      using the config.yaml block"
+                );
+                yaml_base
+            }
+        },
+        None => yaml_base,
+    };
+
+    Some(merged.normalized())
+}
+
+/// Read the persisted `iii-observability` configuration value written by the
+/// configuration worker's file-backed adapter, with the same `${VAR:default}`
+/// expansion `configuration::get` applies. Returns `None` (boot falls back to
+/// the yaml block) when the adapter is not file-backed, the file is absent
+/// (fresh boot), or anything about the file is unusable.
+fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::Value> {
+    let adapter_cfg = cfg
+        .modules
+        .iter()
+        .chain(cfg.workers.iter())
+        .find(|m| m.name == "configuration")
+        .and_then(|e| e.config.as_ref())
+        .and_then(|c| c.get("adapter"));
+
+    let adapter_name = adapter_cfg
+        .and_then(|a| a.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("fs");
+    if adapter_name != "fs" {
+        println!(
+            "persisted iii-observability configuration not read at boot:              configuration adapter '{adapter_name}' is not file-backed"
+        );
+        return None;
+    }
+
+    let directory = adapter_cfg
+        .and_then(|a| a.get("config"))
+        .and_then(|c| c.get("directory"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("./data/configuration");
+    let path = std::path::Path::new(directory).join("iii-observability.yaml");
+
+    let bytes = std::fs::read(&path).ok()?; // absent: fresh boot, use yaml
+
+    let entry: serde_json::Value = match serde_yaml::from_slice(&bytes) {
+        Ok(entry) => entry,
+        Err(err) => {
+            eprintln!(
+                "persisted configuration entry {} is not valid YAML ({err});                  using the config.yaml block",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let value = entry.get("value").cloned().filter(|v| !v.is_null())?;
+
+    // `expand_value` panics on a `${VAR}` placeholder with no default and no
+    // env value. At runtime that fails one bus call; here it would brick
+    // every engine start until the data file is hand-edited — so contain it
+    // and fall back to the yaml block.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::workers::configuration::store::expand_value(&value)
+    })) {
+        Ok(expanded) => Some(expanded),
+        Err(_) => {
+            eprintln!(
+                "persisted configuration entry {} references an environment variable                  with no value and no default; using the config.yaml block",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
 pub fn init_log_from_engine_config(cfg: &EngineConfig) {
-    let otel_cfg = extract_otel_config(cfg);
+    // Resolve the authoritative boot configuration (persisted entry over
+    // yaml block) and publish it as the global BEFORE any pipeline or layer
+    // construction, so the sampler, log storage sizing, and metric store
+    // limits are built from the same source of truth the configuration
+    // worker serves at runtime.
+    let boot_config = resolve_boot_observability_config(cfg);
+    if let Some(boot) = &boot_config {
+        let _ = crate::workers::observability::otel::set_otel_config(boot.clone());
+    }
+
+    let otel_cfg = match boot_config.clone() {
+        Some(module_config) => otel_config_from_module(module_config),
+        None => OtelConfig::default(),
+    };
+
     let otel_module_name = "iii-observability";
     let otel_module_cfg = cfg
         .modules
@@ -437,16 +584,22 @@ pub fn init_log_from_engine_config(cfg: &EngineConfig) {
         .chain(cfg.workers.iter())
         .find(|m| m.name == otel_module_name);
 
-    let log_level = otel_module_cfg
-        .and_then(|m| m.config.as_ref())
-        .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
+    // `log_level` (raw yaml lookup) is a legacy alias not present on the
+    // typed config struct; it keeps working for yaml-only deployments.
+    let log_level = boot_config
+        .as_ref()
+        .and_then(|c| c.level.clone())
+        .or_else(|| {
+            otel_module_cfg
+                .and_then(|m| m.config.as_ref())
+                .and_then(|c| c.get("log_level"))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+        })
         .unwrap_or_else(|| "info".to_string());
 
-    let log_format = otel_module_cfg
-        .and_then(|m| m.config.as_ref())
-        .and_then(|c| c.get("format"))
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
+    let log_format = boot_config
+        .as_ref()
+        .and_then(|c| c.format.clone())
         .unwrap_or_else(|| "default".to_string());
 
     println!(
@@ -1128,6 +1281,159 @@ mod tests {
         );
         assert_eq!(otel.service_name, "workers-key-test");
         assert!(matches!(otel.exporter, ExporterType::Memory));
+    }
+
+    fn boot_cfg_with_dir(
+        dir: &std::path::Path,
+        observability_block: serde_json::Value,
+    ) -> EngineConfig {
+        EngineConfig {
+            modules: vec![],
+            workers: vec![
+                WorkerEntry {
+                    name: "iii-observability".to_string(),
+                    image: None,
+                    config: Some(observability_block),
+                },
+                WorkerEntry {
+                    name: "configuration".to_string(),
+                    image: None,
+                    config: Some(serde_json::json!({
+                        "adapter": { "name": "fs", "config": { "directory": dir.to_string_lossy() } }
+                    })),
+                },
+            ],
+        }
+    }
+
+    fn write_persisted_entry(dir: &std::path::Path, value: serde_json::Value) {
+        let entry = serde_json::json!({
+            "id": "iii-observability",
+            "name": "Observability",
+            "description": "",
+            "schema": { "type": "object" },
+            "value": value,
+        });
+        std::fs::write(
+            dir.join("iii-observability.yaml"),
+            serde_yaml::to_string(&entry).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn boot_merge_uses_yaml_when_file_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({ "logs_max_count": 123 }));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(resolved.logs_max_count, Some(123));
+    }
+
+    #[test]
+    fn boot_merge_prefers_persisted_value_over_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(dir.path(), serde_json::json!({ "logs_max_count": 777 }));
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({ "logs_max_count": 123 }));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(
+            resolved.logs_max_count,
+            Some(777),
+            "the persisted entry is the source of truth; config.yaml is seed-only"
+        );
+    }
+
+    #[test]
+    fn boot_merge_expands_env_placeholders() {
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(
+            dir.path(),
+            serde_json::json!({ "service_name": "${III_BOOT_MERGE_TEST_UNSET:fallback-name}" }),
+        );
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({}));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(resolved.service_name.as_deref(), Some("fallback-name"));
+    }
+
+    #[test]
+    fn boot_merge_falls_back_on_malformed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("iii-observability.yaml"), ":: not yaml ::[").unwrap();
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({ "logs_max_count": 123 }));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(resolved.logs_max_count, Some(123));
+    }
+
+    #[test]
+    fn boot_merge_falls_back_on_invalid_stored_value() {
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(dir.path(), serde_json::json!({ "unknown_field": true }));
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({ "logs_max_count": 123 }));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(resolved.logs_max_count, Some(123));
+    }
+
+    #[test]
+    fn boot_merge_skips_non_fs_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(dir.path(), serde_json::json!({ "logs_max_count": 777 }));
+        let mut cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({ "logs_max_count": 123 }));
+        cfg.workers[1].config = Some(serde_json::json!({
+            "adapter": { "name": "bridge", "config": { "directory": dir.path().to_string_lossy() } }
+        }));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(
+            resolved.logs_max_count,
+            Some(123),
+            "a non-file-backed adapter must not be read from disk"
+        );
+    }
+
+    #[test]
+    fn boot_merge_returns_none_when_entry_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(dir.path(), serde_json::json!({ "enabled": true }));
+        let mut cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({}));
+        cfg.workers.remove(0);
+
+        assert!(
+            resolve_boot_observability_config(&cfg).is_none(),
+            "a stray persisted file must not switch observability on for engines \
+             that never declared the worker"
+        );
+    }
+
+    #[test]
+    fn boot_merge_entry_without_block_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({}));
+        cfg.workers[0].config = None;
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(
+            resolved.enabled,
+            Some(true),
+            "defaults keep observability enabled"
+        );
+    }
+
+    #[test]
+    fn boot_merge_normalizes_out_of_range_stored_values() {
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(
+            dir.path(),
+            serde_json::json!({ "sampling_ratio": 9.0, "memory_max_spans": 0 }),
+        );
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({}));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(resolved.sampling_ratio, Some(1.0));
+        assert_eq!(resolved.memory_max_spans, None);
     }
 
     #[test]
