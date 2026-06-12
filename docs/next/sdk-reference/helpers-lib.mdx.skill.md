@@ -10,14 +10,13 @@
 
 The helpers library holds primitives that are shared across the language SDKs and have no dependency
 on the root SDK package. It is published per language and organized into submodules. This page
-documents the `queue`, `http`, and `worker-connection-manager` submodules. The remaining submodule
-(`stream`) is documented as it is populated.
+documents the `queue`, `http`, `worker-connection-manager`, and `stream` submodules.
 
-| Language | Package | Queue import path | HTTP import path | Worker connection manager import path |
-| --- | --- | --- | --- | --- |
-| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` | `@iii-dev/helpers/http` | `@iii-dev/helpers/worker-connection-manager` |
-| Python | `iii-helpers` | `iii_helpers.queue` | `iii_helpers.http` | `iii_helpers.worker_connection_manager` |
-| Rust | `iii-helpers` | `iii_helpers::queue` | `iii_helpers::http` | `iii_helpers::worker_connection_manager` |
+| Language | Package | Queue import path | HTTP import path | Worker connection manager import path | Stream import path |
+| --- | --- | --- | --- | --- | --- |
+| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` | `@iii-dev/helpers/http` | `@iii-dev/helpers/worker-connection-manager` | `@iii-dev/helpers/stream` |
+| Python | `iii-helpers` | `iii_helpers.queue` | `iii_helpers.http` | `iii_helpers.worker_connection_manager` | `iii_helpers.stream` |
+| Rust | `iii-helpers` | `iii_helpers::queue` | `iii_helpers::http` | `iii_helpers::worker_connection_manager` | `iii_helpers::stream` |
 
 The root SDK depends on the helpers package and imports these primitives internally where needed.
 They are not re-exported from the root SDK public surface; import them from the helpers submodule.
@@ -505,6 +504,439 @@ pub struct OnTriggerTypeRegistrationResult {
     pub trigger_type_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+```
+
+</CodeGroup>
+
+## stream
+
+The `stream` submodule defines the trigger configs, change and join/leave events, the input types for
+stream operations, the auth input and result, the operation results, and the atomic update
+operations. These symbols live only in the `stream` submodule. The root SDK does not re-export them;
+import them from the submodule (`@iii-dev/helpers/stream`, `iii_helpers.stream`,
+`iii_helpers::stream`).
+
+<Info>
+  `IStream` and the streaming request and response types (`StreamRequest`, `StreamResponse`) stay in
+  the root SDK because they reference core-only types. `IStream` imports the input and result types
+  from this submodule. The `state` operations reuse the update-operation types (`UpdateOp`,
+  `UpdateOpError`) from this submodule.
+</Info>
+
+### `StreamTriggerConfig`
+
+Trigger config for `stream` triggers. It filters which item changes fire the handler by stream name,
+group, and item, with an optional condition function.
+
+<CodeGroup>
+
+```typescript Node
+export interface StreamTriggerConfig {
+  stream_name: string
+  group_id?: string
+  item_id?: string
+  condition_function_id?: string
+}
+```
+
+```python Python
+class StreamTriggerConfig(BaseModel):
+    stream_name: str
+    group_id: str | None = None
+    item_id: str | None = None
+    condition_function_id: str | None = None
+```
+
+```rust Rust
+pub struct StreamTriggerConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_function_id: Option<String>,
+}
+```
+
+</CodeGroup>
+
+### `StreamJoinLeaveTriggerConfig`
+
+Trigger config for `stream:join` and `stream:leave` triggers.
+
+<CodeGroup>
+
+```typescript Node
+export interface StreamJoinLeaveTriggerConfig {
+  condition_function_id?: string
+}
+```
+
+```python Python
+class StreamJoinLeaveTriggerConfig(BaseModel):
+    condition_function_id: str | None = None
+```
+
+```rust Rust
+pub struct StreamJoinLeaveTriggerConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_function_id: Option<String>,
+}
+```
+
+</CodeGroup>
+
+### `StreamChangeEvent`
+
+Handler input for `stream` triggers, fired when an item changes via `stream::set`, `stream::update`,
+or `stream::delete`. The `event` field carries the mutation type and the changed data. The wire keys
+`streamName` and `groupId` are camel case in all three languages.
+
+<CodeGroup>
+
+```typescript Node
+export interface StreamChangeEvent {
+  type: 'stream'
+  timestamp: number
+  streamName: string
+  groupId: string
+  id?: string
+  event: {
+    type: 'create' | 'update' | 'delete'
+    data: any
+  }
+}
+```
+
+```python Python
+class StreamChangeEventDetail(BaseModel):
+    type: Literal["create", "update", "delete"]
+    data: Any
+
+
+class StreamChangeEvent(BaseModel):
+    type: Literal["stream"]
+    timestamp: int
+    streamName: str
+    groupId: str
+    id: str | None = None
+    event: StreamChangeEventDetail
+```
+
+```rust Rust
+pub struct StreamChangeEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub timestamp: i64,
+    #[serde(rename = "streamName")]
+    pub stream_name: String,
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    pub id: Option<String>,
+    pub event: StreamEventDetail,
+}
+```
+
+</CodeGroup>
+
+### `StreamJoinLeaveEvent`
+
+Event payload for stream join and leave triggers.
+
+<CodeGroup>
+
+```typescript Node
+export interface StreamJoinLeaveEvent {
+  subscription_id: string
+  stream_name: string
+  group_id: string
+  id?: string
+  context?: StreamContext
+}
+```
+
+```python Python
+class StreamJoinLeaveEvent(BaseModel):
+    subscription_id: str
+    stream_name: str
+    group_id: str
+    id: str | None = None
+    context: Any | None = None
+```
+
+```rust Rust
+pub struct StreamJoinLeaveEvent {
+    pub subscription_id: String,
+    pub stream_name: String,
+    pub group_id: String,
+    pub id: Option<String>,
+    pub context: Option<Value>,
+}
+```
+
+</CodeGroup>
+
+### Stream operation inputs
+
+Input types for the stream operations: `StreamGetInput`, `StreamSetInput`, `StreamDeleteInput`,
+`StreamListInput`, `StreamListGroupsInput`, and `StreamUpdateInput`. `StreamUpdateInput` carries an
+ordered list of update operations applied atomically.
+
+<CodeGroup>
+
+```typescript Node
+export type StreamGetInput = {
+  stream_name: string
+  group_id: string
+  item_id: string
+}
+
+export type StreamUpdateInput = {
+  stream_name: string
+  group_id: string
+  item_id: string
+  ops: UpdateOp[]
+}
+```
+
+```python Python
+class StreamGetInput(BaseModel):
+    stream_name: str
+    group_id: str
+    item_id: str
+
+
+class StreamUpdateInput(BaseModel):
+    stream_name: str
+    group_id: str
+    item_id: str
+    ops: list[UpdateOp]
+```
+
+```rust Rust
+pub struct StreamGetInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+}
+
+pub struct StreamUpdateInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+    pub ops: Vec<UpdateOp>,
+}
+```
+
+</CodeGroup>
+
+### `StreamAuthInput` and `StreamAuthResult`
+
+Input passed to a stream auth handler and the result it returns. The result carries an arbitrary
+context forwarded to stream handlers after authentication. `StreamContext` is the context type
+extracted from `StreamAuthResult`.
+
+<CodeGroup>
+
+```typescript Node
+export interface StreamAuthInput {
+  headers: Record<string, string>
+  path: string
+  query_params: Record<string, string[]>
+  addr: string
+}
+
+export interface StreamAuthResult {
+  context?: any
+}
+
+export type StreamContext = StreamAuthResult['context']
+```
+
+```python Python
+class StreamAuthInput(BaseModel):
+    headers: dict[str, str]
+    path: str
+    query_params: dict[str, list[str]]
+    addr: str
+
+
+class StreamAuthResult(BaseModel):
+    context: Any | None = None
+
+
+StreamContext = Any
+```
+
+```rust Rust
+pub struct StreamAuthInput {
+    pub headers: HashMap<String, String>,
+    pub path: String,
+    pub query_params: HashMap<String, Vec<String>>,
+    pub addr: String,
+}
+
+pub struct StreamAuthResult {
+    pub context: Option<Value>,
+}
+```
+
+</CodeGroup>
+
+### Stream operation results
+
+Result types returned by the stream operations: the set result, the update result, the delete
+result, and `StreamJoinResult`. The update result carries the per-op `errors` array, omitted from the
+wire when empty.
+
+<CodeGroup>
+
+```typescript Node
+export type StreamSetResult<TData> = {
+  old_value?: TData
+  new_value: TData
+}
+
+export type StreamUpdateResult<TData> = {
+  old_value?: TData
+  new_value: TData
+  errors?: UpdateOpError[]
+}
+
+export type DeleteResult = {
+  old_value?: any
+}
+
+export interface StreamJoinResult {
+  unauthorized: boolean
+}
+```
+
+```python Python
+class StreamSetResult(BaseModel, Generic[TData]):
+    old_value: TData | None = None
+    new_value: TData
+
+
+class StreamUpdateResult(BaseModel, Generic[TData]):
+    old_value: TData | None = None
+    new_value: TData
+    errors: list[UpdateOpError] = Field(default_factory=list)
+
+
+class StreamDeleteResult(BaseModel):
+    old_value: Any | None = None
+
+
+class StreamJoinResult(BaseModel):
+    unauthorized: bool
+```
+
+```rust Rust
+pub struct SetResult {
+    pub old_value: Option<Value>,
+    pub new_value: Value,
+}
+
+pub struct UpdateResult {
+    pub old_value: Option<Value>,
+    pub new_value: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<UpdateOpError>,
+}
+
+pub struct DeleteResult {
+    pub old_value: Option<Value>,
+}
+
+pub struct StreamJoinResult {
+    pub unauthorized: bool,
+}
+```
+
+</CodeGroup>
+
+### Update operations
+
+The atomic update operations applied by `stream::update` and `state::update`. `UpdateOp` is the union
+of the set, increment, decrement, append, remove, and merge operations. `MergePath` is the path
+target for the merge and append operations: a single first-level key or an array of literal segments.
+`UpdateOpError` is the per-op error reported when an operation violates the validation bounds.
+
+<CodeGroup>
+
+```typescript Node
+export type MergePath = string | string[]
+
+export type UpdateOp =
+  | UpdateSet
+  | UpdateIncrement
+  | UpdateDecrement
+  | UpdateAppend
+  | UpdateRemove
+  | UpdateMerge
+
+export type UpdateOpError = {
+  op_index: number
+  code: string
+  message: string
+  doc_url?: string
+}
+```
+
+```python Python
+UpdateOp = (
+    UpdateSet
+    | UpdateIncrement
+    | UpdateDecrement
+    | UpdateAppend
+    | UpdateRemove
+    | UpdateMerge
+)
+
+
+class UpdateOpError(BaseModel):
+    op_index: int
+    code: str
+    message: str
+    doc_url: str | None = None
+```
+
+```rust Rust
+pub enum MergePath {
+    Single(String),
+    Segments(Vec<String>),
+}
+
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum UpdateOp {
+    Set { path: String, value: Option<Value> },
+    Merge {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<MergePath>,
+        value: Value,
+    },
+    Increment { path: String, by: i64 },
+    Decrement { path: String, by: i64 },
+    Append {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<MergePath>,
+        value: Value,
+    },
+    Remove { path: String },
+}
+
+pub struct UpdateOpError {
+    pub op_index: usize,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_url: Option<String>,
 }
 ```
 

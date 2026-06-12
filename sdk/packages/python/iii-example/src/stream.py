@@ -4,8 +4,8 @@ from typing import Any
 
 from iii import IIIClient
 from iii.helpers import create_stream
-from iii.stream import (
-    IStream,
+from iii.stream import IStream
+from iii_helpers.stream import (
     StreamDeleteInput,
     StreamGetInput,
     StreamListGroupsInput,
