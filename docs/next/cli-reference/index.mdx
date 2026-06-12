@@ -219,7 +219,7 @@ iii worker init [OPTIONS] [NAME]
 | ------ | ----------- |
 | `-d, --directory <DIRECTORY>` | Target directory. Takes precedence over NAME. If neither NAME nor `--directory` is provided, the directory defaults to the current directory |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
-| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Re-running init in a directory with `.iii/worker.ini` is always allowed (idempotent re-init) |
+| `--allow-non-empty` | Allow initialization into a non-empty directory |
 | `-l, --language <LANG>` | Worker language (typescript \| javascript \| python \| rust). Accepts short aliases (`ts`, `js`, `py`, `rust`, `rs`). When omitted, the user is prompted interactively. Providing this flag fully scripts the scaffold |
 | `--skip-iii` | Skip the iii-engine version compatibility check enforced by the scaffolder. Mirrors the flag on `iii project init` |
 

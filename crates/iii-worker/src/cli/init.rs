@@ -93,8 +93,7 @@ pub struct InitArgs {
     #[arg(long = "template-dir")]
     pub template_dir: Option<String>,
 
-    /// Allow scaffolding into a non-empty directory. Re-running init in a
-    /// directory with `.iii/worker.ini` is always allowed (idempotent re-init).
+    /// Allow initialization into a non-empty directory.
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
 
