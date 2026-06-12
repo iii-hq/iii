@@ -54,7 +54,7 @@ impl TriggerHandler for LifecycleTriggerHandler {
     }
 }
 
-async fn wait_connected(iii: &iii_sdk::III) {
+async fn wait_connected(iii: &iii_sdk::IIIClient) {
     for _ in 0..50 {
         if iii.get_connection_state() == IIIConnectionState::Connected {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -85,7 +85,7 @@ async fn wait_handler_calls(state: &LifecycleState, at_least: usize) {
     panic!("timed out waiting for handler invocations");
 }
 
-async fn create_provider(state: &LifecycleState) -> iii_sdk::III {
+async fn create_provider(state: &LifecycleState) -> iii_sdk::IIIClient {
     let handler_state = state.clone();
     let iii = register_worker(&common::engine_ws_url(), InitOptions::default());
     wait_connected(&iii).await;
@@ -126,7 +126,7 @@ async fn create_provider(state: &LifecycleState) -> iii_sdk::III {
     iii
 }
 
-async fn create_consumer(state: &LifecycleState) -> iii_sdk::III {
+async fn create_consumer(state: &LifecycleState) -> iii_sdk::IIIClient {
     let handler_state = state.clone();
     let iii = register_worker(&common::engine_ws_url(), InitOptions::default());
     wait_connected(&iii).await;

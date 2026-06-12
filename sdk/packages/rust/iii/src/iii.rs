@@ -93,7 +93,7 @@ pub struct TriggerInfo {
 /// - `R` tracks the call request type (set via `.call_request_format::<T>()`)
 ///
 /// Both default to `Value` (untyped) and change when the respective builder
-/// method is called. This allows [`III::register_trigger_type`] to return a
+/// method is called. This allows [`IIIClient::register_trigger_type`] to return a
 /// [`TriggerTypeRef<C, R>`] with compile-time safety for both config and
 /// function input types.
 pub struct RegisterTriggerType<H, C = Value, R = Value> {
@@ -150,14 +150,14 @@ impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
     }
 }
 
-/// Typed handle returned by [`III::register_trigger_type`].
+/// Typed handle returned by [`IIIClient::register_trigger_type`].
 ///
 /// Type parameters:
 /// - `C` — trigger registration type for [`register_trigger`](Self::register_trigger)
 /// - `R` — call request type for [`register_function`](Self::register_function)
 #[derive(Clone)]
 pub struct TriggerTypeRef<C = Value, R = Value> {
-    iii: III,
+    iii: IIIClient,
     trigger_type_id: String,
     _phantom: std::marker::PhantomData<(C, R)>,
 }
@@ -217,7 +217,7 @@ where
 
 /// Telemetry metadata provided by the SDK to the engine.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkerTelemetryMeta {
+pub struct TelemetryOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,7 +242,7 @@ pub struct WorkerMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<WorkerTelemetryMeta>,
+    pub telemetry: Option<TelemetryOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
 }
@@ -275,7 +275,7 @@ impl Default for WorkerMetadata {
             os: os_info,
             description: None,
             pid: Some(pid),
-            telemetry: Some(WorkerTelemetryMeta {
+            telemetry: Some(TelemetryOptions {
                 language,
                 project_name,
                 ..Default::default()
@@ -535,7 +535,7 @@ fn empty_message() -> RegisterFunctionMessage {
 /// Function registration builder.
 ///
 /// The function ID is supplied separately at registration time via
-/// [`III::register_function`] — `RegisterFunction` only carries the handler
+/// [`IIIClient::register_function`] — `RegisterFunction` only carries the handler
 /// and optional metadata.
 ///
 /// Constructors:
@@ -680,11 +680,11 @@ struct IIIInner {
 ///
 /// Create with [`register_worker`](crate::register_worker).
 #[derive(Clone)]
-pub struct III {
+pub struct IIIClient {
     inner: Arc<IIIInner>,
 }
 
-impl III {
+impl IIIClient {
     /// Create a new III with default worker metadata (auto-detected runtime, os, hostname)
     pub fn new(address: &str) -> Self {
         Self::with_metadata(address, WorkerMetadata::default())
@@ -935,7 +935,7 @@ impl III {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # use iii_sdk::{III, RegisterTriggerType};
+    /// # use iii_sdk::{IIIClient, RegisterTriggerType};
     /// # struct MyHandler;
     /// # #[async_trait::async_trait]
     /// # impl iii_sdk::TriggerHandler for MyHandler {
@@ -944,7 +944,7 @@ impl III {
     /// # }
     /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
     /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
-    /// # let iii = III::new("ws://localhost:49134");
+    /// # let iii = IIIClient::new("ws://localhost:49134");
     /// let my_trigger = iii.register_trigger_type(
     ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
     ///         .trigger_request_format::<MyConfig>()
@@ -1005,9 +1005,9 @@ impl III {
     ///
     /// # Examples
     /// ```rust
-    /// # use iii_sdk::{III, RegisterTriggerInput};
+    /// # use iii_sdk::{IIIClient, RegisterTriggerInput};
     /// # use serde_json::json;
-    /// # let iii = III::new("ws://localhost:49134");
+    /// # let iii = IIIClient::new("ws://localhost:49134");
     /// let trigger = iii.register_trigger(RegisterTriggerInput {
     ///     trigger_type: "http".to_string(),
     ///     function_id: "greet".to_string(),
@@ -1058,9 +1058,9 @@ impl III {
     ///
     /// # Examples
     /// ```rust
-    /// # use iii_sdk::{III, TriggerRequest, TriggerAction};
+    /// # use iii_sdk::{IIIClient, TriggerRequest, TriggerAction};
     /// # use serde_json::json;
-    /// # async fn example(iii: &III) -> Result<(), iii_sdk::Error> {
+    /// # async fn example(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
     /// // Synchronous
     /// let result = iii.trigger(TriggerRequest {
     ///     function_id: "greet".to_string(),
@@ -1857,7 +1857,7 @@ impl III {
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn internal_create_channel(
-    iii: &III,
+    iii: &IIIClient,
     buffer_size: Option<usize>,
 ) -> Result<Channel, Error> {
     let result = iii
@@ -2265,26 +2265,26 @@ mod tests {
     #[test]
     fn registration_key_returns_typed_keys_for_register_messages() {
         assert_eq!(
-            III::registration_key(&make_register_function("greet")),
+            IIIClient::registration_key(&make_register_function("greet")),
             Some("function:greet".to_string())
         );
         assert_eq!(
-            III::registration_key(&make_register_trigger("t1")),
+            IIIClient::registration_key(&make_register_trigger("t1")),
             Some("trigger:t1".to_string())
         );
         assert_eq!(
-            III::registration_key(&make_register_trigger_type("tt1")),
+            IIIClient::registration_key(&make_register_trigger_type("tt1")),
             Some("trigger_type:tt1".to_string())
         );
     }
 
     #[test]
     fn registration_key_returns_none_for_non_register_messages() {
-        assert_eq!(III::registration_key(&make_invoke("f")), None);
-        assert_eq!(III::registration_key(&Message::Ping), None);
-        assert_eq!(III::registration_key(&Message::Pong), None);
+        assert_eq!(IIIClient::registration_key(&make_invoke("f")), None);
+        assert_eq!(IIIClient::registration_key(&Message::Ping), None);
+        assert_eq!(IIIClient::registration_key(&Message::Pong), None);
         assert_eq!(
-            III::registration_key(&Message::WorkerRegistered {
+            IIIClient::registration_key(&Message::WorkerRegistered {
                 worker_id: "w".to_string()
             }),
             None
@@ -2314,10 +2314,11 @@ mod tests {
         .collect();
 
         let mut queue: Vec<Message> = Vec::new();
-        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+        let shutdown = IIIClient::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
 
         assert!(!shutdown);
-        let kept_keys: Vec<Option<String>> = queue.iter().map(III::registration_key).collect();
+        let kept_keys: Vec<Option<String>> =
+            queue.iter().map(IIIClient::registration_key).collect();
         assert_eq!(
             kept_keys,
             vec![
@@ -2342,7 +2343,7 @@ mod tests {
 
         let snapshot_ids: HashSet<String> = ["function:a".to_string()].into_iter().collect();
         let mut queue: Vec<Message> = Vec::new();
-        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+        let shutdown = IIIClient::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
 
         assert!(shutdown, "expected shutdown signal to be reported");
         assert!(
@@ -2357,7 +2358,7 @@ mod tests {
         let snapshot_ids: HashSet<String> = HashSet::new();
         let mut queue: Vec<Message> = Vec::new();
 
-        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+        let shutdown = IIIClient::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
 
         assert!(!shutdown);
         assert!(queue.is_empty());

@@ -23,13 +23,16 @@ npm install iii-sdk
 Connect a worker to a running iii engine and return its handle.
 
 ```typescript
-function registerWorker(address: string, options?: InitOptions): ISdk;
+function registerWorker(address: string, options?: InitOptions): IIIClient;
 ```
 
 Pass the engine's SDK WebSocket URL (e.g. `process.env.III_URL`) as `address`. `options` configures
 worker identity (`workerName`, plus an optional `workerDescription`, a one-line summary surfaced
-in `engine::workers::list` / `engine::workers::info`), timeouts, reconnection, and OpenTelemetry. The returned `ISdk` carries every
-method below.
+in `engine::workers::list` / `engine::workers::info`), timeouts, reconnection, and OpenTelemetry. The returned `IIIClient` carries every
+method below. (`ISdk` remains as a deprecated alias for `IIIClient`.)
+
+`TelemetryOptions` is the public type for the worker's telemetry labels (`language`, `project_name`,
+`framework`, `amplitude_api_key`), exported from `iii-sdk` to match the Python and Rust SDKs.
 
 ### `registerFunction`
 

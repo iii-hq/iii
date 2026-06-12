@@ -350,7 +350,7 @@ pub struct StateCallRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StreamJoinLeaveCallRequest {
+pub struct StreamJoinLeaveEvent {
     pub subscription_id: String,
     pub stream_name: String,
     pub group_id: String,
@@ -380,7 +380,7 @@ pub struct StreamEventDetail {
 /// Handler input for `stream` triggers, fired when an item changes
 /// via `stream::set`, `stream::update`, or `stream::delete`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StreamCallRequest {
+pub struct StreamChangeEvent {
     /// Always `"stream"`.
     #[serde(rename = "type")]
     pub event_type: String,
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn stream_call_request_deserializes_typed_event() {
-        let request: StreamCallRequest = serde_json::from_value(json!({
+        let request: StreamChangeEvent = serde_json::from_value(json!({
             "type": "stream",
             "timestamp": 1700000000000_i64,
             "streamName": "chat",

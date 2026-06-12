@@ -157,8 +157,8 @@ class InternalHttpRequest:
     request_body: ChannelReader
 
 
-class HttpResponse:
-    """Streaming HTTP response built on top of a ChannelWriter."""
+class StreamResponse:
+    """Streaming response built on top of a ChannelWriter."""
 
     def __init__(self, writer: ChannelWriter) -> None:
         self._writer = writer
@@ -182,8 +182,8 @@ class HttpResponse:
 
 
 @dataclass
-class HttpRequest:
-    """HTTP request without the response writer."""
+class StreamRequest:
+    """Streaming request without the response writer."""
 
     path_params: dict[str, str]
     query_params: dict[str, str | list[str]]
@@ -191,6 +191,11 @@ class HttpRequest:
     headers: dict[str, str | list[str]]
     method: str
     request_body: ChannelReader
+
+
+# Back-compat aliases; renamed to StreamRequest / StreamResponse. Deprecated.
+HttpRequest = StreamRequest
+HttpResponse = StreamResponse
 
 
 class StreamChannelRefDict(TypedDict):

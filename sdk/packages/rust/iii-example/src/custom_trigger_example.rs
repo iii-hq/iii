@@ -1,5 +1,5 @@
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Error, III, RegisterTriggerType};
+use iii_sdk::{Error, IIIClient, RegisterTriggerType};
 use serde_json::json;
 
 // ── Example 1: Typed trigger with full config ───────────────────────────
@@ -93,7 +93,7 @@ impl TriggerHandler for NoopHandler {
 
 // ── Setup ───────────────────────────────────────────────────────────────
 
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     // ── Example 1: Schedule trigger (fully typed) ───────────────────
     let schedule = iii.register_trigger_type(
         RegisterTriggerType::new(
