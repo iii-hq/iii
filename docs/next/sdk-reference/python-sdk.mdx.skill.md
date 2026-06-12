@@ -68,6 +68,12 @@ The `EngineFunctions` and `EngineTriggers` constants and the `RemoteFunctionHand
 provided only by the `iii.engine` submodule (`from iii.engine import EngineFunctions`). They are
 not importable from the package root.
 
+The protocol message and register-input types (`MessageType`, `RegisterFunctionMessage`,
+`RegisterTriggerMessage`, `RegisterTriggerTypeMessage`, `TriggerRequest`, `RegisterFunctionFormat`,
+`RegisterFunctionInput`, `RegisterTriggerInput`, `RegisterTriggerTypeInput`) are provided only by
+the `iii.protocol` submodule (`from iii.protocol import MessageType`). They are not importable from
+the package root.
+
 ### `register_trigger`
 
 Bind a registered function to a configured trigger instance.

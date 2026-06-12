@@ -61,6 +61,12 @@ The `EngineFunctions` and `EngineTriggers` constants and the `RemoteFunctionHand
 provided only by the `iii-sdk/engine` subpath (`import { EngineFunctions } from 'iii-sdk/engine'`).
 They are not exported from the package root.
 
+The protocol message and register-input types (`MessageType`, `RegisterFunctionMessage`,
+`RegisterTriggerMessage`, `RegisterTriggerTypeMessage`, `TriggerRequest`, `RegisterFunctionInput`,
+`RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerTypeInput`, `RegisterFunctionFormat`
+and `ErrorBody`) are provided only by the `iii-sdk/protocol` subpath
+(`import { MessageType } from 'iii-sdk/protocol'`). They are not exported from the package root.
+
 ### `registerTrigger`
 
 Bind a registered function to a configured trigger instance.

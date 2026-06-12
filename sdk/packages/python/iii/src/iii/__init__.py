@@ -12,18 +12,10 @@ from .iii_constants import (
     TelemetryOptions,
 )
 from .iii_types import (
-    MessageType,
     MiddlewareFunctionInput,
-    RegisterFunctionFormat,
-    RegisterFunctionMessage,
-    RegisterTriggerInput,
-    RegisterTriggerMessage,
-    RegisterTriggerTypeInput,
-    RegisterTriggerTypeMessage,
     StreamChannelRef,
     TriggerActionEnqueue,
     TriggerActionVoid,
-    TriggerRequest,
 )
 from .stream import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
@@ -49,17 +41,9 @@ __all__ = [
     # RBAC types
     "MiddlewareFunctionInput",
     # Message types
-    "MessageType",
-    "RegisterFunctionFormat",
-    "RegisterFunctionMessage",
-    "RegisterTriggerInput",
-    "RegisterTriggerMessage",
-    "RegisterTriggerTypeInput",
-    "RegisterTriggerTypeMessage",
     "StreamChannelRef",
     "TriggerActionEnqueue",
     "TriggerActionVoid",
-    "TriggerRequest",
     # Triggers
     "Trigger",
     "TriggerConfig",

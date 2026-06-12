@@ -66,10 +66,7 @@ pub use iii::{
     WorkerMetadata,
 };
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
-pub use protocol::{
-    ErrorBody, FunctionMessage, Message, RegisterFunctionMessage, RegisterTriggerInput,
-    RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
-};
+pub use protocol::{Message, TriggerAction};
 pub use stream_provider::IStream;
 pub use structs::MiddlewareFunctionInput;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
@@ -297,3 +294,27 @@ fn _ensure_invocation_error_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_stream_request_response_path() {}
+
+// ---------------------------------------------------------------------------
+// protocol submodule grouping: the low-level protocol message and
+// register-input types are reachable only at their canonical path
+// `iii_sdk::protocol` and are no longer re-exported at the crate root.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::protocol::{
+///     ErrorBody, FunctionMessage, RegisterFunctionMessage, RegisterTriggerInput,
+///     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerRequest,
+/// };
+/// ```
+#[allow(dead_code)]
+fn _ensure_protocol_submodule_path() {}
+
+/// ```compile_fail
+/// use iii_sdk::{
+///     ErrorBody, FunctionMessage, RegisterFunctionMessage, RegisterTriggerInput,
+///     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerRequest,
+/// };
+/// ```
+#[allow(dead_code)]
+fn _ensure_protocol_types_not_top_level() {}

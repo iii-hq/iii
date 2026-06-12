@@ -11,7 +11,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{Error, RegisterFunction, RegisterTriggerInput, TriggerAction, TriggerRequest};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{Error, RegisterFunction, TriggerAction};
 
 fn unique_topic(prefix: &str) -> String {
     let ts = std::time::SystemTime::now()

@@ -6,7 +6,7 @@ mod common;
 
 use serde_json::{Value, json};
 
-use iii_sdk::TriggerRequest;
+use iii_sdk::protocol::TriggerRequest;
 
 const STREAM_NAME: &str = "test-stream-rs";
 const GROUP_ID: &str = "test-group";
