@@ -4,7 +4,7 @@
 # Each user-facing binary in this repo (iii, iii-worker, iii-console) exposes
 # a hidden `gen-cli-docs` subcommand that renders its own clap tree as MDX via
 # crates/iii-clap-docs. The output is committed under docs/next/cli-reference/
-# and the cli-docs-drift CI job regenerates + diffs it, so the docs can never
+# and the cli-docs-built CI job regenerates + diffs it, so the docs can never
 # drift from the CLI. (iii-cloud lives outside this repo and is not covered.)
 set -euo pipefail
 

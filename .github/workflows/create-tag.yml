@@ -119,7 +119,7 @@ jobs:
 
           # The generated CLI reference rotates into the release docs with
           # the rest of docs/next/. It is regenerated and drift-gated by the
-          # cli-docs-drift CI job on every PR; here we only require that the
+          # cli-docs-built CI job on every PR; here we only require that the
           # pages exist so a stable release can't ship without them.
           for page in iii iii-worker iii-console; do
             if [[ ! -s "docs/next/cli-reference/${page}.mdx" ]]; then

@@ -225,14 +225,14 @@ jobs:
       #   run: cargo clippy -p iii -p function-macros -p iii-sdk --all-targets --all-features -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
-  # CLI Docs Drift — regenerate docs/next/cli-reference/ from the
+  # CLI Docs Built — regenerate docs/next/cli-reference/ from the
   # clap definitions (hidden `gen-cli-docs` subcommands) and fail when
   # the committed pages don't match. Guarantees the published CLI
   # reference can never go stale relative to the CLI source.
   # ──────────────────────────────────────────────────────────────
 
-  cli-docs-drift:
-    name: CLI Docs Drift
+  cli-docs-built:
+    name: CLI Docs Built
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
