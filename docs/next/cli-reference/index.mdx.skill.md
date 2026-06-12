@@ -11,7 +11,7 @@ Reference for the `iii` binary and the `iii worker` and `iii console` runtimes i
 
 Process communication engine
 
-```bash
+```text
 iii [OPTIONS] [COMMAND]
 ```
 
@@ -37,7 +37,7 @@ iii [OPTIONS] [COMMAND]
 
 Manage iii projects (init, generate-docker)
 
-```bash
+```text
 iii project <COMMAND>
 ```
 
@@ -45,7 +45,7 @@ iii project <COMMAND>
 
 Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing iii project
 
-```bash
+```text
 iii project generate-docker [OPTIONS]
 ```
 
@@ -58,17 +58,17 @@ iii project generate-docker [OPTIONS]
 
 Initialize a new iii project in the current directory
 
-```bash
+```text
 iii project init [OPTIONS] [NAME]
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `[NAME]` | Project name (positional). Also used for directory when `--directory` is not specified |
+| `[NAME]` | Target directory for the new project (positional). Ignored when `--directory` is given. The project name is the resolved directory's name |
 
 | Option | Description |
 | ------ | ----------- |
-| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
+| `-d, --directory <DIRECTORY>` | Target directory. Takes precedence over NAME. If neither NAME nor `--directory` is provided, the directory defaults to the current directory |
 | `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env). Equivalent to running `iii project generate-docker` separately |
 | `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
@@ -79,7 +79,7 @@ iii project init [OPTIONS] [NAME]
 
 Invoke a function on a running iii engine
 
-```bash
+```text
 iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 ```
 
@@ -103,7 +103,7 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 
 Update iii and managed binaries to their latest versions
 
-```bash
+```text
 iii update [OPTIONS] [COMMAND]
 ```
 
@@ -121,7 +121,7 @@ iii managed worker runtime
 
 The `iii` binary dispatches `iii worker ...` to the separately installed `iii-worker` runtime; this section documents that runtime's full tree.
 
-```bash
+```text
 iii worker <COMMAND>
 ```
 
@@ -129,46 +129,46 @@ iii worker <COMMAND>
 
 | Command | Description |
 | ------- | ----------- |
-| [`add`](#iii-worker-add) | Install a worker from the iii registry, a local directory, or by OCI image reference |
+| [`add`](#iii-worker-add) | Install a worker from the iii registry, a local directory, or by OCI image reference. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs |
 | [`clear`](#iii-worker-clear) | Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed) |
 | [`exec`](#iii-worker-exec) | Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY |
 | [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
 | [`list`](#iii-worker-list) | List all workers and their status |
 | [`logs`](#iii-worker-logs) | Show logs from a managed worker container |
-| [`reinstall`](#iii-worker-reinstall) | Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml) |
+| [`reinstall`](#iii-worker-reinstall) | Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset its config.yaml entry to registry defaults) |
 | [`remove`](#iii-worker-remove) | Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them |
-| [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start. Idempotent: running workers get a clean cycle, stopped workers start. By default waits up to 120s for the worker to report ready |
+| [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start. By default waits up to 120s for the worker to report ready (same as start) |
 | [`sandbox`](#iii-worker-sandbox) | Manage ephemeral sandboxes (create/exec/stop short-lived VMs) |
 | [`start`](#iii-worker-start) | Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready |
-| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass `--no-watch` for a one-shot snapshot |
-| [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings it back from the same config entry, so the CLI no longer prompts for confirmation |
+| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing) |
+| [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings the worker back up |
 | [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock. Pass `--frozen` in CI to verify without mutating local files |
 | [`update`](#iii-worker-update) | Re-resolve locked workers and update iii.lock |
 | [`verify`](#iii-worker-verify) | Verify config.yaml is represented in iii.lock without mutating files |
 
 ### `iii worker add`
 
-Install a worker from the iii registry, a local directory, or by OCI image reference
+Install a worker from the iii registry, a local directory, or by OCI image reference. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs
 
-```bash
+```text
 iii worker add [OPTIONS] <WORKER[@VERSION]>...
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `<WORKER[@VERSION]>...` | Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag") |
+| `<WORKER[@VERSION]>...` | iii registry worker names (ex. `database`), local worker paths (ex. `./my_worker`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires `--force` on add) |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` keeps the entry, merging your customizations over the fresh defaults; this flag drops them. Only takes effect together with `--force` on add (reinstall implies it) |
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
-| `--no-wait` | Don't block waiting for the engine to finish booting the sandbox. By default `add` waits up to 120s for the worker to report ready |
+| `--no-wait` | Don't block waiting for the engine to finish booting the worker |
 
 ### `iii worker clear`
 
 Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
 
-```bash
+```text
 iii worker clear [OPTIONS] [WORKER]
 ```
 
@@ -184,7 +184,7 @@ iii worker clear [OPTIONS] [WORKER]
 
 Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY
 
-```bash
+```text
 iii worker exec [OPTIONS] <WORKER> [-- <COMMAND>...]
 ```
 
@@ -197,25 +197,25 @@ iii worker exec [OPTIONS] <WORKER> [-- <COMMAND>...]
 | ------ | ----------- |
 | `-e, --env <ENV>` | Set an environment variable inside the spawned process (repeatable). `KEY=VALUE` form; anything without `=` is silently skipped |
 | `-w, --workdir <WORKDIR>` | Working directory inside the guest. Defaults to the dispatcher's cwd (typically `/workspace`) |
-| `-t, --tty` | Allocate a pseudo-terminal. Required for interactive shells and TUI programs; merges stdout/stderr through the PTY master and puts the host terminal in raw mode for the session. Auto- enabled when both stdin and stdout are TTYs (ssh-style); pass `--no-tty` to force pipe mode in that case |
+| `-t, --tty` | Allocate a pseudo-terminal. Required for interactive shells and TUI programs; merges stdout/stderr through the PTY master and puts the host terminal in raw mode for the session. Automatically enabled when both stdin and stdout are TTYs (ssh-style); pass `--no-tty` to force pipe mode in that case |
 | `--no-tty` | Disable TTY auto-detection and force pipe mode. Use when you want byte-exact output in a terminal session (e.g. capturing structured output from an otherwise-interactive tool) |
-| `--timeout <TIMEOUT>` | Kill the child after this long (e.g. `30s`, `5m`, `500ms`). Parsed by the standard `humantime` syntax. On expiry the client sends SIGKILL to the guest session and exits with code 124 (matches coreutils `timeout(1)`), so shell scripts can distinguish a timeout from an ordinary nonzero exit |
+| `--timeout <TIMEOUT>` | Kill the process after this long (e.g. `30s`, `5m`, `500ms`). Parsed by the standard `humantime` syntax. On expiry the client sends SIGKILL to the guest session and exits with code 124 (matches coreutils `timeout(1)`), so shell scripts can distinguish a timeout from an ordinary nonzero exit |
 
 ### `iii worker init`
 
 Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add`
 
-```bash
+```text
 iii worker init [OPTIONS] [NAME]
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `[NAME]` | Worker name (positional). Also used for directory when `--directory` is not specified |
+| `[NAME]` | Target directory for the new worker (positional). Ignored when `--directory` is given. The worker name is the resolved directory's name |
 
 | Option | Description |
 | ------ | ----------- |
-| `-d, --directory <DIRECTORY>` | Target directory (defaults to current directory). Takes precedence over the positional name |
+| `-d, --directory <DIRECTORY>` | Target directory. Takes precedence over NAME. If neither NAME nor `--directory` is provided, the directory defaults to the current directory |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 | `--allow-non-empty` | Allow scaffolding into a non-empty directory. Re-running init in a directory with `.iii/worker.ini` is always allowed (idempotent re-init) |
 | `-l, --language <LANG>` | Worker language (typescript \| javascript \| python \| rust). Accepts short aliases (`ts`, `js`, `py`, `rust`, `rs`). When omitted, the user is prompted interactively. Providing this flag fully scripts the scaffold |
@@ -225,7 +225,7 @@ iii worker init [OPTIONS] [NAME]
 
 List all workers and their status
 
-```bash
+```text
 iii worker list
 ```
 
@@ -233,7 +233,7 @@ iii worker list
 
 Show logs from a managed worker container
 
-```bash
+```text
 iii worker logs [OPTIONS] <WORKER>
 ```
 
@@ -249,25 +249,25 @@ iii worker logs [OPTIONS] <WORKER>
 
 ### `iii worker reinstall`
 
-Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
+Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset its config.yaml entry to registry defaults)
 
-```bash
+```text
 iii worker reinstall [OPTIONS] <WORKER[@VERSION]>...
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `<WORKER[@VERSION]>...` | Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag") |
+| `<WORKER[@VERSION]>...` | iii registry worker names (ex. `database`), local worker paths (ex. `./my_worker`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Reset config: also remove config.yaml entry before re-adding (requires `--force` on add) |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` keeps the entry, merging your customizations over the fresh defaults; this flag drops them. Only takes effect together with `--force` on add (reinstall implies it) |
 
 ### `iii worker remove`
 
 Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them
 
-```bash
+```text
 iii worker remove [OPTIONS] <WORKER>...
 ```
 
@@ -281,9 +281,9 @@ iii worker remove [OPTIONS] <WORKER>...
 
 ### `iii worker restart`
 
-Restart a managed worker: stop if running, then start. Idempotent: running workers get a clean cycle, stopped workers start. By default waits up to 120s for the worker to report ready
+Restart a managed worker: stop if running, then start. By default waits up to 120s for the worker to report ready (same as start)
 
-```bash
+```text
 iii worker restart [OPTIONS] <WORKER>
 ```
 
@@ -301,7 +301,7 @@ iii worker restart [OPTIONS] <WORKER>
 
 Manage ephemeral sandboxes (create/exec/stop short-lived VMs)
 
-```bash
+```text
 iii worker sandbox <COMMAND>
 ```
 
@@ -311,7 +311,7 @@ Create a long-lived sandbox and print its id to stdout. Pair with `iii worker sa
 
 Pipe-friendly: the sandbox id is the only thing on stdout, so you can do `SB=$(iii worker sandbox create python)` in a shell.
 
-```bash
+```text
 iii worker sandbox create [OPTIONS] <IMAGE>
 ```
 
@@ -337,7 +337,7 @@ Streams bytes through an iii data channel. Writes to `LOCAL_PATH` on disk (or st
 
 Examples: iii worker sandbox download \<SB> /workspace/output.json ./output.json iii worker sandbox download \<SB> /workspace/build.tar - | tar -tf -
 
-```bash
+```text
 iii worker sandbox download [OPTIONS] <SANDBOX_ID> <REMOTE_PATH> <LOCAL_PATH>
 ```
 
@@ -357,7 +357,7 @@ Run a command inside an already-running sandbox.
 
 Pipe-mode only. Pair with `iii worker sandbox create` for the sandbox id. For interactive TTY sessions, use `iii worker exec` against a managed worker instead.
 
-```bash
+```text
 iii worker sandbox exec [OPTIONS] <SANDBOX_ID> [COMMAND]...
 ```
 
@@ -378,7 +378,7 @@ List every sandbox the daemon knows about.
 
 The daemon's list RPC is owner-scoped for multi-tenant SDK callers, but `iii worker sandbox` is a local admin tool with no authenticated identity, so the CLI always requests the unscoped view. The `--all` flag is a silent no-op, kept so scripts that pass it from earlier releases keep working.
 
-```bash
+```text
 iii worker sandbox list [OPTIONS]
 ```
 
@@ -390,7 +390,7 @@ iii worker sandbox list [OPTIONS]
 
 Create a one-shot sandbox, run a command inside it, and stop it. For multi-step workflows (agent loops, REPLs) use `create` + `exec` + `stop` instead
 
-```bash
+```text
 iii worker sandbox run [OPTIONS] <IMAGE> [COMMAND]...
 ```
 
@@ -409,7 +409,7 @@ iii worker sandbox run [OPTIONS] <IMAGE> [COMMAND]...
 
 Stop a sandbox by id, waiting for the reaper to finish
 
-```bash
+```text
 iii worker sandbox stop [OPTIONS] <SANDBOX_ID>
 ```
 
@@ -429,7 +429,7 @@ Streams bytes through an iii data channel; no JSON-envelope size cap. Reads `LOC
 
 Examples: iii worker sandbox upload \<SB> ./script.js /workspace/script.js tar -cf - ./srcdir | iii worker sandbox upload \<SB> - /workspace/src.tar
 
-```bash
+```text
 iii worker sandbox upload [OPTIONS] <SANDBOX_ID> <LOCAL_PATH> <REMOTE_PATH>
 ```
 
@@ -449,7 +449,7 @@ iii worker sandbox upload [OPTIONS] <SANDBOX_ID> <LOCAL_PATH> <REMOTE_PATH>
 
 Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready
 
-```bash
+```text
 iii worker start [OPTIONS] <WORKER>
 ```
 
@@ -465,9 +465,9 @@ iii worker start [OPTIONS] <WORKER>
 
 ### `iii worker status`
 
-Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing). Pass `--no-watch` for a one-shot snapshot
+Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing)
 
-```bash
+```text
 iii worker status [OPTIONS] <WORKER>
 ```
 
@@ -477,13 +477,13 @@ iii worker status [OPTIONS] <WORKER>
 
 | Option | Description |
 | ------ | ----------- |
-| `--no-watch` | Print a one-shot snapshot and exit immediately (no live refresh) |
+| `--no-watch` | Print status and exit immediately (no live refresh) |
 
 ### `iii worker stop`
 
-Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings it back from the same config entry, so the CLI no longer prompts for confirmation
+Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings the worker back up
 
-```bash
+```text
 iii worker stop [OPTIONS] <WORKER>
 ```
 
@@ -499,7 +499,7 @@ iii worker stop [OPTIONS] <WORKER>
 
 Install registry-managed workers exactly from iii.lock. Pass `--frozen` in CI to verify without mutating local files
 
-```bash
+```text
 iii worker sync [OPTIONS]
 ```
 
@@ -511,7 +511,7 @@ iii worker sync [OPTIONS]
 
 Re-resolve locked workers and update iii.lock
 
-```bash
+```text
 iii worker update [WORKER]
 ```
 
@@ -523,7 +523,7 @@ iii worker update [WORKER]
 
 Verify config.yaml is represented in iii.lock without mutating files
 
-```bash
+```text
 iii worker verify [OPTIONS]
 ```
 
@@ -537,7 +537,7 @@ Developer console for the iii engine
 
 The `iii` binary dispatches `iii console ...` to the separately installed `iii-console` binary (downloaded on first use); the same binary can also be invoked directly as `iii-console`.
 
-```bash
+```text
 iii console [OPTIONS]
 ```
 

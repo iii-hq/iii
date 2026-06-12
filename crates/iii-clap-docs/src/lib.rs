@@ -229,7 +229,10 @@ fn render_command(
         ));
     }
 
-    out.push_str("```bash\n");
+    // `text`, not `bash`: usage lines are grammar, not runnable shell, and
+    // bash highlighters tokenize `<COMMAND>` as redirections, coloring the
+    // placeholder inconsistently.
+    out.push_str("```text\n");
     out.push_str(&usage_lines(cmd));
     out.push_str("```\n\n");
 
@@ -734,7 +737,7 @@ mod tests {
         // Intro renders inside the section, after the about line.
         let about_pos = mdx.find("iii managed worker runtime").unwrap();
         let intro_pos = mdx.find("Intro line.").unwrap();
-        let usage_pos = mdx.find("```bash").unwrap();
+        let usage_pos = mdx.find("```text").unwrap();
         assert!(about_pos < intro_pos && intro_pos < usage_pos);
         // Children render normally.
         assert!(mdx.contains("### `iii worker add`"));

@@ -13,11 +13,15 @@ pub const DEFAULT_PORT: u16 = 49134;
 /// Shared arguments for `add` and `reinstall` commands.
 #[derive(Args, Debug)]
 pub struct AddArgs {
-    /// Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
+    /// iii registry worker names (ex. `database`), local worker paths (ex. `./my_worker`),
+    /// or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`)
     #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
     pub worker_names: Vec<String>,
 
-    /// Reset config: also remove config.yaml entry before re-adding (requires --force on add)
+    /// Discard the worker's config.yaml entry and recreate it from registry
+    /// defaults. Plain `add --force` keeps the entry, merging your
+    /// customizations over the fresh defaults; this flag drops them. Only
+    /// takes effect together with --force on add (reinstall implies it).
     #[arg(long)]
     pub reset_config: bool,
 }
@@ -37,6 +41,10 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Install a worker from the iii registry, a local directory, or by OCI image reference.
+    /// By default `add` waits up to 120s for the worker to report ready.
+    /// After which the worker will continue to boot but the command will
+    /// return to the shell. See `iii worker status` to continue observing
+    /// a booting worker and `iii worker logs` for logs.
     Add {
         #[command(flatten)]
         args: AddArgs,
@@ -45,8 +53,7 @@ pub enum Commands {
         #[arg(long, short = 'f')]
         force: bool,
 
-        /// Don't block waiting for the engine to finish booting the sandbox.
-        /// By default `add` waits up to 120s for the worker to report ready.
+        /// Don't block waiting for the engine to finish booting the worker.
         #[arg(long)]
         no_wait: bool,
     },
@@ -64,7 +71,8 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
+    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset
+    /// its config.yaml entry to registry defaults)
     Reinstall {
         #[command(flatten)]
         args: AddArgs,
@@ -113,9 +121,8 @@ pub enum Commands {
     },
 
     /// Stop a managed worker container. Stop is treated as a routine,
-    /// reversible action; running `iii worker start <name>` brings it
-    /// back from the same config entry, so the CLI no longer prompts
-    /// for confirmation.
+    /// reversible action; running `iii worker start <name>` brings the worker
+    /// back up.
     Stop {
         /// Worker name to stop
         #[arg(value_name = "WORKER")]
@@ -126,9 +133,8 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Restart a managed worker: stop if running, then start. Idempotent:
-    /// running workers get a clean cycle, stopped workers start.
-    /// By default waits up to 120s for the worker to report ready.
+    /// Restart a managed worker: stop if running, then start.
+    /// By default waits up to 120s for the worker to report ready (same as start).
     Restart {
         /// Worker name to restart
         #[arg(value_name = "WORKER")]
@@ -168,13 +174,13 @@ pub enum Commands {
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
     /// By default refreshes live in place until the worker reaches a terminal
-    /// phase (ready/missing). Pass --no-watch for a one-shot snapshot.
+    /// phase (ready/missing).
     Status {
         /// Worker name
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Print a one-shot snapshot and exit immediately (no live refresh)
+        /// Print status and exit immediately (no live refresh)
         #[arg(long)]
         no_watch: bool,
     },
@@ -261,7 +267,7 @@ pub struct ExecArgs {
 
     /// Allocate a pseudo-terminal. Required for interactive shells
     /// and TUI programs; merges stdout/stderr through the PTY master
-    /// and puts the host terminal in raw mode for the session. Auto-
+    /// and puts the host terminal in raw mode for the session. Automatically
     /// enabled when both stdin and stdout are TTYs (ssh-style); pass
     /// `--no-tty` to force pipe mode in that case.
     #[arg(short = 't', long)]
@@ -273,7 +279,7 @@ pub struct ExecArgs {
     #[arg(long, conflicts_with = "tty")]
     pub no_tty: bool,
 
-    /// Kill the child after this long (e.g. `30s`, `5m`, `500ms`).
+    /// Kill the process after this long (e.g. `30s`, `5m`, `500ms`).
     /// Parsed by the standard `humantime` syntax. On expiry the client
     /// sends SIGKILL to the guest session and exits with code 124
     /// (matches coreutils `timeout(1)`), so shell scripts can

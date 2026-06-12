@@ -38,11 +38,15 @@ pub enum ProjectAction {
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
-    /// Project name (positional). Also used for directory when --directory is not specified.
+    /// Target directory for the new project (positional). Ignored when
+    /// --directory is given. The project name is the resolved directory's
+    /// name.
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
 
-    /// Target directory (defaults to current directory). Takes precedence over the positional name.
+    /// Target directory. Takes precedence over NAME. If neither NAME nor
+    /// --directory is provided, the directory defaults to the current
+    /// directory.
     #[arg(short, long)]
     pub directory: Option<String>,
 
