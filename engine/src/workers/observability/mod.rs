@@ -648,6 +648,16 @@ fn build_span_tree_node(
 
 #[service(name = "otel")]
 impl ObservabilityWorker {
+    /// The authoritative log-storage capacity: the live global configuration
+    /// (kept current by the configuration-worker apply path) with the yaml
+    /// seed as fallback. Passing the seed directly would revert a runtime
+    /// edit on the next lazy re-init.
+    fn effective_logs_max_count(&self) -> Option<usize> {
+        otel::get_otel_config()
+            .and_then(|c| c.logs_max_count)
+            .or(self._config.logs_max_count)
+    }
+
     // =========================================================================
     // OTEL-native Log Functions (recommended over legacy logger.*)
     // =========================================================================
@@ -786,7 +796,7 @@ impl ObservabilityWorker {
 
         // Initialize storage if not already done, honoring the configured cap.
         if otel::get_log_storage().is_none() {
-            otel::init_log_storage(self._config.logs_max_count);
+            otel::init_log_storage(self.effective_logs_max_count());
         }
 
         let service_name = input
@@ -1621,7 +1631,7 @@ impl ObservabilityWorker {
                 // are disabled at config time. Return an empty result so API
                 // consumers get a consistent shape.
                 if otel::logs_enabled(Some(&self._config)) {
-                    otel::init_log_storage(self._config.logs_max_count);
+                    otel::init_log_storage(self.effective_logs_max_count());
                 }
                 let response = serde_json::json!({
                     "logs": [],
@@ -2079,16 +2089,19 @@ impl Worker for ObservabilityWorker {
             return Ok(());
         }
 
-        // Initialize metrics if enabled
+        // Initialize metrics. Called even when the metrics signal is
+        // disabled: init_metrics returns false in that case but still
+        // applies the configured storage limits, which SDK metric ingestion
+        // uses regardless of the export toggle.
         let metrics_config = metrics::MetricsConfig::default();
-        if metrics_config.enabled && metrics::init_metrics(&metrics_config) {
+        if metrics::init_metrics(&metrics_config) {
             // Pre-initialize global engine metrics only if init succeeded
             let _ = metrics::get_engine_metrics();
         }
 
         // Initialize log storage only when logs are enabled
         if otel::logs_enabled(Some(&self._config)) {
-            otel::init_log_storage(self._config.logs_max_count);
+            otel::init_log_storage(self.effective_logs_max_count());
         } else {
             tracing::info!(
                 "{} OTEL logs disabled via logs_enabled=false; skipping log storage",

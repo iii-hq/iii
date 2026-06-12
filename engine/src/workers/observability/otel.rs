@@ -445,7 +445,9 @@ impl StoredSpan {
 /// In-memory span storage with circular buffer and broadcast channel.
 pub struct InMemorySpanStorage {
     spans: RwLock<VecDeque<StoredSpan>>,
-    max_spans: usize,
+    /// Capacity limit. Atomic so the configuration-worker apply path can
+    /// retune it at runtime; enforcement happens on every insert.
+    max_spans: std::sync::atomic::AtomicUsize,
     /// Secondary index: trace_id -> set of span indices for O(1) trace lookups
     spans_by_trace_id: RwLock<HashMap<String, HashSet<usize>>>,
     /// Broadcast of every span as it lands, driving the `trace` trigger
@@ -457,7 +459,10 @@ impl std::fmt::Debug for InMemorySpanStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemorySpanStorage")
             .field("spans", &self.spans)
-            .field("max_spans", &self.max_spans)
+            .field(
+                "max_spans",
+                &self.max_spans.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("spans_by_trace_id", &self.spans_by_trace_id)
             .finish()
     }
@@ -468,9 +473,28 @@ impl InMemorySpanStorage {
         let (tx, _) = broadcast::channel(1024);
         Self {
             spans: RwLock::new(VecDeque::with_capacity(max_spans)),
-            max_spans,
+            max_spans: std::sync::atomic::AtomicUsize::new(max_spans),
             spans_by_trace_id: RwLock::new(HashMap::new()),
             tx,
+        }
+    }
+
+    /// Retune the capacity at runtime. A shrink evicts oldest spans in one
+    /// O(n) pass (drain + index rebuild) under the same lock order as
+    /// `add_spans` (spans, then index) to avoid lock-order inversion.
+    pub fn set_max_spans(&self, max: usize) {
+        let max = max.max(1);
+        self.max_spans
+            .store(max, std::sync::atomic::Ordering::Relaxed);
+        let mut spans = self.spans.write().unwrap();
+        if spans.len() > max {
+            let mut index = self.spans_by_trace_id.write().unwrap();
+            let excess = spans.len() - max;
+            spans.drain(..excess);
+            index.clear();
+            for (idx, span) in spans.iter().enumerate() {
+                index.entry(span.trace_id.clone()).or_default().insert(idx);
+            }
         }
     }
 
@@ -478,9 +502,13 @@ impl InMemorySpanStorage {
         let mut spans = self.spans.write().unwrap();
         let mut index = self.spans_by_trace_id.write().unwrap();
 
+        let max_spans = self
+            .max_spans
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1);
         for span in new_spans {
-            // Evict oldest if at capacity
-            if spans.len() >= self.max_spans
+            // Evict oldest if at capacity (loop converges after a shrink)
+            while spans.len() >= max_spans
                 && let Some(old) = spans.pop_front()
             {
                 // Remove from index and shift all indices down
@@ -2357,7 +2385,9 @@ pub struct StoredLog {
 /// In-memory log storage with circular buffer and broadcast channel.
 pub struct InMemoryLogStorage {
     logs: RwLock<VecDeque<StoredLog>>,
-    max_logs: usize,
+    /// Capacity limit. Atomic so the configuration-worker apply path can
+    /// retune it at runtime; enforcement happens on every insert.
+    max_logs: std::sync::atomic::AtomicUsize,
     tx: broadcast::Sender<StoredLog>,
 }
 
@@ -2365,7 +2395,10 @@ impl std::fmt::Debug for InMemoryLogStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemoryLogStorage")
             .field("logs", &self.logs)
-            .field("max_logs", &self.max_logs)
+            .field(
+                "max_logs",
+                &self.max_logs.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -2401,15 +2434,32 @@ impl InMemoryLogStorage {
         let (tx, _) = broadcast::channel(1024);
         Self {
             logs: RwLock::new(VecDeque::with_capacity(max_logs)),
-            max_logs,
+            max_logs: std::sync::atomic::AtomicUsize::new(max_logs),
             tx,
+        }
+    }
+
+    /// Retune the capacity at runtime; a shrink evicts oldest logs.
+    pub fn set_max_logs(&self, max: usize) {
+        let max = max.max(1);
+        self.max_logs
+            .store(max, std::sync::atomic::Ordering::Relaxed);
+        let mut logs = self.logs.write().unwrap();
+        if logs.len() > max {
+            let excess = logs.len() - max;
+            logs.drain(..excess);
         }
     }
 
     pub fn store(&self, mut log: StoredLog) {
         strip_ansi_from_log(&mut log);
         let mut logs = self.logs.write().unwrap();
-        if logs.len() >= self.max_logs {
+        while logs.len()
+            >= self
+                .max_logs
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(1)
+        {
             logs.pop_front();
         }
         logs.push_back(log.clone());
@@ -2420,9 +2470,13 @@ impl InMemoryLogStorage {
 
     pub fn add_logs(&self, new_logs: Vec<StoredLog>) {
         let mut logs = self.logs.write().unwrap();
+        let max_logs = self
+            .max_logs
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1);
         for mut log in new_logs {
             strip_ansi_from_log(&mut log);
-            if logs.len() >= self.max_logs {
+            while logs.len() >= max_logs {
                 logs.pop_front();
             }
             logs.push_back(log.clone());
@@ -2613,8 +2667,16 @@ pub fn get_log_storage() -> Option<Arc<InMemoryLogStorage>> {
     LOG_STORAGE.get().cloned()
 }
 
-/// Initialize the global log storage.
+/// Initialize the global log storage, or retune the capacity of an existing
+/// one when an explicit limit is supplied. `None` never resets a configured
+/// limit back to the default.
 pub fn init_log_storage(max_logs: Option<usize>) {
+    if let Some(existing) = LOG_STORAGE.get() {
+        if let Some(max) = max_logs {
+            existing.set_max_logs(max);
+        }
+        return;
+    }
     let storage = Arc::new(InMemoryLogStorage::new(
         max_logs.unwrap_or(DEFAULT_MEMORY_MAX_LOGS),
     ));

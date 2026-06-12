@@ -129,8 +129,17 @@ pub fn ensure_default_meter() {
         return;
     }
 
-    // Initialize metric storage with defaults (needed for SDK metrics ingestion)
-    init_metric_storage(None, None);
+    // Initialize metric storage for SDK metrics ingestion. The global
+    // observability config is already populated on the serve path (logging
+    // init precedes EngineBuilder::build), so configured limits apply here
+    // instead of being silently shadowed by defaults.
+    {
+        let cfg = super::otel::get_otel_config();
+        init_metric_storage(
+            cfg.as_ref().and_then(|c| c.metrics_max_count),
+            cfg.as_ref().and_then(|c| c.metrics_retention_seconds),
+        );
+    }
 
     let provider = SdkMeterProvider::builder().build();
     let meter = provider.meter("iii");
@@ -743,9 +752,11 @@ pub struct TimeIndexedMetricStorage {
     /// Secondary index: name -> timestamps (for name+time queries)
     metrics_by_name:
         std::sync::RwLock<std::collections::HashMap<String, std::collections::BTreeSet<u64>>>,
-    /// Configuration
-    max_age_ns: u64,
-    max_metrics: usize,
+    /// Configuration. Atomic so the configuration-worker apply path can
+    /// retune limits at runtime; enforcement happens per insert
+    /// (`evict_if_needed`) and per 60s retention sweep (`apply_retention`).
+    max_age_ns: std::sync::atomic::AtomicU64,
+    max_metrics: std::sync::atomic::AtomicUsize,
     /// Maximum unique metric names (cardinality limit)
     max_unique_names: usize,
     /// Metric counter for eviction
@@ -759,8 +770,14 @@ impl std::fmt::Debug for TimeIndexedMetricStorage {
         f.debug_struct("TimeIndexedMetricStorage")
             .field("metrics_by_time", &self.metrics_by_time)
             .field("metrics_by_name", &self.metrics_by_name)
-            .field("max_age_ns", &self.max_age_ns)
-            .field("max_metrics", &self.max_metrics)
+            .field(
+                "max_age_ns",
+                &self.max_age_ns.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field(
+                "max_metrics",
+                &self.max_metrics.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("max_unique_names", &self.max_unique_names)
             .finish()
     }
@@ -771,11 +788,31 @@ impl TimeIndexedMetricStorage {
         Self {
             metrics_by_time: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             metrics_by_name: std::sync::RwLock::new(std::collections::HashMap::new()),
-            max_age_ns,
-            max_metrics,
+            max_age_ns: std::sync::atomic::AtomicU64::new(max_age_ns),
+            max_metrics: std::sync::atomic::AtomicUsize::new(max_metrics),
             max_unique_names: 10000, // Default cardinality limit
             total_metrics: std::sync::atomic::AtomicUsize::new(0),
             cardinality_warned: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Retune capacity and retention at runtime. `None` keeps the current
+    /// value. A shrink takes effect on the next insert (capacity) and the
+    /// next 60s retention sweep (age).
+    pub fn set_limits(&self, max_metrics: Option<usize>, retention_seconds: Option<u64>) {
+        if let Some(max) = max_metrics {
+            self.max_metrics
+                .store(max.max(1), std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(seconds) = retention_seconds {
+            match seconds.checked_mul(1_000_000_000) {
+                Some(ns) => self
+                    .max_age_ns
+                    .store(ns, std::sync::atomic::Ordering::Relaxed),
+                None => tracing::error!(
+                    "retention_seconds overflow when converting to nanoseconds; keeping current retention"
+                ),
+            }
         }
     }
 
@@ -826,10 +863,11 @@ impl TimeIndexedMetricStorage {
         by_time: &mut std::collections::BTreeMap<u64, Vec<StoredMetric>>,
         by_name: &mut std::collections::HashMap<String, std::collections::BTreeSet<u64>>,
     ) {
+        let max_metrics = self.max_metrics.load(std::sync::atomic::Ordering::Relaxed);
         while self
             .total_metrics
             .load(std::sync::atomic::Ordering::Relaxed)
-            > self.max_metrics
+            > max_metrics
         {
             // Remove oldest timestamp bucket
             if let Some((oldest_ts, metrics)) = by_time.iter().next() {
@@ -1035,7 +1073,7 @@ impl TimeIndexedMetricStorage {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        let cutoff = now.saturating_sub(self.max_age_ns);
+        let cutoff = now.saturating_sub(self.max_age_ns.load(std::sync::atomic::Ordering::Relaxed));
 
         let mut by_time = self.metrics_by_time.write().unwrap();
         let mut by_name = self.metrics_by_name.write().unwrap();
@@ -1095,8 +1133,14 @@ const DEFAULT_MAX_METRICS: usize = 10000;
 /// Default retention period (1 hour in nanoseconds)
 const DEFAULT_RETENTION_NS: u64 = 3600 * 1_000_000_000;
 
-/// Initialize metric storage with the given capacity and retention
+/// Initialize metric storage with the given capacity and retention, or
+/// retune the limits of an existing one when explicit values are supplied
+/// (`None` never resets a configured limit back to the default).
 pub fn init_metric_storage(max_metrics: Option<usize>, retention_seconds: Option<u64>) {
+    if let Some(existing) = IN_MEMORY_METRIC_STORAGE.get() {
+        existing.set_limits(max_metrics, retention_seconds);
+        return;
+    }
     let max_metrics = max_metrics.unwrap_or(DEFAULT_MAX_METRICS);
     let retention_ns = if let Some(seconds) = retention_seconds {
         match seconds.checked_mul(1_000_000_000) {
