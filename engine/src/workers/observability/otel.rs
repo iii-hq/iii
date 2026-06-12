@@ -759,7 +759,6 @@ impl opentelemetry_sdk::trace::ShouldSample for DynamicSampler {
         attributes: &[opentelemetry::KeyValue],
         links: &[opentelemetry::trace::Link],
     ) -> opentelemetry::trace::SamplingResult {
-        use opentelemetry_sdk::trace::ShouldSample;
         self.inner
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -874,7 +873,6 @@ fn forward_span_is_sampled<S: opentelemetry_sdk::trace::ShouldSample>(
     sd: &SpanData,
 ) -> bool {
     use opentelemetry::trace::SamplingDecision;
-    use opentelemetry_sdk::trace::ShouldSample;
     let result = sampler.should_sample(
         None,
         sd.span_context.trace_id(),

@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod configuration;
 pub mod logs_layer;
 pub mod metrics;
 pub mod otel;
@@ -391,12 +392,29 @@ pub struct BaggageGetAllInput {}
 /// It sets the global OTEL configuration from YAML before logging is initialized.
 #[derive(Clone)]
 pub struct ObservabilityWorker {
+    /// The config.yaml block passed to `create()` (or built-in defaults).
+    /// Used as the seed for first-time `configuration::register` and as the
+    /// fetch fallback; the configuration worker entry is the runtime source
+    /// of truth afterwards.
     _config: config::ObservabilityWorkerConfig,
     triggers: Arc<OtelLogTriggers>,
     trace_triggers: Arc<OtelTraceTriggers>,
     engine: Arc<Engine>,
     /// Shutdown signal sender for background tasks
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// The live worker shutdown receiver, stored by `start_background_tasks`
+    /// so `apply_config` can hand respawned tasks the same lifecycle. `None`
+    /// until started / after destroy — task rebuilds are refused then (the
+    /// other apply tiers still run).
+    worker_shutdown_rx: Arc<std::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>>>,
+    /// Stop signal for the current log-retention task instance (respawned on
+    /// `logs_retention_seconds` changes).
+    logs_retention_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Stop signal for the current OTLP logs exporter task instance
+    /// (respawned on exporter/batch/flush/endpoint/identity changes).
+    logs_exporter_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Serializes concurrent `apply_config` runs (rapid configuration edits).
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// A compiled [`config::SpanCollapseRule`] with precompiled regex patterns.
@@ -681,6 +699,396 @@ impl ObservabilityWorker {
         otel::get_otel_config()
             .and_then(|c| c.logs_max_count)
             .or(self._config.logs_max_count)
+    }
+
+    fn from_config(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
+        let otel_config: config::ObservabilityWorkerConfig = match config {
+            Some(cfg) => serde_json::from_value(cfg)?,
+            None => config::ObservabilityWorkerConfig::default(),
+        };
+        let otel_config = otel_config.normalized();
+
+        // Seed the global OTEL config so logging can use it. On the serve
+        // path the global is already populated during logging init (from the
+        // persisted configuration entry or this same yaml block); first-set
+        // semantics keep that value authoritative.
+        if !otel::set_otel_config(otel_config.clone()) {
+            tracing::debug!(
+                "ObservabilityWorker created with the global config already set; keeping it"
+            );
+        }
+
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
+        Ok(ObservabilityWorker {
+            _config: otel_config,
+            triggers: Arc::new(OtelLogTriggers::new()),
+            trace_triggers: Arc::new(OtelTraceTriggers::new()),
+            engine,
+            shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    /// Construct a worker from a raw config value — mirrors
+    /// `ConfigurationWorker::for_test` so integration tests in `engine/tests/`
+    /// can drive the concrete worker without booting the full engine.
+    #[doc(hidden)]
+    pub fn for_test(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
+        Self::from_config(engine, config)
+    }
+
+    /// The live effective configuration: the global snapshot kept current by
+    /// the configuration-worker apply path, with the yaml seed as fallback.
+    pub fn current_config(&self) -> config::ObservabilityWorkerConfig {
+        otel::get_otel_config()
+            .map(|cfg| (*cfg).clone())
+            .unwrap_or_else(|| self._config.clone())
+    }
+
+    /// Register the `iii-observability::on-config-change` handler. Idempotent
+    /// (replace-by-id), so it is safe to call from both `register_functions`
+    /// (which runs inside the worker scope for destroy/reload cleanup) and
+    /// `start_background_tasks` (which registers the trigger and runs first
+    /// on reload).
+    fn register_config_handler(&self, engine: &Arc<Engine>) {
+        let worker = self.clone();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: configuration::CONFIG_FN_ID.to_string(),
+                description: Some(
+                    "Internal: re-apply the iii-observability configuration when the \
+                     authoritative configuration entry changes."
+                        .to_string(),
+                ),
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(move |_payload: Value| {
+                let worker = worker.clone();
+                async move {
+                    configuration::on_config_change(&worker).await;
+                    crate::function::FunctionResult::Success(Some(
+                        serde_json::json!({ "ok": true }),
+                    ))
+                }
+            }),
+        );
+    }
+
+    /// Fetch the authoritative configuration and apply it per field tier.
+    ///
+    /// - LIVE: the global config snapshot is swapped unconditionally —
+    ///   per-use readers (ingest gates, `logs_console_output`,
+    ///   `logs_sampling_ratio`, resource attributes) pick it up immediately.
+    /// - LIMITS: storage capacities/retention are re-applied unconditionally
+    ///   (idempotent atomics), so a catch-up apply converges even when the
+    ///   value itself did not change.
+    /// - SWAP: sampler, alert rules, collapse-rule cache, and the engine log
+    ///   level are rebuilt only when their fields changed.
+    /// - TASK-REBUILD: the log-retention and OTLP-logs-exporter tasks are
+    ///   respawned when their captured settings changed; refused (warn) when
+    ///   the worker has not started or was destroyed.
+    /// - RESTART-ONLY: trace exporter wiring, resource identity on traces,
+    ///   pipeline enablement, metrics exporter, and the log format are baked
+    ///   in at process start; changes are reported with a warning and take
+    ///   effect at the next engine start (the persisted entry is read at
+    ///   boot).
+    pub(crate) async fn apply_config(&self) -> anyhow::Result<()> {
+        let _guard = self.apply_lock.lock().await;
+
+        let old = self.current_config();
+        let new = tokio::time::timeout(
+            configuration::CONFIG_BUS_TIMEOUT,
+            configuration::fetch_config(self.engine.as_ref(), &old),
+        )
+        .await
+        .map_err(|elapsed| anyhow::Error::new(elapsed).context("configuration::get timed out"))??;
+
+        // LIVE tier: swap the global snapshot.
+        otel::update_otel_config(new.clone());
+
+        // LIMITS tier: idempotent, applied unconditionally.
+        if let Some(storage) = otel::get_span_storage()
+            && let Some(max) = new.memory_max_spans
+        {
+            storage.set_max_spans(max);
+        }
+        otel::init_log_storage(new.logs_max_count);
+        metrics::init_metric_storage(new.metrics_max_count, new.metrics_retention_seconds);
+
+        // SWAP tier: rebuild only what changed.
+        if old.collapse_spans != new.collapse_spans {
+            refresh_collapse_rules(&new.collapse_spans);
+            tracing::info!("iii-observability: span collapse rules recompiled");
+        }
+        if old.alerts != new.alerts {
+            match metrics::get_alert_manager() {
+                Some(manager) => {
+                    manager.update_rules(new.alerts.clone());
+                    tracing::info!(
+                        rules = new.alerts.len(),
+                        "iii-observability: alert rules replaced"
+                    );
+                }
+                None => tracing::warn!(
+                    "iii-observability: alert manager not initialized; alert changes \
+                     apply at the next engine start"
+                ),
+            }
+        }
+        if old.level != new.level {
+            match &new.level {
+                Some(level) => {
+                    if let Err(err) = crate::logging::reload_log_level(level) {
+                        tracing::warn!(
+                            error = %err,
+                            "iii-observability: log level not applied; keeping current level"
+                        );
+                    }
+                }
+                // Removing the key does not revert to a default: the boot
+                // level may have come from env/CLI, not this entry.
+                None => tracing::debug!(
+                    "iii-observability: level removed from configuration; keeping current level"
+                ),
+            }
+        }
+        if old.sampling != new.sampling
+            || old.sampling_ratio != new.sampling_ratio
+            || old.service_name != new.service_name
+        {
+            otel::refresh_sampler();
+            tracing::info!("iii-observability: sampler rebuilt");
+        }
+
+        // TASK-REBUILD tier.
+        let respawn_retention = old.logs_retention_seconds != new.logs_retention_seconds;
+        let respawn_exporter = old.logs_exporter != new.logs_exporter
+            || old.logs_batch_size != new.logs_batch_size
+            || old.logs_flush_interval_ms != new.logs_flush_interval_ms
+            || old.endpoint != new.endpoint
+            || old.service_name != new.service_name
+            || old.service_version != new.service_version;
+        if respawn_retention || respawn_exporter {
+            let started = self
+                .worker_shutdown_rx
+                .lock()
+                .expect("worker_shutdown_rx mutex poisoned")
+                .is_some();
+            if started {
+                if respawn_retention {
+                    self.spawn_logs_retention(&new);
+                }
+                if respawn_exporter {
+                    self.spawn_logs_exporter(&new);
+                }
+            } else {
+                tracing::warn!(
+                    "iii-observability: background tasks not running; log exporter/retention \
+                     changes apply when the worker starts"
+                );
+            }
+        }
+
+        // RESTART-ONLY tier: report what will only apply at the next boot.
+        let mut restart_fields = Vec::new();
+        if old.enabled != new.enabled {
+            restart_fields.push("enabled (pipeline construction; ingest gate applies live)");
+        }
+        if old.exporter != new.exporter {
+            restart_fields.push("exporter");
+        }
+        if old.endpoint != new.endpoint {
+            restart_fields.push("endpoint (trace exporter/forwarder; logs exporter rebuilt live)");
+        }
+        if old.service_name != new.service_name
+            || old.service_version != new.service_version
+            || old.service_namespace != new.service_namespace
+        {
+            restart_fields.push("service identity on the trace resource");
+        }
+        if old.format != new.format {
+            restart_fields.push("format");
+        }
+        if old.metrics_enabled != new.metrics_enabled {
+            restart_fields.push("metrics_enabled");
+        }
+        if old.metrics_exporter != new.metrics_exporter {
+            restart_fields.push("metrics_exporter");
+        }
+        if !restart_fields.is_empty() {
+            tracing::warn!(
+                fields = ?restart_fields,
+                "iii-observability: restart-tier fields changed; they apply at the next \
+                 engine start (the stored entry is read at boot)"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// (Re)spawn the log-retention sweep from `cfg`, stopping any previous
+    /// instance. The task also follows the worker shutdown signal.
+    fn spawn_logs_retention(&self, cfg: &config::ObservabilityWorkerConfig) {
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let previous = self
+            .logs_retention_stop
+            .lock()
+            .expect("logs_retention_stop mutex poisoned")
+            .replace(stop_tx);
+        if let Some(previous) = previous {
+            let _ = previous.send(true);
+        }
+
+        let Some(retention_seconds) = cfg.logs_retention_seconds.filter(|&s| s > 0) else {
+            return; // retention disabled: previous task stopped, nothing to spawn
+        };
+        let Some(retention_ns) = retention_seconds.checked_mul(1_000_000_000) else {
+            tracing::warn!(
+                "logs_retention_seconds overflow when converting to nanoseconds; \
+                 disabling log retention task"
+            );
+            return;
+        };
+        let Some(log_storage) = otel::get_log_storage() else {
+            return;
+        };
+        let Some(mut shutdown_rx) = self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .clone()
+        else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    result = shutdown_rx.changed() => {
+                        if result.is_err() || *shutdown_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log retention task shutting down");
+                            break;
+                        }
+                    }
+                    result = stop_rx.changed() => {
+                        if result.is_err() || *stop_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log retention task replaced");
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        log_storage.apply_retention(retention_ns);
+                    }
+                }
+            }
+        });
+    }
+
+    /// (Re)spawn the OTLP logs exporter from `cfg`, stopping any previous
+    /// instance. The exporter task follows both its per-instance stop signal
+    /// and the worker shutdown signal.
+    fn spawn_logs_exporter(&self, cfg: &config::ObservabilityWorkerConfig) {
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let previous = self
+            .logs_exporter_stop
+            .lock()
+            .expect("logs_exporter_stop mutex poisoned")
+            .replace(stop_tx);
+        if let Some(previous) = previous {
+            let _ = previous.send(true);
+        }
+
+        let exporter_type = cfg
+            .logs_exporter
+            .clone()
+            .unwrap_or(config::LogsExporterType::Memory);
+        if exporter_type == config::LogsExporterType::Memory {
+            return; // OTLP export disabled: previous task stopped
+        }
+        let Some(log_storage) = otel::get_log_storage() else {
+            return;
+        };
+        let Some(worker_shutdown_rx) = self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .clone()
+        else {
+            return;
+        };
+
+        let endpoint = cfg
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| "http://localhost:4317".to_string());
+        let service_name = cfg
+            .service_name
+            .clone()
+            .unwrap_or_else(|| "iii".to_string());
+        let service_version = cfg
+            .service_version
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let rx = log_storage.subscribe();
+        let mut exporter =
+            otel::OtlpLogsExporter::new(endpoint.clone(), service_name, service_version);
+
+        if let Some(batch_size) = cfg
+            .logs_batch_size
+            .or_else(|| parse_env_var("OTEL_LOGS_BATCH_SIZE"))
+        {
+            exporter = exporter.with_batch_size(batch_size);
+        }
+
+        if let Some(flush_interval_ms) = cfg
+            .logs_flush_interval_ms
+            .or_else(|| parse_env_var("OTEL_LOGS_FLUSH_INTERVAL_MS"))
+        {
+            exporter =
+                exporter.with_flush_interval(std::time::Duration::from_millis(flush_interval_ms));
+        }
+
+        // The exporter consumes a single shutdown receiver; bridge the
+        // per-instance stop and the worker-wide shutdown into one channel.
+        let (bridge_tx, bridge_rx) = tokio::sync::watch::channel(false);
+        {
+            let mut stop_rx = stop_rx;
+            let mut worker_rx = worker_shutdown_rx;
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        result = stop_rx.changed() => {
+                            if result.is_err() || *stop_rx.borrow() {
+                                let _ = bridge_tx.send(true);
+                                break;
+                            }
+                        }
+                        result = worker_rx.changed() => {
+                            if result.is_err() || *worker_rx.borrow() {
+                                let _ = bridge_tx.send(true);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        exporter.start_with_shutdown(rx, bridge_rx);
+
+        tracing::info!(
+            "{} OTLP logs exporter started (endpoint: {})",
+            "[LOGS]".cyan(),
+            endpoint
+        );
     }
 
     // =========================================================================
@@ -2079,31 +2487,18 @@ impl Worker for ObservabilityWorker {
     }
 
     async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
-        let otel_config: config::ObservabilityWorkerConfig = match config {
-            Some(cfg) => serde_json::from_value(cfg)?,
-            None => config::ObservabilityWorkerConfig::default(),
-        };
-
-        // Set the global OTEL config so logging can use it
-        if !otel::set_otel_config(otel_config.clone()) {
-            tracing::warn!(
-                "ObservabilityWorker created but global config was already set - using existing config"
-            );
-        }
-
-        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
-
-        Ok(Box::new(ObservabilityWorker {
-            _config: otel_config,
-            triggers: Arc::new(OtelLogTriggers::new()),
-            trace_triggers: Arc::new(OtelTraceTriggers::new()),
-            engine,
-            shutdown_tx: Arc::new(shutdown_tx),
-        }))
+        Ok(Box::new(Self::from_config(engine, config)?))
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
-        self.register_functions(engine);
+        self.register_functions(engine.clone());
+        // Registered here so the worker scope tracks the handler and removes
+        // it automatically on destroy/reload. The hook order differs by
+        // pipeline: initial boot runs `register_functions` BEFORE
+        // `start_background_tasks` (workers/config.rs), reload runs it AFTER
+        // (reload.rs) — so `start_background_tasks` also registers the
+        // handler (if absent) before subscribing to configuration events.
+        self.register_config_handler(&engine);
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -2188,8 +2583,16 @@ impl Worker for ObservabilityWorker {
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
+        // Stored unconditionally (before the enabled gate) so `apply_config`
+        // can hand respawned tasks the worker lifecycle even on deployments
+        // that boot disabled.
+        *self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned") = Some(shutdown_rx.clone());
+
         // Skip all background tasks when observability is disabled
-        if !self._config.enabled.unwrap_or(true) {
+        if !self.current_config().enabled.unwrap_or(true) {
             tracing::debug!("[ObservabilityWorker] Skipping background tasks (disabled)");
             return Ok(());
         }
@@ -2342,40 +2745,8 @@ impl Worker for ObservabilityWorker {
             });
         }
 
-        // Spawn background task for log retention cleanup
-        if let Some(retention_seconds) = self._config.logs_retention_seconds
-            && retention_seconds > 0
-            && let Some(log_storage) = otel::get_log_storage()
-        {
-            let retention_ns = match retention_seconds.checked_mul(1_000_000_000) {
-                Some(ns) => ns,
-                None => {
-                    tracing::warn!(
-                        "logs_retention_seconds overflow when converting to nanoseconds; disabling log retention task"
-                    );
-                    0
-                }
-            };
-            if retention_ns > 0 {
-                let mut shutdown_rx = shutdown_rx.clone();
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
-                    loop {
-                        tokio::select! {
-                            result = shutdown_rx.changed() => {
-                                if result.is_err() || *shutdown_rx.borrow() {
-                                    tracing::debug!("[ObservabilityWorker] Log retention task shutting down");
-                                    break;
-                                }
-                            }
-                            _ = interval.tick() => {
-                                log_storage.apply_retention(retention_ns);
-                            }
-                        }
-                    }
-                });
-            }
-        }
+        // Log retention runs as a respawnable task; spawned below from the
+        // post-adoption effective configuration.
 
         // Spawn background task for metrics retention cleanup and rollup processing
         if let Some(storage) = metrics::get_metric_storage() {
@@ -2439,56 +2810,66 @@ impl Worker for ObservabilityWorker {
             });
         }
 
-        // Start OTLP logs exporter if configured
-        let logs_exporter_type = otel::get_logs_exporter_type();
-        if (logs_exporter_type == config::LogsExporterType::Otlp
-            || logs_exporter_type == config::LogsExporterType::Both)
-            && let Some(log_storage) = otel::get_log_storage()
-        {
-            let endpoint = self
-                ._config
-                .endpoint
-                .clone()
-                .unwrap_or_else(|| "http://localhost:4317".to_string());
-            let service_name = self
-                ._config
-                .service_name
-                .clone()
-                .unwrap_or_else(|| "iii".to_string());
-            let service_version = self
-                ._config
-                .service_version
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
-
-            let rx = log_storage.subscribe();
-            let mut exporter =
-                otel::OtlpLogsExporter::new(endpoint.clone(), service_name, service_version);
-
-            if let Some(batch_size) = self
-                ._config
-                .logs_batch_size
-                .or_else(|| parse_env_var("OTEL_LOGS_BATCH_SIZE"))
-            {
-                exporter = exporter.with_batch_size(batch_size);
-            }
-
-            if let Some(flush_interval_ms) = self
-                ._config
-                .logs_flush_interval_ms
-                .or_else(|| parse_env_var("OTEL_LOGS_FLUSH_INTERVAL_MS"))
-            {
-                exporter = exporter
-                    .with_flush_interval(std::time::Duration::from_millis(flush_interval_ms));
-            }
-
-            exporter.start_with_shutdown(rx, shutdown_rx.clone());
-
-            tracing::info!(
-                "{} OTLP logs exporter started (endpoint: {})",
-                "[LOGS]".cyan(),
-                endpoint
+        // Adopt the configuration worker as the runtime source of truth.
+        // `configuration::*` is callable here on both pipelines (initial boot
+        // registers all worker functions before serving; reload starts the
+        // mandatory configuration worker independently). Failures degrade to
+        // the static config.yaml block so observability stays up. Every bus
+        // call is time-bounded: worker startup is awaited serially by the
+        // boot and reload pipelines.
+        let register = tokio::time::timeout(
+            configuration::CONFIG_BUS_TIMEOUT,
+            configuration::register_config(self.engine.as_ref(), Some(&self._config)),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("configuration::register timed out"))
+        .and_then(|result| result);
+        if let Err(err) = register {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: configuration::register failed; continuing with static config"
             );
+        }
+
+        // Initial sync: fetch the authoritative value and apply it per tier
+        // (apply_config carries its own bus timeout).
+        if let Err(err) = self.apply_config().await {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: failed to read configuration; continuing with static config"
+            );
+        }
+
+        // Spawn the respawnable tasks from the post-sync effective
+        // configuration. The helpers stop any instance an apply above may
+        // already have spawned, so this cannot double-spawn.
+        let effective = self.current_config();
+        self.spawn_logs_retention(&effective);
+        self.spawn_logs_exporter(&effective);
+
+        // Register the handler before the trigger so a configuration event
+        // can never fan out to a missing function. On reload,
+        // `register_functions` runs after this hook and re-registers the
+        // handler inside the worker scope; the `get` check keeps the
+        // initial-boot path (where it already ran) from logging a spurious
+        // "already registered" overwrite.
+        if self
+            .engine
+            .functions
+            .get(configuration::CONFIG_FN_ID)
+            .is_none()
+        {
+            self.register_config_handler(&self.engine);
+        }
+        if let Err(err) = configuration::register_config_trigger(&self.engine).await {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: failed to watch configuration changes; hot-reload disabled"
+            );
+        } else {
+            // Catch-up pass: replay any `configuration::set` that landed
+            // between the initial sync above and the trigger subscription.
+            configuration::on_config_change(self).await;
         }
 
         Ok(())
@@ -2496,6 +2877,33 @@ impl Worker for ObservabilityWorker {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Shutting down ObservabilityWorker...");
+
+        // Best-effort: the trigger is registered outside the worker scope, so
+        // remove it explicitly to keep ReloadManager restarts duplicate-free.
+        let _ = self
+            .engine
+            .trigger_registry
+            .unregister_trigger(
+                configuration::CONFIG_TRIGGER_ID.to_string(),
+                Some(configuration::CONFIG_TRIGGER_TYPE.to_string()),
+            )
+            .await;
+
+        // Serialize with any in-flight `apply_config` so a task respawn
+        // cannot land after the shutdown below; clearing the stored receiver
+        // makes later applies refuse the task-rebuild tier entirely.
+        {
+            let _guard = self.apply_lock.lock().await;
+            self.worker_shutdown_rx
+                .lock()
+                .expect("worker_shutdown_rx mutex poisoned")
+                .take();
+        }
+        for stop in [&self.logs_retention_stop, &self.logs_exporter_stop] {
+            if let Some(stop) = stop.lock().expect("stop mutex poisoned").take() {
+                let _ = stop.send(true);
+            }
+        }
 
         // Signal all background tasks to stop
         let _ = self.shutdown_tx.send(true);
@@ -2595,6 +3003,10 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine,
             shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -6184,6 +6596,10 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let result = worker.initialize().await;
@@ -6219,6 +6635,10 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let result = worker.initialize().await;
@@ -6254,6 +6674,10 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx.clone()),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let result = worker
