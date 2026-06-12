@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Elastic-2.0"
 publish = false
-description = "Renders a clap::Command tree as a Mintlify MDX CLI reference page (used by the hidden `gen-docs` subcommands)."
+description = "Renders a clap::Command tree as a Mintlify MDX CLI reference page (used by the hidden `gen-cli-docs` subcommands)."
 
 [dependencies]
 # "string" lets us set owned full-path bin names ("iii worker sandbox run")

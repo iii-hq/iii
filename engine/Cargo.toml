@@ -128,7 +128,7 @@ cron = "0.15"
 once_cell = "1.21.3"
 clap = { version = "4", features = ["derive"] }
 clap-help = "1"
-# MDX CLI reference generation for the hidden `gen-docs` subcommand.
+# MDX CLI reference generation for the hidden `gen-cli-docs` subcommand.
 iii-clap-docs = { path = "../crates/iii-clap-docs" }
 regex = "1"
 hex = "0.4"

@@ -3,7 +3,7 @@
 # iii console CLI reference
 
 
-{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
+{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
 
 Reference for the `iii console` command. The `iii` binary dispatches `iii console ...` to the separately installed `iii-console` binary (downloaded on first use); the same binary can also be invoked directly as `iii-console`. The dispatcher itself is covered by the [iii CLI reference](./iii).
 

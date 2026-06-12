@@ -2,7 +2,7 @@
 # Regenerate the committed CLI reference pages from the clap definitions.
 #
 # Each user-facing binary in this repo (iii, iii-worker, iii-console) exposes
-# a hidden `gen-docs` subcommand that renders its own clap tree as MDX via
+# a hidden `gen-cli-docs` subcommand that renders its own clap tree as MDX via
 # crates/iii-clap-docs. The output is committed under docs/next/cli-reference/
 # and the cli-docs-drift CI job regenerates + diffs it, so the docs can never
 # drift from the CLI. (iii-cloud lives outside this repo and is not covered.)
@@ -16,14 +16,14 @@ OUT_DIR="docs/next/cli-reference"
 echo "=== CLI Reference Generation ==="
 
 echo "[1/4] iii (engine)..."
-cargo run --quiet -p iii -- gen-docs --out "$OUT_DIR/iii.mdx"
+cargo run --quiet -p iii -- gen-cli-docs --out "$OUT_DIR/iii.mdx"
 
 echo "[2/4] iii worker..."
-cargo run --quiet -p iii-worker -- gen-docs --out "$OUT_DIR/iii-worker.mdx"
+cargo run --quiet -p iii-worker -- gen-cli-docs --out "$OUT_DIR/iii-worker.mdx"
 
 echo "[3/4] iii console..."
-# Placeholder assets are fine; gen-docs never serves the frontend.
-SKIP_FRONTEND_BUILD=1 cargo run --quiet -p iii-console -- gen-docs --out "$OUT_DIR/iii-console.mdx"
+# Placeholder assets are fine; gen-cli-docs never serves the frontend.
+SKIP_FRONTEND_BUILD=1 cargo run --quiet -p iii-console -- gen-cli-docs --out "$OUT_DIR/iii-console.mdx"
 
 # Re-render the per-doc skill artifacts (<page>.mdx.skill.md) that the
 # skill-check workflow verifies. Optional locally; CI's skill-check job is

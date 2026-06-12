@@ -4,10 +4,11 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Hidden `iii worker gen-docs` subcommand: renders this binary's clap tree
-//! as the committed MDX CLI reference (docs/next/cli-reference/iii-worker.mdx).
-//! CI regenerates the page and fails on diff, so the published reference can
-//! never drift from the CLI definitions. See scripts/generate-cli-docs.sh.
+//! Hidden `iii worker gen-cli-docs` subcommand: renders this binary's clap
+//! tree as the committed MDX CLI reference
+//! (docs/next/cli-reference/iii-worker.mdx). CI regenerates the page and
+//! fails on diff, so the published reference can never drift from the CLI
+//! definitions. See scripts/generate-cli-docs.sh.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -28,6 +29,7 @@ pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
                 via `iii worker --help` and `iii worker <subcommand> --help`."
             .to_string(),
         delegated: BTreeMap::new(),
+        notes: BTreeMap::new(),
     };
     iii_clap_docs::write_page(cmd, &meta, out)?;
     Ok(())

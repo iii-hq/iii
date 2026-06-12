@@ -7,7 +7,7 @@
 //! Render a `clap::Command` tree as a Mintlify MDX reference page.
 //!
 //! Each user-facing binary (`iii`, `iii-worker`, `iii-console`) exposes a
-//! hidden `gen-docs` subcommand that hands its own `Command` tree to
+//! hidden `gen-cli-docs` subcommand that hands its own `Command` tree to
 //! [`render_mdx`]. The output is committed under `docs/next/cli-reference/`
 //! and CI regenerates + diffs it so the docs can never drift from the CLI.
 //!
@@ -32,7 +32,8 @@ pub struct Delegated {
     pub note: String,
 }
 
-/// Page-level metadata supplied by each binary's `gen-docs` implementation.
+/// Page-level metadata supplied by each binary's `gen-cli-docs`
+/// implementation.
 pub struct PageMeta {
     pub title: String,
     pub description: String,
@@ -41,6 +42,12 @@ pub struct PageMeta {
     pub intro: String,
     /// Subcommand name -> external documentation target.
     pub delegated: BTreeMap<String, Delegated>,
+    /// Full command path ("iii trigger") -> raw MDX appended to that
+    /// command's section. Docs-only prose that has no place in terminal
+    /// help; for text that should show in BOTH `--help` and the docs, set
+    /// clap's `after_long_help`/`after_help` on the command instead (the
+    /// walker renders it as a `<Note>`).
+    pub notes: BTreeMap<String, String>,
 }
 
 /// Render the full MDX page for `cmd`.
@@ -68,7 +75,7 @@ pub fn render_mdx(cmd: Command, meta: &PageMeta) -> String {
     // Single-line MDX comment: multi-line {/* */} blocks get mangled by
     // formatters, and this file must round-trip byte-identical for the CI
     // drift gate.
-    out.push_str("{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}\n\n");
+    out.push_str("{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}\n\n");
     if !meta.intro.is_empty() {
         out.push_str(meta.intro.trim_end());
         out.push_str("\n\n");
@@ -182,6 +189,18 @@ fn render_command(out: &mut String, cmd: &mut Command, path: &str, level: usize,
             out.push_str(&row);
         }
         out.push('\n');
+    }
+
+    // Trailing notes, mirroring clap's help layout (after_help prints at
+    // the end of `--help` output). First the clap-native text, which shows
+    // on both surfaces; then any docs-only MDX registered for this path.
+    if let Some(after) = cmd.get_after_long_help().or_else(|| cmd.get_after_help()) {
+        let text = esc_mdx(&after.to_string());
+        out.push_str(&format!("<Note>\n  {}\n</Note>\n\n", text.trim()));
+    }
+    if let Some(note) = meta.notes.get(path) {
+        out.push_str(note.trim_end());
+        out.push_str("\n\n");
     }
 
     // Recurse, skipping delegated and the auto help subcommand.
@@ -389,6 +408,7 @@ mod tests {
             owner: "devrel".to_string(),
             intro: "Intro line.".to_string(),
             delegated: BTreeMap::new(),
+            notes: BTreeMap::new(),
         }
     }
 
@@ -547,6 +567,44 @@ mod tests {
         );
         let mdx = render_mdx(explicit, &meta());
         assert!(mdx.contains("`-v, --version`"));
+    }
+
+    #[test]
+    fn after_help_renders_as_note_on_both_surfaces() {
+        let cmd = Command::new("iii").subcommand(
+            Command::new("trigger")
+                .about("Invoke a function")
+                .after_help("Schemas come from <workers>; output varies."),
+        );
+        let mdx = render_mdx(cmd, &meta());
+        // Wrapped in a Note callout, MDX-escaped, inside the right section.
+        let section = mdx.split("### `iii trigger`").nth(1).unwrap();
+        assert!(
+            section.contains("<Note>\n  Schemas come from \\<workers>; output varies.\n</Note>"),
+            "after_help missing or mangled:\n{mdx}"
+        );
+    }
+
+    #[test]
+    fn docs_only_notes_insert_raw_mdx_at_the_keyed_path() {
+        let cmd = Command::new("iii").subcommand(
+            Command::new("project")
+                .about("Manage projects")
+                .subcommand(Command::new("init").about("Scaffold")),
+        );
+        let mut m = meta();
+        m.notes.insert(
+            "iii project init".to_string(),
+            "<Warning>\n  Raw MDX, [link](../somewhere) intact.\n</Warning>".to_string(),
+        );
+        let mdx = render_mdx(cmd, &m);
+        let section = mdx.split("#### `iii project init`").nth(1).unwrap();
+        assert!(
+            section.contains("<Warning>\n  Raw MDX, [link](../somewhere) intact.\n</Warning>"),
+            "docs-only note missing:\n{mdx}"
+        );
+        // Not duplicated into other sections.
+        assert_eq!(mdx.matches("<Warning>").count(), 1);
     }
 
     #[test]

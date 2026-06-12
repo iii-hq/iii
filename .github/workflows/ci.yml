@@ -4,25 +4,25 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
-      - 'skills/**'
-      - 'website/**'
-      - 'blog/**'
-      - 'engine/src/workers/**/*.md'
-      - '**/*.md'
-      - '**/*.mdx'
-      - '.cursor/**'
+      - "docs/**"
+      - "skills/**"
+      - "website/**"
+      - "blog/**"
+      - "engine/src/workers/**/*.md"
+      - "**/*.md"
+      - "**/*.mdx"
+      - ".cursor/**"
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'docs/**'
-      - 'skills/**'
-      - 'website/**'
-      - 'blog/**'
-      - 'engine/src/workers/**/*.md'
-      - '**/*.md'
-      - '**/*.mdx'
-      - '.cursor/**'
+      - "docs/**"
+      - "skills/**"
+      - "website/**"
+      - "blog/**"
+      - "engine/src/workers/**/*.md"
+      - "**/*.md"
+      - "**/*.mdx"
+      - ".cursor/**"
   workflow_dispatch:
 
 concurrency:
@@ -145,8 +145,7 @@ jobs:
     name: Engine Coverage
     needs: changes
     if: >-
-      github.event_name != 'pull_request' ||
-      needs.changes.outputs.engine == 'true'
+      github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -227,7 +226,7 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # CLI Docs Drift — regenerate docs/next/cli-reference/ from the
-  # clap definitions (hidden `gen-docs` subcommands) and fail when
+  # clap definitions (hidden `gen-cli-docs` subcommands) and fail when
   # the committed pages don't match. Guarantees the published CLI
   # reference can never go stale relative to the CLI source.
   # ──────────────────────────────────────────────────────────────
@@ -249,8 +248,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcap-ng-dev
 
-      # iii-skill-render is absent on the runner; the script skips the
-      # .skill.md step (the skill-check workflow owns those artifacts).
       - name: Regenerate CLI reference pages
         run: ./scripts/generate-cli-docs.sh
 
@@ -277,10 +274,8 @@ jobs:
           - 5672:5672
           - 15672:15672
         options: >-
-          --health-cmd "rabbitmq-diagnostics check_running"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd "rabbitmq-diagnostics check_running" --health-interval 10s --health-timeout
+          5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -340,10 +335,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_PKG_CONFIG_ALLOW_CROSS: '1'
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_PKG_CONFIG_ALLOW_CROSS: "1"
       PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: /usr/aarch64-linux-gnu
       PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-L/usr/lib/aarch64-linux-gnu'
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-L/usr/lib/aarch64-linux-gnu"
     strategy:
       fail-fast: false
       matrix:
@@ -574,8 +569,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'pnpm'
+          node-version: "20"
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -641,8 +636,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'pnpm'
+          node-version: "20"
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -689,7 +684,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -701,7 +696,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-dependency-glob: 'sdk/packages/python/iii/uv.lock'
+          cache-dependency-glob: "sdk/packages/python/iii/uv.lock"
 
       - name: Install dependencies
         working-directory: sdk/packages/python/iii
@@ -792,7 +787,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: "1.24"
           cache-dependency-path: sdk/packages/go/iii/go.sum
 
       - name: Check formatting
@@ -845,8 +840,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'pnpm'
+          node-version: "22"
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

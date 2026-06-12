@@ -4,8 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Hidden `iii gen-docs` subcommand: renders the engine's clap tree as the
-//! committed MDX CLI reference (docs/next/cli-reference/iii.mdx). CI
+//! Hidden `iii gen-cli-docs` subcommand: renders the engine's clap tree as
+//! the committed MDX CLI reference (docs/next/cli-reference/iii.mdx). CI
 //! regenerates the page and fails on diff, so the published reference can
 //! never drift from the CLI definitions. See scripts/generate-cli-docs.sh.
 
@@ -51,6 +51,23 @@ fn delegated() -> BTreeMap<String, Delegated> {
     map
 }
 
+/// Docs-only callouts appended to specific command sections (keyed by full
+/// command path). For text that should ALSO show in terminal `--help`, set
+/// clap's `after_long_help` on the command instead; the walker renders it
+/// as a `<Note>` automatically.
+fn notes() -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "iii trigger".to_string(),
+        "<Note>\n  `iii trigger <function> --help` additionally queries a running engine for \
+         the function's description and request schema. That output depends on which workers \
+         are registered and is not part of this page; see \
+         [Functions](../using-iii/functions).\n</Note>"
+            .to_string(),
+    );
+    map
+}
+
 pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
     let meta = PageMeta {
         title: "iii CLI reference".to_string(),
@@ -61,12 +78,10 @@ pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
         intro: "Reference for the `iii` binary. Running `iii` with no subcommand starts the \
                 engine. The same information is available from the binary itself via `iii \
                 --help` and `iii <subcommand> --help`. For a guided overview, see \
-                [CLI](../using-iii/cli).\n\n<Note>\n  `iii trigger <function> --help` \
-                additionally queries a running engine for the function's description and \
-                request schema. That output depends on which workers are registered and is \
-                not part of this page; see [Functions](../using-iii/functions).\n</Note>"
+                [CLI](../using-iii/cli)."
             .to_string(),
         delegated: delegated(),
+        notes: notes(),
     };
     iii_clap_docs::write_page(cmd, &meta, out)?;
     Ok(())

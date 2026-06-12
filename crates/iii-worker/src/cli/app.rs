@@ -234,7 +234,7 @@ pub enum Commands {
 
     /// Generate the committed MDX CLI reference page from this binary's
     /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
-    #[command(name = "gen-docs", hide = true)]
+    #[command(name = "gen-cli-docs", hide = true)]
     GenDocs {
         /// Write the page to this file instead of stdout
         #[arg(long, value_name = "FILE")]

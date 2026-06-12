@@ -169,7 +169,7 @@ enum Commands {
 
     /// Generate the committed MDX CLI reference page from this binary's
     /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
-    #[command(name = "gen-docs", hide = true)]
+    #[command(name = "gen-cli-docs", hide = true)]
     GenDocs {
         /// Write the page to this file instead of stdout
         #[arg(long, value_name = "FILE")]
@@ -221,7 +221,7 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
-        Some(Commands::GenDocs { .. }) => "gen-docs".to_string(),
+        Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
         }) => "update list-targets".to_string(),
@@ -328,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(exit_code);
         }
         // Handled before telemetry above.
-        Some(Commands::GenDocs { .. }) => unreachable!("gen-docs returns early"),
+        Some(Commands::GenDocs { .. }) => unreachable!("gen-cli-docs returns early"),
         Some(Commands::Update {
             target,
             list_targets,

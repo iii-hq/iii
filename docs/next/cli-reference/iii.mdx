@@ -5,13 +5,9 @@ owner: "devrel"
 type: "reference"
 ---
 
-{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
+{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
 
 Reference for the `iii` binary. Running `iii` with no subcommand starts the engine. The same information is available from the binary itself via `iii --help` and `iii <subcommand> --help`. For a guided overview, see [CLI](../using-iii/cli).
-
-<Note>
-  `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Functions](../using-iii/functions).
-</Note>
 
 ## `iii`
 
@@ -56,6 +52,10 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 | `--address <ADDRESS>` | Engine host address [default: localhost] |
 | `--port <PORT>` | Engine WebSocket port [default: 49134] |
 | `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
+
+<Note>
+  `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Functions](../using-iii/functions).
+</Note>
 
 ### `iii project`
 

@@ -3,7 +3,7 @@
 # iii worker CLI reference
 
 
-{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
+{/* AUTO-GENERATED FILE, DO NOT EDIT. Generated from the clap CLI definitions by the hidden `gen-cli-docs` subcommand. Regenerate with `scripts/generate-cli-docs.sh`. */}
 
 Reference for the `iii worker` command surface. The `iii` binary dispatches `iii worker ...` to the separately installed `iii-worker` runtime; this page documents that runtime's full tree. The dispatcher itself is covered by the [iii CLI reference](./iii). The same information is available from the binary via `iii worker --help` and `iii worker <subcommand> --help`.
 
