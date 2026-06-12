@@ -738,10 +738,11 @@ async fn read_frame<R: AsyncReadExt + Unpin>(
             format!("frame length {frame_len} out of range"),
         ));
     }
+    // Zero-initialized rather than `set_len` on uninit capacity: handing
+    // uninitialized memory to an `AsyncRead` impl is unsound
+    // (clippy::uninit_vec, deny-by-default). `frame_len` is bounded by
+    // MAX_FRAME_SIZE, so zeroing is cheap next to the socket read.
     let total = 4 + frame_len;
-    // Zero-init then overwrite via copy_from_slice + read_exact. The
-    // memset is noise next to the socket read, and it keeps the buffer
-    // free of uninit bytes (clippy::uninit_vec is deny-by-default).
     let mut buf: FrameBytes = vec![0u8; total];
     buf[..4].copy_from_slice(&len_buf);
     reader.read_exact(&mut buf[4..]).await?;
