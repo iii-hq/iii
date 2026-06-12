@@ -7,8 +7,6 @@ from .errors import InvocationError
 from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
 from .iii_constants import (
-    EngineFunctions,
-    EngineTriggers,
     FunctionRef,
     InitOptions,
     TelemetryOptions,
@@ -32,7 +30,6 @@ from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
     Channel,
     IIIClient,
-    RemoteFunctionHandler,
     StreamRequest,
     StreamResponse,
 )
@@ -49,9 +46,6 @@ __all__ = [
     "register_worker",
     "TelemetryOptions",
     "TriggerAction",
-    # Engine
-    "EngineFunctions",
-    "EngineTriggers",
     # RBAC types
     "MiddlewareFunctionInput",
     # Message types
@@ -74,7 +68,6 @@ __all__ = [
     # Types
     "Channel",
     "IIIClient",
-    "RemoteFunctionHandler",
     "StreamRequest",
     "StreamResponse",
     # Stream

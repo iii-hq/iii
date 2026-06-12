@@ -49,7 +49,6 @@ pub mod errors {
 pub use builtin_triggers::IIITrigger;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-pub use engine::{EngineFunctions, EngineTriggers};
 #[deprecated(
     since = "0.19.0",
     note = "renamed to Error; import from iii_sdk::errors"
@@ -264,12 +263,26 @@ fn _ensure_stream_io_types_not_top_level() {}
 #[allow(dead_code)]
 fn _ensure_stream_events_helpers_path() {}
 
+// ---------------------------------------------------------------------------
+// engine submodule grouping: engine constants and the remote handler type are
+// reachable only at their canonical path `iii_sdk::engine`. Rust folds this
+// grouping into the existing `engine` module (the file `engine.rs`) rather than
+// a separate `pub mod engine { ... }` block, which would clash with it.
+// ---------------------------------------------------------------------------
+
 /// ```rust,no_run
-/// use iii_sdk::{EngineFunctions, EngineTriggers};
+/// use iii_sdk::engine::{EngineFunctions, EngineTriggers, RemoteFunctionHandler};
 /// let _ = (EngineFunctions::LIST_FUNCTIONS, EngineTriggers::LOG);
+/// fn _takes(_h: RemoteFunctionHandler) {}
 /// ```
 #[allow(dead_code)]
-fn _ensure_engine_constants_path() {}
+fn _ensure_engine_submodule_path() {}
+
+/// ```compile_fail
+/// use iii_sdk::{EngineFunctions, EngineTriggers};
+/// ```
+#[allow(dead_code)]
+fn _ensure_engine_constants_not_top_level() {}
 
 /// ```rust,no_run
 /// use iii_sdk::errors::InvocationError;

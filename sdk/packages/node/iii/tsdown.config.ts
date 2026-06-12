@@ -11,6 +11,7 @@ export default defineConfig({
     './src/runtime.ts',
     './src/errors.ts',
     './src/internal.ts',
+    './src/engine.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,

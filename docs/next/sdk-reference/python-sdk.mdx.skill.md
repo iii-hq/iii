@@ -64,6 +64,10 @@ re-exports.
 The `InternalHttpRequest` type is provided only by the `iii.internal` submodule
 (`from iii.internal import InternalHttpRequest`). It is not importable from the package root.
 
+The `EngineFunctions` and `EngineTriggers` constants and the `RemoteFunctionHandler` type are
+provided only by the `iii.engine` submodule (`from iii.engine import EngineFunctions`). They are
+not importable from the package root.
+
 ### `register_trigger`
 
 Bind a registered function to a configured trigger instance.

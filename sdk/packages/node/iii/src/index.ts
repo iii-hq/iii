@@ -9,8 +9,6 @@ export { IIIInvocationError, type IIIInvocationErrorInit } from './errors'
 
 export { type InitOptions, registerWorker, type TelemetryOptions, TriggerAction } from './iii'
 
-export { EngineFunctions, EngineTriggers } from './iii-constants'
-
 export type {
   MessageType,
   MiddlewareFunctionInput,
@@ -29,7 +27,6 @@ export type {
   RegisterFunctionOptions,
   RegisterTriggerInput,
   RegisterTriggerTypeInput,
-  RemoteFunctionHandler,
   StreamRequest,
   StreamResponse,
 } from './types'
