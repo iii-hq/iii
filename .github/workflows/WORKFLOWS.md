@@ -34,6 +34,11 @@ The workflows are organized into two categories:
    docker-engine.yml ◄── called by release-iii / manual
    license-check.yml ◄── push to main / PRs
    checklist-checker.yml ◄── PR license agreement / comments
+
+   alpha-release ◄── manual dispatch from a feature branch
+        │  bumps + tags iii-alpha/v* (isolated; never touches main)
+        ▼
+        └─► _npm / _py / _rust-cargo / _go  (SDK packages only)
 ```
 
 ---
@@ -99,6 +104,30 @@ Entry point for all releases. Provides a form with:
 The tag push then triggers the corresponding release workflow.
 
 **Tag format:** `{target}/v{version}` (e.g., `iii/v1.2.3`)
+
+---
+
+### `alpha-release.yml` — Isolated Per-Branch Alpha
+
+**Triggers:** manual dispatch only — run from a feature branch via "Use workflow from: `<branch>`"
+
+Publishes an alpha prerelease of every SDK (npm, pypi, crates, go) and engine-internal lib **from any feature branch, without touching `main`**. Built for testing a branch end-to-end before merging.
+
+| Input | Options |
+|-------|---------|
+| `dry_run` | boolean (build + validate, no upload; still pushes the alpha tag) |
+
+**What it does:**
+
+1. Refuses to run on `main` (use `create-tag.yml` for official releases)
+2. Calculates the version with `calculate_release_version.py --bump none --counter-tag-prefix iii-alpha`: anchors on the latest stable `iii/v*` tag and appends an accumulating `-alpha.N` suffix (`0.19.2-alpha.1`, `.2`, `.3` …). The official version is never advanced.
+3. Bumps all manifests in lockstep (Cargo.toml, package.json, pyproject.toml, **Go `sdkVersion` const**) into an **ephemeral commit**
+4. Pushes **only** the `iii-alpha/v{version}` tag — never a branch, never `main`
+5. Calls `_npm.yml` / `_py.yml` / `_rust-cargo.yml` / `_go.yml` checking out that tag (via their `ref` input)
+
+**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. No engine binaries, worker images, worker skills, homebrew or docker are published — SDK packages only.
+
+**Tag format:** `iii-alpha/v{version}` (e.g., `iii-alpha/v0.19.2-alpha.1`)
 
 ---
 
