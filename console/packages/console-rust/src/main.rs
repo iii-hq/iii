@@ -84,7 +84,7 @@ fn gen_docs(out: Option<&std::path::Path>) -> Result<()> {
                 The dispatcher itself is covered by the [iii CLI reference](./iii)."
             .to_string(),
         delegated: std::collections::BTreeMap::new(),
-        notes: std::collections::BTreeMap::new(),
+        mdx_only_notes: std::collections::BTreeMap::new(),
     };
     iii_clap_docs::write_page(cmd, &meta, out)?;
     Ok(())

@@ -29,7 +29,7 @@ pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
                 via `iii worker --help` and `iii worker <subcommand> --help`."
             .to_string(),
         delegated: BTreeMap::new(),
-        notes: BTreeMap::new(),
+        mdx_only_notes: BTreeMap::new(),
     };
     iii_clap_docs::write_page(cmd, &meta, out)?;
     Ok(())

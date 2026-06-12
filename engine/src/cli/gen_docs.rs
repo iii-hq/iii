@@ -55,7 +55,7 @@ fn delegated() -> BTreeMap<String, Delegated> {
 /// command path). For text that should ALSO show in terminal `--help`, set
 /// clap's `after_long_help` on the command instead; the walker renders it
 /// as a `<Note>` automatically.
-fn notes() -> BTreeMap<String, String> {
+fn mdx_only_notes() -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     map.insert(
         "iii trigger".to_string(),
@@ -81,7 +81,7 @@ pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
                 [CLI](../using-iii/cli)."
             .to_string(),
         delegated: delegated(),
-        notes: notes(),
+        mdx_only_notes: mdx_only_notes(),
     };
     iii_clap_docs::write_page(cmd, &meta, out)?;
     Ok(())

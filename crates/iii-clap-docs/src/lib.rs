@@ -47,7 +47,7 @@ pub struct PageMeta {
     /// help; for text that should show in BOTH `--help` and the docs, set
     /// clap's `after_long_help`/`after_help` on the command instead (the
     /// walker renders it as a `<Note>`).
-    pub notes: BTreeMap<String, String>,
+    pub mdx_only_notes: BTreeMap<String, String>,
 }
 
 /// Render the full MDX page for `cmd`.
@@ -198,7 +198,7 @@ fn render_command(out: &mut String, cmd: &mut Command, path: &str, level: usize,
         let text = esc_mdx(&after.to_string());
         out.push_str(&format!("<Note>\n  {}\n</Note>\n\n", text.trim()));
     }
-    if let Some(note) = meta.notes.get(path) {
+    if let Some(note) = meta.mdx_only_notes.get(path) {
         out.push_str(note.trim_end());
         out.push_str("\n\n");
     }
@@ -408,7 +408,7 @@ mod tests {
             owner: "devrel".to_string(),
             intro: "Intro line.".to_string(),
             delegated: BTreeMap::new(),
-            notes: BTreeMap::new(),
+            mdx_only_notes: BTreeMap::new(),
         }
     }
 
@@ -593,7 +593,7 @@ mod tests {
                 .subcommand(Command::new("init").about("Scaffold")),
         );
         let mut m = meta();
-        m.notes.insert(
+        m.mdx_only_notes.insert(
             "iii project init".to_string(),
             "<Warning>\n  Raw MDX, [link](../somewhere) intact.\n</Warning>".to_string(),
         );
