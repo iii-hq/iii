@@ -27,6 +27,15 @@ pub const CONFIG_FN_ID: &str = "iii-http::on-config-change";
 pub const CONFIG_TRIGGER_ID: &str = "iii-http::config-watch";
 pub const CONFIG_TRIGGER_TYPE: &str = "configuration";
 
+/// Upper bound on every `configuration::*` bus call made by this worker.
+/// `configuration::get` is overwrite-by-id on the bus, so a hung provider
+/// must wedge neither the apply lock nor — worse — the serial worker-startup
+/// loops in the boot and reload pipelines.
+pub(super) const CONFIG_BUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Delay before the single retry of a timed-out apply (see `on_config_change`).
+const APPLY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Register the `iii-http` configuration entry: schema and metadata refresh on
 /// every boot; `initial_value` (the config.yaml seed, or built-in defaults) is
 /// included only when nothing is stored yet, so runtime edits survive engine
@@ -40,8 +49,7 @@ pub async fn register_config(engine: &Engine, seed: Option<&RestApiConfig>) -> a
     });
 
     if try_get_value(engine).await?.is_none() {
-        payload["initial_value"] =
-            serde_json::to_value(seed.cloned().unwrap_or_default())?;
+        payload["initial_value"] = serde_json::to_value(seed.cloned().unwrap_or_default())?;
     }
 
     engine
@@ -95,25 +103,39 @@ async fn try_get_value(engine: &Engine) -> anyhow::Result<Option<Value>> {
     }
 }
 
-/// Handler body for `iii-http::on-config-change`. Re-fetches the authoritative
-/// value instead of trusting the trigger payload — the handler is a
-/// discoverable bus function, and acting on a caller-supplied payload would
-/// let anyone repoint the listener without updating persisted state. Any
-/// failure keeps the previous config and server.
-pub async fn on_config_change(engine: &Engine, worker: &HttpWorker) {
-    let config = match fetch_config(engine, &worker.config_snapshot()).await {
-        Ok(config) => config,
-        Err(err) => {
+/// Handler body for `iii-http::on-config-change`. Delegates to `apply_config`,
+/// which re-fetches the authoritative value under the apply lock instead of
+/// trusting the trigger payload — the handler is a discoverable bus function,
+/// and acting on a caller-supplied payload would let anyone repoint the
+/// listener without updating persisted state. Any failure keeps the previous
+/// config and server.
+pub async fn on_config_change(worker: &HttpWorker) {
+    match worker.apply_config().await {
+        Ok(()) => tracing::info!("iii-http configuration re-applied after change"),
+        // A timeout is transient: the stored value is valid but unapplied, and
+        // the event will not fire again — so retry exactly once after a delay.
+        // The retry calls `apply_config` directly (not this handler), so it
+        // cannot loop. Other errors (malformed value, failed bind) are
+        // deterministic; retrying them would just repeat the failure.
+        Err(err) if err.downcast_ref::<tokio::time::error::Elapsed>().is_some() => {
             tracing::error!(
                 error = %err,
-                "iii-http: failed to read changed configuration; keeping previous config"
+                "iii-http: configuration apply timed out; retrying once in {APPLY_RETRY_DELAY:?}"
             );
-            return;
+            let worker = worker.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(APPLY_RETRY_DELAY).await;
+                match worker.apply_config().await {
+                    Ok(()) => {
+                        tracing::info!("iii-http configuration re-applied on retry")
+                    }
+                    Err(err) => tracing::error!(
+                        error = %err,
+                        "iii-http: configuration apply retry failed; keeping previous config"
+                    ),
+                }
+            });
         }
-    };
-
-    match worker.apply_config(config).await {
-        Ok(()) => tracing::info!("iii-http configuration re-applied after change"),
         Err(err) => tracing::error!(
             error = %err,
             "iii-http: failed to apply changed configuration; keeping previous config"
@@ -226,6 +248,19 @@ mod tests {
         // schemars derives deny_unknown_fields into the schema.
         assert_eq!(payload["schema"]["additionalProperties"], json!(false));
         assert!(payload["schema"]["properties"]["port"].is_object());
+        // Field doc comments must flow into the schema so an agent
+        // introspecting the config gets descriptions, not just types.
+        assert!(
+            payload["schema"]["properties"]["port"]["description"].is_string(),
+            "port field must carry a schema description: {payload}"
+        );
+        // A zero-permit concurrency limit would hang every request; the
+        // schema must reject it at configuration::set time.
+        assert_eq!(
+            payload["schema"]["properties"]["concurrency_request_limit"]["minimum"],
+            json!(1.0),
+            "concurrency_request_limit must carry minimum 1: {payload}"
+        );
     }
 
     #[tokio::test]
@@ -305,5 +340,26 @@ mod tests {
             .map(|m| m.function_id.as_str())
             .collect();
         assert_eq!(ids, vec!["fn::a", "fn::b", "fn::c"]);
+    }
+
+    #[tokio::test]
+    async fn on_config_change_keeps_previous_config_on_malformed_value() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let _registered = stub_configuration(&engine, Some(json!({ "port": "not-a-port" })));
+
+        let worker = HttpWorker::for_test(
+            engine.clone(),
+            Some(json!({ "host": "127.0.0.1", "port": 4242 })),
+        )
+        .expect("http worker");
+
+        on_config_change(&worker).await;
+
+        assert_eq!(
+            worker.config_snapshot().port,
+            4242,
+            "a malformed stored value must not mutate the live config"
+        );
     }
 }

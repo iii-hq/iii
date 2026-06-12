@@ -60,9 +60,9 @@ Note: `${VAR:default}` placeholders only work in string fields (e.g. `host`) —
 | `port` | number | The port to listen on. Defaults to `3111`. |
 | `host` | string | The host to listen on. Defaults to `0.0.0.0`. |
 | `default_timeout` | number | Default timeout in milliseconds for request processing. Defaults to `30000`. |
-| `concurrency_request_limit` | number | Maximum number of concurrent requests. Defaults to `1024`. |
-| `cors.allowed_origins` | string[] | Allowed CORS origins. |
-| `cors.allowed_methods` | string[] | Allowed CORS methods. |
+| `concurrency_request_limit` | number | Maximum number of concurrent requests. Must be ≥ 1 (the schema rejects 0). Defaults to `1024`. |
+| `cors.allowed_origins` | string[] | Allowed CORS origins. An empty list allows **any** origin; list origins explicitly to restrict. |
+| `cors.allowed_methods` | string[] | Allowed CORS methods. An empty list allows **any** method; list methods explicitly to restrict. |
 | `middleware` | Middleware[] | Global middleware run on every route (see [Middleware](#middleware)). |
 
 ## Trigger Type: `http`
@@ -112,6 +112,21 @@ iii.registerTrigger({
 | `status_code` | number | HTTP status code. |
 | `body` | any | The response payload. |
 | `headers` | string[] \| Record\<string, string\> | HTTP response headers as `"Header-Name: value"` strings or an object such as `{ "Content-Type": "application/json" }`. Optional. |
+
+### Error Envelope
+
+Errors the server generates itself (handler invocation failure, middleware failure or timeout, unmet route condition) use one stable JSON shape, so clients and AI agents can parse it without guessing:
+
+```json
+{ "error": { "code": "HANDLER_ERROR", "message": "human-readable detail", "error_id": "a1b2c3d4e5f6" } }
+```
+
+- `code` — machine-readable identifier. Engine-generated codes include `MIDDLEWARE_TIMEOUT`, `CONDITION_NOT_MET`, `INTERNAL_ERROR`; handler/condition failures surface the function's own error `code`.
+- `message` — human-facing detail.
+- `error_id` — present on 5xx responses; correlates the response with server logs. Omitted where there is no log correlation (e.g. timeouts).
+- Unmet conditions return `422` with `"skipped": true` alongside the `error` object.
+
+Bodies you return from your own handler or middleware pass through unchanged — the envelope only wraps errors the server raises.
 
 ## Middleware
 

@@ -190,8 +190,7 @@ async fn port_change_rebinds_the_listener() {
     let port_b = free_port();
     assert_ne!(port_a, port_b);
 
-    let _worker =
-        start_http_worker(&harness, json!({ "host": "127.0.0.1", "port": port_a })).await;
+    let _worker = start_http_worker(&harness, json!({ "host": "127.0.0.1", "port": port_a })).await;
     tokio::net::TcpStream::connect(("127.0.0.1", port_a))
         .await
         .expect("initial port accepts connections");
@@ -245,9 +244,84 @@ async fn env_placeholders_expand_on_read() {
     // The stored value keeps the placeholder verbatim.
     let raw = harness
         .engine
-        .call("configuration::get", json!({ "id": "iii-http", "raw": true }))
+        .call(
+            "configuration::get",
+            json!({ "id": "iii-http", "raw": true }),
+        )
         .await
         .expect("configuration::get raw")
         .expect("get returns a body");
     assert_eq!(raw["value"]["host"], "${HTTP_CFG_E2E_HOST:127.0.0.1}");
+}
+
+#[tokio::test]
+async fn failed_rebind_keeps_previous_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let port_a = free_port();
+    let port_b = free_port();
+    assert_ne!(port_a, port_b);
+
+    let worker = start_http_worker(&harness, json!({ "host": "127.0.0.1", "port": port_a })).await;
+    tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+        .await
+        .expect("initial port accepts connections");
+
+    // Occupy port_b so the rebind's bind() fails. Hold the listener for the
+    // rest of the test.
+    let _blocker = std::net::TcpListener::bind(("127.0.0.1", port_b)).expect("occupy port_b");
+
+    set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
+
+    // Drive the handler synchronously instead of sleeping: the failed apply
+    // produces no observable state change, so a sleep-then-assert would pass
+    // vacuously on a loaded CI box where the handler hasn't run yet. The bus
+    // call returns only after the apply attempt completes (the trigger-fired
+    // duplicate is idempotent — it re-fetches the same value and fails again).
+    harness
+        .engine
+        .call("iii-http::on-config-change", json!({}))
+        .await
+        .expect("config-change handler is invocable");
+
+    // Old server still serving on port_a; the live config was not mutated.
+    tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+        .await
+        .expect("old port still accepts after failed rebind");
+    assert_eq!(worker.config_snapshot().port, port_a);
+}
+
+#[tokio::test]
+async fn restart_falls_back_to_seed_when_stored_address_unbindable() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let port_a = free_port();
+    let port_b = free_port();
+    assert_ne!(port_a, port_b);
+    let seed = json!({ "host": "127.0.0.1", "port": port_a });
+
+    let worker = start_http_worker(&harness, seed.clone()).await;
+
+    // Occupy port_b for the whole test, then persist an edit pointing at it.
+    // The hot rebind fails (all-or-nothing), but the bad value is now stored.
+    let _blocker = std::net::TcpListener::bind(("127.0.0.1", port_b)).expect("occupy port_b");
+    set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
+    harness
+        .engine
+        .call("iii-http::on-config-change", json!({}))
+        .await
+        .expect("config-change handler is invocable");
+
+    // Restart (ReloadManager semantics). The boot fetch returns the stored
+    // unbindable address; the worker must fall back to the seed instead of
+    // failing to start — a bad runtime edit must not become an HTTP outage.
+    worker.destroy().await.expect("destroy");
+    let restarted = start_http_worker(&harness, seed).await;
+
+    tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+        .await
+        .expect("restarted server falls back to the seed address");
+    assert_eq!(restarted.config_snapshot().port, port_a);
 }

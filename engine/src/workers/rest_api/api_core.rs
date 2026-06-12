@@ -112,34 +112,13 @@ impl Worker for HttpWorker {
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
-        // Handler for the `configuration` trigger registered in
-        // `start_background_tasks`. Registered here so it lives inside the
-        // worker scope and is removed automatically on destroy/reload.
-        let worker = self.clone();
-        let handler_engine = engine.clone();
-        engine.register_function_handler(
-            crate::engine::RegisterFunctionRequest {
-                function_id: super::configuration::CONFIG_FN_ID.to_string(),
-                description: Some(
-                    "Internal: re-apply the iii-http server configuration when the \
-                     authoritative configuration entry changes."
-                        .to_string(),
-                ),
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            crate::engine::Handler::new(move |_payload: Value| {
-                let worker = worker.clone();
-                let engine = handler_engine.clone();
-                async move {
-                    super::configuration::on_config_change(engine.as_ref(), &worker).await;
-                    crate::function::FunctionResult::Success(Some(
-                        serde_json::json!({ "ok": true }),
-                    ))
-                }
-            }),
-        );
+        // Registered here so the worker scope tracks the handler and removes it
+        // automatically on destroy/reload. The hook order differs by pipeline:
+        // initial boot runs `register_functions` BEFORE `start_background_tasks`
+        // (workers/config.rs), reload runs it AFTER (reload.rs) — so
+        // `start_background_tasks` also registers the handler (if absent)
+        // before subscribing to configuration events.
+        self.register_config_handler(&engine);
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -166,27 +145,35 @@ impl Worker for HttpWorker {
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
-        *self
-            .shutdown_rx
-            .lock()
-            .expect("shutdown_rx mutex poisoned") = Some(shutdown_rx.clone());
-
-        // Adopt the configuration worker as the runtime source of truth. By
-        // the time background tasks start every worker has registered its
-        // functions, so `configuration::*` is callable even though the
-        // mandatory configuration worker may have initialized after us.
-        // Failures degrade to the static config.yaml block so HTTP stays up.
-        if let Err(err) =
-            super::configuration::register_config(self.engine.as_ref(), self.seed.as_ref()).await
-        {
+        // Adopt the configuration worker as the runtime source of truth.
+        // `configuration::*` is callable here on both pipelines (initial boot
+        // registers all worker functions before serving; reload starts the
+        // mandatory configuration worker before optional ones). Failures
+        // degrade to the static config.yaml block so HTTP stays up. Both bus
+        // calls are time-bounded: worker startup is awaited serially by the
+        // boot and reload pipelines, so a hung `configuration::*` provider
+        // must not wedge every other worker behind this one.
+        let register = tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::register_config(self.engine.as_ref(), self.seed.as_ref()),
+        )
+        .await
+        .map_err(|_| anyhow!("configuration::register timed out"))
+        .and_then(|result| result);
+        if let Err(err) = register {
             tracing::warn!(
                 error = %err,
                 "iii-http: configuration::register failed; continuing with static config"
             );
         }
-        match super::configuration::fetch_config(self.engine.as_ref(), &self.config_snapshot())
-            .await
-        {
+        let fetched = tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::fetch_config(self.engine.as_ref(), &self.config_snapshot()),
+        )
+        .await
+        .map_err(|_| anyhow!("configuration::get timed out"))
+        .and_then(|result| result);
+        match fetched {
             Ok(config) => self.set_config(config),
             Err(err) => tracing::warn!(
                 error = %err,
@@ -195,27 +182,80 @@ impl Worker for HttpWorker {
         }
 
         // Bind after the fetch so a runtime-edited host/port survives restarts.
+        // If the stored address cannot be bound (e.g. a bad host/port was
+        // persisted by a runtime edit whose rebind failed), fall back to the
+        // seed/static address instead of failing the whole worker start —
+        // otherwise one bad configuration edit turns into an HTTP outage on
+        // the next engine restart.
         let config = self.config_snapshot();
         let addr = format!("{}:{}", config.host, config.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|err| crate::workers::traits::bind_address_error(&addr, err))?;
+        let listener = match TcpListener::bind(&addr).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                let fallback = self.seed.clone().unwrap_or_default();
+                let fallback_addr = format!("{}:{}", fallback.host, fallback.port);
+                if fallback_addr == addr {
+                    return Err(crate::workers::traits::bind_address_error(&addr, err));
+                }
+                tracing::error!(
+                    error = %err,
+                    stored = %addr,
+                    fallback = %fallback_addr,
+                    "iii-http: stored configuration address cannot be bound; serving on the \
+                     seed/static address — fix the stored `iii-http` configuration value"
+                );
+                self.set_config(fallback);
+                TcpListener::bind(&fallback_addr).await.map_err(|err| {
+                    crate::workers::traits::bind_address_error(&fallback_addr, err)
+                })?
+            }
+        };
+        let addr = {
+            let config = self.config_snapshot();
+            format!("{}:{}", config.host, config.port)
+        };
 
         // Build initial router from registry
         self.update_routes().await?;
 
-        let handle = self.spawn_server(listener, addr, shutdown_rx);
+        let handle = self.spawn_server(listener, addr, shutdown_rx.clone());
         *self
             .server_abort
             .lock()
             .expect("server_abort mutex poisoned") = Some(handle);
 
-        // Subscribe last so a configuration event can never race the initial
-        // server spawn.
+        // Store the receiver only once the server is live: `apply_config`
+        // refuses to rebind while this is `None`, so a stray
+        // `iii-http::on-config-change` invocation cannot spawn a server during
+        // (or instead of) the boot sequence above.
+        *self.shutdown_rx.lock().expect("shutdown_rx mutex poisoned") = Some(shutdown_rx);
+
+        // Register the handler before the trigger so a configuration event can
+        // never fan out to a missing function. On reload, `register_functions`
+        // runs after this hook and re-registers the handler inside the worker
+        // scope; the `get` check keeps the initial-boot path (where it already
+        // ran) from logging a spurious "already registered" overwrite.
+        if self
+            .engine
+            .functions
+            .get(super::configuration::CONFIG_FN_ID)
+            .is_none()
+        {
+            self.register_config_handler(&self.engine);
+        }
         if let Err(err) = super::configuration::register_config_trigger(&self.engine).await {
             tracing::warn!(
                 error = %err,
                 "iii-http: failed to watch configuration changes; hot-reload disabled"
+            );
+        } else if let Err(err) = self.apply_config().await {
+            // Catch-up pass: replay any `configuration::set` that landed
+            // between the boot fetch above and the trigger subscription —
+            // without it that window's updates would be dropped until the
+            // next edit. Same-address values are a cheap snapshot swap.
+            tracing::warn!(
+                error = %err,
+                "iii-http: post-subscribe configuration catch-up failed; serving boot config"
             );
         }
 
@@ -233,6 +273,15 @@ impl Worker for HttpWorker {
                 Some(super::configuration::CONFIG_TRIGGER_TYPE.to_string()),
             )
             .await;
+
+        // Serialize with any in-flight `apply_config` so a rebind can't spawn
+        // a replacement server after we abort below. Clearing `shutdown_rx`
+        // makes any later apply refuse the rebind path entirely.
+        let _guard = self.apply_lock.lock().await;
+        self.shutdown_rx
+            .lock()
+            .expect("shutdown_rx mutex poisoned")
+            .take();
 
         let abort = self
             .server_abort
@@ -286,6 +335,36 @@ impl HttpWorker {
         .expect("test config deserializes")
     }
 
+    /// Register the `iii-http::on-config-change` handler. Idempotent
+    /// (replace-by-id), so it is safe to call from both `register_functions`
+    /// (which runs inside the worker scope for destroy/reload cleanup) and
+    /// `start_background_tasks` (which registers the trigger and runs first).
+    fn register_config_handler(&self, engine: &Arc<Engine>) {
+        let worker = self.clone();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: super::configuration::CONFIG_FN_ID.to_string(),
+                description: Some(
+                    "Internal: re-apply the iii-http server configuration when the \
+                     authoritative configuration entry changes."
+                        .to_string(),
+                ),
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(move |_payload: Value| {
+                let worker = worker.clone();
+                async move {
+                    super::configuration::on_config_change(&worker).await;
+                    crate::function::FunctionResult::Success(Some(
+                        serde_json::json!({ "ok": true }),
+                    ))
+                }
+            }),
+        );
+    }
+
     /// Cheap clone of the live config. Take one snapshot per request/function
     /// so all reads within it are consistent.
     pub fn config_snapshot(&self) -> Arc<RestApiConfig> {
@@ -327,8 +406,11 @@ impl HttpWorker {
         handle.abort_handle()
     }
 
-    /// Hot-apply a new configuration. All-or-nothing: any failure keeps the
-    /// previous config and the previous server running.
+    /// Re-fetch the authoritative configuration and hot-apply it. The
+    /// authoritative read happens under `apply_lock` so overlapping
+    /// configuration events can't apply a stale value last (lost update).
+    /// All-or-nothing: any failure keeps the previous config and the previous
+    /// server running.
     ///
     /// Same address → swap the snapshot and rebuild router layers (CORS,
     /// timeout, concurrency); global middleware is read per-request from the
@@ -337,8 +419,31 @@ impl HttpWorker {
     /// server only once the new one is live. In-flight requests on the old
     /// listener are aborted — same semantics as `destroy()`; a graceful drain
     /// is a possible follow-up.
-    pub(super) async fn apply_config(&self, new_config: RestApiConfig) -> anyhow::Result<()> {
+    pub(super) async fn apply_config(&self) -> anyhow::Result<()> {
         let _guard = self.apply_lock.lock().await;
+
+        // Fetch the authoritative value under the lock so concurrent
+        // configuration events can't apply an older snapshot last. A malformed
+        // stored value surfaces here and keeps the previous config and server.
+        // The fetch is a bus call (`configuration::get` can be re-registered by
+        // any connected worker), so bound it: a hung provider must not wedge
+        // every future apply behind the lock.
+        let new_config = match tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::fetch_config(self.engine.as_ref(), &self.config_snapshot()),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            // Keep the `Elapsed` error downcastable: `on_config_change`
+            // schedules a one-shot retry for timeouts specifically (the stored
+            // value is valid but unapplied; without a retry the live config
+            // silently diverges until the next unrelated edit).
+            Err(elapsed) => {
+                return Err(anyhow::Error::new(elapsed)
+                    .context("configuration::get timed out; keeping previous config"));
+            }
+        };
 
         let old = self.config_snapshot();
         let old_addr = format!("{}:{}", old.host, old.port);
@@ -359,15 +464,18 @@ impl HttpWorker {
             )
         })?;
 
-        self.set_config(new_config);
-        self.update_routes().await?;
-
+        // Resolve every fallible prerequisite before mutating the live config,
+        // so a failed rebind leaves the previous config and server untouched.
         let shutdown_rx = self
             .shutdown_rx
             .lock()
             .expect("shutdown_rx mutex poisoned")
             .clone()
             .ok_or_else(|| anyhow!("server was never started; cannot rebind"))?;
+
+        self.set_config(new_config);
+        self.update_routes().await?;
+
         let new_handle = self.spawn_server(listener, new_addr.clone(), shutdown_rx);
 
         let previous = self
@@ -445,9 +553,7 @@ impl HttpWorker {
             std::time::Duration::from_millis(config.default_timeout),
         ));
 
-        new_router = new_router.layer(ConcurrencyLimitLayer::new(
-            config.concurrency_request_limit,
-        ));
+        new_router = new_router.layer(ConcurrencyLimitLayer::new(config.concurrency_request_limit));
 
         let mut shared_router = self.shared_routers.write().await;
         *shared_router = new_router;
