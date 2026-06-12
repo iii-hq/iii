@@ -1348,8 +1348,10 @@ pub struct AlertEvent {
 
 /// Alert manager for evaluating and triggering alerts
 pub struct AlertManager {
-    /// Configured alert rules
-    rules: Vec<AlertRule>,
+    /// Configured alert rules. RwLock'd so the configuration-worker apply
+    /// path can swap them at runtime; the 10s evaluation task snapshots
+    /// under a read lock each cycle.
+    rules: std::sync::RwLock<Vec<AlertRule>>,
     /// Current state of each alert
     states: std::sync::RwLock<HashMap<String, AlertState>>,
     /// Engine reference for function invocation (optional for backward compatibility)
@@ -1359,7 +1361,10 @@ pub struct AlertManager {
 impl std::fmt::Debug for AlertManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AlertManager")
-            .field("rules_count", &self.rules.len())
+            .field(
+                "rules_count",
+                &self.rules.read().map(|r| r.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -1368,7 +1373,7 @@ impl AlertManager {
     pub fn new(rules: Vec<AlertRule>) -> Self {
         let states = HashMap::new();
         Self {
-            rules,
+            rules: std::sync::RwLock::new(rules),
             states: std::sync::RwLock::new(states),
             engine: None,
         }
@@ -1377,10 +1382,34 @@ impl AlertManager {
     pub fn with_engine(rules: Vec<AlertRule>, engine: Arc<crate::engine::Engine>) -> Self {
         let states = HashMap::new();
         Self {
-            rules,
+            rules: std::sync::RwLock::new(rules),
             states: std::sync::RwLock::new(states),
             engine: Some(engine),
         }
+    }
+
+    /// The currently configured rules.
+    pub fn get_rules(&self) -> Vec<AlertRule> {
+        self.rules
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Replace the rule set at runtime. States for surviving rule names are
+    /// preserved (cooldown / firing continuity); states for removed rules
+    /// are pruned so stale entries do not linger in `engine::alerts::list`.
+    pub fn update_rules(&self, rules: Vec<AlertRule>) {
+        let names: std::collections::HashSet<&str> =
+            rules.iter().map(|r| r.name.as_str()).collect();
+        self.states
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|name, _| names.contains(name.as_str()));
+        *self
+            .rules
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = rules;
     }
 
     /// Evaluate all alert rules against current metrics
@@ -1393,7 +1422,14 @@ impl AlertManager {
         let accumulator = get_metrics_accumulator();
         let mut events = Vec::new();
 
-        for rule in &self.rules {
+        // Snapshot: `take_action` is awaited inside the loop, and a held std
+        // read guard across an await point would make this future !Send.
+        let rules = self
+            .rules
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        for rule in &rules {
             if !rule.enabled {
                 continue;
             }

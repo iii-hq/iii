@@ -725,6 +725,66 @@ impl SpanExporter for TeeSpanExporter {
     }
 }
 
+/// Swappable sampler indirection. The tracer provider (and the SDK span
+/// forwarder) hold clones of this wrapper; the configuration-worker apply
+/// path swaps the inner sampler so `sampling_ratio` / `sampling` changes
+/// take effect without rebuilding the provider.
+#[derive(Clone, Debug)]
+pub struct DynamicSampler {
+    inner: Arc<RwLock<Sampler>>,
+}
+
+impl DynamicSampler {
+    pub fn new(initial: Sampler) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(initial)),
+        }
+    }
+
+    pub fn swap(&self, new: Sampler) {
+        *self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new;
+    }
+}
+
+impl opentelemetry_sdk::trace::ShouldSample for DynamicSampler {
+    fn should_sample(
+        &self,
+        parent_context: Option<&opentelemetry::Context>,
+        trace_id: opentelemetry::trace::TraceId,
+        name: &str,
+        span_kind: &opentelemetry::trace::SpanKind,
+        attributes: &[opentelemetry::KeyValue],
+        links: &[opentelemetry::trace::Link],
+    ) -> opentelemetry::trace::SamplingResult {
+        use opentelemetry_sdk::trace::ShouldSample;
+        self.inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .should_sample(parent_context, trace_id, name, span_kind, attributes, links)
+    }
+}
+
+/// The sampler installed into the tracer provider at init, swappable at
+/// runtime. Unset when the pipeline never initialized (observability
+/// disabled at boot) — sampler changes are restart-tier in that case.
+static DYNAMIC_SAMPLER: OnceLock<DynamicSampler> = OnceLock::new();
+
+pub(super) fn get_dynamic_sampler() -> Option<&'static DynamicSampler> {
+    DYNAMIC_SAMPLER.get()
+}
+
+/// Rebuild the sampler from the live global configuration and swap it into
+/// the running pipeline (engine tracer + SDK span forwarder share one
+/// inner). No-op when the pipeline never initialized.
+pub fn refresh_sampler() {
+    if let Some(dynamic) = DYNAMIC_SAMPLER.get() {
+        dynamic.swap(build_sampler(&OtelConfig::default()));
+    }
+}
+
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 /// OTLP collector endpoint used to lazily build per-service SDK span forwarders.
@@ -738,17 +798,13 @@ static SDK_SPAN_FORWARDERS: OnceLock<
     RwLock<HashMap<String, Arc<opentelemetry_otlp::SpanExporter>>>,
 > = OnceLock::new();
 
-/// Sampler applied to forwarded worker spans so collector volume honors the
-/// engine's `sampling_ratio`. Worker SDKs export to the engine at 100%, so
-/// without this the engine sampler would only govern engine-origin spans.
-static SDK_FORWARD_SAMPLER: OnceLock<Sampler> = OnceLock::new();
-
-/// Record the collector endpoint + sampler so SDK-ingested spans can later be
-/// forwarded to the collector, per-service and sampled.
-fn init_sdk_span_forwarder(endpoint: &str, config: &OtelConfig) {
+/// Record the collector endpoint so SDK-ingested spans can later be
+/// forwarded to the collector, per-service. Forwarded spans honor the same
+/// swappable sampler as the engine tracer (`DYNAMIC_SAMPLER`), so the
+/// collector volume follows `sampling_ratio` even after a runtime change.
+fn init_sdk_span_forwarder(endpoint: &str) {
     let _ = SDK_FORWARDER_ENDPOINT.set(endpoint.to_string());
     let _ = SDK_SPAN_FORWARDERS.set(RwLock::new(HashMap::new()));
-    let _ = SDK_FORWARD_SAMPLER.set(build_sampler(config));
 }
 
 /// Build a `Resource` from an OTLP resource payload, preserving the worker's
@@ -813,7 +869,10 @@ fn get_or_build_forwarder(
 /// Whether the engine sampler keeps a forwarded worker span. The trace-id ratio
 /// is deterministic per trace, so an entire trace is kept or dropped
 /// consistently regardless of which service produced a given span.
-fn forward_span_is_sampled(sampler: &Sampler, sd: &SpanData) -> bool {
+fn forward_span_is_sampled<S: opentelemetry_sdk::trace::ShouldSample>(
+    sampler: &S,
+    sd: &SpanData,
+) -> bool {
     use opentelemetry::trace::SamplingDecision;
     use opentelemetry_sdk::trace::ShouldSample;
     let result = sampler.should_sample(
@@ -848,8 +907,11 @@ where
         Box::new(BaggagePropagator::new()),
     ]));
 
-    // Build the sampler using advanced configuration if available
-    let sampler = build_sampler(config);
+    // Build the sampler using advanced configuration if available, wrapped
+    // in the swappable indirection so runtime configuration changes apply
+    // without a provider rebuild.
+    let sampler = DynamicSampler::new(build_sampler(config));
+    let _ = DYNAMIC_SAMPLER.set(sampler.clone());
 
     // Build resource attributes with OTEL semantic conventions
     // Using string keys for attributes not available in the crate version
@@ -873,7 +935,7 @@ where
         ExporterType::Otlp => {
             match build_span_exporter(&config.endpoint) {
                 Ok(exporter) => {
-                    init_sdk_span_forwarder(&config.endpoint, config);
+                    init_sdk_span_forwarder(&config.endpoint);
 
                     // Initialize in-memory storage for SDK span ingestion (API access)
                     let memory_storage =
@@ -931,7 +993,7 @@ where
             // Try to create OTLP exporter
             match build_span_exporter(&config.endpoint) {
                 Ok(otlp_exporter) => {
-                    init_sdk_span_forwarder(&config.endpoint, config);
+                    init_sdk_span_forwarder(&config.endpoint);
 
                     // Create tee exporter that sends to both
                     let tee_exporter = TeeSpanExporter::new(
@@ -1963,7 +2025,7 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
     // engine sampler so forwarded volume matches `sampling_ratio` (worker SDKs
     // export to the engine at 100%).
     if SDK_FORWARDER_ENDPOINT.get().is_some() {
-        let sampler = SDK_FORWARD_SAMPLER.get();
+        let sampler = get_dynamic_sampler();
         for resource_span in &request.resource_spans {
             let mut span_data = convert_resource_span_to_span_data(resource_span);
             if let Some(sampler) = sampler {

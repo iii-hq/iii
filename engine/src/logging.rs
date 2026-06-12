@@ -507,13 +507,37 @@ fn disable_ansi_for_json_logs() {
     colored::control::set_override(false);
 }
 
+/// Reload handle for the global EnvFilter. The filter is the FIRST layer
+/// composed over `registry()` in BOTH `init_prod_log` and `init_local_log`,
+/// so `S = Registry` is the single correct handle type for either path —
+/// keep that invariant if the layer compositions change.
+type LevelReloadHandle =
+    tracing_subscriber::reload::Handle<EnvFilter, tracing_subscriber::Registry>;
+static LEVEL_RELOAD_HANDLE: OnceLock<LevelReloadHandle> = OnceLock::new();
+
+/// Change the engine log level at runtime (configuration-worker apply path).
+/// An invalid directive is rejected and the current filter is kept.
+pub fn reload_log_level(level: &str) -> anyhow::Result<()> {
+    let filter = EnvFilter::try_new(level)
+        .map_err(|e| anyhow::anyhow!("invalid log level '{level}': {e}"))?;
+    LEVEL_RELOAD_HANDLE
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("logging was initialized without a reload handle"))?
+        .reload(filter)
+        .map_err(|e| anyhow::anyhow!("log level reload failed: {e}"))?;
+    tracing::info!(level = %level, "engine log level reloaded");
+    Ok(())
+}
+
 fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
     TRACING.get_or_init(|| {
         // Prevent ANSI escape codes from leaking into JSON-formatted logs.
         // See `disable_ansi_for_json_logs` for rationale (MOT-2812).
         disable_ansi_for_json_logs();
 
-        let filter = EnvFilter::new(log_level);
+        let (filter, reload_handle) =
+            tracing_subscriber::reload::Layer::new(EnvFilter::new(log_level));
+        let _ = LEVEL_RELOAD_HANDLE.set(reload_handle);
 
         // JSON formatting layer
         let fmt_layer = tracing_subscriber::fmt::layer()
@@ -553,7 +577,9 @@ fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
 
 fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
     TRACING.get_or_init(|| {
-        let filter = EnvFilter::new(log_level);
+        let (filter, reload_handle) =
+            tracing_subscriber::reload::Layer::new(EnvFilter::new(log_level));
+        let _ = LEVEL_RELOAD_HANDLE.set(reload_handle);
 
         // Custom formatting layer
         let fmt_layer = tracing_subscriber::fmt::layer().event_format(IIILogFormatter);

@@ -448,17 +448,42 @@ fn prune_empty_trigger_spans(mut spans: Vec<otel::StoredSpan>) -> Vec<otel::Stor
     spans
 }
 
-/// Compiled collapse rules for the global config, cached after first use.
-/// `GLOBAL_OTEL_CONFIG` is a set-once `OnceLock`, so the compiled form never
-/// changes; callers on the hot path (one per coalesce tick / REST request)
-/// must not recompile the regexes each time. Returns an empty slice — without
-/// poisoning the cache — if the config is not set yet.
-fn cached_collapse_rules() -> &'static [CompiledCollapseRule] {
-    static RULES: std::sync::OnceLock<Vec<CompiledCollapseRule>> = std::sync::OnceLock::new();
-    match otel::get_otel_config() {
-        Some(config) => RULES.get_or_init(|| compile_collapse_rules(&config.collapse_spans)),
-        None => &[],
+/// Compiled collapse rules for the global config, cached after first use and
+/// recompiled by `refresh_collapse_rules` when the configuration-worker
+/// apply path changes them. Callers on the hot path (one per coalesce tick /
+/// REST request) must not recompile the regexes each time. Returns an empty
+/// set — without poisoning the cache — if the config is not set yet.
+static COLLAPSE_RULES: std::sync::RwLock<Option<Arc<Vec<CompiledCollapseRule>>>> =
+    std::sync::RwLock::new(None);
+
+fn cached_collapse_rules() -> Arc<Vec<CompiledCollapseRule>> {
+    {
+        let cached = COLLAPSE_RULES
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(rules) = cached.as_ref() {
+            return rules.clone();
+        }
     }
+    match otel::get_otel_config() {
+        Some(config) => {
+            let compiled = Arc::new(compile_collapse_rules(&config.collapse_spans));
+            let mut cached = COLLAPSE_RULES
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cached.get_or_insert_with(|| compiled.clone()).clone()
+        }
+        None => Arc::new(Vec::new()),
+    }
+}
+
+/// Recompile the collapse-rule cache from the given rules (configuration
+/// apply path).
+pub(crate) fn refresh_collapse_rules(rules: &[config::SpanCollapseRule]) {
+    let compiled = Arc::new(compile_collapse_rules(rules));
+    *COLLAPSE_RULES
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(compiled);
 }
 
 /// Compile the configured collapse rules, skipping any with invalid patterns.
@@ -1042,6 +1067,7 @@ impl ObservabilityWorker {
             return; // No in-memory store → nothing to correct against.
         };
         let collapse_rules = cached_collapse_rules();
+        let collapse_rules = collapse_rules.as_slice();
 
         let mut arrived_by_trace: HashMap<&str, HashSet<String>> = HashMap::new();
         for span in batch {
@@ -1282,7 +1308,7 @@ impl ObservabilityWorker {
                     })));
                 }
 
-                let all_spans = correct_trace_spans(all_spans, cached_collapse_rules());
+                let all_spans = correct_trace_spans(all_spans, &cached_collapse_rules());
 
                 let roots = build_span_tree(all_spans);
 
@@ -1810,6 +1836,7 @@ impl ObservabilityWorker {
 
             let response = serde_json::json!({
                 "alerts": states,
+                "rules": manager.get_rules(),
                 "firing_count": firing.len(),
                 "timestamp": chrono::Utc::now().timestamp_millis(),
             });
@@ -2116,18 +2143,17 @@ impl Worker for ObservabilityWorker {
             "[ROLLUPS]".cyan()
         );
 
-        // Initialize alert manager if alerts are configured
+        // Always initialize the alert manager (even with zero rules) so a
+        // later configuration-worker edit can hot-add rules via
+        // update_rules; the 10s evaluation tick is a no-op while empty.
         if !self._config.alerts.is_empty() {
             tracing::info!(
                 "{} {} alert rules configured",
                 "[ALERTS]".cyan(),
                 self._config.alerts.len()
             );
-            metrics::init_alert_manager_with_engine(
-                self._config.alerts.clone(),
-                self.engine.clone(),
-            );
         }
+        metrics::init_alert_manager_with_engine(self._config.alerts.clone(), self.engine.clone());
 
         // Register log trigger type
         let log_trigger_type = TriggerType::new(
@@ -2380,8 +2406,10 @@ impl Worker for ObservabilityWorker {
             });
         }
 
-        // Spawn background task for alert evaluation
-        if !self._config.alerts.is_empty() {
+        // Spawn background task for alert evaluation. Always spawned (the
+        // 10s tick is a no-op while the rule set is empty) so rules hot-added
+        // through the configuration worker are evaluated without a restart.
+        {
             let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
