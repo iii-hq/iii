@@ -152,6 +152,12 @@
                 "pages": [
                   "next/cli-reference/index"
                 ]
+              },
+              {
+                "group": "Helpers",
+                "pages": [
+                  "next/sdk-reference/helpers-lib"
+                ]
               }
             ]
           },

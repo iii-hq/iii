@@ -1,3 +1,4 @@
+use iii_helpers::stream::StreamTriggerConfig;
 use iii_sdk::builtin_triggers::*;
 use iii_sdk::trigger::IIITrigger;
 use iii_sdk::{Error, IIIClient, RegisterFunction};

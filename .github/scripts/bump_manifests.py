@@ -93,12 +93,14 @@ _CARGO_PACKAGE_FILES = (
     "engine/Cargo.toml",
     "sdk/packages/rust/iii/Cargo.toml",
     "sdk/packages/rust/observability/Cargo.toml",
+    "sdk/packages/rust/helpers/Cargo.toml",
     "console/packages/console-rust/Cargo.toml",
 )
 _JSON_PACKAGE_FILES = (
     "sdk/packages/node/iii/package.json",
     "sdk/packages/node/iii-browser/package.json",
     "sdk/packages/node/observability/package.json",
+    "sdk/packages/node/helpers/package.json",
 )
 
 
@@ -131,12 +133,20 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
     py_obs = root / "sdk/packages/python/observability/pyproject.toml"
     py_obs.write_text(bump_cargo_package_version(py_obs.read_text(), new_py_version))
 
+<<<<<<< HEAD
     # Go SDK: keep the reported sdkVersion const in lockstep. The module
     # itself is versioned by its git tag; this only updates the metadata
     # const, using the raw semver (not the PEP 440) version.
     go_client = root / "sdk/packages/go/iii/client.go"
     go_client.write_text(bump_go_const_version(go_client.read_text(), new_version))
 
+||||||| parent of b45ed695b (State 3: refactor(sdk)!: extract shared types into @iii-dev/helpers (#1847))
+=======
+    # Python helpers: top-level version only
+    py_helpers = root / "sdk/packages/python/helpers/pyproject.toml"
+    py_helpers.write_text(bump_cargo_package_version(py_helpers.read_text(), new_py_version))
+
+>>>>>>> b45ed695b (State 3: refactor(sdk)!: extract shared types into @iii-dev/helpers (#1847))
 
 import argparse
 import sys

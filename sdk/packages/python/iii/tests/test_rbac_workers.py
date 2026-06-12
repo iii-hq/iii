@@ -6,20 +6,22 @@ import time
 import pytest
 
 from iii import (
-    AuthInput,
-    AuthResult,
     InitOptions,
     InvocationError,
     MiddlewareFunctionInput,
+    TriggerConfig,
+    TriggerHandler,
+    register_worker,
+)
+from iii_helpers.worker_connection_manager import (
+    AuthInput,
+    AuthResult,
     OnFunctionRegistrationInput,
     OnFunctionRegistrationResult,
     OnTriggerRegistrationInput,
     OnTriggerRegistrationResult,
     OnTriggerTypeRegistrationInput,
     OnTriggerTypeRegistrationResult,
-    TriggerConfig,
-    TriggerHandler,
-    register_worker,
 )
 
 ENGINE_WS_URL = os.environ.get("III_URL", "ws://localhost:49199")

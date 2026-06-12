@@ -8,8 +8,8 @@ import pytest
 
 from iii.helpers import create_stream
 from iii.iii import III
-from iii.stream import (
-    IStream,
+from iii.stream import IStream
+from iii_helpers.stream import (
     StreamDeleteInput,
     StreamDeleteResult,
     StreamGetInput,

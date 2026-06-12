@@ -24,6 +24,7 @@ dependencies = [
     "pydantic>=2.0",
     "opentelemetry-api>=1.25",
     "iii-observability==0.19.4",
+    "iii-helpers==0.19.1.dev1",
 ]
 
 [project.urls]
@@ -32,6 +33,7 @@ Repository = "https://github.com/iii-hq/iii"
 
 [tool.uv.sources]
 iii-observability = { path = "../observability", editable = true }
+iii-helpers = { path = "../helpers", editable = true }
 
 [project.optional-dependencies]
 dev = [

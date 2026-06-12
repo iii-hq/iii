@@ -6,6 +6,7 @@ members = [
   "sdk/packages/rust/iii",
   "sdk/packages/rust/iii-example",
   "sdk/packages/rust/observability",
+  "sdk/packages/rust/helpers",
   "console/packages/console-rust",
   "crates/iii-clap-docs",
   "crates/iii-init",
@@ -29,6 +30,7 @@ homepage = "https://iii.dev"
 [workspace.dependencies]
 iii-sdk = { path = "sdk/packages/rust/iii" }
 iii-observability = { path = "sdk/packages/rust/observability", version = "0.19.4" }
+iii-helpers = { path = "sdk/packages/rust/helpers", version = "0.19.1-next.1" }
 scaffolder-core = { path = "crates/scaffolder-core" }
 
 # Shared dependencies used by tooling crates
