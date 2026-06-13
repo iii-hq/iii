@@ -12,6 +12,7 @@ export default defineConfig({
     './src/errors.ts',
     './src/internal.ts',
     './src/engine.ts',
+    './src/protocol.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,

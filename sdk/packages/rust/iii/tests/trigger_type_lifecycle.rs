@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use serial_test::serial;
 
 use async_trait::async_trait;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{
-    Error, InitOptions, RegisterFunction, RegisterTriggerInput, TriggerConfig, TriggerHandler,
-    TriggerRequest, register_worker,
+    Error, InitOptions, RegisterFunction, TriggerConfig, TriggerHandler, register_worker,
 };
 use serde_json::{Value, json};
 use tokio::time::Duration;

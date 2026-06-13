@@ -61,11 +61,27 @@ The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii.r
 (`from iii.runtime import FunctionRef`). They stay importable from the package root as deprecated
 re-exports.
 
+The `IIIConnectionState` type is provided only by the `iii.runtime` submodule
+(`from iii.runtime import IIIConnectionState`). It is not importable from the package root.
+
 The `InternalHttpRequest` type is provided only by the `iii.internal` submodule
 (`from iii.internal import InternalHttpRequest`). It is not importable from the package root.
 
 The `EngineFunctions` and `EngineTriggers` constants and the `RemoteFunctionHandler` type are
 provided only by the `iii.engine` submodule (`from iii.engine import EngineFunctions`). They are
+not importable from the package root.
+
+The protocol message and register-input types (`MessageType`, `RegisterFunctionMessage`,
+`RegisterTriggerMessage`, `RegisterTriggerTypeMessage`, `TriggerRequest`, `RegisterFunctionFormat`,
+`RegisterFunctionInput`, `RegisterTriggerInput`, `RegisterTriggerTypeInput`) are provided only by
+the `iii.protocol` submodule (`from iii.protocol import MessageType`). They are not importable from
+the package root.
+
+The `TriggerActionVoid` type is provided only by the `iii.trigger` submodule
+(`from iii.trigger import TriggerActionVoid`). It is not importable from the package root.
+
+The `extract_request_format`, `extract_response_format`, and `python_type_to_format` helpers are
+provided only by the `iii.utils` submodule (`from iii.utils import python_type_to_format`). They are
 not importable from the package root.
 
 ### `register_trigger`
