@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use iii_sdk::{RegisterFunction, RegisterTriggerInput};
+use iii_sdk::RegisterFunction;
+use iii_sdk::protocol::RegisterTriggerInput;
 
 async fn get_health_status(http_url: &str) -> u16 {
     common::http_client()

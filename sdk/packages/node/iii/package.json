@@ -66,6 +66,16 @@
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.mjs",
       "require": "./dist/internal.cjs"
+    },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "import": "./dist/engine.mjs",
+      "require": "./dist/engine.cjs"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.mjs",
+      "require": "./dist/protocol.cjs"
     }
   },
   "dependencies": {

@@ -53,9 +53,23 @@ The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii-s
 subpath (`import type { FunctionRef } from 'iii-sdk/runtime'`). They stay re-exported from the
 package root as deprecated aliases.
 
+The `IIIConnectionState` type is provided only by the `iii-sdk/runtime` subpath
+(`import type { IIIConnectionState } from 'iii-sdk/runtime'`). It is not exported from the
+package root.
+
 The `InternalHttpRequest` type is provided only by the `iii-sdk/internal` subpath
 (`import type { InternalHttpRequest } from 'iii-sdk/internal'`). It is not exported from the
 package root.
+
+The `EngineFunctions` and `EngineTriggers` constants and the `RemoteFunctionHandler` type are
+provided only by the `iii-sdk/engine` subpath (`import { EngineFunctions } from 'iii-sdk/engine'`).
+They are not exported from the package root.
+
+The protocol message and register-input types (`MessageType`, `RegisterFunctionMessage`,
+`RegisterTriggerMessage`, `RegisterTriggerTypeMessage`, `TriggerRequest`, `RegisterFunctionInput`,
+`RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerTypeInput`, `RegisterFunctionFormat`
+and `ErrorBody`) are provided only by the `iii-sdk/protocol` subpath
+(`import { MessageType } from 'iii-sdk/protocol'`). They are not exported from the package root.
 
 ### `registerTrigger`
 

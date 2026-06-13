@@ -1008,7 +1008,8 @@ impl IIIClient {
     ///
     /// # Examples
     /// ```rust
-    /// # use iii_sdk::{IIIClient, RegisterTriggerInput};
+    /// # use iii_sdk::IIIClient;
+    /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
     /// # let iii = IIIClient::new("ws://localhost:49134");
     /// let trigger = iii.register_trigger(RegisterTriggerInput {
@@ -1061,7 +1062,8 @@ impl IIIClient {
     ///
     /// # Examples
     /// ```rust
-    /// # use iii_sdk::{IIIClient, TriggerRequest, TriggerAction};
+    /// # use iii_sdk::{IIIClient, TriggerAction};
+    /// # use iii_sdk::protocol::TriggerRequest;
     /// # use serde_json::json;
     /// # async fn example(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
     /// // Synchronous

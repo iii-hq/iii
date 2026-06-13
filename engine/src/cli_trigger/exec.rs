@@ -4,7 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use iii_sdk::{IIIError, InitOptions, TriggerRequest, register_worker};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{IIIError, InitOptions, register_worker};
 use serde_json::Value;
 
 use super::TriggerCliError;

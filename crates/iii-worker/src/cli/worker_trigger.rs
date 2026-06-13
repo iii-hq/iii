@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{III, IIIError, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{III, IIIError, TriggerAction, TriggerConfig, TriggerHandler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

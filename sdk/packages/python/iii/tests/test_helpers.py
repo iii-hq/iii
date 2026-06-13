@@ -169,7 +169,7 @@ def test_init_no_longer_exports_relocated_channel_items() -> None:
 def test_iii_register_and_unregister_trigger_type_round_trip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from iii import RegisterTriggerTypeInput
+    from iii.protocol import RegisterTriggerTypeInput
     from iii.triggers import TriggerConfig, TriggerHandler
 
     class DummyHandler(TriggerHandler[Any]):

@@ -10,7 +10,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{Error, RegisterFunction, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{Error, RegisterFunction};
 
 #[tokio::test]
 async fn stream_data_from_sender_to_processor() {
