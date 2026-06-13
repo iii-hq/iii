@@ -226,6 +226,9 @@ export function initOtel(config: OtelConfig = {}): void {
  * Shutdown OpenTelemetry, flushing any pending data.
  */
 export async function shutdownOtel(): Promise<void> {
+  // Stop reconnecting/queuing before flushing so a final forceFlush() can't hang on a dead engine
+  sharedConnection?.beginShutdown()
+
   if (tracerProvider) {
     await tracerProvider.forceFlush()
     await tracerProvider.shutdown()

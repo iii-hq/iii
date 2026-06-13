@@ -200,6 +200,29 @@ export class SharedEngineConnection {
   }
 
   /**
+   * Whether the connection is shutting down. While shutting down, exporters
+   * fail-fast instead of queueing when there is no live connection, so a final
+   * forceFlush() can't hang waiting for a reconnect that will never happen.
+   */
+  isShuttingDown(): boolean {
+    return this.shuttingDown
+  }
+
+  /**
+   * Begin shutdown: stop reconnecting and stop accepting new queued exports,
+   * while leaving an open connection in place so buffered telemetry can still
+   * be flushed. Call before flushing, then call shutdown() to close fully.
+   */
+  beginShutdown(): void {
+    this.shuttingDown = true
+
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = null
+    }
+  }
+
+  /**
    * Shutdown the connection.
    */
   async shutdown(): Promise<void> {
