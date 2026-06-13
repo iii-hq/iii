@@ -185,6 +185,41 @@ async fn runtime_edit_survives_worker_restart() {
 
 #[tokio::test]
 #[serial]
+async fn disabled_boot_still_registers_the_configuration_entry() {
+    // A worker that boots disabled must still adopt the configuration worker
+    // (register the entry + watch it), so a remote `enabled: true` can be
+    // persisted and applied at the next start. Before the adoption block was
+    // moved ahead of the enabled gate, a disabled boot registered nothing and
+    // the entry was unreachable via configuration::set / the console.
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let _worker =
+        start_observability_worker(&harness, json!({ "enabled": false, "logs_max_count": 222 }))
+            .await;
+
+    let stored = harness
+        .engine
+        .call("configuration::get", json!({ "id": "iii-observability" }))
+        .await
+        .expect("configuration::get must succeed even when observability booted disabled")
+        .expect("get returns a body");
+    assert_eq!(stored["value"]["enabled"], false);
+    assert_eq!(stored["value"]["logs_max_count"], 222);
+
+    // The change handler is registered too, so a later edit is observable.
+    assert!(
+        harness
+            .engine
+            .functions
+            .get("iii-observability::on-config-change")
+            .is_some(),
+        "the on-config-change handler must be registered on a disabled boot"
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn live_field_hot_applies_through_the_trigger() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;

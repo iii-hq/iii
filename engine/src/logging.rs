@@ -461,40 +461,46 @@ fn resolve_boot_observability_config(
         .modules
         .iter()
         .chain(cfg.workers.iter())
-        .find(|m| m.name == "iii-observability")?;
+        .find(|m| m.name == "iii-observability");
 
+    // The persisted entry is the runtime source of truth. It is read even
+    // when config.yaml declares no `iii-observability` block: the worker is
+    // mandatory and auto-injected, so its persisted file is engine-written,
+    // not a "stray" file — and restart-tier edits made through
+    // `configuration::set` must take effect at the next start regardless of
+    // whether the worker was spelled out in config.yaml.
+    if let Some(stored) = read_persisted_observability_value(cfg) {
+        match serde_json::from_value::<ObservabilityWorkerConfig>(stored) {
+            Ok(stored_cfg) => {
+                println!(
+                    "Using persisted iii-observability configuration entry (config.yaml block is seed-only)"
+                );
+                return Some(stored_cfg.normalized());
+            }
+            Err(err) => eprintln!(
+                "persisted iii-observability configuration is invalid ({err}); using the config.yaml block"
+            ),
+        }
+    }
+
+    // No persisted entry: first boot. Fall back to the config.yaml block when
+    // present; otherwise leave the global unset (the auto-injected worker
+    // seeds its own defaults in `from_config`) — exactly the prior behavior
+    // for engines that never declared the worker.
+    let entry = entry?;
     let yaml_base: ObservabilityWorkerConfig = match &entry.config {
         Some(value) => match serde_json::from_value(value.clone()) {
             Ok(parsed) => parsed,
             Err(err) => {
                 eprintln!(
-                    "iii-observability config block in config.yaml is invalid ({err});                      using built-in defaults"
+                    "iii-observability config block in config.yaml is invalid ({err}); using built-in defaults"
                 );
                 ObservabilityWorkerConfig::default()
             }
         },
         None => ObservabilityWorkerConfig::default(),
     };
-
-    let merged = match read_persisted_observability_value(cfg) {
-        Some(stored) => match serde_json::from_value::<ObservabilityWorkerConfig>(stored) {
-            Ok(stored_cfg) => {
-                println!(
-                    "Using persisted iii-observability configuration entry                      (config.yaml block is seed-only)"
-                );
-                stored_cfg
-            }
-            Err(err) => {
-                eprintln!(
-                    "persisted iii-observability configuration is invalid ({err});                      using the config.yaml block"
-                );
-                yaml_base
-            }
-        },
-        None => yaml_base,
-    };
-
-    Some(merged.normalized())
+    Some(yaml_base.normalized())
 }
 
 /// Read the persisted `iii-observability` configuration value written by the
@@ -517,7 +523,7 @@ fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::
         .unwrap_or("fs");
     if adapter_name != "fs" {
         println!(
-            "persisted iii-observability configuration not read at boot:              configuration adapter '{adapter_name}' is not file-backed"
+            "persisted iii-observability configuration not read at boot: configuration adapter '{adapter_name}' is not file-backed"
         );
         return None;
     }
@@ -535,7 +541,7 @@ fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::
         Ok(entry) => entry,
         Err(err) => {
             eprintln!(
-                "persisted configuration entry {} is not valid YAML ({err});                  using the config.yaml block",
+                "persisted configuration entry {} is not valid YAML ({err}); using the config.yaml block",
                 path.display()
             );
             return None;
@@ -553,7 +559,7 @@ fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::
         Ok(expanded) => Some(expanded),
         Err(_) => {
             eprintln!(
-                "persisted configuration entry {} references an environment variable                  with no value and no default; using the config.yaml block",
+                "persisted configuration entry {} references an environment variable with no value and no default; using the config.yaml block",
                 path.display()
             );
             None
@@ -1395,16 +1401,30 @@ mod tests {
     }
 
     #[test]
-    fn boot_merge_returns_none_when_entry_absent() {
+    fn boot_merge_reads_persisted_entry_even_without_yaml_block() {
+        // The observability worker is mandatory and auto-injected, so its
+        // persisted file is engine-written, not stray: restart-tier edits must
+        // apply at the next boot even when config.yaml never named the worker.
         let dir = tempfile::tempdir().unwrap();
-        write_persisted_entry(dir.path(), serde_json::json!({ "enabled": true }));
+        write_persisted_entry(dir.path(), serde_json::json!({ "logs_max_count": 888 }));
         let mut cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({}));
-        cfg.workers.remove(0);
+        cfg.workers.remove(0); // drop the iii-observability yaml entry
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("persisted entry is read");
+        assert_eq!(resolved.logs_max_count, Some(888));
+    }
+
+    #[test]
+    fn boot_merge_returns_none_on_true_first_boot() {
+        // No yaml entry and no persisted file: leave the global unset so the
+        // auto-injected worker seeds its own defaults.
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({}));
+        cfg.workers.remove(0); // drop the iii-observability yaml entry
 
         assert!(
             resolve_boot_observability_config(&cfg).is_none(),
-            "a stray persisted file must not switch observability on for engines \
-             that never declared the worker"
+            "no yaml entry and no persisted file is a true first boot"
         );
     }
 

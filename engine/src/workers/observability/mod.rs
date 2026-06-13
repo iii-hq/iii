@@ -818,7 +818,14 @@ impl ObservabilityWorker {
         {
             storage.set_max_spans(max);
         }
-        otel::init_log_storage(new.logs_max_count);
+        // Only retune the log store; never CREATE it when logs are disabled —
+        // initialize() deliberately skips log storage in that case and the
+        // ingest path must not lazily revive it. init_log_storage is
+        // update-if-exists, so this retunes an enabled store and no-ops when
+        // logs are off and the store was never created.
+        if otel::logs_enabled(Some(&new)) {
+            otel::init_log_storage(new.logs_max_count);
+        }
         metrics::init_metric_storage(new.metrics_max_count, new.metrics_retention_seconds);
 
         // SWAP tier: rebuild only what changed.
@@ -880,13 +887,21 @@ impl ObservabilityWorker {
                 .lock()
                 .expect("worker_shutdown_rx mutex poisoned")
                 .is_some();
-            if started {
+            // Only (re)spawn when the worker is started AND enabled: a
+            // disabled worker runs no log tasks, and `enabled` is
+            // restart-tier, so a config change must not start them mid-life.
+            if started && new.enabled.unwrap_or(true) {
                 if respawn_retention {
                     self.spawn_logs_retention(&new);
                 }
                 if respawn_exporter {
                     self.spawn_logs_exporter(&new);
                 }
+            } else if started {
+                tracing::debug!(
+                    "iii-observability: observability disabled; log exporter/retention \
+                     changes apply at the next engine start"
+                );
             } else {
                 tracing::warn!(
                     "iii-observability: background tasks not running; log exporter/retention \
@@ -996,23 +1011,43 @@ impl ObservabilityWorker {
     /// and the worker shutdown signal.
     fn spawn_logs_exporter(&self, cfg: &config::ObservabilityWorkerConfig) {
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        // Hold the previous instance's stop sender; it is signaled only once
+        // the replacement is ready to consume (or immediately on the
+        // disabled-exit paths below). Stopping it before the new receiver
+        // subscribes would drop every log broadcast in the gap.
         let previous = self
             .logs_exporter_stop
             .lock()
             .expect("logs_exporter_stop mutex poisoned")
             .replace(stop_tx);
-        if let Some(previous) = previous {
-            let _ = previous.send(true);
-        }
+        let stop_previous = move || {
+            if let Some(previous) = previous {
+                let _ = previous.send(true);
+            }
+        };
 
+        // Resolve the exporter type with the OTEL_LOGS_EXPORTER env fallback
+        // (the field is None when the yaml block omits it; the Default impl's
+        // Some(Memory) only applies when the whole block is absent).
         let exporter_type = cfg
             .logs_exporter
             .clone()
+            .or_else(|| {
+                std::env::var("OTEL_LOGS_EXPORTER")
+                    .ok()
+                    .map(|v| match v.to_lowercase().as_str() {
+                        "otlp" => config::LogsExporterType::Otlp,
+                        "both" => config::LogsExporterType::Both,
+                        _ => config::LogsExporterType::Memory,
+                    })
+            })
             .unwrap_or(config::LogsExporterType::Memory);
         if exporter_type == config::LogsExporterType::Memory {
-            return; // OTLP export disabled: previous task stopped
+            stop_previous(); // OTLP export disabled: stop the old instance
+            return;
         }
         let Some(log_storage) = otel::get_log_storage() else {
+            stop_previous();
             return;
         };
         let Some(worker_shutdown_rx) = self
@@ -1021,6 +1056,7 @@ impl ObservabilityWorker {
             .expect("worker_shutdown_rx mutex poisoned")
             .clone()
         else {
+            stop_previous();
             return;
         };
 
@@ -1037,7 +1073,11 @@ impl ObservabilityWorker {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
+        // Subscribe the new receiver BEFORE stopping the old exporter, so the
+        // window between the two carries bounded duplicates rather than
+        // dropped logs (the broadcast delivers to every live receiver).
         let rx = log_storage.subscribe();
+        stop_previous();
         let mut exporter =
             otel::OtlpLogsExporter::new(endpoint.clone(), service_name, service_version);
 
@@ -2502,7 +2542,13 @@ impl Worker for ObservabilityWorker {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        let enabled = self._config.enabled.unwrap_or(true);
+        // Read the authoritative config, not the yaml seed: on the serve path
+        // the boot merge has already published the persisted entry as the
+        // global, so initialize() and start_background_tasks must agree on the
+        // same source or they half-initialize the worker (one registers the
+        // trigger types / alert manager, the other skips them).
+        let config = self.current_config();
+        let enabled = config.enabled.unwrap_or(true);
         if !enabled {
             tracing::info!(
                 "{} Observability disabled by configuration",
@@ -2522,7 +2568,7 @@ impl Worker for ObservabilityWorker {
         }
 
         // Initialize log storage only when logs are enabled
-        if otel::logs_enabled(Some(&self._config)) {
+        if otel::logs_enabled(Some(&config)) {
             otel::init_log_storage(self.effective_logs_max_count());
         } else {
             tracing::info!(
@@ -2541,14 +2587,18 @@ impl Worker for ObservabilityWorker {
         // Always initialize the alert manager (even with zero rules) so a
         // later configuration-worker edit can hot-add rules via
         // update_rules; the 10s evaluation tick is a no-op while empty.
-        if !self._config.alerts.is_empty() {
+        // Seed from the authoritative config (not the yaml seed): on a restart
+        // the first apply_config sees old == new and skips the alert SWAP
+        // tier, so a manager seeded from the stale yaml rules would silently
+        // revert a runtime edit until the next alerts change.
+        if !config.alerts.is_empty() {
             tracing::info!(
                 "{} {} alert rules configured",
                 "[ALERTS]".cyan(),
-                self._config.alerts.len()
+                config.alerts.len()
             );
         }
-        metrics::init_alert_manager_with_engine(self._config.alerts.clone(), self.engine.clone());
+        metrics::init_alert_manager_with_engine(config.alerts.clone(), self.engine.clone());
 
         // Register log trigger type
         let log_trigger_type = TriggerType::new(
@@ -2591,9 +2641,69 @@ impl Worker for ObservabilityWorker {
             .lock()
             .expect("worker_shutdown_rx mutex poisoned") = Some(shutdown_rx.clone());
 
-        // Skip all background tasks when observability is disabled
+        // Adopt the configuration worker as the runtime source of truth
+        // BEFORE the enabled gate — mirroring iii-http, which always adopts.
+        // This runs even when observability boots disabled, so the
+        // `iii-observability` entry is always registered (a remote
+        // `enabled: true` can be persisted and applied at the next start), the
+        // change trigger always watches, and the restart-tier warning fires.
+        // `configuration::*` is callable here on both pipelines; failures
+        // degrade to the static config.yaml block. Every bus call is bounded.
+        let register = tokio::time::timeout(
+            configuration::CONFIG_BUS_TIMEOUT,
+            configuration::register_config(self.engine.as_ref(), Some(&self._config)),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("configuration::register timed out"))
+        .and_then(|result| result);
+        if let Err(err) = register {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: configuration::register failed; continuing with static config"
+            );
+        }
+
+        // Initial sync: fetch the authoritative value and apply it per tier
+        // (apply_config carries its own bus timeout).
+        if let Err(err) = self.apply_config().await {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: failed to read configuration; continuing with static config"
+            );
+        }
+
+        // Register the handler before the trigger so a configuration event can
+        // never fan out to a missing function. On reload, `register_functions`
+        // runs after this hook and re-registers the handler inside the worker
+        // scope; the `get` check keeps the initial-boot path (where it already
+        // ran) from logging a spurious "already registered" overwrite.
+        if self
+            .engine
+            .functions
+            .get(configuration::CONFIG_FN_ID)
+            .is_none()
+        {
+            self.register_config_handler(&self.engine);
+        }
+        if let Err(err) = configuration::register_config_trigger(&self.engine).await {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: failed to watch configuration changes; hot-reload disabled"
+            );
+        } else {
+            // Catch-up pass: replay any `configuration::set` that landed
+            // between the initial sync above and the trigger subscription.
+            configuration::on_config_change(self).await;
+        }
+
+        // Live background tasks run only when observability is enabled. The
+        // trace/log pipeline is built at process start, so `enabled` is
+        // restart-tier; this gate controls only the per-process task set, not
+        // configuration adoption (done above).
         if !self.current_config().enabled.unwrap_or(true) {
-            tracing::debug!("[ObservabilityWorker] Skipping background tasks (disabled)");
+            tracing::debug!(
+                "[ObservabilityWorker] Observability disabled; skipping background tasks"
+            );
             return Ok(());
         }
 
@@ -2810,67 +2920,12 @@ impl Worker for ObservabilityWorker {
             });
         }
 
-        // Adopt the configuration worker as the runtime source of truth.
-        // `configuration::*` is callable here on both pipelines (initial boot
-        // registers all worker functions before serving; reload starts the
-        // mandatory configuration worker independently). Failures degrade to
-        // the static config.yaml block so observability stays up. Every bus
-        // call is time-bounded: worker startup is awaited serially by the
-        // boot and reload pipelines.
-        let register = tokio::time::timeout(
-            configuration::CONFIG_BUS_TIMEOUT,
-            configuration::register_config(self.engine.as_ref(), Some(&self._config)),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("configuration::register timed out"))
-        .and_then(|result| result);
-        if let Err(err) = register {
-            tracing::warn!(
-                error = %err,
-                "iii-observability: configuration::register failed; continuing with static config"
-            );
-        }
-
-        // Initial sync: fetch the authoritative value and apply it per tier
-        // (apply_config carries its own bus timeout).
-        if let Err(err) = self.apply_config().await {
-            tracing::warn!(
-                error = %err,
-                "iii-observability: failed to read configuration; continuing with static config"
-            );
-        }
-
-        // Spawn the respawnable tasks from the post-sync effective
-        // configuration. The helpers stop any instance an apply above may
+        // Spawn the respawnable log tasks from the effective configuration.
+        // The helpers stop any instance the initial apply_config above may
         // already have spawned, so this cannot double-spawn.
         let effective = self.current_config();
         self.spawn_logs_retention(&effective);
         self.spawn_logs_exporter(&effective);
-
-        // Register the handler before the trigger so a configuration event
-        // can never fan out to a missing function. On reload,
-        // `register_functions` runs after this hook and re-registers the
-        // handler inside the worker scope; the `get` check keeps the
-        // initial-boot path (where it already ran) from logging a spurious
-        // "already registered" overwrite.
-        if self
-            .engine
-            .functions
-            .get(configuration::CONFIG_FN_ID)
-            .is_none()
-        {
-            self.register_config_handler(&self.engine);
-        }
-        if let Err(err) = configuration::register_config_trigger(&self.engine).await {
-            tracing::warn!(
-                error = %err,
-                "iii-observability: failed to watch configuration changes; hot-reload disabled"
-            );
-        } else {
-            // Catch-up pass: replay any `configuration::set` that landed
-            // between the initial sync above and the trigger subscription.
-            configuration::on_config_change(self).await;
-        }
 
         Ok(())
     }

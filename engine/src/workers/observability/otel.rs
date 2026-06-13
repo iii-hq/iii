@@ -52,18 +52,24 @@ static GLOBAL_OTEL_CONFIG: RwLock<Option<Arc<ObservabilityWorkerConfig>>> = RwLo
 ///
 /// Returns true if the config was set, false if it was already initialized.
 pub fn set_otel_config(config: ObservabilityWorkerConfig) -> bool {
-    let mut slot = GLOBAL_OTEL_CONFIG
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if slot.is_none() {
-        *slot = Some(Arc::new(config));
-        true
-    } else {
-        // Config already set - this can happen if module is re-initialized
-        // Log at debug level since this is expected in some scenarios
+    let was_set = {
+        let mut slot = GLOBAL_OTEL_CONFIG
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            *slot = Some(Arc::new(config));
+            true
+        } else {
+            false
+        }
+    };
+    // Log AFTER releasing the write guard: std RwLock is non-reentrant, and a
+    // tracing event flows through the subscriber stack — a layer that ever
+    // reads the global config in its event path would otherwise self-deadlock.
+    if !was_set {
         tracing::debug!("OTEL config already initialized, ignoring new config");
-        false
     }
+    was_set
 }
 
 /// Unconditionally replace the global OTEL configuration (the authoritative

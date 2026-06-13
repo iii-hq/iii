@@ -1757,17 +1757,39 @@ impl AlertManager {
 
     /// Get current state of all alerts
     pub fn get_states(&self) -> Vec<AlertState> {
-        self.states.read().unwrap().values().cloned().collect()
-    }
-
-    /// Get alerts that are currently firing
-    pub fn get_firing_alerts(&self) -> Vec<AlertState> {
+        let live = self.live_rule_names();
         self.states
             .read()
             .unwrap()
             .values()
-            .filter(|s| s.firing)
+            .filter(|s| live.contains(&s.name))
             .cloned()
+            .collect()
+    }
+
+    /// Get alerts that are currently firing
+    pub fn get_firing_alerts(&self) -> Vec<AlertState> {
+        let live = self.live_rule_names();
+        self.states
+            .read()
+            .unwrap()
+            .values()
+            .filter(|s| s.firing && live.contains(&s.name))
+            .cloned()
+            .collect()
+    }
+
+    /// Names of the currently-configured rules. Used to filter out states
+    /// for rules that were removed at runtime — `update_rules` prunes them,
+    /// but a concurrent in-flight `evaluate` (which snapshots the rules then
+    /// re-inserts state per rule) can resurrect a removed rule's state; this
+    /// read-side filter keeps such a straggler out of `engine::alerts::list`.
+    fn live_rule_names(&self) -> std::collections::HashSet<String> {
+        self.rules
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|r| r.name.clone())
             .collect()
     }
 }
