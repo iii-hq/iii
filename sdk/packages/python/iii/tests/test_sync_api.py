@@ -8,7 +8,8 @@ from typing import Any
 import pytest
 
 import iii.iii as iii_module
-from iii import InitOptions, RegisterTriggerTypeInput
+from iii import InitOptions
+from iii.protocol import RegisterTriggerTypeInput
 from iii.helpers import create_channel
 from iii.iii import III
 from iii.triggers import TriggerConfig, TriggerHandler

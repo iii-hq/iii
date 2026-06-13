@@ -7,7 +7,8 @@
 //! `iii worker sandbox {run, create, exec, list, stop}` handlers. Thin CLI wrapper
 //! that calls the sandbox daemon directly via `iii.trigger(TriggerRequest{...})`.
 
-use iii_sdk::{III, IIIError, InitOptions, TriggerRequest, register_worker};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{III, IIIError, InitOptions, register_worker};
 use serde_json::{Value, json};
 
 use crate::cli::rootfs_cache;

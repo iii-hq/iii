@@ -11,9 +11,8 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    III, InitOptions, RegisterFunction, RegisterTriggerInput, TriggerRequest, register_worker,
-};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{III, InitOptions, RegisterFunction, register_worker};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;

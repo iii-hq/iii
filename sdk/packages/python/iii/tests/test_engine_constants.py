@@ -1,6 +1,6 @@
 """EngineFunctions / EngineTriggers parity with the Node SDK."""
 
-from iii import EngineFunctions, EngineTriggers
+from iii.engine import EngineFunctions, EngineTriggers
 
 
 def test_engine_function_ids() -> None:
