@@ -4,7 +4,6 @@ from typing import Any
 
 from .channels import ChannelReader, ChannelWriter
 from .errors import InvocationError
-from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
 from .iii_constants import (
     FunctionRef,
@@ -15,7 +14,6 @@ from .iii_types import (
     MiddlewareFunctionInput,
     StreamChannelRef,
     TriggerActionEnqueue,
-    TriggerActionVoid,
 )
 from .stream import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
@@ -43,7 +41,6 @@ __all__ = [
     # Message types
     "StreamChannelRef",
     "TriggerActionEnqueue",
-    "TriggerActionVoid",
     # Triggers
     "Trigger",
     "TriggerConfig",
@@ -56,10 +53,6 @@ __all__ = [
     "StreamResponse",
     # Stream
     "IStream",
-    # Format extraction
-    "extract_request_format",
-    "extract_response_format",
-    "python_type_to_format",
 ]
 
 

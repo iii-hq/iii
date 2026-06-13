@@ -61,10 +61,7 @@ pub use iii::TelemetryOptions;
 #[deprecated(since = "0.20.0", note = "renamed to TelemetryOptions")]
 pub use iii::TelemetryOptions as WorkerTelemetryMeta;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
-pub use iii::{
-    FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,
-    WorkerMetadata,
-};
+pub use iii::{FunctionInfo, FunctionRef, TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata};
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
 pub use protocol::{Message, TriggerAction};
 pub use stream_provider::IStream;
@@ -195,6 +192,12 @@ fn _ensure_create_channel_not_on_instance() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_runtime_submodule_path() {}
+
+/// ```compile_fail
+/// use iii_sdk::IIIConnectionState;
+/// ```
+#[allow(dead_code)]
+fn _ensure_connection_state_not_top_level() {}
 
 // ---------------------------------------------------------------------------
 // Stage 1 trigger submodule: trigger types are reachable at their new
