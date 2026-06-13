@@ -229,21 +229,26 @@ export async function shutdownOtel(): Promise<void> {
   // Stop reconnecting/queuing before flushing so a final forceFlush() can't hang on a dead engine
   sharedConnection?.beginShutdown()
 
+  // Flushing is best-effort on shutdown: when the engine is gone the exporters
+  // fail their pending exports, which rejects forceFlush()/shutdown(). Swallow
+  // those so a dropped final flush can't crash or block teardown.
+  const settle = (p: Promise<unknown>) => p.catch(() => {})
+
   if (tracerProvider) {
-    await tracerProvider.forceFlush()
-    await tracerProvider.shutdown()
+    await settle(tracerProvider.forceFlush())
+    await settle(tracerProvider.shutdown())
     tracerProvider = null
   }
 
   if (meterProvider) {
-    await meterProvider.forceFlush()
-    await meterProvider.shutdown()
+    await settle(meterProvider.forceFlush())
+    await settle(meterProvider.shutdown())
     meterProvider = null
   }
 
   if (loggerProvider) {
-    await loggerProvider.forceFlush()
-    await loggerProvider.shutdown()
+    await settle(loggerProvider.forceFlush())
+    await settle(loggerProvider.shutdown())
     loggerProvider = null
   }
 

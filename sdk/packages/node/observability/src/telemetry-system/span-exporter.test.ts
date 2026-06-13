@@ -1,6 +1,6 @@
 import { ExportResultCode } from '@opentelemetry/core'
 import { describe, expect, it, vi } from 'vitest'
-import type { SharedEngineConnection } from './connection'
+import { SharedEngineConnection } from './connection'
 import { EngineSpanExporter } from './span-exporter'
 import type { ConnectionState } from './types'
 
@@ -37,5 +37,24 @@ describe('EngineSpanExporter shutdown behavior', () => {
     exporter.export([], failed)
     expect(failed).toHaveBeenCalledOnce()
     expect(failed.mock.calls[0][0].code).toBe(ExportResultCode.FAILED)
+  })
+
+  it('drains already-queued export callbacks when shutdown begins while disconnected', async () => {
+    // Dead address: the connection never reaches 'connected'.
+    const connection = new SharedEngineConnection('ws://127.0.0.1:9', {})
+    const exporter = new EngineSpanExporter(connection)
+
+    // Export queued before shutdown — callback still pending.
+    const callback = vi.fn()
+    exporter.export([], callback)
+    expect(callback).not.toHaveBeenCalled()
+
+    // beginShutdown() with no live connection must resolve the queued callback,
+    // so a later forceFlush() can't hang waiting on it.
+    connection.beginShutdown()
+    expect(callback).toHaveBeenCalledOnce()
+    expect(callback.mock.calls[0][0].code).toBe(ExportResultCode.FAILED)
+
+    await connection.shutdown()
   })
 })

@@ -214,11 +214,32 @@ export class SharedEngineConnection {
    * be flushed. Call before flushing, then call shutdown() to close fully.
    */
   beginShutdown(): void {
+    if (this.shuttingDown) {
+      return
+    }
     this.shuttingDown = true
 
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
+    }
+
+    // With no live connection there's nothing to flush to, so fail queued work
+    // now instead of leaving callbacks unresolved for the flush below to wait on
+    if (this.state !== 'connected') {
+      const pending = this.pendingMessages.splice(0, this.pendingMessages.length)
+      const shutdownError = new Error('Connection shutdown before message could be sent')
+      for (const { callback } of pending) {
+        callback?.(shutdownError)
+      }
+
+      for (const cb of this.onFailedCallbacks) {
+        try {
+          cb()
+        } catch (err) {
+          console.error('[OTel] onFailed callback threw:', err)
+        }
+      }
     }
   }
 
