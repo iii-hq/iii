@@ -378,7 +378,7 @@ impl HttpWorker {
                 ),
                 request_format: None,
                 response_format: None,
-                metadata: None,
+                metadata: Some(serde_json::json!({ "internal": true })),
             },
             crate::engine::Handler::new(move |_payload: Value| {
                 let worker = worker.clone();
