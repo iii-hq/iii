@@ -1,4 +1,13 @@
 //! Engine function and trigger ids, mirroring the Node SDK constants.
+//!
+//! This module also re-exports [`RemoteFunctionHandler`] so the engine
+//! grouping (`iii_sdk::engine`) exposes the same symbols as the Node
+//! `iii-sdk/engine` and Python `iii.engine` submodules. Rust cannot use a
+//! separate `pub mod engine { ... }` grouping block here because the real
+//! engine module is the file `engine.rs` (`pub mod engine;` in `lib.rs`),
+//! so the grouping is folded into this module instead.
+
+pub use crate::types::RemoteFunctionHandler;
 
 /// Engine function ids for internal operations.
 pub struct EngineFunctions;

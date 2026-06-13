@@ -16,10 +16,9 @@ use iii_helpers::worker_connection_manager::{
     OnTriggerRegistrationInput, OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput,
     OnTriggerTypeRegistrationResult,
 };
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::IIIConnectionState;
-use iii_sdk::{
-    InitOptions, MiddlewareFunctionInput, RegisterFunction, TriggerRequest, register_worker,
-};
+use iii_sdk::{InitOptions, MiddlewareFunctionInput, RegisterFunction, register_worker};
 use serde::Deserialize;
 
 /// Minimal deserialization target for `engine::functions::list` rows used
@@ -537,7 +536,7 @@ async fn should_deny_trigger_registration_via_hook() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let _ = iii_client.register_trigger(iii_sdk::RegisterTriggerInput {
+    let _ = iii_client.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
         trigger_type: "test-rbac-trigger".to_string(),
         function_id: "denied-trig::my-fn".to_string(),
         config: json!({ "key": "value" }),

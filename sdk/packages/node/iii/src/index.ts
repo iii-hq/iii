@@ -9,31 +9,12 @@ export { IIIInvocationError, type IIIInvocationErrorInit } from './errors'
 
 export { type InitOptions, registerWorker, type TelemetryOptions, TriggerAction } from './iii'
 
-export { EngineFunctions, EngineTriggers } from './iii-constants'
-
-export type {
-  MessageType,
-  MiddlewareFunctionInput,
-  RegisterFunctionMessage,
-  RegisterTriggerMessage,
-  RegisterTriggerTypeMessage,
-  TriggerRequest,
-} from './iii-types'
+export type { MiddlewareFunctionInput } from './iii-types'
 
 /** @deprecated Import trigger types from `iii-sdk/trigger`. */
 export type { Trigger, TriggerConfig, TriggerHandler } from './trigger'
 
-export type {
-  IIIClient,
-  InternalHttpRequest,
-  RegisterFunctionInput,
-  RegisterFunctionOptions,
-  RegisterTriggerInput,
-  RegisterTriggerTypeInput,
-  RemoteFunctionHandler,
-  StreamRequest,
-  StreamResponse,
-} from './types'
+export type { IIIClient, StreamRequest, StreamResponse } from './types'
 
 /** @deprecated Renamed to `IIIClient`. */
 export type { ISdk } from './types'

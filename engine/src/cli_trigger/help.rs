@@ -6,7 +6,8 @@
 
 use anyhow::Result;
 use colored::Colorize;
-use iii_sdk::{InitOptions, TriggerRequest, register_worker};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{InitOptions, register_worker};
 use serde_json::{Value, json};
 
 pub async fn print(

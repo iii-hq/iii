@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use iii_sdk::{RegisterFunction, RegisterTriggerInput};
+use iii_sdk::RegisterFunction;
+use iii_sdk::protocol::RegisterTriggerInput;
 
 #[tokio::test]
 async fn middleware_continue_to_handler() {

@@ -12,8 +12,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
+use iii_sdk::RegisterFunction;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::FunctionInfo;
-use iii_sdk::{RegisterFunction, RegisterTriggerInput, TriggerRequest};
 
 fn unique_function_id(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
