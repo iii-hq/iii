@@ -58,6 +58,14 @@ variable "github_environment" {
   default     = "iii-website-prod"
 }
 
+variable "github_tf_apply_environment" {
+  # Distinct from github_environment so the apply env can be configured with
+  # required reviewers without gating routine S3 deploys.
+  description = "GitHub environment scoping the tf-apply role. Configure required reviewers on this env in repo settings to gate applies."
+  type        = string
+  default     = "iii-website-prod-tf-apply"
+}
+
 variable "csp_report_only" {
   description = "Send CSP as report-only instead of enforcing."
   type        = bool
@@ -65,20 +73,13 @@ variable "csp_report_only" {
 }
 
 variable "manage_apex_records" {
-  # Leave false until Phase 4 cutover. When false, the apex records are not managed
-  # by this module (they already exist — manually created in Route53, not
-  # External-DNS-owned). Flip to true after importing the existing records.
   description = "Whether Terraform manages the iii.dev apex A/AAAA Route53 records."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "manage_www_records" {
-  # Leave false until www.iii.dev has been released by External-DNS (argocd PR
-  # removing the iii-dev-www Ingress has merged + synced). Flip to true after
-  # importing the existing records. Decoupled from apex so the two can be
-  # cut over independently to limit blast radius.
   description = "Whether Terraform manages the www.iii.dev A/AAAA Route53 records."
   type        = bool
-  default     = false
+  default     = true
 }

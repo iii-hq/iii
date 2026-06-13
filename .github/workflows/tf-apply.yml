@@ -1,0 +1,87 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/terraform/website/**'
+      - '.github/workflows/tf-apply.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to apply (default: current default branch)'
+        required: false
+        type: string
+
+concurrency:
+  group: tf-apply-website
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    name: terraform apply (infra/terraform/website)
+    runs-on: ubuntu-latest
+    environment: iii-website-prod-tf-apply
+    timeout-minutes: 15
+
+    env:
+      AWS_REGION: us-east-1
+      TF_IN_AUTOMATION: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TF_APPLY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform init
+        working-directory: infra/terraform/website
+        run: terraform init -input=false
+
+      - name: Terraform apply
+        id: apply
+        working-directory: infra/terraform/website
+        env:
+          TF_VAR_alarm_email: ${{ secrets.ALARM_EMAIL }}
+        run: |
+          set -o pipefail
+          terraform apply -input=false -auto-approve -no-color 2>&1 | tee apply.txt
+          {
+            echo 'apply<<TF_APPLY_EOF'
+            tail -c 60000 apply.txt
+            echo 'TF_APPLY_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Job summary
+        if: always()
+        env:
+          APPLY: ${{ steps.apply.outputs.apply }}
+        run: |
+          {
+            echo "## terraform apply — \`infra/terraform/website\`"
+            echo
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Ref: \`${{ inputs.ref || github.ref }}\`"
+            echo
+            echo '<details><summary>Apply output</summary>'
+            echo
+            echo '```'
+            echo "${APPLY:-(no apply output captured)}"
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
