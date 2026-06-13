@@ -1,4 +1,5 @@
-use iii_sdk::{RegisterFunction, TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{RegisterFunction, III};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};

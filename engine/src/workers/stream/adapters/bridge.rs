@@ -7,11 +7,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{
-    III, InitOptions, RegisterTriggerInput, TriggerRequest, UpdateOp, UpdateResult,
-    register_worker,
-    types::{DeleteResult, SetResult},
-};
+use iii_helpers::stream::{DeleteResult, SetResult, UpdateOp, UpdateResult};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{III, InitOptions, register_worker};
 use serde_json::Value;
 
 use crate::{

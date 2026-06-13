@@ -190,9 +190,9 @@ def test_register_function_str_with_http_invocation_and_format(monkeypatch: pyte
     client.shutdown()
 
 
-def test_register_function_format_importable_from_top_level() -> None:
-    """RegisterFunctionFormat should remain importable from iii."""
-    from iii import RegisterFunctionFormat
+def test_register_function_format_importable_from_protocol() -> None:
+    """RegisterFunctionFormat should be importable from iii.protocol."""
+    from iii.protocol import RegisterFunctionFormat
 
     fmt = RegisterFunctionFormat(name="test", type="string")
     assert fmt.name == "test"

@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::sync::Mutex;
 
-use iii_sdk::{Error, RegisterFunction, RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{Error, RegisterFunction};
 use tokio::time::sleep;
 
 fn test_pdf_path() -> PathBuf {
