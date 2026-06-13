@@ -7,10 +7,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    III, IIIError, InitOptions, RegisterTriggerInput, Trigger, TriggerAction, TriggerRequest,
-    register_worker,
-};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{III, IIIError, InitOptions, Trigger, TriggerAction, register_worker};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;

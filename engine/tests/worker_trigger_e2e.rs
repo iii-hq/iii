@@ -24,9 +24,8 @@ use std::time::Duration;
 
 use iii::EngineBuilder;
 use iii::workers::config::EngineConfig;
-use iii_sdk::{
-    III, InitOptions, RegisterFunction, RegisterTriggerInput, TriggerRequest, register_worker,
-};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{III, InitOptions, RegisterFunction, register_worker};
 use iii_worker::cli::app::WorkerManagerDaemonArgs;
 use iii_worker::cli::worker_manager_daemon;
 use serde_json::{Value, json};

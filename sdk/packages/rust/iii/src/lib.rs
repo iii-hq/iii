@@ -35,11 +35,20 @@ pub mod errors {
     pub use crate::error::{Error, InvocationError};
 }
 
+// No `internal` submodule for Rust: the internal types grouped under
+// `iii-sdk/internal` (Node) and `iii.internal` (Python) have no crate-root
+// equivalent here. There is no `InternalHttpRequest` (the Rust SDK uses
+// `iii_helpers::http::HttpRequest`), and the stream result types
+// (`SetResult`, `UpdateResult`, `DeleteResult`) live in `iii_helpers::stream`
+// and are consumed inside `stream_provider.rs` — they are not re-exported at
+// the crate root. Grouping them here would re-surface clean-break helpers
+// types into the SDK, which the `compile_fail` doctests below deliberately
+// forbid. Hence the `internal` grouping is a no-op for Rust.
+
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
 pub use builtin_triggers::IIITrigger;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
 pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-pub use engine::{EngineFunctions, EngineTriggers};
 #[deprecated(
     since = "0.19.0",
     note = "renamed to Error; import from iii_sdk::errors"
@@ -52,15 +61,9 @@ pub use iii::TelemetryOptions;
 #[deprecated(since = "0.20.0", note = "renamed to TelemetryOptions")]
 pub use iii::TelemetryOptions as WorkerTelemetryMeta;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
-pub use iii::{
-    FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,
-    WorkerMetadata,
-};
+pub use iii::{FunctionInfo, FunctionRef, TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata};
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
-pub use protocol::{
-    ErrorBody, FunctionMessage, Message, RegisterFunctionMessage, RegisterTriggerInput,
-    RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
-};
+pub use protocol::{Message, TriggerAction};
 pub use stream_provider::IStream;
 pub use structs::MiddlewareFunctionInput;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
@@ -190,6 +193,12 @@ fn _ensure_create_channel_not_on_instance() {}
 #[allow(dead_code)]
 fn _ensure_runtime_submodule_path() {}
 
+/// ```compile_fail
+/// use iii_sdk::IIIConnectionState;
+/// ```
+#[allow(dead_code)]
+fn _ensure_connection_state_not_top_level() {}
+
 // ---------------------------------------------------------------------------
 // Stage 1 trigger submodule: trigger types are reachable at their new
 // canonical path `iii_sdk::trigger`.
@@ -254,12 +263,26 @@ fn _ensure_stream_io_types_not_top_level() {}
 #[allow(dead_code)]
 fn _ensure_stream_events_helpers_path() {}
 
+// ---------------------------------------------------------------------------
+// engine submodule grouping: engine constants and the remote handler type are
+// reachable only at their canonical path `iii_sdk::engine`. Rust folds this
+// grouping into the existing `engine` module (the file `engine.rs`) rather than
+// a separate `pub mod engine { ... }` block, which would clash with it.
+// ---------------------------------------------------------------------------
+
 /// ```rust,no_run
-/// use iii_sdk::{EngineFunctions, EngineTriggers};
+/// use iii_sdk::engine::{EngineFunctions, EngineTriggers, RemoteFunctionHandler};
 /// let _ = (EngineFunctions::LIST_FUNCTIONS, EngineTriggers::LOG);
+/// fn _takes(_h: RemoteFunctionHandler) {}
 /// ```
 #[allow(dead_code)]
-fn _ensure_engine_constants_path() {}
+fn _ensure_engine_submodule_path() {}
+
+/// ```compile_fail
+/// use iii_sdk::{EngineFunctions, EngineTriggers};
+/// ```
+#[allow(dead_code)]
+fn _ensure_engine_constants_not_top_level() {}
 
 /// ```rust,no_run
 /// use iii_sdk::errors::InvocationError;
@@ -274,3 +297,27 @@ fn _ensure_invocation_error_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_stream_request_response_path() {}
+
+// ---------------------------------------------------------------------------
+// protocol submodule grouping: the low-level protocol message and
+// register-input types are reachable only at their canonical path
+// `iii_sdk::protocol` and are no longer re-exported at the crate root.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::protocol::{
+///     ErrorBody, FunctionMessage, RegisterFunctionMessage, RegisterTriggerInput,
+///     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerRequest,
+/// };
+/// ```
+#[allow(dead_code)]
+fn _ensure_protocol_submodule_path() {}
+
+/// ```compile_fail
+/// use iii_sdk::{
+///     ErrorBody, FunctionMessage, RegisterFunctionMessage, RegisterTriggerInput,
+///     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerRequest,
+/// };
+/// ```
+#[allow(dead_code)]
+fn _ensure_protocol_types_not_top_level() {}

@@ -7,7 +7,8 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use iii_sdk::{III, IIIError, InitOptions, TriggerAction, TriggerRequest, register_worker};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{III, IIIError, InitOptions, TriggerAction, register_worker};
 use serde::Deserialize;
 use serde_json::Value;
 

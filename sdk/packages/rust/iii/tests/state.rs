@@ -10,7 +10,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{IIIClient, RegisterFunction, RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 
 const SCOPE: &str = "test-scope-rs";
 

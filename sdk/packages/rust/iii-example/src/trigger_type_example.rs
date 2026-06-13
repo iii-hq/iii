@@ -1,5 +1,6 @@
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Error, IIIClient, RegisterTriggerType, TriggerRequest};
+use iii_sdk::{Error, IIIClient, RegisterTriggerType};
 use serde::Deserialize;
 
 /// Minimal deserialization target for `engine::triggers::list` rows used
