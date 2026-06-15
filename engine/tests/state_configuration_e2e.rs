@@ -209,6 +209,62 @@ async fn save_interval_ms_retune_updates_live_snapshot() {
     assert_eq!(worker.current_config().save_interval_ms, Some(500));
 }
 
+/// Poll until `dir` contains at least one entry, or panic after 5s.
+async fn wait_for_persisted_file(dir: &std::path::Path) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let has_entry = std::fs::read_dir(dir)
+            .map(|mut rd| rd.next().is_some())
+            .unwrap_or(false);
+        if has_entry {
+            return;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("state was not persisted to disk after the save-loop retune");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+#[tokio::test]
+async fn save_interval_ms_retunes_a_file_backed_save_loop() {
+    let cfg_dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(cfg_dir.path()).await;
+    let store_dir = tempfile::tempdir().unwrap();
+
+    let worker = start_state_worker(
+        &harness,
+        json!({
+            "adapter": {
+                "name": "kv",
+                "config": {
+                    "store_method": "file_based",
+                    "file_path": store_dir.path().to_str().unwrap()
+                }
+            }
+        }),
+    )
+    .await;
+
+    // Retune the cadence at runtime; this must reach the real file-backed loop,
+    // not no-op against an in-memory store.
+    set_value(&harness, json!({ "save_interval_ms": 200 })).await;
+    drive_apply(&harness).await;
+    assert_eq!(worker.current_config().save_interval_ms, Some(200));
+
+    // A write now flushes at the retuned cadence — proof the reconfigure drove a
+    // live file-backed save loop end-to-end.
+    harness
+        .engine
+        .call(
+            "state::set",
+            json!({ "scope": "s", "key": "k", "value": { "v": 1 } }),
+        )
+        .await
+        .expect("state::set");
+    wait_for_persisted_file(store_dir.path()).await;
+}
+
 #[tokio::test]
 async fn triggers_enabled_hot_applies_to_live_snapshot() {
     let dir = tempfile::tempdir().unwrap();

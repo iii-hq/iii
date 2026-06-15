@@ -26,9 +26,13 @@ use tokio::sync::RwLock;
 const KEY_FILE_EXTENSION: &str = "bin";
 
 /// Default persistence flush cadence (ms) for file-backed stores. Used when no
-/// `save_interval_ms` is configured and as the revert target when a
-/// reconfigure clears it.
+/// `save_interval_ms` is configured at construction.
 const DEFAULT_SAVE_INTERVAL_MS: u64 = 5000;
+
+/// Floor for the save cadence (ms). A value below this — e.g. a hand-edited
+/// adapter config that bypasses the configuration schema's `minimum: 100` — is
+/// clamped up so it can never drive the save loop into a tight busy-loop.
+const MIN_SAVE_INTERVAL_MS: u64 = 100;
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize)]
 struct KeyStorage(String);
@@ -183,6 +187,11 @@ pub struct BuiltinKvStore {
     /// [`BuiltinKvStore::reconfigure`]. `None` for in-memory stores, which run
     /// no save loop.
     save_loop_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// The boot-configured save cadence (ms, already floored). A reconfigure
+    /// that clears `save_interval_ms` reverts to this rather than to the global
+    /// default, so clearing the runtime knob restores the adapter's configured
+    /// cadence instead of silently dropping to 5000.
+    default_interval: u64,
 }
 
 impl BuiltinKvStore {
@@ -216,7 +225,8 @@ impl BuiltinKvStore {
             .clone()
             .and_then(|cfg| cfg.get("save_interval_ms").and_then(|v| v.as_u64()))
             .filter(|&n| n > 0)
-            .unwrap_or(DEFAULT_SAVE_INTERVAL_MS);
+            .unwrap_or(DEFAULT_SAVE_INTERVAL_MS)
+            .max(MIN_SAVE_INTERVAL_MS);
 
         let file_store_dir = match store_method.as_str() {
             "file_based" => {
@@ -245,6 +255,7 @@ impl BuiltinKvStore {
             file_store_dir,
             dirty,
             save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
+            default_interval: interval,
         };
 
         // File-backed stores run a background save loop; in-memory stores have
@@ -280,8 +291,9 @@ impl BuiltinKvStore {
     }
 
     /// Hot-reconfigure the store. Currently honors `save_interval_ms`: when the
-    /// store is file-backed, respawn the save loop at the new cadence (a clear /
-    /// invalid value reverts to the built-in default). No-op for in-memory
+    /// store is file-backed, respawn the save loop at the new cadence. A clear /
+    /// invalid value reverts to the boot-configured cadence (`default_interval`),
+    /// and any value is floored to `MIN_SAVE_INTERVAL_MS`. No-op for in-memory
     /// stores.
     pub fn reconfigure(&self, config: &Value) {
         if self.file_store_dir.is_none() {
@@ -291,7 +303,8 @@ impl BuiltinKvStore {
             .get("save_interval_ms")
             .and_then(|v| v.as_u64())
             .filter(|&n| n > 0)
-            .unwrap_or(DEFAULT_SAVE_INTERVAL_MS);
+            .unwrap_or(self.default_interval)
+            .max(MIN_SAVE_INTERVAL_MS);
         tracing::info!(
             save_interval_ms = interval,
             "[BuiltinKvStore] respawning save loop at new cadence"
@@ -681,6 +694,47 @@ mod test {
             );
         }
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reconfigure_reverts_to_boot_interval_when_cleared() {
+        let dir = temp_store_dir();
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 250
+        });
+        let kv_store = BuiltinKvStore::new(Some(config));
+        assert_eq!(kv_store.default_interval, 250);
+
+        // Clearing the knob reverts to the boot cadence (250), NOT the global
+        // default; the loop stays alive.
+        kv_store.reconfigure(&serde_json::json!({}));
+        assert!(
+            kv_store
+                .save_loop_stop
+                .lock()
+                .expect("save_loop_stop mutex")
+                .is_some()
+        );
+        assert_eq!(kv_store.default_interval, 250);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_boot_interval_is_floored() {
+        let dir = temp_store_dir();
+        // A sub-floor value (e.g. hand-edited adapter config bypassing the
+        // schema) is clamped up so it cannot drive a tight save loop.
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 1
+        });
+        let kv_store = BuiltinKvStore::new(Some(config));
+        assert_eq!(kv_store.default_interval, MIN_SAVE_INTERVAL_MS);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

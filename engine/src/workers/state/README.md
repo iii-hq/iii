@@ -40,7 +40,7 @@ npx skills add iii-hq/iii --full-depth --skill iii-state
 | `adapter` | Adapter | Adapter for state persistence. Defaults to `kv`. Restart-tier (see below). |
 | `triggers_enabled` | boolean | Globally enable/disable state change-trigger fan-out. Defaults to `true`. Applied live. |
 | `max_value_bytes` | number | Reject `state::set` writes whose JSON-serialized value exceeds this many bytes (`VALUE_TOO_LARGE`). Minimum `1`; unset means no limit. Applied live. |
-| `save_interval_ms` | number | Persistence flush cadence (ms) for the file-backed `kv` adapter. `100`–`3600000`; defaults to `5000`. Applied live (respawns the save loop). |
+| `save_interval_ms` | number | Persistence flush cadence (ms) for the file-backed `kv` adapter. `100`–`3600000`; defaults to `5000`. Task-rebuild (respawns the save loop). |
 
 ## Runtime configuration (hot reload)
 

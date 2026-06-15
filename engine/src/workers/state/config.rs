@@ -61,15 +61,19 @@ impl Default for StateModuleConfig {
 
 impl StateModuleConfig {
     /// Normalize a freshly-loaded config. Runs on every load path (static
-    /// block, seed, or a value read back from the configuration worker): zero
-    /// numeric knobs fall back to `None` (their built-in defaults) so a stale
-    /// or hand-edited `0` neither rejects every write nor busy-loops the save
-    /// loop. The JSON Schema rejects out-of-range values at `configuration::set`
-    /// time; this guards values that bypass it (yaml / hand-edited adapter
-    /// files).
+    /// block, seed, or a value read back from the configuration worker):
+    /// out-of-range numeric knobs fall back to `None` (their built-in defaults)
+    /// so a stale or hand-edited value neither rejects every write nor
+    /// busy-loops the save loop. The JSON Schema rejects out-of-range values at
+    /// `configuration::set` time; this re-applies the same bounds to values that
+    /// bypass it (yaml / hand-edited persisted files). `save_interval_ms` is
+    /// held to the schema's `[100, 3_600_000]` range so a hand-edited `1` can't
+    /// drive a 1ms flush loop.
     pub fn normalized(mut self) -> Self {
         self.max_value_bytes = self.max_value_bytes.filter(|&n| n > 0);
-        self.save_interval_ms = self.save_interval_ms.filter(|&n| n > 0);
+        self.save_interval_ms = self
+            .save_interval_ms
+            .filter(|&n| (100..=3_600_000).contains(&n));
         self
     }
 }

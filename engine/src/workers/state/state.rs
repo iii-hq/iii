@@ -54,9 +54,6 @@ pub struct StateWorker {
     /// first-time `configuration::register` and the fetch fallback; the
     /// configuration worker entry is the runtime source of truth afterwards.
     seed: StateModuleConfig,
-    /// Shutdown signal sender for background tasks (kept for symmetry with the
-    /// other workers and future state background work).
-    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// The live worker shutdown receiver, stored by `start_background_tasks`
     /// so `apply_config` can refuse the adapter task-rebuild tier once the
     /// worker is gone. `None` until started / after destroy.
@@ -183,9 +180,6 @@ impl Worker for StateWorker {
                 .take();
         }
 
-        // Signal background tasks (kept for symmetry / future work).
-        let _ = self.shutdown_tx.send(true);
-
         self.adapter.destroy().await?;
         Ok(())
     }
@@ -229,7 +223,19 @@ impl ConfigurableWorker for StateWorker {
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
-        config.adapter.as_ref().and_then(|a| a.config.clone())
+        let mut adapter_config = config.adapter.as_ref().and_then(|a| a.config.clone());
+        // The top-level `save_interval_ms` is the authoritative cadence knob.
+        // Fold it into the adapter config blob the kv store is built from so the
+        // boot-constructed save loop honors it (otherwise the adapter would read
+        // only its inner `adapter.config.save_interval_ms` and the top-level
+        // value would not take effect until a runtime reconfigure).
+        if let Some(interval) = config.save_interval_ms {
+            let entry = adapter_config.get_or_insert_with(|| Value::Object(Default::default()));
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("save_interval_ms".to_string(), Value::from(interval));
+            }
+        }
+        adapter_config
     }
 }
 
@@ -255,8 +261,8 @@ fn state_trigger_matches(
 }
 
 impl StateWorker {
-    /// Construct a worker from a parsed config and a ready adapter, publishing
-    /// the normalized config to the global snapshot so the live gates
+    /// Construct a worker from a parsed config and a ready adapter, storing the
+    /// normalized config in the per-worker config cell so the live gates
     /// (`triggers_enabled`, `max_value_bytes`) observe the effective config
     /// immediately — before `start_background_tasks` runs the adoption apply.
     fn from_config(
@@ -265,14 +271,12 @@ impl StateWorker {
         adapter: Arc<dyn StateAdapter>,
     ) -> Self {
         let seed = config.normalized();
-        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             adapter,
             engine,
             triggers: Arc::new(StateTriggers::new()),
             config: Arc::new(SyncRwLock::new(Arc::new(seed.clone()))),
             seed,
-            shutdown_tx: Arc::new(shutdown_tx),
             worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
@@ -400,8 +404,12 @@ impl StateWorker {
     /// Register the `iii-state::on-config-change` handler. Idempotent
     /// (replace-by-id), so it is safe to call from both `register_functions`
     /// (worker scope, for destroy/reload cleanup) and `start_background_tasks`
-    /// (which registers the trigger). Marked `internal` so it stays out of
-    /// user-facing function listings.
+    /// (which registers the trigger). Tagged `metadata.internal = true`: this is
+    /// surfaced by `engine::functions::info` and is forward-compatible with a
+    /// metadata-aware listing filter, but the current default listing filter
+    /// hides rows by the `engine::` function-id prefix, so this handler (and the
+    /// `iii-state::config-watch` trigger) are still listed by default — the
+    /// handler is, by design, a discoverable bus function.
     fn register_config_handler(&self, engine: &Arc<Engine>) {
         let worker = self.clone();
         engine.register_function_handler(
@@ -1029,6 +1037,42 @@ mod tests {
             .expect("worker_shutdown_rx mutex")
             .take();
         assert!(!module.is_active());
+    }
+
+    #[test]
+    fn adapter_config_folds_top_level_save_interval() {
+        // The authoritative top-level save_interval_ms is injected into the
+        // adapter config blob so the boot-constructed kv store honors it.
+        let config = StateModuleConfig {
+            adapter: Some(crate::workers::traits::AdapterEntry {
+                name: "kv".to_string(),
+                config: Some(serde_json::json!({ "store_method": "file_based" })),
+            }),
+            save_interval_ms: Some(750),
+            ..Default::default()
+        };
+        let adapter_config =
+            <StateWorker as ConfigurableWorker>::adapter_config_from_config(&config)
+                .expect("adapter config present");
+        assert_eq!(adapter_config["save_interval_ms"], 750);
+        assert_eq!(adapter_config["store_method"], "file_based");
+    }
+
+    #[test]
+    fn adapter_config_injects_save_interval_without_inner_block() {
+        // Even when the adapter has no inner config, the top-level knob lands.
+        let config = StateModuleConfig {
+            adapter: Some(crate::workers::traits::AdapterEntry {
+                name: "kv".to_string(),
+                config: None,
+            }),
+            save_interval_ms: Some(900),
+            ..Default::default()
+        };
+        let adapter_config =
+            <StateWorker as ConfigurableWorker>::adapter_config_from_config(&config)
+                .expect("adapter config present");
+        assert_eq!(adapter_config["save_interval_ms"], 900);
     }
 
     fn register_panic_handler(engine: &Arc<Engine>) {

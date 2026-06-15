@@ -194,10 +194,13 @@ pub async fn register_config_trigger(engine: &Engine) -> anyhow::Result<()> {
 /// knob survives engine restarts. Falls back to the yaml block on a fresh boot,
 /// an unreadable/missing file, or a malformed persisted value.
 ///
-/// Because the first boot seeds the configuration entry from the yaml block
-/// (`register_config`), the persisted value carries the yaml's `adapter`
-/// selection forward — so "persisted replaces yaml" never silently drops the
-/// configured storage backend.
+/// The storage `adapter` is restart-authoritative and must never be silently
+/// dropped. `configuration::set` replaces the entire stored value (no merge),
+/// so a partial edit that omits `adapter` (e.g. `set iii-state {max_value_bytes:
+/// 4096}`) would otherwise leave an adapter-less persisted value that demotes a
+/// file/redis backend to the default in-memory kv on the next boot — silent
+/// data loss. To prevent that, when the persisted value carries no `adapter`
+/// but the config.yaml block does, the yaml adapter is carried forward.
 ///
 /// Limitation: state's `create` does not receive the `EngineConfig`, so a
 /// non-default `configuration` adapter directory is not discoverable here. The
@@ -211,11 +214,28 @@ pub(super) fn resolve_boot_config(yaml_block: Option<Value>) -> Option<Value> {
 /// Directory-parameterized core of [`resolve_boot_config`], so the boot-read can
 /// be unit-tested against a tempdir instead of the process-wide default path.
 fn resolve_boot_config_from(dir: &Path, yaml_block: Option<Value>) -> Option<Value> {
-    let Some(persisted) = read_persisted_state_value_from(dir) else {
+    let Some(mut persisted) = read_persisted_state_value_from(dir) else {
         return yaml_block;
     };
     match serde_json::from_value::<StateModuleConfig>(persisted.clone()) {
-        Ok(_) => {
+        Ok(parsed) => {
+            // Carry the config.yaml adapter forward when the persisted value
+            // dropped it (partial set), so the configured storage backend
+            // survives instead of falling back to the default in-memory kv.
+            if parsed.adapter.is_none()
+                && let Some(yaml_adapter) = yaml_block
+                    .as_ref()
+                    .and_then(|b| b.get("adapter"))
+                    .filter(|a| !a.is_null())
+                    .cloned()
+                && let Some(obj) = persisted.as_object_mut()
+            {
+                obj.insert("adapter".to_string(), yaml_adapter);
+                tracing::warn!(
+                    "persisted iii-state value has no `adapter`; carrying the config.yaml \
+                     adapter forward so the configured storage backend is not dropped"
+                );
+            }
             tracing::info!(
                 "Using persisted iii-state configuration entry (config.yaml block is seed-only)"
             );
@@ -486,6 +506,43 @@ mod tests {
             resolve_boot_config_from(dir.path(), yaml.clone()),
             yaml,
             "malformed persisted value must fall back to the yaml block"
+        );
+    }
+
+    #[test]
+    fn boot_read_carries_yaml_adapter_when_persisted_omits_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // A partial `configuration::set` dropped the adapter from the value.
+        write_entry(dir.path(), json!({ "max_value_bytes": 4096 }));
+
+        let yaml = Some(json!({
+            "adapter": {
+                "name": "kv",
+                "config": { "store_method": "file_based", "file_path": "./data/state_store" }
+            }
+        }));
+        let resolved = resolve_boot_config_from(dir.path(), yaml).expect("persisted present");
+        // The runtime edit is preserved...
+        assert_eq!(resolved["max_value_bytes"], 4096);
+        // ...and the yaml adapter is carried forward, so the configured backend
+        // is NOT silently demoted to the default in-memory kv.
+        assert_eq!(resolved["adapter"]["name"], "kv");
+        assert_eq!(resolved["adapter"]["config"]["store_method"], "file_based");
+    }
+
+    #[test]
+    fn boot_read_keeps_persisted_adapter_over_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        // The persisted value carries its own adapter (a runtime adapter edit).
+        write_entry(
+            dir.path(),
+            json!({ "adapter": { "name": "redis", "config": { "redis_url": "redis://persisted" } } }),
+        );
+        let yaml = Some(json!({ "adapter": { "name": "kv" } }));
+        let resolved = resolve_boot_config_from(dir.path(), yaml).expect("persisted present");
+        assert_eq!(
+            resolved["adapter"]["name"], "redis",
+            "the persisted adapter must win when present (not overwritten by yaml)"
         );
     }
 }
