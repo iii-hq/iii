@@ -13,7 +13,7 @@
 //! - `otlp`: Export traces to an OTLP collector via gRPC
 //! - `memory`: Store traces in memory for API querying
 
-use super::config::{ObservabilityWorkerConfig, OtelExporterType};
+use super::config::{LogsExporterType, ObservabilityWorkerConfig, OtelExporterType};
 use super::otlp_exporter::build_span_exporter;
 use super::sampler::AdvancedSampler;
 use opentelemetry::propagation::{TextMapCompositePropagator, TextMapPropagator};
@@ -3390,6 +3390,26 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+/// Get the logs exporter type from config.
+#[deprecated(
+    since = "0.19.0",
+    note = "Resolve the exporter type from ObservabilityWorkerConfig directly; this helper is kept for backward compatibility"
+)]
+pub fn get_logs_exporter_type() -> LogsExporterType {
+    get_otel_config()
+        .and_then(|cfg| cfg.logs_exporter.clone())
+        .or_else(|| {
+            env::var("OTEL_LOGS_EXPORTER")
+                .ok()
+                .map(|v| match v.to_lowercase().as_str() {
+                    "otlp" => LogsExporterType::Otlp,
+                    "both" => LogsExporterType::Both,
+                    _ => LogsExporterType::Memory,
+                })
+        })
+        .unwrap_or(LogsExporterType::Memory)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3500,7 +3520,14 @@ mod tests {
         use opentelemetry_sdk::trace::ShouldSample;
 
         let sampler = DynamicSampler::new(Sampler::AlwaysOff);
-        let drop = sampler.should_sample(None, TraceId::from_bytes([1u8; 16]), "op", &SpanKind::Internal, &[], &[]);
+        let drop = sampler.should_sample(
+            None,
+            TraceId::from_bytes([1u8; 16]),
+            "op",
+            &SpanKind::Internal,
+            &[],
+            &[],
+        );
         assert!(
             matches!(drop.decision, SamplingDecision::Drop),
             "AlwaysOff inner must drop"
@@ -3508,7 +3535,14 @@ mod tests {
 
         // Hot-swap the inner sampler; the same handle observes the new policy.
         sampler.swap(Sampler::AlwaysOn);
-        let keep = sampler.should_sample(None, TraceId::from_bytes([2u8; 16]), "op", &SpanKind::Internal, &[], &[]);
+        let keep = sampler.should_sample(
+            None,
+            TraceId::from_bytes([2u8; 16]),
+            "op",
+            &SpanKind::Internal,
+            &[],
+            &[],
+        );
         assert!(
             matches!(keep.decision, SamplingDecision::RecordAndSample),
             "after swap to AlwaysOn the same sampler must record-and-sample"
@@ -3517,8 +3551,14 @@ mod tests {
         // A clone shares the same inner Arc, so it sees swaps too.
         let cloned = sampler.clone();
         sampler.swap(Sampler::AlwaysOff);
-        let drop_again =
-            cloned.should_sample(None, TraceId::from_bytes([3u8; 16]), "op", &SpanKind::Internal, &[], &[]);
+        let drop_again = cloned.should_sample(
+            None,
+            TraceId::from_bytes([3u8; 16]),
+            "op",
+            &SpanKind::Internal,
+            &[],
+            &[],
+        );
         assert!(
             matches!(drop_again.decision, SamplingDecision::Drop),
             "a clone must observe the swap through the shared inner"

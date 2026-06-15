@@ -1056,6 +1056,12 @@ impl ObservabilityWorker {
     ///   boot).
     pub(crate) async fn apply_config(&self) -> anyhow::Result<()> {
         let _guard = self.apply_lock.lock().await;
+        if !self.is_active() {
+            tracing::debug!(
+                "iii-observability: worker no longer active; skipping configuration apply"
+            );
+            return Ok(());
+        }
 
         let old = self.current_config();
         let new = tokio::time::timeout(
@@ -1229,27 +1235,15 @@ impl ObservabilityWorker {
     /// in the LIMITS tier, can respawn this without an engine restart. Follows
     /// both its per-instance stop signal and the worker shutdown signal.
     fn spawn_log_trigger_subscriber(&self) {
-        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-        // Hold the previous instance's stop sender and signal it only once the
-        // new receiver has subscribed (or immediately on the early-return
-        // paths). Stopping it before the new receiver subscribes would drop log
-        // broadcasts in the handoff gap — same ordering as spawn_logs_exporter.
-        let previous = self
-            .logs_trigger_stop
-            .lock()
-            .expect("logs_trigger_stop mutex poisoned")
-            .replace(stop_tx);
-        let stop_previous = move || {
-            if let Some(previous) = previous {
-                let _ = previous.send(true);
-            }
-        };
-
+        // Verify the prerequisites first so we never stop the previous
+        // subscriber without replacing it. A `logs_enabled` false->true toggle
+        // creates log storage in the LIMITS tier before this is called, so the
+        // early returns here are only hit when the worker is destroyed or the
+        // store was never initialized.
         let Some(storage) = otel::get_log_storage() else {
             tracing::debug!(
                 "[ObservabilityWorker] Log storage not available; log trigger subscriber not started"
             );
-            stop_previous();
             return;
         };
         let Some(mut shutdown_rx) = self
@@ -1258,17 +1252,25 @@ impl ObservabilityWorker {
             .expect("worker_shutdown_rx mutex poisoned")
             .clone()
         else {
-            stop_previous();
             return;
         };
 
-        let triggers = self.triggers.clone();
-        let engine = self.engine.clone();
-        // Subscribe BEFORE stopping the old instance so the handoff window
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        // Subscribe BEFORE replacing the old stop sender so the handoff window
         // carries bounded duplicates (the broadcast reaches every live receiver
         // and `log` trigger delivery is at-least-once) rather than dropped logs.
         let mut rx = storage.subscribe();
-        stop_previous();
+        let previous = self
+            .logs_trigger_stop
+            .lock()
+            .expect("logs_trigger_stop mutex poisoned")
+            .replace(stop_tx);
+        if let Some(previous) = previous {
+            let _ = previous.send(true);
+        }
+
+        let triggers = self.triggers.clone();
+        let engine = self.engine.clone();
 
         tokio::spawn(async move {
             tracing::debug!("[ObservabilityWorker] Log trigger subscriber started");
@@ -3353,21 +3355,27 @@ mod tests {
     #[test]
     fn is_active_reflects_worker_shutdown_rx() {
         let module = make_test_module(Arc::new(Engine::new()));
-        assert!(!module.is_active(), "for_test/make_test_module leaves rx None");
+        assert!(
+            !module.is_active(),
+            "for_test/make_test_module leaves rx None"
+        );
 
         let (_tx, rx) = tokio::sync::watch::channel(false);
         *module
             .worker_shutdown_rx
             .lock()
-            .expect("worker_shutdown_rx mutex") = Some(rx);
+            .expect("worker_shutdown_rx mutex poisoned") = Some(rx);
         assert!(module.is_active(), "set receiver -> active");
 
         module
             .worker_shutdown_rx
             .lock()
-            .expect("worker_shutdown_rx mutex")
+            .expect("worker_shutdown_rx mutex poisoned")
             .take();
-        assert!(!module.is_active(), "destroy clears the receiver -> inactive");
+        assert!(
+            !module.is_active(),
+            "destroy clears the receiver -> inactive"
+        );
     }
 
     #[tokio::test]
@@ -3485,7 +3493,11 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        assert_eq!(all_hits.load(Ordering::SeqCst), 1, "level=all must fire on WARN");
+        assert_eq!(
+            all_hits.load(Ordering::SeqCst),
+            1,
+            "level=all must fire on WARN"
+        );
         assert_eq!(
             error_hits.load(Ordering::SeqCst),
             0,

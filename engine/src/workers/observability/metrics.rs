@@ -1757,40 +1757,37 @@ impl AlertManager {
 
     /// Get current state of all alerts
     pub fn get_states(&self) -> Vec<AlertState> {
-        let live = self.live_rule_names();
         self.states
             .read()
             .unwrap()
             .values()
-            .filter(|s| live.contains(&s.name))
+            .filter(|s| self.is_live_rule(&s.name))
             .cloned()
             .collect()
     }
 
     /// Get alerts that are currently firing
     pub fn get_firing_alerts(&self) -> Vec<AlertState> {
-        let live = self.live_rule_names();
         self.states
             .read()
             .unwrap()
             .values()
-            .filter(|s| s.firing && live.contains(&s.name))
+            .filter(|s| s.firing && self.is_live_rule(&s.name))
             .cloned()
             .collect()
     }
 
-    /// Names of the currently-configured rules. Used to filter out states
-    /// for rules that were removed at runtime — `update_rules` prunes them,
-    /// but a concurrent in-flight `evaluate` (which snapshots the rules then
-    /// re-inserts state per rule) can resurrect a removed rule's state; this
-    /// read-side filter keeps such a straggler out of `engine::alerts::list`.
-    fn live_rule_names(&self) -> std::collections::HashSet<String> {
+    /// True if `name` matches a currently-configured rule. Used to filter out
+    /// states for rules that were removed at runtime — `update_rules` prunes
+    /// them, but a concurrent in-flight `evaluate` (which snapshots the rules
+    /// then re-inserts state per rule) can resurrect a removed rule's state;
+    /// this read-side check keeps such a straggler out of `engine::alerts::list`.
+    fn is_live_rule(&self, name: &str) -> bool {
         self.rules
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
-            .map(|r| r.name.clone())
-            .collect()
+            .any(|r| r.name == name)
     }
 }
 

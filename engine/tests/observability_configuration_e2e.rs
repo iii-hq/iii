@@ -126,6 +126,23 @@ async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
     }
 }
 
+/// Poll for `duration` and panic if `predicate` becomes true. Use this for
+/// negative assertions where an event must *not* happen after a config change
+/// has already been driven through `drive_apply`.
+async fn assert_does_not_happen_for(
+    mut predicate: impl FnMut() -> bool,
+    duration: Duration,
+    what: &str,
+) {
+    let deadline = tokio::time::Instant::now() + duration;
+    while tokio::time::Instant::now() < deadline {
+        if predicate() {
+            panic!("{what}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 #[tokio::test]
 #[serial]
 async fn first_boot_seeds_configuration_entry() {
@@ -437,7 +454,10 @@ fn clear_log_storage() {
 async fn ingest_log(harness: &Harness, level_fn: &str, message: &str) {
     harness
         .engine
-        .call(level_fn, json!({ "message": message, "service_name": "e2e" }))
+        .call(
+            level_fn,
+            json!({ "message": message, "service_name": "e2e" }),
+        )
         .await
         .expect("log ingest call");
 }
@@ -466,12 +486,12 @@ async fn logs_reenable_reactivates_the_log_trigger_pipeline() {
     // While disabled, the ingest gate drops the log before any broadcast, so
     // the trigger never fires.
     ingest_log(&harness, "engine::log::info", "while-disabled").await;
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(
-        hits.load(Ordering::SeqCst),
-        0,
-        "logs disabled: the trigger must not fire"
-    );
+    assert_does_not_happen_for(
+        || hits.load(Ordering::SeqCst) > 0,
+        Duration::from_millis(150),
+        "log trigger fired while logs were disabled",
+    )
+    .await;
 
     // Enable logs at runtime; the F3 reactivation path revives the store in the
     // LIMITS tier and respawns the log-trigger subscriber.
@@ -521,12 +541,12 @@ async fn logs_disable_after_enable_stops_trigger_delivery() {
     .await;
 
     ingest_log(&harness, "engine::log::info", "disabled-2").await;
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(
-        hits.load(Ordering::SeqCst),
-        after_enabled,
-        "logs disabled at runtime: the trigger must stop firing"
-    );
+    assert_does_not_happen_for(
+        || hits.load(Ordering::SeqCst) > after_enabled,
+        Duration::from_millis(150),
+        "log trigger fired after logs were disabled at runtime",
+    )
+    .await;
 }
 
 #[tokio::test]
