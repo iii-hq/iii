@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>iii / privacy policy</title>
+
+    <!-- Google Tag Manager -->
+    <script>
+      (function (w, d, s, l, i) {
+        w[l] = w[l] || [];
+        w[l].push({ "gtm.start": new Date().getTime(), event: "gtm.js" });
+        var f = d.getElementsByTagName(s)[0],
+          j = d.createElement(s),
+          dl = l != "dataLayer" ? "&l=" + l : "";
+        j.async = true;
+        j.src = "https://www.googletagmanager.com/gtm.js?id=" + i + dl;
+        f.parentNode.insertBefore(j, f);
+      })(window, document, "script", "dataLayer", "GTM-N8DCTFB8");
+    </script>
+    <!-- End Google Tag Manager -->
+
+    <!-- Common Room: loads only after analytics consent (see cookie banner below) -->
+    <script>
+      (function () {
+        var STORAGE_KEY = "iii_cookie_consent";
+        window.iiiLoadCommonRoomSignals = function () {
+          if (typeof window.signals !== "undefined") return;
+          var script = document.createElement("script");
+          script.src =
+            "https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js";
+          script.async = true;
+          window.signals = Object.assign(
+            [],
+            { _opts: { apiHost: "https://api.cr-relay.com" } },
+            ["page", "identify", "form"].reduce(function (acc, method) {
+              acc[method] = function () {
+                signals.push([method, arguments]);
+                return signals;
+              };
+              return acc;
+            }, {}),
+          );
+          document.head.appendChild(script);
+        };
+        window.iiiNotifyCommonRoomEmail = function (email) {
+          try {
+            if (!email || localStorage.getItem(STORAGE_KEY) !== "accepted") return;
+            if (typeof window.signals === "undefined" || !window.signals.form) return;
+            window.signals.form({ email: email });
+          } catch (_) {}
+        };
+        try {
+          if (localStorage.getItem(STORAGE_KEY) === "accepted") window.iiiLoadCommonRoomSignals();
+        } catch (_) {}
+      })();
+    </script>
+    <script src="/posthog-consent.js"></script>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+
+    <!-- SEO Meta Tags -->
+    <meta
+      name="description"
+      content="The iii privacy policy. How we collect, use, and protect your information — minimal data collection, anonymized analytics, and no selling of personal data."
+    />
+    <meta
+      name="keywords"
+      content="iii, privacy policy, data protection, analytics, telemetry, data security, GDPR, developer privacy"
+    />
+    <meta name="author" content="Motia LLC" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <link rel="canonical" href="https://iii.dev/privacy-policy" />
+    <meta name="robots" content="index,follow" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="article" />
+    <meta property="og:url" content="https://iii.dev/privacy-policy" />
+    <meta property="og:title" content="iii / privacy policy" />
+    <meta
+      property="og:description"
+      content="How iii collects, uses, and protects your information — minimal data collection, anonymized analytics, and no selling of personal data."
+    />
+    <meta property="og:image" content="https://iii.dev/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="https://iii.dev/privacy-policy" />
+    <meta name="twitter:title" content="iii / privacy policy" />
+    <meta
+      name="twitter:description"
+      content="Privacy is a core value. We collect only what's necessary, anonymize analytics, and never sell your personal data."
+    />
+    <meta name="twitter:image" content="https://iii.dev/og-image.png" />
+    <style>
+      @font-face {
+        font-family: "Chivo Mono";
+        src: url("fonts/ChivoMono-VariableFont_wght.ttf") format("truetype-variations");
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Chivo Mono";
+        src: url("fonts/ChivoMono-Italic-VariableFont_wght.ttf") format("truetype-variations");
+        font-weight: 100 900;
+        font-style: italic;
+        font-display: swap;
+      }
+    </style>
+    <script>
+      // Theme detection: stored preference > system preference > light
+      (function () {
+        var THEME_KEY = "iii_theme";
+        var stored = null;
+        try {
+          stored = localStorage.getItem(THEME_KEY);
+        } catch (e) {}
+        var prefersDark =
+          stored === "dark" ||
+          (stored === null && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        if (prefersDark) {
+          document.documentElement.dataset.theme = "dark";
+          document.documentElement.style.cssText =
+            "--bg:#111110;--panel:#1a1916;--ink:#f2f0ed;--ink-2:#e2dfd9;--ink-soft:#e2dfd9;--ink-faint:#9c9893;--ink-ghost:#5d5a55;--mute:#9c9893;--mute-2:#5d5a55;--rule:#2a2926;--rule-2:#1f1e1c;--accent:#3ea8ff;--accent-2:#ff5a1f";
+        }
+        window.__iiiThemeInit = prefersDark;
+      })();
+    </script>
+    <style>
+      :root {
+        --bg: #f5f3ee;
+        --panel: #e9e6e2;
+        --ink: #0a0a0a;
+        --ink-2: #1a1a1a;
+        --ink-soft: #1a1a1a;
+        --ink-faint: #6b6865;
+        --ink-ghost: #a3a09c;
+        --mute: #6b6865;
+        --mute-2: #a3a09c;
+        --rule: #d8d4cb;
+        --rule-2: #e6e3df;
+        --accent: #ff5a1f;
+        --accent-2: #1a5fbf;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 400;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      * {
+        font-variant-ligatures: none;
+        font-feature-settings:
+          "liga" 0,
+          "clig" 0,
+          "calt" 0,
+          "dlig" 0;
+      }
+      ::selection {
+        background: var(--ink);
+        color: var(--bg);
+      }
+
+      .page {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .sheet {
+        position: relative;
+        width: min(1200px, 100%);
+        background: var(--bg);
+        border-left: 1px solid var(--rule);
+        border-right: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+      }
+
+      /* ===== NAV ===== */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: var(--bg);
+        border-bottom: 1px solid var(--rule);
+        padding: 18px 28px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .logo-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        text-decoration: none;
+        color: var(--ink);
+      }
+      .logo-mark {
+        width: 24px;
+        height: 24px;
+        color: var(--ink);
+        flex: none;
+      }
+      .logo-mark rect {
+        fill: currentColor;
+      }
+      .logo-word {
+        font-weight: 600;
+        font-size: 17px;
+        letter-spacing: -0.02em;
+        color: var(--ink);
+        text-transform: lowercase;
+        line-height: 1;
+      }
+      .nav-mid {
+        font-size: 14px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .nav-mid .dot {
+        width: 5px;
+        height: 5px;
+        background: var(--accent);
+        display: inline-block;
+      }
+      .nav-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .nav-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--rule);
+        background: var(--bg);
+        padding: 7px 12px;
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 500;
+        font-size: 12px;
+        color: var(--ink);
+        text-decoration: none;
+        transition:
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .nav-back:hover {
+        border-color: var(--ink);
+        background: var(--panel);
+      }
+      .nav-back svg {
+        width: 12px;
+        height: 12px;
+      }
+      .theme-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border: 1px solid var(--rule);
+        background: var(--bg);
+        color: var(--ink-faint);
+        cursor: pointer;
+        transition:
+          color 0.15s,
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .theme-btn:hover {
+        color: var(--ink);
+        border-color: var(--ink);
+      }
+      .theme-btn svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      /* ===== HERO ===== */
+      .hero {
+        padding: 96px 36px 56px;
+        border-bottom: 1px solid var(--rule);
+        position: relative;
+      }
+      .hero-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin-bottom: 28px;
+      }
+      .hero-eyebrow .ix {
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+        display: inline-block;
+      }
+      .hero-title {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        margin: 0;
+        font-weight: 500;
+        font-size: clamp(34px, 5.4vw, 64px);
+        line-height: 1.07;
+        letter-spacing: -0.035em;
+        text-transform: none;
+        color: var(--ink-2);
+        max-width: 1080px;
+        text-wrap: balance;
+      }
+      .hero-lede {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 400;
+        font-size: 15px;
+        line-height: 1.7;
+        color: var(--ink-2);
+        margin: 28px 0 0;
+        max-width: 680px;
+        text-wrap: pretty;
+      }
+      .hero-lede .accent {
+        color: var(--accent);
+        font-weight: 500;
+      }
+
+      /* ===== POLICY SECTIONS ===== */
+      .doc {
+        padding: 0;
+      }
+      .doc-sec {
+        padding: 48px 36px;
+        border-bottom: 1px solid var(--rule);
+      }
+      .doc-sec:last-of-type {
+        border-bottom: 0;
+      }
+      .doc-sec.callout {
+        background: var(--panel);
+        border-left: 3px solid var(--accent);
+      }
+      .doc-title {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 500;
+        font-size: clamp(20px, 2.4vw, 26px);
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+        color: var(--ink-2);
+        margin: 0 0 18px;
+        max-width: 920px;
+        text-transform: none;
+        text-wrap: pretty;
+      }
+      .doc-body {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 1.75;
+        color: var(--ink-2);
+        margin: 0;
+        max-width: 720px;
+        text-wrap: pretty;
+      }
+      .doc-body + .doc-body {
+        margin-top: 16px;
+      }
+      .doc-body .accent {
+        color: var(--accent);
+        font-weight: 500;
+      }
+      .doc-code {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        border-left: 3px solid var(--accent);
+        color: var(--ink);
+        padding: 14px 16px;
+        margin: 16px 0 0;
+        max-width: 720px;
+        overflow-x: auto;
+        white-space: pre;
+      }
+      .doc-code code {
+        font-family: inherit;
+        color: inherit;
+      }
+      .doc-inline {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-size: 0.9em;
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        border-radius: 3px;
+        padding: 0.05em 0.34em;
+        color: var(--ink);
+      }
+      .doc-list {
+        list-style: none;
+        margin: 18px 0 0;
+        padding: 0;
+        max-width: 720px;
+      }
+      .doc-list li {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-size: 14px;
+        line-height: 1.7;
+        color: var(--ink-2);
+        padding-left: 20px;
+        position: relative;
+        margin-bottom: 12px;
+      }
+      .doc-list li::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.62em;
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+      }
+      .doc-list li b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .doc-contact {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-size: 14px;
+        line-height: 1.75;
+        color: var(--ink-2);
+        max-width: 720px;
+      }
+      .doc-contact a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .doc-contact a:hover {
+        text-decoration: underline;
+      }
+      .doc-updated {
+        margin-top: 18px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        color: var(--ink-faint);
+      }
+
+      /* ===== PAGE FOOT ===== */
+      .pfoot {
+        padding: 32px 36px;
+        border-top: 1px solid var(--rule);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .pfoot a {
+        color: var(--ink-faint);
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+      }
+      .pfoot a:hover {
+        color: var(--ink);
+      }
+      .pfoot a svg {
+        width: 11px;
+        height: 11px;
+      }
+
+      @media (max-width: 720px) {
+        .nav {
+          padding: 14px 16px;
+          gap: 12px;
+        }
+        .nav-mid {
+          display: none;
+        }
+        .hero {
+          padding: 64px 18px 44px;
+        }
+        .doc-sec {
+          padding: 40px 18px;
+        }
+        .pfoot {
+          padding: 24px 18px;
+        }
+      }
+
+      .cookie-consent-wrap {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 10050;
+        padding: 16px;
+        display: flex;
+        justify-content: center;
+        box-sizing: border-box;
+        pointer-events: none;
+      }
+      .cookie-consent-wrap:not([hidden]) {
+        pointer-events: auto;
+      }
+      .cookie-consent-panel {
+        pointer-events: auto;
+        max-width: 36rem;
+        width: 100%;
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        border-radius: 10px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+        padding: 18px 20px;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--ink-faint);
+        font-family: "Chivo Mono", ui-monospace, monospace;
+      }
+      .cookie-consent-panel .cc-strong {
+        color: var(--ink-soft);
+      }
+      .cookie-consent-actions {
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      .cookie-consent-actions button {
+        font-family: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        border-radius: 6px;
+        padding: 8px 14px;
+      }
+      .cookie-consent-actions .cc-decline {
+        border: 1px solid var(--rule);
+        background: transparent;
+        color: var(--ink-soft);
+      }
+      .cookie-consent-actions .cc-decline:hover {
+        border-color: var(--ink-ghost);
+        color: var(--ink);
+      }
+      .cookie-consent-actions .cc-accept {
+        border: none;
+        background: var(--accent);
+        color: var(--bg);
+        font-weight: 600;
+      }
+      .cookie-consent-actions .cc-accept:hover {
+        filter: brightness(1.06);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript
+      ><iframe
+        src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8"
+        height="0"
+        width="0"
+        style="display: none; visibility: hidden"
+      ></iframe
+    ></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+
+    <div id="cookie-consent-banner" class="cookie-consent-wrap" hidden>
+      <div class="cookie-consent-panel">
+        <p style="margin: 0">
+          This site uses cookies to understand how visitors find us.
+          <span class="cc-strong">You can accept or decline non-essential cookies.</span>
+        </p>
+        <div class="cookie-consent-actions">
+          <button type="button" class="cc-decline" data-consent-reject>Decline</button>
+          <button type="button" class="cc-accept" data-consent-accept>Accept</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var STORAGE_KEY = "iii_cookie_consent";
+        var banner = document.getElementById("cookie-consent-banner");
+        if (!banner) return;
+        try {
+          var stored = localStorage.getItem(STORAGE_KEY);
+          if (stored === "accepted" || stored === "rejected") {
+            banner.remove();
+            return;
+          }
+        } catch (_) {}
+        banner.removeAttribute("hidden");
+        var accept = banner.querySelector("[data-consent-accept]");
+        var reject = banner.querySelector("[data-consent-reject]");
+        if (accept) {
+          accept.addEventListener("click", function () {
+            try {
+              localStorage.setItem(STORAGE_KEY, "accepted");
+            } catch (_) {}
+            banner.remove();
+            if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
+            if (window.iiiLoadPostHog) window.iiiLoadPostHog();
+          });
+        }
+        if (reject) {
+          reject.addEventListener("click", function () {
+            try {
+              localStorage.setItem(STORAGE_KEY, "rejected");
+            } catch (_) {}
+            banner.remove();
+          });
+        }
+      })();
+    </script>
+
+    <div class="page">
+      <main class="sheet">
+        <!-- NAV -->
+        <nav class="nav">
+          <a class="logo-link" href="/" aria-label="iii home">
+            <svg
+              class="logo-mark"
+              viewBox="0 0 1075.74 1075.74"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <rect x="0" y="0.05" width="268.94" height="268.94" />
+              <rect x="0" y="403.45" width="268.94" height="672.24" />
+              <rect x="403.4" y="0.05" width="268.94" height="268.94" />
+              <rect x="403.4" y="403.45" width="268.94" height="672.24" />
+              <rect x="806.81" y="0.05" width="268.94" height="268.94" />
+              <rect x="806.81" y="403.45" width="268.94" height="672.24" />
+            </svg>
+          </a>
+          <div class="nav-mid">
+            <span>privacy policy</span>
+          </div>
+          <div class="nav-right">
+            <a class="nav-back" href="/">
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M10 3 L5 8 L10 13" />
+              </svg>
+              back
+            </a>
+            <button id="theme-btn" class="theme-btn" aria-label="Toggle theme">
+              <svg
+                id="theme-icon"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z" />
+              </svg>
+            </button>
+          </div>
+        </nav>
+
+        <!-- HERO -->
+        <header class="hero">
+          <div class="hero-eyebrow"><span class="ix"></span>privacy policy</div>
+          <h1 class="hero-title">your data, on your terms.</h1>
+          <p class="hero-lede">
+            Privacy is fundamental to how we build iii. This policy explains how we
+            <span class="accent">collect, use, and protect</span> your information.
+          </p>
+        </header>
+
+        <!-- POLICY -->
+        <article class="doc">
+          <section class="doc-sec">
+            <h2 class="doc-title">Information we collect</h2>
+            <p class="doc-body">
+              We collect information to provide better services to all our users. The information we
+              collect falls into <span class="accent">three main categories</span>: account
+              information, usage analytics, and support communications.
+            </p>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">Account information</h2>
+            <p class="doc-body">When you create an iii account, we collect:</p>
+            <ul class="doc-list">
+              <li>
+                <b>Basic profile data:</b> Email address, name, and account details and preferences.
+              </li>
+              <li>
+                <b>Billing information:</b> Payment details for paid plans (processed securely by
+                third-party providers).
+              </li>
+              <li>
+                <b>Project metadata:</b> Project names, configurations, and deployment settings.
+              </li>
+            </ul>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">Usage analytics</h2>
+            <p class="doc-body">
+              To improve iii, we collect <span class="accent">completely anonymized usage
+              analytics</span>. This includes command usage patterns, performance metrics, and error
+              frequencies. No personal information is collected unless you provide it. All analytics
+              data is aggregated and cannot be traced back to individual users.
+            </p>
+            <p class="doc-body">
+              <span class="accent">You can opt out at any time.</span> To disable anonymous usage
+              data collection by the iii engine, set the following environment variable before
+              running iii:
+            </p>
+            <pre class="doc-code"><code>export III_TELEMETRY_ENABLED=false</code></pre>
+            <p class="doc-body">
+              To make it permanent, add it to your shell profile (e.g.
+              <code class="doc-inline">~/.zshrc</code> or <code class="doc-inline">~/.bashrc</code>):
+            </p>
+            <pre class="doc-code"><code>echo 'export III_TELEMETRY_ENABLED=false' >> ~/.zshrc
+source ~/.zshrc</code></pre>
+            <p class="doc-body">
+              This setting controls anonymous usage data collected by the iii engine. To disable
+              OpenTelemetry observability instrumentation (traces, metrics, logs), set
+              <code class="doc-inline">OTEL_ENABLED=false</code> instead. On this website,
+              non-essential analytics such as PostHog and Common Room load only after you accept the
+              cookie banner, and you can decline or clear that choice in your browser at any time.
+            </p>
+          </section>
+
+          <section class="doc-sec callout">
+            <h2 class="doc-title">Data protection principles</h2>
+            <p class="doc-body">
+              We follow strict data protection principles designed to
+              <span class="accent">respect your privacy and maintain your trust</span>. These
+              aren't just policies — they're commitments.
+            </p>
+            <ul class="doc-list">
+              <li>
+                <b>Minimal data collection:</b> We only collect data that's necessary to provide and
+                improve our services.
+              </li>
+              <li>
+                <b>Purpose limitation:</b> Data is used only for the purposes we've disclosed to
+                you.
+              </li>
+              <li>
+                <b>Data minimization:</b> We retain data only as long as necessary and delete it
+                when it is no longer needed.
+              </li>
+              <li>
+                <b>Security by design:</b> All systems are built with privacy and security as
+                foundational requirements.
+              </li>
+            </ul>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">How we use your information</h2>
+            <p class="doc-body">We use the information we collect to:</p>
+            <ul class="doc-list">
+              <li>Provide, maintain, and improve iii services.</li>
+              <li>Process transactions and send related information.</li>
+              <li>Send technical notices, updates, and support messages.</li>
+              <li>Respond to your comments, questions, and customer service requests.</li>
+              <li>Develop new features and functionality.</li>
+              <li>Monitor and analyze trends, usage, and activities.</li>
+            </ul>
+            <p class="doc-body">
+              <span class="accent">We never sell your personal data</span> to third parties or use
+              it for advertising purposes.
+            </p>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">Data sharing and disclosure</h2>
+            <p class="doc-body">
+              We may share your information in the following limited circumstances:
+            </p>
+            <ul class="doc-list">
+              <li>
+                <b>Service providers:</b> With trusted third-party services that help us operate
+                (hosting, payment processing, support).
+              </li>
+              <li>
+                <b>Legal requirements:</b> When required by law or to protect our rights and users'
+                safety.
+              </li>
+              <li>
+                <b>Business transfers:</b> In connection with mergers, acquisitions, or asset sales
+                (with user notification).
+              </li>
+              <li>
+                <b>With your consent:</b> When you explicitly authorize us to share specific
+                information.
+              </li>
+            </ul>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">Data security</h2>
+            <p class="doc-body">
+              We implement comprehensive security measures to protect your information, including
+              access controls, regular security audits, and employee training on data protection.
+            </p>
+            <p class="doc-body">
+              While we strive to protect your personal information, no method of transmission over
+              the internet is 100% secure. We continuously improve our security practices and will
+              notify you of any significant data breaches as required by law.
+            </p>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">Your rights and choices</h2>
+            <p class="doc-body">You have several rights regarding your personal information:</p>
+            <ul class="doc-list">
+              <li>
+                <b>Access:</b> Request a copy of the personal information we hold about you.
+              </li>
+              <li><b>Correction:</b> Update or correct inaccurate personal information.</li>
+              <li>
+                <b>Deletion:</b> Request deletion of your personal information (subject to legal
+                obligations).
+              </li>
+              <li><b>Opt-out:</b> Disable analytics collection and marketing communications.</li>
+            </ul>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">International data transfers</h2>
+            <p class="doc-body">
+              iii operates globally, and your information may be transferred to and processed in
+              countries other than your own. <span class="accent">We ensure appropriate
+              safeguards</span> are in place for international transfers, including standard
+              contractual clauses and adequacy decisions.
+            </p>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">Children's privacy</h2>
+            <p class="doc-body">
+              iii is not intended for use by children under 13 years of age. We do not knowingly
+              collect personal information from children under 13. If you become aware that a child
+              has provided us with personal information, please contact us immediately.
+            </p>
+          </section>
+
+          <section class="doc-sec">
+            <h2 class="doc-title">Changes to this policy</h2>
+            <p class="doc-body">
+              We may update this Privacy Policy from time to time. We will notify you of any material
+              changes by posting the new Privacy Policy on this page and updating the "Last updated"
+              date. <span class="accent">Significant changes will be communicated</span> via email
+              or prominent notice in the application.
+            </p>
+          </section>
+
+          <section class="doc-sec">
+            <p class="doc-contact">
+              Privacy isn't just a policy for us, it's a core value. We believe developers should
+              have <span class="accent">complete control over their data</span> and a clear
+              understanding of how it's used to improve the tools they rely on.
+            </p>
+            <p class="doc-contact" style="margin-top: 18px">
+              Questions about this privacy policy or your data? Contact us at
+              <a href="mailto:mike@iii.dev">mike@iii.dev</a>.
+            </p>
+            <p class="doc-updated">Last updated: June 2026</p>
+          </section>
+        </article>
+
+        <footer class="pfoot">
+          <span>© Motia LLC</span>
+          <a href="/">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M13 8 L3 8 M7 4 L3 8 L7 12" />
+            </svg>
+            back to iii.dev
+          </a>
+        </footer>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        const btn = document.getElementById("theme-btn");
+        const icon = document.getElementById("theme-icon");
+        const THEME_KEY = "iii_theme";
+        let isDark = window.__iiiThemeInit || false;
+        function apply(dark) {
+          const r = document.documentElement.style;
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+          if (dark) {
+            r.setProperty("--bg", "#111110");
+            r.setProperty("--panel", "#1a1916");
+            r.setProperty("--ink", "#f2f0ed");
+            r.setProperty("--ink-2", "#e2dfd9");
+            r.setProperty("--ink-soft", "#e2dfd9");
+            r.setProperty("--ink-faint", "#9c9893");
+            r.setProperty("--ink-ghost", "#5d5a55");
+            r.setProperty("--mute", "#9c9893");
+            r.setProperty("--mute-2", "#5d5a55");
+            r.setProperty("--rule", "#2a2926");
+            r.setProperty("--rule-2", "#1f1e1c");
+            r.setProperty("--accent", "#3ea8ff");
+            r.setProperty("--accent-2", "#ff5a1f");
+            icon.innerHTML =
+              '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
+          } else {
+            r.setProperty("--bg", "#f5f3ee");
+            r.setProperty("--panel", "#e9e6e2");
+            r.setProperty("--ink", "#0a0a0a");
+            r.setProperty("--ink-2", "#1a1a1a");
+            r.setProperty("--ink-soft", "#1a1a1a");
+            r.setProperty("--ink-faint", "#6b6865");
+            r.setProperty("--ink-ghost", "#a3a09c");
+            r.setProperty("--mute", "#6b6865");
+            r.setProperty("--mute-2", "#a3a09c");
+            r.setProperty("--rule", "#d8d4cb");
+            r.setProperty("--rule-2", "#e6e3df");
+            r.setProperty("--accent", "#ff5a1f");
+            r.setProperty("--accent-2", "#1a5fbf");
+            icon.innerHTML = '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';
+          }
+        }
+        if (isDark) {
+          icon.innerHTML =
+            '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
+        }
+        btn.addEventListener("click", () => {
+          isDark = !isDark;
+          try {
+            localStorage.setItem(THEME_KEY, isDark ? "dark" : "light");
+          } catch (e) {}
+          apply(isDark);
+        });
+      })();
+    </script>
+  </body>
+</html>

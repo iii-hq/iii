@@ -72,6 +72,7 @@ function handler(event) {
   // ship a new top-level page as `pagename.html`.
   var htmlPretty = {
     '/manifesto': '/manifesto.html',
+    '/privacy-policy': '/privacy-policy.html',
   }
   var htmlTarget = htmlPretty[uri]
   if (htmlTarget !== undefined) {
