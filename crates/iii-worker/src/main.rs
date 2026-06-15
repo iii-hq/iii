@@ -7,6 +7,37 @@
 use clap::{CommandFactory, FromArgMatches};
 use iii_worker::{Cli, Commands};
 
+/// A `stdout` tracing writer that never reports I/O errors back to the fmt
+/// layer. The fmt layer's sole error path is an `eprintln!`, which PANICS
+/// when stderr is *also* a broken pipe — precisely the engine-death case for
+/// the spawned daemons (`worker-manager-daemon`, `sandbox-daemon`): the engine
+/// consumed both fds 1 and 2, so when it dies the connection thread's very
+/// next reconnect log would panic the process (exit 101) before the
+/// engine-gone reaper runs. Swallowing the write error keeps the daemon alive;
+/// it then dup2's fds 1/2 onto its durable exit log
+/// (`daemon_exit::redirect_stdio_to_exit_log`) and these same writes land there
+/// as forensics. For one-shot CLI use it just turns a `… | head` EPIPE into a
+/// silent drop instead of a panic — strictly better either way.
+struct ResilientStdout;
+
+impl std::io::Write for ResilientStdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStdout {
+    type Writer = ResilientStdout;
+    fn make_writer(&self) -> Self::Writer {
+        ResilientStdout
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // FIRST, before the tokio runtime spawns worker threads: capture (and
     // scrub from the env) any inherited lifeline facts. The capture mutates
@@ -22,6 +53,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(ResilientStdout)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),

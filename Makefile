@@ -171,7 +171,15 @@ build-console:
 	pnpm --filter console-frontend build
 	cargo build -p iii-console --release
 
-build: build-sdk-node build-console
+build: sandbox build-console ## Build everything: init + engine + worker + console
+	@echo ""
+	@echo "Build complete. Binaries:"
+	@echo "  engine:   $(CURDIR)/target/release/iii"
+	@echo "  console:  $(CURDIR)/target/release/iii-console"
+	@echo "  worker:   $(CURDIR)/target/$(WORKER_TARGET)/release/iii-worker"
+	@echo ""
+	@echo "Add them to your PATH:"
+	@echo '  export PATH="$(CURDIR)/target/release:$(CURDIR)/target/$(WORKER_TARGET)/release:$$PATH"'
 
 # ── CI Jobs (mirror ci.yml) ──────────────────────────────────────────────────
 
@@ -204,6 +212,6 @@ fix-lint:
 	cargo clippy -p iii-sdk --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings
 	pnpm --filter console-frontend run lint:fix
 
-check: lint fmt-check-all typecheck build
+check: lint fmt-check-all typecheck build-sdk-node build-console
 
 ci-local: ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust ci-console
