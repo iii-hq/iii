@@ -28,7 +28,8 @@ type: "reference"
   - Main client handle aligned to `IIIClient` (Node was `ISdk`, Rust was `III`).
   - Telemetry config aligned to `TelemetryOptions` (Rust was `WorkerTelemetryMeta`).
   - Buffered HTTP request and response renamed `ApiRequest` and `ApiResponse` to `HttpRequest` and `HttpResponse`; streaming keeps `StreamRequest` and `StreamResponse`. Rust `StreamCallRequest` and `StreamJoinLeaveCallRequest` become `StreamChangeEvent` and `StreamJoinLeaveEvent`.
-  - Removed: `UpdateBuilder`, the Rust `Value` re-export, `IIIForbiddenError` and `IIITimeoutError` (Python), the `TriggerActionType` alias, `FieldPath` and `MergePath` (Rust path helpers), and the root `Logger` and OpenTelemetry re-exports (use `@iii-dev/observability`).
+  - Stream helper type names aligned across the three SDKs: the change-event detail is `StreamChangeEventDetail` everywhere (Rust was `StreamEventDetail`, Node was an inline object), the result types are `StreamSetResult` / `StreamUpdateResult` / `StreamDeleteResult` (Rust had bare `SetResult` / `UpdateResult`, Node and Rust had a bare `DeleteResult`), and `MergePath` is now a named export in all three.
+  - Removed: `UpdateBuilder`, the Rust `Value` re-export, `IIIForbiddenError` and `IIITimeoutError` (Python), the `TriggerActionType` alias, the Rust `FieldPath` path helper, and the root `Logger` and OpenTelemetry re-exports (use `@iii-dev/observability`).
 
   See [the parity entry](./0-20-0/cross-language-parity) for the full table.
 
