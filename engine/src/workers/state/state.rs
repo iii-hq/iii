@@ -931,6 +931,104 @@ mod tests {
         (engine, module)
     }
 
+    fn setup_with_config(config: StateModuleConfig) -> (Arc<Engine>, StateWorker) {
+        ensure_default_meter();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let adapter: Arc<dyn StateAdapter> = Arc::new(BuiltinKvStoreAdapter::new(None));
+        let module = StateWorker::from_config(engine.clone(), config, adapter);
+        (engine, module)
+    }
+
+    #[tokio::test]
+    async fn triggers_disabled_skips_fan_out() {
+        let (engine, module) = setup_with_config(StateModuleConfig {
+            triggers_enabled: Some(false),
+            ..Default::default()
+        });
+        register_panic_handler(&engine); // "test::handler" panics if invoked
+
+        let trigger = crate::trigger::Trigger {
+            id: "state-trig-disabled".to_string(),
+            trigger_type: "state".to_string(),
+            function_id: "test::handler".to_string(),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: None,
+        };
+        let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
+            trigger.config.clone(),
+        )
+        .unwrap();
+        module.triggers.list.write().await.insert(
+            trigger.id.clone(),
+            super::super::trigger::StateTrigger { config, trigger },
+        );
+
+        // triggers_enabled=false gates fan-out entirely; the panic handler must
+        // never be invoked.
+        module
+            .invoke_triggers(super::super::structs::StateEventData {
+                message_type: "state".to_string(),
+                event_type: super::super::structs::StateEventType::Created,
+                scope: "s".to_string(),
+                key: "k".to_string(),
+                old_value: None,
+                new_value: serde_json::json!(1),
+            })
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    #[tokio::test]
+    async fn set_rejects_value_over_max_bytes() {
+        let (_engine, module) = setup_with_config(StateModuleConfig {
+            max_value_bytes: Some(10),
+            ..Default::default()
+        });
+
+        let oversized = module
+            .set(StateSetInput {
+                scope: "s".to_string(),
+                key: "big".to_string(),
+                value: serde_json::json!("a value that is definitely longer than ten bytes"),
+            })
+            .await;
+        match oversized {
+            FunctionResult::Failure(err) => assert_eq!(err.code, "VALUE_TOO_LARGE"),
+            _ => panic!("expected VALUE_TOO_LARGE"),
+        }
+
+        // A value within the limit still writes.
+        let small = module
+            .set(StateSetInput {
+                scope: "s".to_string(),
+                key: "ok".to_string(),
+                value: serde_json::json!(1),
+            })
+            .await;
+        assert!(matches!(small, FunctionResult::Success(_)));
+    }
+
+    #[tokio::test]
+    async fn is_active_reflects_worker_shutdown_rx() {
+        let (_engine, module) = setup();
+        assert!(!module.is_active());
+
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        *module
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex") = Some(rx);
+        assert!(module.is_active());
+
+        module
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex")
+            .take();
+        assert!(!module.is_active());
+    }
+
     fn register_panic_handler(engine: &Arc<Engine>) {
         engine.register_function_handler(
             crate::engine::RegisterFunctionRequest {

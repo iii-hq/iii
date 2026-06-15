@@ -91,4 +91,56 @@ mod tests {
         let config: StateModuleConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.adapter.unwrap().name, "redis");
     }
+
+    #[test]
+    fn manual_default_enables_triggers() {
+        let config = StateModuleConfig::default();
+        assert_eq!(config.triggers_enabled, Some(true));
+        assert!(config.adapter.is_none());
+        assert!(config.max_value_bytes.is_none());
+        assert!(config.save_interval_ms.is_none());
+    }
+
+    #[test]
+    fn deserializing_empty_leaves_knobs_unset() {
+        // serde `default` on each Option is None (not the manual struct
+        // Default), so the live gates fall back to their unwrap_or defaults.
+        let config: StateModuleConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(config.triggers_enabled.is_none());
+    }
+
+    #[test]
+    fn deny_unknown_fields_rejects_typos() {
+        let result: Result<StateModuleConfig, _> =
+            serde_json::from_value(json!({ "triggers_enabledd": true }));
+        assert!(result.is_err(), "unknown top-level field must be rejected");
+    }
+
+    #[test]
+    fn normalized_zeroes_out_invalid_knobs() {
+        let config = StateModuleConfig {
+            max_value_bytes: Some(0),
+            save_interval_ms: Some(0),
+            ..Default::default()
+        }
+        .normalized();
+        assert!(config.max_value_bytes.is_none());
+        assert!(config.save_interval_ms.is_none());
+    }
+
+    #[test]
+    fn schema_has_bounds_descriptions_and_permissive_adapter() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(StateModuleConfig)).expect("schema");
+        let props = &schema["properties"];
+        assert_eq!(props["max_value_bytes"]["minimum"], json!(1.0));
+        assert_eq!(props["save_interval_ms"]["minimum"], json!(100.0));
+        assert_eq!(props["save_interval_ms"]["maximum"], json!(3_600_000.0));
+        assert!(props["triggers_enabled"]["description"].is_string());
+        // deny_unknown_fields flows into the schema.
+        assert_eq!(schema["additionalProperties"], json!(false));
+        // The adapter stays present but loosely-schema'd so adapters remain
+        // pluggable (its inner `config` does not constrain shape).
+        assert!(props["adapter"].is_object());
+    }
 }

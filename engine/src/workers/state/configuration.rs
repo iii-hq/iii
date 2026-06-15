@@ -269,3 +269,223 @@ fn read_persisted_state_value_from(dir: &Path) -> Option<Value> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::{
+        engine::{Handler, RegisterFunctionRequest},
+        function::FunctionResult,
+        workers::configuration::adapters::fs,
+        workers::observability::metrics::ensure_default_meter,
+    };
+
+    /// Stub `configuration::get` to return a fixed stored value (`None` →
+    /// NOT_FOUND) and capture `configuration::register` payloads.
+    fn stub_configuration(
+        engine: &Arc<Engine>,
+        stored_value: Option<Value>,
+    ) -> mpsc::UnboundedReceiver<Value> {
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "configuration::get".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let stored_value = stored_value.clone();
+                async move {
+                    match stored_value {
+                        Some(value) => {
+                            FunctionResult::Success(Some(json!({ "id": CONFIG_ID, "value": value })))
+                        }
+                        None => FunctionResult::Failure(crate::protocol::ErrorBody {
+                            message: format!("configuration '{CONFIG_ID}' not found"),
+                            code: "NOT_FOUND".to_string(),
+                            stacktrace: None,
+                        }),
+                    }
+                }
+            }),
+        );
+
+        let (tx, rx) = mpsc::unbounded_channel::<Value>();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "configuration::register".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: Value| {
+                let tx = tx.clone();
+                async move {
+                    let _ = tx.send(input);
+                    FunctionResult::Success(Some(json!({})))
+                }
+            }),
+        );
+        rx
+    }
+
+    #[tokio::test]
+    async fn register_seeds_initial_value_when_nothing_stored() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let mut registered = stub_configuration(&engine, None);
+
+        let seed = StateModuleConfig {
+            max_value_bytes: Some(256),
+            ..StateModuleConfig::default()
+        };
+        register_config(&engine, Some(&seed)).await.unwrap();
+
+        let payload = registered.recv().await.unwrap();
+        assert_eq!(payload["id"], CONFIG_ID);
+        assert_eq!(payload["initial_value"]["max_value_bytes"], 256);
+        // The manual Default enables triggers, so the seed carries it explicitly.
+        assert_eq!(payload["initial_value"]["triggers_enabled"], json!(true));
+        // schemars derives deny_unknown_fields into the schema.
+        assert_eq!(payload["schema"]["additionalProperties"], json!(false));
+        // Field doc comments must flow into the schema so an agent
+        // introspecting the config gets descriptions, not just types.
+        assert!(
+            payload["schema"]["properties"]["triggers_enabled"]["description"].is_string(),
+            "triggers_enabled must carry a schema description: {payload}"
+        );
+        // Bounds must reach the schema so the configuration worker rejects
+        // out-of-range values at set time.
+        assert_eq!(
+            payload["schema"]["properties"]["max_value_bytes"]["minimum"],
+            json!(1.0),
+            "max_value_bytes must carry minimum 1: {payload}"
+        );
+        assert_eq!(
+            payload["schema"]["properties"]["save_interval_ms"]["minimum"],
+            json!(100.0),
+            "save_interval_ms must carry minimum 100: {payload}"
+        );
+        assert_eq!(
+            payload["schema"]["properties"]["save_interval_ms"]["maximum"],
+            json!(3_600_000.0),
+            "save_interval_ms must carry maximum 3_600_000: {payload}"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_omits_initial_value_when_value_stored() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let mut registered = stub_configuration(&engine, Some(json!({ "max_value_bytes": 9999 })));
+
+        register_config(&engine, Some(&StateModuleConfig::default()))
+            .await
+            .unwrap();
+
+        let payload = registered.recv().await.unwrap();
+        assert!(
+            payload.get("initial_value").is_none(),
+            "stored value must not be clobbered: {payload}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_config_falls_back_when_not_found() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let _registered = stub_configuration(&engine, None);
+
+        let fallback = StateModuleConfig {
+            max_value_bytes: Some(512),
+            ..StateModuleConfig::default()
+        };
+        let config = fetch_config(&engine, &fallback).await.unwrap();
+        assert_eq!(config.max_value_bytes, Some(512));
+    }
+
+    #[tokio::test]
+    async fn fetch_config_falls_back_on_null_value() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let _registered = stub_configuration(&engine, Some(Value::Null));
+
+        let config = fetch_config(&engine, &StateModuleConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(config.triggers_enabled, Some(true));
+    }
+
+    #[tokio::test]
+    async fn fetch_config_errors_on_malformed_value() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let _registered =
+            stub_configuration(&engine, Some(json!({ "max_value_bytes": "not-a-number" })));
+
+        let result = fetch_config(&engine, &StateModuleConfig::default()).await;
+        assert!(result.is_err(), "malformed value must surface as an error");
+    }
+
+    #[tokio::test]
+    async fn fetch_config_normalizes_zero_knobs() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        // A 0 could land via a hand-edited adapter file that bypasses the schema.
+        let _registered = stub_configuration(
+            &engine,
+            Some(json!({ "max_value_bytes": 0, "save_interval_ms": 0 })),
+        );
+
+        let config = fetch_config(&engine, &StateModuleConfig::default())
+            .await
+            .unwrap();
+        assert!(config.max_value_bytes.is_none());
+        assert!(config.save_interval_ms.is_none());
+    }
+
+    fn write_entry(dir: &std::path::Path, value: Value) {
+        let entry = json!({ "id": CONFIG_ID, "value": value });
+        let path = dir.join(format!("{}.{}", CONFIG_ID, fs::FILE_EXTENSION));
+        std::fs::write(&path, serde_yaml::to_string(&entry).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn boot_read_prefers_persisted_over_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        write_entry(dir.path(), json!({ "max_value_bytes": 99 }));
+
+        let resolved = resolve_boot_config_from(dir.path(), Some(json!({ "max_value_bytes": 1 })))
+            .expect("persisted entry present");
+        assert_eq!(resolved["max_value_bytes"], 99);
+    }
+
+    #[test]
+    fn boot_read_falls_back_to_yaml_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = Some(json!({ "max_value_bytes": 7 }));
+        assert_eq!(resolve_boot_config_from(dir.path(), yaml.clone()), yaml);
+    }
+
+    #[test]
+    fn boot_read_falls_back_on_malformed_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unknown field → StateModuleConfig (deny_unknown_fields) rejects it →
+        // the yaml block must win.
+        write_entry(dir.path(), json!({ "bogus_field": 1 }));
+
+        let yaml = Some(json!({ "max_value_bytes": 5 }));
+        assert_eq!(
+            resolve_boot_config_from(dir.path(), yaml.clone()),
+            yaml,
+            "malformed persisted value must fall back to the yaml block"
+        );
+    }
+}
