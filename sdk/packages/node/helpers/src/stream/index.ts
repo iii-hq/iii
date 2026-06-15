@@ -246,7 +246,7 @@ export type UpdateOpError = {
 }
 
 /** Result of a stream delete operation. */
-export type DeleteResult = {
+export type StreamDeleteResult = {
   /** Previous value (if it existed). */
   // biome-ignore lint/suspicious/noExplicitAny: any is fine here
   old_value?: any
@@ -296,6 +296,15 @@ export interface StreamJoinLeaveTriggerConfig {
   condition_function_id?: string
 }
 
+/** Detail of a stream change event containing the mutation type and data. */
+export type StreamChangeEventDetail = {
+  /** The kind of mutation (create, update, or delete). */
+  type: 'create' | 'update' | 'delete'
+  /** The data associated with the event. */
+  // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+  data: any
+}
+
 /** Handler input for `stream` triggers, fired when an item changes via `stream::set`, `stream::update`, or `stream::delete`. */
 export interface StreamChangeEvent {
   /** The event type. */
@@ -308,10 +317,6 @@ export interface StreamChangeEvent {
   groupId: string
   /** The item ID that changed. */
   id?: string
-  /** The event detail object containing `type` and `data` fields. */
-  event: {
-    type: 'create' | 'update' | 'delete'
-    // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-    data: any
-  }
+  /** The event detail containing mutation type and data. */
+  event: StreamChangeEventDetail
 }

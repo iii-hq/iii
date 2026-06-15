@@ -1,6 +1,6 @@
 import type {
-  DeleteResult,
   StreamDeleteInput,
+  StreamDeleteResult,
   StreamGetInput,
   StreamListGroupsInput,
   StreamListInput,
@@ -22,7 +22,7 @@ export interface IStream<TData> {
   /** Set (create or overwrite) a stream item. */
   set(input: StreamSetInput): Promise<StreamSetResult<TData> | null>
   /** Delete a stream item. */
-  delete(input: StreamDeleteInput): Promise<DeleteResult>
+  delete(input: StreamDeleteInput): Promise<StreamDeleteResult>
   /** List all items in a group. */
   list(input: StreamListInput): Promise<TData[]>
   /** List all group IDs in a stream. */

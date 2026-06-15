@@ -39,7 +39,7 @@ pub mod errors {
 // `iii-sdk/internal` (Node) and `iii.internal` (Python) have no crate-root
 // equivalent here. There is no `InternalHttpRequest` (the Rust SDK uses
 // `iii_helpers::http::HttpRequest`), and the stream result types
-// (`SetResult`, `UpdateResult`, `DeleteResult`) live in `iii_helpers::stream`
+// (`StreamSetResult`, `StreamUpdateResult`, `StreamDeleteResult`) live in `iii_helpers::stream`
 // and are consumed inside `stream_provider.rs` — they are not re-exported at
 // the crate root. Grouping them here would re-surface clean-break helpers
 // types into the SDK, which the `compile_fail` doctests below deliberately

@@ -209,7 +209,7 @@ pub struct UpdateOpError {
 
 /// Result of an atomic update operation
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct UpdateResult {
+pub struct StreamUpdateResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
     /// The value after the update
@@ -222,7 +222,7 @@ pub struct UpdateResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SetResult {
+pub struct StreamSetResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
     /// The value after the update
@@ -230,7 +230,7 @@ pub struct SetResult {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct DeleteResult {
+pub struct StreamDeleteResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
 }
@@ -430,7 +430,7 @@ pub enum StreamEventType {
 
 /// Detail of a stream change event containing the mutation type and data.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StreamEventDetail {
+pub struct StreamChangeEventDetail {
     /// The kind of mutation (create, update, or delete).
     #[serde(rename = "type")]
     pub event_type: StreamEventType,
@@ -456,7 +456,7 @@ pub struct StreamChangeEvent {
     /// The item ID that changed.
     pub id: Option<String>,
     /// The event detail containing mutation type and data.
-    pub event: StreamEventDetail,
+    pub event: StreamChangeEventDetail,
 }
 
 #[cfg(test)]
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn update_result_with_errors_serializes_field() {
-        let result = UpdateResult {
+        let result = StreamUpdateResult {
             old_value: None,
             new_value: serde_json::json!({"a": 1}),
             errors: vec![UpdateOpError {
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn update_result_without_errors_omits_field_from_json() {
-        let result = UpdateResult {
+        let result = StreamUpdateResult {
             old_value: None,
             new_value: serde_json::json!({"a": 1}),
             errors: vec![],

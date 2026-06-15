@@ -14,7 +14,7 @@ use std::{
 
 use indexmap::IndexMap;
 
-use iii_helpers::stream::{DeleteResult, SetResult, UpdateOp, UpdateResult};
+use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -291,7 +291,7 @@ impl BuiltinKvStore {
         }
     }
 
-    pub async fn set(&self, index: String, key: String, data: Value) -> SetResult {
+    pub async fn set(&self, index: String, key: String, data: Value) -> StreamSetResult {
         let result = {
             let mut store = self.store.write().await;
             let index_map = store.get_mut(&index);
@@ -300,7 +300,7 @@ impl BuiltinKvStore {
                 let old_value = index_map.get(&key).cloned();
                 index_map.insert(key.clone(), data.clone());
 
-                SetResult {
+                StreamSetResult {
                     old_value,
                     new_value: data.clone(),
                 }
@@ -309,7 +309,7 @@ impl BuiltinKvStore {
                 index_map.insert(key, data.clone());
                 store.insert(index.clone(), index_map);
 
-                SetResult {
+                StreamSetResult {
                     old_value: None,
                     new_value: data.clone(),
                 }
@@ -334,7 +334,7 @@ impl BuiltinKvStore {
         None
     }
 
-    pub async fn delete(&self, index: String, key: String) -> DeleteResult {
+    pub async fn delete(&self, index: String, key: String) -> StreamDeleteResult {
         let (removed, dirty_op) = {
             let mut store = self.store.write().await;
             let index_map = store.get_mut(&index);
@@ -350,9 +350,9 @@ impl BuiltinKvStore {
                 } else {
                     None
                 };
-                (DeleteResult { old_value: removed }, dirty_op)
+                (StreamDeleteResult { old_value: removed }, dirty_op)
             } else {
-                (DeleteResult { old_value: None }, None)
+                (StreamDeleteResult { old_value: None }, None)
             }
         };
 
@@ -445,7 +445,12 @@ impl BuiltinKvStore {
         released
     }
 
-    pub async fn update(&self, index: String, key: String, ops: Vec<UpdateOp>) -> UpdateResult {
+    pub async fn update(
+        &self,
+        index: String,
+        key: String,
+        ops: Vec<UpdateOp>,
+    ) -> StreamUpdateResult {
         let mut store = self.store.write().await;
 
         // Automatically create index_map if it doesn't exist
@@ -466,7 +471,7 @@ impl BuiltinKvStore {
                 .insert(index.clone(), DirtyOp::Upsert);
         }
 
-        UpdateResult {
+        StreamUpdateResult {
             old_value,
             new_value: updated_value,
             errors,

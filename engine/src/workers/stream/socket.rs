@@ -158,7 +158,7 @@ mod tests {
         routing::get,
     };
     use futures_util::{SinkExt, StreamExt};
-    use iii_helpers::stream::{DeleteResult, SetResult, UpdateResult};
+    use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult};
     use serde_json::{Value, json};
     use tokio::{
         net::TcpListener,
@@ -226,8 +226,8 @@ mod tests {
             _group_id: &str,
             _item_id: &str,
             data: Value,
-        ) -> anyhow::Result<SetResult> {
-            Ok(SetResult {
+        ) -> anyhow::Result<StreamSetResult> {
+            Ok(StreamSetResult {
                 old_value: None,
                 new_value: data,
             })
@@ -247,8 +247,8 @@ mod tests {
             _stream_name: &str,
             _group_id: &str,
             _item_id: &str,
-        ) -> anyhow::Result<DeleteResult> {
-            Ok(DeleteResult { old_value: None })
+        ) -> anyhow::Result<StreamDeleteResult> {
+            Ok(StreamDeleteResult { old_value: None })
         }
 
         async fn get_group(
@@ -319,8 +319,8 @@ mod tests {
             _group_id: &str,
             _item_id: &str,
             _ops: Vec<iii_helpers::stream::UpdateOp>,
-        ) -> anyhow::Result<UpdateResult> {
-            Ok(UpdateResult {
+        ) -> anyhow::Result<StreamUpdateResult> {
+            Ok(StreamUpdateResult {
                 old_value: None,
                 new_value: json!({}),
                 errors: Vec::new(),

@@ -9,12 +9,12 @@ pub mod kv_store;
 pub mod redis_adapter;
 
 use async_trait::async_trait;
-use iii_helpers::stream::{SetResult, UpdateOp, UpdateResult};
+use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
 use serde_json::Value;
 
 #[async_trait]
 pub trait StateAdapter: Send + Sync {
-    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult>;
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult>;
     async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>>;
     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()>;
     async fn update(
@@ -22,7 +22,7 @@ pub trait StateAdapter: Send + Sync {
         scope: &str,
         key: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult>;
+    ) -> anyhow::Result<StreamUpdateResult>;
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     async fn destroy(&self) -> anyhow::Result<()>;
