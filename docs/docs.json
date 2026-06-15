@@ -85,6 +85,7 @@
                   "next/using-iii/engine",
                   "next/using-iii/console",
                   "next/using-iii/cli",
+                  "next/using-iii/sandboxes",
                   "next/using-iii/deployment"
                 ]
               },
