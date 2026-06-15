@@ -1872,6 +1872,32 @@ mod tests {
     }
 
     #[test]
+    fn function_summary_metadata_skips_when_none_surfaces_when_some() {
+        // None metadata is omitted from the wire (skip_serializing_if).
+        let without = FunctionSummary {
+            function_id: "my::func".to_string(),
+            worker_name: "my".to_string(),
+            description: None,
+            metadata: None,
+        };
+        let json = serde_json::to_value(&without).expect("serialize");
+        assert!(
+            json.get("metadata").is_none(),
+            "None metadata must be omitted, not serialized as null"
+        );
+
+        // Some metadata is surfaced so callers can distinguish internal handlers.
+        let with = FunctionSummary {
+            function_id: "my::on-config-change".to_string(),
+            worker_name: "my".to_string(),
+            description: None,
+            metadata: Some(serde_json::json!({ "internal": true })),
+        };
+        let json = serde_json::to_value(&with).expect("serialize");
+        assert_eq!(json["metadata"]["internal"], true);
+    }
+
+    #[test]
     fn registered_trigger_summary_serializes() {
         let summary = RegisteredTriggerSummary {
             id: "t-1".to_string(),

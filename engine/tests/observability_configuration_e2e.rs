@@ -18,12 +18,13 @@
 //! manager), so concurrent tests in this binary would race each other.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use serial_test::serial;
 
-use iii::engine::{Engine, EngineTrait};
+use iii::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
 use iii::function::FunctionResult;
 use iii::workers::configuration::ConfigurationWorker;
 use iii::workers::configuration::adapters::ConfigurationAdapter;
@@ -378,4 +379,281 @@ async fn restart_tier_change_applies_live_fields_and_reports_rest() {
         Some(iii::workers::observability::config::OtelExporterType::Otlp),
         "the stored snapshot carries the restart-tier value for the next boot"
     );
+}
+
+// ── Edge-case coverage: log-trigger reactivation, ingest gates, live store ──
+// limits, schema set-rejection, and concurrent-edit convergence. ────────────
+
+/// Register a `log` trigger that bumps a counter on each fan-out, filtered to
+/// `level`. Returns the hit counter. Call AFTER `start_observability_worker`
+/// (the worker registers the `log` trigger type in `initialize`).
+async fn register_log_recorder(harness: &Harness, fn_id: &str, level: &str) -> Arc<AtomicUsize> {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    harness.engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: fn_id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |_payload: Value| {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                FunctionResult::Success(Some(json!({ "ok": true })))
+            }
+        }),
+    );
+    harness
+        .engine
+        .trigger_registry
+        .register_trigger(iii::trigger::Trigger {
+            id: format!("{fn_id}-trigger"),
+            trigger_type: iii::workers::observability::LOG_TRIGGER_TYPE.to_string(),
+            function_id: fn_id.to_string(),
+            config: json!({ "level": level }),
+            worker_id: None,
+            metadata: None,
+        })
+        .await
+        .expect("register log trigger");
+    hits
+}
+
+fn log_storage_len() -> usize {
+    iii::workers::observability::otel::get_log_storage()
+        .map(|s| s.len())
+        .unwrap_or(0)
+}
+
+fn clear_log_storage() {
+    if let Some(s) = iii::workers::observability::otel::get_log_storage() {
+        s.clear();
+    }
+}
+
+async fn ingest_log(harness: &Harness, level_fn: &str, message: &str) {
+    harness
+        .engine
+        .call(level_fn, json!({ "message": message, "service_name": "e2e" }))
+        .await
+        .expect("log ingest call");
+}
+
+/// Drive `apply_config` synchronously through the real handler, so an
+/// assertion cannot pass vacuously before the trigger fan-out ran.
+async fn drive_apply(harness: &Harness) {
+    harness
+        .engine
+        .call("iii-observability::on-config-change", json!({}))
+        .await
+        .expect("config-change handler is invocable");
+}
+
+#[tokio::test]
+#[serial]
+async fn logs_reenable_reactivates_the_log_trigger_pipeline() {
+    // Boot with logs disabled (observability itself stays enabled, so the
+    // background task set — including the parked log-trigger subscriber — runs).
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "logs_enabled": false })).await;
+
+    let hits = register_log_recorder(&harness, "test::reactivate-recorder", "all").await;
+
+    // While disabled, the ingest gate drops the log before any broadcast, so
+    // the trigger never fires.
+    ingest_log(&harness, "engine::log::info", "while-disabled").await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "logs disabled: the trigger must not fire"
+    );
+
+    // Enable logs at runtime; the F3 reactivation path revives the store in the
+    // LIMITS tier and respawns the log-trigger subscriber.
+    set_value(&harness, json!({ "logs_enabled": true })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().logs_enabled == Some(true),
+        "logs_enabled:true to apply",
+    )
+    .await;
+
+    // The reactivated subscriber now delivers ingested logs to the trigger —
+    // no engine restart required.
+    ingest_log(&harness, "engine::log::info", "after-enable").await;
+    wait_for(
+        || hits.load(Ordering::SeqCst) >= 1,
+        "log trigger to fire after reactivation",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn logs_disable_after_enable_stops_trigger_delivery() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "logs_enabled": true })).await;
+
+    let hits = register_log_recorder(&harness, "test::disable-recorder", "all").await;
+
+    // Enabled: the trigger fires.
+    ingest_log(&harness, "engine::log::info", "enabled-1").await;
+    wait_for(
+        || hits.load(Ordering::SeqCst) >= 1,
+        "log trigger to fire while enabled",
+    )
+    .await;
+    let after_enabled = hits.load(Ordering::SeqCst);
+
+    // Disable at runtime: the per-call ingest gate drops subsequent logs.
+    set_value(&harness, json!({ "logs_enabled": false })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().logs_enabled == Some(false),
+        "logs_enabled:false to apply",
+    )
+    .await;
+
+    ingest_log(&harness, "engine::log::info", "disabled-2").await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        after_enabled,
+        "logs disabled at runtime: the trigger must stop firing"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn logs_max_count_retune_bounds_the_live_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "logs_max_count": 1000 })).await;
+    clear_log_storage();
+
+    set_value(&harness, json!({ "logs_max_count": 3 })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().logs_max_count == Some(3),
+        "logs_max_count to apply",
+    )
+    .await;
+
+    // Ingest well past the new cap; the LIMITS tier retuned the live store, so
+    // it bounds itself.
+    for i in 0..8 {
+        ingest_log(&harness, "engine::log::info", &format!("m{i}")).await;
+    }
+    assert!(
+        log_storage_len() <= 3,
+        "retuned cap must bound the live store, got {}",
+        log_storage_len()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn logs_sampling_ratio_zero_drops_then_restores() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "logs_sampling_ratio": 1.0 })).await;
+    clear_log_storage();
+
+    set_value(&harness, json!({ "logs_sampling_ratio": 0.0 })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().logs_sampling_ratio == 0.0,
+        "sampling_ratio 0 to apply",
+    )
+    .await;
+
+    clear_log_storage();
+    for i in 0..5 {
+        ingest_log(&harness, "engine::log::info", &format!("drop{i}")).await;
+    }
+    assert_eq!(
+        log_storage_len(),
+        0,
+        "logs_sampling_ratio 0 drops every ingested log at the gate"
+    );
+
+    // Restore full sampling -> logs flow again.
+    set_value(&harness, json!({ "logs_sampling_ratio": 1.0 })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || (worker.current_config().logs_sampling_ratio - 1.0).abs() < f64::EPSILON,
+        "sampling_ratio 1 to apply",
+    )
+    .await;
+    clear_log_storage();
+    ingest_log(&harness, "engine::log::info", "kept").await;
+    assert_eq!(log_storage_len(), 1, "full sampling keeps the ingested log");
+}
+
+#[tokio::test]
+#[serial]
+async fn schema_rejects_out_of_range_log_bounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "logs_batch_size": 100 })).await;
+
+    // The tightened schema bounds reject values the OTLP exporter would
+    // otherwise silently clamp to its defaults: logs_batch_size max 10_000,
+    // logs_flush_interval_ms in [100, 3_600_000].
+    set_value_expect_rejection(&harness, json!({ "logs_batch_size": 20_000 })).await;
+    set_value_expect_rejection(&harness, json!({ "logs_flush_interval_ms": 50 })).await;
+    set_value_expect_rejection(&harness, json!({ "logs_flush_interval_ms": 4_000_000 })).await;
+
+    // The rejected sets never touched the live config.
+    assert_eq!(worker.current_config().logs_batch_size, Some(100));
+
+    // Boundary values are accepted (inclusive bounds) and apply.
+    set_value(
+        &harness,
+        json!({ "logs_batch_size": 10_000, "logs_flush_interval_ms": 100 }),
+    )
+    .await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().logs_batch_size == Some(10_000),
+        "accepted boundary value to apply",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn concurrent_applies_converge_under_apply_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "logs_max_count": 1 })).await;
+
+    // Persist a new value, then fire several applies concurrently. The
+    // apply_lock serializes them; they all read the same stored value and
+    // converge — no torn or lost update.
+    set_value(&harness, json!({ "logs_max_count": 77 })).await;
+    let mut handles = Vec::new();
+    for _ in 0..5 {
+        let engine = harness.engine.clone();
+        handles.push(tokio::spawn(async move {
+            let _ = engine
+                .call("iii-observability::on-config-change", json!({}))
+                .await;
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+    wait_for(
+        || worker.current_config().logs_max_count == Some(77),
+        "concurrent applies to converge",
+    )
+    .await;
+    assert_eq!(worker.current_config().logs_max_count, Some(77));
 }

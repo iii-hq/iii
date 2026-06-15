@@ -140,6 +140,18 @@ pub async fn on_config_change(worker: &ObservabilityWorker) {
             let worker = worker.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(APPLY_RETRY_DELAY).await;
+                // Best-effort: skip the retry if the worker was already
+                // destroyed during the delay. This is a point-in-time check,
+                // not a lock — a destroy that races just after it is still
+                // safe: `apply_config` re-checks the worker lifecycle under its
+                // lock before respawning any task, and the remaining live-tier
+                // writes are idempotent global-snapshot swaps.
+                if !worker.is_active() {
+                    tracing::debug!(
+                        "iii-observability: worker no longer active; skipping configuration apply retry"
+                    );
+                    return;
+                }
                 match worker.apply_config().await {
                     Ok(()) => {
                         tracing::info!("iii-observability configuration re-applied on retry")

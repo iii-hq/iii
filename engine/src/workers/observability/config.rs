@@ -293,12 +293,12 @@ pub struct ObservabilityWorkerConfig {
 
     /// Batch size for OTLP logs export (default: 100)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 1, max = 10_000))]
     pub logs_batch_size: Option<usize>,
 
     /// Flush interval in milliseconds for OTLP logs export (default: 5000)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 100, max = 3_600_000))]
     pub logs_flush_interval_ms: Option<u64>,
 
     /// Sampling ratio for logs (0.0 to 1.0). 1.0 means keep all logs.
@@ -364,13 +364,16 @@ impl Default for ObservabilityWorkerConfig {
 }
 
 impl ObservabilityWorkerConfig {
-    /// Clamp out-of-range values into safe bounds.
+    /// Clamp out-of-range top-level values into safe bounds.
     ///
     /// The JSON Schema rejects out-of-range values at `configuration::set`
     /// time, but stored entries can predate a schema tightening or be
     /// hand-edited on disk (`./data/configuration/iii-observability.yaml`),
-    /// so every read path normalizes as well. Zero counts fall back to the
+    /// so the top-level ratio and count fields are re-normalized on every
+    /// read: ratios are clamped into `0..=1` and zero counts fall back to the
     /// built-in defaults (`None`) rather than creating zero-capacity stores.
+    /// Nested alert-rule and rate-limit bounds are not re-clamped here — they
+    /// are enforced by the schema at set time and guarded at their use sites.
     pub fn normalized(mut self) -> Self {
         fn clamp_ratio(v: f64) -> f64 {
             if v.is_finite() {
@@ -562,7 +565,12 @@ mod tests {
         assert_eq!(props["logs_sampling_ratio"]["maximum"], 1.0);
         assert_eq!(props["memory_max_spans"]["minimum"], 1.0);
         assert_eq!(props["logs_batch_size"]["minimum"], 1.0);
+        assert_eq!(props["logs_batch_size"]["maximum"], 10000.0);
         assert_eq!(props["metrics_max_count"]["minimum"], 1.0);
+        // Log flush/batch bounds must mirror the runtime's accepted range so
+        // configuration::set rejects values the exporter would silently drop.
+        assert_eq!(props["logs_flush_interval_ms"]["minimum"], 100.0);
+        assert_eq!(props["logs_flush_interval_ms"]["maximum"], 3600000.0);
     }
 
     #[test]

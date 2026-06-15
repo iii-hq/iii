@@ -382,27 +382,6 @@ static TRACING: OnceLock<()> = OnceLock::new();
 
 /// Extract OTEL configuration from the ObservabilityWorker config in the config file.
 /// This is called early during startup, before modules are loaded.
-fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
-    use crate::workers::observability::config::ObservabilityWorkerConfig;
-
-    let otel_module_name = "iii-observability";
-    let otel_module_cfg = cfg
-        .modules
-        .iter()
-        .chain(cfg.workers.iter())
-        .find(|m| m.name == otel_module_name);
-
-    let module_config: ObservabilityWorkerConfig = match otel_module_cfg {
-        Some(entry) => match &entry.config {
-            Some(cfg) => serde_json::from_value(cfg.clone()).unwrap_or_default(),
-            None => ObservabilityWorkerConfig::default(),
-        },
-        None => return OtelConfig::default(),
-    };
-
-    otel_config_from_module(module_config)
-}
-
 /// Map the observability worker's config block onto the boot-time
 /// `OtelConfig` consumed by `init_otel`.
 fn otel_config_from_module(
@@ -517,11 +496,15 @@ fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::
         .and_then(|e| e.config.as_ref())
         .and_then(|c| c.get("adapter"));
 
+    // Resolve adapter/dir/extension from the same constants the fs adapter and
+    // configuration worker use, so this boot read can never silently drift to a
+    // different location than where the worker actually persists entries.
+    use crate::workers::configuration::adapters::fs;
     let adapter_name = adapter_cfg
         .and_then(|a| a.get("name"))
         .and_then(|v| v.as_str())
-        .unwrap_or("fs");
-    if adapter_name != "fs" {
+        .unwrap_or(fs::ADAPTER_NAME);
+    if adapter_name != fs::ADAPTER_NAME {
         println!(
             "persisted iii-observability configuration not read at boot: configuration adapter '{adapter_name}' is not file-backed"
         );
@@ -532,8 +515,13 @@ fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::
         .and_then(|a| a.get("config"))
         .and_then(|c| c.get("directory"))
         .and_then(|v| v.as_str())
-        .unwrap_or("./data/configuration");
-    let path = std::path::Path::new(directory).join("iii-observability.yaml");
+        .unwrap_or(fs::DEFAULT_DIRECTORY);
+    let file_name = format!(
+        "{}.{}",
+        crate::workers::observability::configuration::CONFIG_ID,
+        fs::FILE_EXTENSION
+    );
+    let path = std::path::Path::new(directory).join(file_name);
 
     let bytes = std::fs::read(&path).ok()?; // absent: fresh boot, use yaml
 
@@ -800,6 +788,33 @@ mod tests {
     use tracing::callsite::Identifier;
     use tracing::field::{FieldSet, Visit};
     use tracing::metadata::{Kind, Metadata};
+
+    /// Drift guard (F4): the boot-time persisted-config read resolves the SAME
+    /// adapter name, directory, and filename the fs configuration adapter
+    /// actually writes, so the boot read can never silently diverge from where
+    /// the worker persists entries.
+    #[test]
+    fn boot_read_path_constants_align_with_fs_adapter() {
+        use crate::workers::configuration::adapters::fs;
+        assert_eq!(fs::ADAPTER_NAME, "fs");
+        assert_eq!(fs::DEFAULT_DIRECTORY, "./data/configuration");
+        assert_eq!(fs::FILE_EXTENSION, "yaml");
+        assert_eq!(
+            format!(
+                "{}.{}",
+                crate::workers::observability::configuration::CONFIG_ID,
+                fs::FILE_EXTENSION
+            ),
+            "iii-observability.yaml",
+        );
+        // The configuration worker selects the fs adapter by default, so the
+        // boot read's "is the adapter file-backed?" check stays in lockstep.
+        assert_eq!(
+            <crate::workers::configuration::ConfigurationWorker
+                as crate::workers::traits::ConfigurableWorker>::DEFAULT_ADAPTER_NAME,
+            fs::ADAPTER_NAME,
+        );
+    }
 
     /// Helper: builds a `FieldSet` (and backing static metadata) that contains
     /// the given field names, and returns a closure that can look up any of
@@ -1239,54 +1254,26 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_otel_config_reads_observability_module_config() {
-        let cfg = EngineConfig {
-            modules: vec![WorkerEntry {
-                name: "iii-observability".to_string(),
-                image: None,
-                config: Some(serde_json::json!({
-                    "enabled": true,
-                    "service_name": "test-service",
-                    "exporter": "memory",
-                    "endpoint": "http://collector:4317",
-                    "sampling_ratio": 0.25,
-                    "memory_max_spans": 321
-                })),
-            }],
-            workers: vec![],
-        };
+    fn otel_config_from_module_maps_all_fields() {
+        // The mapping half of the boot path (entry lookup is covered by the
+        // boot_merge_* tests). Module config -> the OtelConfig init_otel uses.
+        let module_config = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "service_name": "test-service",
+            "exporter": "memory",
+            "endpoint": "http://collector:4317",
+            "sampling_ratio": 0.25,
+            "memory_max_spans": 321
+        }))
+        .expect("module config parses");
 
-        let otel = extract_otel_config(&cfg);
+        let otel = otel_config_from_module(module_config);
         assert!(otel.enabled);
         assert_eq!(otel.service_name, "test-service");
         assert!(matches!(otel.exporter, ExporterType::Memory));
         assert_eq!(otel.endpoint, "http://collector:4317");
         assert_eq!(otel.sampling_ratio, 0.25);
         assert_eq!(otel.memory_max_spans, 321);
-    }
-
-    #[test]
-    fn test_extract_otel_config_reads_observability_from_workers_key() {
-        let cfg = EngineConfig {
-            modules: vec![],
-            workers: vec![WorkerEntry {
-                name: "iii-observability".to_string(),
-                image: None,
-                config: Some(serde_json::json!({
-                    "enabled": true,
-                    "service_name": "workers-key-test",
-                    "exporter": "memory",
-                })),
-            }],
-        };
-
-        let otel = extract_otel_config(&cfg);
-        assert!(
-            otel.enabled,
-            "should find observability config under workers key"
-        );
-        assert_eq!(otel.service_name, "workers-key-test");
-        assert!(matches!(otel.exporter, ExporterType::Memory));
     }
 
     fn boot_cfg_with_dir(
@@ -1457,22 +1444,13 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_otel_config_defaults_when_module_missing() {
-        let cfg = EngineConfig {
-            modules: vec![],
-            workers: vec![],
-        };
-
-        let otel = extract_otel_config(&cfg);
-        assert!(!otel.enabled);
-        assert!(matches!(otel.exporter, ExporterType::Otlp));
-    }
-
-    #[test]
-    fn test_extract_otel_config_reads_default_engine_config() {
-        let cfg = EngineConfig::default_config();
-
-        let otel = extract_otel_config(&cfg);
+    fn otel_config_from_module_defaults_map_to_memory_enabled() {
+        // The default observability block maps to an enabled, memory-exporter
+        // OtelConfig. Entry lookup (modules/workers key, missing entry) is
+        // covered by the resolve_boot / boot_merge_* tests; this asserts the
+        // mapping they feed init_otel.
+        use crate::workers::observability::config::ObservabilityWorkerConfig;
+        let otel = otel_config_from_module(ObservabilityWorkerConfig::default());
         assert!(otel.enabled);
         assert_eq!(otel.service_name, "iii");
         assert!(matches!(otel.exporter, ExporterType::Memory));

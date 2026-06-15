@@ -78,7 +78,7 @@ caveats:
 | Live | `logs_console_output`, `logs_sampling_ratio`, `logs_enabled` (ingest gate), `enabled` (ingest gate) | Immediate — read per use |
 | Limits | `memory_max_spans`, `logs_max_count`, `metrics_max_count`, `metrics_retention_seconds` | Immediate — enforced on the next insert / 60s sweep |
 | Swap | `sampling_ratio`, `sampling.*`, `alerts`, `collapse_spans`, `level` | Immediate — compiled artifact rebuilt and swapped (alert states of surviving rules keep cooldown/firing continuity) |
-| Task rebuild | `logs_exporter`, `logs_batch_size`, `logs_flush_interval_ms`, `logs_retention_seconds`, plus `endpoint`/`service_name`/`service_version` as used by the OTLP *logs* exporter | The background task restarts with the new settings |
+| Task rebuild | `logs_exporter`, `logs_batch_size`, `logs_flush_interval_ms`, `logs_retention_seconds`, plus `endpoint`/`service_name`/`service_version` as used by the OTLP *logs* exporter, and `logs_enabled` on a false→true transition | The background task restarts with the new settings. A `logs_enabled` false→true toggle revives the log store and respawns the log-trigger subscriber, OTLP logs exporter, and retention task — so the `log` trigger fan-out and OTLP log export reactivate without an engine restart |
 | Restart-only | `exporter`, `endpoint` (trace exporter / span forwarder), `service_name`/`service_version`/`service_namespace` on the trace resource, `format`, `metrics_enabled`, `metrics_exporter`, `enabled` (pipeline construction) | Logged as a warning; applied at the next engine start via the persisted entry |
 
 Known limitation: an engine config-file reload that destroys and recreates

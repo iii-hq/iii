@@ -1878,6 +1878,130 @@ pub fn process_metrics_for_rollups(metrics: &[StoredMetric]) {
 mod tests {
     use super::*;
 
+    // ── Coverage: runtime metric-store retune + alert rule/state hot-swap ──
+    use crate::workers::observability::config::AlertOperator;
+
+    fn engine_metric_rule(name: &str, threshold: f64) -> AlertRule {
+        // Engine metrics resolve their value from the global accumulator, so a
+        // rule on one fires deterministically once the accumulator is set.
+        AlertRule {
+            name: name.to_string(),
+            metric: "iii.invocations.total".to_string(),
+            threshold,
+            operator: AlertOperator::GreaterThan,
+            window_seconds: 60,
+            action: AlertAction::Log,
+            enabled: true,
+            cooldown_seconds: 60,
+        }
+    }
+
+    #[test]
+    fn set_limits_shrinks_capacity_on_next_insert() {
+        let storage = InMemoryMetricStorage::new(10, DEFAULT_RETENTION_NS);
+        for i in 0..5u64 {
+            storage.add_metrics(vec![make_number_metric(
+                &format!("m{i}"),
+                "svc",
+                StoredMetricType::Gauge,
+                &[(i as f64, (i + 1) * 1_000_000_000)],
+                vec![],
+            )]);
+        }
+        assert_eq!(storage.len(), 5);
+
+        // Tighten the cap; eviction applies on the next insert (LIMITS tier).
+        storage.set_limits(Some(2), None);
+        storage.add_metrics(vec![make_number_metric(
+            "m-new",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(9.0, 9_000_000_000)],
+            vec![],
+        )]);
+        assert!(
+            storage.len() <= 2,
+            "tightened cap must bound the store, got {}",
+            storage.len()
+        );
+    }
+
+    #[test]
+    fn set_limits_retention_overflow_is_safe() {
+        let storage = InMemoryMetricStorage::new(5, DEFAULT_RETENTION_NS);
+        // A retention whose ms->ns conversion overflows must not panic; the
+        // current retention is kept and the store keeps working.
+        storage.set_limits(None, Some(u64::MAX));
+        storage.add_metrics(vec![make_number_metric(
+            "m",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(1.0, 1_000_000_000)],
+            vec![],
+        )]);
+        assert_eq!(storage.len(), 1);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn alert_manager_fires_then_prunes_state_on_rule_removal() {
+        use std::sync::atomic::Ordering;
+        get_metrics_accumulator()
+            .invocations_total
+            .store(100, Ordering::Relaxed);
+
+        let manager = AlertManager::new(vec![engine_metric_rule("too-many", 10.0)]);
+        let events = manager.evaluate().await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].firing);
+        assert_eq!(manager.get_firing_alerts().len(), 1);
+
+        // Removing the rule prunes its lingering AlertState (no resurrection
+        // via engine::alerts::list).
+        manager.update_rules(Vec::new());
+        assert!(
+            manager.get_states().is_empty(),
+            "state must be pruned together with its rule"
+        );
+        assert!(manager.get_firing_alerts().is_empty());
+
+        get_metrics_accumulator()
+            .invocations_total
+            .store(0, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn alert_manager_resurrection_filter_hides_removed_rule() {
+        use std::sync::atomic::Ordering;
+        get_metrics_accumulator()
+            .invocations_total
+            .store(100, Ordering::Relaxed);
+
+        let manager = AlertManager::new(vec![
+            engine_metric_rule("keep", 10.0),
+            engine_metric_rule("drop-me", 10.0),
+        ]);
+        manager.evaluate().await;
+        assert_eq!(manager.get_firing_alerts().len(), 2, "both rules fire");
+
+        // Keep only "keep". The read-side live_rule_names filter hides
+        // "drop-me" from get_states/get_firing_alerts even though its state may
+        // linger from a concurrent evaluate.
+        manager.update_rules(vec![engine_metric_rule("keep", 10.0)]);
+        let firing = manager.get_firing_alerts();
+        assert_eq!(firing.len(), 1);
+        assert_eq!(firing[0].name, "keep");
+        assert!(
+            manager.get_states().iter().all(|s| s.name != "drop-me"),
+            "removed rule's state must not surface"
+        );
+
+        get_metrics_accumulator()
+            .invocations_total
+            .store(0, Ordering::Relaxed);
+    }
+
     #[test]
     fn test_ensure_default_meter_makes_get_meter_available() {
         // After calling ensure_default_meter, get_meter() should return Some

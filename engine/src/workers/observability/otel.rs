@@ -13,7 +13,7 @@
 //! - `otlp`: Export traces to an OTLP collector via gRPC
 //! - `memory`: Store traces in memory for API querying
 
-use super::config::{LogsExporterType, ObservabilityWorkerConfig, OtelExporterType};
+use super::config::{ObservabilityWorkerConfig, OtelExporterType};
 use super::otlp_exporter::build_span_exporter;
 use super::sampler::AdvancedSampler;
 use opentelemetry::propagation::{TextMapCompositePropagator, TextMapPropagator};
@@ -85,6 +85,18 @@ pub fn update_otel_config(
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     slot.replace(Arc::new(config))
+}
+
+/// Test-only: clear the global OTEL config back to its unset baseline. The
+/// global is process-wide and is NOT reset between tests, so a `#[serial]`
+/// test that calls `update_otel_config` must clear afterward — otherwise it
+/// pollutes sibling tests that rely on `current_config()` falling back to the
+/// worker's own `_config`.
+#[cfg(test)]
+pub(crate) fn clear_otel_config_for_test() {
+    *GLOBAL_OTEL_CONFIG
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 /// Get the global OTEL configuration if set.
@@ -3378,22 +3390,6 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-/// Get the logs exporter type from config
-pub fn get_logs_exporter_type() -> LogsExporterType {
-    get_otel_config()
-        .and_then(|cfg| cfg.logs_exporter.clone())
-        .or_else(|| {
-            env::var("OTEL_LOGS_EXPORTER")
-                .ok()
-                .map(|v| match v.to_lowercase().as_str() {
-                    "otlp" => LogsExporterType::Otlp,
-                    "both" => LogsExporterType::Both,
-                    _ => LogsExporterType::Memory,
-                })
-        })
-        .unwrap_or(LogsExporterType::Memory)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3431,6 +3427,129 @@ mod tests {
                 );
             },
         );
+    }
+
+    // ── Coverage: runtime storage-limit retune + dynamic sampler swap ──────
+    // These exercise the hot-apply LIMITS tier mechanisms and the swappable
+    // sampler that `apply_config` drives.
+
+    #[test]
+    fn set_max_spans_shrinks_and_rebuilds_trace_index() {
+        let storage = InMemorySpanStorage::new(10);
+        storage.add_spans(vec![
+            make_stored_span("trace-a", "s1", "op1", 1_000_000_000, 2_000_000_000),
+            make_stored_span("trace-b", "s2", "op2", 3_000_000_000, 4_000_000_000),
+            make_stored_span("trace-a", "s3", "op3", 5_000_000_000, 6_000_000_000),
+            make_stored_span("trace-c", "s4", "op4", 7_000_000_000, 8_000_000_000),
+        ]);
+        assert_eq!(storage.len(), 4);
+
+        // Shrink to 2: the two oldest (s1=trace-a, s2=trace-b) are evicted and
+        // the trace-id index is rebuilt from the survivors (s3=trace-a,
+        // s4=trace-c).
+        storage.set_max_spans(2);
+        assert_eq!(storage.len(), 2);
+        assert_eq!(
+            storage.get_spans_by_trace_id("trace-a").len(),
+            1,
+            "only the surviving trace-a span should remain in the rebuilt index"
+        );
+        assert_eq!(
+            storage.get_spans_by_trace_id("trace-b").len(),
+            0,
+            "the evicted trace-b span must be gone from the index"
+        );
+        assert_eq!(storage.get_spans_by_trace_id("trace-c").len(), 1);
+
+        // A 0 request is clamped to at least 1 (never a zero-capacity store).
+        storage.set_max_spans(0);
+        assert_eq!(storage.len(), 1);
+    }
+
+    #[test]
+    fn set_max_logs_shrinks_to_new_capacity() {
+        let storage = InMemoryLogStorage::new(10);
+        for i in 0..5 {
+            storage.store(StoredLog {
+                timestamp_unix_nano: 1_704_067_200_000_000_000 + i * 1_000_000_000,
+                observed_timestamp_unix_nano: 1_704_067_200_000_000_000 + i * 1_000_000_000,
+                severity_number: 9,
+                severity_text: "INFO".to_string(),
+                body: format!("log {i}"),
+                attributes: HashMap::new(),
+                trace_id: None,
+                span_id: None,
+                resource: HashMap::new(),
+                service_name: "test".to_string(),
+                instrumentation_scope_name: None,
+                instrumentation_scope_version: None,
+            });
+        }
+        assert_eq!(storage.len(), 5);
+
+        storage.set_max_logs(2);
+        let logs = storage.get_logs();
+        assert_eq!(logs.len(), 2, "shrink must drop the oldest logs");
+        assert_eq!(logs[0].body, "log 3", "oldest survivor after shrink");
+        assert_eq!(logs[1].body, "log 4");
+    }
+
+    #[test]
+    fn dynamic_sampler_swap_changes_decision() {
+        use opentelemetry::trace::{SamplingDecision, SpanKind, TraceId};
+        use opentelemetry_sdk::trace::ShouldSample;
+
+        let sampler = DynamicSampler::new(Sampler::AlwaysOff);
+        let drop = sampler.should_sample(None, TraceId::from_bytes([1u8; 16]), "op", &SpanKind::Internal, &[], &[]);
+        assert!(
+            matches!(drop.decision, SamplingDecision::Drop),
+            "AlwaysOff inner must drop"
+        );
+
+        // Hot-swap the inner sampler; the same handle observes the new policy.
+        sampler.swap(Sampler::AlwaysOn);
+        let keep = sampler.should_sample(None, TraceId::from_bytes([2u8; 16]), "op", &SpanKind::Internal, &[], &[]);
+        assert!(
+            matches!(keep.decision, SamplingDecision::RecordAndSample),
+            "after swap to AlwaysOn the same sampler must record-and-sample"
+        );
+
+        // A clone shares the same inner Arc, so it sees swaps too.
+        let cloned = sampler.clone();
+        sampler.swap(Sampler::AlwaysOff);
+        let drop_again =
+            cloned.should_sample(None, TraceId::from_bytes([3u8; 16]), "op", &SpanKind::Internal, &[], &[]);
+        assert!(
+            matches!(drop_again.decision, SamplingDecision::Drop),
+            "a clone must observe the swap through the shared inner"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn init_log_storage_retunes_existing_store() {
+        // init_log_storage is create-or-retune: a second call with a tighter
+        // cap retunes the live store rather than allocating a new one.
+        init_log_storage(Some(3));
+        let storage = get_log_storage().expect("log storage created");
+        storage.clear();
+        for i in 0..6 {
+            storage.store(StoredLog {
+                timestamp_unix_nano: 1_704_067_200_000_000_000 + i * 1_000_000_000,
+                observed_timestamp_unix_nano: 1_704_067_200_000_000_000 + i * 1_000_000_000,
+                severity_number: 9,
+                severity_text: "INFO".to_string(),
+                body: format!("retune {i}"),
+                attributes: HashMap::new(),
+                trace_id: None,
+                span_id: None,
+                resource: HashMap::new(),
+                service_name: "test".to_string(),
+                instrumentation_scope_name: None,
+                instrumentation_scope_version: None,
+            });
+        }
+        assert_eq!(storage.len(), 3, "retuned cap must bound the live store");
     }
 
     #[tokio::test]

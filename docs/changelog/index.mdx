@@ -108,7 +108,9 @@ type: "reference"
 
   Changes hot-apply per field tier: ingest gates, `logs_console_output`, and `logs_sampling_ratio` are read live; store limits retune on the next insert/sweep; the sampler, alert rules (with cooldown/firing continuity for surviving rules), span-collapse cache, and engine log level rebuild and swap in place; the OTLP logs exporter and log-retention tasks restart with new settings. Restart-tier fields (trace exporter wiring, resource identity, log format) are warned about and apply at the next engine start — the persisted entry is read at boot, before logging init, so they genuinely take effect.
 
-  The schema rejects invalid values at `configuration::set` time (unknown fields, sampling ratios outside `0..=1`, zero counts), and out-of-range values that predate a schema tightening are clamped on read.
+  The schema rejects invalid values at `configuration::set` time (unknown fields, sampling ratios outside `0..=1`, zero counts, log batch/flush sizes outside the exporter's accepted range), and out-of-range values that predate a schema tightening are clamped on read.
+
+  `engine::alerts::list` now also returns the configured `rules` alongside the live alert states, so a caller sees the active thresholds and their firing status in one call.
 
   This work also fixed three latent dead-config bugs: `metrics_max_count`/`metrics_retention_seconds` and `logs_max_count` were silently shadowed by defaults claimed before the worker booted, and advanced `sampling` rules never reached the engine tracer because the sampler was built before the global config existed. All three now apply — and the first two are live-tunable.
 

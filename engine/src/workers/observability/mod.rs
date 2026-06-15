@@ -646,6 +646,10 @@ pub struct ObservabilityWorker {
     /// Stop signal for the current OTLP logs exporter task instance
     /// (respawned on exporter/batch/flush/endpoint/identity changes).
     logs_exporter_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Stop signal for the current log-trigger subscriber task instance.
+    /// Respawned when `logs_enabled` flips false->true at runtime so the `log`
+    /// trigger fan-out reactivates without an engine restart.
+    logs_trigger_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
     /// Serializes concurrent `apply_config` runs (rapid configuration edits).
     apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -962,6 +966,7 @@ impl ObservabilityWorker {
             worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
             logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
             logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
@@ -980,6 +985,22 @@ impl ObservabilityWorker {
         otel::get_otel_config()
             .map(|cfg| (*cfg).clone())
             .unwrap_or_else(|| self._config.clone())
+    }
+
+    /// True while the worker is started and has not been destroyed.
+    ///
+    /// `worker_shutdown_rx` is set at the top of `start_background_tasks`
+    /// (before the change trigger that drives `on_config_change` is registered)
+    /// and cleared by `destroy`, so a deferred apply — the timeout retry in
+    /// `on_config_change` — checks this before touching process-global
+    /// telemetry state. A retry that fires after the owning worker was torn
+    /// down becomes a no-op instead of mutating globals on behalf of a worker
+    /// that no longer exists.
+    pub(crate) fn is_active(&self) -> bool {
+        self.worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .is_some()
     }
 
     /// Register the `iii-observability::on-config-change` handler. Idempotent
@@ -1023,9 +1044,11 @@ impl ObservabilityWorker {
     ///   value itself did not change.
     /// - SWAP: sampler, alert rules, collapse-rule cache, and the engine log
     ///   level are rebuilt only when their fields changed.
-    /// - TASK-REBUILD: the log-retention and OTLP-logs-exporter tasks are
-    ///   respawned when their captured settings changed; refused (warn) when
-    ///   the worker has not started or was destroyed.
+    /// - TASK-REBUILD: the log-retention, OTLP-logs-exporter, and log-trigger
+    ///   subscriber tasks are respawned when their captured settings changed or
+    ///   when `logs_enabled` flips false->true (which revives the store in the
+    ///   LIMITS tier); refused (warn) when the worker has not started or was
+    ///   destroyed.
     /// - RESTART-ONLY: trace exporter wiring, resource identity on traces,
     ///   pipeline enablement, metrics exporter, and the log format are baked
     ///   in at process start; changes are reported with a warning and take
@@ -1107,14 +1130,26 @@ impl ObservabilityWorker {
         }
 
         // TASK-REBUILD tier.
-        let respawn_retention = old.logs_retention_seconds != new.logs_retention_seconds;
-        let respawn_exporter = old.logs_exporter != new.logs_exporter
+        //
+        // `logs_enabled` false->true revives the log store in the LIMITS tier
+        // above, but the log-trigger subscriber, OTLP exporter, and retention
+        // task all bailed at boot when the store was absent. Treat that
+        // transition as a respawn trigger for all three so the `log` trigger
+        // fan-out and OTLP export reactivate without an engine restart. Only
+        // the false->true edge fires this (a true->false edge is handled by
+        // the per-call ingest gate, leaving the idle tasks as-is, matching the
+        // prior behavior).
+        let logs_reenabled = otel::logs_enabled(Some(&new)) && !otel::logs_enabled(Some(&old));
+        let respawn_retention =
+            old.logs_retention_seconds != new.logs_retention_seconds || logs_reenabled;
+        let respawn_exporter = logs_reenabled
+            || old.logs_exporter != new.logs_exporter
             || old.logs_batch_size != new.logs_batch_size
             || old.logs_flush_interval_ms != new.logs_flush_interval_ms
             || old.endpoint != new.endpoint
             || old.service_name != new.service_name
             || old.service_version != new.service_version;
-        if respawn_retention || respawn_exporter {
+        if respawn_retention || respawn_exporter || logs_reenabled {
             let started = self
                 .worker_shutdown_rx
                 .lock()
@@ -1129,6 +1164,13 @@ impl ObservabilityWorker {
                 }
                 if respawn_exporter {
                     self.spawn_logs_exporter(&new);
+                }
+                if logs_reenabled {
+                    self.spawn_log_trigger_subscriber();
+                    tracing::info!(
+                        "iii-observability: logs re-enabled; log trigger subscriber and \
+                         exporter reactivated"
+                    );
                 }
             } else if started {
                 tracing::debug!(
@@ -1178,6 +1220,90 @@ impl ObservabilityWorker {
         }
 
         Ok(())
+    }
+
+    /// (Re)spawn the log-trigger subscriber that fans `log` ingest events out
+    /// to registered `log` triggers, stopping any previous instance. Returns
+    /// early (after parking the stop sender) when log storage has not been
+    /// created — so a `logs_enabled` false->true toggle, which creates storage
+    /// in the LIMITS tier, can respawn this without an engine restart. Follows
+    /// both its per-instance stop signal and the worker shutdown signal.
+    fn spawn_log_trigger_subscriber(&self) {
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        // Hold the previous instance's stop sender and signal it only once the
+        // new receiver has subscribed (or immediately on the early-return
+        // paths). Stopping it before the new receiver subscribes would drop log
+        // broadcasts in the handoff gap — same ordering as spawn_logs_exporter.
+        let previous = self
+            .logs_trigger_stop
+            .lock()
+            .expect("logs_trigger_stop mutex poisoned")
+            .replace(stop_tx);
+        let stop_previous = move || {
+            if let Some(previous) = previous {
+                let _ = previous.send(true);
+            }
+        };
+
+        let Some(storage) = otel::get_log_storage() else {
+            tracing::debug!(
+                "[ObservabilityWorker] Log storage not available; log trigger subscriber not started"
+            );
+            stop_previous();
+            return;
+        };
+        let Some(mut shutdown_rx) = self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .clone()
+        else {
+            stop_previous();
+            return;
+        };
+
+        let triggers = self.triggers.clone();
+        let engine = self.engine.clone();
+        // Subscribe BEFORE stopping the old instance so the handoff window
+        // carries bounded duplicates (the broadcast reaches every live receiver
+        // and `log` trigger delivery is at-least-once) rather than dropped logs.
+        let mut rx = storage.subscribe();
+        stop_previous();
+
+        tokio::spawn(async move {
+            tracing::debug!("[ObservabilityWorker] Log trigger subscriber started");
+            loop {
+                tokio::select! {
+                    result = shutdown_rx.changed() => {
+                        if result.is_err() || *shutdown_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log trigger subscriber shutting down");
+                            break;
+                        }
+                    }
+                    result = stop_rx.changed() => {
+                        if result.is_err() || *stop_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log trigger subscriber replaced");
+                            break;
+                        }
+                    }
+                    result = rx.recv() => {
+                        match result {
+                            Ok(log) => {
+                                ObservabilityWorker::invoke_triggers_for_log(&triggers, &engine, &log).await;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                tracing::warn!(skipped, "Log trigger subscriber lagged, some logs were skipped");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::debug!("[ObservabilityWorker] Log broadcast channel closed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            tracing::debug!("[ObservabilityWorker] Log trigger subscriber stopped");
+        });
     }
 
     /// (Re)spawn the log-retention sweep from `cfg`, stopping any previous
@@ -2978,58 +3104,9 @@ impl Worker for ObservabilityWorker {
             return Ok(());
         }
 
-        // Start log subscriber to invoke triggers for all logs
-        {
-            let triggers = self.triggers.clone();
-            let engine = self.engine.clone();
-            let mut shutdown_rx = shutdown_rx.clone();
-
-            tokio::spawn(async move {
-                // Wait a bit for log storage to be initialized
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-                if let Some(storage) = otel::get_log_storage() {
-                    let mut rx = storage.subscribe();
-
-                    tracing::debug!("[ObservabilityWorker] Log trigger subscriber started");
-
-                    loop {
-                        tokio::select! {
-                            result = shutdown_rx.changed() => {
-                                if result.is_err() {
-                                    tracing::debug!("[ObservabilityWorker] Shutdown channel closed");
-                                    break;
-                                }
-                                if *shutdown_rx.borrow() {
-                                    tracing::debug!("[ObservabilityWorker] Log trigger subscriber shutting down");
-                                    break;
-                                }
-                            }
-                            result = rx.recv() => {
-                                match result {
-                                    Ok(log) => {
-                                        ObservabilityWorker::invoke_triggers_for_log(&triggers, &engine, &log).await;
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                        tracing::warn!(skipped, "Log trigger subscriber lagged, some logs were skipped");
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                        tracing::debug!("[ObservabilityWorker] Log broadcast channel closed");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    tracing::debug!("[ObservabilityWorker] Log trigger subscriber stopped");
-                } else {
-                    tracing::warn!(
-                        "[ObservabilityWorker] Log storage not available, log triggers will not work"
-                    );
-                }
-            });
-        }
+        // Start the log-trigger subscriber (respawnable: a runtime
+        // logs_enabled false->true toggle re-runs this via apply_config).
+        self.spawn_log_trigger_subscriber();
 
         // Start span subscriber: coalesce span activity into periodic `trace`
         // trigger fan-outs, excluding engine-internal spans and the trigger's
@@ -3225,7 +3302,11 @@ impl Worker for ObservabilityWorker {
                 .expect("worker_shutdown_rx mutex poisoned")
                 .take();
         }
-        for stop in [&self.logs_retention_stop, &self.logs_exporter_stop] {
+        for stop in [
+            &self.logs_retention_stop,
+            &self.logs_exporter_stop,
+            &self.logs_trigger_stop,
+        ] {
             if let Some(stop) = stop.lock().expect("stop mutex poisoned").take() {
                 let _ = stop.send(true);
             }
@@ -3258,6 +3339,186 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::collections::{HashMap, HashSet};
+
+    // ── Coverage: log-trigger level filter, ingest gate, is_active, collapse ──
+
+    #[test]
+    fn should_trigger_for_level_matches_all_and_exact() {
+        assert!(should_trigger_for_level("all", "info"));
+        assert!(should_trigger_for_level("error", "error"));
+        assert!(!should_trigger_for_level("error", "warn"));
+        assert!(!should_trigger_for_level("info", "debug"));
+    }
+
+    #[test]
+    fn is_active_reflects_worker_shutdown_rx() {
+        let module = make_test_module(Arc::new(Engine::new()));
+        assert!(!module.is_active(), "for_test/make_test_module leaves rx None");
+
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        *module
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex") = Some(rx);
+        assert!(module.is_active(), "set receiver -> active");
+
+        module
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex")
+            .take();
+        assert!(!module.is_active(), "destroy clears the receiver -> inactive");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn store_and_emit_log_respects_logs_enabled_gate() {
+        reset_observability_test_state();
+        let module = make_test_module(Arc::new(Engine::new()));
+        let storage = otel::get_log_storage().expect("log storage");
+        storage.clear();
+
+        let make_input = |body: &str| OtelLogInput {
+            trace_id: None,
+            span_id: None,
+            message: body.to_string(),
+            data: None,
+            service_name: Some("gate-test".to_string()),
+        };
+
+        // Logs disabled -> ingest is a no-op at the gate.
+        otel::update_otel_config(config::ObservabilityWorkerConfig {
+            logs_enabled: Some(false),
+            ..config::ObservabilityWorkerConfig::default()
+        });
+        let _ = module.log_info(make_input("dropped")).await;
+        assert_eq!(storage.len(), 0, "disabled logs must not be stored");
+
+        // Re-enabled -> ingest stores again.
+        otel::update_otel_config(config::ObservabilityWorkerConfig {
+            logs_enabled: Some(true),
+            ..config::ObservabilityWorkerConfig::default()
+        });
+        let _ = module.log_info(make_input("kept")).await;
+        assert_eq!(storage.len(), 1, "re-enabled logs must be stored");
+        assert_eq!(storage.get_logs()[0].body, "kept");
+
+        // Leave the process-global config at its unset baseline so serial
+        // siblings (e.g. test_initialize_returns_ok_when_disabled) still fall
+        // back to their own _config.
+        otel::clear_otel_config_for_test();
+    }
+
+    #[tokio::test]
+    async fn invoke_triggers_for_log_filters_by_level() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let engine = Arc::new(Engine::new());
+        let all_hits = Arc::new(AtomicUsize::new(0));
+        let error_hits = Arc::new(AtomicUsize::new(0));
+
+        for (fid, counter) in [
+            ("test::rec-all", all_hits.clone()),
+            ("test::rec-error", error_hits.clone()),
+        ] {
+            let counter = counter.clone();
+            engine.register_function_handler(
+                crate::engine::RegisterFunctionRequest {
+                    function_id: fid.to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                crate::engine::Handler::new(move |_payload: Value| {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                    }
+                }),
+            );
+        }
+
+        let triggers = Arc::new(OtelLogTriggers::new());
+        {
+            let mut guard = triggers.triggers.write().await;
+            guard.insert(Trigger {
+                id: "t-all".to_string(),
+                trigger_type: LOG_TRIGGER_TYPE.to_string(),
+                function_id: "test::rec-all".to_string(),
+                config: serde_json::json!({ "level": "all" }),
+                worker_id: None,
+                metadata: None,
+            });
+            guard.insert(Trigger {
+                id: "t-error".to_string(),
+                trigger_type: LOG_TRIGGER_TYPE.to_string(),
+                function_id: "test::rec-error".to_string(),
+                config: serde_json::json!({ "level": "error" }),
+                worker_id: None,
+                metadata: None,
+            });
+        }
+
+        // A WARN log: matches the "all" trigger, not the "error" one.
+        let warn_log = otel::StoredLog {
+            timestamp_unix_nano: 1,
+            observed_timestamp_unix_nano: 1,
+            severity_number: 13,
+            severity_text: "WARN".to_string(),
+            body: "warn".to_string(),
+            attributes: HashMap::new(),
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "svc".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+        ObservabilityWorker::invoke_triggers_for_log(&triggers, &engine, &warn_log).await;
+
+        // Fan-out is fire-and-forget tokio::spawn; poll for the effect.
+        for _ in 0..40 {
+            if all_hits.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(all_hits.load(Ordering::SeqCst), 1, "level=all must fire on WARN");
+        assert_eq!(
+            error_hits.load(Ordering::SeqCst),
+            0,
+            "level=error must NOT fire on WARN"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn refresh_collapse_rules_recompiles_cache() {
+        refresh_collapse_rules(&[
+            config::SpanCollapseRule {
+                name: "wrapper*".to_string(),
+                service: None,
+            },
+            config::SpanCollapseRule {
+                name: "proxy*".to_string(),
+                service: None,
+            },
+        ]);
+        assert_eq!(
+            cached_collapse_rules().len(),
+            2,
+            "refresh must recompile the cache from the new rules"
+        );
+
+        refresh_collapse_rules(&[]);
+        assert_eq!(
+            cached_collapse_rules().len(),
+            0,
+            "clearing rules must empty the cache"
+        );
+    }
 
     // =========================================================================
     // Helper: create a StoredSpan with configurable fields
@@ -3332,6 +3593,7 @@ mod tests {
             worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
             logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
             logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
@@ -6946,6 +7208,7 @@ mod tests {
             worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
             logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
             logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
@@ -6985,6 +7248,7 @@ mod tests {
             worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
             logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
             logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
@@ -7024,6 +7288,7 @@ mod tests {
             worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
             logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
             logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
