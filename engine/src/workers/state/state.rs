@@ -71,6 +71,11 @@ impl Worker for StateWorker {
         "StateWorker"
     }
     async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
+        // The persisted `iii-state` configuration entry is the runtime source of
+        // truth: read it and let it replace the config.yaml block so a
+        // runtime-edited adapter (or knob) survives restarts. The adapter is
+        // built from the resolved config below.
+        let config = configuration::resolve_boot_config(config);
         Self::create_with_adapters(engine, config).await
     }
 

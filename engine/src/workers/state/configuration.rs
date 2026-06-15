@@ -17,6 +17,8 @@
 //! the storage `adapter` is restart-tier (applied at the next engine start via
 //! the boot-read).
 
+use std::path::Path;
+
 use anyhow::anyhow;
 use serde_json::{Value, json};
 
@@ -185,4 +187,85 @@ pub async fn register_config_trigger(engine: &Engine) -> anyhow::Result<()> {
         .await
         .map_err(|err| anyhow!("failed to register configuration trigger: {err:?}"))?;
     Ok(())
+}
+
+/// Resolve the boot-time configuration: the persisted `iii-state` entry replaces
+/// the config.yaml block when present and valid, so a runtime-edited adapter or
+/// knob survives engine restarts. Falls back to the yaml block on a fresh boot,
+/// an unreadable/missing file, or a malformed persisted value.
+///
+/// Because the first boot seeds the configuration entry from the yaml block
+/// (`register_config`), the persisted value carries the yaml's `adapter`
+/// selection forward — so "persisted replaces yaml" never silently drops the
+/// configured storage backend.
+///
+/// Limitation: state's `create` does not receive the `EngineConfig`, so a
+/// non-default `configuration` adapter directory is not discoverable here. The
+/// read uses the fs adapter's default directory; if the configuration worker is
+/// not file-backed there, the file is simply absent and the yaml block is used.
+pub(super) fn resolve_boot_config(yaml_block: Option<Value>) -> Option<Value> {
+    use crate::workers::configuration::adapters::fs;
+    resolve_boot_config_from(Path::new(fs::DEFAULT_DIRECTORY), yaml_block)
+}
+
+/// Directory-parameterized core of [`resolve_boot_config`], so the boot-read can
+/// be unit-tested against a tempdir instead of the process-wide default path.
+fn resolve_boot_config_from(dir: &Path, yaml_block: Option<Value>) -> Option<Value> {
+    let Some(persisted) = read_persisted_state_value_from(dir) else {
+        return yaml_block;
+    };
+    match serde_json::from_value::<StateModuleConfig>(persisted.clone()) {
+        Ok(_) => {
+            tracing::info!(
+                "Using persisted iii-state configuration entry (config.yaml block is seed-only)"
+            );
+            Some(persisted)
+        }
+        Err(err) => {
+            tracing::warn!(
+                "persisted iii-state configuration is invalid ({err}); using the config.yaml block"
+            );
+            yaml_block
+        }
+    }
+}
+
+/// Read the persisted `iii-state` value written by the configuration worker's
+/// file-backed adapter, with the same `${VAR:default}` expansion
+/// `configuration::get` applies. Returns `None` (boot falls back to the yaml
+/// block) when the file is absent (fresh boot) or anything about it is unusable.
+fn read_persisted_state_value_from(dir: &Path) -> Option<Value> {
+    use crate::workers::configuration::adapters::fs;
+
+    let path = dir.join(format!("{}.{}", CONFIG_ID, fs::FILE_EXTENSION));
+    let bytes = std::fs::read(&path).ok()?; // absent: fresh boot, use yaml
+
+    let entry: Value = match serde_yaml::from_slice(&bytes) {
+        Ok(entry) => entry,
+        Err(err) => {
+            eprintln!(
+                "persisted configuration entry {} is not valid YAML ({err}); using the config.yaml block",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let value = entry.get("value").cloned().filter(|v| !v.is_null())?;
+
+    // `expand_value` panics on a `${VAR}` placeholder with no default and no
+    // env value. At runtime that fails one bus call; here it would brick every
+    // engine start until the data file is hand-edited — so contain it and fall
+    // back to the yaml block.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::workers::configuration::store::expand_value(&value)
+    })) {
+        Ok(expanded) => Some(expanded),
+        Err(_) => {
+            eprintln!(
+                "persisted configuration entry {} references an environment variable with no value and no default; using the config.yaml block",
+                path.display()
+            );
+            None
+        }
+    }
 }
