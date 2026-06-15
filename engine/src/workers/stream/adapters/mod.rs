@@ -11,10 +11,7 @@ pub mod redis_adapter;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{
-    UpdateOp, UpdateResult,
-    types::{DeleteResult, SetResult},
-};
+use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use serde_json::Value;
 
 use crate::{
@@ -30,7 +27,7 @@ pub trait StreamAdapter: Send + Sync {
         group_id: &str,
         item_id: &str,
         data: Value,
-    ) -> anyhow::Result<SetResult>;
+    ) -> anyhow::Result<StreamSetResult>;
 
     async fn get(
         &self,
@@ -44,7 +41,7 @@ pub trait StreamAdapter: Send + Sync {
         stream_name: &str,
         group_id: &str,
         item_id: &str,
-    ) -> anyhow::Result<DeleteResult>;
+    ) -> anyhow::Result<StreamDeleteResult>;
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>>;
 
@@ -73,7 +70,7 @@ pub trait StreamAdapter: Send + Sync {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult>;
+    ) -> anyhow::Result<StreamUpdateResult>;
 }
 
 #[async_trait]

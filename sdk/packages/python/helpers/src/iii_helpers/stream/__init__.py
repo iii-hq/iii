@@ -7,6 +7,7 @@ from typing import Any, Generic, Literal, TypeVar
 from pydantic import BaseModel, Field, model_serializer
 
 __all__ = [
+    "MergePath",
     "StreamAuthInput",
     "StreamAuthResult",
     "StreamChangeEvent",
@@ -36,6 +37,12 @@ __all__ = [
 ]
 
 TData = TypeVar("TData")
+
+# Path target for a ``merge`` / ``append`` op. Accepts either a single
+# string (legacy / first-level key) or a list of literal segments
+# (nested path). Mirrors the Node ``string | string[]`` alias and the
+# Rust ``MergePath`` enum.
+MergePath = str | list[str]
 
 
 class StreamAuthInput(BaseModel):
@@ -222,8 +229,8 @@ class UpdateAppend(BaseModel):
     type: str = "append"
     # Optional. Accepts a single string (legacy / first-level key) or
     # a list of literal segments (nested append). ``None`` / ``""`` /
-    # ``[]`` all route to root append.
-    path: str | list[str] | None = None
+    # ``[]`` all route to root append. See :data:`MergePath`.
+    path: MergePath | None = None
     value: Any
 
     @model_serializer(mode="wrap")
@@ -276,8 +283,8 @@ class UpdateMerge(BaseModel):
     type: str = "merge"
     # Optional. Accepts a single string or a list of literal segments.
     # Pydantic resolves ``str | list[str]`` via smart-union: string
-    # input -> str, array input -> list[str].
-    path: str | list[str] | None = None
+    # input -> str, array input -> list[str]. See :data:`MergePath`.
+    path: MergePath | None = None
     value: Any
 
     @model_serializer(mode="wrap")

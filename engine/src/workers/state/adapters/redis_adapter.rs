@@ -7,7 +7,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+<<<<<<< HEAD
 use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
+||||||| parent of b40bda29b (refactor(sdk): align stream helper type names across the SDKs (#1858))
+use iii_helpers::stream::{SetResult, UpdateOp, UpdateResult};
+=======
+use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
+>>>>>>> b40bda29b (refactor(sdk): align stream helper type names across the SDKs (#1858))
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde_json::Value;
 use tokio::{sync::Mutex, time::timeout};
@@ -51,7 +57,7 @@ impl StateRedisAdapter {
 
 #[async_trait]
 impl StateAdapter for StateRedisAdapter {
-    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult> {
         let scope_key: String = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
         let serialized = serde_json::to_string(&value)
@@ -80,7 +86,7 @@ impl StateAdapter for StateRedisAdapter {
                 let old_value = s.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
                 let new_value = value.clone();
 
-                Ok(SetResult {
+                Ok(StreamSetResult {
                     old_value,
                     new_value,
                 })
@@ -110,7 +116,7 @@ impl StateAdapter for StateRedisAdapter {
         scope: &str,
         key: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult> {
+    ) -> anyhow::Result<StreamUpdateResult> {
         let mut conn = self.publisher.lock().await;
         let scope_key = format!("state:{}", scope);
 
@@ -158,7 +164,7 @@ impl StateAdapter for StateRedisAdapter {
                         Vec::new()
                     };
 
-                    Ok(UpdateResult {
+                    Ok(StreamUpdateResult {
                         old_value,
                         new_value,
                         errors,

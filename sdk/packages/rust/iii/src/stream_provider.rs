@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use iii_helpers::stream::{
-    DeleteResult, SetResult, StreamDeleteInput, StreamGetInput, StreamListGroupsInput,
-    StreamListInput, StreamSetInput, StreamUpdateInput, UpdateResult,
+    StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput,
+    StreamSetInput, StreamSetResult, StreamUpdateInput, StreamUpdateResult,
 };
 use serde_json::Value;
 
@@ -13,9 +13,9 @@ use crate::error::Error;
 #[async_trait]
 pub trait IStream: Send + Sync + 'static {
     async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, Error>;
-    async fn set(&self, input: StreamSetInput) -> Result<Option<SetResult>, Error>;
-    async fn delete(&self, input: StreamDeleteInput) -> Result<DeleteResult, Error>;
+    async fn set(&self, input: StreamSetInput) -> Result<Option<StreamSetResult>, Error>;
+    async fn delete(&self, input: StreamDeleteInput) -> Result<StreamDeleteResult, Error>;
     async fn list(&self, input: StreamListInput) -> Result<Vec<Value>, Error>;
     async fn list_groups(&self, input: StreamListGroupsInput) -> Result<Vec<String>, Error>;
-    async fn update(&self, input: StreamUpdateInput) -> Result<Option<UpdateResult>, Error>;
+    async fn update(&self, input: StreamUpdateInput) -> Result<Option<StreamUpdateResult>, Error>;
 }

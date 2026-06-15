@@ -14,7 +14,7 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 use tracing::Instrument;
 
-use iii_sdk::types::{SetResult, UpdateResult};
+use iii_helpers::stream::{StreamSetResult, StreamUpdateResult};
 
 use crate::{
     condition::check_condition,
@@ -569,7 +569,7 @@ impl StateWorker {
 #[service(name = "state")]
 impl StateWorker {
     #[function(id = "state::set", description = "Set a value in state")]
-    pub async fn set(&self, input: StateSetInput) -> FunctionResult<SetResult, ErrorBody> {
+    pub async fn set(&self, input: StateSetInput) -> FunctionResult<StreamSetResult, ErrorBody> {
         crate::workers::telemetry::collector::track_state_set();
 
         // LIVE guard: reject oversized values before touching the adapter.
@@ -680,7 +680,10 @@ impl StateWorker {
     }
 
     #[function(id = "state::update", description = "Update a value in state")]
-    pub async fn update(&self, input: StateUpdateInput) -> FunctionResult<UpdateResult, ErrorBody> {
+    pub async fn update(
+        &self,
+        input: StateUpdateInput,
+    ) -> FunctionResult<StreamUpdateResult, ErrorBody> {
         crate::workers::telemetry::collector::track_state_update();
         match self
             .adapter
@@ -831,9 +834,9 @@ mod tests {
         list_error: Option<&'static str>,
         list_groups_error: Option<&'static str>,
         destroy_error: Option<&'static str>,
-        set_result: SetResult,
+        set_result: StreamSetResult,
         get_result: Option<Value>,
-        update_result: UpdateResult,
+        update_result: StreamUpdateResult,
         list_values: Vec<Value>,
         groups: Vec<String>,
         destroy_called: AtomicBool,
@@ -849,12 +852,12 @@ mod tests {
                 list_error: None,
                 list_groups_error: None,
                 destroy_error: None,
-                set_result: SetResult {
+                set_result: StreamSetResult {
                     old_value: None,
                     new_value: serde_json::json!({"ok": true}),
                 },
                 get_result: None,
-                update_result: UpdateResult {
+                update_result: StreamUpdateResult {
                     old_value: None,
                     new_value: serde_json::json!({"ok": true}),
                     errors: Vec::new(),
@@ -868,7 +871,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl StateAdapter for FakeStateAdapter {
-        async fn set(&self, _scope: &str, _key: &str, _value: Value) -> anyhow::Result<SetResult> {
+        async fn set(
+            &self,
+            _scope: &str,
+            _key: &str,
+            _value: Value,
+        ) -> anyhow::Result<StreamSetResult> {
             match self.set_error {
                 Some(message) => Err(anyhow::anyhow!(message)),
                 None => Ok(self.set_result.clone()),
@@ -893,8 +901,8 @@ mod tests {
             &self,
             _scope: &str,
             _key: &str,
-            _ops: Vec<iii_sdk::UpdateOp>,
-        ) -> anyhow::Result<UpdateResult> {
+            _ops: Vec<iii_helpers::stream::UpdateOp>,
+        ) -> anyhow::Result<StreamUpdateResult> {
             match self.update_error {
                 Some(message) => Err(anyhow::anyhow!(message)),
                 None => Ok(self.update_result.clone()),
@@ -1152,7 +1160,7 @@ mod tests {
             assert_eq!(val.old_value, Some(serde_json::json!(1)));
             assert_eq!(val.new_value, serde_json::json!(2));
         } else {
-            panic!("Expected Success with SetResult");
+            panic!("Expected Success with StreamSetResult");
         }
 
         // Verify get returns updated value
