@@ -120,7 +120,20 @@ where
     }
 }
 
+/// Serializes the whole suite so no two tests contend for TCP ports.
+///
+/// `free_port()` reserves a port by binding `:0` and dropping the listener,
+/// which leaves a TOCTOU window before that port is bound for real — by a
+/// worker's listener or a held `_blocker`. cargo runs these `#[tokio::test]`s
+/// in parallel, so two tests can draw the same just-freed ephemeral port and
+/// collide with `EADDRINUSE` (observed on CI: a server bind landing on another
+/// test's blocker port). Each test holds this lock for its whole lifetime, so
+/// only one is reserving and binding ports at a time. `tokio::sync::Mutex`
+/// never poisons, so a panicking test still releases it cleanly for the next.
+static PORT_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Reserve a free TCP port by binding to port 0 and dropping the listener.
+/// Safe against cross-test reuse only while [`PORT_SERIAL`] is held.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind ephemeral")
@@ -131,6 +144,7 @@ fn free_port() -> u16 {
 
 #[tokio::test]
 async fn first_boot_seeds_configuration_entry() {
+    let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
@@ -153,6 +167,7 @@ async fn first_boot_seeds_configuration_entry() {
 
 #[tokio::test]
 async fn updated_value_hot_applies_without_rebind() {
+    let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
@@ -174,6 +189,7 @@ async fn updated_value_hot_applies_without_rebind() {
 
 #[tokio::test]
 async fn runtime_edits_survive_worker_restart() {
+    let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
     let seed = json!({ "host": "127.0.0.1", "port": 0, "default_timeout": 7000 });
@@ -201,6 +217,7 @@ async fn runtime_edits_survive_worker_restart() {
 
 #[tokio::test]
 async fn port_change_rebinds_the_listener() {
+    let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
@@ -247,6 +264,10 @@ async fn port_change_rebinds_the_listener() {
 
 #[tokio::test]
 async fn env_placeholders_expand_on_read() {
+    // Held for the whole test: serializes port use and also guards the
+    // process-global env mutation below from concurrent readers in sibling
+    // tests (see PORT_SERIAL).
+    let _serial = PORT_SERIAL.lock().await;
     // Scrub ambient state so the `${VAR:default}` default branch is what we
     // actually exercise. SAFETY: runs before the harness spawns any task;
     // remove_var is unsafe in edition 2024 because concurrent env access
@@ -280,6 +301,7 @@ async fn env_placeholders_expand_on_read() {
 
 #[tokio::test]
 async fn failed_rebind_keeps_previous_server() {
+    let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
@@ -318,6 +340,7 @@ async fn failed_rebind_keeps_previous_server() {
 
 #[tokio::test]
 async fn restart_falls_back_to_seed_when_stored_address_unbindable() {
+    let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
@@ -364,6 +387,7 @@ async fn restart_falls_back_to_seed_when_stored_address_unbindable() {
 
 #[tokio::test]
 async fn restart_refuses_seed_fallback_that_widens_loopback() {
+    let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
