@@ -25,6 +25,11 @@ use tokio::sync::RwLock;
 
 const KEY_FILE_EXTENSION: &str = "bin";
 
+/// Default persistence flush cadence (ms) for file-backed stores. Used when no
+/// `save_interval_ms` is configured and as the revert target when a
+/// reconfigure clears it.
+const DEFAULT_SAVE_INTERVAL_MS: u64 = 5000;
+
 #[derive(Archive, RkyvSerialize, RkyvDeserialize)]
 struct KeyStorage(String);
 
@@ -173,11 +178,11 @@ pub struct BuiltinKvStore {
     store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
     file_store_dir: Option<PathBuf>,
     dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
-    #[allow(
-        dead_code,
-        reason = "Going to be used in the future for graceful shutdown"
-    )]
-    handler: Option<tokio::task::JoinHandle<()>>,
+    /// Stop signal for the current save-loop instance. Replaced (and the prior
+    /// loop signalled to exit) when `save_interval_ms` is hot-reconfigured via
+    /// [`BuiltinKvStore::reconfigure`]. `None` for in-memory stores, which run
+    /// no save loop.
+    save_loop_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
 }
 
 impl BuiltinKvStore {
@@ -210,7 +215,8 @@ impl BuiltinKvStore {
         let interval = config
             .clone()
             .and_then(|cfg| cfg.get("save_interval_ms").and_then(|v| v.as_u64()))
-            .unwrap_or(5000);
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_SAVE_INTERVAL_MS);
 
         let file_store_dir = match store_method.as_str() {
             "file_based" => {
@@ -233,20 +239,64 @@ impl BuiltinKvStore {
         };
         let store = Arc::new(RwLock::new(data_from_disk));
         let dirty = Arc::new(RwLock::new(HashMap::new()));
-        let handler = file_store_dir.clone().map(|dir| {
-            let store = Arc::clone(&store);
-            let dirty = Arc::clone(&dirty);
-            tokio::spawn(async move {
-                Self::save_loop(store, dirty, interval, dir).await;
-            })
-        });
 
-        Self {
+        let kv = Self {
             store,
             file_store_dir,
             dirty,
-            handler,
+            save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
+        };
+
+        // File-backed stores run a background save loop; in-memory stores have
+        // nothing to persist. `spawn_save_loop` is a no-op when not file-backed.
+        kv.spawn_save_loop(interval);
+
+        kv
+    }
+
+    /// (Re)start the background save loop at `interval_ms`, signalling any prior
+    /// instance to exit so only the newest cadence persists. No-op for
+    /// in-memory stores. Called once from `new` and again from `reconfigure`.
+    fn spawn_save_loop(&self, interval_ms: u64) {
+        let Some(dir) = self.file_store_dir.clone() else {
+            return;
+        };
+
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        if let Some(previous) = self
+            .save_loop_stop
+            .lock()
+            .expect("save_loop_stop mutex poisoned")
+            .replace(stop_tx)
+        {
+            let _ = previous.send(true);
         }
+
+        let store = Arc::clone(&self.store);
+        let dirty = Arc::clone(&self.dirty);
+        tokio::spawn(async move {
+            Self::save_loop(store, dirty, interval_ms, dir, stop_rx).await;
+        });
+    }
+
+    /// Hot-reconfigure the store. Currently honors `save_interval_ms`: when the
+    /// store is file-backed, respawn the save loop at the new cadence (a clear /
+    /// invalid value reverts to the built-in default). No-op for in-memory
+    /// stores.
+    pub fn reconfigure(&self, config: &Value) {
+        if self.file_store_dir.is_none() {
+            return;
+        }
+        let interval = config
+            .get("save_interval_ms")
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_SAVE_INTERVAL_MS);
+        tracing::info!(
+            save_interval_ms = interval,
+            "[BuiltinKvStore] respawning save loop at new cadence"
+        );
+        self.spawn_save_loop(interval);
     }
 
     async fn save_loop(
@@ -254,39 +304,53 @@ impl BuiltinKvStore {
         dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
         polling_interval: u64,
         dir: PathBuf,
+        mut stop_rx: tokio::sync::watch::Receiver<bool>,
     ) {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(polling_interval));
         loop {
-            interval.tick().await;
-            let batch = {
-                let mut dirty = dirty.write().await;
-                if dirty.is_empty() {
-                    continue;
-                }
-                dirty.drain().collect::<Vec<_>>()
-            };
-
-            for (index, op) in batch {
-                match op {
-                    DirtyOp::Upsert => {
-                        let value = {
-                            let store = store.read().await;
-                            store.get(&index).cloned()
-                        };
-                        if let Some(value) = value
-                            && let Err(err) = persist_index_to_disk(&dir, &index, &value).await
-                        {
-                            tracing::error!(error = ?err, index = %index, "failed to persist index");
-                            let mut dirty = dirty.write().await;
-                            dirty.insert(index, DirtyOp::Upsert);
-                        }
+            tokio::select! {
+                changed = stop_rx.changed() => {
+                    // Sender dropped (Err) or signalled `true` → this instance
+                    // was replaced by a reconfigure (or the store was dropped).
+                    // Exit so only the newest loop persists.
+                    if changed.is_err() || *stop_rx.borrow() {
+                        tracing::debug!("[BuiltinKvStore] save loop stopped");
+                        break;
                     }
-                    DirtyOp::Delete => {
-                        if let Err(err) = delete_index_from_disk(&dir, &index).await {
-                            tracing::error!(error = ?err, index = %index, "failed to delete index");
-                            let mut dirty = dirty.write().await;
-                            dirty.insert(index, DirtyOp::Delete);
+                }
+                _ = interval.tick() => {
+                    let batch = {
+                        let mut dirty = dirty.write().await;
+                        if dirty.is_empty() {
+                            continue;
+                        }
+                        dirty.drain().collect::<Vec<_>>()
+                    };
+
+                    for (index, op) in batch {
+                        match op {
+                            DirtyOp::Upsert => {
+                                let value = {
+                                    let store = store.read().await;
+                                    store.get(&index).cloned()
+                                };
+                                if let Some(value) = value
+                                    && let Err(err) =
+                                        persist_index_to_disk(&dir, &index, &value).await
+                                {
+                                    tracing::error!(error = ?err, index = %index, "failed to persist index");
+                                    let mut dirty = dirty.write().await;
+                                    dirty.insert(index, DirtyOp::Upsert);
+                                }
+                            }
+                            DirtyOp::Delete => {
+                                if let Err(err) = delete_index_from_disk(&dir, &index).await {
+                                    tracing::error!(error = ?err, index = %index, "failed to delete index");
+                                    let mut dirty = dirty.write().await;
+                                    dirty.insert(index, DirtyOp::Delete);
+                                }
+                            }
                         }
                     }
                 }
@@ -568,6 +632,71 @@ mod test {
         }
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reconfigure_respawns_save_loop() {
+        let dir = temp_store_dir();
+        let index = "recfg";
+        let key = "k1";
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 1000
+        });
+        let kv_store = BuiltinKvStore::new(Some(config));
+
+        // Retune to a much faster cadence; the prior loop is signalled to exit
+        // and a fresh one takes over. A stop sender must remain registered.
+        kv_store.reconfigure(&serde_json::json!({ "save_interval_ms": 5 }));
+        assert!(
+            kv_store
+                .save_loop_stop
+                .lock()
+                .expect("save_loop_stop mutex")
+                .is_some()
+        );
+
+        let data = serde_json::json!({ "v": 1 });
+        kv_store
+            .set(index.to_string(), key.to_string(), data.clone())
+            .await;
+
+        // The respawned loop must still persist writes to disk.
+        let file_path = dir.join(index_file_name(index));
+        let timeout = std::time::Duration::from_secs(5);
+        let start = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            if let Ok(bytes) = std::fs::read(&file_path) {
+                let storage =
+                    rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
+                let on_disk: IndexMap<String, Value> = serde_json::from_str(&storage.0).unwrap();
+                if on_disk.get(key) == Some(&data) {
+                    break;
+                }
+            }
+            assert!(
+                start.elapsed() < timeout,
+                "value not persisted after reconfigure respawn"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reconfigure_in_memory_is_noop() {
+        let kv_store = BuiltinKvStore::new(None); // in-memory: no save loop
+        kv_store.reconfigure(&serde_json::json!({ "save_interval_ms": 100 }));
+        assert!(
+            kv_store
+                .save_loop_stop
+                .lock()
+                .expect("save_loop_stop mutex")
+                .is_none(),
+            "in-memory store must not spawn a save loop"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
