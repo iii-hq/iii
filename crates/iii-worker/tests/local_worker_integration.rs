@@ -25,6 +25,35 @@ use iii_worker::cli::local_worker::{
 use iii_worker::cli::project::{ProjectInfo, WORKER_MANIFEST};
 use std::collections::HashMap;
 
+/// RAII guard overriding `HOME` for tests that exercise `~/.iii` artifact
+/// paths (via `dirs::home_dir()`), restoring the prior value on drop. The
+/// async `handle_local_add` tests that use it run under `in_temp_dir_async`'s
+/// `CWD_LOCK`, which serializes them, so a dedicated env lock isn't required.
+struct HomeGuard {
+    original: Option<std::ffi::OsString>,
+}
+
+impl HomeGuard {
+    fn new(path: &std::path::Path) -> Self {
+        let original = std::env::var_os("HOME");
+        // SAFETY: test-only; serialized with sibling CWD/HOME tests via CWD_LOCK.
+        unsafe { std::env::set_var("HOME", path) };
+        Self { original }
+    }
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        // SAFETY: test-only; serialized with sibling CWD/HOME tests via CWD_LOCK.
+        unsafe {
+            match &self.original {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Group 1: Pure function tests (no filesystem, no async)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -428,6 +457,70 @@ async fn handle_local_add_force_replaces_existing() {
             "stored path '{}' should contain new canonical path '{}'",
             stored,
             canonical_project.display()
+        );
+    })
+    .await;
+}
+
+/// MOT-3585: `--force` must invalidate the `.iii-prepared` marker so the next
+/// boot reruns the in-VM dependency install — even when a co-named binary
+/// artifact also exists, which used to trip the `if freed == 0` guard in
+/// `delete_worker_artifacts` and strand the managed dir (marker + dep caches).
+#[tokio::test]
+async fn handle_local_add_force_removes_prepared_marker() {
+    in_temp_dir_async(|| async {
+        let cwd = std::env::current_dir().unwrap();
+
+        // Sandbox HOME so we touch a temp ~/.iii, never the developer's real one.
+        let home = cwd.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home_guard = HomeGuard::new(&home);
+
+        // Project with a manifest (no `dependencies:` block → no network).
+        let project_dir = cwd.join("my-worker");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("package.json"), "{}").unwrap();
+        std::fs::write(
+            project_dir.join(WORKER_MANIFEST),
+            "name: my-worker\nruntime:\n  kind: typescript\n  package_manager: npm\n  entry: src/index.ts\n",
+        )
+        .unwrap();
+
+        // Pre-seed config.yaml so the --force replace path runs.
+        TestConfigBuilder::new()
+            .with_worker("my-worker", Some("/old/path"))
+            .build(&cwd);
+
+        // Simulate a previously-prepared worker: a binary artifact (frees > 0,
+        // the regression trigger) plus the managed dir holding the marker and a
+        // dep cache.
+        let binary_dir = home.join(".iii/workers/my-worker");
+        std::fs::create_dir_all(&binary_dir).unwrap();
+        std::fs::write(binary_dir.join("blob"), "bytes").unwrap();
+
+        let managed_dir = home.join(".iii/managed/my-worker");
+        let marker = managed_dir.join("var/.iii-prepared");
+        std::fs::create_dir_all(managed_dir.join("bin")).unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "").unwrap();
+        std::fs::create_dir_all(managed_dir.join("var/iii/deps/node_modules")).unwrap();
+
+        let result =
+            handle_local_add(project_dir.to_str().unwrap(), true, false, true, false).await;
+        assert_eq!(result, 0, "force add should succeed");
+
+        // Config entry replaced with the new canonical path.
+        let stored = get_worker_path("my-worker").expect("worker path should be stored");
+        assert!(
+            !stored.contains("/old/path"),
+            "stale path should be replaced, got '{}'",
+            stored
+        );
+
+        // The reinstall trigger: the marker must be gone after --force.
+        assert!(
+            !marker.exists(),
+            "`.iii-prepared` marker must be removed on --force so install reruns"
         );
     })
     .await;

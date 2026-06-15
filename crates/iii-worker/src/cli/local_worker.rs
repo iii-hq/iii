@@ -537,6 +537,35 @@ pub async fn handle_local_add(
                 freed as f64 / 1_048_576.0
             );
         }
+        // Defense-in-depth (MOT-3585): guarantee the in-VM dependency install
+        // reruns on --force even if delete_worker_artifacts above partially
+        // failed and left the managed dir (and its `.iii-prepared` marker) on
+        // disk. The marker is what gates setup_cmd/install_cmd in
+        // build_libkrun_local_script; if it survives, a user who changed a lock
+        // file (e.g. added a package to pyproject.toml) gets the stale cache
+        // and a ModuleNotFoundError at runtime. Removing the tiny marker file
+        // is far more reliable than the recursive dir wipe.
+        let prepared_marker = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".iii/managed")
+            .join(&worker_name)
+            .join("var")
+            .join(".iii-prepared");
+        match std::fs::remove_file(&prepared_marker) {
+            Ok(()) => {
+                tracing::debug!(marker = %prepared_marker.display(), "removed prepared marker on --force");
+            }
+            // Expected when the full managed-dir wipe above already succeeded.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                eprintln!(
+                    "  {} could not remove prepared marker {}: {}",
+                    "warning:".yellow(),
+                    prepared_marker.display(),
+                    e
+                );
+            }
+        }
         if reset_config {
             let _ = super::config_file::remove_worker(&worker_name);
         }

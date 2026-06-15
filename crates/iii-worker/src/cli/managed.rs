@@ -2708,20 +2708,21 @@ pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
         }
     }
 
-    // Local-path worker: ~/.iii/managed/{name}/ (same as OCI)
+    // Local-path worker: ~/.iii/managed/{name}/. This is a DISTINCT path from
+    // the OCI image cache (~/.iii/images/{hash}/), so there is no double-count
+    // to guard against. Always remove it when present — leaving it behind on
+    // --force strands the `.iii-prepared` marker and the /var/iii/deps caches,
+    // which silently skips the in-VM dependency reinstall (MOT-3585).
     let managed_dir = home.join(".iii/managed").join(worker_name);
     if managed_dir.is_dir() {
-        // Only count if we haven't already freed anything (avoid double-counting with OCI)
-        if freed == 0 {
-            freed += dir_size(&managed_dir);
-            if let Err(e) = std::fs::remove_dir_all(&managed_dir) {
-                eprintln!(
-                    "  {} Failed to remove {}: {}",
-                    "warning:".yellow(),
-                    managed_dir.display(),
-                    e
-                );
-            }
+        freed += dir_size(&managed_dir);
+        if let Err(e) = std::fs::remove_dir_all(&managed_dir) {
+            eprintln!(
+                "  {} Failed to remove {}: {}",
+                "warning:".yellow(),
+                managed_dir.display(),
+                e
+            );
         }
     }
 
@@ -6072,6 +6073,60 @@ dependencies:
     fn delete_worker_artifacts_nothing_to_delete() {
         let freed = delete_worker_artifacts("__iii_test_no_artifacts_exist__");
         assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn delete_worker_artifacts_removes_managed_dir_even_when_binary_exists() {
+        // Regression for MOT-3585: a leftover binary artifact must NOT stop the
+        // managed dir (which holds the `.iii-prepared` marker and the
+        // /var/iii/deps caches) from being wiped. Before the fix, managed-dir
+        // removal was gated behind `if freed == 0`, so any earlier freed bytes
+        // (a co-named binary or OCI image) stranded the marker, which silently
+        // skipped the in-VM dependency reinstall on `--force`.
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let name = "mot3585-mixed-artifacts";
+
+            // Binary artifact at ~/.iii/workers/{name}/ — frees > 0 bytes, which
+            // is exactly the condition that used to trip the `if freed == 0`
+            // guard and leave the managed dir behind.
+            let binary_dir = home.join(".iii/workers").join(name);
+            std::fs::create_dir_all(&binary_dir).unwrap();
+            std::fs::write(binary_dir.join("blob"), "fake binary bytes").unwrap();
+
+            // Managed dir as a prepared local worker would have it: a populated
+            // `/bin`, the `.iii-prepared` marker, and a dep cache under
+            // /var/iii/deps.
+            let managed_dir = home.join(".iii/managed").join(name);
+            let marker = managed_dir.join("var").join(".iii-prepared");
+            std::fs::create_dir_all(managed_dir.join("bin")).unwrap();
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, "").unwrap();
+            std::fs::create_dir_all(managed_dir.join("var/iii/deps/.venv")).unwrap();
+            std::fs::write(managed_dir.join("var/iii/deps/.venv/pyvenv.cfg"), "stale").unwrap();
+
+            let freed = delete_worker_artifacts(name);
+
+            assert!(
+                !managed_dir.exists(),
+                "managed dir must be removed even when a binary artifact was freed first"
+            );
+            assert!(
+                !marker.exists(),
+                "prepared marker must be gone so the next boot reruns install"
+            );
+            assert!(!binary_dir.exists(), "binary artifact must be removed too");
+            assert!(
+                freed > 0,
+                "freed byte total should account for the removed artifacts"
+            );
+        });
     }
 
     #[test]
