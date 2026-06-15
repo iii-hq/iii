@@ -602,16 +602,18 @@ or `stream::delete`. The `event` field carries the mutation type and the changed
 <CodeGroup>
 
 ```typescript Node
+export type StreamChangeEventDetail = {
+  type: 'create' | 'update' | 'delete'
+  data: any
+}
+
 export interface StreamChangeEvent {
   type: 'stream'
   timestamp: number
   streamName: string
   groupId: string
   id?: string
-  event: {
-    type: 'create' | 'update' | 'delete'
-    data: any
-  }
+  event: StreamChangeEventDetail
 }
 ```
 
@@ -631,6 +633,12 @@ class StreamChangeEvent(BaseModel):
 ```
 
 ```rust Rust
+pub struct StreamChangeEventDetail {
+    #[serde(rename = "type")]
+    pub event_type: StreamEventType,
+    pub data: Value,
+}
+
 pub struct StreamChangeEvent {
     #[serde(rename = "type")]
     pub event_type: String,
@@ -640,7 +648,7 @@ pub struct StreamChangeEvent {
     #[serde(rename = "groupId")]
     pub group_id: String,
     pub id: Option<String>,
-    pub event: StreamEventDetail,
+    pub event: StreamChangeEventDetail,
 }
 ```
 
@@ -810,7 +818,7 @@ export type StreamUpdateResult<TData> = {
   errors?: UpdateOpError[]
 }
 
-export type DeleteResult = {
+export type StreamDeleteResult = {
   old_value?: any
 }
 
@@ -840,19 +848,19 @@ class StreamJoinResult(BaseModel):
 ```
 
 ```rust Rust
-pub struct SetResult {
+pub struct StreamSetResult {
     pub old_value: Option<Value>,
     pub new_value: Value,
 }
 
-pub struct UpdateResult {
+pub struct StreamUpdateResult {
     pub old_value: Option<Value>,
     pub new_value: Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<UpdateOpError>,
 }
 
-pub struct DeleteResult {
+pub struct StreamDeleteResult {
     pub old_value: Option<Value>,
 }
 
@@ -892,6 +900,8 @@ export type UpdateOpError = {
 ```
 
 ```python Python
+MergePath = str | list[str]
+
 UpdateOp = (
     UpdateSet
     | UpdateIncrement

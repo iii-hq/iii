@@ -12,7 +12,6 @@ from .iii_constants import (
 )
 from .iii_types import (
     MiddlewareFunctionInput,
-    StreamChannelRef,
     TriggerActionEnqueue,
 )
 from .stream import IStream
@@ -39,7 +38,6 @@ __all__ = [
     # RBAC types
     "MiddlewareFunctionInput",
     # Message types
-    "StreamChannelRef",
     "TriggerActionEnqueue",
     # Triggers
     "Trigger",
@@ -66,4 +64,15 @@ def __getattr__(name: str) -> Any:
             stacklevel=2,
         )
         return InvocationError
+    if name == "StreamChannelRef":
+        import warnings
+
+        warnings.warn(
+            "Importing StreamChannelRef from iii is deprecated; import it from iii.channel",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from .channel import StreamChannelRef
+
+        return StreamChannelRef
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

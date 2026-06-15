@@ -26,7 +26,7 @@ use crate::{
         },
     },
 };
-use iii_helpers::stream::{DeleteResult, SetResult, UpdateOp, UpdateResult};
+use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 
 const STREAM_TOPIC: &str = "stream::events";
 
@@ -73,7 +73,7 @@ impl StreamAdapter for RedisAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult> {
+    ) -> anyhow::Result<StreamUpdateResult> {
         let mut conn = self.publisher.lock().await;
         let key = format!("stream:{}:{}", stream_name, group_id);
 
@@ -121,7 +121,7 @@ impl StreamAdapter for RedisAdapter {
                         Vec::new()
                     };
 
-                    Ok(UpdateResult {
+                    Ok(StreamUpdateResult {
                         old_value,
                         new_value,
                         errors,
@@ -161,7 +161,7 @@ impl StreamAdapter for RedisAdapter {
         group_id: &str,
         item_id: &str,
         data: Value,
-    ) -> anyhow::Result<SetResult> {
+    ) -> anyhow::Result<StreamSetResult> {
         let key: String = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data).unwrap_or_default();
@@ -201,7 +201,7 @@ impl StreamAdapter for RedisAdapter {
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Value set in Redis");
 
-        Ok(SetResult {
+        Ok(StreamSetResult {
             old_value,
             new_value,
         })
@@ -230,7 +230,7 @@ impl StreamAdapter for RedisAdapter {
         stream_name: &str,
         group_id: &str,
         item_id: &str,
-    ) -> anyhow::Result<DeleteResult> {
+    ) -> anyhow::Result<StreamDeleteResult> {
         let stream_name = stream_name.to_string();
         let group_id = group_id.to_string();
         let item_id = item_id.to_string();
@@ -268,7 +268,7 @@ impl StreamAdapter for RedisAdapter {
             }
         };
 
-        Ok(DeleteResult { old_value })
+        Ok(StreamDeleteResult { old_value })
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {

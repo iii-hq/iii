@@ -7,7 +7,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use iii_helpers::stream::{DeleteResult, SetResult, UpdateOp, UpdateResult};
+use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -60,7 +60,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult> {
+    ) -> anyhow::Result<StreamUpdateResult> {
         Ok(self
             .storage
             .update(
@@ -82,7 +82,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         group_id: &str,
         item_id: &str,
         data: Value,
-    ) -> anyhow::Result<SetResult> {
+    ) -> anyhow::Result<StreamSetResult> {
         let index = self.gen_key(stream_name, group_id);
         let result = self
             .storage
@@ -107,7 +107,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         stream_name: &str,
         group_id: &str,
         item_id: &str,
-    ) -> anyhow::Result<DeleteResult> {
+    ) -> anyhow::Result<StreamDeleteResult> {
         let index = self.gen_key(stream_name, group_id);
         let old_value = self.storage.delete(index, item_id.to_string()).await;
 
