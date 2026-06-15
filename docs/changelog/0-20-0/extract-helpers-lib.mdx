@@ -1,0 +1,66 @@
+---
+title: 'Shared SDK types extracted into @iii-dev/helpers'
+description: 'The HTTP, queue, stream, and worker-connection-manager types move out of the root SDK into a new separately published package, @iii-dev/helpers (crate iii-helpers, PyPI iii-helpers), organized into submodules. The old root exports are removed.'
+---
+
+## What changed
+
+The user-facing types that the three SDKs share with the engine move out of the root SDK into a new package, **`@iii-dev/helpers`** (npm), **`iii-helpers`** (crate and PyPI, import `iii_helpers`). The package is organized into four submodules. This is a breaking change: the moved symbols are removed from the root SDK and are importable only from the helpers package.
+
+| Submodule | Node | Python | Rust |
+| --- | --- | --- | --- |
+| http | `@iii-dev/helpers/http` | `iii_helpers.http` | `iii_helpers::http` |
+| queue | `@iii-dev/helpers/queue` | `iii_helpers.queue` | `iii_helpers::queue` |
+| stream | `@iii-dev/helpers/stream` | `iii_helpers.stream` | `iii_helpers::stream` |
+| worker-connection-manager | `@iii-dev/helpers/worker-connection-manager` | `iii_helpers.worker_connection_manager` | `iii_helpers::worker_connection_manager` |
+
+## Moved symbols
+
+| Submodule | Symbols |
+| --- | --- |
+| http | `HttpAuthConfig`, `HttpInvocationConfig`, `HttpMethod`, the `http` handler helper, buffered `HttpRequest` and `HttpResponse` |
+| queue | `EnqueueResult` |
+| stream | the stream trigger configs, events, IO inputs, auth and result types, and the update operations (`UpdateOp`, `UpdateOpError`, `MergePath`, `UpdateSet`, `UpdateMerge`, and the other `Update*` variants) |
+| worker-connection-manager | `AuthInput`, `AuthResult`, and the six `On{Function,Trigger,TriggerType}Registration{Input,Result}` types |
+
+## What stays in the root SDK
+
+Types that reference core-only types stay in the root SDK in all three languages, because moving them would create a dependency cycle from the helpers package back into the core SDK: `IStream`, the streaming `StreamRequest` and `StreamResponse`, `MiddlewareFunctionInput`, and `TriggerActionEnqueue`. The root SDK depends on `iii-helpers` and imports the moved types from the submodules internally where its own code needs them.
+
+## Migration
+
+Import the moved types from the helpers package.
+
+Node:
+
+```ts
+// Before
+import { HttpAuthConfig, EnqueueResult } from 'iii-sdk'
+// After
+import { HttpAuthConfig } from '@iii-dev/helpers/http'
+import { EnqueueResult } from '@iii-dev/helpers/queue'
+```
+
+Python:
+
+```python
+# Before
+from iii import HttpInvocationConfig, AuthInput
+# After
+from iii_helpers.http import HttpInvocationConfig
+from iii_helpers.worker_connection_manager import AuthInput
+```
+
+Rust:
+
+```rust
+// Before
+use iii_sdk::{HttpAuthConfig, StreamTriggerConfig};
+// After
+use iii_helpers::http::HttpAuthConfig;
+use iii_helpers::stream::StreamTriggerConfig;
+```
+
+## Why
+
+These types are part of the shared contract between the SDKs and the engine. Housing them in one separately versioned package gives a single source of truth, lets consumers depend on only the surface they need, and keeps the root SDK focused on the worker and runtime API. It follows the `@iii-dev/observability` precedent. The helpers package has no dependency on the root SDK, so the dependency direction stays one way.
