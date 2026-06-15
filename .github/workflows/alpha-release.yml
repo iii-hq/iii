@@ -5,13 +5,22 @@ name: Alpha Release
 # latest stable tag and appends an accumulating -alpha.N suffix
 # (0.19.2-alpha.1, .2, .3 ...).
 #
+# Publishes:
+#   * SDK packages — npm + pypi + crates + go.
+#   * Engine binaries — iii / iii-worker / iii-init, attached to a GitHub
+#     prerelease on the iii-alpha/v* tag.
+#   * Builtin workers + skills — to the workers registry under a dedicated
+#     `alpha` tag (never next/latest).
+#   Console, docker and homebrew are intentionally excluded.
+#
 # Isolation guarantees:
 #   * Tags live under the iii-alpha/v* namespace, so release-iii.yml
 #     (trigger iii/v*) never fires.
 #   * No commit or push to main or to the feature branch — the version bump
 #     lives only in an ephemeral commit that the alpha tag points at.
-#   * Publishes ONLY npm + pypi + crates + go. No engine binaries, worker
-#     images, worker skills, homebrew or docker.
+#   * Engine binaries land on their own prerelease and workers use the
+#     dedicated `alpha` registry tag, so nothing collides with the official
+#     iii/v* releases or the next/latest channels.
 #
 # Run from: Actions -> Alpha Release -> "Use workflow from: <feature-branch>".
 # Note: dry_run still creates the iii-alpha tag (publishers need it to check
