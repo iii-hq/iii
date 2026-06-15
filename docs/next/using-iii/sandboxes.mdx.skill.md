@@ -11,45 +11,47 @@ iii worker add iii-sandbox
 ```
 
 <Note>
-  This page is a quick tour. For the full payload schemas, image catalog, configuration, and error
-  codes, see the [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
+  This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
+  [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
 </Note>
 
 You drive sandboxes by invoking the worker's `sandbox::*` triggers, the same way you call any
 function (see [Trigger a function from the CLI](./cli#trigger-a-function-from-the-cli)). Images are
-catalog names such as `python` or `node`, not arbitrary OCI references.
+catalog names such as `python` or `node`, not arbitrary OCI references. The examples below capture
+the new sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
 
 ## One-shot run
 
-`sandbox::run` boots a VM, runs a snippet, captures its output, and stops the VM in a single call.
+`sandbox::run` boots a VM, runs a snippet, captures its output, and stops the VM in a single call,
+so there is nothing to clean up.
 
 ```bash
-iii trigger sandbox::run --json '{"image":"python","lang":"python","code":"print(2+2)"}'
+iii trigger sandbox::run image=python lang=python code='print(2+2)'
 ```
 
 `lang` accepts `node`, `python`, `shell`, or an interpreter path. Pass `keep_sandbox=true` to leave
-the VM running afterwards.
+the VM running afterwards (then stop it yourself with `sandbox::stop`).
 
 ## Lifecycle
 
-For multi-step work, create a sandbox, operate on it with its id, then stop it. `sandbox::create`
-returns a `sandbox_id` in its response that the later calls reference.
+For multi-step work, create a sandbox, operate on it with its id, then stop it. Most triggers take
+flat `key=value` arguments; only nested payloads need `--json`.
 
 ```bash
-iii trigger sandbox::create image=python   # returns {"sandbox_id": "...", "image": "python"}
-iii trigger sandbox::exec --json '{"sandbox_id":"<sandbox-id>","cmd":"python","args":["--version"]}'
-iii trigger sandbox::list                  # active sandboxes
-iii trigger sandbox::stop sandbox_id=<sandbox-id>
+SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)   # boot, capture the id
+iii trigger sandbox::exec sandbox_id=$SB cmd='python --version'      # run a command
+iii trigger sandbox::list                                            # active sandboxes
+iii trigger sandbox::stop sandbox_id=$SB                             # stop when done
 ```
 
-`sandbox::exec` also accepts a shell-line `cmd` (`"cmd":"python --version"`) or a single
-`argv` array. It is not a shell, so it does not expand variables or chain commands; use
-`sandbox::run` with `lang=shell` for that.
+A whitespace-containing `cmd` is split into a command and its arguments. It is not a shell, so it
+does not expand variables or chain commands; use `sandbox::run` with `lang=shell` for that.
 
 ## Catalog
 
 `sandbox::catalog::list` reports the images this engine can boot (presets plus any
-operator-registered images). Call it when you do not already know what is available.
+operator-registered images). Call it when you do not already know what is available. It does not
+boot a sandbox, so there is nothing to stop.
 
 ```bash
 iii trigger sandbox::catalog::list
@@ -61,16 +63,19 @@ The `sandbox::fs::*` triggers manipulate files inside a running sandbox. Each ta
 plus operation-specific fields.
 
 ```bash
-iii trigger sandbox::fs::mkdir --json '{"sandbox_id":"<sandbox-id>","path":"/work","parents":true}'
-iii trigger sandbox::fs::write --json '{"sandbox_id":"<sandbox-id>","path":"/work/main.py","content":"print(1)\n"}'
-iii trigger sandbox::fs::ls    --json '{"sandbox_id":"<sandbox-id>","path":"/work"}'
-iii trigger sandbox::fs::stat  --json '{"sandbox_id":"<sandbox-id>","path":"/work/main.py"}'
-iii trigger sandbox::fs::read  --json '{"sandbox_id":"<sandbox-id>","path":"/work/main.py"}'
-iii trigger sandbox::fs::chmod --json '{"sandbox_id":"<sandbox-id>","path":"/work/main.py","mode":"0644"}'
-iii trigger sandbox::fs::grep  --json '{"sandbox_id":"<sandbox-id>","path":"/work","pattern":"print"}'
-iii trigger sandbox::fs::sed   --json '{"sandbox_id":"<sandbox-id>","path":"/work","pattern":"print","replacement":"log"}'
-iii trigger sandbox::fs::mv    --json '{"sandbox_id":"<sandbox-id>","src":"/work/main.py","dst":"/work/app.py"}'
-iii trigger sandbox::fs::rm    --json '{"sandbox_id":"<sandbox-id>","path":"/work/app.py"}'
+SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
+D=/work; F=$D/main.py
+iii trigger sandbox::fs::mkdir sandbox_id=$SB path=$D parents=true
+iii trigger sandbox::fs::write sandbox_id=$SB path=$F content='print(1)'
+iii trigger sandbox::fs::ls    sandbox_id=$SB path=$D
+iii trigger sandbox::fs::stat  sandbox_id=$SB path=$F
+iii trigger sandbox::fs::read  sandbox_id=$SB path=$F
+iii trigger sandbox::fs::chmod sandbox_id=$SB path=$F mode=0644
+iii trigger sandbox::fs::grep  sandbox_id=$SB path=$D pattern=print
+iii trigger sandbox::fs::sed   sandbox_id=$SB path=$D pattern=print replacement=log
+iii trigger sandbox::fs::mv    sandbox_id=$SB src=$F dst=$D/app.py
+iii trigger sandbox::fs::rm    sandbox_id=$SB path=$D/app.py
+iii trigger sandbox::stop      sandbox_id=$SB
 ```
 
 ## Moving files in and out
@@ -78,6 +83,11 @@ iii trigger sandbox::fs::rm    --json '{"sandbox_id":"<sandbox-id>","path":"/wor
 To copy a file between the host and a running sandbox, use the `iii worker sandbox` CLI:
 
 ```bash
-iii worker sandbox upload <sandbox-id> ./local.txt /work/remote.txt    # host -> sandbox
-iii worker sandbox download <sandbox-id> /work/result.txt ./result.txt # sandbox -> host
+SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
+echo 'hello from host' > ./local.txt                        # make a file to send
+iii worker sandbox upload "$SB" ./local.txt /remote.txt     # host -> sandbox
+rm ./local.txt                                              # remove the local copy
+iii worker sandbox download "$SB" /remote.txt ./remote.txt  # retrieve it from the sandbox
+cat ./remote.txt                                            # -> hello from host
+iii trigger sandbox::stop sandbox_id=$SB
 ```

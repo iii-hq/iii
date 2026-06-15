@@ -36,17 +36,34 @@ iii trigger math::add a=2 b=3
 
 ## Subcommands
 
-| Subcommand    | What it does                                                                                          |
-| ------------- | ----------------------------------------------------------------------------------------------------- |
-| `iii trigger` | Invoke a registered function on a running engine.                                                     |
-| `iii worker`  | Manage workers: add, remove, list, start/stop, update, verify. See [Workers](./workers).              |
-| `iii project` | Manage iii projects: scaffold a new one, generate Docker assets. See [Deployment](./deployment).      |
-| `iii console` | Launch the iii web console. See [Console](./console).                                                 |
-| `iii cloud`   | Manage hosted iii deployments. See [Managing iii Cloud deployments](#managing-iii-cloud-deployments). |
-| `iii update`  | Update iii and its managed binaries. See [Updating iii itself](#updating-iii-itself).                 |
-
 Running `iii` with no subcommand starts the engine from `./config.yaml` (or the path passed to
-`--config`); pass `--use-default-config` to start with the built-in defaults instead.
+`--config`); pass `--use-default-config` to start with the built-in defaults instead. For the full
+flag-level reference of every subcommand, see the generated [CLI reference](../cli-reference/index).
+
+### `iii trigger`
+
+Invoke a registered function on a running engine. See [Trigger a function from the
+CLI](#trigger-a-function-from-the-cli).
+
+### `iii worker`
+
+Manage workers: add, remove, list, start, stop, update, verify. See [Workers](./workers).
+
+### `iii project`
+
+Scaffold a new iii project or generate Docker assets. See [Deployment](./deployment).
+
+### `iii console`
+
+Launch the iii web console. See [Console](./console).
+
+### `iii cloud`
+
+Manage hosted iii deployments. See [Managing iii Cloud deployments](#managing-iii-cloud-deployments).
+
+### `iii update`
+
+Update iii and its managed binaries. See [Updating iii](#updating-iii).
 
 ## Managing iii Cloud deployments
 

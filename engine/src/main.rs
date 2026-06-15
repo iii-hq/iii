@@ -153,7 +153,7 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Manage workers (add, remove, list, info)
+    /// Manage workers (add, remove, list)
     #[command(
         trailing_var_arg = true,
         allow_hyphen_values = true,
