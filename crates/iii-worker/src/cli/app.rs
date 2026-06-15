@@ -84,7 +84,8 @@ pub enum Commands {
         worker_name: Option<String>,
     },
 
-    /// Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
+    /// Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed).
+    /// Does not affect a worker's own build artifacts or dependencies (e.g. node_modules, Cargo.lock).
     Clear {
         /// Worker name to clear (omit to clear all)
         #[arg(value_name = "WORKER")]
