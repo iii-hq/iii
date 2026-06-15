@@ -16,8 +16,12 @@ The three SDKs are aligned so the same concept has the same name everywhere. Thi
 | Buffered HTTP request and response | `ApiRequest`, `ApiResponse` | `HttpRequest`, `HttpResponse` |
 | Stream change event (Rust) | `StreamCallRequest` | `StreamChangeEvent` |
 | Stream join and leave event (Rust) | `StreamJoinLeaveCallRequest` | `StreamJoinLeaveEvent` |
+| Stream change event detail | Rust `StreamEventDetail`, Node inline object | `StreamChangeEventDetail` (all three) |
+| Stream set result | Rust `SetResult` | `StreamSetResult` (all three) |
+| Stream update result | Rust `UpdateResult` | `StreamUpdateResult` (all three) |
+| Stream delete result | Rust and Node `DeleteResult` | `StreamDeleteResult` (all three) |
 
-The streaming request and response types keep the `StreamRequest` and `StreamResponse` names. The buffered types reclaim the `HttpRequest` and `HttpResponse` names from them. `EngineFunctions` and `EngineTriggers` are now present in the Python and Rust SDKs as well, not only Node.
+The streaming request and response types keep the `StreamRequest` and `StreamResponse` names. The buffered types reclaim the `HttpRequest` and `HttpResponse` names from them. `EngineFunctions` and `EngineTriggers` are now present in the Python and Rust SDKs as well, not only Node. `MergePath` (the path argument for merge and append update operations) is now a named export in all three SDKs.
 
 ## Removals
 
@@ -27,7 +31,7 @@ The streaming request and response types keep the `StreamRequest` and `StreamRes
 | `Value` re-export | Rust | depend on `serde_json` directly |
 | `IIIForbiddenError`, `IIITimeoutError` | Python | check the error `code` on the invocation error, matching Node and Rust |
 | `TriggerActionType` alias | Node | use the `TriggerAction` value |
-| `FieldPath`, `MergePath` (separate path helpers) | Rust | use `UpdateSet` and `UpdateMerge` |
+| `FieldPath` (separate path helper) | Rust | use `UpdateSet` and `UpdateMerge`; the merge and append path argument is the retained `MergePath` |
 | `Logger` re-export | Node | import from `@iii-dev/observability` |
 | OpenTelemetry suite re-export | Python | import from `iii-observability` |
 
