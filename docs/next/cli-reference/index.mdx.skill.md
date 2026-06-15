@@ -130,7 +130,7 @@ iii worker <COMMAND>
 | Command | Description |
 | ------- | ----------- |
 | [`add`](#iii-worker-add) | Install a worker from the iii registry, a local directory, or by OCI image reference. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs |
-| [`clear`](#iii-worker-clear) | Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed) |
+| [`clear`](#iii-worker-clear) | Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed). Does not affect a worker's own build artifacts or dependencies (e.g. node_modules, Cargo.lock) |
 | [`exec`](#iii-worker-exec) | Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY |
 | [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
 | [`list`](#iii-worker-list) | List all workers and their status |
@@ -166,7 +166,7 @@ iii worker add [OPTIONS] <WORKER[@VERSION]>...
 
 ### `iii worker clear`
 
-Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
+Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed). Does not affect a worker's own build artifacts or dependencies (e.g. node_modules, Cargo.lock)
 
 ```text
 iii worker clear [OPTIONS] [WORKER]
