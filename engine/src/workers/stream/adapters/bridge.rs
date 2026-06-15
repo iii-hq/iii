@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_helpers::stream::{DeleteResult, SetResult, UpdateOp, UpdateResult};
+use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{III, InitOptions, register_worker};
 use serde_json::Value;
@@ -60,7 +60,7 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult> {
+    ) -> anyhow::Result<StreamUpdateResult> {
         let data = StreamUpdateInput {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
@@ -79,7 +79,7 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update value via bridge: {}", e))?;
 
-        serde_json::from_value::<UpdateResult>(result)
+        serde_json::from_value::<StreamUpdateResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize update result: {}", e))
     }
 
@@ -115,7 +115,7 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
         data: Value,
-    ) -> anyhow::Result<SetResult> {
+    ) -> anyhow::Result<StreamSetResult> {
         let input = StreamSetInput {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
@@ -133,7 +133,7 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value via bridge: {}", e))?;
 
-        serde_json::from_value::<SetResult>(result)
+        serde_json::from_value::<StreamSetResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
     }
 
@@ -168,7 +168,7 @@ impl StreamAdapter for BridgeAdapter {
         stream_name: &str,
         group_id: &str,
         item_id: &str,
-    ) -> anyhow::Result<DeleteResult> {
+    ) -> anyhow::Result<StreamDeleteResult> {
         let data = StreamDeleteInput {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
@@ -185,7 +185,7 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value via bridge: {}", e))?;
 
-        serde_json::from_value::<DeleteResult>(result)
+        serde_json::from_value::<StreamDeleteResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize delete result: {}", e))
     }
 

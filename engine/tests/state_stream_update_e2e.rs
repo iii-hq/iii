@@ -3,7 +3,7 @@
 //
 // Closes iii-hq/iii#1546. Each test here exercises behavior that
 // requires going through `BuiltinKvStore` (persistence across calls,
-// op-batch interleaving, error plumbing into `UpdateResult`). The
+// op-batch interleaving, error plumbing into `StreamUpdateResult`). The
 // in-batch nested-merge mechanics — auto-create intermediates, replace
 // non-object intermediates, validation rejections — are covered by
 // the unit tests in `engine/src/update_ops.rs`.

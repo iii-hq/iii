@@ -7,7 +7,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+<<<<<<< HEAD
 use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
+||||||| parent of b40bda29b (refactor(sdk): align stream helper type names across the SDKs (#1858))
+use iii_helpers::stream::{SetResult, UpdateOp, UpdateResult};
+=======
+use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
+>>>>>>> b40bda29b (refactor(sdk): align stream helper type names across the SDKs (#1858))
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -40,7 +46,7 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         Ok(())
     }
 
-    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult> {
         Ok(self
             .storage
             .set(scope.to_string(), key.to_string(), value.clone())
@@ -63,7 +69,7 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         scope: &str,
         key: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult> {
+    ) -> anyhow::Result<StreamUpdateResult> {
         Ok(self
             .storage
             .update(scope.to_string(), key.to_string(), ops)
