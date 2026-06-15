@@ -669,8 +669,7 @@ mod test {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             if let Ok(bytes) = std::fs::read(&file_path) {
-                let storage =
-                    rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
+                let storage = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
                 let on_disk: IndexMap<String, Value> = serde_json::from_str(&storage.0).unwrap();
                 if on_disk.get(key) == Some(&data) {
                     break;

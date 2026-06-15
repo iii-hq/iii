@@ -49,6 +49,12 @@ type: "reference"
 
   Logs fetched over the bus are stripped of ANSI/OSC escapes and spinner residue — raw escape bytes are token noise for LLM consumers and can rewrite the reader's terminal. Pass `raw: true` to opt out.
 
+  ## `iii-state` runtime settings live in the configuration worker
+
+  The state worker now registers its config schema under the `iii-state` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart. Two new runtime knobs apply live: `triggers_enabled` globally pauses/resumes state change-trigger fan-out, and `max_value_bytes` rejects oversized `state::set` writes with `VALUE_TOO_LARGE`. `save_interval_ms` retunes the file-backed `kv` save cadence by respawning the save loop. The schema carries per-field descriptions and rejects invalid values (e.g. `max_value_bytes: 0`, `save_interval_ms: 10`) at set time.
+
+  The storage `adapter` is **restart-tier**: a change is logged and takes effect at the next engine start, where a boot-read of the persisted `iii-state` entry drives adapter construction — so a runtime-edited adapter survives restarts. As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-state.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read.
+
   ## Hardening
 
   - The VM UDP relay now writes a real pseudo-header checksum on response packets (strict guest stacks drop zero-checksum UDP), bounds payloads to the 16-bit IP length limit instead of silently truncating, and no longer injects empty frames into the guest's rx ring.

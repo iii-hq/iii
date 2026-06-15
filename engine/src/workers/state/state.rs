@@ -920,14 +920,16 @@ mod tests {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
         let adapter: Arc<dyn StateAdapter> = Arc::new(BuiltinKvStoreAdapter::new(None));
-        let module = StateWorker::from_config(engine.clone(), StateModuleConfig::default(), adapter);
+        let module =
+            StateWorker::from_config(engine.clone(), StateModuleConfig::default(), adapter);
         (engine, module)
     }
 
     fn setup_with_adapter(adapter: Arc<dyn StateAdapter>) -> (Arc<Engine>, StateWorker) {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
-        let module = StateWorker::from_config(engine.clone(), StateModuleConfig::default(), adapter);
+        let module =
+            StateWorker::from_config(engine.clone(), StateModuleConfig::default(), adapter);
         (engine, module)
     }
 

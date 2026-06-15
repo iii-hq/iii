@@ -303,9 +303,9 @@ mod tests {
                 let stored_value = stored_value.clone();
                 async move {
                     match stored_value {
-                        Some(value) => {
-                            FunctionResult::Success(Some(json!({ "id": CONFIG_ID, "value": value })))
-                        }
+                        Some(value) => FunctionResult::Success(Some(
+                            json!({ "id": CONFIG_ID, "value": value }),
+                        )),
                         None => FunctionResult::Failure(crate::protocol::ErrorBody {
                             message: format!("configuration '{CONFIG_ID}' not found"),
                             code: "NOT_FOUND".to_string(),
