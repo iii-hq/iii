@@ -73,7 +73,7 @@ iii project init [OPTIONS] [NAME]
 | `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 | `--skip-iii` | Skip the iii-engine version compatibility check |
-| `--allow-non-empty` | Allow scaffolding into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
+| `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
 
 ### `iii trigger`
 
@@ -139,12 +139,12 @@ iii worker <COMMAND>
 | [`remove`](#iii-worker-remove) | Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them |
 | [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start. By default waits up to 120s for the worker to report ready (same as start) |
 | [`sandbox`](#iii-worker-sandbox) | Manage ephemeral sandboxes (create/exec/stop short-lived VMs) |
-| [`start`](#iii-worker-start) | Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready |
-| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing) |
+| [`start`](#iii-worker-start) | Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready before returning. Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for tracking workers |
+| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a success or failure state |
 | [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings the worker back up |
-| [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock. Pass `--frozen` in CI to verify without mutating local files |
-| [`update`](#iii-worker-update) | Re-resolve locked workers and update iii.lock |
-| [`verify`](#iii-worker-verify) | Verify config.yaml is represented in iii.lock without mutating files |
+| [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock |
+| [`update`](#iii-worker-update) | Update workers in iii.lock to their latest allowed version |
+| [`verify`](#iii-worker-verify) | Verify the worker's manifest (iii.worker.yaml) is valid |
 
 ### `iii worker add`
 
@@ -160,7 +160,7 @@ iii worker add [OPTIONS] <WORKER[@VERSION]>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` keeps the entry, merging your customizations over the fresh defaults; this flag drops them. Only takes effect together with `--force` on add (reinstall implies it) |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
 | `--no-wait` | Don't block waiting for the engine to finish booting the worker |
 
@@ -217,8 +217,8 @@ iii worker init [OPTIONS] [NAME]
 | ------ | ----------- |
 | `-d, --directory <DIRECTORY>` | Target directory. Takes precedence over NAME. If neither NAME nor `--directory` is provided, the directory defaults to the current directory |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
-| `--allow-non-empty` | Allow initialization into a non-empty directory |
-| `-l, --language <LANG>` | Worker language (typescript \| javascript \| python \| rust). Accepts short aliases (`ts`, `js`, `py`, `rust`, `rs`). When omitted, the user is prompted interactively. Providing this flag fully scripts the scaffold |
+| `--allow-non-empty` | Allow initialization into a non-empty directory. Re-running init in a directory with `.iii/worker.ini` is always allowed (idempotent re-init) |
+| `-l, --language <LANG>` | Worker language (`typescript` \| `javascript` \| `python` \| `rust`). Accepts short aliases (`ts`, `js`, `py`, `rust`, `rs`). When omitted, the user is prompted interactively |
 | `--skip-iii` | Skip the iii-engine version compatibility check enforced by the scaffolder. Mirrors the flag on `iii project init` |
 
 ### `iii worker list`
@@ -261,7 +261,7 @@ iii worker reinstall [OPTIONS] <WORKER[@VERSION]>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` keeps the entry, merging your customizations over the fresh defaults; this flag drops them. Only takes effect together with `--force` on add (reinstall implies it) |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
 
 ### `iii worker remove`
 
@@ -293,7 +293,7 @@ iii worker restart [OPTIONS] <WORKER>
 
 | Option | Description |
 | ------ | ----------- |
-| `--no-wait` | Don't block waiting for the worker to report ready |
+| `--no-wait` | Return immediately. Don't block waiting for the worker to report ready |
 | `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Same semantics as `start --port` [default: 49134] |
 | `--config <PATH>` | Same as `start --config` |
 
@@ -447,7 +447,7 @@ iii worker sandbox upload [OPTIONS] <SANDBOX_ID> <LOCAL_PATH> <REMOTE_PATH>
 
 ### `iii worker start`
 
-Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready
+Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready before returning. Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for tracking workers
 
 ```text
 iii worker start [OPTIONS] <WORKER>
@@ -459,13 +459,13 @@ iii worker start [OPTIONS] <WORKER>
 
 | Option | Description |
 | ------ | ----------- |
-| `--no-wait` | Don't block waiting for the worker to report ready |
+| `--no-wait` | Return immediately. Don't block waiting for the worker to report ready |
 | `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Defaults to DEFAULT_PORT; the engine passes its configured iii-worker-manager port when auto-spawning external workers so non-default manager ports don't silently break connectivity [default: 49134] |
 | `--config <PATH>` | YAML config forwarded to the spawned worker binary as `--config <path>`. Binary workers only; OCI workers warn and ignore |
 
 ### `iii worker status`
 
-Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a terminal phase (ready/missing)
+Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a success or failure state
 
 ```text
 iii worker status [OPTIONS] <WORKER>
@@ -497,7 +497,7 @@ iii worker stop [OPTIONS] <WORKER>
 
 ### `iii worker sync`
 
-Install registry-managed workers exactly from iii.lock. Pass `--frozen` in CI to verify without mutating local files
+Install registry-managed workers exactly from iii.lock
 
 ```text
 iii worker sync [OPTIONS]
@@ -505,11 +505,11 @@ iii worker sync [OPTIONS]
 
 | Option | Description |
 | ------ | ----------- |
-| `--frozen` | Verify the lockfile without mutating local files |
+| `--frozen` | Verify lockfile dependencies without mutating local files. Useful for validation in CICD |
 
 ### `iii worker update`
 
-Re-resolve locked workers and update iii.lock
+Update workers in iii.lock to their latest allowed version
 
 ```text
 iii worker update [WORKER]
@@ -521,7 +521,7 @@ iii worker update [WORKER]
 
 ### `iii worker verify`
 
-Verify config.yaml is represented in iii.lock without mutating files
+Verify the worker's manifest (iii.worker.yaml) is valid
 
 ```text
 iii worker verify [OPTIONS]

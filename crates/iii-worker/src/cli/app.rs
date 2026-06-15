@@ -77,7 +77,7 @@ pub enum Commands {
         args: AddArgs,
     },
 
-    /// Re-resolve locked workers and update iii.lock
+    /// Update workers in iii.lock to their latest allowed version
     Update {
         /// Optional worker name to update. If omitted, updates every worker in iii.lock.
         #[arg(value_name = "WORKER")]
@@ -96,7 +96,9 @@ pub enum Commands {
     },
 
     /// Start a previously stopped managed worker container.
-    /// By default waits up to 120s for the worker to report ready.
+    /// By default waits up to 120s for the worker to report ready before returning.
+    /// Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for
+    /// tracking workers.
     Start {
         /// Worker name to start
         #[arg(value_name = "WORKER")]
@@ -157,14 +159,14 @@ pub enum Commands {
     List,
 
     /// Install registry-managed workers exactly from iii.lock.
-    /// Pass --frozen in CI to verify without mutating local files.
     Sync {
-        /// Verify the lockfile without mutating local files.
+        /// Verify lockfile dependencies without mutating local files.
+        /// Useful for validation in CICD.
         #[arg(long)]
         frozen: bool,
     },
 
-    /// Verify config.yaml is represented in iii.lock without mutating files
+    /// Verify the worker's manifest (iii.worker.yaml) is valid.
     Verify {
         /// Also check dependency declarations against locked versions.
         #[arg(long)]
@@ -172,8 +174,8 @@ pub enum Commands {
     },
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
-    /// By default refreshes live in place until the worker reaches a terminal
-    /// phase (ready/missing).
+    /// By default refreshes live in place until the worker reaches a success
+    /// or failure state.
     Status {
         /// Worker name
         #[arg(value_name = "WORKER")]
