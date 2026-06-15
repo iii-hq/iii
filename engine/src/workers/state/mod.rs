@@ -6,11 +6,11 @@
 
 pub mod adapters;
 pub mod config;
+pub mod configuration;
 #[allow(clippy::module_inception)]
 mod state;
 
 pub mod registry;
-pub mod snapshot;
 mod structs;
 mod trigger;
 
