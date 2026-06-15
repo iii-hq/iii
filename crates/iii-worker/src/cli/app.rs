@@ -19,9 +19,8 @@ pub struct AddArgs {
     pub worker_names: Vec<String>,
 
     /// Discard the worker's config.yaml entry and recreate it from registry
-    /// defaults. Plain `add --force` keeps the entry, merging your
-    /// customizations over the fresh defaults; this flag drops them. Only
-    /// takes effect together with --force on add (reinstall implies it).
+    /// defaults. Plain `add --force` would otherwise keep the entry. Only
+    /// takes effect together with --force on add.
     #[arg(long)]
     pub reset_config: bool,
 }
@@ -103,7 +102,7 @@ pub enum Commands {
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Don't block waiting for the worker to report ready.
+        /// Return immediately. Don't block waiting for the worker to report ready.
         #[arg(long)]
         no_wait: bool,
 
@@ -140,7 +139,7 @@ pub enum Commands {
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Don't block waiting for the worker to report ready.
+        /// Return immediately. Don't block waiting for the worker to report ready.
         #[arg(long)]
         no_wait: bool,
 

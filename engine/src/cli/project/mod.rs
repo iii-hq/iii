@@ -69,7 +69,7 @@ pub struct InitArgs {
     #[arg(long = "skip-iii")]
     pub skip_iii: bool,
 
-    /// Allow scaffolding into a non-empty directory. Without this flag, init
+    /// Allow initialization into a non-empty directory. Without this flag, init
     /// errors out if the target dir contains anything other than hidden
     /// dotfiles (e.g. `.git/`). Re-running init in a directory with
     /// `.iii/project.ini` is always allowed (idempotent re-init).
