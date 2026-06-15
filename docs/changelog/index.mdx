@@ -6,32 +6,42 @@ type: "reference"
 ---
 
 <Update label="0.20.0" description="June 2026">
-  ## SDK: public exports grouped into submodules
+  ## SDK: a major, breaking reorganization of the public surface
 
-  The flat root export surface of the Node, Python, and Rust SDKs is being reorganized into named submodules. This first slice moves four groups and renames the invocation error types. Every old import path keeps working as a deprecated re-export, so this release is backward compatible at runtime.
+  The Node, Python, and Rust SDKs are reorganized for a consistent, well-factored public surface. Names are aligned across the three languages, the shared types move into a new package, and the rest of the root surface is grouped into named submodules. This release is breaking: many symbols move out of the SDK root.
 
-  | Group | Node | Python | Rust |
+  ### Shared types extracted into `@iii-dev/helpers`
+
+  The HTTP, queue, stream, and worker-connection-manager types move out of the root SDK into a new separately published package, **`@iii-dev/helpers`** (npm), **`iii-helpers`** (crate and PyPI, import `iii_helpers`), organized into four submodules. The root exports are removed; import these types from the helpers package.
+
+  | Submodule | Node | Python | Rust |
   | --- | --- | --- | --- |
-  | errors | `iii-sdk/errors` | `iii.errors` | `iii_sdk::errors` |
-  | channel | `iii-sdk/channel` | `iii.channel` | `iii_sdk::channel` |
-  | trigger | `iii-sdk/trigger` | `iii.trigger` | `iii_sdk::trigger` |
-  | runtime | `iii-sdk/runtime` | `iii.runtime` | `iii_sdk::runtime` |
+  | http | `@iii-dev/helpers/http` | `iii_helpers.http` | `iii_helpers::http` |
+  | queue | `@iii-dev/helpers/queue` | `iii_helpers.queue` | `iii_helpers::queue` |
+  | stream | `@iii-dev/helpers/stream` | `iii_helpers.stream` | `iii_helpers::stream` |
+  | worker-connection-manager | `@iii-dev/helpers/worker-connection-manager` | `iii_helpers.worker_connection_manager` | `iii_helpers::worker_connection_manager` |
 
-  ### Errors renamed (the `III` prefix is dropped)
+  `IStream`, the streaming `StreamRequest` and `StreamResponse`, `MiddlewareFunctionInput`, and `TriggerActionEnqueue` stay in the root SDK. See [the helpers entry](./0-20-0/extract-helpers-lib) for the full symbol list and migration.
 
-  - Node: `IIIInvocationError` becomes `InvocationError` (and `IIIInvocationErrorInit` becomes `InvocationErrorInit`), exported from `iii-sdk/errors`. The thrown error's `name` is now `InvocationError`.
-  - Python: `IIIInvocationError` becomes `InvocationError`, exported from `iii.errors`. Importing the old name from the package root emits a `DeprecationWarning`.
-  - Rust: the `IIIError` enum becomes `Error`, at `iii_sdk::errors::Error`.
+  ### Cross-language parity: renames and removals
 
-  The former names stay available at the package root as deprecated aliases.
+  - Main client handle aligned to `IIIClient` (Node was `ISdk`, Rust was `III`).
+  - Telemetry config aligned to `TelemetryOptions` (Rust was `WorkerTelemetryMeta`).
+  - Buffered HTTP request and response renamed `ApiRequest` and `ApiResponse` to `HttpRequest` and `HttpResponse`; streaming keeps `StreamRequest` and `StreamResponse`. Rust `StreamCallRequest` and `StreamJoinLeaveCallRequest` become `StreamChangeEvent` and `StreamJoinLeaveEvent`.
+  - Removed: `UpdateBuilder`, the Rust `Value` re-export, `IIIForbiddenError` and `IIITimeoutError` (Python), the `TriggerActionType` alias, `FieldPath` and `MergePath` (Rust path helpers), and the root `Logger` and OpenTelemetry re-exports (use `@iii-dev/observability`).
+
+  See [the parity entry](./0-20-0/cross-language-parity) for the full table.
 
   ### Submodule grouping
 
-  - **channel**: `ChannelReader`, `ChannelWriter`, `StreamChannelRef`, `Channel`.
-  - **trigger**: `Trigger`, `TriggerConfig`, `TriggerHandler` (Rust also groups the built-in `IIITrigger` factory here).
-  - **runtime**: `FunctionRef` and `TriggerTypeRef` in all SDKs; Rust additionally groups `IIIConnectionState`, `WorkerMetadata`, `FunctionInfo`, `TriggerInfo`, and `WorkerInfo`.
+  The remaining root surface is grouped into submodules (`iii-sdk/<name>` / `iii.<name>` / `iii_sdk::<name>`):
 
-  Prefer the new submodule paths. The root re-exports are deprecated and will be removed in a future breaking release. See [the migration entry](./0-20-0/organize-sdk-imports) for the full per-symbol detail and before/after imports.
+  - **errors** (`InvocationError`, `Error`), **channel**, **trigger**, **runtime**: the first slice. The `III` prefix is dropped from the invocation error types. These keep their old root paths working as deprecated aliases. See [the first slice](./0-20-0/organize-sdk-imports).
+  - **engine** (`EngineFunctions`, `EngineTriggers`, `RemoteFunctionHandler`), **protocol** (the message and register-input types), **internal** (`InternalHttpRequest`), and Python **utils** (the format helpers): these move out of the root with the root export removed. `IIIConnectionState` (runtime) and `TriggerActionVoid` (Python trigger) likewise leave the root. See [the submodule entry](./0-20-0/submodule-clean-break).
+
+  ### Compatibility
+
+  This release is not backward compatible. The first errors/channel/trigger/runtime slice keeps deprecated root aliases, but everything extracted into `@iii-dev/helpers`, the renamed types, and the `engine`/`protocol`/`internal`/`utils` groups are removed from the root SDK. Update imports to the submodule and helpers paths.
 </Update>
 
 <Update label="0.19.5" description="June 2026">
