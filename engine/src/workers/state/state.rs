@@ -26,6 +26,7 @@ use crate::{
         state::{
             adapters::StateAdapter,
             config::StateModuleConfig,
+            snapshot,
             structs::{
                 StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput,
                 StateGetInput, StateListGroupsInput, StateListGroupsResult, StateSetInput,
@@ -42,6 +43,20 @@ pub struct StateWorker {
     adapter: Arc<dyn StateAdapter>,
     engine: Arc<Engine>,
     pub triggers: Arc<StateTriggers>,
+    /// The config.yaml block passed to `create()` (or built-in defaults),
+    /// merged with the persisted entry at boot. Seed for the first-time
+    /// `configuration::register` and the fetch fallback; the configuration
+    /// worker entry is the runtime source of truth afterwards.
+    _config: StateModuleConfig,
+    /// Shutdown signal sender for background tasks (the configuration-change
+    /// handler retry and any future state background work).
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// The live worker shutdown receiver, stored by `start_background_tasks`
+    /// so `apply_config` can refuse task rebuilds once the worker is gone.
+    /// `None` until started / after destroy.
+    worker_shutdown_rx: Arc<std::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>>>,
+    /// Serializes concurrent `apply_config` runs (rapid configuration edits).
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[async_trait::async_trait]
@@ -93,12 +108,8 @@ impl ConfigurableWorker for StateWorker {
         &REGISTRY
     }
 
-    fn build(engine: Arc<Engine>, _config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
-        Self {
-            adapter,
-            engine,
-            triggers: Arc::new(StateTriggers::new()),
-        }
+    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        Self::from_config(engine, config, adapter)
     }
 
     fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
@@ -132,6 +143,62 @@ fn state_trigger_matches(
 }
 
 impl StateWorker {
+    /// Construct a worker from a parsed config and a ready adapter, publishing
+    /// the normalized config to the global snapshot so the live gates
+    /// (`triggers_enabled`, `max_value_bytes`) observe the effective config
+    /// immediately — before `start_background_tasks` runs the adoption apply.
+    fn from_config(
+        engine: Arc<Engine>,
+        config: StateModuleConfig,
+        adapter: Arc<dyn StateAdapter>,
+    ) -> Self {
+        let config = config.normalized();
+        snapshot::update_state_config(config.clone());
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+        Self {
+            adapter,
+            engine,
+            triggers: Arc::new(StateTriggers::new()),
+            _config: config,
+            shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    /// Test-only constructor: parse the config, build an in-process kv adapter
+    /// from its adapter block, and wrap a worker around it. Used by the
+    /// `state_configuration_e2e` suite (integration tests are a separate crate,
+    /// so this cannot be `#[cfg(test)]`).
+    pub fn for_test(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
+        let parsed: StateModuleConfig = config
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        let adapter_config = Self::adapter_config_from_config(&parsed);
+        let adapter: Arc<dyn StateAdapter> = Arc::new(
+            super::adapters::kv_store::BuiltinKvStoreAdapter::new(adapter_config),
+        );
+        Ok(Self::from_config(engine, parsed, adapter))
+    }
+
+    /// True while the worker is running (between `start_background_tasks` and
+    /// `destroy`). Gates the task-rebuild apply tier and the apply retry.
+    pub(crate) fn is_active(&self) -> bool {
+        self.worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .is_some()
+    }
+
+    /// The effective live configuration: the global snapshot when published,
+    /// else the construction-time `_config` fallback.
+    pub fn current_config(&self) -> StateModuleConfig {
+        snapshot::get_state_config()
+            .map(|arc| (*arc).clone())
+            .unwrap_or_else(|| self._config.clone())
+    }
+
     /// Invoke triggers for a given event type with condition checks.
     ///
     /// Triggers are pre-filtered by scope/key BEFORE the `state_triggers` span
@@ -599,22 +666,14 @@ mod tests {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
         let adapter: Arc<dyn StateAdapter> = Arc::new(BuiltinKvStoreAdapter::new(None));
-        let module = StateWorker {
-            adapter,
-            engine: engine.clone(),
-            triggers: Arc::new(StateTriggers::new()),
-        };
+        let module = StateWorker::from_config(engine.clone(), StateModuleConfig::default(), adapter);
         (engine, module)
     }
 
     fn setup_with_adapter(adapter: Arc<dyn StateAdapter>) -> (Arc<Engine>, StateWorker) {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
-        let module = StateWorker {
-            adapter,
-            engine: engine.clone(),
-            triggers: Arc::new(StateTriggers::new()),
-        };
+        let module = StateWorker::from_config(engine.clone(), StateModuleConfig::default(), adapter);
         (engine, module)
     }
 

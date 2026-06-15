@@ -32,8 +32,12 @@ use crate::workers::configuration::registry::{
 };
 use crate::workers::configuration::structs::ConfigurationEntry;
 
-const DEFAULT_DIRECTORY: &str = "./data/configuration";
-const FILE_EXTENSION: &str = "yaml";
+/// Registered name of this adapter (`register_adapter!` below). Exposed so
+/// boot-time persisted-config readers (e.g. the `iii-state` boot-read) resolve
+/// the same adapter identity the configuration worker persists under.
+pub(crate) const ADAPTER_NAME: &str = "fs";
+pub(crate) const DEFAULT_DIRECTORY: &str = "./data/configuration";
+pub(crate) const FILE_EXTENSION: &str = "yaml";
 
 pub struct FsAdapter {
     directory: PathBuf,

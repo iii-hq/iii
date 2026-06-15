@@ -5,12 +5,14 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod adapters;
-mod config;
+pub mod config;
 #[allow(clippy::module_inception)]
 mod state;
 
 pub mod registry;
+pub mod snapshot;
 mod structs;
 mod trigger;
 
+pub use self::config::StateModuleConfig;
 pub use self::state::StateWorker;
