@@ -91,9 +91,7 @@ async fn create_adapter_with_unknown_runtime() {
 /// The actual value depends on whether firmware is present on the test host.
 #[test]
 fn libkrun_available_returns_bool() {
-    let available: bool = iii_worker::cli::worker_manager::libkrun::libkrun_available();
-    // Assert it is a valid bool (this is mainly a smoke test for no panic).
-    assert!(available || !available);
+    let _available: bool = iii_worker::cli::worker_manager::libkrun::libkrun_available();
 }
 
 // ===========================================================================

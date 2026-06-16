@@ -37,7 +37,7 @@ pub use registry::SandboxRegistry;
 /// assert!(guide.contains("error.message"));
 /// ```
 pub const SANDBOX_AGENT_GUIDE: &str = r#"
-You have access to the iii sandbox::* tools. Use them to run code in an
+You have access to the iii worker sandbox::* tools. Use them to run code in an
 isolated microVM and capture stdout/stderr.
 
 # Workflow

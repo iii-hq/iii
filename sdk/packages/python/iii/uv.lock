@@ -546,7 +546,7 @@ wheels = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "../helpers" }
 dependencies = [
     { name = "pydantic" },
@@ -566,7 +566,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "iii-observability"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "../observability" }
 dependencies = [
     { name = "httpx" },
@@ -592,7 +592,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "iii-sdk"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "." }
 dependencies = [
     { name = "iii-helpers" },

@@ -27,11 +27,19 @@ fn check_directory_state_passes_for_empty_dir() {
 }
 
 #[test]
-fn check_directory_state_allows_dotfiles_and_data() {
+fn check_directory_state_allows_dotfiles() {
     let dir = tempdir().unwrap();
     fs::create_dir(dir.path().join(".git")).unwrap();
-    fs::create_dir(dir.path().join("data")).unwrap();
     assert!(check_directory_state(dir.path(), false, "worker.ini").is_ok());
+}
+
+#[test]
+fn check_directory_state_rejects_data_dir_without_flag() {
+    // `data/` is engine-owned runtime state; scaffolding next to it would
+    // orphan that engine's project. It must NOT be exempt like dotfiles.
+    let dir = tempdir().unwrap();
+    fs::create_dir(dir.path().join("data")).unwrap();
+    assert!(check_directory_state(dir.path(), false, "worker.ini").is_err());
 }
 
 #[test]

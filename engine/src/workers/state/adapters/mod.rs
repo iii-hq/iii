@@ -26,4 +26,13 @@ pub trait StateAdapter: Send + Sync {
     async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     async fn destroy(&self) -> anyhow::Result<()>;
+
+    /// Hot-reconfigure the adapter from a partial config blob. Default no-op;
+    /// adapters with runtime-tunable behavior (e.g. the kv save cadence)
+    /// override this. Called by `StateWorker::apply_config`'s task-rebuild tier
+    /// when `save_interval_ms` changes. Connection/identity changes stay
+    /// restart-tier and are not applied here.
+    async fn reconfigure(&self, _config: &Value) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

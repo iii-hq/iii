@@ -35,6 +35,8 @@ oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 clap = { version = "4", features = ["derive"] }
+# MDX CLI reference generation for the hidden `gen-cli-docs` subcommand.
+iii-clap-docs = { path = "../iii-clap-docs" }
 colored = "3.0.0"
 cliclack = "0.3"
 console = "0.16"
@@ -44,7 +46,6 @@ scaffolder-core = { workspace = true }
 serde_json = "1"
 serde_yaml = "0.9"
 semver = { workspace = true }
-serde_yml = "0.0.12"
 anyhow = "1.0.100"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 async-trait = "0.1.89"

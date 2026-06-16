@@ -77,6 +77,13 @@ impl StateAdapter for BuiltinKvStoreAdapter {
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
         Ok(self.storage.list_groups().await)
     }
+
+    async fn reconfigure(&self, config: &Value) -> anyhow::Result<()> {
+        // Only `save_interval_ms` is hot-tunable for the kv store; respawns the
+        // save loop when file-backed, no-op otherwise.
+        self.storage.reconfigure(config);
+        Ok(())
+    }
 }
 
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StateAdapterFuture {

@@ -1,0 +1,16 @@
+[package]
+name = "iii-clap-docs"
+version = "0.1.0"
+edition = "2021"
+license = "Elastic-2.0"
+publish = false
+description = "Renders a clap::Command tree as a Mintlify MDX CLI reference page (used by the hidden `gen-cli-docs` subcommands)."
+
+[dependencies]
+# "string" lets us set owned full-path bin names ("iii worker sandbox run")
+# on every node so render_usage prints complete command paths. "env" exposes
+# Arg::get_env so env-var-backed flags (console uses them) are documented.
+clap = { version = "4", features = ["string", "env"] }
+# Wraps bare `--flag` mentions in help prose in backticks; Mintlify's smart
+# typography otherwise renders the double hyphen as an en/em dash.
+regex = "1"

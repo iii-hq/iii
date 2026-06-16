@@ -126,7 +126,9 @@ time, duration, or service. The selected span's detail panel includes its name, 
 status, IDs, tags, logs, errors, and baggage.
 
 <Info title="Observability worker required">
-  Trace collection requires the iii-observability worker with traces enabled.
+  Trace collection requires the iii-observability worker with traces enabled. The Traces page reads
+  local in-memory trace storage, so configure traces with `exporter: memory` or `exporter: both`.
+  Use `exporter: both` when you also export traces to an external OTLP collector.
 </Info>
 
 ## Logs page
@@ -141,7 +143,9 @@ trace ID on each row is clickable: it pivots the view to show only logs from tha
 lets you jump to the corresponding entry on the [Traces page](#traces-page).
 
 <Info title="Observability worker required">
-  Log collection requires the iii-observability worker with logs enabled.
+  Log collection requires the iii-observability worker with logs enabled. Use `logs_exporter:
+  memory` or `logs_exporter: both` when you want logs visible in the console; `both` also exports
+  them to the configured OTLP collector.
 </Info>
 
 ## Configuration

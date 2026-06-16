@@ -53,6 +53,12 @@ pub const FRAME_HEADER_SIZE: usize = 5;
 /// asking the reader to allocate an arbitrary buffer.
 pub const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
 
+/// Initial allocation cap for frame-body reads. Bodies are read incrementally
+/// (`take` + `read_to_end`), so memory grows only as payload actually arrives:
+/// a peer that sends a max-size length prefix and then stalls costs at most
+/// this much, not `MAX_FRAME_SIZE`, per attempt.
+pub const FRAME_READ_INITIAL_CAP: usize = 64 * 1024;
+
 /// Bitmask flags carried in the 1-byte header field.
 pub mod flags {
     /// This frame ends the session with `corr_id`. Relays/dispatchers
@@ -490,14 +496,20 @@ pub fn read_frame_blocking<R: std::io::Read>(
     let frame_len = validate_frame_len(frame_len)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // SAFETY: read_exact fills every byte of the uninit body before
-    // decode_frame_body sees it; on error we truncate + drop. u8 has
-    // no invalid bit patterns. Matches shell_relay::read_frame.
-    let mut body: Vec<u8> = Vec::with_capacity(frame_len);
-    unsafe { body.set_len(frame_len) };
-    if let Err(e) = reader.read_exact(&mut body) {
-        body.truncate(0);
-        return Err(e);
+    // Incremental read with a capped initial allocation (no uninit memory,
+    // no full-size zero-fill): memory grows only as payload arrives, so a
+    // peer sending a max-size length prefix and stalling costs at most
+    // FRAME_READ_INITIAL_CAP, not MAX_FRAME_SIZE.
+    use std::io::Read as _;
+    let mut body: Vec<u8> = Vec::with_capacity(frame_len.min(FRAME_READ_INITIAL_CAP));
+    let read = (&mut *reader)
+        .take(frame_len as u64)
+        .read_to_end(&mut body)?;
+    if read != frame_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "partial frame body",
+        ));
     }
     let parsed = decode_frame_body(&body)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;

@@ -70,6 +70,22 @@ def bump_pep440_dep_pin(text: str, dep_name: str, new_pep440: str) -> str:
     return f'{text[:m.start()]}"{dep_name}=={new_pep440}"{text[m.end():]}'
 
 
+_GO_SDK_VERSION_RE = re.compile(r'const sdkVersion = "[^"]*"')
+
+
+def bump_go_const_version(text: str, new_version: str) -> str:
+    """Replace the ``const sdkVersion = "..."`` line in the Go SDK client.
+
+    Go modules are versioned by their git tag, but the const is reported in
+    worker metadata, so it must stay in lockstep with the other SDKs. Uses
+    the raw semver string (not the PEP 440 form).
+    """
+    m = _GO_SDK_VERSION_RE.search(text)
+    if m is None:
+        raise ValueError("no sdkVersion const in Go client")
+    return f'{text[:m.start()]}const sdkVersion = "{new_version}"{text[m.end():]}'
+
+
 from pathlib import Path
 
 
@@ -120,6 +136,12 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
     # Python helpers: top-level version only
     py_helpers = root / "sdk/packages/python/helpers/pyproject.toml"
     py_helpers.write_text(bump_cargo_package_version(py_helpers.read_text(), new_py_version))
+
+    # Go SDK: keep the reported sdkVersion const in lockstep. The module
+    # itself is versioned by its git tag; this only updates the metadata
+    # const, using the raw semver (not the PEP 440) version.
+    go_client = root / "sdk/packages/go/iii/client.go"
+    go_client.write_text(bump_go_const_version(go_client.read_text(), new_version))
 
 
 import argparse

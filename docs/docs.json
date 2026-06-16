@@ -151,39 +151,19 @@
                 "pages": [
                   "next/sdk-reference/helpers-lib"
                 ]
+              },
+              {
+                "group": "CLI reference",
+                "pages": [
+                  "next/cli-reference/index"
+                ]
               }
             ]
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog/index"
-                ]
-              },
-              {
-                "group": "0.20.0",
-                "pages": [
-                  "changelog/0-20-0/organize-sdk-imports"
-                ]
-              },
-              {
-                "group": "0.16.0",
-                "pages": [
-                  "changelog/0-16-0/align-rust-register-function-with-signature"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog/index"
             ]
           }
         ]
@@ -279,28 +259,8 @@
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog/index"
-                ]
-              },
-              {
-                "group": "0.16.0",
-                "pages": [
-                  "changelog/0-16-0/align-rust-register-function-with-signature"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog/index"
             ]
           }
         ]
@@ -393,28 +353,8 @@
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog/index"
-                ]
-              },
-              {
-                "group": "0.16.0",
-                "pages": [
-                  "changelog/0-16-0/align-rust-register-function-with-signature"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog/index"
             ]
           }
         ]
@@ -489,28 +429,8 @@
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog/index"
-                ]
-              },
-              {
-                "group": "0.16.0",
-                "pages": [
-                  "changelog/0-16-0/align-rust-register-function-with-signature"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog/index"
             ]
           }
         ]
@@ -585,28 +505,8 @@
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog/index"
-                ]
-              },
-              {
-                "group": "0.16.0",
-                "pages": [
-                  "changelog/0-16-0/align-rust-register-function-with-signature"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog/index"
             ]
           }
         ]
@@ -683,22 +583,8 @@
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog/index"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog/index"
             ]
           }
         ]
@@ -775,22 +661,8 @@
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog/index"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog/index"
             ]
           }
         ]
@@ -959,22 +831,8 @@
           },
           {
             "tab": "Changelog",
-            "groups": [
-              {
-                "group": "Changelog",
-                "pages": [
-                  "changelog"
-                ]
-              },
-              {
-                "group": "0.11.0",
-                "pages": [
-                  "changelog/0-11-0/everything-is-a-worker",
-                  "changelog/0-11-0/migrating-from-motia-js",
-                  "changelog/0-11-0/migrating-from-motia-py",
-                  "changelog/0-11-0/migrated-examples"
-                ]
-              }
+            "pages": [
+              "changelog"
             ]
           }
         ]

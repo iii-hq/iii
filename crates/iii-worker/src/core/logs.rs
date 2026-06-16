@@ -58,6 +58,72 @@ pub fn pick_best_logs_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
     best.map(|(dir, _)| dir)
 }
 
+/// Strip terminal escape sequences (CSI `ESC[…m`-style, OSC `ESC]…BEL/ST`,
+/// single-char escapes) and remaining control bytes (tabs survive) from one
+/// log line. Worker logs are written by tools that assume a TTY (npm's
+/// colored output, braille spinners, cursor-rewrite frames); over the bus
+/// they reach LLM/automation callers where the escapes are pure token noise
+/// and can even rewrite the reader's terminal when echoed.
+pub fn strip_terminal_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                // CSI: ESC [ … final byte in @..=~
+                Some('[') => {
+                    chars.next();
+                    for c2 in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c2) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: ESC ] … terminated by BEL or ST (ESC \)
+                Some(']') => {
+                    chars.next();
+                    while let Some(c2) = chars.next() {
+                        if c2 == '\u{7}' {
+                            break;
+                        }
+                        if c2 == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Single-char escape (ESC X)
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+        } else if !c.is_control() || c == '\t' {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// True when a stripped line carries no information for a non-TTY reader:
+/// blank, or nothing but braille spinner glyphs (U+2800..=U+28FF) and
+/// whitespace — the residue of progress-spinner redraw frames.
+fn is_spinner_noise(stripped: &str) -> bool {
+    stripped
+        .chars()
+        .all(|c| c.is_whitespace() || ('\u{2800}'..='\u{28ff}').contains(&c))
+}
+
+/// Default (non-`raw`) presentation: strip terminal controls and drop
+/// spinner-residue frames.
+pub fn sanitize_lines(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|l| strip_terminal_controls(&l))
+        .filter(|l| !is_spinner_noise(l))
+        .collect()
+}
+
 /// Last `tail` lines of `path`, scanning at most the trailing
 /// [`LOGS_READ_BYTES_MAX`] bytes. Missing/unreadable files yield no lines.
 fn tail_lines(path: &Path, tail: usize) -> Vec<String> {
@@ -100,9 +166,17 @@ pub async fn run(opts: LogsOptions) -> Result<LogsOutcome, WorkerOpError> {
         });
     };
 
+    let stdout = tail_lines(&dir.join("stdout.log"), tail);
+    let stderr = tail_lines(&dir.join("stderr.log"), tail);
+    let (stdout, stderr) = if opts.raw {
+        (stdout, stderr)
+    } else {
+        (sanitize_lines(stdout), sanitize_lines(stderr))
+    };
+
     Ok(LogsOutcome {
-        stdout: tail_lines(&dir.join("stdout.log"), tail),
-        stderr: tail_lines(&dir.join("stderr.log"), tail),
+        stdout,
+        stderr,
         logs_dir: Some(dir.display().to_string()),
         name: opts.name,
     })
@@ -175,6 +249,7 @@ mod tests {
             let err = run(LogsOptions {
                 name: name.to_string(),
                 tail: 10,
+                raw: false,
             })
             .await
             .unwrap_err();
@@ -186,6 +261,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn strip_terminal_controls_removes_csi_osc_and_controls() {
+        // npm-style colored line
+        assert_eq!(
+            strip_terminal_controls("\u{1b}[1mnpm\u{1b}[22m \u{1b}[31merror\u{1b}[39m 404"),
+            "npm error 404"
+        );
+        // OSC title-set terminated by BEL, then text
+        assert_eq!(strip_terminal_controls("\u{1b}]2;evil\u{7}ok"), "ok");
+        // cursor-rewrite spinner frame residue
+        assert_eq!(strip_terminal_controls("⠼\u{1b}[1G\u{1b}[0K"), "⠼");
+        // tabs survive, other C0 controls don't
+        assert_eq!(strip_terminal_controls("a\tb\u{8}c"), "a\tbc");
+    }
+
+    #[test]
+    fn strip_terminal_controls_terminates_osc_on_st_terminator() {
+        assert_eq!(
+            strip_terminal_controls("\u{1b}]0;set title\u{1b}\\visible"),
+            "visible"
+        );
+    }
+
+    #[test]
+    fn strip_terminal_controls_consumes_single_char_escapes() {
+        // ESC M (reverse index) and ESC 7 (save cursor): the char after
+        // ESC is swallowed, surrounding text survives.
+        assert_eq!(strip_terminal_controls("\u{1b}Mup"), "up");
+        assert_eq!(strip_terminal_controls("a\u{1b}7b"), "ab");
+    }
+
+    #[test]
+    fn strip_terminal_controls_drops_trailing_escape() {
+        assert_eq!(strip_terminal_controls("tail\u{1b}"), "tail");
+    }
+
+    #[test]
+    fn sanitize_lines_drops_spinner_residue_and_blanks() {
+        let lines = vec![
+            "⠙\u{1b}[1G\u{1b}[0K⠹\u{1b}[1G\u{1b}[0K".to_string(), // pure spinner
+            "".to_string(),
+            "\u{1b}[32mreal output\u{1b}[0m".to_string(),
+        ];
+        assert_eq!(sanitize_lines(lines), vec!["real output".to_string()]);
+    }
+
     #[tokio::test]
     async fn run_caps_tail_at_max() {
         // Unknown-but-valid worker: empty outcome, no error — the cap and
@@ -194,11 +315,102 @@ mod tests {
         let outcome = run(LogsOptions {
             name: "definitely-not-a-real-worker-name-xyz".to_string(),
             tail: usize::MAX,
+            raw: false,
         })
         .await
         .unwrap();
         assert!(outcome.logs_dir.is_none());
         assert!(outcome.stdout.is_empty());
         assert!(outcome.stderr.is_empty());
+    }
+
+    /// Restores the original `HOME` on drop so the override can't leak
+    /// into sibling tests. Mirrors `cli::status::tests::ProbeEnvGuard`;
+    /// callers must hold `test_support::lock_home` for the whole body.
+    struct HomeGuard {
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl HomeGuard {
+        fn set(home: &Path) -> Self {
+            let original = std::env::var_os("HOME");
+            // SAFETY: test-only, serialized via test_support::lock_home.
+            unsafe { std::env::set_var("HOME", home) };
+            Self { original }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: test-only, serialized via test_support::lock_home.
+            unsafe {
+                match &self.original {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    // lock_home is intentionally held across run().await: it serializes the
+    // process-global HOME mutation against sibling tests.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn run_sanitizes_logs_from_best_dir_by_default() {
+        let _g = crate::cli::test_support::lock_home();
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        let logs_dir = tmp.path().join(".iii/logs/sanitize-target");
+        write(
+            &logs_dir,
+            "stdout.log",
+            "\u{1b}[32mready\u{1b}[0m\n⠙\u{1b}[1G\u{1b}[0K\n",
+        );
+        write(&logs_dir, "stderr.log", "\u{1b}[31moops\u{1b}[39m\n");
+
+        let outcome = run(LogsOptions {
+            name: "sanitize-target".to_string(),
+            tail: 10,
+            raw: false,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.stdout, vec!["ready".to_string()]);
+        assert_eq!(outcome.stderr, vec!["oops".to_string()]);
+        assert_eq!(outcome.logs_dir, Some(logs_dir.display().to_string()));
+        assert_eq!(outcome.name, "sanitize-target");
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn run_raw_preserves_escapes_and_spinner_frames() {
+        let _g = crate::cli::test_support::lock_home();
+        let tmp = TempDir::new().unwrap();
+        let _home = HomeGuard::set(tmp.path());
+        let logs_dir = tmp.path().join(".iii/logs/raw-target");
+        write(
+            &logs_dir,
+            "stdout.log",
+            "\u{1b}[32mready\u{1b}[0m\n⠙\u{1b}[1G\u{1b}[0K\n",
+        );
+
+        let outcome = run(LogsOptions {
+            name: "raw-target".to_string(),
+            tail: 10,
+            raw: true,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome.stdout,
+            vec![
+                "\u{1b}[32mready\u{1b}[0m".to_string(),
+                "⠙\u{1b}[1G\u{1b}[0K".to_string(),
+            ]
+        );
+        assert!(outcome.stderr.is_empty());
+        assert_eq!(outcome.logs_dir, Some(logs_dir.display().to_string()));
     }
 }

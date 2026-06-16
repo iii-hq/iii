@@ -13,11 +13,15 @@ pub const DEFAULT_PORT: u16 = 49134;
 /// Shared arguments for `add` and `reinstall` commands.
 #[derive(Args, Debug)]
 pub struct AddArgs {
-    /// Worker names or OCI image references (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
-    #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
+    /// iii registry worker names (ex. `database` or `pdfkit@1.0.0`), local worker
+    /// paths (ex. `./my_worker`, a directory containing `iii.worker.yaml`), or
+    /// Docker / OCI image references (ex. `ghcr.io/org/worker:tag`)
+    #[arg(value_name = "WORKER[@VERSION]|PATH", required = true, num_args = 1..)]
     pub worker_names: Vec<String>,
 
-    /// Reset config: also remove config.yaml entry before re-adding (requires --force on add)
+    /// Discard the worker's config.yaml entry and recreate it from registry
+    /// defaults. Plain `add --force` would otherwise keep the entry. Only
+    /// takes effect together with --force on add.
     #[arg(long)]
     pub reset_config: bool,
 }
@@ -36,8 +40,14 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install an EXISTING worker from the registry or by OCI image reference.
-    /// To create a NEW worker from scratch, use `iii worker init`.
+    /// Install a worker from the iii registry, a path to a local worker directory (ex.
+    /// `./myWorker` with a `iii.worker.yaml` file within it)
+    /// or by OCI image reference. To create a NEW worker from scratch, use
+    /// `iii worker init`.
+    /// By default `add` waits up to 120s for the worker to report ready.
+    /// After which the worker will continue to boot but the command will
+    /// return to the shell. See `iii worker status` to continue observing
+    /// a booting worker and `iii worker logs` for logs.
     Add {
         #[command(flatten)]
         args: AddArgs,
@@ -46,8 +56,7 @@ pub enum Commands {
         #[arg(long, short = 'f')]
         force: bool,
 
-        /// Don't block waiting for the engine to finish booting the sandbox.
-        /// By default `add` waits up to 120s for the worker to report ready.
+        /// Don't block waiting for the engine to finish booting the worker.
         #[arg(long)]
         no_wait: bool,
     },
@@ -65,20 +74,22 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also clear config.yaml)
+    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset
+    /// its config.yaml entry to registry defaults)
     Reinstall {
         #[command(flatten)]
         args: AddArgs,
     },
 
-    /// Re-resolve locked workers and update iii.lock
+    /// Update workers in iii.lock to their latest allowed version
     Update {
         /// Optional worker name to update. If omitted, updates every worker in iii.lock.
         #[arg(value_name = "WORKER")]
         worker_name: Option<String>,
     },
 
-    /// Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed)
+    /// Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed).
+    /// Does not affect a worker's own build artifacts or dependencies (e.g. node_modules, Cargo.lock).
     Clear {
         /// Worker name to clear (omit to clear all)
         #[arg(value_name = "WORKER")]
@@ -90,13 +101,15 @@ pub enum Commands {
     },
 
     /// Start a previously stopped managed worker container.
-    /// By default waits up to 120s for the worker to report ready.
+    /// By default waits up to 120s for the worker to report ready before returning.
+    /// Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for
+    /// tracking workers.
     Start {
         /// Worker name to start
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Don't block waiting for the worker to report ready.
+        /// Return immediately. Don't block waiting for the worker to report ready.
         #[arg(long)]
         no_wait: bool,
 
@@ -114,9 +127,8 @@ pub enum Commands {
     },
 
     /// Stop a managed worker container. Stop is treated as a routine,
-    /// reversible action — running `iii worker start <name>` brings it
-    /// back from the same config entry, so the CLI no longer prompts
-    /// for confirmation.
+    /// reversible action; running `iii worker start <name>` brings the worker
+    /// back up.
     Stop {
         /// Worker name to stop
         #[arg(value_name = "WORKER")]
@@ -127,15 +139,14 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Restart a managed worker: stop if running, then start. Idempotent --
-    /// running workers get a clean cycle, stopped workers just start.
-    /// By default waits up to 120s for the worker to report ready.
+    /// Restart a managed worker: stop if running, then start.
+    /// By default waits up to 120s for the worker to report ready (same as start).
     Restart {
         /// Worker name to restart
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Don't block waiting for the worker to report ready.
+        /// Return immediately. Don't block waiting for the worker to report ready.
         #[arg(long)]
         no_wait: bool,
 
@@ -153,14 +164,14 @@ pub enum Commands {
     List,
 
     /// Install registry-managed workers exactly from iii.lock.
-    /// Pass --frozen in CI to verify without mutating local files.
     Sync {
-        /// Verify the lockfile without mutating local files.
+        /// Verify lockfile dependencies without mutating local files.
+        /// Useful for validation in CICD.
         #[arg(long)]
         frozen: bool,
     },
 
-    /// Verify config.yaml is represented in iii.lock without mutating files
+    /// Verify the worker's manifest (iii.worker.yaml) is valid.
     Verify {
         /// Also check dependency declarations against locked versions.
         #[arg(long)]
@@ -168,14 +179,14 @@ pub enum Commands {
     },
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
-    /// By default refreshes live in place until the worker reaches a terminal
-    /// phase (ready/missing). Pass --no-watch for a one-shot snapshot.
+    /// By default refreshes live in place until the worker reaches a success
+    /// or failure state.
     Status {
         /// Worker name
         #[arg(value_name = "WORKER")]
         worker_name: String,
 
-        /// Print a one-shot snapshot and exit immediately (no live refresh)
+        /// Print status and exit immediately (no live refresh)
         #[arg(long)]
         no_watch: bool,
     },
@@ -231,6 +242,15 @@ pub enum Commands {
     /// Internal: host-side source watcher sidecar for local-path workers
     #[command(name = "__watch-source", hide = true)]
     WatchSource(WatchSourceArgs),
+
+    /// Generate the committed MDX CLI reference page from this binary's
+    /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
+    #[command(name = "gen-cli-docs", hide = true)]
+    GenDocs {
+        /// Write the page to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
 }
 
 /// Arguments for `iii worker exec`. Mirrors `msb exec`'s shape so
@@ -253,7 +273,7 @@ pub struct ExecArgs {
 
     /// Allocate a pseudo-terminal. Required for interactive shells
     /// and TUI programs; merges stdout/stderr through the PTY master
-    /// and puts the host terminal in raw mode for the session. Auto-
+    /// and puts the host terminal in raw mode for the session. Automatically
     /// enabled when both stdin and stdout are TTYs (ssh-style); pass
     /// `--no-tty` to force pipe mode in that case.
     #[arg(short = 't', long)]
@@ -265,7 +285,7 @@ pub struct ExecArgs {
     #[arg(long, conflicts_with = "tty")]
     pub no_tty: bool,
 
-    /// Kill the child after this long (e.g. `30s`, `5m`, `500ms`).
+    /// Kill the process after this long (e.g. `30s`, `5m`, `500ms`).
     /// Parsed by the standard `humantime` syntax. On expiry the client
     /// sends SIGKILL to the guest session and exits with code 124
     /// (matches coreutils `timeout(1)`), so shell scripts can
@@ -319,7 +339,7 @@ pub struct SandboxDaemonArgs {
     pub engine: String,
 }
 
-/// Subcommands for `iii sandbox`. Each one talks to the engine's
+/// Subcommands for `iii worker sandbox`. Each one talks to the engine's
 /// `sandbox::*` trigger handlers via the iii-sdk WebSocket client.
 #[derive(Subcommand, Debug)]
 pub enum SandboxCmd {
@@ -349,10 +369,10 @@ pub enum SandboxCmd {
     },
 
     /// Create a long-lived sandbox and print its id to stdout. Pair with
-    /// `iii sandbox exec <id>` and `iii sandbox stop <id>`.
+    /// `iii worker sandbox exec <id>` and `iii worker sandbox stop <id>`.
     ///
     /// Pipe-friendly: the sandbox id is the only thing on stdout, so you
-    /// can do `SB=$(iii sandbox create python)` in a shell.
+    /// can do `SB=$(iii worker sandbox create python)` in a shell.
     Create {
         /// OCI image reference (must match the engine's sandbox allowlist).
         #[arg(value_name = "IMAGE")]
@@ -392,11 +412,11 @@ pub enum SandboxCmd {
 
     /// Run a command inside an already-running sandbox.
     ///
-    /// Pipe-mode only. Pair with `iii sandbox create` for the sandbox id.
+    /// Pipe-mode only. Pair with `iii worker sandbox create` for the sandbox id.
     /// For interactive TTY sessions, use `iii worker exec` against a managed
     /// worker instead.
     Exec {
-        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        /// Sandbox id from `iii worker sandbox create` / `iii worker sandbox list`.
         #[arg(value_name = "SANDBOX_ID")]
         id: String,
 
@@ -415,7 +435,7 @@ pub enum SandboxCmd {
         port: u16,
 
         /// Program and arguments to exec inside the sandbox. Comes after `--`:
-        /// `iii sandbox exec <id> -- python3 -c 'print(2+2)'`.
+        /// `iii worker sandbox exec <id> -- python3 -c 'print(2+2)'`.
         #[arg(trailing_var_arg = true, value_name = "COMMAND")]
         cmd: Vec<String>,
     },
@@ -423,7 +443,7 @@ pub enum SandboxCmd {
     /// List every sandbox the daemon knows about.
     ///
     /// The daemon's list RPC is owner-scoped for multi-tenant SDK
-    /// callers, but `iii sandbox` is a local admin tool with no
+    /// callers, but `iii worker sandbox` is a local admin tool with no
     /// authenticated identity, so the CLI always requests the unscoped
     /// view. The `--all` flag is a silent no-op, kept so scripts that
     /// pass it from earlier releases keep working.
@@ -451,16 +471,16 @@ pub enum SandboxCmd {
 
     /// Copy a local file into a running sandbox.
     ///
-    /// Streams bytes through an iii data channel — no JSON-envelope size cap.
+    /// Streams bytes through an iii data channel; no JSON-envelope size cap.
     /// Reads `LOCAL_PATH` from disk (or stdin when `LOCAL_PATH` is `-`) and
     /// writes atomically (temp file + fsync + rename) to `REMOTE_PATH` inside
     /// the sandbox.
     ///
     /// Examples:
-    ///   iii sandbox upload <SB> ./script.js /workspace/script.js
-    ///   tar -cf - ./srcdir | iii sandbox upload <SB> - /workspace/src.tar
+    ///   iii worker sandbox upload <SB> ./script.js /workspace/script.js
+    ///   tar -cf - ./srcdir | iii worker sandbox upload <SB> - /workspace/src.tar
     Upload {
-        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        /// Sandbox id from `iii worker sandbox create` / `iii worker sandbox list`.
         #[arg(value_name = "SANDBOX_ID")]
         id: String,
 
@@ -491,10 +511,10 @@ pub enum SandboxCmd {
     /// disk (or stdout when `LOCAL_PATH` is `-`).
     ///
     /// Examples:
-    ///   iii sandbox download <SB> /workspace/output.json ./output.json
-    ///   iii sandbox download <SB> /workspace/build.tar - | tar -tf -
+    ///   iii worker sandbox download <SB> /workspace/output.json ./output.json
+    ///   iii worker sandbox download <SB> /workspace/build.tar - | tar -tf -
     Download {
-        /// Sandbox id from `iii sandbox create` / `iii sandbox list`.
+        /// Sandbox id from `iii worker sandbox create` / `iii worker sandbox list`.
         #[arg(value_name = "SANDBOX_ID")]
         id: String,
 

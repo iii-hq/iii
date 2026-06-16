@@ -11,7 +11,7 @@ mod config;
 mod configuration;
 
 pub mod registry;
-mod store;
+pub(crate) mod store;
 pub mod structs;
 mod trigger;
 

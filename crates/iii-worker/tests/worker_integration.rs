@@ -219,10 +219,16 @@ fn sync_subcommand_accepts_frozen_flag() {
 
 #[test]
 fn sync_help_matches_lockfile_replay_behavior() {
-    let help = Cli::command().render_long_help().to_string();
+    // The `--frozen` detail lives on the flag's own help, so it only shows
+    // in the subcommand help, not the root command's.
+    let mut cmd = Cli::command();
+    let sync = cmd
+        .find_subcommand_mut("sync")
+        .expect("sync subcommand exists");
+    let help = sync.render_long_help().to_string();
 
     assert!(help.contains("Install registry-managed workers exactly from iii.lock"));
-    assert!(help.contains("Pass --frozen in CI to verify without mutating local files"));
+    assert!(help.contains("Verify lockfile dependencies without mutating local files"));
 }
 
 #[test]

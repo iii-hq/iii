@@ -20,10 +20,13 @@ use crate::{
 };
 
 // use across modules
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AdapterEntry {
+    /// Adapter class name (e.g. `kv`, `redis`, `bridge`).
     pub name: String,
+    /// Adapter-specific configuration. Free-form so adapters stay pluggable —
+    /// the schema does not constrain its shape.
     #[serde(default)]
     pub config: Option<Value>,
 }
