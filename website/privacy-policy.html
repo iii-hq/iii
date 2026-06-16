@@ -68,7 +68,7 @@
     />
     <meta
       name="keywords"
-      content="iii, privacy policy, data protection, analytics, telemetry, data security, GDPR, developer privacy"
+      content="iii, privacy policy, data protection, website analytics, cookies, data security, GDPR, developer privacy"
     />
     <meta name="author" content="Motia LLC" />
     <meta name="theme-color" content="#0a0a0a" />
@@ -395,33 +395,6 @@
         color: var(--accent);
         font-weight: 500;
       }
-      .doc-code {
-        font-family: "Chivo Mono", ui-monospace, monospace;
-        font-size: 13px;
-        line-height: 1.6;
-        background: var(--panel);
-        border: 1px solid var(--rule);
-        border-left: 3px solid var(--accent);
-        color: var(--ink);
-        padding: 14px 16px;
-        margin: 16px 0 0;
-        max-width: 720px;
-        overflow-x: auto;
-        white-space: pre;
-      }
-      .doc-code code {
-        font-family: inherit;
-        color: inherit;
-      }
-      .doc-inline {
-        font-family: "Chivo Mono", ui-monospace, monospace;
-        font-size: 0.9em;
-        background: var(--panel);
-        border: 1px solid var(--rule);
-        border-radius: 3px;
-        padding: 0.05em 0.34em;
-        color: var(--ink);
-      }
       .doc-list {
         list-style: none;
         margin: 18px 0 0;
@@ -715,57 +688,35 @@
         <!-- POLICY -->
         <article class="doc">
           <section class="doc-sec">
+            <h2 class="doc-title">What this policy covers</h2>
+            <p class="doc-body">
+              iii is <span class="accent">open source and runs on your own infrastructure</span>.
+              The engine does not phone home: running iii does not send your code, data, or project
+              information to us. This policy covers only the iii.dev website and documentation.
+            </p>
+            <p class="doc-body">
+              You do not need an account to use iii, and we do not require personal details to
+              download or run it.
+            </p>
+          </section>
+
+          <section class="doc-sec">
             <h2 class="doc-title">Information we collect</h2>
             <p class="doc-body">
-              We collect information to provide better services to all our users. The information we
-              collect falls into <span class="accent">three main categories</span>: account
-              information, usage analytics, and support communications.
+              When you visit the iii.dev website, our hosting and analytics providers may record
+              standard technical information such as your IP address, browser type, referring page,
+              and the pages you view. This is used <span class="accent">in aggregate</span> to
+              understand traffic and improve the site, not to identify you personally.
             </p>
           </section>
 
           <section class="doc-sec">
-            <h2 class="doc-title">Account information</h2>
-            <p class="doc-body">When you create an iii account, we collect:</p>
-            <ul class="doc-list">
-              <li>
-                <b>Basic profile data:</b> Email address, name, and account details and preferences.
-              </li>
-              <li>
-                <b>Billing information:</b> Payment details for paid plans (processed securely by
-                third-party providers).
-              </li>
-              <li>
-                <b>Project metadata:</b> Project names, configurations, and deployment settings.
-              </li>
-            </ul>
-          </section>
-
-          <section class="doc-sec">
-            <h2 class="doc-title">Usage analytics</h2>
+            <h2 class="doc-title">Cookies and analytics</h2>
             <p class="doc-body">
-              To improve iii, we collect <span class="accent">completely anonymized usage
-              analytics</span>. This includes command usage patterns, performance metrics, and error
-              frequencies. No personal information is collected unless you provide it. All analytics
-              data is aggregated and cannot be traced back to individual users.
-            </p>
-            <p class="doc-body">
-              <span class="accent">You can opt out at any time.</span> To disable anonymous usage
-              data collection by the iii engine, set the following environment variable before
-              running iii:
-            </p>
-            <pre class="doc-code"><code>export III_TELEMETRY_ENABLED=false</code></pre>
-            <p class="doc-body">
-              To make it permanent, add it to your shell profile (e.g.
-              <code class="doc-inline">~/.zshrc</code> or <code class="doc-inline">~/.bashrc</code>):
-            </p>
-            <pre class="doc-code"><code>echo 'export III_TELEMETRY_ENABLED=false' >> ~/.zshrc
-source ~/.zshrc</code></pre>
-            <p class="doc-body">
-              This setting controls anonymous usage data collected by the iii engine. To disable
-              OpenTelemetry observability instrumentation (traces, metrics, logs), set
-              <code class="doc-inline">OTEL_ENABLED=false</code> instead. On this website,
-              non-essential analytics such as PostHog and Common Room load only after you accept the
-              cookie banner, and you can decline or clear that choice in your browser at any time.
+              Non-essential analytics load <span class="accent">only after you accept the cookie
+              banner</span>. We use Google Tag Manager, PostHog, and Common Room to measure how
+              visitors find and use the site. Decline at the banner, or clear your choice in your
+              browser at any time, and these tools will not load.
             </p>
           </section>
 
@@ -800,12 +751,10 @@ source ~/.zshrc</code></pre>
             <h2 class="doc-title">How we use your information</h2>
             <p class="doc-body">We use the information we collect to:</p>
             <ul class="doc-list">
-              <li>Provide, maintain, and improve iii services.</li>
-              <li>Process transactions and send related information.</li>
-              <li>Send technical notices, updates, and support messages.</li>
-              <li>Respond to your comments, questions, and customer service requests.</li>
-              <li>Develop new features and functionality.</li>
-              <li>Monitor and analyze trends, usage, and activities.</li>
+              <li>Operate, maintain, and improve the iii website and documentation.</li>
+              <li>Understand how visitors find and use the site, in aggregate.</li>
+              <li>Respond to questions and requests you send us.</li>
+              <li>Detect, prevent, and address technical or security issues.</li>
             </ul>
             <p class="doc-body">
               <span class="accent">We never sell your personal data</span> to third parties or use
@@ -820,8 +769,8 @@ source ~/.zshrc</code></pre>
             </p>
             <ul class="doc-list">
               <li>
-                <b>Service providers:</b> With trusted third-party services that help us operate
-                (hosting, payment processing, support).
+                <b>Service providers:</b> With trusted third-party services that help us operate the
+                site (hosting and analytics).
               </li>
               <li>
                 <b>Legal requirements:</b> When required by law or to protect our rights and users'
@@ -863,7 +812,7 @@ source ~/.zshrc</code></pre>
                 <b>Deletion:</b> Request deletion of your personal information (subject to legal
                 obligations).
               </li>
-              <li><b>Opt-out:</b> Disable analytics collection and marketing communications.</li>
+              <li><b>Opt-out:</b> Decline analytics at the cookie banner at any time.</li>
             </ul>
           </section>
 
@@ -889,10 +838,8 @@ source ~/.zshrc</code></pre>
           <section class="doc-sec">
             <h2 class="doc-title">Changes to this policy</h2>
             <p class="doc-body">
-              We may update this Privacy Policy from time to time. We will notify you of any material
-              changes by posting the new Privacy Policy on this page and updating the "Last updated"
-              date. <span class="accent">Significant changes will be communicated</span> via email
-              or prominent notice in the application.
+              We may update this Privacy Policy from time to time. We will post any changes on this
+              page and update the <span class="accent">"Last updated"</span> date below.
             </p>
           </section>
 
