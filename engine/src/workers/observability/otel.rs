@@ -3181,7 +3181,11 @@ fn parse_otlp_header_string(headers: &str) -> HeaderMap {
             tracing::warn!(header = name, "Ignoring invalid OTLP header name");
             continue;
         };
-        let Ok(value) = HeaderValue::from_str(value) else {
+        let Some(value) = percent_decode_header_value(value) else {
+            tracing::warn!(header = %name, "Ignoring OTLP header value with invalid percent encoding");
+            continue;
+        };
+        let Ok(value) = HeaderValue::from_bytes(&value) else {
             tracing::warn!(header = %name, "Ignoring invalid OTLP header value");
             continue;
         };
@@ -3190,6 +3194,35 @@ fn parse_otlp_header_string(headers: &str) -> HeaderMap {
     }
 
     header_map
+}
+
+fn percent_decode_header_value(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = bytes.get(i + 1).copied().and_then(hex_value)?;
+            let lo = bytes.get(i + 2).copied().and_then(hex_value)?;
+            decoded.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    Some(decoded)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Get the logs exporter type from config
@@ -3212,6 +3245,40 @@ pub fn get_logs_exporter_type() -> LogsExporterType {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn otlp_logs_headers_fallback_decodes_percent_encoded_values() {
+        temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_LOGS_HEADERS", None::<&str>),
+                (
+                    "OTEL_EXPORTER_OTLP_HEADERS",
+                    Some("Authorization=Bearer%20token,x-honeycomb-team=test%2Fteam"),
+                ),
+            ],
+            || {
+                let headers = otlp_logs_headers_from_env();
+
+                assert_eq!(
+                    headers
+                        .get("authorization")
+                        .expect("authorization header")
+                        .to_str()
+                        .unwrap(),
+                    "Bearer token"
+                );
+                assert_eq!(
+                    headers
+                        .get("x-honeycomb-team")
+                        .expect("x-honeycomb-team header")
+                        .to_str()
+                        .unwrap(),
+                    "test/team"
+                );
+            },
+        );
+    }
 
     #[tokio::test]
     #[serial]

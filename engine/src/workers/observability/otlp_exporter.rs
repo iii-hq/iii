@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
 use std::env;
 
 use opentelemetry_otlp::{
@@ -52,15 +58,18 @@ fn signal_http_path(signal: OtlpSignal) -> &'static str {
     }
 }
 
+fn strip_otlp_signal_path(endpoint: &str) -> &str {
+    ["/v1/traces", "/v1/metrics", "/v1/logs"]
+        .iter()
+        .find_map(|signal_path| endpoint.strip_suffix(signal_path))
+        .unwrap_or(endpoint)
+}
+
 pub(crate) fn http_endpoint_for_signal(endpoint: &str, signal: OtlpSignal) -> String {
     let trimmed = endpoint.trim_end_matches('/');
-    let signal_path = signal_http_path(signal);
+    let base = strip_otlp_signal_path(trimmed);
 
-    if trimmed.ends_with(signal_path) {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}{signal_path}")
-    }
+    format!("{base}{}", signal_http_path(signal))
 }
 
 fn endpoint_uses_https(endpoint: &str) -> bool {
@@ -329,6 +338,28 @@ mod tests {
                 OtlpSignal::Metrics
             ),
             "https://collector.example.com/v1/metrics"
+        );
+    }
+
+    #[test]
+    fn http_endpoint_replaces_existing_other_signal_path() {
+        assert_eq!(
+            http_endpoint_for_signal(
+                "https://collector.example.com/v1/traces",
+                OtlpSignal::Metrics
+            ),
+            "https://collector.example.com/v1/metrics"
+        );
+        assert_eq!(
+            http_endpoint_for_signal(
+                "https://collector.example.com/v1/metrics",
+                OtlpSignal::Traces
+            ),
+            "https://collector.example.com/v1/traces"
+        );
+        assert_eq!(
+            http_endpoint_for_signal("https://collector.example.com/v1/logs", OtlpSignal::Traces),
+            "https://collector.example.com/v1/traces"
         );
     }
 
