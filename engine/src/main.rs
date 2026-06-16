@@ -199,13 +199,10 @@ fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
 }
 
 fn passthrough_command_path(command: &str, args: &[String]) -> String {
-    for arg in args {
-        if arg.starts_with('-') {
-            break;
-        }
-        return format!("{command} {arg}");
+    match args.first() {
+        Some(arg) if !arg.starts_with('-') => format!("{command} {arg}"),
+        _ => command.to_string(),
     }
-    command.to_string()
 }
 
 fn cli_usage_command_path(cli: &Cli) -> String {

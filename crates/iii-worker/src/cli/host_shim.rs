@@ -248,6 +248,22 @@ pub fn classify_handler_error(rc: i32, captured: &str, op: &str, name_hint: &str
     WorkerOpError::Internal { message: msg }
 }
 
+/// True when `e` is the bare rc-only wrapper from [`classify_handler_error`]
+/// — produced when the handler ran UNCAPTURED (TTY or log-file stderr), i.e.
+/// its real, colored error already reached the user directly. CLI callers
+/// should exit nonzero without re-printing it: the wrapper carries nothing
+/// the user hasn't seen, and "[W900] internal" mislabels what is usually a
+/// plain user error (caught by the live DX audit). Daemon trigger callers
+/// still receive it over the bus as a last-resort envelope when stderr
+/// capture itself failed.
+pub fn is_bare_rc_wrapper(e: &WorkerOpError) -> bool {
+    matches!(
+        e,
+        WorkerOpError::Internal { message }
+            if message.starts_with("iii worker ") && message.contains(" exited with rc ")
+    )
+}
+
 /// Strip a leading `internal: ` from handler output before re-wrapping into
 /// a typed validation error. The handler emits a self-describing message
 /// already; the prefix is misleading once we route to W100.
@@ -315,11 +331,12 @@ impl WorkerHostShim for CliHostShim {
         let reset_config = opts.reset_config;
         let wait = opts.wait;
         // Snapshot config workers BEFORE the install so we can diff and
-        // recover the canonical worker name on success. For OCI / local
-        // installs `source_label_name` returns a raw reference/path, which
-        // lockfile lookups miss and clients can't feed back into other
-        // worker::* triggers. The canonical name is whatever the installer
-        // actually wrote to config.yaml.
+        // recover the canonical worker name on success. For OCI installs
+        // `source_label_name` returns a raw reference, which lockfile
+        // lookups miss and clients can't feed back into other worker::*
+        // triggers. The canonical name is whatever the installer actually
+        // wrote to config.yaml; local re-adds (no diff) resolve it from
+        // the manifest instead.
         let pre_config_names: std::collections::HashSet<String> =
             crate::cli::config_file::list_worker_names()
                 .into_iter()
@@ -350,10 +367,10 @@ impl WorkerHostShim for CliHostShim {
         if rc == 0 {
             let label = source_label_name(&opts.source);
             // First post-install canonical name we didn't see beforehand.
-            // Falls back to the raw label for idempotent re-adds where the
-            // entry already existed (in which case the label IS the name
-            // for the registry path, and the lockfile lookup at least
-            // returns None cleanly for OCI / local sources).
+            // For idempotent re-adds where the entry already existed:
+            // registry sources use the slug, local sources resolve the
+            // manifest name, and only OCI falls back to the raw label
+            // (the lockfile lookup returns None cleanly there).
             let name = post_install_worker_name(&opts.source, &pre_config_names, &label);
             let version = read_locked_version(&name);
             Ok(AddOutcome {
@@ -626,12 +643,6 @@ impl WorkerHostShim for CliHostShim {
 // on-disk worker dirs; safe to call concurrently.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Resolve the canonical worker name after a successful add by diffing
-/// config.yaml entries. Returns the first name that appears post-install
-/// but didn't exist beforehand. Falls back to:
-///   - the registry name (for `Registry` sources, which is already canonical)
-///   - the raw label otherwise (OCI ref / local path), preserving the prior
-///     behavior for idempotent re-adds where the diff is empty.
 fn post_install_worker_name(
     source: &crate::core::WorkerSource,
     pre: &std::collections::HashSet<String>,
@@ -645,7 +656,14 @@ fn post_install_worker_name(
     }
     match source {
         crate::core::WorkerSource::Registry { name, .. } => name.clone(),
-        _ => fallback_label.to_string(),
+        // Re-adds (force: true) leave the config.yaml entry in place, so the
+        // pre/post diff finds nothing new. Resolve from the manifest (falling
+        // back to the directory name) — the raw path label is not a worker
+        // name and no other worker::* trigger accepts it.
+        crate::core::WorkerSource::Local { path } => {
+            crate::cli::local_worker::resolve_worker_name(path)
+        }
+        crate::core::WorkerSource::Oci { .. } => fallback_label.to_string(),
     }
 }
 
@@ -990,5 +1008,99 @@ mod tests {
         };
         let err = resolve_clear_targets(&opts).unwrap_err();
         assert_eq!(err.kind(), WorkerOpErrorKind::MissingTarget);
+    }
+
+    #[test]
+    fn bare_rc_wrapper_detected_only_for_uncaptured_failures() {
+        // Empty capture (CLI TTY / log-file stderr) → the bare wrapper the
+        // CLI must NOT re-print: the handler already showed the real error.
+        let bare = classify_handler_error(1, "", "add", "w");
+        assert!(is_bare_rc_wrapper(&bare));
+
+        // Captured detail → a real message the CLI/daemon caller needs.
+        let detailed = classify_handler_error(1, "error: HTTP 422 from registry", "add", "w");
+        assert!(!is_bare_rc_wrapper(&detailed));
+
+        // Other typed errors never match.
+        let not_found = classify_handler_error(1, "Worker 'w' not found", "add", "w");
+        assert!(!is_bare_rc_wrapper(&not_found));
+    }
+
+    /// Regression: a forced re-add of a local worker found no NEW name in
+    /// the config.yaml pre/post diff (the entry already existed) and fell
+    /// back to the raw path label — `worker::add` returned
+    /// `name: "/tmp/hello-world"`, which no other worker::* trigger
+    /// accepts. Local sources must resolve the name from the manifest.
+    #[test]
+    fn post_install_worker_name_local_readd_resolves_manifest_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("iii.worker.yaml"),
+            "name: hello-world\nscripts:\n  start: \"node src/index.js\"\n",
+        )
+        .expect("write manifest");
+
+        let source = crate::core::WorkerSource::Local {
+            path: dir.path().to_path_buf(),
+        };
+        // Snapshot the CURRENT config names as `pre` so the diff finds
+        // nothing new — the forced re-add shape.
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
+        let label = dir.path().display().to_string();
+
+        let name = post_install_worker_name(&source, &pre, &label);
+        assert_eq!(
+            name, "hello-world",
+            "local re-add must return the manifest name, not the path"
+        );
+    }
+
+    /// Without a manifest name, the local fallback is the directory name —
+    /// still a valid single-segment worker id, never the full path.
+    #[test]
+    fn post_install_worker_name_local_readd_without_manifest_uses_dir_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = crate::core::WorkerSource::Local {
+            path: dir.path().to_path_buf(),
+        };
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
+        let label = dir.path().display().to_string();
+
+        let name = post_install_worker_name(&source, &pre, &label);
+        let dir_name = dir
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .to_string();
+        assert_eq!(name, dir_name);
+        assert!(
+            !name.contains('/'),
+            "worker name must be a single path segment, got {name}"
+        );
+    }
+
+    /// OCI re-adds have no manifest dir or registry slug to resolve a name
+    /// from, so the only safe answer is the raw reference label (the
+    /// lockfile version lookup returns None cleanly for it).
+    #[test]
+    fn post_install_worker_name_oci_readd_falls_back_to_reference_label() {
+        let reference = "ghcr.io/iii-hq/node:latest";
+        let source = crate::core::WorkerSource::Oci {
+            reference: reference.to_string(),
+        };
+        let pre: std::collections::HashSet<String> = crate::cli::config_file::list_worker_names()
+            .into_iter()
+            .collect();
+
+        let name = post_install_worker_name(&source, &pre, reference);
+        assert_eq!(
+            name, reference,
+            "OCI re-add must fall back to the reference label"
+        );
     }
 }

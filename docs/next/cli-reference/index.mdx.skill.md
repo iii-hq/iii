@@ -129,7 +129,7 @@ iii worker <COMMAND>
 
 | Command | Description |
 | ------- | ----------- |
-| [`add`](#iii-worker-add) | Install a worker from the iii registry, a local directory, or by OCI image reference. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs |
+| [`add`](#iii-worker-add) | Install a worker from the iii registry, a path to a local worker directory (ex. `./myWorker` with a `iii.worker.yaml` file within it) or by OCI image reference. To create a NEW worker from scratch, use `iii worker init`. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs |
 | [`clear`](#iii-worker-clear) | Clear downloaded worker artifacts from ~/.iii/ (local-only, no engine connection needed). Does not affect a worker's own build artifacts or dependencies (e.g. node_modules, Cargo.lock) |
 | [`exec`](#iii-worker-exec) | Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY |
 | [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
@@ -148,15 +148,15 @@ iii worker <COMMAND>
 
 ### `iii worker add`
 
-Install a worker from the iii registry, a local directory, or by OCI image reference. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs
+Install a worker from the iii registry, a path to a local worker directory (ex. `./myWorker` with a `iii.worker.yaml` file within it) or by OCI image reference. To create a NEW worker from scratch, use `iii worker init`. By default `add` waits up to 120s for the worker to report ready. After which the worker will continue to boot but the command will return to the shell. See `iii worker status` to continue observing a booting worker and `iii worker logs` for logs
 
 ```text
-iii worker add [OPTIONS] <WORKER[@VERSION]>...
+iii worker add [OPTIONS] <WORKER[@VERSION]|PATH>...
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `<WORKER[@VERSION]>...` | iii registry worker names (ex. `database`), local worker paths (ex. `./my_worker`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
+| `<WORKER[@VERSION]|PATH>...` | iii registry worker names (ex. `database` or `pdfkit@1.0.0`), local worker paths (ex. `./my_worker`, a directory containing `iii.worker.yaml`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
 
 | Option | Description |
 | ------ | ----------- |
@@ -252,12 +252,12 @@ iii worker logs [OPTIONS] <WORKER>
 Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset its config.yaml entry to registry defaults)
 
 ```text
-iii worker reinstall [OPTIONS] <WORKER[@VERSION]>...
+iii worker reinstall [OPTIONS] <WORKER[@VERSION]|PATH>...
 ```
 
 | Argument | Description |
 | -------- | ----------- |
-| `<WORKER[@VERSION]>...` | iii registry worker names (ex. `database`), local worker paths (ex. `./my_worker`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
+| `<WORKER[@VERSION]|PATH>...` | iii registry worker names (ex. `database` or `pdfkit@1.0.0`), local worker paths (ex. `./my_worker`, a directory containing `iii.worker.yaml`), or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`) |
 
 | Option | Description |
 | ------ | ----------- |
