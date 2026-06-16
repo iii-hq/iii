@@ -36,7 +36,8 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: write # prepare tag push, go tag, GitHub prerelease + binary uploads
+  id-token: write # OIDC / npm + pypi provenance (sdk-node, _py.yml)
 
 jobs:
   prepare:
