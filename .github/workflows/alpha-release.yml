@@ -139,6 +139,7 @@ jobs:
         run: >-
           pnpm
           --filter "@iii-dev/observability"
+          --filter "@iii-dev/helpers"
           --filter iii-sdk
           --filter iii-browser-sdk
           build
@@ -157,6 +158,7 @@ jobs:
         run: >-
           pnpm
           --filter "@iii-dev/observability"
+          --filter "@iii-dev/helpers"
           --filter iii-sdk
           --filter iii-browser-sdk
           -r publish
@@ -177,9 +179,23 @@ jobs:
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 
+  helpers-py:
+    name: Helpers Python (pypi)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/helpers
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
   sdk-py:
     name: SDK Python (pypi)
-    needs: [prepare, observability-py]
+    # iii depends on iii-observability and iii-helpers; publish them first
+    # so the package is installable from PyPI.
+    needs: [prepare, observability-py, helpers-py]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_py.yml
     with:
@@ -201,9 +217,23 @@ jobs:
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  helpers-rust:
+    name: Helpers Rust (cargo)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/helpers
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   sdk-rust:
     name: SDK Rust (cargo)
-    needs: [prepare, observability-rust]
+    # iii-sdk depends on both iii-observability and iii-helpers; cargo
+    # publish resolves those from crates.io, so both must be published first.
+    needs: [prepare, observability-rust, helpers-rust]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-cargo.yml
     with:
@@ -381,6 +411,9 @@ jobs:
       worker_dir: ${{ matrix.worker_dir }}
       version: ${{ needs.prepare.outputs.version }}
       release_tag: ${{ needs.prepare.outputs.tag }}
+      # Checkout the version-bumped commit: build_engine_publish_payload.py
+      # asserts engine/Cargo.toml matches the published version.
+      ref: ${{ needs.prepare.outputs.tag }}
       registry_tag: alpha
     secrets:
       WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}

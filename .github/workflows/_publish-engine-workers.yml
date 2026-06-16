@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: ''
+      ref:
+        description: 'Git ref to checkout (default: the triggering ref). The payload builder asserts engine/Cargo.toml matches the published version, so this must point at the version-bumped commit.'
+        required: false
+        type: string
+        default: ''
       registry_tag:
         description: 'Registry tag (latest, next, ...)'
         required: false
@@ -44,6 +49,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-python@v5
         with:
