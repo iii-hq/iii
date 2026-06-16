@@ -35,10 +35,18 @@ use std::collections::HashMap;
 /// A future test that reads `dirs::home_dir()` (directly or transitively)
 /// outside `in_temp_dir_async` would race this guard and must not be added
 /// without holding the same lock — there is no separate env lock here.
+///
+/// Unix-only: `dirs::home_dir()` honors `HOME` only on Unix. On Windows it
+/// resolves via the Known Folder API (FOLDERID_Profile) and ignores `HOME`,
+/// so this guard cannot sandbox `~/.iii`, and a `--force` test would run
+/// `remove_dir_all` against the real user home. The `~/.iii` libkrun worker
+/// surface this exercises is Unix-only anyway.
+#[cfg(unix)]
 struct HomeGuard {
     original: Option<std::ffi::OsString>,
 }
 
+#[cfg(unix)]
 impl HomeGuard {
     fn new(path: &std::path::Path) -> Self {
         let original = std::env::var_os("HOME");
@@ -48,6 +56,7 @@ impl HomeGuard {
     }
 }
 
+#[cfg(unix)]
 impl Drop for HomeGuard {
     fn drop(&mut self) {
         // SAFETY: test-only; serialized with sibling CWD/HOME tests via CWD_LOCK.
@@ -472,6 +481,10 @@ async fn handle_local_add_force_replaces_existing() {
 /// boot reruns the in-VM dependency install — even when a co-named binary
 /// artifact also exists, which used to trip the `if freed == 0` guard in
 /// `delete_worker_artifacts` and strand the managed dir (marker + dep caches).
+///
+/// Unix-only: relies on `HomeGuard` sandboxing `~/.iii` via `HOME`, which
+/// `dirs::home_dir()` honors only on Unix (see `HomeGuard`).
+#[cfg(unix)]
 #[tokio::test]
 async fn handle_local_add_force_removes_prepared_marker() {
     in_temp_dir_async(|| async {
@@ -632,6 +645,84 @@ async fn handle_local_add_force_removes_marker_when_dir_wipe_fails() {
         assert!(
             managed_dir.exists(),
             "precondition: the sabotaged dir should still be present, proving the wipe failed"
+        );
+    })
+    .await;
+}
+
+/// MOT-3585: when the explicit `.iii-prepared` removal hits a hard error (not
+/// NotFound), `--force` must FAIL (exit 1) rather than report success while a
+/// stale marker survives — a stale marker makes the next boot skip
+/// setup/install and reuse stale deps, which is the bug this PR fixes.
+///
+/// We make `var/` read-only (`0o500`) so both `delete_worker_artifacts`'
+/// recursive wipe and the direct `remove_file` fallback fail with
+/// PermissionDenied, leaving the marker in place. Unix-only and skipped under
+/// root (root bypasses the permission check).
+#[cfg(unix)]
+#[tokio::test]
+async fn handle_local_add_force_fails_when_marker_removal_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!(
+            "skipping handle_local_add_force_fails_when_marker_removal_errors: \
+             running as root, the read-only var/ sabotage is ineffective"
+        );
+        return;
+    }
+
+    in_temp_dir_async(|| async {
+        let cwd = std::env::current_dir().unwrap();
+
+        let home = cwd.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home_guard = HomeGuard::new(&home);
+
+        let project_dir = cwd.join("my-worker");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("package.json"), "{}").unwrap();
+        std::fs::write(
+            project_dir.join(WORKER_MANIFEST),
+            "name: my-worker\nruntime:\n  kind: typescript\n  package_manager: npm\n  entry: src/index.ts\n",
+        )
+        .unwrap();
+
+        TestConfigBuilder::new()
+            .with_worker("my-worker", Some("/old/path"))
+            .build(&cwd);
+
+        let managed_dir = home.join(".iii/managed/my-worker");
+        let var_dir = managed_dir.join("var");
+        let marker = var_dir.join(".iii-prepared");
+        std::fs::create_dir_all(&var_dir).unwrap();
+        std::fs::write(&marker, "").unwrap();
+
+        // Read-only var/ (r-x, no write): the marker can be unlinked by neither
+        // the recursive wipe nor the explicit remove_file, so the hard-error
+        // arm fires.
+        std::fs::set_permissions(&var_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        // Restore perms on scope exit/unwind so TempDir cleanup isn't defeated.
+        struct RestorePerms<'a>(&'a std::path::Path);
+        impl Drop for RestorePerms<'_> {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = RestorePerms(&var_dir);
+
+        let result =
+            handle_local_add(project_dir.to_str().unwrap(), true, false, true, false).await;
+
+        assert_eq!(
+            result, 1,
+            "--force must fail when the prepared marker cannot be removed"
+        );
+        assert!(
+            marker.exists(),
+            "precondition: the marker should still be present, proving removal failed"
         );
     })
     .await;

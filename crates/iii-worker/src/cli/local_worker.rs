@@ -553,12 +553,18 @@ pub async fn handle_local_add(
             // Expected when the full managed-dir wipe above already succeeded.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
+                // Abort: a surviving marker makes the next boot skip
+                // setup/install and reuse stale deps (MOT-3585). Failing here
+                // is better than reporting --force success with stale gating.
                 eprintln!(
-                    "  {} could not remove prepared marker {}: {}",
-                    "warning:".yellow(),
+                    "{} could not remove the prepared marker {}: {}\n  \
+                     Aborting --force so the worker is not left with a stale \
+                     reinstall marker; fix the error (e.g. permissions) and retry.",
+                    "error:".red(),
                     prepared_marker.display(),
                     e
                 );
+                return 1;
             }
         }
         if reset_config {
