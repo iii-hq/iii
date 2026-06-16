@@ -35,10 +35,10 @@ iii worker init my-worker --language typescript
 
 Supported languages: `typescript` (`ts`), `javascript` (`js`), `python` (`py`), `rust` (`rs`).
 
-The positional `NAME` is the target directory; pass `--directory` to override it.
+Workers will typically store their program's entrypoint at `src/index.ext` or `src/main.ext` though
+this may vary slightly by programming language and template.
 
-Re-running `iii worker init` on a directory that already holds a iii worker (ie. has
-`.iii/worker.ini`) will make no changes to the worker.
+The positional `NAME` is used as the target directory; pass `--directory` to override it.
 
 Worker init will fail by default when targeting a non-empty directory, use `--allow-non-empty` to
 scaffold into any other non-empty directory.
@@ -57,10 +57,10 @@ process can be deployed anywhere reachable on the network.
 
 <Note>
   This connects with full trust, appropriate for workers you run. For an untrusted worker (a browser
-  client or a third party's), connect through the `iii-worker-manager` RBAC listener and gate it with
-  an auth function instead. See [Untrusted workers and access
-  control](../using-iii/workers#untrusted-workers-and-access-control) and the
-  [iii-worker-manager worker page](https://workers.iii.dev/workers/iii-worker-manager).
+  client or a third party's), connect through the `iii-worker-manager` RBAC listener and gate it
+  with an auth function instead. See [Untrusted workers and access
+  control](../using-iii/workers#untrusted-workers-and-access-control) and the [iii-worker-manager
+  worker page](https://workers.iii.dev/workers/iii-worker-manager).
 </Note>
 
 <Tabs>
@@ -443,8 +443,8 @@ as they happen. This is particularly useful for continuing work when a Worker co
 
 `iii.worker.yaml` is the manifest at the worker's root that tells iii how to install dependencies,
 run the worker, and pass through configuration. This applies to both the iii worker CLI commands
-(e.g. [`start`, `stop`, `restart`](../using-iii/workers#starting-and-stopping-workers)) and to workers
-that iii starts automatically when they're specified in iii's
+(e.g. [`start`, `stop`, `restart`](../using-iii/workers#starting-and-stopping-workers)) and to
+workers that iii starts automatically when they're specified in iii's
 [`config.yaml`](../using-iii/engine#configuration-file-structure).
 
 ```yaml
@@ -458,8 +458,8 @@ scripts:
   start: "watchfiles 'python src/math_worker.py'"
 ```
 
-`description` is an optional one-line, human/LLM-readable summary of what the worker does; the
-iii CLI displays it when installing or inspecting the worker.
+`description` is an optional one-line, human/LLM-readable summary of what the worker does; the iii
+CLI displays it when installing or inspecting the worker.
 
 `scripts.install` runs once to fetch dependencies and `scripts.start` launches the worker. Here,
 `watchfiles` reloads it whenever you edit a source file. `runtime.base_image` selects the OCI image
@@ -516,9 +516,9 @@ dropped socket; graceful shutdown makes it deterministic and faster.
 </Tabs>
 
 <Note>
-  Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless
-  containers, or scheduled scripts can connect like any other Worker, do their work, and
-  `shutdown()` (`shutdown_async().await` in Rust).
+  Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless containers,
+  or scheduled scripts can connect like any other Worker, do their work, and `shutdown()`
+  (`shutdown_async().await` in Rust).
 </Note>
 
 {/* TODO: confirm the SDK shutdown call (e.g. `worker.shutdown()`) and add a minimal Node / TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits cleanly. */}

@@ -87,6 +87,7 @@
                   "next/using-iii/cli",
                   "next/using-iii/sandboxes",
                   "next/using-iii/observability",
+                  "next/using-iii/http",
                   "next/using-iii/deployment"
                 ]
               },
