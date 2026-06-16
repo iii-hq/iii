@@ -48,29 +48,38 @@ The registry contains many workers that encapsulate common services. See
 ### Adding a worker
 
 <Note>
-  You need iii [installed](../install) and [running](./engine) before adding a worker. To
-  spin up a temporary iii instance for testing, run `iii --use-default-config` (see [Default
+  You need iii [installed](../install) and [running](./engine) before adding a worker. To spin up a
+  temporary iii instance for testing, run `iii --use-default-config` (see [Default
   configuration](./engine#default-configuration)).
 </Note>
+
+Workers can be added to your iii instance from three different sources: the iii
+[worker registry](./workers-registry), docker and OCI-compatible repositories, or locally developed
+workers which you can learn more about in
+[Creating Workers / Scaffold a new Worker](../creating-workers/workers#scaffold-a-new-worker).
 
 `iii worker add <name>` installs a worker into your project:
 
 ```bash
-iii worker add iii-state
+iii worker add iii-state # Downloads and adds a worker from iii registry
+iii worker add ./workers/my_worker # Adds a local worker created with `iii worker init`
+iii worker add ghcr.io/org/worker:tag # Adds a local worker from a Docker or OCI image registry
 ```
 
 The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
-<Note>
-  For local paths, Docker / OCI images, and version pinning, see [Worker Registry / Adding a
-  worker](./workers-registry#adding-a-worker).
-</Note>
+#### Pinning worker versions
+
+Registry workers are published with semver versions. For how versions are picked, pinned with
+`@<version>`, updated, and recorded in `iii.lock`, see
+[Versioning](./workers#versioning) and
+[Updating a worker](./workers#updating-a-worker) on the Workers page.
 
 ### Listing workers
 
 `iii worker list` shows every worker declared in your project's `config.yaml` along with its current
-status:
+status. This is what you check to see the list of running and stopped workers:
 
 ```bash
 iii worker list

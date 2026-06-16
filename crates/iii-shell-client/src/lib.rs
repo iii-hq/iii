@@ -947,8 +947,7 @@ where
             "frame length {frame_len} out of range"
         )));
     }
-    let mut body: Vec<u8> = Vec::with_capacity(frame_len);
-    unsafe { body.set_len(frame_len) };
+    let mut body = vec![0u8; frame_len];
     reader
         .read_exact(&mut body)
         .await
@@ -1001,10 +1000,9 @@ async fn read_one_frame(
             "frame length {frame_len} out of range"
         )));
     }
-    // read_exact overwrites every byte, so uninit is fine — same
-    // SAFETY rationale as shell_relay::read_frame.
-    let mut body: Vec<u8> = Vec::with_capacity(frame_len);
-    unsafe { body.set_len(frame_len) };
+    // Zero-init then overwrite via read_exact — memset is noise next to
+    // the socket read (clippy::uninit_vec is deny-by-default).
+    let mut body = vec![0u8; frame_len];
     reader
         .read_exact(&mut body)
         .await
@@ -1153,5 +1151,143 @@ mod tests {
         assert_eq!(s.stderr, b"err");
         assert_eq!(s.on_stdout(b"x"), Flow::StopAppending);
         assert_eq!(s.on_stderr(b"y"), Flow::StopAppending);
+    }
+
+    #[tokio::test]
+    async fn read_frame_async_round_trips_valid_frame() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let msg = ShellMessage::Exited { code: 7 };
+        let frame = encode_frame(11, FLAG_TERMINAL, &msg).expect("encode");
+        server.write_all(&frame).await.expect("write frame");
+
+        let got = read_frame_async(&mut client)
+            .await
+            .expect("read ok")
+            .expect("frame present");
+
+        assert_eq!(got, (11, FLAG_TERMINAL, msg));
+    }
+
+    #[tokio::test]
+    async fn read_frame_async_returns_none_on_eof_at_frame_boundary() {
+        let (mut client, server) = tokio::io::duplex(64);
+        drop(server);
+
+        let got = read_frame_async(&mut client).await.expect("clean eof");
+
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_frame_async_rejects_frame_length_above_max() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let oversized = (MAX_FRAME_SIZE as u32) + 1;
+        server
+            .write_all(&oversized.to_be_bytes())
+            .await
+            .expect("write prefix");
+        drop(server);
+
+        let err = read_frame_async(&mut client).await.unwrap_err();
+
+        assert!(matches!(err, VmClientError::ProtocolViolation(_)));
+    }
+
+    #[tokio::test]
+    async fn read_frame_async_rejects_frame_length_below_header_size() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let undersized = (FRAME_HEADER_SIZE as u32) - 1;
+        server
+            .write_all(&undersized.to_be_bytes())
+            .await
+            .expect("write prefix");
+        drop(server);
+
+        let err = read_frame_async(&mut client).await.unwrap_err();
+
+        assert!(matches!(err, VmClientError::ProtocolViolation(_)));
+    }
+
+    #[tokio::test]
+    async fn read_frame_async_rejects_partial_length_prefix() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+        server.write_all(&[0u8, 0]).await.expect("write 2 bytes");
+        drop(server);
+
+        let err = read_frame_async(&mut client).await.unwrap_err();
+
+        assert!(matches!(err, VmClientError::ProtocolViolation(_)));
+    }
+
+    #[tokio::test]
+    async fn read_frame_async_errors_on_truncated_body() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let frame = encode_frame(3, 0, &ShellMessage::Exited { code: 0 }).expect("encode");
+        server
+            .write_all(&frame[..frame.len() - 1])
+            .await
+            .expect("write truncated");
+        drop(server);
+
+        let err = read_frame_async(&mut client).await.unwrap_err();
+
+        assert!(matches!(err, VmClientError::Io(_)));
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_round_trips_valid_frame_over_unix_socket() {
+        let (a, mut b) = UnixStream::pair().expect("socketpair");
+        let (mut read_half, _keep_write) = a.into_split();
+        let msg = ShellMessage::Exited { code: 42 };
+        let frame = encode_frame(9, 0, &msg).expect("encode");
+        b.write_all(&frame).await.expect("write frame");
+
+        let got = read_one_frame(&mut read_half)
+            .await
+            .expect("read ok")
+            .expect("frame present");
+
+        assert_eq!(got, (9, 0, msg));
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_returns_none_on_eof_at_frame_boundary() {
+        let (a, b) = UnixStream::pair().expect("socketpair");
+        let (mut read_half, _keep_write) = a.into_split();
+        drop(b);
+
+        let got = read_one_frame(&mut read_half).await.expect("clean eof");
+
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_rejects_frame_length_above_max() {
+        let (a, mut b) = UnixStream::pair().expect("socketpair");
+        let (mut read_half, _keep_write) = a.into_split();
+        let oversized = (MAX_FRAME_SIZE as u32) + 1;
+        b.write_all(&oversized.to_be_bytes())
+            .await
+            .expect("write prefix");
+        drop(b);
+
+        let err = read_one_frame(&mut read_half).await.unwrap_err();
+
+        assert!(matches!(err, VmClientError::ProtocolViolation(_)));
+    }
+
+    #[tokio::test]
+    async fn read_one_frame_errors_on_truncated_body() {
+        let (a, mut b) = UnixStream::pair().expect("socketpair");
+        let (mut read_half, _keep_write) = a.into_split();
+        let frame = encode_frame(5, 0, &ShellMessage::Exited { code: 1 }).expect("encode");
+        b.write_all(&frame[..frame.len() - 1])
+            .await
+            .expect("write truncated");
+        drop(b);
+
+        let err = read_one_frame(&mut read_half).await.unwrap_err();
+
+        assert!(matches!(err, VmClientError::Io(_)));
     }
 }

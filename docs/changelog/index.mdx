@@ -5,6 +5,56 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.20.0" description="June 2026">
+  ## `iii.worker.yaml` is validated before anything is installed
+
+  Local `worker add` (CLI and `worker::add` trigger) now validates the manifest **before any artifact is written**. A typed schema is the single source of truth, and it is strict where it matters:
+
+  - **Unknown keys are rejected** — collected and sorted, so a manifest with several typos surfaces them all in one run:
+
+    ```
+    unknown key(s) in ./my-worker/iii.worker.yaml: [runtimee, scrpits].
+    Supported fields are: name, description, runtime.base_image,
+    scripts.(setup|install|start), env, dependencies, resources.(cpus|memory).
+    ```
+
+  - **Deprecated keys warn but still work** (`runtime.kind` / `package_manager` / `entry` / `language`, top-level `config` / `language` / `entry`) — honored for now, scheduled for removal in a future version, with migration hints per key. Silence with `III_NO_DEPRECATION_WARN=1`.
+  - **Shape errors read in plain English** — `runtime: node` reports "`runtime` must be a mapping", not serde's "expected struct RuntimeSection". A manifest missing `name` says so precisely instead of the false "No project manifest detected".
+  - The same strict validation re-runs at `start`, with a 64 KiB size cap that defuses hostile (billion-laughs) or accidental multi-GB manifests before they are slurped into host memory.
+
+  **Breaking:** a local manifest with unknown keys that previously installed silently now fails `worker::add`. Fix the typo or remove the key — `worker::validate` (below) tells you exactly which.
+
+  ## Author → check → add: `worker::validate` and the manifest contract
+
+  Two new ops close the authoring loop for LLMs and automation:
+
+  - **`worker::validate`** dry-runs a manifest — inline string or host path — and returns `{ valid, name, errors, unknown_keys, deprecated_keys, warnings }` without touching anything. `valid: true` means `worker::add` would accept it.
+  - **`worker::schema { function_id: "iii.worker.yaml" }`** serves the manifest's JSON Schema (closed-world: every field described, unknown keys rejected) plus a ready-to-write hello-world bundle using the correct `iii-sdk` package — self-tested against our own validator so the example can never drift from the rules.
+
+  ## `worker::status`: one worker, full picture
+
+  `worker::status { name }` reports a single worker's config entry, sandbox state, process liveness, and recent logs in one call, with actionable hints — a local worker without logs yet reports that it is still provisioning rather than implying failure. Like every `worker::*` op it carries schemars-generated request/response schemas via `engine::functions::info`.
+
+  ## Local-path workers: stop re-adding after code edits
+
+  Local workers run their project directory live and get a host-side source watcher: editing a source file auto-restarts the worker, and editing a dependency manifest (`package.json`, `Cargo.toml`, …) forces a full restart. Re-running `worker::add` after a code change is pure waste — it re-registers triggers and re-runs install scripts. The `worker::add` / `worker::update` descriptions now say this to LLM callers directly: re-add with `force: true` only when `iii.worker.yaml` itself changes, and `worker::update` never touches local-path workers (it re-resolves registry workers pinned in `iii.lock`).
+
+  Also fixed: a forced local re-add returned the raw path (`/tmp/hello-world`) as the worker name instead of the manifest name (`hello-world`) — no other `worker::*` op accepts the path form, so the response was a dead end.
+
+  ## W120 tells you when the lock holder is the daemon itself
+
+  When the worker lock is held by the `iii-worker-ops` daemon — the process serving the `worker::*` API — the W120 `LockBusy` error now says so and tells the caller **not** to kill that pid. From a real harness session: an LLM saw "lock held by pid N", killed N, and took down the entire worker management API it was using.
+
+  ## `worker::logs` output is terminal-sanitized
+
+  Logs fetched over the bus are stripped of ANSI/OSC escapes and spinner residue — raw escape bytes are token noise for LLM consumers and can rewrite the reader's terminal. Pass `raw: true` to opt out.
+
+  ## Hardening
+
+  - The VM UDP relay now writes a real pseudo-header checksum on response packets (strict guest stacks drop zero-checksum UDP), bounds payloads to the 16-bit IP length limit instead of silently truncating, and no longer injects empty frames into the guest's rx ring.
+  - Shell frame readers (proto, client, relay) zero-initialize their buffers instead of using uninitialized memory before the socket read.
+</Update>
+
 <Update label="0.19.2" description="June 2026">
   ## Conflicting HTTP routes are rejected instead of crashing the worker
 

@@ -177,6 +177,7 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
     function_id: "state::get",
     payload: { scope: "links", key: payload.code },
   });
+  logger.info("link resolved", { code: payload.code, found: !!stored?.url });
   return { url: stored?.url ?? null };
 });
 

@@ -20,17 +20,10 @@ Workers can also be found on Docker and OCI-compatible registries.
 `config.yaml` and started automatically.
 
 ```bash
-iii worker add iii-state                # registry name
-iii worker add ./workers/my-worker      # local path
-iii worker add ghcr.io/org/worker:tag   # Docker or OCI image
+iii worker add iii-state # Downloads and adds a worker from iii registry
+iii worker add ./workers/my_worker # Adds a local worker created with `iii worker init`
+iii worker add ghcr.io/org/worker:tag # Adds a local worker from a Docker or OCI image registry
 ```
-
-<Note>
-  Registry workers are published with semver versions. For how versions are picked, pinned with
-  `@<version>`, updated, and recorded in `iii.lock`, see [Versioning and
-  pinning](./workers#versioning-and-pinning) and [Updating a
-  worker](./workers#updating-a-worker) on the Workers page.
-</Note>
 
 <Note>
   For removing workers and the broader `iii worker` subcommand set (start, stop, restart, sync,
