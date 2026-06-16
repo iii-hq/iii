@@ -71,14 +71,16 @@ export class EngineMetricsExporter implements PushMetricExporter {
     resultCallback: (result: ExportResult) => void,
   ): void {
     const state = this.connection.getState()
-    if (state === 'failed') {
-      resultCallback({
-        code: ExportResultCode.FAILED,
-        error: new Error('Connection failed: dropping metrics'),
-      })
-      return
-    }
     if (state !== 'connected') {
+      // Drop instead of queue when there's no prospect of delivery (failed, or shutting down)
+      if (state === 'failed' || this.connection.isShuttingDown()) {
+        const reason = state === 'failed' ? 'failed' : 'shut down'
+        resultCallback({
+          code: ExportResultCode.FAILED,
+          error: new Error(`Connection ${reason}: dropping metrics`),
+        })
+        return
+      }
       if (this.pendingExports.length >= EngineMetricsExporter.MAX_PENDING_EXPORTS) {
         const dropped = this.pendingExports.shift()
         dropped?.resultCallback?.({
