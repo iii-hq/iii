@@ -18,6 +18,23 @@ being callable until it reconnects.
   Workers](../creating-workers/workers#connecting-to-the-engine).
 </Note>
 
+## Untrusted workers and access control
+
+The default engine listener trusts anything that connects to it, which is fine for workers you run.
+A worker you do not control, a browser client or a third party's worker, must not get that same
+unrestricted access. For those, connect them through the `iii-worker-manager` worker, which exposes
+a separate role-based access control (RBAC) listener:
+
+```bash
+iii worker add iii-worker-manager
+```
+
+The RBAC listener runs an auth function you write on every connection to admit or reject it and to
+decide which functions and trigger types that connection may use, so an untrusted worker only ever
+sees the surface you grant it. Configuration, the auth and middleware function shapes, and the full
+connection flow are documented on the
+[iii-worker-manager worker page](https://workers.iii.dev/workers/iii-worker-manager).
+
 ## Managing workers
 
 The `iii worker` CLI commands cover the full lifecycle of every worker in your project: finding new

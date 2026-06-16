@@ -26,7 +26,7 @@ the new sandbox's id with `jq` and stop the sandbox when done so nothing keeps r
 so there is nothing to clean up.
 
 ```bash
-iii trigger sandbox::run image=python lang=python code='print(2+2)'
+iii trigger sandbox::run image=python lang=python code='print(2+2)' | jq -r .stdout   # -> 4
 ```
 
 `lang` accepts `node`, `python`, `shell`, or an interpreter path. Pass `keep_sandbox=true` to leave
@@ -38,10 +38,10 @@ For multi-step work, create a sandbox, operate on it with its id, then stop it. 
 flat `key=value` arguments; only nested payloads need `--json`.
 
 ```bash
-SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)   # boot, capture the id
-iii trigger sandbox::exec sandbox_id=$SB cmd='python --version'      # run a command
-iii trigger sandbox::list                                            # active sandboxes
-iii trigger sandbox::stop sandbox_id=$SB                             # stop when done
+SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)               # capture the id
+iii trigger sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout  # command output
+iii trigger sandbox::list | jq -r '.[].sandbox_id'                               # active sandbox ids
+iii trigger sandbox::stop sandbox_id=$SB                                         # stop when done
 ```
 
 A whitespace-containing `cmd` is split into a command and its arguments. It is not a shell, so it
@@ -54,7 +54,7 @@ operator-registered images). Call it when you do not already know what is availa
 boot a sandbox, so there is nothing to stop.
 
 ```bash
-iii trigger sandbox::catalog::list
+iii trigger sandbox::catalog::list | jq -r '.images[].name'   # e.g. python, node
 ```
 
 ## Filesystem
@@ -67,9 +67,9 @@ SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
 D=/work; F=$D/main.py
 iii trigger sandbox::fs::mkdir sandbox_id=$SB path=$D parents=true
 iii trigger sandbox::fs::write sandbox_id=$SB path=$F content='print(1)'
-iii trigger sandbox::fs::ls    sandbox_id=$SB path=$D
+iii trigger sandbox::fs::ls    sandbox_id=$SB path=$D | jq -r '.entries[].name'
 iii trigger sandbox::fs::stat  sandbox_id=$SB path=$F
-iii trigger sandbox::fs::read  sandbox_id=$SB path=$F
+iii trigger sandbox::fs::read  sandbox_id=$SB path=$F | jq -r .body
 iii trigger sandbox::fs::chmod sandbox_id=$SB path=$F mode=0644
 iii trigger sandbox::fs::grep  sandbox_id=$SB path=$D pattern=print
 iii trigger sandbox::fs::sed   sandbox_id=$SB path=$D pattern=print replacement=log

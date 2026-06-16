@@ -3,7 +3,7 @@
 
 ## How workers expand iii
 
-Workers add capability to an iii system. Each one contributes functions and triggers the engine can
+Workers add capability to a iii system. Each one contributes functions and triggers the engine can
 route to. This page covers deploying and wiring workers into a project.
 
 Once connected, a worker exposes:
@@ -37,7 +37,7 @@ Supported languages: `typescript` (`ts`), `javascript` (`js`), `python` (`py`), 
 
 The positional `NAME` is the target directory; pass `--directory` to override it.
 
-Re-running `iii worker init` on a directory that already holds an iii worker (ie. has
+Re-running `iii worker init` on a directory that already holds a iii worker (ie. has
 `.iii/worker.ini`) will make no changes to the worker.
 
 Worker init will fail by default when targeting a non-empty directory, use `--allow-non-empty` to
@@ -54,6 +54,14 @@ A worker connects to the engine over WebSocket. The convention is to set the eng
 `III_URL` environment variable, but it can also be passed explicitly to `register_worker`. The
 connection string is the only coupling between a worker and the iii instance it joins, so the worker
 process can be deployed anywhere reachable on the network.
+
+<Note>
+  This connects with full trust, appropriate for workers you run. For an untrusted worker (a browser
+  client or a third party's), connect through the `iii-worker-manager` RBAC listener and gate it with
+  an auth function instead. See [Untrusted workers and access
+  control](../using-iii/workers#untrusted-workers-and-access-control) and the
+  [iii-worker-manager worker page](https://workers.iii.dev/workers/iii-worker-manager).
+</Note>
 
 <Tabs>
   <Tab title="Node / TypeScript">

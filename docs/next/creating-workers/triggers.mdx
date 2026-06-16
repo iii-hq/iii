@@ -139,8 +139,8 @@ Don't confuse trigger _metadata_ with trigger type [_schemas_](#attach-schemas-t
 (`trigger_request_format` and `call_request_format`):
 
 - **Metadata** is set by the **consumer** on each binding (ie. the `worker.registerTrigger()` call).
-  It's a free-form tag bag the engine stores as-is, used for the publisher's bookkeeping and for
-  discovery. For example, a consumer binding to `http` might attach
+  It's a free-form tag structure the engine stores as-is, used for the publisher's bookkeeping and
+  for discovery. For example, a consumer binding to `http` might attach
   `metadata: { team: "platform", env: "staging", on_call: "alice" }` so the publishing worker can
   log the team, and [`engine::triggers::list`](../using-iii/functions#engine-functions-engine)
   surfaces this information on request.
@@ -167,9 +167,10 @@ A trigger type is two things bundled together:
 1. A string `id` that consumers reference when they bind to a trigger (ex. `type: "mini-http"`).
 2. A per-binding routing table that **your worker** maintains in-process. The engine's registry
    records the binding canonically (this is what
-   [`engine::triggers::list`](../using-iii/functions#engine-functions-engine) returns), but the engine
-   doesn't dispatch on it. The engine forwards every bind/unbind from any consumer worker on the
-   network to the publisher worker as a callback, and this worker decides what to do with each one.
+   [`engine::triggers::list`](../using-iii/functions#engine-functions-engine) returns), but the
+   engine doesn't dispatch on it. The engine forwards every bind/unbind from any consumer worker on
+   the network to the publisher worker as a callback, and this worker decides what to do with each
+   one.
 
 You declare the trigger type once at startup with
 `worker.registerTriggerType({ id, description }, handler)`.
@@ -334,11 +335,11 @@ know what to send and what they'll receive.
 
 Each SDK accepts these in its own idiomatic way:
 
-| SDK                                                                                                             | What you pass                                                                                                                                  |
-| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| SDK                                                                                                                 | What you pass                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Node](../sdk-reference/node-sdk#registertriggertype) / [Browser](../sdk-reference/browser-sdk#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
-| [Python](../sdk-reference/python-sdk#register_trigger_type)                                                       | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
-| [Rust](../sdk-reference/rust-sdk#register_trigger_type)                                                           | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
+| [Python](../sdk-reference/python-sdk#register_trigger_type)                                                         | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
+| [Rust](../sdk-reference/rust-sdk#register_trigger_type)                                                             | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 
