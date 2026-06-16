@@ -26,9 +26,15 @@ use iii_worker::cli::project::{ProjectInfo, WORKER_MANIFEST};
 use std::collections::HashMap;
 
 /// RAII guard overriding `HOME` for tests that exercise `~/.iii` artifact
-/// paths (via `dirs::home_dir()`), restoring the prior value on drop. The
-/// async `handle_local_add` tests that use it run under `in_temp_dir_async`'s
-/// `CWD_LOCK`, which serializes them, so a dedicated env lock isn't required.
+/// paths (via `dirs::home_dir()`), restoring the prior value on drop.
+///
+/// SAFETY INVARIANT (load-bearing, not optional): `HOME` is process-global,
+/// so the `unsafe` `set_var`/`remove_var` below are only sound while *every*
+/// HOME-reading test in this binary holds `CWD_LOCK` via `in_temp_dir_async`,
+/// which serializes them. This guard is constructed only inside such closures.
+/// A future test that reads `dirs::home_dir()` (directly or transitively)
+/// outside `in_temp_dir_async` would race this guard and must not be added
+/// without holding the same lock — there is no separate env lock here.
 struct HomeGuard {
     original: Option<std::ffi::OsString>,
 }
@@ -521,6 +527,111 @@ async fn handle_local_add_force_removes_prepared_marker() {
         assert!(
             !marker.exists(),
             "`.iii-prepared` marker must be removed on --force so install reruns"
+        );
+
+        // Root-cause coverage: the whole managed dir (marker + the
+        // /var/iii/deps caches) must be wiped, not just the marker. Without
+        // these, the test passes even if the `delete_worker_artifacts`
+        // managed-dir wipe regresses, because the defense-in-depth
+        // `remove_file` deletes the marker on its own. A surviving dep cache
+        // is half of MOT-3585: a changed lock file would reuse stale deps.
+        assert!(
+            !managed_dir.exists(),
+            "managed dir must be wiped on --force, not stranded by a freed binary artifact"
+        );
+        assert!(
+            !managed_dir.join("var/iii/deps/node_modules").exists(),
+            "stale dep cache must be removed on --force so a changed lock file reinstalls"
+        );
+    })
+    .await;
+}
+
+/// MOT-3585 part 2 (defense-in-depth): when the managed-dir wipe in
+/// `delete_worker_artifacts` fails and strands the dir + marker, the explicit
+/// `.iii-prepared` removal must still fire so the next boot reruns install.
+/// This is the ONLY test that exercises the `Ok(())` arm of that fallback —
+/// the happy-path tests wipe the dir successfully, so their `remove_file`
+/// always hits the no-op `NotFound` arm instead.
+///
+/// We force the wipe to fail deterministically by making the managed dir
+/// unreadable (`0o300`: execute+write, no read), so `remove_dir_all` can't
+/// enumerate it, while the direct `remove_file(.../var/.iii-prepared)` path
+/// still resolves (execute on the dirs, write on `var/`). Unix-only because it
+/// relies on POSIX permission semantics.
+#[cfg(unix)]
+#[tokio::test]
+async fn handle_local_add_force_removes_marker_when_dir_wipe_fails() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // root bypasses POSIX permission checks, so the 0o300 sabotage below would
+    // NOT block remove_dir_all — the wipe would succeed, the dir would vanish,
+    // and the `managed_dir.exists()` precondition would fail. Skip honestly
+    // (common in container CI that runs as root) rather than fail or, worse,
+    // pass for the wrong reason.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!(
+            "skipping handle_local_add_force_removes_marker_when_dir_wipe_fails: \
+             running as root, the 0o300 permission sabotage is ineffective"
+        );
+        return;
+    }
+
+    in_temp_dir_async(|| async {
+        let cwd = std::env::current_dir().unwrap();
+
+        let home = cwd.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home_guard = HomeGuard::new(&home);
+
+        let project_dir = cwd.join("my-worker");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("package.json"), "{}").unwrap();
+        std::fs::write(
+            project_dir.join(WORKER_MANIFEST),
+            "name: my-worker\nruntime:\n  kind: typescript\n  package_manager: npm\n  entry: src/index.ts\n",
+        )
+        .unwrap();
+
+        TestConfigBuilder::new()
+            .with_worker("my-worker", Some("/old/path"))
+            .build(&cwd);
+
+        let managed_dir = home.join(".iii/managed/my-worker");
+        let marker = managed_dir.join("var/.iii-prepared");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, "").unwrap();
+
+        // Sabotage the wipe: unreadable managed dir => remove_dir_all fails to
+        // enumerate, leaving the dir + marker behind for the fallback to clean.
+        std::fs::set_permissions(&managed_dir, std::fs::Permissions::from_mode(0o300)).unwrap();
+
+        // Restore perms on scope exit OR unwind, so a panic inside
+        // handle_local_add can't leave the 0o300 subtree behind to defeat
+        // TempDir cleanup. `exists()` assertions below still work at 0o300
+        // (execute bit is set), so restoring after them is unnecessary.
+        struct RestorePerms<'a>(&'a std::path::Path);
+        impl Drop for RestorePerms<'_> {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = RestorePerms(&managed_dir);
+
+        let result =
+            handle_local_add(project_dir.to_str().unwrap(), true, false, true, false).await;
+
+        assert_eq!(result, 0, "force add should still succeed when the dir wipe fails");
+        assert!(
+            !marker.exists(),
+            "defense-in-depth remove_file must clear the marker even when the dir wipe failed"
+        );
+        // The dir itself is expected to survive (the wipe failed) — that is the
+        // whole point of the marker-only fallback.
+        assert!(
+            managed_dir.exists(),
+            "precondition: the sabotaged dir should still be present, proving the wipe failed"
         );
     })
     .await;

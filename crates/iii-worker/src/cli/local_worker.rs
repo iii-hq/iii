@@ -545,12 +545,7 @@ pub async fn handle_local_add(
         // file (e.g. added a package to pyproject.toml) gets the stale cache
         // and a ModuleNotFoundError at runtime. Removing the tiny marker file
         // is far more reliable than the recursive dir wipe.
-        let prepared_marker = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".iii/managed")
-            .join(&worker_name)
-            .join("var")
-            .join(".iii-prepared");
+        let prepared_marker = super::managed::prepared_marker_path(&worker_name);
         match std::fs::remove_file(&prepared_marker) {
             Ok(()) => {
                 tracing::debug!(marker = %prepared_marker.display(), "removed prepared marker on --force");
@@ -1009,7 +1004,10 @@ async fn start_worker_impl(
     //    in the fast path. Printing a "Using cached deps" banner every
     //    start made it look like install was running every restart (it
     //    wasn't), which confused users reading watcher.log tails.
-    let prepared_marker = managed_dir.join("var").join(".iii-prepared");
+    // Derive from the already-resolved `managed_dir` (built behind the strict
+    // home_dir() guard above) rather than re-resolving via worker name, so the
+    // marker check can't diverge from the dir this function actually uses.
+    let prepared_marker = super::managed::prepared_marker_in(&managed_dir);
     let is_prepared = prepared_marker.exists();
 
     // 6. Build env with engine URL + OCI env + config.yaml env

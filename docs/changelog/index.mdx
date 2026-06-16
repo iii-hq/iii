@@ -41,6 +41,12 @@ type: "reference"
 
   Also fixed: a forced local re-add returned the raw path (`/tmp/hello-world`) as the worker name instead of the manifest name (`hello-world`) — no other `worker::*` op accepts the path form, so the response was a dead end.
 
+  ## `worker add --force` reruns install when dependencies change
+
+  `--force` is the documented way to rebuild a local worker after its `iii.worker.yaml` or lock file changes. It stops the worker and clears artifacts, but a leftover binary or OCI image under `~/.iii` could trip an `if freed == 0` guard that left the managed directory in place — and with it the `.iii-prepared` marker and the `/var/iii/deps` caches. The next boot saw the marker, skipped `setup`/`install`, and reused stale dependencies, so a freshly added package surfaced as a `ModuleNotFoundError` at runtime.
+
+  The managed directory is now always wiped on `--force` (it is a distinct path from the image cache, so there was never a double-count to guard against), and the `.iii-prepared` marker is removed explicitly as a backstop even when the directory wipe partially fails. A changed lock file reinstalls.
+
   ## W120 tells you when the lock holder is the daemon itself
 
   When the worker lock is held by the `iii-worker-ops` daemon — the process serving the `worker::*` API — the W120 `LockBusy` error now says so and tells the caller **not** to kill that pid. From a real harness session: an LLM saw "lock held by pid N", killed N, and took down the entire worker management API it was using.
