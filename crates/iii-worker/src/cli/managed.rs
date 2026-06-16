@@ -6192,7 +6192,10 @@ dependencies:
             std::fs::create_dir_all(&image_dir).unwrap();
             std::fs::write(image_dir.join("layer.tar"), "fake image bytes").unwrap();
             let image_bytes = dir_size(&image_dir);
-            assert!(image_bytes > 0, "OCI image dir must free > 0 bytes (the trigger)");
+            assert!(
+                image_bytes > 0,
+                "OCI image dir must free > 0 bytes (the trigger)"
+            );
 
             let managed_dir = home.join(".iii/managed").join(name);
             let marker = managed_dir.join("var").join(".iii-prepared");
