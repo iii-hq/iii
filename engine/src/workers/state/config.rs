@@ -185,7 +185,9 @@ fn adapter_branch(name: &str, config_schema: Schema) -> Schema {
         object
             .properties
             .insert("name".to_string(), Schema::Object(name_schema));
-        object.properties.insert("config".to_string(), config_schema);
+        object
+            .properties
+            .insert("config".to_string(), config_schema);
         object.required.insert("name".to_string());
         object.additional_properties = Some(Box::new(Schema::Bool(false)));
     }
