@@ -14,22 +14,33 @@ iii worker add iii-queue
   list, see the [iii-queue worker docs](https://workers.iii.dev/workers/iii-queue).
 </Note>
 
-## Publishing a message
-
-Publish to a topic with `iii::durable::publish`. Every function subscribed to that topic receives
-the `data` payload:
-
-```bash
-# publish a message to the "emails" topic
-iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
-```
-
 ## Consuming messages
 
-A function consumes a topic by binding a `durable:subscriber` trigger to it; the engine runs the
-function once per message:
+A function consumes a topic by binding a `durable:subscriber` trigger to it. The engine runs the
+function once per message, passing the published `data` as the payload. Returning normally
+acknowledges the message; throwing nacks it, so it is retried and eventually dead-lettered.
+
+1. In a worker, register the consumer function and subscribe it to the topic. If you do not have a
+   worker yet, scaffold one with
+   [`iii worker init`](../creating-workers/workers#scaffold-a-new-worker), then edit its source:
+
+```bash
+iii worker init email-worker --language typescript
+```
 
 ```typescript
+import { registerWorker } from "iii-sdk";
+
+const url = process.env.III_URL;
+if (!url) throw new Error("III_URL must be set");
+const worker = registerWorker(url, { workerName: "email-worker" });
+
+// receives the `data` from each published message
+worker.registerFunction("email::send", async (msg: { to: string; subject: string }) => {
+  // do the work here; throw to nack and let the message retry
+  return { sent: true };
+});
+
 worker.registerTrigger({
   type: "durable:subscriber",
   function_id: "email::send",
@@ -37,27 +48,124 @@ worker.registerTrigger({
 });
 ```
 
-See [Creating Workers / Triggers](../creating-workers/triggers) for the full trigger-registration
-surface.
+2. Add the worker to start it:
+
+```bash
+iii worker add ./email-worker
+```
+
+## Publishing a message
+
+With the consumer running, publish to its topic. The engine delivers the `data` to every subscriber,
+so `email::send` runs once per message:
+
+```bash
+# publish a message to the "emails" topic
+iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
+```
+
+<Tip>
+  Open the [console](./console) and go to the **Traces** tab to watch the message flow from the
+  publish through to `email::send` running.
+</Tip>
 
 ## Inspecting topics and the dead-letter queue
 
-Messages that exhaust their retries land in the dead-letter queue. Inspect topics and the DLQ, and
-move dead-lettered messages back, with these functions:
+A topic appears here once a function subscribes to it, so these commands inspect the `emails` topic
+from above. (Publishing to a topic that nothing subscribes to does not register it, so there is
+nothing to inspect.)
+
+List every topic:
 
 ```bash
-# list every topic
 iii trigger engine::queue::list_topics
+```
 
-# stats for one topic
+```json
+[{ "name": "emails", "broker_type": "function_queue", "subscriber_count": 1 }]
+```
+
+Get stats for the topic (`depth` is messages waiting for the consumer, `dlq_depth` is
+dead-lettered). A topic whose consumer keeps up sits at `depth: 0`:
+
+```bash
 iii trigger engine::queue::topic_stats topic=emails
+```
 
-# topics that have dead-lettered messages
+```json
+{ "depth": 0, "consumer_count": 1, "dlq_depth": 0, "config": null }
+```
+
+### Forcing a message into the dead-letter queue
+
+A message reaches the dead-letter queue only once its subscribed function exhausts its retries, so
+the DLQ functions return empty until something fails. To see them populated, make `email::send`
+fail: change the handler to throw, and set `maxRetries: 0` in the trigger's `queue_config` so the
+first failure dead-letters immediately instead of after the default three attempts.
+
+```typescript
+worker.registerFunction("email::send", async () => {
+  throw new Error("forced failure");
+});
+
+worker.registerTrigger({
+  type: "durable:subscriber",
+  function_id: "email::send",
+  config: { topic: "emails", queue_config: { maxRetries: 0 } },
+});
+```
+
+Now publish a message, it fails and lands in the DLQ:
+
+```bash
+iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
+```
+
+Now the DLQ functions return the failed message (exact ids, timestamps, and sizes vary per run).
+
+List the topics that currently have dead-lettered messages:
+
+```bash
 iii trigger engine::queue::dlq_topics
+```
 
-# browse a topic's dead-letter messages
+```json
+[{ "topic": "emails", "broker_type": "function_queue", "message_count": 1 }]
+```
+
+Browse a topic's dead-letter messages:
+
+```bash
 iii trigger engine::queue::dlq_messages topic=emails
+```
 
-# move a topic's dead-lettered messages back to the main queue
+```json
+[
+  {
+    "id": "0b9c…",
+    "payload": { "to": "a@b.com", "subject": "hi" },
+    "error": "ErrorBody { code: \"invocation_failed\", message: \"forced failure\"...",
+    "failed_at": 1718900000,
+    "retries": 0,
+    "size_bytes": 64
+  }
+]
+```
+
+Fix the code to be what it was originally and then move a topic's dead-lettered messages back to the
+main queue for reprocessing:
+
+```bash
 iii trigger iii::queue::redrive topic=emails
+```
+
+```json
+{ "queue": "emails", "redriven": 1 }
+```
+
+After doing so you can see the DLQ is once again empty, having been processed by the new fixed
+function:
+
+```bash
+iii trigger engine::queue::dlq_messages topic=emails
 ```
