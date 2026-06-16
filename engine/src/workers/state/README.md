@@ -37,7 +37,7 @@ npx skills add iii-hq/iii --full-depth --skill iii-state
 
 | Field | Type | Description |
 |---|---|---|
-| `adapter` | Adapter | Adapter for state persistence. Defaults to `kv`. Restart-tier (see below). |
+| `adapter` | Adapter | Storage adapter selected by `name` — one of `kv` (default), `redis`, or `bridge` — with a per-adapter `config`. Validated against the concrete per-adapter schema at set time. Restart-tier (see below). |
 | `triggers_enabled` | boolean | Globally enable/disable state change-trigger fan-out. Defaults to `true`. Applied live. |
 | `max_value_bytes` | number | Reject `state::set` writes whose JSON-serialized value exceeds this many bytes (`VALUE_TOO_LARGE`). Minimum `1`; unset means no limit. Applied live. |
 | `save_interval_ms` | number | Persistence flush cadence (ms) for the file-backed `kv` adapter. `100`–`3600000`; defaults to `5000`. Task-rebuild (respawns the save loop). |
@@ -66,6 +66,10 @@ Apply tiers:
 > edits; otherwise the config.yaml block is used at boot.
 
 ## Adapters
+
+The adapter set is closed: `configuration::set` accepts only the built-in adapters
+below, each with its own typed `config` schema, so an agent introspecting the schema
+(or the console) sees concrete per-adapter fields rather than a free-form object.
 
 ### kv
 

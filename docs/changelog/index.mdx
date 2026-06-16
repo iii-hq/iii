@@ -55,6 +55,8 @@ type: "reference"
 
   The storage `adapter` is **restart-tier**: a change is logged and takes effect at the next engine start, where a boot-read of the persisted `iii-state` entry drives adapter construction — so a runtime-edited adapter survives restarts. As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-state.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read.
 
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `kv`, `redis`, and `bridge` adapters, each with its own typed `config` (`kv`: `store_method` / `file_path` / `save_interval_ms`; `redis`: `redis_url`; `bridge`: `bridge_url`). `configuration::set` validates adapter settings against it and rejects an unknown adapter name or stray config key, and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
   ## Hardening
 
   - The VM UDP relay now writes a real pseudo-header checksum on response packets (strict guest stacks drop zero-checksum UDP), bounds payloads to the 16-bit IP length limit instead of silently truncating, and no longer injects empty frames into the guest's rx ring.
