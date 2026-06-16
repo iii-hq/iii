@@ -10,11 +10,11 @@
 //! Memory (in-memory storage) and OTLP (push) exporters.
 
 use super::config::MetricsExporterType;
+use super::otlp_exporter::build_metric_exporter;
 use opentelemetry::{
     global,
     metrics::{Counter, Gauge, Histogram, Meter, MeterProvider as _},
 };
-use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     Resource,
     metrics::{PeriodicReader, SdkMeterProvider},
@@ -158,11 +158,7 @@ pub fn init_metrics(config: &MetricsConfig) -> bool {
     match config.exporter {
         MetricsExporterType::Otlp => {
             // Initialize OTLP exporter
-            let exporter = match opentelemetry_otlp::MetricExporter::builder()
-                .with_tonic()
-                .with_endpoint(&config.endpoint)
-                .build()
-            {
+            let exporter = match build_metric_exporter(&config.endpoint) {
                 Ok(exporter) => exporter,
                 Err(e) => {
                     tracing::error!(
