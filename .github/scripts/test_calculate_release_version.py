@@ -867,3 +867,58 @@ class TestTagPatternRejectsImpostors:
             calculate_version("0.15.0-next.1", "minor", "next", "0.13.0", tags, "iii")
             == "0.15.0-next.4"
         )
+
+
+# ---------- calculate_version: bump="none" (alpha anchor) ----------
+
+
+class TestCalculateVersionBumpNone:
+    def test_anchors_on_latest_stable_keeps_base(self):
+        # Manifest is ahead (0.19.3-next.1) but the alpha anchors on the
+        # latest stable (0.19.2) and never touches the official version.
+        v = calculate_version(
+            current="0.19.3-next.1",
+            bump_type="none",
+            prerelease="alpha",
+            latest_stable="0.19.2",
+            existing_tags=[],
+            tag_prefix="iii-alpha",
+        )
+        assert v == "0.19.2-alpha.1"
+
+    def test_counter_accumulates_under_its_own_prefix(self):
+        v = calculate_version(
+            current="0.19.3-next.1",
+            bump_type="none",
+            prerelease="alpha",
+            latest_stable="0.19.2",
+            existing_tags=[
+                "iii-alpha/v0.19.2-alpha.1",
+                "iii-alpha/v0.19.2-alpha.2",
+                "iii/v0.19.2",  # official stable — different prefix, ignored
+            ],
+            tag_prefix="iii-alpha",
+        )
+        assert v == "0.19.2-alpha.3"
+
+    def test_falls_back_to_current_base_without_stable(self):
+        v = calculate_version(
+            current="0.19.3-next.1",
+            bump_type="none",
+            prerelease="alpha",
+            latest_stable=None,
+            existing_tags=[],
+            tag_prefix="iii-alpha",
+        )
+        assert v == "0.19.3-alpha.1"
+
+    def test_requires_a_prerelease_label(self):
+        with pytest.raises(ValueError, match="requires a prerelease"):
+            calculate_version(
+                current="0.19.3-next.1",
+                bump_type="none",
+                prerelease="none",
+                latest_stable="0.19.2",
+                existing_tags=[],
+                tag_prefix="iii-alpha",
+            )

@@ -57,6 +57,12 @@ type: "reference"
 
   The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `kv`, `redis`, and `bridge` adapters, each with its own typed `config` (`kv`: `store_method` / `file_path` / `save_interval_ms`; `redis`: `redis_url`; `bridge`: `bridge_url`). `configuration::set` validates adapter settings against it and rejects an unknown adapter name or stray config key, and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
 
+  ## OTLP observability exports work with TLS collectors
+
+  OTLP trace and metric exporters now honor OpenTelemetry protocol environment variables and automatically enable TLS for HTTPS gRPC collector endpoints. HTTP/protobuf endpoints are normalized to the correct `/v1/traces` or `/v1/metrics` signal path even when the configured endpoint already includes another OTLP signal path.
+
+  Log export also applies headers from `OTEL_EXPORTER_OTLP_LOGS_HEADERS` or the global `OTEL_EXPORTER_OTLP_HEADERS`, including percent-decoded header values, so authenticated collectors receive the configured credentials.
+
   ## Hardening
 
   - The VM UDP relay now writes a real pseudo-header checksum on response packets (strict guest stacks drop zero-checksum UDP), bounds payloads to the 16-bit IP length limit instead of silently truncating, and no longer injects empty frames into the guest's rx ring.

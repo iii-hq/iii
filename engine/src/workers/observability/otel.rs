@@ -14,19 +14,20 @@
 //! - `memory`: Store traces in memory for API querying
 
 use super::config::{LogsExporterType, ObservabilityWorkerConfig, OtelExporterType};
+use super::otlp_exporter::build_span_exporter;
 use super::sampler::AdvancedSampler;
 use opentelemetry::propagation::{TextMapCompositePropagator, TextMapPropagator};
 use opentelemetry::{
     Context, KeyValue, global,
     trace::{TraceContextExt, TracerProvider as _},
 };
-use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     Resource,
     error::OTelSdkResult,
     propagation::{BaggagePropagator, TraceContextPropagator},
     trace::{RandomIdGenerator, Sampler, SdkTracerProvider, SpanData, SpanExporter},
 };
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
@@ -738,11 +739,7 @@ fn get_or_build_forwarder(
     if let Some(existing) = map.get(service_name) {
         return Some(existing.clone());
     }
-    match opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(endpoint.as_str())
-        .build()
-    {
+    match build_span_exporter(endpoint.as_str()) {
         Ok(mut exporter) => {
             exporter.set_resource(resource);
             let arc = Arc::new(exporter);
@@ -821,11 +818,7 @@ where
     // Build tracer provider based on exporter type
     let provider = match config.exporter {
         ExporterType::Otlp => {
-            match opentelemetry_otlp::SpanExporter::builder()
-                .with_tonic()
-                .with_endpoint(&config.endpoint)
-                .build()
-            {
+            match build_span_exporter(&config.endpoint) {
                 Ok(exporter) => {
                     init_sdk_span_forwarder(&config.endpoint, config);
 
@@ -883,11 +876,7 @@ where
             }
 
             // Try to create OTLP exporter
-            match opentelemetry_otlp::SpanExporter::builder()
-                .with_tonic()
-                .with_endpoint(&config.endpoint)
-                .build()
-            {
+            match build_span_exporter(&config.endpoint) {
                 Ok(otlp_exporter) => {
                     init_sdk_span_forwarder(&config.endpoint, config);
 
@@ -2847,13 +2836,14 @@ const MIN_LOG_FLUSH_INTERVAL_MS: u64 = 100;
 /// Maximum flush interval for log export (1 hour)
 const MAX_LOG_FLUSH_INTERVAL_MS: u64 = 3_600_000;
 
-/// OTLP Logs Exporter - exports logs to OTLP collector via gRPC
+/// OTLP Logs Exporter - exports logs to an OTLP HTTP collector.
 pub struct OtlpLogsExporter {
     endpoint: String,
     service_name: String,
     service_version: String,
     batch_size: usize,
     flush_interval: Duration,
+    headers: HeaderMap,
 }
 
 impl OtlpLogsExporter {
@@ -2865,6 +2855,7 @@ impl OtlpLogsExporter {
             service_version,
             batch_size: DEFAULT_LOG_BATCH_SIZE,
             flush_interval: Duration::from_millis(DEFAULT_LOG_FLUSH_INTERVAL_MS),
+            headers: otlp_logs_headers_from_env(),
         }
     }
 
@@ -3042,6 +3033,7 @@ impl OtlpLogsExporter {
 
         let response = client
             .post(&endpoint)
+            .headers(self.headers.clone())
             .header("Content-Type", "application/json")
             .json(&resource_logs)
             .send()
@@ -3160,6 +3152,79 @@ impl OtlpLogsExporter {
     }
 }
 
+fn otlp_logs_headers_from_env() -> HeaderMap {
+    env::var("OTEL_EXPORTER_OTLP_LOGS_HEADERS")
+        .or_else(|_| env::var("OTEL_EXPORTER_OTLP_HEADERS"))
+        .ok()
+        .as_deref()
+        .map(parse_otlp_header_string)
+        .unwrap_or_default()
+}
+
+fn parse_otlp_header_string(headers: &str) -> HeaderMap {
+    let mut header_map = HeaderMap::new();
+
+    for pair in headers.split(',') {
+        let Some((name, value)) = pair.split_once('=') else {
+            tracing::warn!("Ignoring malformed OTLP header entry without '='");
+            continue;
+        };
+
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() {
+            tracing::warn!("Ignoring OTLP header entry with empty name");
+            continue;
+        }
+
+        let Ok(name) = HeaderName::from_bytes(name.as_bytes()) else {
+            tracing::warn!(header = name, "Ignoring invalid OTLP header name");
+            continue;
+        };
+        let Some(value) = percent_decode_header_value(value) else {
+            tracing::warn!(header = %name, "Ignoring OTLP header value with invalid percent encoding");
+            continue;
+        };
+        let Ok(value) = HeaderValue::from_bytes(&value) else {
+            tracing::warn!(header = %name, "Ignoring invalid OTLP header value");
+            continue;
+        };
+
+        header_map.insert(name, value);
+    }
+
+    header_map
+}
+
+fn percent_decode_header_value(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = bytes.get(i + 1).copied().and_then(hex_value)?;
+            let lo = bytes.get(i + 2).copied().and_then(hex_value)?;
+            decoded.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    Some(decoded)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Get the logs exporter type from config
 pub fn get_logs_exporter_type() -> LogsExporterType {
     get_otel_config()
@@ -3180,6 +3245,40 @@ pub fn get_logs_exporter_type() -> LogsExporterType {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn otlp_logs_headers_fallback_decodes_percent_encoded_values() {
+        temp_env::with_vars(
+            [
+                ("OTEL_EXPORTER_OTLP_LOGS_HEADERS", None::<&str>),
+                (
+                    "OTEL_EXPORTER_OTLP_HEADERS",
+                    Some("Authorization=Bearer%20token,x-honeycomb-team=test%2Fteam"),
+                ),
+            ],
+            || {
+                let headers = otlp_logs_headers_from_env();
+
+                assert_eq!(
+                    headers
+                        .get("authorization")
+                        .expect("authorization header")
+                        .to_str()
+                        .unwrap(),
+                    "Bearer token"
+                );
+                assert_eq!(
+                    headers
+                        .get("x-honeycomb-team")
+                        .expect("x-honeycomb-team header")
+                        .to_str()
+                        .unwrap(),
+                    "test/team"
+                );
+            },
+        );
+    }
 
     #[tokio::test]
     #[serial]

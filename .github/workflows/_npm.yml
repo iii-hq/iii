@@ -15,6 +15,11 @@ on:
         description: 'pnpm filter for building the package (e.g., iii-sdk)'
         required: true
         type: string
+      ref:
+        description: 'Git ref to checkout (default: the triggering ref)'
+        required: false
+        type: string
+        default: ''
       pre_build_filter:
         description: 'pnpm filter for building dependencies first (optional)'
         required: false
@@ -65,6 +70,8 @@ jobs:
             text: ":large_yellow_circle: ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — in progress"
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: pnpm/action-setup@v4
         with:
