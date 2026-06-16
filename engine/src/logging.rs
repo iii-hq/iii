@@ -440,7 +440,7 @@ fn resolve_boot_observability_config(
         .modules
         .iter()
         .chain(cfg.workers.iter())
-        .find(|m| m.name == "iii-observability");
+        .find(|m| m.name == crate::workers::observability::configuration::CONFIG_ID);
 
     // The persisted entry is the runtime source of truth. It is read even
     // when config.yaml declares no `iii-observability` block: the worker is
@@ -571,7 +571,7 @@ pub fn init_log_from_engine_config(cfg: &EngineConfig) {
         None => OtelConfig::default(),
     };
 
-    let otel_module_name = "iii-observability";
+    let otel_module_name = crate::workers::observability::configuration::CONFIG_ID;
     let otel_module_cfg = cfg
         .modules
         .iter()

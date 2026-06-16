@@ -1071,8 +1071,34 @@ impl ObservabilityWorker {
         .await
         .map_err(|elapsed| anyhow::Error::new(elapsed).context("configuration::get timed out"))??;
 
-        // LIVE tier: swap the global snapshot.
-        otel::update_otel_config(new.clone());
+        // Apply the engine log level BEFORE publishing the global snapshot, so
+        // current_config() never advertises a level we failed to install. On a
+        // failed reload we keep the previous level in the published config,
+        // leaving old.level != new.level so the next apply retries instead of
+        // silently masking the drift.
+        let mut effective = new.clone();
+        if old.level != new.level {
+            match &new.level {
+                Some(level) => {
+                    if let Err(err) = crate::logging::reload_log_level(level) {
+                        tracing::warn!(
+                            error = %err,
+                            "iii-observability: log level not applied; keeping current level"
+                        );
+                        effective.level = old.level.clone();
+                    }
+                }
+                // Removing the key does not revert to a default: the boot
+                // level may have come from env/CLI, not this entry.
+                None => tracing::debug!(
+                    "iii-observability: level removed from configuration; keeping current level"
+                ),
+            }
+        }
+
+        // LIVE tier: swap the global snapshot (carrying the level we actually
+        // installed, per the reload above).
+        otel::update_otel_config(effective);
 
         // LIMITS tier: idempotent, applied unconditionally.
         if let Some(storage) = otel::get_span_storage()
@@ -1107,23 +1133,6 @@ impl ObservabilityWorker {
                 None => tracing::warn!(
                     "iii-observability: alert manager not initialized; alert changes \
                      apply at the next engine start"
-                ),
-            }
-        }
-        if old.level != new.level {
-            match &new.level {
-                Some(level) => {
-                    if let Err(err) = crate::logging::reload_log_level(level) {
-                        tracing::warn!(
-                            error = %err,
-                            "iii-observability: log level not applied; keeping current level"
-                        );
-                    }
-                }
-                // Removing the key does not revert to a default: the boot
-                // level may have come from env/CLI, not this entry.
-                None => tracing::debug!(
-                    "iii-observability: level removed from configuration; keeping current level"
                 ),
             }
         }
@@ -2479,8 +2488,10 @@ impl ObservabilityWorker {
             None => {
                 // Honor logs_enabled: do NOT lazily revive storage when logs
                 // are disabled at config time. Return an empty result so API
-                // consumers get a consistent shape.
-                if otel::logs_enabled(Some(&self._config)) {
+                // consumers get a consistent shape. Gate on the LIVE config
+                // (not the boot seed `_config`) so a runtime logs_enabled
+                // toggle agrees with the ingest path in `store_and_emit_log`.
+                if otel::logs_enabled(otel::get_otel_config().as_deref()) {
                     otel::init_log_storage(self.effective_logs_max_count());
                 }
                 FunctionResult::Success(LogsListResult {

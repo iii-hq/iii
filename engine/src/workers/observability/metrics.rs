@@ -1759,7 +1759,7 @@ impl AlertManager {
     pub fn get_states(&self) -> Vec<AlertState> {
         self.states
             .read()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
             .filter(|s| self.is_live_rule(&s.name))
             .cloned()
@@ -1770,7 +1770,7 @@ impl AlertManager {
     pub fn get_firing_alerts(&self) -> Vec<AlertState> {
         self.states
             .read()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
             .filter(|s| s.firing && self.is_live_rule(&s.name))
             .cloned()

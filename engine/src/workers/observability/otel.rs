@@ -3001,6 +3001,12 @@ const MIN_LOG_FLUSH_INTERVAL_MS: u64 = 100;
 /// Maximum flush interval for log export (1 hour)
 const MAX_LOG_FLUSH_INTERVAL_MS: u64 = 3_600_000;
 
+/// HTTP timeout for a single OTLP logs export request. Bounds `export_batch`
+/// so a stalled collector cannot park the exporter task indefinitely — the
+/// task's shutdown signal is only observed between awaits in the select loop,
+/// so an unbounded send would also defeat exporter teardown on config rebuild.
+const DEFAULT_LOG_EXPORT_TIMEOUT_SECS: u64 = 30;
+
 /// OTLP Logs Exporter - exports logs to an OTLP HTTP collector.
 pub struct OtlpLogsExporter {
     endpoint: String,
@@ -3180,7 +3186,9 @@ impl OtlpLogsExporter {
         let resource_logs = self.build_otlp_logs_request(logs);
 
         // Send via HTTP to the OTLP collector
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(DEFAULT_LOG_EXPORT_TIMEOUT_SECS))
+            .build()?;
 
         // OTLP HTTP endpoint for logs
         // Convert gRPC port 4317 to HTTP port 4318 if needed
