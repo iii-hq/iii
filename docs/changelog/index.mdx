@@ -49,6 +49,12 @@ type: "reference"
 
   Logs fetched over the bus are stripped of ANSI/OSC escapes and spinner residue — raw escape bytes are token noise for LLM consumers and can rewrite the reader's terminal. Pass `raw: true` to opt out.
 
+  ## OTLP observability exports work with TLS collectors
+
+  OTLP trace and metric exporters now honor OpenTelemetry protocol environment variables and automatically enable TLS for HTTPS gRPC collector endpoints. HTTP/protobuf endpoints are normalized to the correct `/v1/traces` or `/v1/metrics` signal path even when the configured endpoint already includes another OTLP signal path.
+
+  Log export also applies headers from `OTEL_EXPORTER_OTLP_LOGS_HEADERS` or the global `OTEL_EXPORTER_OTLP_HEADERS`, including percent-decoded header values, so authenticated collectors receive the configured credentials.
+
   ## Hardening
 
   - The VM UDP relay now writes a real pseudo-header checksum on response packets (strict guest stacks drop zero-checksum UDP), bounds payloads to the 16-bit IP length limit instead of silently truncating, and no longer injects empty frames into the guest's rx ring.
