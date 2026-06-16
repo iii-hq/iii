@@ -75,7 +75,7 @@ iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.co
   publish through to `email::send` running.
 </Tip>
 
-## Inspecting topics and the dead-letter queue
+## Inspecting Queue Topics
 
 A topic appears here once a function subscribes to it, so these commands inspect the `emails` topic
 from above. (Publishing to a topic that nothing subscribes to does not register it, so there is
@@ -102,12 +102,16 @@ iii trigger engine::queue::topic_stats topic=emails
 { "depth": 0, "consumer_count": 1, "dlq_depth": 0, "config": null }
 ```
 
-### Forcing a message into the dead-letter queue
+## Inspecting Dead Letter Queue Messages
 
 A message reaches the dead-letter queue only once its subscribed function exhausts its retries, so
-the DLQ functions return empty until something fails. To see them populated, make `email::send`
-fail: change the handler to throw, and set `maxRetries: 0` in the trigger's `queue_config` so the
-first failure dead-letters immediately instead of after the default three attempts.
+the DLQ functions return empty until something fails.
+
+### Forcing a message into the dead-letter queue
+
+To see the DLQ populated, make `email::send` fail: change the handler to throw, and set
+`maxRetries: 0` in the trigger's `queue_config` so the first failure dead-letters immediately instead
+of after the default three attempts.
 
 ```typescript
 worker.registerFunction("email::send", async () => {
@@ -121,15 +125,14 @@ worker.registerTrigger({
 });
 ```
 
-Now publish a message, it fails and lands in the DLQ:
+Now publish a message; it fails and lands in the DLQ (exact ids, timestamps, and sizes vary per
+run):
 
 ```bash
 iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
 ```
 
-Now the DLQ functions return the failed message (exact ids, timestamps, and sizes vary per run).
-
-List the topics that currently have dead-lettered messages:
+### Listing topics with dead-lettered messages
 
 ```bash
 iii trigger engine::queue::dlq_topics
@@ -139,7 +142,7 @@ iii trigger engine::queue::dlq_topics
 [{ "topic": "emails", "broker_type": "function_queue", "message_count": 1 }]
 ```
 
-Browse a topic's dead-letter messages:
+### Browsing dead-lettered messages
 
 ```bash
 iii trigger engine::queue::dlq_messages topic=emails
@@ -158,7 +161,9 @@ iii trigger engine::queue::dlq_messages topic=emails
 ]
 ```
 
-Fix the code to be what it was originally and then move a topic's dead-lettered messages back to the
+### Redriving dead-lettered messages
+
+Fix the code back to what it was originally, then move the topic's dead-lettered messages back to the
 main queue for reprocessing:
 
 ```bash
@@ -169,8 +174,7 @@ iii trigger iii::queue::redrive topic=emails
 { "queue": "emails", "redriven": 1 }
 ```
 
-After doing so you can see the DLQ is once again empty, having been processed by the new fixed
-function:
+The fixed function now processes them, so the DLQ is empty again:
 
 ```bash
 iii trigger engine::queue::dlq_messages topic=emails
