@@ -1,0 +1,67 @@
+---
+title: "Queues"
+description: "Async job processing with named topics, retries, and dead-letter support via the iii-queue worker."
+owner: "devrel"
+type: "how-to"
+---
+
+The `iii-queue` worker decouples producers from consumers: a function publishes a message to a named
+topic and returns right away, and any function subscribed to that topic processes the message in the
+background, with retries and a dead-letter queue (DLQ) for messages that keep failing.
+
+```bash
+iii worker add iii-queue
+```
+
+<Note>
+  This page is a quick tour. For retry and back-off settings, queue adapters, and the full function
+  list, see the [iii-queue worker docs](https://workers.iii.dev/workers/iii-queue).
+</Note>
+
+## Publishing a message
+
+Publish to a topic with `iii::durable::publish`. Every function subscribed to that topic receives
+the `data` payload:
+
+```bash
+# publish a message to the "emails" topic
+iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
+```
+
+## Consuming messages
+
+A function consumes a topic by binding a `durable:subscriber` trigger to it; the engine runs the
+function once per message:
+
+```typescript
+worker.registerTrigger({
+  type: "durable:subscriber",
+  function_id: "email::send",
+  config: { topic: "emails" },
+});
+```
+
+See [Creating Workers / Triggers](../creating-workers/triggers) for the full trigger-registration
+surface.
+
+## Inspecting topics and the dead-letter queue
+
+Messages that exhaust their retries land in the dead-letter queue. Inspect topics and the DLQ, and
+move dead-lettered messages back, with these functions:
+
+```bash
+# list every topic
+iii trigger engine::queue::list_topics
+
+# stats for one topic
+iii trigger engine::queue::topic_stats topic=emails
+
+# topics that have dead-lettered messages
+iii trigger engine::queue::dlq_topics
+
+# browse a topic's dead-letter messages
+iii trigger engine::queue::dlq_messages topic=emails
+
+# move a topic's dead-lettered messages back to the main queue
+iii trigger iii::queue::redrive topic=emails
+```

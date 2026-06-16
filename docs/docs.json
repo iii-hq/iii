@@ -88,6 +88,7 @@
                   "next/using-iii/sandboxes",
                   "next/using-iii/observability",
                   "next/using-iii/http",
+                  "next/using-iii/queues",
                   "next/using-iii/deployment"
                 ]
               },
