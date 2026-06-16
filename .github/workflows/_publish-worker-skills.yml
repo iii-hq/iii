@@ -13,6 +13,10 @@ on:
         required: false
         type: string
         default: 'https://api.workers.iii.dev'
+    secrets:
+      WORKERS_REGISTRY_API_KEY:
+        description: 'API key for the workers registry'
+        required: false
 
 jobs:
   discover:

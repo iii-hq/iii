@@ -13,6 +13,7 @@ import pytest
 
 from bump_manifests import bump_cargo_package_version
 from bump_manifests import bump_cargo_workspace_dep_version
+from bump_manifests import bump_go_const_version
 from bump_manifests import bump_json_top_level_version
 from bump_manifests import bump_pep440_dep_pin
 from bump_manifests import rewrite_all
@@ -103,6 +104,21 @@ class TestBumpPep440DepPin:
             bump_pep440_dep_pin(src, "iii-observability", "0.16.0.dev2")
 
 
+class TestBumpGoConstVersion:
+    def test_replaces_const(self):
+        src = (
+            "// sdkVersion is reported in the worker metadata.\n"
+            'const sdkVersion = "0.1.0"\n'
+        )
+        out = bump_go_const_version(src, "0.19.2-alpha.1")
+        assert 'const sdkVersion = "0.19.2-alpha.1"' in out
+        assert '"0.1.0"' not in out
+
+    def test_raises_when_missing(self):
+        with pytest.raises(ValueError, match="sdkVersion"):
+            bump_go_const_version("package iii\n", "0.19.2-alpha.1")
+
+
 def _write(p: Path, body: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body)
@@ -129,6 +145,7 @@ def test_rewrite_all_updates_every_target_file(tmp_path: Path):
     ))
     _write(root / "sdk/packages/python/observability/pyproject.toml", '[project]\nname = "iii-observability"\nversion = "0.13.0.dev1"\n')
     _write(root / "console/packages/console-rust/Cargo.toml", '[package]\nname = "console-rust"\nversion = "0.15.0-next.1"\n')
+    _write(root / "sdk/packages/go/iii/client.go", 'package iii\n\nconst sdkVersion = "0.1.0"\n')
 
     rewrite_all(root=root, new_version="0.16.0-next.2", new_py_version="0.16.0.dev2")
 
@@ -145,6 +162,7 @@ def test_rewrite_all_updates_every_target_file(tmp_path: Path):
     assert '"iii-observability==0.16.0.dev2"' in py_iii
     assert 'version = "0.16.0.dev2"' in (root / "sdk/packages/python/observability/pyproject.toml").read_text()
     assert 'version = "0.16.0-next.2"' in (root / "console/packages/console-rust/Cargo.toml").read_text()
+    assert 'const sdkVersion = "0.16.0-next.2"' in (root / "sdk/packages/go/iii/client.go").read_text()
 
 
 def test_cli_invokes_rewrite_all(tmp_path: Path):
@@ -167,6 +185,7 @@ def test_cli_invokes_rewrite_all(tmp_path: Path):
     ))
     _write(root / "sdk/packages/python/observability/pyproject.toml", 'version = "0.13.0.dev1"\n')
     _write(root / "console/packages/console-rust/Cargo.toml", 'version = "0.15.0-next.1"\n')
+    _write(root / "sdk/packages/go/iii/client.go", 'package iii\n\nconst sdkVersion = "0.1.0"\n')
 
     script = Path(__file__).parent / "bump_manifests.py"
     result = subprocess.run(

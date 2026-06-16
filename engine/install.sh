@@ -365,7 +365,20 @@ fi
 # Release selection
 # ---------------------------------------------------------------------------
 
-if [ -n "$VERSION" ]; then
+if [ -n "${III_RELEASE_TAG:-}" ]; then
+  # Explicit exact release tag (e.g. iii-alpha/v0.19.2-alpha.1). Bypasses the
+  # iii/v<version> construction so isolated alpha releases living under a
+  # different tag namespace are installable. Opt-in, so the prerelease flag is
+  # not rejected here.
+  info "installing pinned release tag: $III_RELEASE_TAG"
+  _tag="$III_RELEASE_TAG"
+  release_version="${_tag##*/v}"
+  api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
+  if ! json=$(github_api "$api_url" 2>/dev/null); then
+    check_rate_limit_or_continue "https://api.github.com/repos/$REPO/releases/latest"
+    err "download" "release tag not found: $III_RELEASE_TAG. Browse releases: https://github.com/$REPO/releases"
+  fi
+elif [ -n "$VERSION" ]; then
   info "installing version: $VERSION"
   _ver="${VERSION#iii/}"
   _ver="${_ver#v}"

@@ -34,6 +34,13 @@ The workflows are organized into two categories:
    docker-engine.yml ◄── called by release-iii / manual
    license-check.yml ◄── push to main / PRs
    checklist-checker.yml ◄── PR license agreement / comments
+
+   alpha-release ◄── manual dispatch from a feature branch
+        │  bumps + tags iii-alpha/v* (isolated; never touches main)
+        ▼
+        ├─► sdk-node (pnpm) / _py / _rust-cargo / _go   (SDK packages)
+        ├─► _rust-binary.yml + init-build job            (engine/worker/init binaries → iii-alpha prerelease)
+        └─► _publish-engine-workers / -skills            (builtin workers → `alpha` registry tag)
 ```
 
 ---
@@ -99,6 +106,35 @@ Entry point for all releases. Provides a form with:
 The tag push then triggers the corresponding release workflow.
 
 **Tag format:** `{target}/v{version}` (e.g., `iii/v1.2.3`)
+
+---
+
+### `alpha-release.yml` — Isolated Per-Branch Alpha
+
+**Triggers:** manual dispatch only — run from a feature branch via "Use workflow from: `<branch>`"
+
+Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine binaries, and the builtin workers **from any feature branch, without touching `main`**. Built for testing a branch end-to-end before merging.
+
+| Input | Options |
+|-------|---------|
+| `dry_run` | boolean (build + validate, no upload; still pushes the alpha tag) |
+
+**What it does:**
+
+1. Refuses to run on `main` (use `create-tag.yml` for official releases)
+2. Calculates the version with `calculate_release_version.py --bump none --counter-tag-prefix iii-alpha`: anchors on the latest stable `iii/v*` tag and appends an accumulating `-alpha.N` suffix (`0.19.2-alpha.1`, `.2`, `.3` …). The official version is never advanced.
+3. Bumps all manifests in lockstep (Cargo.toml, package.json, pyproject.toml, **Go `sdkVersion` const**) into an **ephemeral commit**
+4. Pushes **only** the `iii-alpha/v{version}` tag — never a branch, never `main`
+5. Publishes, all checking out that tag:
+   - **SDK packages** — an inline `sdk-node` job (single `pnpm -r publish` over the three node packages) plus `_py.yml`, `_rust-cargo.yml`, `_go.yml`
+   - **Engine binaries** — `iii` and `iii-worker` via `_rust-binary.yml`, and `iii-init` via an inline `init-build` job; all attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
+   - **Builtin workers + skills** — `_publish-engine-workers.yml` / `_publish-worker-skills.yml` published to the workers registry under a dedicated **`alpha`** tag (never `next`/`latest`)
+
+**Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Console, docker and homebrew are intentionally excluded.**
+
+**Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 curl -fsSL https://iii.dev/install.sh | sh`. The worker-publish job uses the same override to pin the engine CLI.
+
+**Tag format:** `iii-alpha/v{version}` (e.g., `iii-alpha/v0.19.2-alpha.1`)
 
 ---
 
