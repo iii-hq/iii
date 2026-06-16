@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         base_ver = new_ver.split("-", 1)[0]
-        counter = next_dry_run_counter(base_ver, tags, tag_prefix)
+        counter = next_dry_run_counter(base_ver, tags, counter_prefix)
         new_ver = f"{base_ver}-dry-run.{counter}"
 
     py_ver = to_pep440(new_ver)
@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     _emit("current", current)
     _emit("is_prerelease", "true" if is_prerelease else "false")
     _emit("npm_tag", npm_tag)
-    print(f"::notice::{tag_prefix}: {current} -> {new_ver} (python: {py_ver})", file=sys.stderr)
+    print(f"::notice::{counter_prefix}: {current} -> {new_ver} (python: {py_ver})", file=sys.stderr)
     return 0
 
 
