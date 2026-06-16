@@ -111,11 +111,14 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
         path = root / rel
         path.write_text(bump_cargo_package_version(path.read_text(), new_version))
 
-    # Workspace root: bump both the workspace.package version and the
-    # iii-observability workspace-dep version pin.
+    # Workspace root: bump the workspace.package version and the internal
+    # workspace-dep version pins. The pins are plain "X.Y.Z" requirements, so
+    # they must move to the prerelease too — otherwise `cargo` can't match the
+    # prerelease candidate (e.g. ^0.19.4 won't accept 0.19.4-alpha.1).
     workspace_path = root / "Cargo.toml"
     body = bump_cargo_package_version(workspace_path.read_text(), new_version)
     body = bump_cargo_workspace_dep_version(body, "iii-observability", new_version)
+    body = bump_cargo_workspace_dep_version(body, "iii-helpers", new_version)
     workspace_path.write_text(body)
 
     # JSON package versions
@@ -123,10 +126,12 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
         path = root / rel
         path.write_text(bump_json_top_level_version(path.read_text(), new_version))
 
-    # Python iii: top-level version + iii-observability pin
+    # Python iii: top-level version + internal pins (== requirements must
+    # move to the prerelease alongside the packages they point at).
     py_iii = root / "sdk/packages/python/iii/pyproject.toml"
     body = bump_cargo_package_version(py_iii.read_text(), new_py_version)
     body = bump_pep440_dep_pin(body, "iii-observability", new_py_version)
+    body = bump_pep440_dep_pin(body, "iii-helpers", new_py_version)
     py_iii.write_text(body)
 
     # Python observability: top-level version only
