@@ -40,19 +40,27 @@ use crate::{
     workers::traits::{AdapterFactory, ConfigurableWorker, Worker},
 };
 
+/// The live config + transport, swapped together under one lock so every
+/// reader observes a coherent generation. Combining them is what prevents a
+/// runtime adapter hot-swap from exposing a new-config + old-adapter window to
+/// a concurrent enqueue (which would publish through the dying transport with
+/// the new per-queue settings). The inner `Arc`s make a snapshot a cheap clone.
+#[derive(Clone)]
+struct LiveState {
+    config: Arc<QueueModuleConfig>,
+    adapter: Arc<dyn QueueAdapter>,
+}
+
 #[derive(Clone)]
 pub struct QueueWorker {
     engine: Arc<Engine>,
-    /// Live transport. The outer lock is held only for pointer swaps; readers
-    /// clone the inner `Arc` once per call via `adapter_snapshot()`. Behind a
-    /// lock so a runtime change to the `adapter` config can re-instantiate the
-    /// transport (full hot-swap) without rebuilding the worker.
-    adapter: Arc<RwLock<Arc<dyn QueueAdapter>>>,
-    /// Live config snapshot. The outer lock is held only for pointer swaps;
-    /// readers clone the inner `Arc` once per call via `config_snapshot()`,
-    /// which is what makes the value hot-swappable from the configuration
-    /// worker.
-    config: Arc<RwLock<Arc<QueueModuleConfig>>>,
+    /// Live config + transport behind a single lock. The outer lock is held
+    /// only for pointer swaps; readers clone the inner `Arc`(s) once per call
+    /// via `config_snapshot()` / `adapter_snapshot()` / `live_snapshot()`.
+    /// Both are hot-swappable from the configuration worker, and `apply_config`
+    /// swaps the pair atomically so no reader sees a half-applied transport
+    /// change.
+    live: Arc<RwLock<LiveState>>,
     /// The config.yaml block passed to `build()` (post-`ensure_default_queue`).
     /// Used only as the seed for the first `configuration::register`; the
     /// configuration worker entry is the runtime source of truth afterwards.
@@ -157,11 +165,15 @@ impl QueueWorker {
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> anyhow::Result<()> {
-        let config = self.config_snapshot();
-        let queue_config = config.queue_configs.get(queue_name).ok_or_else(|| {
+        // One coherent snapshot of config + transport: the per-queue settings
+        // and the adapter we publish through must come from the same generation
+        // so a concurrent adapter hot-swap can't make us publish through the old
+        // transport with the new config (or vice versa).
+        let live = self.live_snapshot();
+        let queue_config = live.config.queue_configs.get(queue_name).ok_or_else(|| {
             tracing::warn!(
                 queue_name = %queue_name,
-                available = ?config.queue_configs.keys().collect::<Vec<_>>(),
+                available = ?live.config.queue_configs.keys().collect::<Vec<_>>(),
                 "Enqueue attempted for unknown queue"
             );
             anyhow::anyhow!("Queue '{}' not found", queue_name)
@@ -197,7 +209,7 @@ impl QueueWorker {
         // `BaggageSpanProcessor` would otherwise stamp.
         let baggage = crate::telemetry::baggage_with_function_id(baggage.as_deref(), function_id);
 
-        self.adapter_snapshot()
+        live.adapter
             .publish_to_function_queue(
                 queue_name,
                 function_id,
@@ -692,25 +704,42 @@ impl TriggerRegistrator for QueueWorker {
 }
 
 impl QueueWorker {
+    /// Coherent snapshot of the live config + transport in a single lock
+    /// acquisition. Use this when one operation needs both (e.g. enqueue reads
+    /// the per-queue config AND publishes through the adapter) so it can never
+    /// observe a half-applied hot-swap.
+    fn live_snapshot(&self) -> LiveState {
+        self.live.read().expect("live lock poisoned").clone()
+    }
+
     /// Cheap clone of the live config. Take one snapshot per call so all reads
     /// within it are consistent.
     pub fn config_snapshot(&self) -> Arc<QueueModuleConfig> {
-        self.config.read().expect("config lock poisoned").clone()
+        self.live.read().expect("live lock poisoned").config.clone()
     }
 
     fn set_config(&self, config: QueueModuleConfig) {
-        *self.config.write().expect("config lock poisoned") = Arc::new(config);
+        self.live.write().expect("live lock poisoned").config = Arc::new(config);
     }
 
     /// Cheap clone of the live transport. Take one snapshot per call.
     /// `pub` (mirroring `config_snapshot`) so integration tests can confirm a
     /// hot-swap actually rebuilt the adapter instance.
     pub fn adapter_snapshot(&self) -> Arc<dyn QueueAdapter> {
-        self.adapter.read().expect("adapter lock poisoned").clone()
+        self.live
+            .read()
+            .expect("live lock poisoned")
+            .adapter
+            .clone()
     }
 
-    fn set_adapter(&self, adapter: Arc<dyn QueueAdapter>) {
-        *self.adapter.write().expect("adapter lock poisoned") = adapter;
+    /// Atomically swap both the config and the transport. Used by the adapter
+    /// hot-swap path so a concurrent reader sees either the old (config,
+    /// adapter) pair or the new one — never a mix.
+    fn set_live(&self, config: QueueModuleConfig, adapter: Arc<dyn QueueAdapter>) {
+        let mut guard = self.live.write().expect("live lock poisoned");
+        guard.config = Arc::new(config);
+        guard.adapter = adapter;
     }
 
     /// Resolve and instantiate the adapter named by `config` (or the default).
@@ -960,7 +989,9 @@ impl QueueWorker {
             // failure keeps the previous config, adapter, and consumers. Then
             // restart every consumer on the new transport.
             let new_adapter = Self::resolve_adapter(&self.engine, &new_config).await?;
-            self.set_config(new_config.clone());
+            // Swap config + adapter atomically so a concurrent enqueue never
+            // observes the new config paired with the old (dying) transport.
+            self.set_live(new_config.clone(), new_adapter);
             let previous: Vec<AbortHandle> = self
                 .consumers
                 .lock()
@@ -971,7 +1002,6 @@ impl QueueWorker {
             for handle in previous {
                 handle.abort();
             }
-            self.set_adapter(new_adapter);
             // Data-loss boundary (accepted tradeoff for a transport hot-swap):
             // the new adapter starts empty, so messages still queued in the old
             // adapter do NOT migrate — plus in-flight per-message tasks finish
@@ -1226,8 +1256,10 @@ impl ConfigurableWorker for QueueWorker {
         let seed = Some(config.clone());
         Self {
             engine,
-            adapter: Arc::new(RwLock::new(adapter)),
-            config: Arc::new(RwLock::new(Arc::new(config))),
+            live: Arc::new(RwLock::new(LiveState {
+                config: Arc::new(config),
+                adapter,
+            })),
             seed,
             consumers: Arc::new(StdMutex::new(HashMap::new())),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -1600,10 +1632,10 @@ mod tests {
         let adapter_dyn: Arc<dyn QueueAdapter> = adapter.clone();
         let module = QueueWorker {
             engine: engine.clone(),
-            adapter: Arc::new(RwLock::new(adapter_dyn)),
-            config: Arc::new(RwLock::new(Arc::new(
-                super::super::config::QueueModuleConfig::default(),
-            ))),
+            live: Arc::new(RwLock::new(LiveState {
+                config: Arc::new(super::super::config::QueueModuleConfig::default()),
+                adapter: adapter_dyn,
+            })),
             seed: None,
             consumers: Arc::new(StdMutex::new(HashMap::new())),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -2182,8 +2214,10 @@ mod tests {
         let adapter_dyn: Arc<dyn QueueAdapter> = adapter.clone();
         let module = QueueWorker {
             engine: engine.clone(),
-            adapter: Arc::new(RwLock::new(adapter_dyn)),
-            config: Arc::new(RwLock::new(Arc::new(config))),
+            live: Arc::new(RwLock::new(LiveState {
+                config: Arc::new(config),
+                adapter: adapter_dyn,
+            })),
             seed: None,
             consumers: Arc::new(StdMutex::new(HashMap::new())),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -2342,8 +2376,10 @@ mod tests {
         let adapter_dyn: Arc<dyn QueueAdapter> = adapter.clone();
         let module = QueueWorker {
             engine: engine.clone(),
-            adapter: Arc::new(RwLock::new(adapter_dyn)),
-            config: Arc::new(RwLock::new(Arc::new(config))),
+            live: Arc::new(RwLock::new(LiveState {
+                config: Arc::new(config),
+                adapter: adapter_dyn,
+            })),
             seed: None,
             consumers: Arc::new(StdMutex::new(HashMap::new())),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),

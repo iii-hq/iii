@@ -475,9 +475,6 @@ impl QueueAdapter for BuiltinQueueAdapter {
                             job_id: job.id.clone(),
                         },
                     );
-                    if outstanding.len() == window {
-                        outstanding.pop_front();
-                    }
                     outstanding.push_back(delivery_id);
 
                     let msg = QueueMessage {
@@ -492,6 +489,16 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
                     if tx.send(msg).await.is_err() {
                         break;
+                    }
+
+                    // Trim only AFTER a successful send. A send unblocks when the
+                    // consumer makes room in the channel, so once `outstanding`
+                    // exceeds the channel window the oldest entry has necessarily
+                    // been received and no longer needs nack-on-stop cleanup.
+                    // Trimming before the send (while it can still block) would
+                    // drop a still-buffered delivery id and strand it.
+                    while outstanding.len() > window {
+                        outstanding.pop_front();
                     }
                 } else {
                     tokio::time::sleep(poll_interval).await;
@@ -994,6 +1001,72 @@ mod tests {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "stranded delivery should be nacked when the consumer stops"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn consumer_stop_nacks_oldest_when_buffer_full() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        // prefetch = 2 → a channel buffer of 2. Publish 3 jobs and never receive:
+        // the poll task buffers the first two, pops the third, and blocks on a
+        // full-channel send. The oldest delivery must NOT be stranded when the
+        // consumer stops (regression test for premature eviction).
+        let rx = adapter
+            .consume_function_queue("test-q", 2)
+            .await
+            .expect("consume should return receiver");
+
+        for i in 0..3 {
+            adapter
+                .publish_to_function_queue(
+                    "test-q",
+                    "fn::handler",
+                    json!({ "i": i }),
+                    &format!("msg-{i}"),
+                    3,
+                    1000,
+                    None,
+                    None,
+                )
+                .await;
+        }
+
+        // Wait until all three are popped into delivery_map (the third leaves
+        // the poll task blocked on a full-channel send).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while adapter.delivery_map.read().await.len() < 3 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "all three jobs should be popped into delivery_map"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Abort the consumer.
+        drop(rx);
+
+        // Every delivery — including the oldest, which was buffered but would be
+        // evicted from the tracking window before its send completed — must be
+        // nacked, not stranded.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = adapter.delivery_map.read().await.len();
+            if remaining == 0 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no delivery may be stranded when the consumer stops, {remaining} left"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
