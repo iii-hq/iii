@@ -1,6 +1,4 @@
 //! Observability module: OTel + Logger primitives for the iii Rust SDK.
-pub const VERSION: &str = "0.13.0-next.1";
-
 pub mod logger;
 pub mod telemetry;
 
