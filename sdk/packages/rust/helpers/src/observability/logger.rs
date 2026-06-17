@@ -68,7 +68,7 @@ impl Logger {
     /// Emit a LogRecord via the OTel LoggerProvider with trace context from the active span.
     /// Returns `true` if the log was emitted via OTel, `false` otherwise.
     fn emit_otel(&self, message: &str, severity: Severity, data: Option<&Value>) -> bool {
-        let Some(provider) = crate::telemetry::get_logger_provider() else {
+        let Some(provider) = crate::observability::telemetry::get_logger_provider() else {
             return false;
         };
 
