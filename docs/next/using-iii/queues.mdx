@@ -110,8 +110,8 @@ the DLQ functions return empty until something fails.
 ### Forcing a message into the dead-letter queue
 
 To see the DLQ populated, make `email::send` fail: change the handler to throw, and set
-`maxRetries: 0` in the trigger's `queue_config` so the first failure dead-letters immediately instead
-of after the default three attempts.
+`maxRetries: 0` in the trigger's `queue_config` so the first failure dead-letters immediately
+instead of after the default three attempts.
 
 ```typescript
 worker.registerFunction("email::send", async () => {
@@ -163,8 +163,8 @@ iii trigger engine::queue::dlq_messages topic=emails
 
 ### Redriving dead-lettered messages
 
-Fix the code back to what it was originally, then move the topic's dead-lettered messages back to the
-main queue for reprocessing:
+Fix the code back to what it was originally, then move the topic's dead-lettered messages back to
+the main queue for reprocessing:
 
 ```bash
 iii trigger iii::queue::redrive topic=emails
