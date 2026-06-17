@@ -26,8 +26,8 @@ short-code → URL mappings in a key-value store (provided by `iii-state`). Add 
 ready when the `link` worker reaches for them:
 
 ```bash
-iii worker add iii-http
-iii worker add iii-state
+iii worker add iii-http@0.19.4-alpha.2
+iii worker add iii-state@0.19.4-alpha.2
 ```
 
 If you open `config.yaml` now you'll notice both workers have been added, plus a few that iii ships
@@ -72,21 +72,26 @@ A worker is a self-contained service. Here, the `link` worker is a Node package 
 language or runtime.
 
 `link/iii.worker.yaml` is the manifest that describes how the worker builds and runs itself: the
-command to install dependencies and the command to start. Update it so it looks like the below.
+command to install dependencies and the command to start. The default manifest will work for our
+purposes.
 
-```yaml {4-6} iii.worker.yaml
+```yaml iii.worker.yaml
 name: link
 runtime:
   base_image: docker.io/iiidev/node:latest
 scripts:
-  install: "npm install"
-  start: "npm run start"
+  install: npm install
+  start: npm run start
 ```
 
 <Info>
-  iii runs a worker for you from these `scripts`, but a worker is an ordinary service: you can also
-  start it yourself and let it connect to the engine over WebSocket. Learn more about the
-  [`iii.worker.yaml` manifest](/creating-workers/workers#worker-manifest).
+  iii runs an isolated sandboxed worker for you from these `scripts`, but a worker can also be an
+  ordinary service. Any process that uses a iii SDK and calls `registerWorker()` is also a worker.
+  This means you can run the worker directly with just `npm i && npm start` and it will work just
+  the same as the `iii worker` variant, just outside of a sandbox.
+  <p>
+    Learn more about the [`iii.worker.yaml` manifest](/creating-workers/workers#worker-manifest).
+  </p>
 </Info>
 
 Replace the template's `link/package.json` with this one. Note you don't need to run npm or node
@@ -104,8 +109,8 @@ directly and reloads the worker whenever you save a change.
     "start": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "^0.19.0",
-    "@iii-dev/observability": "^0.19.0",
+    "iii-sdk": "0.19.4-alpha.2",
+    "@iii-dev/observability": "0.19.4-alpha.2",
     "tsx": "^4.22.3"
   },
   "devDependencies": {
@@ -210,11 +215,19 @@ Add the `link` worker to your system by running:
 iii worker add ./link
 ```
 
-<Note>
-  You do not run the worker yourself: iii runs the worker's `install` script the first time it
-  starts the worker. You will see the `link` worker register `link::create` and `link::resolve`.
-  Leave the engine running and open a second terminal for the next steps.
-</Note>
+iii runs the worker's `install` script the first time it starts the worker. On the `iii` engine's
+output you will see the `link` worker register `link::create` and `link::resolve`. The output will
+look something like this:
+
+```bash
+[11:54:47.597 AM] [INFO] iii::worker_connections Worker registered
+    ├ worker_id: adf46954-461e-450c-961f-ed6fe0cc1e31
+    └ ip_address: Some("127.0.0.1")
+[11:54:47.609 AM] [INFO] iii::function [REGISTERED] Function link::create
+[11:54:47.609 AM] [INFO] iii::function [REGISTERED] Function link::resolve
+[11:54:47.697 AM] [INFO] iii-node link worker ready
+```
+
 ## Call the functions
 
 `iii trigger` invokes a function on the running engine. Create a link with a custom code:
