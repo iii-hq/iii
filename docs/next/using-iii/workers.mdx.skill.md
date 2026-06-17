@@ -83,8 +83,7 @@ worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 #### Pinning worker versions
 
 Registry workers are published with semver versions. For how versions are picked, pinned with
-`@<version>`, updated, and recorded in `iii.lock`, see
-[Versioning](./workers#versioning) and
+`@<version>`, updated, and recorded in `iii.lock`, see [Versioning](./workers#versioning) and
 [Updating a worker](./workers#updating-a-worker) on the Workers page.
 
 ### Listing workers
@@ -108,6 +107,13 @@ iii worker start <name>        # start one worker
 iii worker stop -y <name>      # stop one worker (-y skips the confirmation prompt)
 iii worker restart <name>      # stop then start
 ```
+
+<Note>
+  These commands manage workers that iii runs for you in its built-in virtualization. However iii
+  does not have to run a worker. Any process that uses a iii SDK, calls `registerWorker()`, and
+  connects to a iii instance is a worker. This will become more relevant when [creating
+  workers](../creating-workers/workers) or [deploying a iii system](./deployment).
+</Note>
 
 <Note>
   To call functions inside running workers (directly with `worker.trigger` / `iii trigger`, or by
