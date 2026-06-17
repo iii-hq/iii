@@ -1,5 +1,5 @@
 import pytest
-from iii_observability import OtelConfig, ReconnectionConfig, current_span_id, current_trace_id
+from iii_helpers.observability import OtelConfig, ReconnectionConfig, current_span_id, current_trace_id
 
 
 def test_otel_config_defaults_disabled():
