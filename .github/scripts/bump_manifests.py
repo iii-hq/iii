@@ -60,8 +60,8 @@ def bump_json_top_level_version(text: str, new_version: str) -> str:
 def bump_pep440_dep_pin(text: str, dep_name: str, new_pep440: str) -> str:
     """Replace ``"<dep_name>==<old>"`` with ``"<dep_name>==<new_pep440>"``.
 
-    Used for the ``iii-observability`` pin inside the python iii
-    ``pyproject.toml`` ``dependencies = [...]`` array.
+    Replaces a pinned PEP 440 dependency version in a pyproject.toml
+    ``dependencies = [...]`` array.
     """
     line_re = re.compile(rf'"{re.escape(dep_name)}==[^"]*"')
     m = line_re.search(text)
@@ -135,9 +135,12 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
     body = bump_pep440_dep_pin(body, "iii-helpers", new_py_version)
     py_iii.write_text(body)
 
-    # Python observability: top-level version only
+    # Python observability: top-level version + iii-helpers dep pin (shim must
+    # depend on the same version of iii-helpers being released alongside it).
     py_obs = root / "sdk/packages/python/observability/pyproject.toml"
-    py_obs.write_text(bump_cargo_package_version(py_obs.read_text(), new_py_version))
+    body = bump_cargo_package_version(py_obs.read_text(), new_py_version)
+    body = bump_pep440_dep_pin(body, "iii-helpers", new_py_version)
+    py_obs.write_text(body)
 
     # Python helpers: top-level version only
     py_helpers = root / "sdk/packages/python/helpers/pyproject.toml"
