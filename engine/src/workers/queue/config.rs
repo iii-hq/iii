@@ -6,7 +6,8 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::workers::traits::AdapterEntry;
 
@@ -42,24 +43,41 @@ fn default_poll_interval_ms() -> u64 {
     100
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Per-queue settings. Doc comments on each field flow into the JSON Schema
+/// (via `schemars`) that the `iii-queue` configuration entry registers, so an
+/// agent introspecting the schema sees the same descriptions and defaults
+/// documented here.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FunctionQueueConfig {
+    /// Maximum delivery attempts before a message is sent to the dead-letter
+    /// queue. Defaults to 3.
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
 
+    /// Number of messages processed concurrently. For `fifo` queues the
+    /// effective prefetch is forced to 1 to preserve ordering. Defaults to 10.
     #[serde(default = "default_concurrency")]
     pub concurrency: u32,
 
+    /// Delivery semantics: "standard" (concurrent, unordered) or "fifo"
+    /// (ordered per message group; requires `message_group_field`).
+    /// Defaults to "standard".
     #[serde(default = "default_queue_type", rename = "type")]
     pub r#type: String,
 
+    /// For `fifo` queues, the message field whose value defines the ordering
+    /// group. Required when `type` is "fifo"; ignored otherwise.
     #[serde(default)]
     pub message_group_field: Option<String>,
 
+    /// Base delay in milliseconds for the exponential retry backoff. Defaults
+    /// to 1000 (1s).
     #[serde(default = "default_backoff_ms")]
     pub backoff_ms: u64,
 
+    /// Poll interval in milliseconds for adapters that poll for messages.
+    /// Defaults to 100.
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
 }
@@ -77,12 +95,21 @@ impl Default for FunctionQueueConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+/// Queue worker settings. Doc comments flow into the JSON Schema (via
+/// `schemars`) that the `iii-queue` configuration entry registers. After first
+/// boot this entry is the runtime source of truth; the `config.yaml` block is
+/// seed-only.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct QueueModuleConfig {
+    /// Transport backing the queues (e.g. "builtin", "rabbitmq"). When omitted,
+    /// the built-in in-process adapter is used. Changing this at runtime
+    /// re-instantiates the transport and restarts every consumer.
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 
+    /// Named queues keyed by queue name, each with its own retry, concurrency,
+    /// and ordering settings. The built-in `default` queue is always present.
     #[serde(default)]
     pub queue_configs: HashMap<String, FunctionQueueConfig>,
 }

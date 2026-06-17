@@ -7,7 +7,10 @@
 use std::{
     collections::HashMap,
     pin::Pin,
-    sync::{Arc, Mutex as StdMutex, RwLock},
+    sync::{
+        Arc, Mutex as StdMutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -21,7 +24,10 @@ use serde_json::{Value, json};
 use std::panic::AssertUnwindSafe;
 use tokio::task::AbortHandle;
 
-use super::{QueueAdapter, SubscriberQueueConfig, TopicInfo, config::QueueModuleConfig};
+use super::{
+    QueueAdapter, SubscriberQueueConfig, TopicInfo,
+    config::{FunctionQueueConfig, QueueModuleConfig},
+};
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -36,10 +42,32 @@ use crate::{
 
 #[derive(Clone)]
 pub struct QueueWorker {
-    adapter: Arc<dyn QueueAdapter>,
     engine: Arc<Engine>,
-    _config: QueueModuleConfig,
-    consumer_aborts: Arc<StdMutex<Vec<AbortHandle>>>,
+    /// Live transport. The outer lock is held only for pointer swaps; readers
+    /// clone the inner `Arc` once per call via `adapter_snapshot()`. Behind a
+    /// lock so a runtime change to the `adapter` config can re-instantiate the
+    /// transport (full hot-swap) without rebuilding the worker.
+    adapter: Arc<RwLock<Arc<dyn QueueAdapter>>>,
+    /// Live config snapshot. The outer lock is held only for pointer swaps;
+    /// readers clone the inner `Arc` once per call via `config_snapshot()`,
+    /// which is what makes the value hot-swappable from the configuration
+    /// worker.
+    config: Arc<RwLock<Arc<QueueModuleConfig>>>,
+    /// The config.yaml block passed to `build()` (post-`ensure_default_queue`).
+    /// Used only as the seed for the first `configuration::register`; the
+    /// configuration worker entry is the runtime source of truth afterwards.
+    seed: Option<QueueModuleConfig>,
+    /// One live consumer task per queue name, so an individual consumer can be
+    /// restarted on a config change without disturbing the others.
+    consumers: Arc<StdMutex<HashMap<String, AbortHandle>>>,
+    /// Serializes concurrent `apply_config` runs (rapid configuration edits).
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Set by `destroy()` (under `apply_lock`). A late `apply_config` — from an
+    /// in-flight trigger event or the detached one-shot retry in
+    /// `on_config_change` — checks this after acquiring the lock and bails, so a
+    /// torn-down worker can never re-spawn consumers. The queue analogue of
+    /// `HttpWorker`'s `shutdown_rx` None-guard.
+    destroyed: Arc<AtomicBool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -113,7 +141,7 @@ impl QueueWorker {
     /// Function queues (listed in config) are prefixed with `__fn_queue::`;
     /// topic-based queues pass through unchanged.
     fn resolve_queue_key(&self, name: &str) -> String {
-        if self._config.queue_configs.contains_key(name) {
+        if self.config_snapshot().queue_configs.contains_key(name) {
             format!("__fn_queue::{}", name)
         } else {
             name.to_string()
@@ -129,10 +157,11 @@ impl QueueWorker {
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> anyhow::Result<()> {
-        let queue_config = self._config.queue_configs.get(queue_name).ok_or_else(|| {
+        let config = self.config_snapshot();
+        let queue_config = config.queue_configs.get(queue_name).ok_or_else(|| {
             tracing::warn!(
                 queue_name = %queue_name,
-                available = ?self._config.queue_configs.keys().collect::<Vec<_>>(),
+                available = ?config.queue_configs.keys().collect::<Vec<_>>(),
                 "Enqueue attempted for unknown queue"
             );
             anyhow::anyhow!("Queue '{}' not found", queue_name)
@@ -168,7 +197,7 @@ impl QueueWorker {
         // `BaggageSpanProcessor` would otherwise stamp.
         let baggage = crate::telemetry::baggage_with_function_id(baggage.as_deref(), function_id);
 
-        self.adapter
+        self.adapter_snapshot()
             .publish_to_function_queue(
                 queue_name,
                 function_id,
@@ -187,7 +216,7 @@ impl QueueWorker {
     /// Returns the number of messages in the DLQ for a function queue.
     pub async fn function_queue_dlq_count(&self, queue_name: &str) -> anyhow::Result<u64> {
         let namespaced = format!("__fn_queue::{}", queue_name);
-        self.adapter.dlq_count(&namespaced).await
+        self.adapter_snapshot().dlq_count(&namespaced).await
     }
 
     /// Returns up to `count` DLQ messages for a function queue as parsed JSON Values.
@@ -197,12 +226,12 @@ impl QueueWorker {
         count: usize,
     ) -> anyhow::Result<Vec<Value>> {
         let namespaced = format!("__fn_queue::{}", queue_name);
-        self.adapter.dlq_messages(&namespaced, count).await
+        self.adapter_snapshot().dlq_messages(&namespaced, count).await
     }
 
     #[function(id = "iii::durable::publish", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
         let event_data = input.data;
         let topic = input.topic;
 
@@ -247,7 +276,7 @@ impl QueueWorker {
         }
 
         let resolved = self.resolve_queue_key(&input.queue);
-        match self.adapter.redrive_dlq(&resolved).await {
+        match self.adapter_snapshot().redrive_dlq(&resolved).await {
             Ok(count) => {
                 tracing::info!(
                     queue = %input.queue,
@@ -300,7 +329,7 @@ impl QueueWorker {
 
         let resolved = self.resolve_queue_key(&input.queue);
         match self
-            .adapter
+            .adapter_snapshot()
             .redrive_dlq_message(&resolved, &input.message_id)
             .await
         {
@@ -362,7 +391,7 @@ impl QueueWorker {
 
         let resolved = self.resolve_queue_key(&input.queue);
         match self
-            .adapter
+            .adapter_snapshot()
             .discard_dlq_message(&resolved, &input.message_id)
             .await
         {
@@ -390,14 +419,14 @@ impl QueueWorker {
         &self,
         _input: Value,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        match self.adapter.list_topics().await {
+        match self.adapter_snapshot().list_topics().await {
             Ok(topics) => {
                 // Merge function queue topics from config.
                 // Adapters report these with subscriber_count=0 because internal
                 // consumers aren't tracked in the subscription map. Override with
                 // the configured concurrency so the console shows the real count.
                 let mut all_topics = topics;
-                for (name, config) in &self._config.queue_configs {
+                for (name, config) in &self.config_snapshot().queue_configs {
                     let namespaced = format!("__fn_queue::{}", name);
                     if let Some(existing) = all_topics
                         .iter_mut()
@@ -448,12 +477,12 @@ impl QueueWorker {
         }
 
         let resolved = self.resolve_queue_key(&topic);
-        match self.adapter.topic_stats(&resolved).await {
+        match self.adapter_snapshot().topic_stats(&resolved).await {
             Ok(mut stats) => {
                 // Adapters report consumer_count=0 for function queues because
                 // internal consumers aren't tracked in the subscription map.
                 // Override with the configured concurrency.
-                if let Some(config) = self._config.queue_configs.get(&topic) {
+                if let Some(config) = self.config_snapshot().queue_configs.get(&topic) {
                     stats.consumer_count = config.concurrency as u64;
                 }
                 FunctionResult::Success(Some(serde_json::to_value(&stats).unwrap_or(json!({}))))
@@ -474,11 +503,12 @@ impl QueueWorker {
         &self,
         _input: Value,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        match self.adapter.list_topics().await {
+        let adapter = self.adapter_snapshot();
+        match adapter.list_topics().await {
             Ok(topics) => {
                 let mut dlq_topics = Vec::new();
                 for topic in &topics {
-                    let dlq_count = self.adapter.dlq_count(&topic.name).await.unwrap_or(0);
+                    let dlq_count = adapter.dlq_count(&topic.name).await.unwrap_or(0);
                     dlq_topics.push(json!({
                         "topic": topic.name,
                         "broker_type": topic.broker_type,
@@ -486,9 +516,9 @@ impl QueueWorker {
                     }));
                 }
                 // Also include function queue DLQs
-                for name in self._config.queue_configs.keys() {
+                for name in self.config_snapshot().queue_configs.keys() {
                     let namespaced = format!("__fn_queue::{}", name);
-                    let dlq_count = self.adapter.dlq_count(&namespaced).await.unwrap_or(0);
+                    let dlq_count = adapter.dlq_count(&namespaced).await.unwrap_or(0);
                     dlq_topics.push(json!({
                         "topic": name,
                         "broker_type": "function_queue",
@@ -525,7 +555,7 @@ impl QueueWorker {
         let limit = input.limit;
 
         let resolved = self.resolve_queue_key(&topic);
-        match self.adapter.dlq_peek(&resolved, offset, limit).await {
+        match self.adapter_snapshot().dlq_peek(&resolved, offset, limit).await {
             Ok(messages) => {
                 FunctionResult::Success(Some(serde_json::to_value(&messages).unwrap_or(json!([]))))
             }
@@ -595,7 +625,7 @@ impl TriggerRegistrator for QueueWorker {
         );
 
         // Get adapter reference before async block
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         Box::pin(async move {
             if !topic.is_empty() {
@@ -635,7 +665,7 @@ impl TriggerRegistrator for QueueWorker {
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         // Get adapter reference before async block
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         Box::pin(async move {
             tracing::debug!(trigger = %trigger.id, "Unregistering trigger");
@@ -655,6 +685,356 @@ impl TriggerRegistrator for QueueWorker {
     }
 }
 
+impl QueueWorker {
+    /// Cheap clone of the live config. Take one snapshot per call so all reads
+    /// within it are consistent.
+    pub fn config_snapshot(&self) -> Arc<QueueModuleConfig> {
+        self.config.read().expect("config lock poisoned").clone()
+    }
+
+    fn set_config(&self, config: QueueModuleConfig) {
+        *self.config.write().expect("config lock poisoned") = Arc::new(config);
+    }
+
+    /// Cheap clone of the live transport. Take one snapshot per call.
+    /// `pub` (mirroring `config_snapshot`) so integration tests can confirm a
+    /// hot-swap actually rebuilt the adapter instance.
+    pub fn adapter_snapshot(&self) -> Arc<dyn QueueAdapter> {
+        self.adapter.read().expect("adapter lock poisoned").clone()
+    }
+
+    fn set_adapter(&self, adapter: Arc<dyn QueueAdapter>) {
+        *self.adapter.write().expect("adapter lock poisoned") = adapter;
+    }
+
+    /// Resolve and instantiate the adapter named by `config` (or the default).
+    /// Mirrors steps 3–4 of `ConfigurableWorker::create_with_adapters`, reused
+    /// for test construction and for runtime adapter hot-swaps.
+    async fn resolve_adapter(
+        engine: &Arc<Engine>,
+        config: &QueueModuleConfig,
+    ) -> anyhow::Result<Arc<dyn QueueAdapter>> {
+        let adapter_name = Self::adapter_name_from_config(config)
+            .unwrap_or_else(|| Self::DEFAULT_ADAPTER_NAME.to_string());
+        let factory = Self::get_adapter(&adapter_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("queue adapter '{adapter_name}' is not registered"))?;
+        let adapter_config = Self::adapter_config_from_config(config);
+        factory(engine.clone(), adapter_config).await
+    }
+
+    /// Effective `(name, config)` of the adapter selected by `config`, with the
+    /// default name filled in, so `None` vs `Some(builtin)` is not a false
+    /// change when comparing two configs.
+    fn effective_adapter(config: &QueueModuleConfig) -> (String, Option<Value>) {
+        (
+            Self::adapter_name_from_config(config)
+                .unwrap_or_else(|| Self::DEFAULT_ADAPTER_NAME.to_string()),
+            Self::adapter_config_from_config(config),
+        )
+    }
+
+    /// Construct a worker from a raw config value — mirrors `HttpWorker::for_test`
+    /// so integration tests in `engine/tests/` can drive the concrete worker
+    /// without booting the full engine. Async because the queue resolves its
+    /// adapter from the registry.
+    #[doc(hidden)]
+    pub async fn for_test(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
+        let parsed: QueueModuleConfig = config
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        let adapter = Self::resolve_adapter(&engine, &parsed).await?;
+        Ok(Self::build(engine, parsed, adapter))
+    }
+
+    /// Register the `iii-queue::on-config-change` handler. Idempotent
+    /// (replace-by-id), so it is safe to call from both `register_functions`
+    /// (which runs inside the worker scope for destroy/reload cleanup) and
+    /// `start_background_tasks` (which registers the trigger and runs first).
+    fn register_config_handler(&self, engine: &Arc<Engine>) {
+        let worker = self.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: super::configuration::CONFIG_FN_ID.to_string(),
+                description: Some(
+                    "Internal: re-apply the iii-queue configuration when the \
+                     authoritative configuration entry changes."
+                        .to_string(),
+                ),
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_payload: Value| {
+                let worker = worker.clone();
+                async move {
+                    super::configuration::on_config_change(&worker).await;
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                }
+            }),
+        );
+    }
+
+    /// Set up and start (or restart) the consumer for one queue. Aborts any
+    /// prior consumer for `name` only after the new one is live, so a restart
+    /// never strands the queue. Every fallible adapter call happens BEFORE the
+    /// `consumers` map is mutated, so a failed (re)start leaves the previous
+    /// consumer running — the property that makes the runtime apply best-effort
+    /// safe.
+    async fn spawn_consumer(
+        &self,
+        name: &str,
+        config: &FunctionQueueConfig,
+    ) -> anyhow::Result<()> {
+        let adapter = self.adapter_snapshot();
+        adapter.setup_function_queue(name, config).await?;
+
+        let prefetch = if config.r#type == "fifo" {
+            1
+        } else {
+            config.concurrency
+        };
+        let max_retries = config.max_retries;
+        let mut receiver = adapter.consume_function_queue(name, prefetch).await?;
+
+        let engine = self.engine.clone();
+        let queue_name = name.to_string();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(prefetch as usize));
+
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = receiver.recv().await {
+                let adapter = adapter.clone();
+                let engine = engine.clone();
+                let queue_name = queue_name.clone();
+                let semaphore = semaphore.clone();
+
+                let permit = semaphore.acquire_owned().await;
+                if permit.is_err() {
+                    break;
+                }
+                let permit = permit.unwrap();
+
+                let traceparent = msg.traceparent.clone();
+                let baggage = msg.baggage.clone();
+
+                tokio::spawn(async move {
+                    let delivery_id = msg.delivery_id;
+                    let function_id = msg.function_id.clone();
+                    let attempt = msg.attempt;
+
+                    let span = tracing::info_span!(
+                        "fn_queue_job",
+                        otel.name = %format!("fn_queue {}", queue_name),
+                        function_id = %function_id,
+                        queue = %queue_name,
+                        attempt = %attempt,
+                        delivery_id = %delivery_id,
+                        "messaging.system" = "iii-queue",
+                        "messaging.destination.name" = %queue_name,
+                        "messaging.operation.type" = "process",
+                        otel.status_code = tracing::field::Empty,
+                    )
+                    .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+
+                    let result =
+                        AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
+                            .catch_unwind()
+                            .instrument(span)
+                            .await;
+
+                    match result {
+                        Ok(Ok(_)) => {
+                            tracing::Span::current().record("otel.status_code", "OK");
+                            if let Err(e) =
+                                adapter.ack_function_queue(&queue_name, delivery_id).await
+                            {
+                                tracing::error!(error = %e, "Failed to ack message");
+                            }
+                        }
+                        Ok(Err(ref err)) => {
+                            tracing::Span::current().record("otel.status_code", "ERROR");
+                            tracing::warn!(
+                                function_id = %function_id,
+                                queue = %queue_name,
+                                attempt = %attempt,
+                                max_retries = %max_retries,
+                                error = ?err,
+                                "Function queue job failed"
+                            );
+                            if let Err(e) = adapter
+                                .nack_function_queue(&queue_name, delivery_id, attempt, max_retries)
+                                .await
+                            {
+                                tracing::error!(error = %e, "Failed to nack message");
+                            }
+                        }
+                        Err(_panic) => {
+                            tracing::Span::current().record("otel.status_code", "ERROR");
+                            tracing::error!(
+                                function_id = %function_id,
+                                queue = %queue_name,
+                                attempt = %attempt,
+                                max_retries = %max_retries,
+                                "Function queue job panicked"
+                            );
+                            if let Err(e) = adapter
+                                .nack_function_queue(&queue_name, delivery_id, attempt, max_retries)
+                                .await
+                            {
+                                tracing::error!(error = %e, "Failed to nack panicked message");
+                            }
+                        }
+                    }
+
+                    drop(permit);
+                });
+            }
+
+            tracing::warn!(queue = %queue_name, "Consumer loop ended");
+        });
+
+        // Insert the new handle, then abort any prior one for this name. The
+        // fallible work above already succeeded, so the swap cannot strand the
+        // queue without a consumer.
+        let previous = self
+            .consumers
+            .lock()
+            .expect("consumers mutex poisoned")
+            .insert(name.to_string(), handle.abort_handle());
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+
+        tracing::info!(
+            queue = %name,
+            r#type = %config.r#type,
+            concurrency = %config.concurrency,
+            "Started function queue consumer"
+        );
+        Ok(())
+    }
+
+    /// Re-fetch the authoritative configuration and hot-apply it. The
+    /// authoritative read happens under `apply_lock` so overlapping
+    /// configuration events can't apply a stale value last (lost update).
+    ///
+    /// The fetch+validate gate is strict all-or-nothing: any failure keeps the
+    /// previous config, adapter, and every consumer. Past the gate, an adapter
+    /// change re-instantiates the transport and restarts every consumer on it;
+    /// otherwise the `queue_configs` delta is applied per queue, best-effort —
+    /// a single queue's restart failure is logged while the others apply and
+    /// that queue keeps its previous consumer.
+    pub(super) async fn apply_config(&self) -> anyhow::Result<()> {
+        let _guard = self.apply_lock.lock().await;
+
+        // Bail if the worker was torn down. `destroy()` sets this under the same
+        // lock, so a late apply (in-flight trigger event, or the detached retry
+        // in `on_config_change`) can never re-spawn consumers post-destroy.
+        if self.destroyed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        // GATE: fetch under the lock; keep the `Elapsed` error downcastable so
+        // `on_config_change` schedules its one-shot retry for timeouts only.
+        let new_config = match tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::fetch_config(self.engine.as_ref(), &self.config_snapshot()),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(elapsed) => {
+                return Err(anyhow::Error::new(elapsed)
+                    .context("configuration::get timed out; keeping previous config"));
+            }
+        };
+        new_config.validate()?;
+
+        let old = self.config_snapshot();
+
+        if Self::effective_adapter(&old) != Self::effective_adapter(&new_config) {
+            // FULL TRANSPORT HOT-SWAP. Build the new adapter first (fallible); a
+            // failure keeps the previous config, adapter, and consumers. Then
+            // restart every consumer on the new transport.
+            let new_adapter = Self::resolve_adapter(&self.engine, &new_config).await?;
+            self.set_config(new_config.clone());
+            let previous: Vec<AbortHandle> = self
+                .consumers
+                .lock()
+                .expect("consumers mutex poisoned")
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect();
+            for handle in previous {
+                handle.abort();
+            }
+            self.set_adapter(new_adapter);
+            // Data-loss boundary (accepted tradeoff for a transport hot-swap):
+            // the new adapter starts empty, so messages still queued in the old
+            // adapter do NOT migrate — plus in-flight per-message tasks finish
+            // acking against the OLD adapter Arc they captured. The old adapter
+            // is dropped once its last ref is gone. Re-spawn is best-effort per
+            // queue: a queue whose `spawn_consumer` fails here is left with NO
+            // consumer (unlike the same-adapter path, which retains the prior
+            // one) because the transport it was bound to no longer exists.
+            for (name, queue_config) in &new_config.queue_configs {
+                if let Err(err) = self.spawn_consumer(name, queue_config).await {
+                    tracing::error!(
+                        queue = %name,
+                        error = %err,
+                        "iii-queue: failed to start consumer on the new adapter; queue left unconsumed"
+                    );
+                }
+            }
+            tracing::info!("iii-queue transport hot-swapped after configuration change");
+            return Ok(());
+        }
+
+        // Same adapter: diff `queue_configs` and restart only what changed.
+        // Publish the new snapshot first so restarted consumers and the enqueue
+        // path read the new settings.
+        self.set_config(new_config.clone());
+
+        // Removed: present in old, absent from new. `default` is always present
+        // in `new_config` (ensure_default_queue runs in fetch_config), so it can
+        // never land in this branch.
+        for name in old.queue_configs.keys() {
+            if !new_config.queue_configs.contains_key(name) {
+                if let Some(handle) = self
+                    .consumers
+                    .lock()
+                    .expect("consumers mutex poisoned")
+                    .remove(name)
+                {
+                    handle.abort();
+                }
+                tracing::info!(queue = %name, "Stopped consumer for removed queue");
+            }
+        }
+
+        // Added or changed: (re)start the consumer (best-effort per queue).
+        for (name, queue_config) in &new_config.queue_configs {
+            let unchanged = old
+                .queue_configs
+                .get(name)
+                .is_some_and(|prev| prev == queue_config);
+            if unchanged {
+                continue;
+            }
+            if let Err(err) = self.spawn_consumer(name, queue_config).await {
+                tracing::error!(
+                    queue = %name,
+                    error = %err,
+                    "iii-queue: failed to (re)start consumer; keeping previous consumer for this queue"
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Worker for QueueWorker {
     fn name(&self) -> &'static str {
@@ -665,12 +1045,20 @@ impl Worker for QueueWorker {
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
-        self.register_functions(engine);
+        // The `#[service]`-generated inherent method registers every queue
+        // function; the config handler is registered alongside it (inside the
+        // worker scope) so destroy/reload track and remove it. The hook order
+        // differs by pipeline: initial boot runs `register_functions` BEFORE
+        // `start_background_tasks`, reload runs it AFTER — so
+        // `start_background_tasks` also registers the handler (if absent) before
+        // subscribing to configuration events.
+        self.register_functions(engine.clone());
+        self.register_config_handler(&engine);
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing QueueModule");
-        self._config.validate()?;
+        self.config_snapshot().validate()?;
         self.engine.set_queue_module(Arc::new(self.clone())).await;
 
         let trigger_type = TriggerType::new(
@@ -690,140 +1078,90 @@ impl Worker for QueueWorker {
         _shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
-        // Consumer loops are not wired to `shutdown_rx`: `destroy()` aborts the
-        // spawned task via the stored AbortHandle, which is sufficient to stop
-        // it cleanly during reload. Adding a `select!` on shutdown made
-        // `receiver.recv()` race-prone under heavy parallel test load.
-        for (name, config) in &self._config.queue_configs {
-            self.adapter.setup_function_queue(name, config).await?;
-
-            let prefetch = if config.r#type == "fifo" {
-                1
-            } else {
-                config.concurrency
-            };
-            let max_retries = config.max_retries;
-            let mut receiver = self.adapter.consume_function_queue(name, prefetch).await?;
-
-            let adapter = self.adapter.clone();
-            let engine = self.engine.clone();
-            let queue_name = name.clone();
-
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(prefetch as usize));
-
-            let handle = tokio::spawn(async move {
-                while let Some(msg) = receiver.recv().await {
-                    let adapter = adapter.clone();
-                    let engine = engine.clone();
-                    let queue_name = queue_name.clone();
-                    let semaphore = semaphore.clone();
-
-                    let permit = semaphore.acquire_owned().await;
-                    if permit.is_err() {
-                        break;
-                    }
-                    let permit = permit.unwrap();
-
-                    let traceparent = msg.traceparent.clone();
-                    let baggage = msg.baggage.clone();
-
-                    tokio::spawn(async move {
-                        let delivery_id = msg.delivery_id;
-                        let function_id = msg.function_id.clone();
-                        let attempt = msg.attempt;
-
-                        let span = tracing::info_span!(
-                            "fn_queue_job",
-                            otel.name = %format!("fn_queue {}", queue_name),
-                            function_id = %function_id,
-                            queue = %queue_name,
-                            attempt = %attempt,
-                            delivery_id = %delivery_id,
-                            "messaging.system" = "iii-queue",
-                            "messaging.destination.name" = %queue_name,
-                            "messaging.operation.type" = "process",
-                            otel.status_code = tracing::field::Empty,
-                        )
-                        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
-
-                        let result =
-                            AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
-                                .catch_unwind()
-                                .instrument(span)
-                                .await;
-
-                        match result {
-                            Ok(Ok(_)) => {
-                                tracing::Span::current().record("otel.status_code", "OK");
-                                if let Err(e) =
-                                    adapter.ack_function_queue(&queue_name, delivery_id).await
-                                {
-                                    tracing::error!(error = %e, "Failed to ack message");
-                                }
-                            }
-                            Ok(Err(ref err)) => {
-                                tracing::Span::current().record("otel.status_code", "ERROR");
-                                tracing::warn!(
-                                    function_id = %function_id,
-                                    queue = %queue_name,
-                                    attempt = %attempt,
-                                    max_retries = %max_retries,
-                                    error = ?err,
-                                    "Function queue job failed"
-                                );
-                                if let Err(e) = adapter
-                                    .nack_function_queue(
-                                        &queue_name,
-                                        delivery_id,
-                                        attempt,
-                                        max_retries,
-                                    )
-                                    .await
-                                {
-                                    tracing::error!(error = %e, "Failed to nack message");
-                                }
-                            }
-                            Err(_panic) => {
-                                tracing::Span::current().record("otel.status_code", "ERROR");
-                                tracing::error!(
-                                    function_id = %function_id,
-                                    queue = %queue_name,
-                                    attempt = %attempt,
-                                    max_retries = %max_retries,
-                                    "Function queue job panicked"
-                                );
-                                if let Err(e) = adapter
-                                    .nack_function_queue(
-                                        &queue_name,
-                                        delivery_id,
-                                        attempt,
-                                        max_retries,
-                                    )
-                                    .await
-                                {
-                                    tracing::error!(error = %e, "Failed to nack panicked message");
-                                }
-                            }
-                        }
-
-                        drop(permit);
-                    });
-                }
-
-                tracing::warn!(queue = %queue_name, "Consumer loop ended");
-            });
-
-            self.consumer_aborts
-                .lock()
-                .expect("consumer_aborts mutex poisoned")
-                .push(handle.abort_handle());
-
-            tracing::info!(
-                queue = %name,
-                r#type = %config.r#type,
-                concurrency = %config.concurrency,
-                "Started function queue consumer"
+        // Adopt the configuration worker as the runtime source of truth.
+        // `configuration::*` is callable on both pipelines (initial boot
+        // registers all worker functions before serving; reload starts the
+        // mandatory configuration worker before optional ones). Failures
+        // degrade to the static config.yaml block so the queue stays up. Both
+        // bus calls are time-bounded: worker startup is awaited serially by the
+        // boot and reload pipelines, so a hung `configuration::*` provider must
+        // not wedge every other worker behind this one.
+        let register = tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::register_config(self.engine.as_ref(), self.seed.as_ref()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("configuration::register timed out"))
+        .and_then(|result| result);
+        if let Err(err) = register {
+            tracing::warn!(
+                error = %err,
+                "iii-queue: configuration::register failed; continuing with static config"
             );
+        }
+        let fetched = tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::fetch_config(self.engine.as_ref(), &self.config_snapshot()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("configuration::get timed out"))
+        .and_then(|result| result);
+        match fetched {
+            // Validate before adopting. The configuration worker's JSON schema
+            // can't express cross-field rules (a `fifo` queue requires
+            // `message_group_field`), so a value that `apply_config` rejects at
+            // runtime can still be stored and read back here. Without this gate
+            // a bad stored value would boot a misconfigured consumer on the next
+            // restart. On failure keep the seed (already validated in
+            // `initialize`), matching the runtime apply gate.
+            Ok(config) => match config.validate() {
+                Ok(()) => self.set_config(config),
+                Err(err) => tracing::warn!(
+                    error = %err,
+                    "iii-queue: stored configuration is invalid; continuing with static config"
+                ),
+            },
+            Err(err) => tracing::warn!(
+                error = %err,
+                "iii-queue: failed to read configuration; continuing with static config"
+            ),
+        }
+
+        // Start a consumer per queue from the (possibly updated) snapshot. The
+        // initial spawn is fatal: a queue that cannot be set up at boot fails
+        // the worker, preserving the pre-migration behavior. Runtime restarts
+        // in `apply_config` are best-effort by contrast.
+        let config = self.config_snapshot();
+        for (name, queue_config) in &config.queue_configs {
+            self.spawn_consumer(name, queue_config).await?;
+        }
+
+        // Register the handler before the trigger so a configuration event can
+        // never fan out to a missing function. On reload, `register_functions`
+        // runs after this hook and re-registers the handler inside the worker
+        // scope; the `get` check keeps the initial-boot path (where it already
+        // ran) from logging a spurious overwrite.
+        if self
+            .engine
+            .functions
+            .get(super::configuration::CONFIG_FN_ID)
+            .is_none()
+        {
+            self.register_config_handler(&self.engine);
+        }
+        if let Err(err) = super::configuration::register_config_trigger(&self.engine).await {
+            tracing::warn!(
+                error = %err,
+                "iii-queue: failed to watch configuration changes; hot-reload disabled"
+            );
+        } else {
+            // Catch-up pass: replay any `configuration::set` that landed between
+            // the boot fetch above and the trigger subscription — without it
+            // that window's updates would be dropped until the next edit. Routed
+            // through `on_config_change` (not `apply_config` directly) so a
+            // timed-out catch-up gets the same one-shot delayed retry as a
+            // trigger-driven apply.
+            super::configuration::on_config_change(self).await;
         }
 
         Ok(())
@@ -831,11 +1169,28 @@ impl Worker for QueueWorker {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying QueueModule");
+        // The trigger is registered outside the worker scope, so remove it
+        // explicitly to keep ReloadManager restarts duplicate-free.
+        let _ = self
+            .engine
+            .trigger_registry
+            .unregister_trigger(
+                super::configuration::CONFIG_TRIGGER_ID.to_string(),
+                Some(super::configuration::CONFIG_TRIGGER_TYPE.to_string()),
+            )
+            .await;
+
+        // Serialize with any in-flight `apply_config` so a restart can't spawn a
+        // replacement consumer after we abort below. Setting `destroyed` under
+        // the lock makes every later apply bail before re-spawning.
+        let _guard = self.apply_lock.lock().await;
+        self.destroyed.store(true, Ordering::SeqCst);
         let aborts: Vec<AbortHandle> = self
-            .consumer_aborts
+            .consumers
             .lock()
-            .expect("consumer_aborts mutex poisoned")
-            .drain(..)
+            .expect("consumers mutex poisoned")
+            .drain()
+            .map(|(_, handle)| handle)
             .collect();
         for abort in aborts {
             abort.abort();
@@ -863,11 +1218,18 @@ impl ConfigurableWorker for QueueWorker {
         // consumer spawn in `start_background_tasks` and the lookup in
         // `enqueue_to_function_queue` see it.
         config.ensure_default_queue();
+        // The config.yaml block (with the default queue provisioned) seeds the
+        // first `configuration::register`; the configuration entry is the
+        // runtime source of truth afterwards.
+        let seed = Some(config.clone());
         Self {
             engine,
-            _config: config,
-            adapter,
-            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
+            adapter: Arc::new(RwLock::new(adapter)),
+            config: Arc::new(RwLock::new(Arc::new(config))),
+            seed,
+            consumers: Arc::new(StdMutex::new(HashMap::new())),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+            destroyed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1064,6 +1426,9 @@ mod tests {
         dlq_count_value: AtomicU64,
         dlq_count_should_fail: AtomicBool,
         discard_should_fail: AtomicBool,
+        /// Queue names whose `setup_function_queue` returns an error, for
+        /// exercising per-queue spawn-failure isolation in `apply_config`.
+        setup_fail_queues: Mutex<std::collections::HashSet<String>>,
     }
 
     impl MockQueueAdapter {
@@ -1093,6 +1458,7 @@ mod tests {
                 dlq_count_value: AtomicU64::new(0),
                 dlq_count_should_fail: AtomicBool::new(false),
                 discard_should_fail: AtomicBool::new(false),
+                setup_fail_queues: Mutex::new(std::collections::HashSet::new()),
             }
         }
     }
@@ -1206,9 +1572,12 @@ mod tests {
 
         async fn setup_function_queue(
             &self,
-            _queue_name: &str,
+            queue_name: &str,
             _config: &super::super::config::FunctionQueueConfig,
         ) -> anyhow::Result<()> {
+            if self.setup_fail_queues.lock().await.contains(queue_name) {
+                return Err(anyhow::anyhow!("mock setup failure for '{queue_name}'"));
+            }
             Ok(())
         }
 
@@ -1226,13 +1595,165 @@ mod tests {
         crate::workers::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let adapter = Arc::new(MockQueueAdapter::new());
+        let adapter_dyn: Arc<dyn QueueAdapter> = adapter.clone();
         let module = QueueWorker {
-            adapter: adapter.clone(),
             engine: engine.clone(),
-            _config: super::super::config::QueueModuleConfig::default(),
-            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
+            adapter: Arc::new(RwLock::new(adapter_dyn)),
+            config: Arc::new(RwLock::new(Arc::new(
+                super::super::config::QueueModuleConfig::default(),
+            ))),
+            seed: None,
+            consumers: Arc::new(StdMutex::new(HashMap::new())),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+            destroyed: Arc::new(AtomicBool::new(false)),
         };
         (engine, module, adapter)
+    }
+
+    /// Stub `configuration::get` on the engine to return a fixed value.
+    fn stub_configuration_get(engine: &Arc<Engine>, value: Value) {
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "configuration::get".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let value = value.clone();
+                async move { FunctionResult::Success(Some(json!({ "id": "iii-queue", "value": value }))) }
+            }),
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_config_isolates_per_queue_spawn_failure() {
+        let (engine, module, adapter) = setup_queue_module();
+        // The mock fails `setup_function_queue` for "bad" only.
+        adapter
+            .setup_fail_queues
+            .lock()
+            .await
+            .insert("bad".to_string());
+
+        stub_configuration_get(
+            &engine,
+            json!({ "queue_configs": {
+                "good": { "concurrency": 1 },
+                "bad": { "concurrency": 1 }
+            } }),
+        );
+
+        // A single queue's spawn failure must not abort the whole apply.
+        module
+            .apply_config()
+            .await
+            .expect("apply_config must not error on a per-queue spawn failure");
+
+        // The gate adopted the new config (set_config ran before the per-queue loop).
+        let cfg = module.config_snapshot();
+        assert!(cfg.queue_configs.contains_key("good"));
+        assert!(cfg.queue_configs.contains_key("bad"));
+        assert!(cfg.queue_configs.contains_key("default"));
+
+        // Best-effort isolation: healthy queues got consumers; the failing one
+        // did not, but it did not block the others.
+        let consumers = module.consumers.lock().expect("consumers mutex");
+        assert!(
+            consumers.contains_key("good"),
+            "a healthy queue must get a consumer even when a sibling fails"
+        );
+        assert!(
+            consumers.contains_key("default"),
+            "the default queue must get a consumer"
+        );
+        assert!(
+            !consumers.contains_key("bad"),
+            "the failing queue must be left out of the consumers map"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn apply_config_timeout_surfaces_downcastable_elapsed() {
+        let (engine, module, _adapter) = setup_queue_module();
+        // `configuration::get` never returns, so the bounded fetch times out.
+        // The paused clock auto-advances to the timeout (no real 10s wait).
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "configuration::get".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input: Value| async {
+                std::future::pending::<FunctionResult<Option<Value>, crate::protocol::ErrorBody>>()
+                    .await
+            }),
+        );
+
+        let err = module
+            .apply_config()
+            .await
+            .expect_err("a timed-out fetch must surface as an error");
+
+        // `on_config_change` branches on this downcast to schedule its one-shot
+        // retry; if the timeout stopped being downcastable the retry path would
+        // silently break.
+        assert!(
+            err.downcast_ref::<tokio::time::error::Elapsed>().is_some(),
+            "apply_config timeout must stay downcastable to Elapsed: {err:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_config_change_retries_once_after_timeout() {
+        let (engine, module, _adapter) = setup_queue_module();
+        // First `configuration::get` hangs (forcing a timeout); every later call
+        // returns a valid config. The one-shot retry must pick it up.
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "configuration::get".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let calls = calls.clone();
+                async move {
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        std::future::pending::<
+                            FunctionResult<Option<Value>, crate::protocol::ErrorBody>,
+                        >()
+                        .await
+                    } else {
+                        FunctionResult::Success(Some(json!({
+                            "id": "iii-queue",
+                            "value": { "queue_configs": { "jobs": { "concurrency": 5 } } }
+                        })))
+                    }
+                }
+            }),
+        );
+
+        // Initial apply times out and schedules the detached one-shot retry.
+        super::super::configuration::on_config_change(&module).await;
+        assert!(
+            !module.config_snapshot().queue_configs.contains_key("jobs"),
+            "the timed-out first apply must not have applied anything"
+        );
+
+        // Let virtual time pass the retry delay so the detached retry runs and
+        // applies the now-readable config.
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        assert!(
+            module.config_snapshot().queue_configs.contains_key("jobs"),
+            "the one-shot retry after a timeout must apply the now-readable config"
+        );
     }
 
     // =========================================================================
@@ -1584,7 +2105,7 @@ mod tests {
         let module = QueueWorker::build(engine, QueueModuleConfig::default(), adapter);
         assert!(
             module
-                ._config
+                .config_snapshot()
                 .queue_configs
                 .contains_key(DEFAULT_QUEUE_NAME),
             "build() must provision the built-in default queue"
@@ -1654,11 +2175,15 @@ mod tests {
             queue_configs,
         };
 
+        let adapter_dyn: Arc<dyn QueueAdapter> = adapter.clone();
         let module = QueueWorker {
-            adapter: adapter.clone(),
             engine: engine.clone(),
-            _config: config,
-            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
+            adapter: Arc::new(RwLock::new(adapter_dyn)),
+            config: Arc::new(RwLock::new(Arc::new(config))),
+            seed: None,
+            consumers: Arc::new(StdMutex::new(HashMap::new())),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+            destroyed: Arc::new(AtomicBool::new(false)),
         };
 
         (engine, module, adapter)
@@ -1810,11 +2335,15 @@ mod tests {
             queue_configs,
         };
 
+        let adapter_dyn: Arc<dyn QueueAdapter> = adapter.clone();
         let module = QueueWorker {
-            adapter: adapter.clone(),
             engine: engine.clone(),
-            _config: config,
-            consumer_aborts: Arc::new(StdMutex::new(Vec::new())),
+            adapter: Arc::new(RwLock::new(adapter_dyn)),
+            config: Arc::new(RwLock::new(Arc::new(config))),
+            seed: None,
+            consumers: Arc::new(StdMutex::new(HashMap::new())),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+            destroyed: Arc::new(AtomicBool::new(false)),
         };
 
         (engine, module, adapter)
