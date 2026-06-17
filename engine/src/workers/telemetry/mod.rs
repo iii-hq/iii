@@ -209,6 +209,7 @@ pub fn is_iii_builtin_function_id(id: &str) -> bool {
         || id.starts_with("iii-state::")
         || id.starts_with("iii-pubsub::")
         || id.starts_with("iii-stream::")
+        || id.starts_with("iii-cron::")
         || id.starts_with("bridge.")
         || id.starts_with("motia::")
         || id == "publish"
@@ -2173,6 +2174,7 @@ mod tests {
         assert!(is_iii_builtin_function_id("iii-state::on-config-change"));
         assert!(is_iii_builtin_function_id("iii-pubsub::on-config-change"));
         assert!(is_iii_builtin_function_id("iii-stream::on-config-change"));
+        assert!(is_iii_builtin_function_id("iii-cron::on-config-change"));
         assert!(!is_iii_builtin_function_id("orders::process"));
         assert!(!is_iii_builtin_function_id("user::my_function"));
         assert!(!is_iii_builtin_function_id("payments::charge"));

@@ -32,13 +32,26 @@ pub trait CronSchedulerAdapter: Send + Sync + 'static {
     async fn release_lock(&self, job_id: &str);
 }
 
+/// A cron job reduced to the data needed to re-register it on a different
+/// adapter during a lock-backend hot-swap.
+#[derive(Clone)]
+pub(crate) struct CronJobSpec {
+    pub id: String,
+    pub expression: String,
+    pub function_id: String,
+    pub condition_function_id: Option<String>,
+}
+
 pub(crate) struct CronJobInfo {
     #[allow(dead_code)]
     pub id: String,
+    /// Original cron expression, retained so a lock-backend hot-swap can
+    /// re-register the job on a freshly-built adapter without round-tripping
+    /// through `Schedule`'s `Display`.
+    pub expression: String,
     #[allow(dead_code)]
     pub schedule: Schedule,
     pub function_id: String,
-    #[allow(dead_code)]
     pub condition_function_id: Option<String>,
     pub task_handle: JoinHandle<()>,
 }
@@ -227,6 +240,18 @@ impl CronAdapter {
         function_id: &str,
         condition_function_id: Option<String>,
     ) -> anyhow::Result<()> {
+        // Refuse to register on a scheduler that is shutting down (e.g. the old
+        // adapter mid lock-backend hot-swap). The spawned task would otherwise
+        // receive the shutdown signal and exit immediately, silently dropping the
+        // job. The worker serializes registration with `apply_config`, so this is
+        // defense-in-depth against a stale `Arc<CronAdapter>` being driven.
+        if self.shutdown_called.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!(
+                "cron scheduler is shutting down; cannot register job '{}'",
+                id
+            ));
+        }
+
         // Check if already registered
         {
             let jobs = self.jobs.read().await;
@@ -262,6 +287,7 @@ impl CronAdapter {
             id.to_string(),
             CronJobInfo {
                 id: id.to_string(),
+                expression: cron_expression.to_string(),
                 schedule,
                 function_id: function_id.to_string(),
                 condition_function_id,
@@ -312,6 +338,28 @@ impl CronAdapter {
             }
             self.adapter.release_lock(&id).await;
         }
+    }
+
+    /// Snapshot of every currently-registered job as a re-registration spec.
+    /// Used by a lock-backend hot-swap to rebuild the jobs on a freshly-built
+    /// adapter; the parsed `Schedule` is not reused because `register`
+    /// re-parses the (already-validated) expression.
+    pub(crate) async fn job_specs(&self) -> Vec<CronJobSpec> {
+        let jobs = self.jobs.read().await;
+        jobs.iter()
+            .map(|(id, info)| CronJobSpec {
+                id: id.clone(),
+                expression: info.expression.clone(),
+                function_id: info.function_id.clone(),
+                condition_function_id: info.condition_function_id.clone(),
+            })
+            .collect()
+    }
+
+    /// Number of currently-registered cron jobs. Exposed for integration tests
+    /// that assert a hot-swap re-registered every live job onto the new adapter.
+    pub async fn job_count(&self) -> usize {
+        self.jobs.read().await.len()
     }
 }
 

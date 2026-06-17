@@ -35,6 +35,25 @@ npx skills add iii-hq/iii --full-depth --skill iii-cron
 |---|---|---|
 | `adapter` | Adapter | Adapter for distributed locking. Defaults to `kv`. Use `redis` for multi-instance deployments. |
 
+## Runtime configuration (hot reload)
+
+`iii-cron` registers its configuration with the builtin `configuration` worker
+under the id **`iii-cron`**, so the adapter above can be read and changed at
+runtime (e.g. `configuration::set { id: "iii-cron", value: { ... } }`) without
+restarting the engine. The config.yaml block is the **seed** used on first boot
+only; afterwards the configuration entry is the runtime source of truth and a
+runtime edit survives engine restarts. Values are validated against the schema
+at set time, and `${VAR:default}` placeholders are expanded on read.
+
+A change to `adapter` is a **full hot-swap**: the new lock backend is built and
+every live cron job is re-registered onto it, then the previous backend is shut
+down — all without a restart. The swap is gated (a value that fails to build the
+new backend keeps the previous one) and best-effort per job (a single job that
+fails to re-register is logged while the rest move over). The old and new lock
+backends cannot coordinate during the brief swap, so a job whose schedule fires
+in that exact window could run on both — prefer a quiet moment to repoint the
+adapter in a multi-instance deployment.
+
 ## Adapters
 
 ### kv

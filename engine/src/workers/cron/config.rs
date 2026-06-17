@@ -8,9 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::workers::traits::AdapterEntry;
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CronModuleConfig {
+    /// The distributed-lock backend used to coordinate cron job execution across
+    /// engine instances (e.g. `kv`, `redis`). Omit to use the default `kv`
+    /// adapter. Changing this at runtime hot-swaps the lock backend and
+    /// re-schedules every live cron job onto the new transport.
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
@@ -69,5 +73,27 @@ mod tests {
         let adapter = deserialized.adapter.unwrap();
         assert_eq!(adapter.name, "test::Adapter");
         assert_eq!(adapter.config.unwrap()["interval"], 60);
+    }
+
+    #[test]
+    fn schema_denies_unknown_fields_and_documents_adapter() {
+        let schema = serde_json::to_value(schemars::schema_for!(CronModuleConfig)).unwrap();
+        // `deny_unknown_fields` must flow into the schema so `configuration::set`
+        // rejects a typo'd top-level key at write time.
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::json!(false),
+            "schema must deny unknown fields: {schema}"
+        );
+        // The adapter field must exist and carry the doc comment as a schema
+        // description, so an agent introspecting the config gets guidance.
+        assert!(
+            schema["properties"]["adapter"].is_object(),
+            "adapter property must be present: {schema}"
+        );
+        assert!(
+            schema["properties"]["adapter"]["description"].is_string(),
+            "adapter field must carry a schema description: {schema}"
+        );
     }
 }
