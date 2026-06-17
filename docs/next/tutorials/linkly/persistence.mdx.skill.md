@@ -18,7 +18,7 @@ State is a fast cache, but you also want a durable record you can run SQL over: 
 timestamped row each time someone follows one. Add the `database` worker:
 
 ```bash
-iii worker add database
+iii worker add database@0.2.6
 mkdir -p data
 ```
 
@@ -181,7 +181,7 @@ worker.registerFunction(
 
 **Now update `http::redirect` to trigger it directly**, right before returning the redirect:
 
-```typescript src/index.ts {14-17}
+```typescript src/index.ts {14-18}
 worker.registerFunction("http::redirect", async (req) => {
   const code = req.path_params.code;
   const { url } = await worker.trigger<{ code: string }, { url: string | null }>({
@@ -209,7 +209,10 @@ worker.registerFunction("http::redirect", async (req) => {
   durable queue that removes the latency while also adding recovery from database failures.
 </Note>
 
-Save the file, create a link, and follow it a few times:
+### Try the click tracking
+
+Now let's see the click tracking in action. Save the file, create a link, and simulate clicking it a
+few times:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
@@ -224,7 +227,20 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
 ```
 
 ```json
-{ "rows": [{ "clicks": 3 }], "row_count": 1 }
+{
+  "columns": [
+    {
+      "name": "clicks",
+      "type": ""
+    }
+  ],
+  "row_count": 1,
+  "rows": [
+    {
+      "clicks": 3
+    }
+  ]
+}
 ```
 
 ## Conclusion
