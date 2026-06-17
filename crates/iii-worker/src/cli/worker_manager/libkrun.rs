@@ -101,6 +101,7 @@ pub async fn run_dev(
     rootfs: PathBuf,
     rootfs_lower: Option<PathBuf>,
     rootfs_mode: String,
+    rootfs_upper: Option<PathBuf>,
     background: bool,
     worker_name: &str,
     mounts: &[(String, String)],
@@ -141,6 +142,7 @@ pub async fn run_dev(
         &rootfs,
         rootfs_lower.as_deref(),
         &rootfs_mode,
+        rootfs_upper.as_deref(),
         exec_path,
         vcpus,
         ram_mib,
@@ -289,6 +291,7 @@ fn vm_boot_args_oci(
     rootfs: &Path,
     rootfs_lower: Option<&Path>,
     rootfs_mode: &str,
+    rootfs_upper: Option<&Path>,
     exec_path: &str,
     workdir: &str,
     vcpus: u32,
@@ -303,7 +306,7 @@ fn vm_boot_args_oci(
     let mut out: Vec<OsString> = Vec::new();
     out.push(OsString::from("--rootfs"));
     out.push(rootfs.as_os_str().to_owned());
-    push_overlay_args(&mut out, rootfs_lower, rootfs_mode);
+    push_overlay_args(&mut out, rootfs_lower, rootfs_mode, rootfs_upper);
     out.push(OsString::from("--exec"));
     out.push(OsString::from(exec_path));
     out.push(OsString::from("--workdir"));
@@ -334,12 +337,24 @@ fn vm_boot_args_oci(
 
 /// Push `--rootfs-lower <sqfs> --rootfs-mode <mode>` when overlay mode is
 /// active (i.e. the start path built a base squashfs). No-op for legacy.
-fn push_overlay_args(out: &mut Vec<OsString>, rootfs_lower: Option<&Path>, rootfs_mode: &str) {
+fn push_overlay_args(
+    out: &mut Vec<OsString>,
+    rootfs_lower: Option<&Path>,
+    rootfs_mode: &str,
+    rootfs_upper: Option<&Path>,
+) {
     if let Some(lower) = rootfs_lower {
         out.push(OsString::from("--rootfs-lower"));
         out.push(lower.as_os_str().to_owned());
         out.push(OsString::from("--rootfs-mode"));
         out.push(OsString::from(rootfs_mode));
+        // The upper is optional even in overlay mode: dev builds without an
+        // embedded golden image attach no upper and iii-init falls back to a
+        // tmpfs upper.
+        if let Some(upper) = rootfs_upper {
+            out.push(OsString::from("--rootfs-upper"));
+            out.push(upper.as_os_str().to_owned());
+        }
     }
 }
 
@@ -348,6 +363,7 @@ fn vm_boot_args_dev(
     rootfs: &Path,
     rootfs_lower: Option<&Path>,
     rootfs_mode: &str,
+    rootfs_upper: Option<&Path>,
     exec_path: &str,
     vcpus: u32,
     ram_mib: u32,
@@ -360,7 +376,7 @@ fn vm_boot_args_dev(
     let mut out: Vec<OsString> = Vec::new();
     out.push(OsString::from("--rootfs"));
     out.push(rootfs.as_os_str().to_owned());
-    push_overlay_args(&mut out, rootfs_lower, rootfs_mode);
+    push_overlay_args(&mut out, rootfs_lower, rootfs_mode, rootfs_upper);
     out.push(OsString::from("--exec"));
     out.push(OsString::from(exec_path));
     out.push(OsString::from("--workdir"));
@@ -724,15 +740,30 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let env_pairs: Vec<(String, String)> = merged_env.into_iter().collect();
 
         // Overlay: build the shared read-only base squashfs from the cached
-        // image rootfs (host-side, image-independent) when overlay is active.
-        let (oci_rootfs_lower, oci_rootfs_mode) = if crate::cli::overlay::overlay_active() {
-            match crate::cli::squashfs::ensure_base_squashfs(&rootfs_dir) {
-                Ok(sqfs) => (Some(sqfs), "overlay".to_string()),
-                Err(e) => return Err(anyhow::anyhow!("failed to build base squashfs: {e}")),
-            }
-        } else {
-            (None, String::new())
-        };
+        // image rootfs (host-side, image-independent) and materialize this
+        // worker's persistent ext4 upper from the embedded golden image, both
+        // when overlay is active. Built in START so a failure fails the start
+        // loudly (never a silent fall back to a per-worker clone).
+        let (oci_rootfs_lower, oci_rootfs_mode, oci_rootfs_upper) =
+            if crate::cli::overlay::overlay_active() {
+                let sqfs = match crate::cli::squashfs::ensure_base_squashfs(&rootfs_dir) {
+                    Ok(s) => s,
+                    Err(e) => return Err(anyhow::anyhow!("failed to build base squashfs: {e}")),
+                };
+                let upper = if crate::cli::upper::has_golden() {
+                    match crate::cli::upper::ensure_upper_ext4(&worker_dir) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            return Err(anyhow::anyhow!("failed to materialize overlay upper: {e}"));
+                        }
+                    }
+                } else {
+                    None
+                };
+                (Some(sqfs), "overlay".to_string(), upper)
+            } else {
+                (None, String::new(), None)
+            };
 
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");
@@ -743,6 +774,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             &worker_rootfs,
             oci_rootfs_lower.as_deref(),
             &oci_rootfs_mode,
+            oci_rootfs_upper.as_deref(),
             &exec_path,
             &workdir,
             vcpus,
@@ -926,6 +958,7 @@ mod tests {
             Path::new("/tmp/rootfs"),
             Some(Path::new("/tmp/base.sqfs")),
             "overlay",
+            Some(Path::new("/tmp/upper.ext4")),
             "/bin/sh",
             "/",
             4,
@@ -952,6 +985,7 @@ mod tests {
         assert_eq!(parsed.arg, exec_args);
         assert_eq!(parsed.rootfs_lower.as_deref(), Some("/tmp/base.sqfs"));
         assert_eq!(parsed.rootfs_mode, "overlay");
+        assert_eq!(parsed.rootfs_upper.as_deref(), Some("/tmp/upper.ext4"));
     }
 
     #[test]
@@ -964,6 +998,7 @@ mod tests {
             Path::new("/tmp/rootfs"),
             None,
             "",
+            None,
             "/bin/sh",
             2,
             2048,

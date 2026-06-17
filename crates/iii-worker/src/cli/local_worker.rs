@@ -1159,19 +1159,33 @@ async fn start_worker_impl(
     let mounts = build_local_mounts(project_path);
 
     // Overlay: build the shared read-only base squashfs from the prepared base
-    // rootfs (host-side, image-independent) when overlay is active. Built in
-    // the start path so the cost is visible and a failure fails the start
-    // cleanly (rather than inside the detached __vm-boot child).
-    let (rootfs_lower, rootfs_mode) = if overlay {
-        match crate::cli::squashfs::ensure_base_squashfs(&base_rootfs) {
-            Ok(sqfs) => (Some(sqfs), "overlay".to_string()),
+    // rootfs (host-side, image-independent) and materialize this worker's
+    // persistent ext4 upper from the embedded golden image, both when overlay
+    // is active. Built in the start path so the cost is visible and a failure
+    // fails the start cleanly (rather than inside the detached __vm-boot child),
+    // and never silently falls back to a per-worker clone.
+    let (rootfs_lower, rootfs_mode, rootfs_upper) = if overlay {
+        let sqfs = match crate::cli::squashfs::ensure_base_squashfs(&base_rootfs) {
+            Ok(s) => s,
             Err(e) => {
                 eprintln!("{} failed to build base squashfs: {}", "error:".red(), e);
                 return 1;
             }
-        }
+        };
+        let upper = if crate::cli::upper::has_golden() {
+            match crate::cli::upper::ensure_upper_ext4(&managed_dir) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("{} failed to materialize overlay upper: {}", "error:".red(), e);
+                    return 1;
+                }
+            }
+        } else {
+            None
+        };
+        (Some(sqfs), "overlay".to_string(), upper)
     } else {
-        (None, String::new())
+        (None, String::new(), None)
     };
 
     let managed_dir_for_watcher = managed_dir.clone();
@@ -1186,6 +1200,7 @@ async fn start_worker_impl(
         managed_dir,
         rootfs_lower,
         rootfs_mode,
+        rootfs_upper,
         true,
         worker_name,
         &mounts,

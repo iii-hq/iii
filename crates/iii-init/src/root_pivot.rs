@@ -383,8 +383,13 @@ pub fn overlay_root() -> Result<(), InitError> {
             Some("mode=755"),
         )
     } else {
-        // Device-backed upper (e.g. ext4 on /dev/vdb), assumed already
-        // formatted by the time we get here.
+        // Device-backed upper (ext4 on /dev/vdb). The host materialized it
+        // from a pre-formatted golden image (iii-worker cli::upper), so it is
+        // ALWAYS already a valid ext4 — there is deliberately no in-guest
+        // format step (that would re-introduce a dependency on guest tooling
+        // the overlay model exists to avoid). A mount failure here is fatal
+        // (propagated below); we never silently reformat and lose persisted
+        // deps.
         mount(
             Some(upper.as_str()),
             OVERLAY_UPPERFS,

@@ -38,6 +38,7 @@ pub mod supervisor_ctl;
 pub mod sync;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod upper;
 pub mod vm_boot;
 pub mod worker_manager;
 pub mod worker_manager_daemon;

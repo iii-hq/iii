@@ -29,6 +29,13 @@ pub struct VmBootArgs {
     #[arg(long, default_value = "")]
     pub rootfs_mode: String,
 
+    /// Overlay mode: host path to this worker's writable upper image
+    /// (a pre-formatted ext4 materialized from the embedded golden image,
+    /// attached as /dev/vdb). Absent => iii-init uses a non-persistent
+    /// tmpfs upper (dev builds without the embedded golden).
+    #[arg(long)]
+    pub rootfs_upper: Option<String>,
+
     /// Executable path inside the guest
     #[arg(long)]
     pub exec: String,
@@ -740,11 +747,22 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         // clone artifacts (dep cache + prepared marker) and stamp the marker.
         crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
         eprintln!("iii: overlay base squashfs -> /dev/vda: {sqfs}");
+        // Disk attach ORDER is the guest device order: the lower MUST be the
+        // first disk (/dev/vda) and the upper the second (/dev/vdb). iii-init
+        // reads III_BLOCK_ROOT_LOWER=/dev/vda and III_BLOCK_ROOT_UPPER=/dev/vdb.
         builder = builder.disk(move |d| {
             d.path(&sqfs)
                 .format(msb_krun::DiskImageFormat::Raw)
                 .read_only(true)
         });
+        if let Some(upper) = args.rootfs_upper.clone() {
+            eprintln!("iii: overlay writable upper -> /dev/vdb: {upper}");
+            builder = builder.disk(move |d| {
+                d.path(&upper)
+                    .format(msb_krun::DiskImageFormat::Raw)
+                    .read_only(false)
+            });
+        }
     }
 
     // 2 workers when the shell relay is active (benefits from
@@ -863,11 +881,20 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
         // Overlay rootfs: tell iii-init to build `/` from the read-only base
         // disk (/dev/vda) + a writable upper instead of the virtiofs root.
-        // Milestone A uses a tmpfs upper (no in-guest mkfs needed).
+        // The upper is a pre-formatted ext4 image on /dev/vdb (materialized
+        // host-side from the embedded golden image) when one was attached;
+        // iii-init mounts it as-is (no in-guest format). When absent (dev
+        // builds without the embedded golden), fall back to a non-persistent
+        // tmpfs upper so the overlay still boots — deps just don't persist.
         if overlay_mode {
             e = e.env("III_BLOCK_ROOT_LOWER", "/dev/vda");
             e = e.env("III_BLOCK_ROOT_LOWER_FSTYPE", "squashfs");
-            e = e.env("III_BLOCK_ROOT_UPPER", "tmpfs");
+            if args.rootfs_upper.is_some() {
+                e = e.env("III_BLOCK_ROOT_UPPER", "/dev/vdb");
+                e = e.env("III_BLOCK_ROOT_UPPER_FSTYPE", "ext4");
+            } else {
+                e = e.env("III_BLOCK_ROOT_UPPER", "tmpfs");
+            }
         }
         if control_port_env {
             e = e.env(
