@@ -1046,18 +1046,40 @@ async fn start_worker_impl(
     //    Fast-restart is enabled whenever vm_boot wires the control port,
     //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
     let script = build_libkrun_local_script(&project, is_prepared, is_bundle);
+    let overlay = crate::cli::overlay::overlay_active();
 
-    let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
-    std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
-    if let Err(e) = std::fs::write(&script_path, &script) {
-        eprintln!("{} Failed to write run script: {}", "error:".red(), e);
-        return 1;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-    }
+    // Choose how the boot script reaches the guest:
+    //   - overlay: the per-worker rootfs is the shared READ-ONLY squashfs
+    //     lower (iii-init assembles the overlay + pivots). A host-written
+    //     /opt/iii/dev-run.sh would sit under that read-only lower and be
+    //     invisible in-guest, so pass the script INLINE via III_WORKER_CMD
+    //     (`bash -c <script>`). No host file, no managed_dir/opt dir.
+    //   - legacy: the per-worker clone is the writable PassthroughFs root,
+    //     so keep the host-file indirection exactly as before.
+    let (exec_path, args): (&str, Vec<String>) = if overlay {
+        ("bash", vec!["-c".to_string(), script.clone()])
+    } else {
+        let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
+        std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
+        if let Err(e) = std::fs::write(&script_path, &script) {
+            eprintln!("{} Failed to write run script: {}", "error:".red(), e);
+            return 1;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+        }
+        // The script sets up the workspace; no pre-cd needed (and /workspace
+        // is empty until virtiofs mounts, so cd-before-exec would be racy).
+        (
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                "exec bash /opt/iii/dev-run.sh".to_string(),
+            ],
+        )
+    };
 
     // 8. Copy iii-init if needed
     let init_path = match super::firmware::download::ensure_init_binary().await {
@@ -1134,22 +1156,13 @@ async fn start_worker_impl(
         parse_manifest_resources(&manifest_path)
     };
 
-    let exec_path = "/bin/sh";
-    // The script sets up the overlay at /workspace; no pre-cd needed (and
-    // /workspace is empty until overlay mounts, so cd-before-exec would be
-    // racy).
-    let args = vec![
-        "-c".to_string(),
-        "exec bash /opt/iii/dev-run.sh".to_string(),
-    ];
-
     let mounts = build_local_mounts(project_path);
 
     // Overlay: build the shared read-only base squashfs from the prepared base
     // rootfs (host-side, image-independent) when overlay is active. Built in
     // the start path so the cost is visible and a failure fails the start
     // cleanly (rather than inside the detached __vm-boot child).
-    let (rootfs_lower, rootfs_mode) = if crate::cli::overlay::overlay_active() {
+    let (rootfs_lower, rootfs_mode) = if overlay {
         match crate::cli::squashfs::ensure_base_squashfs(&base_rootfs) {
             Ok(sqfs) => (Some(sqfs), "overlay".to_string()),
             Err(e) => {
