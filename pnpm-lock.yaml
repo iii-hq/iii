@@ -227,9 +227,6 @@ importers:
       '@iii-dev/helpers':
         specifier: workspace:*
         version: link:../helpers
-      '@iii-dev/observability':
-        specifier: workspace:*
-        version: link:../observability
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.0

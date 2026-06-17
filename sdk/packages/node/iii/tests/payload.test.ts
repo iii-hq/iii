@@ -4,7 +4,7 @@ import {
   redactAndTruncate,
   REDACTED_PLACEHOLDER,
   resolveMaxBytesFromEnv,
-} from '@iii-dev/observability'
+} from '@iii-dev/helpers/observability'
 
 describe('redact', () => {
   it('redacts top-level sensitive keys', () => {

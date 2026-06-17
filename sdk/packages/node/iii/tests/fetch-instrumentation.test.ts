@@ -84,8 +84,8 @@ vi.mock('../../observability/src/telemetry-system/connection', () => ({
   })),
 }))
 
-import { initOtel, shutdownOtel } from '@iii-dev/observability'
-import { getTracer } from '@iii-dev/observability/internal'
+import { initOtel, shutdownOtel } from '@iii-dev/helpers/observability'
+import { getTracer } from '@iii-dev/helpers/observability/internal'
 
 describe('Fetch instrumentation', () => {
   const originalEnv = process.env
@@ -211,7 +211,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -260,7 +260,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -300,7 +300,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -334,7 +334,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -369,7 +369,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -403,7 +403,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -435,7 +435,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -471,7 +471,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -503,7 +503,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -548,7 +548,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -587,7 +587,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
@@ -622,7 +622,7 @@ describe('Fetch span attributes', () => {
     }
 
     const { patchGlobalFetch, unpatchGlobalFetch } = await import(
-      '@iii-dev/observability'
+      '@iii-dev/helpers/observability'
     )
     unpatch = unpatchGlobalFetch
 
