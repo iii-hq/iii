@@ -113,6 +113,41 @@ async fn handle_functions_list(bridge: &III, input: Value) -> Value {
     }
 }
 
+async fn handle_function_detail(bridge: &III, input: Value) -> Value {
+    // The list route (`engine::functions::list`) returns slim summaries with no
+    // schemas after the engine_fn rework. `engine::functions::info` is the only
+    // surface that carries `request_schema`/`response_schema`, so the console
+    // detail panel fetches it per-function to drive request-body pre-fill and
+    // the schema viewer.
+    let function_id = input
+        .get("path_params")
+        .and_then(|p| p.get("function_id"))
+        .and_then(|v| v.as_str())
+        .or_else(|| input.get("function_id").and_then(|v| v.as_str()));
+
+    let function_id = match function_id {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            return error_response(iii_sdk::IIIError::Handler(
+                "Missing function_id in path parameters".to_string(),
+            ))
+        }
+    };
+
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::info".to_string(),
+            payload: json!({ "function_id": function_id }),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+    {
+        Ok(data) => success_response(data),
+        Err(err) => error_response(err),
+    }
+}
+
 async fn handle_status(bridge: &III) -> Value {
     let (workers_result, functions_result, metrics_result) = tokio::join!(
         bridge.trigger(TriggerRequest {
@@ -1293,6 +1328,15 @@ pub fn register_functions(bridge: &III) {
         RegisterFunction::new_async(move |input: Value| {
             let bridge = b.clone();
             async move { Ok(handle_functions_list(&bridge, input).await) }
+        }),
+    );
+
+    let b = bridge.clone();
+    bridge.register_function(
+        "engine::console::function_detail",
+        RegisterFunction::new_async(move |input: Value| {
+            let bridge = b.clone();
+            async move { Ok(handle_function_detail(&bridge, input).await) }
         }),
     );
 
