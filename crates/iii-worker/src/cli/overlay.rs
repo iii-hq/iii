@@ -27,15 +27,17 @@ pub const LAYOUT_LEGACY: &str = "legacy";
 /// Shared read-only base + per-worker overlay upper layout.
 pub const LAYOUT_OVERLAY: &str = "overlay";
 
-/// Overlay is on by default; `III_ROOTFS_MODE=legacy|off|0|false` disables it.
+/// Overlay is on by default; `legacy|off|0|false|no` disables it.
+///
+/// Precedence: `III_ROOTFS_MODE` env var > config.yaml `rootfs.mode` >
+/// default (overlay). The config.yaml fallback exists because the engine's
+/// worker-spawn chain doesn't forward arbitrary env to the start process, so
+/// an on-disk setting is how an operator preference reliably reaches the boot
+/// path. Unset everywhere = overlay.
 pub fn overlay_enabled() -> bool {
-    // env first; fall back to ~/.iii/rootfs-mode (the engine's worker-spawn
-    // chain doesn't forward arbitrary env to __vm-boot, so the file is how an
-    // operator setting actually reaches the boot process). Unset = overlay.
-    let val = std::env::var("III_ROOTFS_MODE").ok().or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        std::fs::read_to_string(format!("{home}/.iii/rootfs-mode")).ok()
-    });
+    let val = std::env::var("III_ROOTFS_MODE")
+        .ok()
+        .or_else(crate::cli::config_file::rootfs_mode);
     match val {
         Some(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
