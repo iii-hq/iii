@@ -14,16 +14,7 @@ use std::{
 
 use indexmap::IndexMap;
 
-<<<<<<< HEAD
-use iii_sdk::{
-    UpdateOp, UpdateResult,
-    types::{DeleteResult, SetResult},
-};
-||||||| parent of b40bda29b (refactor(sdk): align stream helper type names across the SDKs (#1858))
-use iii_helpers::stream::{DeleteResult, SetResult, UpdateOp, UpdateResult};
-=======
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
->>>>>>> b40bda29b (refactor(sdk): align stream helper type names across the SDKs (#1858))
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

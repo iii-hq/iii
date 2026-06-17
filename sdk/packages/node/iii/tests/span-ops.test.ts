@@ -11,7 +11,7 @@ import {
   recordSpanEvent,
   setCurrentSpanAttribute,
   setCurrentSpanError,
-} from '@iii-dev/observability'
+} from '@iii-dev/helpers/observability'
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
 
 let activeProvider: BasicTracerProvider | null = null

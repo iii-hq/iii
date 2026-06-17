@@ -214,13 +214,14 @@ jobs:
           }
 
           check_pep440_pin() {
+            # $1=file $2=dep_name $3=expected_version
             local actual
-            actual=$(grep -oE '"iii-observability==[^"]+"' "$1" | head -n1 | sed -E 's/.*==([^"]+)".*/\1/')
-            if [[ "$actual" != "$2" ]]; then
-              echo "::error::$1 iii-observability pin mismatch: expected $2, got $actual"
+            actual=$(grep -oE "\"${2}==[^\"]+\"" "$1" | head -n1 | sed -E 's/.*==([^"]+)".*/\1/')
+            if [[ "$actual" != "$3" ]]; then
+              echo "::error::$1 ${2} pin mismatch: expected $3, got $actual"
               exit 1
             fi
-            echo "  $1 iii-observability -> $actual"
+            echo "  $1 ${2} -> $actual"
           }
 
           echo "Validating version updates..."
@@ -240,7 +241,8 @@ jobs:
             check_cargo "console/packages/console-rust/Cargo.toml" "$VERSION"
             check_cargo "Cargo.toml" "$VERSION"
             check_workspace_dep "Cargo.toml" "$VERSION"
-            check_pep440_pin "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"
+            check_pep440_pin "sdk/packages/python/iii/pyproject.toml" "iii-helpers" "$PY_VERSION"
+            check_pep440_pin "sdk/packages/python/observability/pyproject.toml" "iii-helpers" "$PY_VERSION"
           fi
 
           echo "All versions validated."

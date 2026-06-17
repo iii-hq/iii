@@ -1,4 +1,4 @@
-use iii_observability::Logger;
+use iii_helpers::observability::Logger;
 use iii_sdk::{Error, IIIClient, RegisterFunction};
 use serde_json::{Value, json};
 

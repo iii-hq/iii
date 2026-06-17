@@ -96,7 +96,7 @@ test-adapters = []
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true }
-iii-observability = { workspace = true }
+iii-helpers = { workspace = true }
 scaffolder-core = { workspace = true }
 console = { workspace = true }
 ctrlc = { workspace = true }

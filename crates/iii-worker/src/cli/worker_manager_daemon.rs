@@ -24,7 +24,7 @@ use crate::core::{
     list as core_list, logs as core_logs, remove as core_remove, start as core_start,
     stop as core_stop, update as core_update,
 };
-use iii_observability::OtelConfig;
+use iii_helpers::observability::OtelConfig;
 use iii_sdk::{
     III, IIIError, InitOptions, RegisterFunction, RegisterTriggerType, WorkerMetadata,
     register_worker,

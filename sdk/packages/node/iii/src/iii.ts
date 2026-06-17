@@ -25,8 +25,8 @@ import {
   type TriggerRequest,
   type WorkerRegisteredMessage,
 } from './iii-types'
-import { registerWorkerGauges, stopWorkerGauges } from '@iii-dev/observability'
-import { getMeter, getTracer } from '@iii-dev/observability/internal'
+import { registerWorkerGauges, stopWorkerGauges } from '@iii-dev/helpers/observability'
+import { getMeter, getTracer } from '@iii-dev/helpers/observability/internal'
 import { SpanKind } from '@opentelemetry/api'
 import type { IStream } from './stream'
 import { detectProjectName } from './utils'
@@ -43,7 +43,7 @@ import {
   SeverityNumber,
   shutdownOtel,
   withSpan,
-} from '@iii-dev/observability'
+} from '@iii-dev/helpers/observability'
 import type { TriggerHandler } from './triggers'
 import type {
   FunctionRef,

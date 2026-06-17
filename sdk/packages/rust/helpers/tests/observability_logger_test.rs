@@ -1,4 +1,4 @@
-use iii_observability::Logger;
+use iii_helpers::observability::Logger;
 
 #[test]
 fn logger_constructs() {

@@ -6,6 +6,8 @@ export default defineConfig({
     './src/queue/index.ts',
     './src/stream/index.ts',
     './src/worker-connection-manager/index.ts',
+    './src/observability/index.ts',
+    './src/observability/internal.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,

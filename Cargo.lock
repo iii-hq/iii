@@ -2704,9 +2704,8 @@ dependencies = [
  "hex",
  "http-body-util",
  "iana-time-zone",
- "iii",
  "iii-clap-docs",
- "iii-observability",
+ "iii-helpers",
  "iii-sdk",
  "iii-worker",
  "indexmap 2.14.0",
@@ -2775,7 +2774,7 @@ dependencies = [
  "clap",
  "futures-util",
  "iii-clap-docs",
- "iii-observability",
+ "iii-helpers",
  "iii-sdk",
  "mime_guess",
  "reqwest 0.12.28",
@@ -2794,7 +2793,6 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "iii-helpers",
- "iii-observability",
  "iii-sdk",
  "reqwest 0.12.28",
  "schemars 0.8.22",
@@ -2815,11 +2813,22 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.19.1-next.1"
+version = "0.19.4"
 dependencies = [
+ "futures-util",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry_sdk",
+ "reqwest 0.12.28",
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serial_test",
+ "sysinfo 0.38.4",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2858,18 +2867,7 @@ dependencies = [
 name = "iii-observability"
 version = "0.19.4"
 dependencies = [
- "futures-util",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry_sdk",
- "reqwest 0.12.28",
- "serde_json",
- "serial_test",
- "sysinfo 0.38.4",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tracing",
- "uuid",
+ "iii-helpers",
 ]
 
 [[package]]
@@ -2881,7 +2879,6 @@ dependencies = [
  "futures-util",
  "hostname",
  "iii-helpers",
- "iii-observability",
  "opentelemetry",
  "opentelemetry_sdk",
  "reqwest 0.12.28",
@@ -2957,8 +2954,8 @@ dependencies = [
  "humantime",
  "iii-clap-docs",
  "iii-filesystem",
+ "iii-helpers",
  "iii-network",
- "iii-observability",
  "iii-sdk",
  "iii-shell-client",
  "iii-shell-proto",

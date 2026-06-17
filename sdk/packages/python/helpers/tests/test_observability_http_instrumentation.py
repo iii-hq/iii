@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from iii_observability import execute_traced_request
+from iii_helpers.observability import execute_traced_request
 
 
 @pytest.mark.asyncio
