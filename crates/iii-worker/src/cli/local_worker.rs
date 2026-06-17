@@ -179,6 +179,7 @@ pub fn build_libkrun_local_script(
     project: &ProjectInfo,
     prepared: bool,
     is_bundle: bool,
+    overlay: bool,
 ) -> String {
     let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
@@ -255,7 +256,30 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
     // and couldn't help tsx 4.x anyway (tsx uses fs.watch with no
     // polling fallback, and doesn't depend on chokidar).
 
-    if !prepared {
+    // Provisioning (setup + install) gating:
+    //   - legacy: the host decides via `prepared` — it can see the marker in
+    //     the per-worker clone (`managed_dir/var/.iii-prepared`) and omits the
+    //     block entirely once prepared.
+    //   - overlay: the marker lives on the persistent ext4 upper, which the
+    //     host CANNOT see (it's inside a block device). So always emit the
+    //     block but guard it IN-GUEST on the marker. The upper persists across
+    //     restarts, so install runs once and is skipped thereafter — matching
+    //     legacy's skip semantics without needing host visibility. `set -e`
+    //     still aborts (and leaves the marker unwritten) if install fails.
+    if overlay {
+        let mut prov = String::new();
+        if !project.setup_cmd.is_empty() {
+            prov.push_str(&project.setup_cmd);
+            prov.push('\n');
+        }
+        if !project.install_cmd.is_empty() {
+            prov.push_str(&project.install_cmd);
+            prov.push('\n');
+        }
+        parts.push(format!(
+            "if [ ! -e /var/.iii-prepared ]; then\n{prov}mkdir -p /var && touch /var/.iii-prepared\nfi"
+        ));
+    } else if !prepared {
         if !project.setup_cmd.is_empty() {
             parts.push(project.setup_cmd.clone());
         }
@@ -1067,7 +1091,7 @@ async fn start_worker_impl(
     //    `iii-init` binary absorbs that role (see iii_init::supervisor).
     //    Fast-restart is enabled whenever vm_boot wires the control port,
     //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
-    let script = build_libkrun_local_script(&project, is_prepared, is_bundle);
+    let script = build_libkrun_local_script(&project, is_prepared, is_bundle, overlay);
 
     // Choose how the boot script reaches the guest:
     //   - overlay: the per-worker rootfs is the shared READ-ONLY squashfs
@@ -1416,7 +1440,8 @@ mod tests {
             env: HashMap::new(),
             base_image: None,
         };
-        let script = build_libkrun_local_script(&project, false, /*is_bundle=*/ false);
+        let script =
+            build_libkrun_local_script(&project, false, /*is_bundle=*/ false, /*overlay=*/ false);
         assert!(script.contains("apt-get install nodejs"));
         assert!(script.contains("npm install"));
         assert!(script.contains("node server.js"));
@@ -1442,11 +1467,35 @@ mod tests {
             env: HashMap::new(),
             base_image: None,
         };
-        let script = build_libkrun_local_script(&project, true, /*is_bundle=*/ false);
+        let script =
+            build_libkrun_local_script(&project, true, /*is_bundle=*/ false, /*overlay=*/ false);
         assert!(!script.contains("apt-get install nodejs"));
         assert!(!script.contains("npm install"));
         assert!(script.contains("node server.js"));
         assert!(script.contains("mount --bind"));
+    }
+
+    #[test]
+    fn build_libkrun_local_script_overlay_guards_install_in_guest() {
+        let project = ProjectInfo {
+            name: "test".to_string(),
+            kind: Some("typescript".to_string()),
+            setup_cmd: "apt-get install nodejs".to_string(),
+            install_cmd: "npm install".to_string(),
+            run_cmd: "node server.js".to_string(),
+            env: HashMap::new(),
+            base_image: None,
+        };
+        // Under overlay the host `prepared` flag is ignored: the block is
+        // always emitted but guarded in-guest on the persistent marker, so the
+        // install runs once and is skipped on later boots from the same upper.
+        let script =
+            build_libkrun_local_script(&project, /*prepared=*/ true, /*is_bundle=*/ false, true);
+        assert!(script.contains("if [ ! -e /var/.iii-prepared ]; then"));
+        assert!(script.contains("apt-get install nodejs"));
+        assert!(script.contains("npm install"));
+        assert!(script.contains("touch /var/.iii-prepared"));
+        assert!(script.contains("node server.js"));
     }
 
     #[test]
