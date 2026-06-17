@@ -1591,10 +1591,13 @@ impl IIIClient {
             // ContextGuard is !Send and can't be held across .await in tokio::spawn.
             let otel_cx = {
                 use iii_helpers::observability::extract_context;
-                use iii_helpers::observability::opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
+                use iii_helpers::observability::opentelemetry::trace::{
+                    SpanKind, TraceContextExt, Tracer,
+                };
 
                 let parent_cx = extract_context(traceparent.as_deref(), baggage.as_deref());
-                let tracer = iii_helpers::observability::opentelemetry::global::tracer("iii-rust-sdk");
+                let tracer =
+                    iii_helpers::observability::opentelemetry::global::tracer("iii-rust-sdk");
                 // INTERNAL and named `execute` (not `call`/`trigger`): the engine
                 // already emits the SERVER `call <fn>` span for this hop AND a
                 // `trigger <fn>` span from fire_triggers. Reusing either name would
