@@ -309,6 +309,49 @@ async fn boot_rebuilds_adapter_from_persisted_value() {
 }
 
 #[tokio::test]
+async fn boot_resolve_failure_reconciles_config_to_served_adapter() {
+    // When the persisted config selects an unresolvable adapter, boot keeps the
+    // seed-built backend AND reverts the live config's adapter field to match,
+    // so config_snapshot() never advertises a backend that is not running (and a
+    // future no-op apply comparison can't treat the bad adapter as applied).
+    let _serial = PORT_SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let first = start_stream_worker(&harness, json!({ "host": "127.0.0.1", "port": 0 })).await;
+    // Bindable port, but an adapter name with no registered factory.
+    set_value(
+        &harness,
+        json!({ "host": "127.0.0.1", "port": 0, "adapter": { "name": "does-not-exist" } }),
+    )
+    .await;
+    first.destroy().await.expect("destroy");
+
+    let restarted = StreamWorker::for_test(
+        harness.engine.clone(),
+        Some(json!({ "host": "127.0.0.1", "port": 0 })),
+    )
+    .await
+    .expect("stream worker");
+    let seed_adapter = restarted.adapter_snapshot();
+    restarted.initialize().await.expect("initialize");
+    Worker::register_functions(&restarted, harness.engine.clone());
+    restarted
+        .start_background_tasks(harness.shutdown_rx.clone(), harness.shutdown_tx.clone())
+        .await
+        .expect("start_background_tasks");
+
+    assert!(
+        Arc::ptr_eq(&seed_adapter, &restarted.adapter_snapshot()),
+        "an unresolvable boot adapter must keep the seed-built backend"
+    );
+    assert!(
+        restarted.config_snapshot().adapter.is_none(),
+        "the live config adapter must be reconciled to the served (seed) backend, not the unresolved stored value"
+    );
+}
+
+#[tokio::test]
 async fn adapter_hot_swap_rebuilds_backend() {
     let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();

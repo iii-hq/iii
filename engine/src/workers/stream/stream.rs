@@ -353,10 +353,22 @@ impl Worker for StreamWorker {
         if adapter_outdated {
             match Self::resolve_adapter(&self.engine, &served_config).await {
                 Ok(adapter) => self.set_adapter(adapter),
-                Err(err) => tracing::warn!(
-                    error = %err,
-                    "iii-stream: stored adapter could not be resolved at boot; keeping seed adapter"
-                ),
+                Err(err) => {
+                    // Keep the live config consistent with the adapter actually
+                    // being served: revert just the adapter field to the seed's
+                    // (the backend `build` resolved, still running), so
+                    // `config_snapshot()` never advertises a backend that isn't
+                    // up — which would also let a future no-op apply comparison
+                    // treat the unresolved adapter as already applied and never
+                    // retry it.
+                    tracing::warn!(
+                        error = %err,
+                        "iii-stream: stored adapter could not be resolved at boot; keeping seed adapter"
+                    );
+                    let mut reconciled = (*served_config).clone();
+                    reconciled.adapter = self.seed.as_ref().and_then(|seed| seed.adapter.clone());
+                    self.set_config(Arc::new(reconciled));
+                }
             }
         }
 
