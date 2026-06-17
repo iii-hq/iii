@@ -957,7 +957,29 @@ async fn start_worker_impl(
     // instead of at `managed_dir/`. Anything the user cares about under
     // managed_dir is regenerated on boot (logs, vm.pid, dep caches come
     // back after pip install / npm install).
-    if needs_rootfs_clone(&managed_dir) {
+    // Overlay mode serves the shared read-only squashfs base as the rootfs
+    // lower (built later from the cache) plus a per-worker ext4 upper — so
+    // there is NO per-worker rootfs clone. The managed_dir is just a minimal
+    // trampoline: embed-init injects /init.krun from memory (overlay requires
+    // an embedded init) and iii-init creates its runtime mount dirs at boot.
+    // This is what eliminates both the per-worker clone AND the empty dep
+    // dirs the legacy clone left behind.
+    let overlay = crate::cli::overlay::overlay_active();
+    if overlay {
+        if let Err(e) = std::fs::create_dir_all(&managed_dir) {
+            eprintln!(
+                "{} Failed to create worker dir {}: {}",
+                "error:".red(),
+                managed_dir.display(),
+                e
+            );
+            return 1;
+        }
+        // Reclaim orphaned legacy-clone artifacts (dep cache + prepared
+        // marker) and stamp the overlay layout marker. Idempotent and a no-op
+        // for a worker already on the overlay layout.
+        crate::cli::overlay::migrate_to_overlay(&managed_dir);
+    } else if needs_rootfs_clone(&managed_dir) {
         eprintln!("  Preparing sandbox...");
         if managed_dir.exists()
             && let Err(e) = std::fs::remove_dir_all(&managed_dir)
@@ -1046,7 +1068,6 @@ async fn start_worker_impl(
     //    Fast-restart is enabled whenever vm_boot wires the control port,
     //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
     let script = build_libkrun_local_script(&project, is_prepared, is_bundle);
-    let overlay = crate::cli::overlay::overlay_active();
 
     // Choose how the boot script reaches the guest:
     //   - overlay: the per-worker rootfs is the shared READ-ONLY squashfs

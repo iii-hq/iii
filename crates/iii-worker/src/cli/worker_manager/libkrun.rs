@@ -628,23 +628,49 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         };
 
         let worker_rootfs = worker_dir.join("rootfs");
-        let expected_arch = expected_oci_arch().to_string();
-        let mut needs_clone = !worker_rootfs.exists();
-        if !needs_clone {
-            let worker_arch = read_cached_rootfs_arch(&worker_rootfs);
-            let arch_match = worker_arch
-                .as_deref()
-                .map(|a| a == expected_arch)
-                .unwrap_or(false);
-            if !arch_match {
-                let _ = std::fs::remove_dir_all(&worker_rootfs);
-                needs_clone = true;
+        // Overlay mode serves the shared read-only squashfs base (built below
+        // from `rootfs_dir`) plus a per-worker ext4 upper, so there is NO
+        // per-worker rootfs clone: worker_rootfs is just a minimal trampoline
+        // (embed-init injects /init.krun from memory). OCI image config
+        // (entrypoint/workdir/env) is then read from the cache `rootfs_dir`,
+        // not the empty trampoline.
+        let overlay = crate::cli::overlay::overlay_active();
+        if overlay {
+            std::fs::create_dir_all(&worker_rootfs).with_context(|| {
+                format!(
+                    "failed to create worker rootfs dir: {}",
+                    worker_rootfs.display()
+                )
+            })?;
+            crate::cli::overlay::migrate_to_overlay(&worker_rootfs);
+        } else {
+            let expected_arch = expected_oci_arch().to_string();
+            let mut needs_clone = !worker_rootfs.exists();
+            if !needs_clone {
+                let worker_arch = read_cached_rootfs_arch(&worker_rootfs);
+                let arch_match = worker_arch
+                    .as_deref()
+                    .map(|a| a == expected_arch)
+                    .unwrap_or(false);
+                if !arch_match {
+                    let _ = std::fs::remove_dir_all(&worker_rootfs);
+                    needs_clone = true;
+                }
+            }
+            if needs_clone {
+                clone_rootfs(&rootfs_dir, &worker_rootfs)
+                    .map_err(|e| anyhow::anyhow!("failed to clone rootfs: {}", e))?;
             }
         }
-        if needs_clone {
-            clone_rootfs(&rootfs_dir, &worker_rootfs)
-                .map_err(|e| anyhow::anyhow!("failed to clone rootfs: {}", e))?;
-        }
+
+        // Where OCI image config (entrypoint/workdir/env) is read from: the
+        // shared cache rootfs under overlay (the trampoline is empty), else
+        // the per-worker clone.
+        let oci_config_dir: &std::path::Path = if overlay {
+            rootfs_dir.as_path()
+        } else {
+            worker_rootfs.as_path()
+        };
 
         if !iii_filesystem::init::has_init() {
             let init_path = crate::cli::firmware::download::ensure_init_binary().await?;
@@ -683,7 +709,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             .with_context(|| "failed to open stderr.log")?;
 
         let (exec_path, mut exec_args) =
-            read_oci_entrypoint(&worker_rootfs).unwrap_or_else(|| ("/bin/sh".to_string(), vec![]));
+            read_oci_entrypoint(oci_config_dir).unwrap_or_else(|| ("/bin/sh".to_string(), vec![]));
 
         if let Some(url) = spec.env.get("III_ENGINE_URL").or(spec.env.get("III_URL")) {
             let mut i = 0;
@@ -703,7 +729,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         }
 
         let workdir =
-            super::oci::read_oci_workdir(&worker_rootfs).unwrap_or_else(|| "/".to_string());
+            super::oci::read_oci_workdir(oci_config_dir).unwrap_or_else(|| "/".to_string());
 
         let vcpus = spec
             .cpu_limit
@@ -731,7 +757,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // handles requests. Absent => exec refuses with a clear error.
         let shell_sock_path = worker_dir.join("shell.sock");
 
-        let image_env = read_oci_env(&worker_rootfs);
+        let image_env = read_oci_env(oci_config_dir);
         let mut caller_env: HashMap<String, String> = image_env.into_iter().collect();
         for (key, value) in &spec.env {
             caller_env.insert(key.clone(), value.clone());
@@ -744,8 +770,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // worker's persistent ext4 upper from the embedded golden image, both
         // when overlay is active. Built in START so a failure fails the start
         // loudly (never a silent fall back to a per-worker clone).
-        let (oci_rootfs_lower, oci_rootfs_mode, oci_rootfs_upper) =
-            if crate::cli::overlay::overlay_active() {
+        let (oci_rootfs_lower, oci_rootfs_mode, oci_rootfs_upper) = if overlay {
                 let sqfs = match crate::cli::squashfs::ensure_base_squashfs(&rootfs_dir) {
                     Ok(s) => s,
                     Err(e) => return Err(anyhow::anyhow!("failed to build base squashfs: {e}")),
