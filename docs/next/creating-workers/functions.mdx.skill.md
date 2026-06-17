@@ -76,8 +76,8 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 ## Attach request and response schemas
 
 Attach JSON Schemas to the registration so the request and response shape are documented alongside
-the function. The schemas are stored with the function and surface in the iii console and the
-agent-readable skills.
+the function. The schemas are stored with the function and surface in the iii console,
+`iii trigger --help`, and elsewhere.
 
 <Note>
   Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not

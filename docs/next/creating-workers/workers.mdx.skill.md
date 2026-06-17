@@ -26,10 +26,11 @@ language-specific project directory with the iii SDK installed, an `iii.worker.y
 example function and trigger registrations you can replace with your own.
 
 <Note>
-  `iii worker init` is a convenience, not a requirement. A worker is any code that uses a iii SDK,
-  connects to a iii instance, and calls `registerWorker()`. You can write that by hand without
-  scaffolding, run it on bare metal or in your own virtualization, and deploy it anywhere; `iii
-  worker` is one way to create and run a worker, not the only one.
+  `iii worker init` is a convenience that helps with managing and sandboxing workers but it is not a
+  requirement. A worker is any code that uses a iii SDK, connects to a iii instance, and calls
+  `registerWorker()`. You can write that by hand without scaffolding, run it on bare metal or in
+  your own virtualization, and deploy it anywhere; `iii worker` is one way to create and run a
+  worker, not the only one.
 </Note>
 
 ```bash
