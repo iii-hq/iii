@@ -43,6 +43,14 @@ type: "reference"
   ### Compatibility
 
   This release is not backward compatible. The first errors/channel/trigger/runtime slice keeps deprecated root aliases, but everything extracted into `@iii-dev/helpers`, the renamed types, and the `engine`/`protocol`/`internal`/`utils` groups are removed from the root SDK. Update imports to the submodule and helpers paths.
+
+  ### Observability moved into `@iii-dev/helpers`
+
+  The `Logger`, `initOtel`, `withSpan`, `executeTracedRequest`, and the rest of the public observability API move from the standalone `iii-observability` packages into a new `observability` submodule of the helpers package. The OpenTelemetry dependencies are now bundled in helpers (net-neutral for SDK users). The standalone `@iii-dev/observability` / `iii-observability` packages become deprecated shims that re-export from helpers; they continue to work but emit a deprecation signal. See [the observability entry](./0-20-0/observability-into-helpers) for the full path table and migration.
+
+  | Submodule | Node | Python | Rust |
+  | --- | --- | --- | --- |
+  | observability | `@iii-dev/helpers/observability` | `iii_helpers.observability` | `iii_helpers::observability` |
 </Update>
 
 <Update label="0.20.0" description="June 2026">

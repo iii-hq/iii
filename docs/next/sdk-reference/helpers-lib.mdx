@@ -1,6 +1,6 @@
 ---
 title: "Helpers Library"
-description: "Shared helper primitives across the iii SDKs (`@iii-dev/helpers`, `iii-helpers`)."
+description: "Shared helper primitives across the iii SDKs (`@iii-dev/helpers`, `iii-helpers`), including the observability submodule."
 owner: "engineering"
 type: "reference"
 ---
@@ -12,13 +12,13 @@ type: "reference"
 
 The helpers library holds primitives that are shared across the language SDKs and have no dependency
 on the root SDK package. It is published per language and organized into submodules. This page
-documents the `queue`, `http`, `worker-connection-manager`, and `stream` submodules.
+documents the `queue`, `http`, `worker-connection-manager`, `stream`, and `observability` submodules.
 
-| Language | Package | Queue import path | HTTP import path | Worker connection manager import path | Stream import path |
-| --- | --- | --- | --- | --- | --- |
-| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` | `@iii-dev/helpers/http` | `@iii-dev/helpers/worker-connection-manager` | `@iii-dev/helpers/stream` |
-| Python | `iii-helpers` | `iii_helpers.queue` | `iii_helpers.http` | `iii_helpers.worker_connection_manager` | `iii_helpers.stream` |
-| Rust | `iii-helpers` | `iii_helpers::queue` | `iii_helpers::http` | `iii_helpers::worker_connection_manager` | `iii_helpers::stream` |
+| Language | Package | Queue import path | HTTP import path | Worker connection manager import path | Stream import path | Observability import path |
+| --- | --- | --- | --- | --- | --- | --- |
+| Node | `@iii-dev/helpers` | `@iii-dev/helpers/queue` | `@iii-dev/helpers/http` | `@iii-dev/helpers/worker-connection-manager` | `@iii-dev/helpers/stream` | `@iii-dev/helpers/observability` |
+| Python | `iii-helpers` | `iii_helpers.queue` | `iii_helpers.http` | `iii_helpers.worker_connection_manager` | `iii_helpers.stream` | `iii_helpers.observability` |
+| Rust | `iii-helpers` | `iii_helpers::queue` | `iii_helpers::http` | `iii_helpers::worker_connection_manager` | `iii_helpers::stream` | `iii_helpers::observability` |
 
 The root SDK depends on the helpers package and imports these primitives internally where needed.
 They are not re-exported from the root SDK public surface; import them from the helpers submodule.
@@ -953,3 +953,85 @@ pub struct UpdateOpError {
 ```
 
 </CodeGroup>
+
+## observability
+
+The `observability` submodule provides structured logging, OpenTelemetry tracing, metrics, and HTTP
+trace propagation. These symbols live only in the `observability` submodule. The root SDK does not
+re-export them; import them from the submodule (`@iii-dev/helpers/observability`,
+`iii_helpers.observability`, `iii_helpers::observability`).
+
+<Note>
+  Node exposes an additional internal-only entry point `@iii-dev/helpers/observability/internal`
+  that provides `getMeter` and `getTracer`. This entry point is reserved for first-party iii
+  packages and is not part of the public API.
+</Note>
+
+<Note>
+  The standalone `@iii-dev/observability` (npm), `iii-observability` (PyPI), and `iii-observability`
+  (crates.io) packages are deprecated shims that re-export the public API from this submodule. They
+  continue to work but emit a deprecation signal. Prefer the helpers submodule path for new code.
+</Note>
+
+### `Logger`
+
+Structured logger backed by OpenTelemetry logs. Writes log records to the configured OTLP exporter
+and emits them to the console. Available in all three languages.
+
+### `initOtel` / `init_otel`
+
+Initializes the OpenTelemetry SDK with the provided configuration. Sets up trace, metric, and log
+providers. Must be called once before any telemetry is emitted. Accepts an `OtelConfig` /
+`TelemetryOptions` value.
+
+### `shutdownOtel` / `shutdown_otel`
+
+Shuts down the OpenTelemetry SDK, flushing all pending spans, metrics, and log records to the
+exporter. Call before process exit to avoid dropping buffered telemetry.
+
+### `flushOtel` / `flush_otel`
+
+Force-flushes every OpenTelemetry provider without tearing the SDK down. Use before short-lived
+process exits where pending telemetry must be delivered but the SDK is reused afterward.
+
+### `withSpan` / `with_span`
+
+Wraps a synchronous or asynchronous callback in a new OTel span. Propagates trace context. Sets
+the span status to `ERROR` and records the exception on uncaught errors.
+
+### `executeTracedRequest` / `execute_traced_request`
+
+Wraps an outgoing HTTP call in an OTel `CLIENT` span. Injects the W3C `traceparent` header,
+records HTTP semantic-convention attributes (`http.method`, `http.url`, `http.status_code`), sets
+`ERROR` status on responses with status code >= 400, and records exceptions on network errors.
+Accepts an `httpx` `AsyncClient` request in Python and a `fetch`-compatible call in Node.
+
+### `OtelConfig` / `TelemetryOptions`
+
+Configuration passed to `initOtel` / `init_otel`. Controls the service name, exporter endpoint,
+and export protocol. In Rust and Python the type is `OtelConfig`; in Node it is `TelemetryOptions`.
+
+### Baggage and traceparent helpers
+
+Utilities for injecting and extracting W3C trace context and baggage across process boundaries:
+`injectTraceparent` / `inject_traceparent`, `extractTraceparent` / `extract_traceparent`,
+`injectBaggage` / `inject_baggage`, `extractBaggage` / `extract_baggage`.
+
+### Span utilities
+
+Helpers for interacting with the active span: `currentSpanId` / `current_span_id`,
+`currentTraceId` / `current_trace_id`, `currentSpanIsRecording` / `current_span_is_recording`,
+`recordSpanEvent` / `record_span_event`, `setCurrentSpanAttribute` / `set_current_span_attribute`,
+`setCurrentSpanError` / `set_current_span_error`.
+
+### `BaggageSpanProcessor`
+
+OpenTelemetry `SpanProcessor` that copies W3C baggage entries as span attributes on span start.
+Add it to the tracer provider to propagate baggage through spans automatically.
+
+### Payload redaction
+
+Utilities for redacting sensitive fields before they are logged or recorded as span attributes:
+`redact`, `redactAndTruncate` / `redact_and_truncate`, `resolveMaxBytesFromEnv` /
+`resolve_max_bytes_from_env`. `DEFAULT_ALLOWLIST` is the built-in set of non-sensitive keys.
+`REDACTED_PLACEHOLDER` is the replacement string used for redacted values.

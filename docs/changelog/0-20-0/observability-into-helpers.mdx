@@ -1,0 +1,61 @@
+---
+title: 'Observability moved into @iii-dev/helpers as a submodule'
+description: 'The iii-observability package (Node, Python, Rust) merges into the helpers package as a new observability submodule. The standalone iii-observability packages become deprecated shims.'
+---
+
+## What changed
+
+The observability surface (`Logger`, `initOtel` / `init_otel`, `withSpan` / `with_span`, `executeTracedRequest` / `execute_traced_request`, and the rest of the public API) moves from the standalone `iii-observability` packages into the **`@iii-dev/helpers`** package as a new `observability` submodule.
+
+| Submodule | Node | Python | Rust |
+| --- | --- | --- | --- |
+| observability | `@iii-dev/helpers/observability` | `iii_helpers.observability` | `iii_helpers::observability` |
+
+Node also exposes an internal-only entry point `@iii-dev/helpers/observability/internal` that provides `getMeter` and `getTracer`. This entry point is not part of the public API; it is reserved for first-party iii packages.
+
+### OpenTelemetry dependencies
+
+The OpenTelemetry dependencies are now bundled in `@iii-dev/helpers` / `iii-helpers` directly. For SDK users this is net-neutral: the root SDK already depended on `iii-observability`, which pulled in otel. The dependency now flows through the helpers package instead.
+
+### Deprecated shims
+
+The standalone packages remain published but are deprecated. They re-export the public API from the helpers `observability` submodule. Importing from the old packages continues to work but emits a deprecation signal:
+
+| Language | Deprecated package | Deprecation mechanism |
+| --- | --- | --- |
+| Node | `@iii-dev/observability` | `@deprecated` JSDoc on every re-export |
+| Python | `iii-observability` (PyPI) | `DeprecationWarning` at import time |
+| Rust | `iii-observability` (crates.io) | `#![deprecated]` crate-level attribute |
+
+The shim covers the public API only. Symbols that were already marked internal (such as `getMeter` / `getTracer` in Node, moved to `@iii-dev/observability/internal` in 0.17.0) are not re-exported from the shim.
+
+## Migration
+
+Replace imports of the standalone `iii-observability` packages with the `observability` submodule path from helpers.
+
+Node:
+
+```ts
+// Before
+import { Logger, initOtel, withSpan } from '@iii-dev/observability'
+// After
+import { Logger, initOtel, withSpan } from '@iii-dev/helpers/observability'
+```
+
+Python:
+
+```python
+# Before
+from iii_observability import Logger, init_otel, with_span
+# After
+from iii_helpers.observability import Logger, init_otel, with_span
+```
+
+Rust:
+
+```rust
+// Before
+use iii_observability::{Logger, init_otel, with_span};
+// After
+use iii_helpers::observability::{Logger, init_otel, with_span};
+```
