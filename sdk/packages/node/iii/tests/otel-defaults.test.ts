@@ -66,14 +66,14 @@ vi.mock('@opentelemetry/sdk-trace-base', () => ({
 }))
 
 // Mock exporters to avoid real exporter instantiation
-vi.mock('../../observability/src/telemetry-system/exporters', () => ({
+vi.mock('../../helpers/src/observability/telemetry-system/exporters', () => ({
   EngineSpanExporter: vi.fn().mockImplementation(() => ({})),
   EngineMetricsExporter: vi.fn().mockImplementation(() => ({})),
   EngineLogExporter: vi.fn().mockImplementation(() => ({})),
 }))
 
 // Mock the shared connection to avoid real WebSocket connections
-vi.mock('../../observability/src/telemetry-system/connection', () => ({
+vi.mock('../../helpers/src/observability/telemetry-system/connection', () => ({
   SharedEngineConnection: vi.fn().mockImplementation(() => ({
     send: vi.fn(),
     onConnected: vi.fn(),
