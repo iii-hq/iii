@@ -1,7 +1,7 @@
 use std::{thread::sleep, time::Duration};
 
 use iii_helpers::stream::UpdateOp;
-use iii_observability::OtelConfig;
+use iii_helpers::observability::OtelConfig;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{Error, InitOptions, RegisterFunction, register_worker};
 use serde_json::json;
