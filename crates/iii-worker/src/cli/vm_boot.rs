@@ -714,6 +714,50 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         });
     }
 
+    // Block-image overlay rootfs (spike, III_ROOTFS_MODE=overlay): attach a
+    // shared, read-only base image (squashfs) as a virtio-blk disk. The VM
+    // still boots off the existing virtiofs root just long enough to run
+    // /init.krun; iii-init then sees III_BLOCK_ROOT_* (set in the exec env
+    // below), assembles overlayfs(base=/dev/vda, writable upper) and pivots
+    // into it. Proves the shared-base + overlay boot path; eliminating the
+    // per-worker rootfs clone is the follow-up.
+    // Block-image overlay rootfs: point III_ROOTFS_BASE_DIR (or the
+    // ~/.iii/overlay-base-dir file fallback — the engine's worker-mgmt spawn
+    // chain doesn't forward arbitrary env to __vm-boot) at an extracted base
+    // rootfs DIR. iii packs it into a read-only squashfs HOST-SIDE (backhand),
+    // never using any tool inside the image, and attaches it as /dev/vda.
+    // iii-init then assembles overlayfs(base, writable upper) and pivots in.
+    let overlay_base_dir = std::env::var("III_ROOTFS_BASE_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            std::fs::read_to_string(format!("{home}/.iii/overlay-base-dir"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    // Overlay is on by default, but only activates when (a) a base rootfs is
+    // configured, (b) the feature flag isn't set to legacy, and (c) an
+    // overlay-capable (embedded) iii-init is available. The handshake (c)
+    // makes an iii update safe even if a stale init lingers in the cache —
+    // see cli::overlay. Falls back to the legacy per-worker-clone boot
+    // otherwise.
+    let overlay_mode = overlay_base_dir.is_some() && crate::cli::overlay::overlay_active();
+    if overlay_mode {
+        let dir = overlay_base_dir.expect("overlay_mode implies a base dir");
+        // Migrate this worker's on-disk layout to overlay: GC orphaned legacy
+        // clone artifacts (dep cache + prepared marker) and stamp the marker.
+        crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
+        let sqfs = crate::cli::squashfs::ensure_base_squashfs(std::path::Path::new(&dir))?;
+        eprintln!("iii: overlay base squashfs -> /dev/vda: {}", sqfs.display());
+        builder = builder.disk(move |d| {
+            d.path(&sqfs)
+                .format(msb_krun::DiskImageFormat::Raw)
+                .read_only(true)
+        });
+    }
+
     // 2 workers when the shell relay is active (benefits from
     // parallel read/write task scheduling); 1 otherwise (network +
     // control proxy run fine on a single worker).
@@ -828,6 +872,14 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             e = e.env("III_INIT_CIDR", "30");
         }
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
+        // Overlay rootfs: tell iii-init to build `/` from the read-only base
+        // disk (/dev/vda) + a writable upper instead of the virtiofs root.
+        // Milestone A uses a tmpfs upper (no in-guest mkfs needed).
+        if overlay_mode {
+            e = e.env("III_BLOCK_ROOT_LOWER", "/dev/vda");
+            e = e.env("III_BLOCK_ROOT_LOWER_FSTYPE", "squashfs");
+            e = e.env("III_BLOCK_ROOT_UPPER", "tmpfs");
+        }
         if control_port_env {
             e = e.env(
                 "III_CONTROL_PORT",

@@ -30,7 +30,12 @@ iii-observability = { workspace = true }
 iii-shell-client = { path = "../iii-shell-client" }
 iii-shell-proto = { path = "../iii-shell-proto" }
 iii-supervisor = { path = "../iii-supervisor" }
-msb_krun = { version = "0.1.9", features = ["net", "blk"] }
+msb_krun = { version = "0.1.16", features = ["net", "blk"] }
+# Host-side squashfs builder for the shared read-only base image. gzip-only
+# (the guest squashfs kernel supports zlib) keeps it pure-ish Rust and avoids
+# the xz/zstd C build deps. Packs an extracted rootfs without using any tool
+# inside the image, so it works for ANY base image.
+backhand = { version = "0.25", default-features = false, features = ["gzip"] }
 oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }

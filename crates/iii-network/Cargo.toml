@@ -13,7 +13,7 @@ smoltcp = { version = "0.13", default-features = false, features = [
     "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp", "alloc"
 ] }
 crossbeam-queue = "0.3"
-msb_krun = { version = "0.1.9", features = ["net"] }
+msb_krun = { version = "0.1.16", features = ["net"] }
 libc = "0.2"
 tracing = "0.1"
 bytes = "1"
