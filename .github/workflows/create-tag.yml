@@ -242,6 +242,7 @@ jobs:
             check_cargo "Cargo.toml" "$VERSION"
             check_workspace_dep "Cargo.toml" "$VERSION"
             check_pep440_pin "sdk/packages/python/iii/pyproject.toml" "iii-helpers" "$PY_VERSION"
+            check_pep440_pin "sdk/packages/python/observability/pyproject.toml" "iii-helpers" "$PY_VERSION"
           fi
 
           echo "All versions validated."
