@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "iii-observability"
 version = "0.19.4"
-description = "OpenTelemetry and logging primitives shared across iii SDKs."
+description = "Deprecated shim: re-exports iii_helpers.observability. Import from iii-helpers instead."
 authors = [{ name = "III" }]
 license = { text = "Apache-2.0" }
 readme = "README.md"
@@ -20,25 +20,15 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "opentelemetry-api>=1.25",
-    "opentelemetry-sdk>=1.25",
-    "httpx>=0.27",
-    "websockets>=12.0",
+    "iii-helpers==0.19.4",
 ]
 
 [project.urls]
 Homepage = "https://github.com/iii-hq/iii"
 Repository = "https://github.com/iii-hq/iii"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-cov>=6.0",
-    "pytest-httpx>=0.30",
-    "mypy>=1.8",
-    "ruff>=0.2",
-]
+[tool.uv.sources]
+iii-helpers = { path = "../helpers", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/iii_observability"]
@@ -53,8 +43,3 @@ select = ["E", "F", "I", "W"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-
-[tool.pytest.ini_options]
-addopts = "--cov=src/iii_observability --cov-branch --cov-report=term-missing"
-testpaths = ["tests"]
-asyncio_mode = "auto"
