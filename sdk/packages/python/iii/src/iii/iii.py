@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
 import websockets
 from iii_helpers.http import HttpInvocationConfig
+from iii_helpers.observability import OtelConfig
 from iii_helpers.stream import (
     StreamDeleteInput,
     StreamGetInput,
@@ -22,7 +23,6 @@ from iii_helpers.stream import (
     StreamListInput,
     StreamSetInput,
 )
-from iii_helpers.observability import OtelConfig
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
