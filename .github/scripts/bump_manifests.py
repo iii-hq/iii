@@ -128,9 +128,10 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
 
     # Python iii: top-level version + internal pins (== requirements must
     # move to the prerelease alongside the packages they point at).
+    # Note: iii-observability is no longer a direct dep of Python iii (replaced
+    # by iii-helpers after the observability-into-helpers refactor).
     py_iii = root / "sdk/packages/python/iii/pyproject.toml"
     body = bump_cargo_package_version(py_iii.read_text(), new_py_version)
-    body = bump_pep440_dep_pin(body, "iii-observability", new_py_version)
     body = bump_pep440_dep_pin(body, "iii-helpers", new_py_version)
     py_iii.write_text(body)
 

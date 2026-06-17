@@ -142,9 +142,11 @@ def test_rewrite_all_updates_every_target_file(tmp_path: Path):
     _write(root / "sdk/packages/node/iii-browser/package.json", '{\n  "name": "iii-browser",\n  "version": "0.15.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/observability/package.json", '{\n  "name": "@iii-dev/observability",\n  "version": "0.13.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/helpers/package.json", '{\n  "name": "@iii-dev/helpers",\n  "version": "0.13.0-next.1"\n}\n')
+    # Python iii: iii-observability is no longer a direct dep (removed in
+    # observability-into-helpers refactor); only iii-helpers is pinned.
     _write(root / "sdk/packages/python/iii/pyproject.toml", (
         '[project]\nname = "iii-sdk"\nversion = "0.15.0.dev1"\n'
-        'dependencies = [\n    "iii-observability==0.13.0.dev1",\n    "iii-helpers==0.13.0.dev1",\n]\n'
+        'dependencies = [\n    "iii-helpers==0.13.0.dev1",\n]\n'
     ))
     _write(root / "sdk/packages/python/observability/pyproject.toml", '[project]\nname = "iii-observability"\nversion = "0.13.0.dev1"\n')
     _write(root / "sdk/packages/python/helpers/pyproject.toml", '[project]\nname = "iii-helpers"\nversion = "0.13.0.dev1"\n')
@@ -166,8 +168,9 @@ def test_rewrite_all_updates_every_target_file(tmp_path: Path):
     assert '"version": "0.16.0-next.2"' in (root / "sdk/packages/node/helpers/package.json").read_text()
     py_iii = (root / "sdk/packages/python/iii/pyproject.toml").read_text()
     assert 'version = "0.16.0.dev2"' in py_iii
-    assert '"iii-observability==0.16.0.dev2"' in py_iii
     assert '"iii-helpers==0.16.0.dev2"' in py_iii
+    # iii-observability is published as a shim but is no longer a dep of iii-sdk
+    assert '"iii-observability==' not in py_iii
     assert 'version = "0.16.0.dev2"' in (root / "sdk/packages/python/observability/pyproject.toml").read_text()
     assert 'version = "0.16.0.dev2"' in (root / "sdk/packages/python/helpers/pyproject.toml").read_text()
     assert 'version = "0.16.0-next.2"' in (root / "console/packages/console-rust/Cargo.toml").read_text()
@@ -191,9 +194,11 @@ def test_cli_invokes_rewrite_all(tmp_path: Path):
     _write(root / "sdk/packages/node/iii-browser/package.json", '{\n  "version": "0.15.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/observability/package.json", '{\n  "version": "0.13.0-next.1"\n}\n')
     _write(root / "sdk/packages/node/helpers/package.json", '{\n  "version": "0.13.0-next.1"\n}\n')
+    # Python iii: only iii-helpers is pinned (iii-observability removed in
+    # observability-into-helpers refactor).
     _write(root / "sdk/packages/python/iii/pyproject.toml", (
         'version = "0.15.0.dev1"\n'
-        'dependencies = [\n    "iii-observability==0.13.0.dev1",\n    "iii-helpers==0.13.0.dev1",\n]\n'
+        'dependencies = [\n    "iii-helpers==0.13.0.dev1",\n]\n'
     ))
     _write(root / "sdk/packages/python/observability/pyproject.toml", 'version = "0.13.0.dev1"\n')
     _write(root / "sdk/packages/python/helpers/pyproject.toml", 'version = "0.13.0.dev1"\n')
@@ -209,4 +214,4 @@ def test_cli_invokes_rewrite_all(tmp_path: Path):
     assert "0.16.0-next.2" in result.stdout
 
     assert 'version = "0.16.0-next.2"' in (root / "Cargo.toml").read_text()
-    assert 'iii-observability==0.16.0.dev2' in (root / "sdk/packages/python/iii/pyproject.toml").read_text()
+    assert 'iii-helpers==0.16.0.dev2' in (root / "sdk/packages/python/iii/pyproject.toml").read_text()
