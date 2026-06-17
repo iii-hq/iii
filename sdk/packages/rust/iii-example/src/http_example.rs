@@ -1,5 +1,5 @@
 use iii_helpers::http::{HttpRequest, HttpResponse};
-use iii_observability::{Logger, execute_traced_request};
+use iii_helpers::observability::{Logger, execute_traced_request};
 use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
 use iii_sdk::trigger::IIITrigger;
 use iii_sdk::{Error, IIIClient, RegisterFunction};

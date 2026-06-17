@@ -1,4 +1,4 @@
-use iii_observability::{current_span_id, current_trace_id};
+use iii_helpers::observability::{current_span_id, current_trace_id};
 
 #[test]
 fn outside_span_returns_none() {

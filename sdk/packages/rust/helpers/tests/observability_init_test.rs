@@ -1,5 +1,5 @@
-use iii_observability::OtelConfig;
-use iii_observability::{flush_otel, init_otel, shutdown_otel};
+use iii_helpers::observability::OtelConfig;
+use iii_helpers::observability::{flush_otel, init_otel, shutdown_otel};
 
 #[tokio::test]
 async fn init_otel_with_disabled_config_is_noop() {
