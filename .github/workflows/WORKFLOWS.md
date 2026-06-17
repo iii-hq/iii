@@ -169,8 +169,12 @@ setup (parse tag metadata, Slack notification)
   ├─► publish-builtin-workers ► _publish-engine-workers.yml
   └─► publish-worker-skills ► _publish-worker-skills.yml
   │
+  ├─► trigger-validations (dispatch downstream smoke/quickstart on success)
+  │
   └─► notify-complete (aggregated Slack status)
 ```
+
+**Downstream validations:** once every publish job succeeds (non-dry-run), `trigger-validations` dispatches `init-smoke.yml` in `iii-hq/templates` and `quickstart-validate.yml` in `iii-hq/quickstart-validator`, passing `channel=next` for a prerelease or `channel=main` for a stable release. Both repos report results to their own Slack threads. Requires the `III_CI_APP` GitHub App installed on both repos with `actions: write`.
 
 **Setup job** parses the tag to determine:
 - `version` — stripped prefix (e.g., `iii/v1.2.3` becomes `1.2.3`)
@@ -180,7 +184,7 @@ setup (parse tag metadata, Slack notification)
 
 **Concurrency:** only one iii release runs at a time per repository.
 
-**Skipped on dry run:** GitHub Release creation, Homebrew publish.
+**Skipped on dry run:** GitHub Release creation, Homebrew publish, downstream validations.
 
 ---
 
