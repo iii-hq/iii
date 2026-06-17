@@ -87,7 +87,7 @@ pub struct InitOptions {
     /// Custom HTTP headers sent during the WebSocket handshake.
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
-    pub otel: Option<iii_observability::OtelConfig>,
+    pub otel: Option<iii_helpers::observability::OtelConfig>,
 }
 
 /// Create and return a connected SDK instance. The WebSocket connection is
