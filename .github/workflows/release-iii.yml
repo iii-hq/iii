@@ -694,6 +694,57 @@ jobs:
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────
+  # Trigger downstream validations
+  #
+  # Once every publish job has succeeded (the validators install the
+  # freshly-published artifacts), dispatch the smoke/quickstart workflows
+  # in the templates and quickstart-validator repos. A prerelease publishes
+  # the `next` channel; a stable release publishes `main`. Skipped on
+  # dry-run and whenever any publish job failed (`!failure()`).
+  # ──────────────────────────────────────────────────────────────
+
+  trigger-validations:
+    name: Trigger downstream validations
+    needs:
+      - setup
+      - engine-release
+      - worker-release
+      - console-release
+      - sdk-npm
+      - sdk-npm-browser
+      - sdk-py
+      - sdk-rust
+      - sdk-go
+      - observability-npm
+      - observability-py
+      - observability-rust
+      - publish-builtin-workers
+      - publish-worker-skills
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      CHANNEL: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'main' }}
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: templates,quickstart-validator
+
+      - name: Dispatch validation workflows
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          echo "::notice::Dispatching downstream validations (channel=${CHANNEL})"
+          gh workflow run init-smoke.yml \
+            --repo iii-hq/templates --ref main -f channel="$CHANNEL"
+          gh workflow run quickstart-validate.yml \
+            --repo iii-hq/quickstart-validator --ref main -f channel="$CHANNEL"
+
+  # ──────────────────────────────────────────────────────────────
   # Notification: Complete
   # ──────────────────────────────────────────────────────────────
 

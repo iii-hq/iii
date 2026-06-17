@@ -129,7 +129,7 @@ npx skills add iii-hq/workers --all         # every worker skill
 ```
 
 The engine's built-in workers (`iii-queue`, `iii-state`, `iii-pubsub`, `iii-stream`, `iii-cron`,
-`iii-http`, `iii-observability`, `iii-bridge`, `iii-exec`, `iii-worker-manager`) ship their skills in
+`iii-http`, `iii-observability`, `iii-bridge`, `iii-exec`, `configuration`) ship their skills in
 this repo. Install one with `npx skills add iii-hq/iii --full-depth --skill <name>`; each worker's README under
 [`engine/src/workers/`](engine/src/workers/) lists the exact `iii worker add` and skill command.
 
