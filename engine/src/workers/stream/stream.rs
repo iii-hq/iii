@@ -7,7 +7,10 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, Mutex as StdMutex, RwLock as SyncRwLock},
+    sync::{
+        Arc, Mutex as StdMutex, RwLock as SyncRwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use axum::{
@@ -55,15 +58,49 @@ use crate::{
     },
 };
 
+/// The runtime-swappable pieces of the worker: the live configuration and the
+/// live pub/sub adapter. Held together behind one lock so an adapter hot-swap
+/// publishes the new config and backend atomically.
+struct LiveState {
+    config: Arc<StreamModuleConfig>,
+    adapter: Arc<dyn StreamAdapter>,
+}
+
 #[derive(Clone)]
 pub struct StreamWorker {
-    config: StreamModuleConfig,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub adapter: Arc<dyn StreamAdapter>,
     engine: Arc<Engine>,
+    /// Live config + adapter, swapped atomically by `apply_config`. Readers
+    /// clone the inner `Arc`s via `config_snapshot`/`adapter_snapshot`.
+    live: Arc<SyncRwLock<LiveState>>,
+    /// The config.yaml block; used only for `register_config`'s initial value
+    /// and the boot bind/adapter fallback.
+    seed: Option<StreamModuleConfig>,
 
     pub triggers: Arc<StreamTriggers>,
-    task_aborts: Arc<StdMutex<Vec<AbortHandle>>>,
+    /// Abort handle for the running axum server task (rebound on host/port
+    /// change).
+    server_abort: Arc<StdMutex<Option<AbortHandle>>>,
+    /// Abort handle for the adapter `watch_events` pump (restarted on an
+    /// adapter hot-swap).
+    watch_abort: Arc<StdMutex<Option<AbortHandle>>>,
+    /// Stored once the server is live; `apply_config` refuses to rebind/swap
+    /// while this is `None`, and `destroy` clears it to block late applies.
+    shutdown_rx: Arc<StdMutex<Option<tokio::sync::watch::Receiver<bool>>>>,
+    /// Serializes overlapping `apply_config` runs (last write wins).
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Set by `destroy` so a late retry can't resurrect the server/adapter.
+    destroyed: Arc<AtomicBool>,
+}
+
+/// True for hosts that restrict the listener to the local machine
+/// ("localhost", 127.0.0.0/8, ::1). Used by the boot bind fallback to refuse
+/// widening a loopback-only stored address to a non-loopback seed.
+fn is_loopback_host(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 async fn ws_handler(
@@ -75,7 +112,7 @@ async fn ws_handler(
 ) -> impl IntoResponse {
     let module = module.clone();
 
-    if let Some(auth_function) = module.auth_function.clone() {
+    if let Some(auth_function) = module.auth_function() {
         let engine = module.engine.clone();
         let input = StreamAuthInput {
             headers: headers_to_map(&headers),
@@ -133,21 +170,50 @@ impl Worker for StreamWorker {
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
+        self.register_config_handler(&engine);
         self.register_functions(engine);
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying StreamWorker");
-        let aborts: Vec<AbortHandle> = self
-            .task_aborts
+        // Best-effort: the trigger is registered outside the worker scope, so
+        // remove it explicitly to keep ReloadManager restarts duplicate-free.
+        let _ = self
+            .engine
+            .trigger_registry
+            .unregister_trigger(
+                super::configuration::CONFIG_TRIGGER_ID.to_string(),
+                Some(super::configuration::CONFIG_TRIGGER_TYPE.to_string()),
+            )
+            .await;
+
+        // Serialize with any in-flight `apply_config`, then block future
+        // applies/rebinds: `destroyed` short-circuits apply, and clearing
+        // `shutdown_rx` makes the rebind/swap path refuse outright.
+        let _guard = self.apply_lock.lock().await;
+        self.destroyed.store(true, Ordering::SeqCst);
+        self.shutdown_rx
             .lock()
-            .expect("stream task_aborts mutex poisoned")
-            .drain(..)
-            .collect();
-        for abort in aborts {
-            abort.abort();
+            .expect("stream shutdown_rx mutex poisoned")
+            .take();
+
+        if let Some(server) = self
+            .server_abort
+            .lock()
+            .expect("stream server_abort mutex poisoned")
+            .take()
+        {
+            server.abort();
         }
-        let _ = self.adapter.destroy().await;
+        if let Some(watch) = self
+            .watch_abort
+            .lock()
+            .expect("stream watch_abort mutex poisoned")
+            .take()
+        {
+            watch.abort();
+        }
+        let _ = self.adapter_snapshot().destroy().await;
         Ok(())
     }
 
@@ -189,77 +255,154 @@ impl Worker for StreamWorker {
 
     async fn start_background_tasks(
         &self,
-        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
-        let socket_manager = Arc::new(StreamSocketManager::new(
-            self.engine.clone(),
-            self.adapter.clone(),
-            Arc::new(self.clone()),
-            self.config.auth_function.clone(),
-            self.triggers.clone(),
-        ));
-        let raw_addr = format!("{}:{}", self.config.host, self.config.port);
-        let addr: SocketAddr = raw_addr
-            .parse()
-            .map_err(|err| anyhow::anyhow!("invalid stream bind address {}: {}", raw_addr, err))?;
-        tracing::info!("Starting StreamWorker on {}", addr.to_string().purple());
-        let listener = TcpListener::bind(addr)
-            .await
-            .map_err(|err| crate::workers::traits::bind_address_error(addr, err))?;
-        let app = Router::new()
-            .route("/", get(ws_handler))
-            .with_state(socket_manager);
-
-        let mut server_shutdown_rx = shutdown_rx.clone();
-        let server_handle = tokio::spawn(async move {
-            tracing::info!(
-                "Stream API listening on address: {}",
-                addr.to_string().purple()
+        // Adopt the configuration worker as the runtime source of truth. Both
+        // bus calls are time-bounded: worker startup is awaited serially by the
+        // boot and reload pipelines, so a hung `configuration::*` provider must
+        // not wedge every other worker behind this one. Failures degrade to the
+        // static config.yaml block so the stream server stays up.
+        let register = tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::register_config(self.engine.as_ref(), self.seed.as_ref()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("configuration::register timed out"))
+        .and_then(|result| result);
+        if let Err(err) = register {
+            tracing::warn!(
+                error = %err,
+                "iii-stream: configuration::register failed; continuing with static config"
             );
+        }
+        let fetched = tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::fetch_config(self.engine.as_ref(), &self.config_snapshot()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("configuration::get timed out"))
+        .and_then(|result| result);
+        match fetched {
+            Ok(config) => self.set_config(Arc::new(config)),
+            Err(err) => tracing::warn!(
+                error = %err,
+                "iii-stream: failed to read configuration; continuing with static config"
+            ),
+        }
 
-            let serve = axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async move {
-                while server_shutdown_rx.changed().await.is_ok() {
-                    if *server_shutdown_rx.borrow() {
-                        break;
+        // Bind after the fetch so a runtime-edited host/port survives restarts.
+        // If the stored address can't be bound, fall back to the seed address
+        // rather than failing the whole worker start — GUARDED: requires an
+        // explicit seed, the addresses must differ, and it must not widen a
+        // loopback-only stored host to a non-loopback seed. The fallback may
+        // revert `live.config` to the seed, so adapter adoption is deferred
+        // until AFTER the bind: it must reconcile against the config actually
+        // being served, never a stored value we failed to honor.
+        let config = self.config_snapshot();
+        let addr = format!("{}:{}", config.host, config.port);
+        let listener = match TcpListener::bind(&addr).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                let Some(fallback) = self.seed.clone() else {
+                    return Err(crate::workers::traits::bind_address_error(&addr, err));
+                };
+                let fallback_addr = format!("{}:{}", fallback.host, fallback.port);
+                let widens_loopback =
+                    is_loopback_host(&config.host) && !is_loopback_host(&fallback.host);
+                if fallback_addr == addr || widens_loopback {
+                    if widens_loopback {
+                        tracing::error!(
+                            stored = %addr,
+                            seed = %fallback_addr,
+                            "iii-stream: refusing seed fallback that would widen a \
+                             loopback-only address to a non-loopback interface"
+                        );
                     }
+                    return Err(crate::workers::traits::bind_address_error(&addr, err));
                 }
-            });
-            if let Err(e) = serve.await {
-                tracing::error!(error = %e, "Stream server exited with error");
+                tracing::error!(
+                    error = %err,
+                    stored = %addr,
+                    fallback = %fallback_addr,
+                    "iii-stream: stored configuration address cannot be bound; serving on the \
+                     seed address — fix the stored `iii-stream` configuration value"
+                );
+                self.set_config(Arc::new(fallback));
+                TcpListener::bind(&fallback_addr).await.map_err(|err| {
+                    crate::workers::traits::bind_address_error(&fallback_addr, err)
+                })?
             }
-        });
+        };
+        let addr = {
+            let config = self.config_snapshot();
+            format!("{}:{}", config.host, config.port)
+        };
+        tracing::info!("Starting StreamWorker on {}", addr.purple());
 
-        let adapter = self.adapter.clone();
-        let watch_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = adapter.watch_events() => {
-                    if let Err(e) = result {
-                        tracing::error!(error = %e, "Failed to watch events");
-                    }
-                }
-                _ = async {
-                    while shutdown_rx.changed().await.is_ok() {
-                        if *shutdown_rx.borrow() {
-                            break;
-                        }
-                    }
-                } => {
-                    tracing::info!("Stream watch_events shutdown signal received");
-                }
+        // Boot adoption of the adapter, reconciled against the config actually
+        // served (post-bind, so a fallback's reverted config is honored).
+        // `build()` resolved the adapter from the seed; the served config may
+        // select a different backend, so resolve and adopt it — keeping config
+        // and adapter consistent. A resolve failure keeps the seed adapter
+        // (logged) rather than failing worker start.
+        let served_config = self.config_snapshot();
+        let adapter_outdated = self.seed.as_ref().is_none_or(|seed| {
+            Self::effective_adapter(seed) != Self::effective_adapter(&served_config)
+        });
+        if adapter_outdated {
+            match Self::resolve_adapter(&self.engine, &served_config).await {
+                Ok(adapter) => self.set_adapter(adapter),
+                Err(err) => tracing::warn!(
+                    error = %err,
+                    "iii-stream: stored adapter could not be resolved at boot; keeping seed adapter"
+                ),
             }
-        });
+        }
 
-        let mut aborts = self
-            .task_aborts
+        // Spawn the server and the adapter watch pump.
+        let server = self.spawn_server(listener, addr, shutdown_rx.clone());
+        *self
+            .server_abort
             .lock()
-            .expect("stream task_aborts mutex poisoned");
-        aborts.push(server_handle.abort_handle());
-        aborts.push(watch_handle.abort_handle());
+            .expect("stream server_abort mutex poisoned") = Some(server);
+        let watch = self.spawn_watch(self.adapter_snapshot(), shutdown_rx.clone());
+        *self
+            .watch_abort
+            .lock()
+            .expect("stream watch_abort mutex poisoned") = Some(watch);
+
+        // Store the receiver only once the server is live: `apply_config`
+        // refuses to rebind/swap while this is `None`, so a stray
+        // on-config-change cannot act during (or instead of) the boot sequence.
+        *self
+            .shutdown_rx
+            .lock()
+            .expect("stream shutdown_rx mutex poisoned") = Some(shutdown_rx);
+
+        // Register the handler before the trigger so an event can never fan out
+        // to a missing function. The `get` check keeps the initial-boot path
+        // (where `register_functions` already ran it) from logging a spurious
+        // overwrite.
+        if self
+            .engine
+            .functions
+            .get(super::configuration::CONFIG_FN_ID)
+            .is_none()
+        {
+            self.register_config_handler(&self.engine);
+        }
+        if let Err(err) = super::configuration::register_config_trigger(&self.engine).await {
+            tracing::warn!(
+                error = %err,
+                "iii-stream: failed to watch configuration changes; hot-reload disabled"
+            );
+        } else {
+            // Catch-up pass: replay any `configuration::set` that landed between
+            // the boot fetch above and the trigger subscription. Routed through
+            // `on_config_change` so a timed-out catch-up gets the one-shot retry.
+            super::configuration::on_config_change(self).await;
+        }
 
         Ok(())
     }
@@ -279,12 +422,20 @@ impl ConfigurableWorker for StreamWorker {
     }
 
     fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        let seed = Some(config.clone());
         Self {
-            config,
-            adapter,
             engine,
+            live: Arc::new(SyncRwLock::new(LiveState {
+                config: Arc::new(config),
+                adapter,
+            })),
+            seed,
             triggers: Arc::new(StreamTriggers::new()),
-            task_aborts: Arc::new(StdMutex::new(Vec::new())),
+            server_abort: Arc::new(StdMutex::new(None)),
+            watch_abort: Arc::new(StdMutex::new(None)),
+            shutdown_rx: Arc::new(StdMutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+            destroyed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -294,6 +445,337 @@ impl ConfigurableWorker for StreamWorker {
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
         config.adapter.as_ref().and_then(|a| a.config.clone())
+    }
+}
+
+impl StreamWorker {
+    /// Snapshot the live configuration (cheap `Arc` clone, no lock held by the
+    /// caller).
+    pub fn config_snapshot(&self) -> Arc<StreamModuleConfig> {
+        self.live
+            .read()
+            .expect("stream live state poisoned")
+            .config
+            .clone()
+    }
+
+    /// Snapshot the live pub/sub adapter (cheap `Arc` clone).
+    pub fn adapter_snapshot(&self) -> Arc<dyn StreamAdapter> {
+        self.live
+            .read()
+            .expect("stream live state poisoned")
+            .adapter
+            .clone()
+    }
+
+    fn set_config(&self, config: Arc<StreamModuleConfig>) {
+        self.live
+            .write()
+            .expect("stream live state poisoned")
+            .config = config;
+    }
+
+    fn set_adapter(&self, adapter: Arc<dyn StreamAdapter>) {
+        self.live
+            .write()
+            .expect("stream live state poisoned")
+            .adapter = adapter;
+    }
+
+    fn set_live(&self, config: Arc<StreamModuleConfig>, adapter: Arc<dyn StreamAdapter>) {
+        let mut guard = self.live.write().expect("stream live state poisoned");
+        guard.config = config;
+        guard.adapter = adapter;
+    }
+
+    /// The effective `(adapter_name, adapter_config)`, so `None` and an explicit
+    /// built-in default compare equal — no false "changed" verdict on boot
+    /// adoption or an `auth_function`-only edit.
+    fn effective_adapter(config: &StreamModuleConfig) -> (String, Option<Value>) {
+        (
+            Self::adapter_name_from_config(config)
+                .unwrap_or_else(|| Self::DEFAULT_ADAPTER_NAME.to_string()),
+            Self::adapter_config_from_config(config),
+        )
+    }
+
+    /// Resolve an `Arc<dyn StreamAdapter>` from a config, mirroring steps 3–4 of
+    /// `create_with_adapters` so a runtime adapter edit builds the same backend
+    /// the boot path would.
+    async fn resolve_adapter(
+        engine: &Arc<Engine>,
+        config: &StreamModuleConfig,
+    ) -> anyhow::Result<Arc<dyn StreamAdapter>> {
+        let adapter_name = Self::adapter_name_from_config(config)
+            .unwrap_or_else(|| Self::DEFAULT_ADAPTER_NAME.to_string());
+        let factory = Self::get_adapter(&adapter_name).await.ok_or_else(|| {
+            anyhow::anyhow!("stream adapter factory '{}' not found", adapter_name)
+        })?;
+        let adapter_config = Self::adapter_config_from_config(config);
+        factory(engine.clone(), adapter_config).await
+    }
+
+    /// Build a worker straight from a JSON config for tests (async because
+    /// adapter resolution is). Mirrors `create_with_adapters` then `build`.
+    pub async fn for_test(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
+        let parsed: StreamModuleConfig = config
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+        let adapter = Self::resolve_adapter(&engine, &parsed).await?;
+        Ok(Self::build(engine, parsed, adapter))
+    }
+
+    /// Register the `iii-stream::on-config-change` handler (idempotent by id).
+    fn register_config_handler(&self, engine: &Arc<Engine>) {
+        let worker = self.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: super::configuration::CONFIG_FN_ID.to_string(),
+                description: Some("Apply iii-stream configuration changes".to_string()),
+                request_format: None,
+                response_format: None,
+                metadata: Some(serde_json::json!({ "internal": true })),
+            },
+            Handler::new(move |_input: Value| {
+                let worker = worker.clone();
+                async move {
+                    super::configuration::on_config_change(&worker).await;
+                    FunctionResult::Success(Some(serde_json::json!({})))
+                }
+            }),
+        );
+    }
+
+    /// Spawn the axum WebSocket server for an already-bound listener and return
+    /// its abort handle. The socket manager reads the worker's live config and
+    /// adapter per connection, so `auth_function`/adapter edits apply without a
+    /// respawn; only a host/port change needs a rebind.
+    fn spawn_server(
+        &self,
+        listener: TcpListener,
+        addr_display: String,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> AbortHandle {
+        let socket_manager = Arc::new(StreamSocketManager::new(
+            self.engine.clone(),
+            Arc::new(self.clone()),
+            self.triggers.clone(),
+        ));
+        let app = Router::new()
+            .route("/", get(ws_handler))
+            .with_state(socket_manager);
+        let handle = tokio::spawn(async move {
+            tracing::info!("Stream API listening on address: {}", addr_display.purple());
+            let serve = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                while shutdown_rx.changed().await.is_ok() {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+            });
+            if let Err(e) = serve.await {
+                tracing::error!(address = %addr_display, error = %e, "Stream server exited with error");
+            }
+        });
+        handle.abort_handle()
+    }
+
+    /// Spawn the adapter `watch_events` pump for the given adapter and return
+    /// its abort handle. Restarted on an adapter hot-swap; the captured `Arc`
+    /// keeps the backend alive for as long as the pump runs.
+    fn spawn_watch(
+        &self,
+        adapter: Arc<dyn StreamAdapter>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> AbortHandle {
+        let handle = tokio::spawn(async move {
+            tokio::select! {
+                result = adapter.watch_events() => {
+                    if let Err(e) = result {
+                        tracing::error!(error = %e, "Failed to watch events");
+                    }
+                }
+                _ = async {
+                    while shutdown_rx.changed().await.is_ok() {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                } => {
+                    tracing::info!("Stream watch_events shutdown signal received");
+                }
+            }
+        });
+        handle.abort_handle()
+    }
+
+    /// Schedule graceful teardown of an adapter that was just swapped out.
+    ///
+    /// Each WebSocket connection captures its own `Arc` to the backend it
+    /// subscribed to and holds it for its lifetime (see
+    /// `StreamSocketManager::socket_handler`), so the previous backend must stay
+    /// alive while any orphaned connection still uses it. We poll until only
+    /// this task's `Arc` remains — every orphaned connection (and the aborted
+    /// watch pump) has released it — then run `StreamAdapter::destroy()` so
+    /// stateful backends (redis closes connections, bridge stops its socket
+    /// thread) release their resources. A plain `Arc` drop would NOT run
+    /// `destroy()`. Bounded so a never-closing connection can't keep the task
+    /// (and the backend) alive forever.
+    fn schedule_adapter_teardown(previous_adapter: Arc<dyn StreamAdapter>) {
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+        const MAX_DRAIN: std::time::Duration = std::time::Duration::from_secs(600);
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + MAX_DRAIN;
+            // strong_count == 1 means only this task holds the previous backend.
+            while Arc::strong_count(&previous_adapter) > 1 {
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        "iii-stream: previous adapter still referenced after {MAX_DRAIN:?}; \
+                         tearing it down anyway"
+                    );
+                    break;
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+            if let Err(err) = previous_adapter.destroy().await {
+                tracing::warn!(error = %err, "iii-stream: previous adapter teardown failed");
+            }
+        });
+    }
+
+    /// Re-fetch the authoritative configuration and hot-apply it under
+    /// `apply_lock` (so overlapping events can't apply a stale value last).
+    /// All-or-nothing on the fallible prerequisites: a failed adapter resolve or
+    /// listener bind keeps the previous config, adapter, and server.
+    ///
+    /// `auth_function`-only change → swap the config snapshot (the running
+    /// server reads it per connection). `adapter` change → build the new
+    /// backend, swap it in, and restart the `watch_events` pump (existing
+    /// connections stay bound to the previous backend until they close).
+    /// `host`/`port` change → bind the new address, respawn the server on it,
+    /// then abort the old listener.
+    pub(super) async fn apply_config(&self) -> anyhow::Result<()> {
+        let _guard = self.apply_lock.lock().await;
+
+        // `destroy` sets this and aborts the server; a late retry must not
+        // resurrect anything (or build a throwaway adapter below).
+        if self.destroyed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let new_config = match tokio::time::timeout(
+            super::configuration::CONFIG_BUS_TIMEOUT,
+            super::configuration::fetch_config(self.engine.as_ref(), &self.config_snapshot()),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            // Keep the `Elapsed` error downcastable: `on_config_change`
+            // schedules a one-shot retry for timeouts specifically.
+            Err(elapsed) => {
+                return Err(anyhow::Error::new(elapsed)
+                    .context("configuration::get timed out; keeping previous config"));
+            }
+        };
+
+        let old = self.config_snapshot();
+        let addr_changed =
+            (old.host.as_str(), old.port) != (new_config.host.as_str(), new_config.port);
+        let adapter_changed = Self::effective_adapter(&old) != Self::effective_adapter(&new_config);
+
+        if !addr_changed && !adapter_changed {
+            // Pure `auth_function` (or no-op) change: the server reads the live
+            // config per connection, so a snapshot swap is all that is needed.
+            self.set_config(Arc::new(new_config));
+            return Ok(());
+        }
+
+        // Resolve every fallible prerequisite BEFORE mutating live state, so a
+        // failure leaves the previous config/adapter/server untouched.
+        let new_adapter = if adapter_changed {
+            Some(Self::resolve_adapter(&self.engine, &new_config).await?)
+        } else {
+            None
+        };
+
+        // The `shutdown_rx` check doubles as the started/destroyed guard
+        // (`destroy` clears it). Checking it before binding means a post-destroy
+        // retry can never transiently bind the stored address.
+        let shutdown_rx = self
+            .shutdown_rx
+            .lock()
+            .expect("stream shutdown_rx mutex poisoned")
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("stream server was never started; cannot apply"))?;
+
+        let new_addr = format!("{}:{}", new_config.host, new_config.port);
+        let listener = if addr_changed {
+            Some(
+                TcpListener::bind(&new_addr)
+                    .await
+                    .map_err(|err| crate::workers::traits::bind_address_error(&new_addr, err))?,
+            )
+        } else {
+            None
+        };
+
+        // Capture the outgoing adapter before the swap so it can be torn down
+        // once it has drained (see `schedule_adapter_teardown`). Only relevant
+        // when the adapter actually changes.
+        let previous_adapter = new_adapter.as_ref().map(|_| self.adapter_snapshot());
+
+        // Past the gate — commit.
+        let new_config = Arc::new(new_config);
+        match &new_adapter {
+            Some(adapter) => self.set_live(new_config, adapter.clone()),
+            None => self.set_config(new_config),
+        }
+
+        // Adapter swap: restart the watch pump on the new backend, abort the
+        // old pump (releasing its old-adapter `Arc`). Existing connections keep
+        // their own old-adapter `Arc` alive until they close, so they stay bound
+        // to the previous backend (accepted: they no longer receive new events).
+        if let Some(adapter) = new_adapter {
+            let new_watch = self.spawn_watch(adapter, shutdown_rx.clone());
+            let previous = self
+                .watch_abort
+                .lock()
+                .expect("stream watch_abort mutex poisoned")
+                .replace(new_watch);
+            if let Some(previous) = previous {
+                previous.abort();
+            }
+            // Tear down the swapped-out backend once no live connection still
+            // references it, so stateful backends (redis/bridge) release their
+            // resources without cutting off orphaned connections mid-swap.
+            if let Some(previous_adapter) = previous_adapter {
+                Self::schedule_adapter_teardown(previous_adapter);
+            }
+        }
+
+        // Address change: respawn the server on the new listener, then abort
+        // the old one (the addresses differ, so no self-conflict). Live
+        // connections on the old listener are dropped — same semantics as
+        // `destroy`.
+        if let Some(listener) = listener {
+            let new_server = self.spawn_server(listener, new_addr.clone(), shutdown_rx);
+            let previous = self
+                .server_abort
+                .lock()
+                .expect("stream server_abort mutex poisoned")
+                .replace(new_server);
+            if let Some(previous) = previous {
+                previous.abort();
+            }
+            tracing::info!(new = %new_addr, "iii-stream server rebound after configuration change");
+        }
+
+        Ok(())
     }
 }
 
@@ -447,7 +929,7 @@ impl StreamWorker {
 
         let function_id = format!("stream::set({})", stream_name);
         let function = self.engine.functions.get(&function_id);
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<SetResult> = match function {
             Some(_) => {
@@ -534,7 +1016,7 @@ impl StreamWorker {
 
         let function_id = format!("stream::get({})", stream_name);
         let function = self.engine.functions.get(&function_id);
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         crate::workers::telemetry::collector::track_stream_get();
         match function {
@@ -584,7 +1066,7 @@ impl StreamWorker {
         let item_id = input.item_id;
         let function_id = format!("stream::delete({})", stream_name);
         let function = self.engine.functions.get(&function_id);
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<DeleteResult> = match function {
             Some(_) => {
@@ -660,7 +1142,7 @@ impl StreamWorker {
 
         let function_id = format!("stream::list({})", stream_name);
         let function = self.engine.functions.get(&function_id);
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         crate::workers::telemetry::collector::track_stream_list();
         match function {
@@ -712,7 +1194,7 @@ impl StreamWorker {
 
         let function_id = format!("stream::list_groups({})", stream_name);
         let function = self.engine.functions.get(&function_id);
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         match function {
             Some(_) => {
@@ -757,7 +1239,7 @@ impl StreamWorker {
         &self,
         _input: StreamListAllInput,
     ) -> FunctionResult<StreamListAllResult, ErrorBody> {
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         match adapter.list_all_stream().await {
             Ok(stream) => {
@@ -796,7 +1278,7 @@ impl StreamWorker {
 
         self.invoke_triggers(message.clone()).await;
 
-        if let Err(e) = self.adapter.emit_event(message).await {
+        if let Err(e) = self.adapter_snapshot().emit_event(message).await {
             tracing::error!(error = %e, "Failed to emit stream send event");
             return FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to send event: {}", e),
@@ -826,7 +1308,7 @@ impl StreamWorker {
 
         let function_id = format!("stream::update({})", stream_name);
         let function = self.engine.functions.get(&function_id);
-        let adapter = self.adapter.clone();
+        let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<UpdateResult> = match function {
             Some(_) => {
@@ -937,6 +1419,42 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn effective_adapter_treats_none_as_default() {
+        use crate::workers::traits::AdapterEntry;
+
+        // An absent adapter and an explicit built-in-default adapter must
+        // compare equal, so boot adoption (or an auth_function-only edit) is not
+        // mistaken for an adapter change that would trigger a needless hot-swap.
+        let none = StreamModuleConfig::default();
+        assert!(none.adapter.is_none());
+        let explicit = StreamModuleConfig {
+            adapter: Some(AdapterEntry {
+                name: StreamWorker::DEFAULT_ADAPTER_NAME.to_string(),
+                config: None,
+            }),
+            ..StreamModuleConfig::default()
+        };
+        assert_eq!(
+            StreamWorker::effective_adapter(&none),
+            StreamWorker::effective_adapter(&explicit),
+            "None and the explicit default adapter must be the same effective adapter"
+        );
+
+        let other = StreamModuleConfig {
+            adapter: Some(AdapterEntry {
+                name: "redis".to_string(),
+                config: None,
+            }),
+            ..StreamModuleConfig::default()
+        };
+        assert_ne!(
+            StreamWorker::effective_adapter(&none),
+            StreamWorker::effective_adapter(&other),
+            "a different adapter name must be a different effective adapter"
+        );
+    }
 
     struct RecordingConnection {
         tx: mpsc::UnboundedSender<StreamWrapperMessage>,
@@ -1173,7 +1691,7 @@ mod tests {
         // Subscribe to events
         let (tx, mut rx) = mpsc::unbounded_channel();
         module
-            .adapter
+            .adapter_snapshot()
             .subscribe(
                 "test-subscriber".to_string(),
                 Arc::new(RecordingConnection { tx }),
@@ -1182,7 +1700,7 @@ mod tests {
             .expect("Should subscribe successfully");
 
         // Start event watcher
-        let watcher_adapter = module.adapter.clone();
+        let watcher_adapter = module.adapter_snapshot();
         let watcher = tokio::spawn(async move {
             let _ = watcher_adapter.watch_events().await;
         });
@@ -1307,7 +1825,7 @@ mod tests {
         // Subscribe to events
         let (tx, mut rx) = mpsc::unbounded_channel();
         module
-            .adapter
+            .adapter_snapshot()
             .subscribe(
                 "test-subscriber".to_string(),
                 Arc::new(RecordingConnection { tx }),
@@ -1316,7 +1834,7 @@ mod tests {
             .expect("Should subscribe successfully");
 
         // Start event watcher
-        let watcher_adapter = module.adapter.clone();
+        let watcher_adapter = module.adapter_snapshot();
         let watcher = tokio::spawn(async move {
             let _ = watcher_adapter.watch_events().await;
         });
@@ -1387,7 +1905,7 @@ mod tests {
         // Subscribe to events
         let (tx, mut rx) = mpsc::unbounded_channel();
         module
-            .adapter
+            .adapter_snapshot()
             .subscribe(
                 "test-subscriber".to_string(),
                 Arc::new(RecordingConnection { tx }),
@@ -1396,7 +1914,7 @@ mod tests {
             .expect("Should subscribe successfully");
 
         // Start event watcher
-        let watcher_adapter = module.adapter.clone();
+        let watcher_adapter = module.adapter_snapshot();
         let watcher = tokio::spawn(async move {
             let _ = watcher_adapter.watch_events().await;
         });

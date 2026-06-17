@@ -8,18 +8,36 @@ use serde::{Deserialize, Serialize};
 
 use crate::workers::traits::AdapterEntry;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// Runtime configuration for the `iii-stream` WebSocket server.
+///
+/// Consumed by the builtin `configuration` worker: the config.yaml block seeds
+/// this entry on first boot, after which the configuration entry is the runtime
+/// source of truth. `host`/`port` and `adapter` hot-apply at runtime (the
+/// server rebinds; the pub/sub backend is hot-swapped); `auth_function` applies
+/// to new connections.
+#[derive(Serialize, Deserialize, Debug, Clone, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StreamModuleConfig {
+    /// TCP port the WebSocket server binds to. Defaults to `3112`. A change
+    /// rebinds the listener at runtime (dropping live connections on the old
+    /// address).
     #[serde(default = "default_port")]
     pub port: u16,
 
+    /// Host/interface the WebSocket server binds to. Defaults to `0.0.0.0`
+    /// (all interfaces). A change rebinds the listener at runtime.
     #[serde(default = "default_host")]
     pub host: String,
 
+    /// Optional function id invoked at connection upgrade to authenticate a
+    /// client. A change applies to new connections only.
     #[serde(default)]
     pub auth_function: Option<String>,
 
+    /// Pub/sub backend for stream distribution. Defaults to the built-in `kv`
+    /// adapter; use `redis` (or `bridge`) for multi-instance deployments. A
+    /// change hot-swaps the backend: new connections use it, while existing
+    /// connections remain bound to the previous backend until they close.
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
@@ -133,5 +151,30 @@ auth_function: "check_auth"
         assert_eq!(config.port, 7777);
         assert_eq!(config.host, "10.0.0.1");
         assert_eq!(config.auth_function, Some("check_auth".to_string()));
+    }
+
+    #[test]
+    fn schema_denies_unknown_fields_and_documents_fields() {
+        let schema = serde_json::to_value(schemars::schema_for!(StreamModuleConfig)).unwrap();
+
+        // `deny_unknown_fields` must flow into the schema so `configuration::set`
+        // rejects typo'd keys (e.g. `prt`) at set time rather than silently
+        // ignoring them.
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::json!(false),
+            "schema must deny unknown fields: {schema}"
+        );
+
+        // Field doc comments must become schema descriptions so an agent
+        // introspecting the config sees intent, not just types.
+        assert!(
+            schema["properties"]["port"]["description"].is_string(),
+            "port field must carry a schema description: {schema}"
+        );
+        assert!(
+            schema["properties"]["adapter"]["description"].is_string(),
+            "adapter field must carry a schema description: {schema}"
+        );
     }
 }
