@@ -1145,6 +1145,22 @@ async fn start_worker_impl(
 
     let mounts = build_local_mounts(project_path);
 
+    // Overlay: build the shared read-only base squashfs from the prepared base
+    // rootfs (host-side, image-independent) when overlay is active. Built in
+    // the start path so the cost is visible and a failure fails the start
+    // cleanly (rather than inside the detached __vm-boot child).
+    let (rootfs_lower, rootfs_mode) = if crate::cli::overlay::overlay_active() {
+        match crate::cli::squashfs::ensure_base_squashfs(&base_rootfs) {
+            Ok(sqfs) => (Some(sqfs), "overlay".to_string()),
+            Err(e) => {
+                eprintln!("{} failed to build base squashfs: {}", "error:".red(), e);
+                return 1;
+            }
+        }
+    } else {
+        (None, String::new())
+    };
+
     let managed_dir_for_watcher = managed_dir.clone();
     let exit_code = super::worker_manager::libkrun::run_dev(
         kind,
@@ -1155,6 +1171,8 @@ async fn start_worker_impl(
         vcpus,
         ram,
         managed_dir,
+        rootfs_lower,
+        rootfs_mode,
         true,
         worker_name,
         &mounts,

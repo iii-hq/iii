@@ -60,9 +60,11 @@ pub fn overlay_active() -> bool {
         return false;
     }
     if !init_overlay_capable() {
-        eprintln!(
-            "iii: overlay rootfs requested but iii-init is not embedded in this build; \
-             using legacy per-worker rootfs (build with --features embed-init for overlay)."
+        // Common+expected in non-embed (dev) builds, so keep it quiet — a
+        // per-start stderr warning would spam every worker boot. Operators
+        // who expect overlay can see this at debug level.
+        tracing::debug!(
+            "overlay rootfs requested but iii-init is not embedded; using legacy per-worker rootfs"
         );
         return false;
     }

@@ -89,6 +89,7 @@ pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<Strin
 
 /// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
 /// Uses a separate process for crash isolation.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_dev(
     _kind: &str,
     _project_path: &str,
@@ -98,6 +99,8 @@ pub async fn run_dev(
     vcpus: u32,
     ram_mib: u32,
     rootfs: PathBuf,
+    rootfs_lower: Option<PathBuf>,
+    rootfs_mode: String,
     background: bool,
     worker_name: &str,
     mounts: &[(String, String)],
@@ -136,6 +139,8 @@ pub async fn run_dev(
     cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
     for boot_arg in vm_boot_args_dev(
         &rootfs,
+        rootfs_lower.as_deref(),
+        &rootfs_mode,
         exec_path,
         vcpus,
         ram_mib,
@@ -279,8 +284,11 @@ use super::adapter::{ContainerSpec, ContainerStatus, ImageInfo, RuntimeAdapter};
 
 const VM_BOOT_NETWORK_FLAG: &str = "--network";
 
+#[allow(clippy::too_many_arguments)]
 fn vm_boot_args_oci(
     rootfs: &Path,
+    rootfs_lower: Option<&Path>,
+    rootfs_mode: &str,
     exec_path: &str,
     workdir: &str,
     vcpus: u32,
@@ -295,6 +303,7 @@ fn vm_boot_args_oci(
     let mut out: Vec<OsString> = Vec::new();
     out.push(OsString::from("--rootfs"));
     out.push(rootfs.as_os_str().to_owned());
+    push_overlay_args(&mut out, rootfs_lower, rootfs_mode);
     out.push(OsString::from("--exec"));
     out.push(OsString::from(exec_path));
     out.push(OsString::from("--workdir"));
@@ -323,8 +332,22 @@ fn vm_boot_args_oci(
     out
 }
 
+/// Push `--rootfs-lower <sqfs> --rootfs-mode <mode>` when overlay mode is
+/// active (i.e. the start path built a base squashfs). No-op for legacy.
+fn push_overlay_args(out: &mut Vec<OsString>, rootfs_lower: Option<&Path>, rootfs_mode: &str) {
+    if let Some(lower) = rootfs_lower {
+        out.push(OsString::from("--rootfs-lower"));
+        out.push(lower.as_os_str().to_owned());
+        out.push(OsString::from("--rootfs-mode"));
+        out.push(OsString::from(rootfs_mode));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn vm_boot_args_dev(
     rootfs: &Path,
+    rootfs_lower: Option<&Path>,
+    rootfs_mode: &str,
     exec_path: &str,
     vcpus: u32,
     ram_mib: u32,
@@ -337,6 +360,7 @@ fn vm_boot_args_dev(
     let mut out: Vec<OsString> = Vec::new();
     out.push(OsString::from("--rootfs"));
     out.push(rootfs.as_os_str().to_owned());
+    push_overlay_args(&mut out, rootfs_lower, rootfs_mode);
     out.push(OsString::from("--exec"));
     out.push(OsString::from(exec_path));
     out.push(OsString::from("--workdir"));
@@ -699,6 +723,17 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let merged_env = build_vm_env(caller_env);
         let env_pairs: Vec<(String, String)> = merged_env.into_iter().collect();
 
+        // Overlay: build the shared read-only base squashfs from the cached
+        // image rootfs (host-side, image-independent) when overlay is active.
+        let (oci_rootfs_lower, oci_rootfs_mode) = if crate::cli::overlay::overlay_active() {
+            match crate::cli::squashfs::ensure_base_squashfs(&rootfs_dir) {
+                Ok(sqfs) => (Some(sqfs), "overlay".to_string()),
+                Err(e) => return Err(anyhow::anyhow!("failed to build base squashfs: {e}")),
+            }
+        } else {
+            (None, String::new())
+        };
+
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");
         // Detached by design — see the matching scrub in run_dev above.
@@ -706,6 +741,8 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         cmd.env_remove(crate::daemon_exit::LIFELINE_SPAWNER_PID_ENV);
         for boot_arg in vm_boot_args_oci(
             &worker_rootfs,
+            oci_rootfs_lower.as_deref(),
+            &oci_rootfs_mode,
             &exec_path,
             &workdir,
             vcpus,
@@ -887,6 +924,8 @@ mod tests {
 
         let parsed = parse_vm_boot_args(vm_boot_args_oci(
             Path::new("/tmp/rootfs"),
+            Some(Path::new("/tmp/base.sqfs")),
+            "overlay",
             "/bin/sh",
             "/",
             4,
@@ -911,6 +950,8 @@ mod tests {
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
         assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
         assert_eq!(parsed.arg, exec_args);
+        assert_eq!(parsed.rootfs_lower.as_deref(), Some("/tmp/base.sqfs"));
+        assert_eq!(parsed.rootfs_mode, "overlay");
     }
 
     #[test]
@@ -921,6 +962,8 @@ mod tests {
 
         let parsed = parse_vm_boot_args(vm_boot_args_dev(
             Path::new("/tmp/rootfs"),
+            None,
+            "",
             "/bin/sh",
             2,
             2048,

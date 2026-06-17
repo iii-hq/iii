@@ -14,9 +14,20 @@
 /// Arguments for the `__vm-boot` hidden subcommand.
 #[derive(clap::Args, Debug)]
 pub struct VmBootArgs {
-    /// Path to the guest rootfs directory
+    /// Path to the guest rootfs directory (the boot trampoline; in overlay
+    /// mode this is a minimal dir serving only the injected /init.krun).
     #[arg(long)]
     pub rootfs: String,
+
+    /// Overlay mode: host path to the prebuilt read-only base squashfs
+    /// (attached as the overlay lower, /dev/vda). Built host-side by the
+    /// start path; absent => legacy per-worker-rootfs boot.
+    #[arg(long)]
+    pub rootfs_lower: Option<String>,
+
+    /// Rootfs mode signalled by the start path: "overlay" or "" (legacy).
+    #[arg(long, default_value = "")]
+    pub rootfs_mode: String,
 
     /// Executable path inside the guest
     #[arg(long)]
@@ -714,43 +725,21 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         });
     }
 
-    // Block-image overlay rootfs (spike, III_ROOTFS_MODE=overlay): attach a
-    // shared, read-only base image (squashfs) as a virtio-blk disk. The VM
-    // still boots off the existing virtiofs root just long enough to run
-    // /init.krun; iii-init then sees III_BLOCK_ROOT_* (set in the exec env
-    // below), assembles overlayfs(base=/dev/vda, writable upper) and pivots
-    // into it. Proves the shared-base + overlay boot path; eliminating the
-    // per-worker rootfs clone is the follow-up.
-    // Block-image overlay rootfs: point III_ROOTFS_BASE_DIR (or the
-    // ~/.iii/overlay-base-dir file fallback — the engine's worker-mgmt spawn
-    // chain doesn't forward arbitrary env to __vm-boot) at an extracted base
-    // rootfs DIR. iii packs it into a read-only squashfs HOST-SIDE (backhand),
-    // never using any tool inside the image, and attaches it as /dev/vda.
-    // iii-init then assembles overlayfs(base, writable upper) and pivots in.
-    let overlay_base_dir = std::env::var("III_ROOTFS_BASE_DIR")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            std::fs::read_to_string(format!("{home}/.iii/overlay-base-dir"))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
-    // Overlay is on by default, but only activates when (a) a base rootfs is
-    // configured, (b) the feature flag isn't set to legacy, and (c) an
-    // overlay-capable (embedded) iii-init is available. The handshake (c)
-    // makes an iii update safe even if a stale init lingers in the cache —
-    // see cli::overlay. Falls back to the legacy per-worker-clone boot
-    // otherwise.
-    let overlay_mode = overlay_base_dir.is_some() && crate::cli::overlay::overlay_active();
+    // Overlay mode is decided by the START path (which evaluated the feature
+    // flag + the embedded-init capability handshake — same binary, so the
+    // decision is authoritative) and passed down as --rootfs-mode + the
+    // prebuilt --rootfs-lower squashfs. We attach it here; the squashfs is
+    // built host-side in the start path, not in this detached child.
+    let overlay_mode = args.rootfs_mode == "overlay" && args.rootfs_lower.is_some();
     if overlay_mode {
-        let dir = overlay_base_dir.expect("overlay_mode implies a base dir");
+        let sqfs = args
+            .rootfs_lower
+            .clone()
+            .expect("overlay_mode implies --rootfs-lower");
         // Migrate this worker's on-disk layout to overlay: GC orphaned legacy
         // clone artifacts (dep cache + prepared marker) and stamp the marker.
         crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
-        let sqfs = crate::cli::squashfs::ensure_base_squashfs(std::path::Path::new(&dir))?;
-        eprintln!("iii: overlay base squashfs -> /dev/vda: {}", sqfs.display());
+        eprintln!("iii: overlay base squashfs -> /dev/vda: {sqfs}");
         builder = builder.disk(move |d| {
             d.path(&sqfs)
                 .format(msb_krun::DiskImageFormat::Raw)
