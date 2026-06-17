@@ -43,8 +43,8 @@ def _patch_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWebSocket:
         return ws
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
-    monkeypatch.setattr("iii_observability.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii_observability.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.attach_event_loop", lambda loop: None)
     monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
     return ws
 

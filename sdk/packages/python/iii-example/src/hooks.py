@@ -3,7 +3,7 @@ from typing import Any, Awaitable, Callable
 
 from iii import IIIClient
 from iii_helpers.http import HttpRequest, HttpResponse
-from iii_observability import Logger
+from iii_helpers.observability import Logger
 
 
 def use_api(

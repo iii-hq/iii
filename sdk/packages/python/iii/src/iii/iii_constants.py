@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Final, Literal
 
-from iii_observability import OtelConfig, ReconnectionConfig
+from iii_helpers.observability import OtelConfig, ReconnectionConfig
 
 IIIConnectionState = Literal["disconnected", "connecting", "connected", "reconnecting", "failed"]
 
