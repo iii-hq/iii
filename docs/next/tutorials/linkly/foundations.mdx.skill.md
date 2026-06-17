@@ -83,8 +83,8 @@ scripts:
 <Info>
   iii runs an isolated sandboxed worker for you from these `scripts`, but a worker can also be an
   ordinary service. Any process that uses a iii SDK and calls `registerWorker()` is also a worker.
-  This means you can run the worker directly with just `npm i && npm start` and it will work just
-  the same as the `iii worker` variant, just outside of a sandbox.
+  This means you can run the worker directly with `npm i && npm start` and it behaves the same as
+  the `iii worker` variant, only outside of a sandbox.
   <p>
     Learn more about the [`iii.worker.yaml` manifest](/creating-workers/workers#worker-manifest).
   </p>
