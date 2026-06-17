@@ -687,7 +687,11 @@ async fn failed_log_level_reload_is_not_advertised_and_keeps_retrying() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
     let worker = start_observability_worker(&harness, json!({})).await;
-    assert_eq!(worker.current_config().level, None, "no level seeded at boot");
+    assert_eq!(
+        worker.current_config().level,
+        None,
+        "no level seeded at boot"
+    );
 
     // `engine=notalevel` passes schema (level is a free string) but fails the
     // EnvFilter parse in reload_log_level, so the install always fails —
