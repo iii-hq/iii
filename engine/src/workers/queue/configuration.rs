@@ -211,9 +211,9 @@ mod tests {
                 let stored_value = stored_value.clone();
                 async move {
                     match stored_value {
-                        Some(value) => {
-                            FunctionResult::Success(Some(json!({ "id": CONFIG_ID, "value": value })))
-                        }
+                        Some(value) => FunctionResult::Success(Some(
+                            json!({ "id": CONFIG_ID, "value": value }),
+                        )),
                         None => FunctionResult::Failure(crate::protocol::ErrorBody {
                             message: format!("configuration '{CONFIG_ID}' not found"),
                             code: "NOT_FOUND".to_string(),
@@ -266,7 +266,10 @@ mod tests {
 
         let payload = registered.recv().await.unwrap();
         assert_eq!(payload["id"], CONFIG_ID);
-        assert_eq!(payload["initial_value"]["queue_configs"]["reports"]["concurrency"], 7);
+        assert_eq!(
+            payload["initial_value"]["queue_configs"]["reports"]["concurrency"],
+            7
+        );
         // schemars derives deny_unknown_fields into the schema.
         assert_eq!(payload["schema"]["additionalProperties"], json!(false));
         // Field doc comments must flow into the schema so an agent
@@ -369,8 +372,10 @@ mod tests {
         // JSON schema (which can't express the cross-field rule), so it reaches
         // the worker's `validate()` gate — which must reject it and keep the
         // previous live config.
-        let _registered =
-            stub_configuration(&engine, Some(json!({ "queue_configs": { "orders": { "type": "fifo" } } })));
+        let _registered = stub_configuration(
+            &engine,
+            Some(json!({ "queue_configs": { "orders": { "type": "fifo" } } })),
+        );
 
         let worker = QueueWorker::for_test(
             engine.clone(),

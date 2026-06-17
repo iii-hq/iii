@@ -130,7 +130,10 @@ async fn first_boot_seeds_configuration_entry() {
         .await
         .expect("configuration::get")
         .expect("get returns a body");
-    assert_eq!(stored["value"]["queue_configs"]["reports"]["concurrency"], 4);
+    assert_eq!(
+        stored["value"]["queue_configs"]["reports"]["concurrency"],
+        4
+    );
     // The always-present built-in `default` queue is seeded too.
     assert!(
         stored["value"]["queue_configs"]["default"].is_object(),
@@ -361,7 +364,12 @@ async fn hot_remove_queue_drops_it_from_live_config() {
         "enqueue to a removed queue must fail (consumer stopped, queue absent)"
     );
     // `default` survives every edit (ensure_default_queue in fetch_config).
-    assert!(worker.config_snapshot().queue_configs.contains_key("default"));
+    assert!(
+        worker
+            .config_snapshot()
+            .queue_configs
+            .contains_key("default")
+    );
 }
 
 #[tokio::test]

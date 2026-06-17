@@ -226,7 +226,9 @@ impl QueueWorker {
         count: usize,
     ) -> anyhow::Result<Vec<Value>> {
         let namespaced = format!("__fn_queue::{}", queue_name);
-        self.adapter_snapshot().dlq_messages(&namespaced, count).await
+        self.adapter_snapshot()
+            .dlq_messages(&namespaced, count)
+            .await
     }
 
     #[function(id = "iii::durable::publish", description = "Enqueue a message")]
@@ -555,7 +557,11 @@ impl QueueWorker {
         let limit = input.limit;
 
         let resolved = self.resolve_queue_key(&topic);
-        match self.adapter_snapshot().dlq_peek(&resolved, offset, limit).await {
+        match self
+            .adapter_snapshot()
+            .dlq_peek(&resolved, offset, limit)
+            .await
+        {
             Ok(messages) => {
                 FunctionResult::Success(Some(serde_json::to_value(&messages).unwrap_or(json!([]))))
             }
@@ -782,11 +788,7 @@ impl QueueWorker {
     /// `consumers` map is mutated, so a failed (re)start leaves the previous
     /// consumer running — the property that makes the runtime apply best-effort
     /// safe.
-    async fn spawn_consumer(
-        &self,
-        name: &str,
-        config: &FunctionQueueConfig,
-    ) -> anyhow::Result<()> {
+    async fn spawn_consumer(&self, name: &str, config: &FunctionQueueConfig) -> anyhow::Result<()> {
         let adapter = self.adapter_snapshot();
         adapter.setup_function_queue(name, config).await?;
 
@@ -1622,7 +1624,9 @@ mod tests {
             },
             Handler::new(move |_input: Value| {
                 let value = value.clone();
-                async move { FunctionResult::Success(Some(json!({ "id": "iii-queue", "value": value }))) }
+                async move {
+                    FunctionResult::Success(Some(json!({ "id": "iii-queue", "value": value })))
+                }
             }),
         );
     }
