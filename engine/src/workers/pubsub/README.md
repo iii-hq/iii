@@ -33,6 +33,26 @@ npx skills add iii-hq/iii --full-depth --skill iii-pubsub
 |---|---|---|
 | `adapter` | Adapter | Adapter for pub/sub distribution. Defaults to `local` (in-memory). |
 
+## Runtime configuration (hot reload)
+
+`iii-pubsub` registers its configuration with the builtin `configuration` worker
+under the id **`iii-pubsub`**, so the `adapter` can be read and changed at runtime
+(e.g. `configuration::set { id: "iii-pubsub", value: { adapter: { name: "redis",
+config: { redis_url: "..." } } } }`) without restarting the engine. The
+config.yaml block is the **seed** used on first boot only; afterwards the
+configuration entry is the runtime source of truth and a runtime edit survives
+engine restarts. Values are validated against the schema at set time, and
+`${VAR:default}` placeholders are expanded on read.
+
+The `adapter` applies as a **full backend hot-swap**: the new pub/sub backend is
+built, every live `subscribe` trigger is re-subscribed onto it, the live backend
+is swapped so new publishes route through it, and the previous backend's
+subscriptions are torn down (aborting its redis tasks). The swap is gated — a
+value that fails to build the backend keeps the previous one. Because pub/sub is
+fire-and-forget, a publish in the brief window mid-swap may be observed by both
+backends; prefer a quiet moment to repoint the adapter in a multi-instance
+deployment.
+
 ## Adapters
 
 ### local
