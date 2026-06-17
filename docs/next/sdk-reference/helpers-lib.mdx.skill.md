@@ -969,6 +969,8 @@ re-export them; import them from the submodule (`@iii-dev/helpers/observability`
   The standalone `@iii-dev/observability` (npm), `iii-observability` (PyPI), and `iii-observability`
   (crates.io) packages are deprecated shims that re-export the public API from this submodule. They
   continue to work but emit a deprecation signal. Prefer the helpers submodule path for new code.
+  For per-language deprecation mechanisms (Node `@deprecated` JSDoc, Python `DeprecationWarning`,
+  Rust `#![deprecated]`) see the [0.20.0 changelog](/changelog/0-20-0/observability-into-helpers).
 </Note>
 
 ### `Logger`
