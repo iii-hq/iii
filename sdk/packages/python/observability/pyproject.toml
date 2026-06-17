@@ -10,7 +10,7 @@ authors = [{ name = "III" }]
 license = { text = "Apache-2.0" }
 readme = "README.md"
 requires-python = ">=3.10"
-keywords = ["iii", "observability", "opentelemetry", "logger"]
+keywords = ["iii", "observability", "logger"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

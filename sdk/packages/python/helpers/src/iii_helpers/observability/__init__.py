@@ -1,4 +1,4 @@
-"""iii-observability: shared OTel + Logger primitives."""
+"""iii_helpers.observability: shared OTel + Logger primitives."""
 
 from .baggage_span_processor import DEFAULT_ALLOWLIST, BaggageSpanProcessor
 from .http_instrumentation import execute_traced_request
