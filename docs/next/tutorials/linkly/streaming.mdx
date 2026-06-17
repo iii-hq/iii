@@ -19,7 +19,7 @@ worker to manage the streaming, so scaffold it the same way you scaffolded `link
 `analytics` in Chapter 4:
 
 ```bash
-iii worker add iii-stream
+iii worker add iii-stream@0.19.4-alpha.2
 iii worker init click-streamer --language typescript
 ```
 
@@ -111,12 +111,17 @@ The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those
 
 ## See it work
 
-With the engine running, follow a link a few times and read the live `clicks` stream:
+With the engine running, create and follow a link a few times:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
   -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
 for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+```
+
+Then read the live `clicks` stream:
+
+```bash
 iii trigger stream::list stream_name=clicks group_id=all
 ```
 
