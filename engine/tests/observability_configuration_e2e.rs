@@ -677,3 +677,86 @@ async fn concurrent_applies_converge_under_apply_lock() {
     .await;
     assert_eq!(worker.current_config().logs_max_count, Some(77));
 }
+
+#[tokio::test]
+#[serial]
+async fn failed_log_level_reload_is_not_advertised_and_keeps_retrying() {
+    // C4 regression: the global snapshot must never report a log level we
+    // failed to install, and old.level != new.level must persist so the next
+    // apply retries instead of masking the drift.
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({})).await;
+    assert_eq!(worker.current_config().level, None, "no level seeded at boot");
+
+    // `engine=notalevel` passes schema (level is a free string) but fails the
+    // EnvFilter parse in reload_log_level, so the install always fails —
+    // deterministically, independent of whether a reload handle exists.
+    set_value(&harness, json!({ "level": "engine=notalevel" })).await;
+    drive_apply(&harness).await;
+    assert_eq!(
+        worker.current_config().level,
+        None,
+        "a failed log-level reload must not advertise the un-applied level"
+    );
+
+    // Re-driving applies again: still reverted, never converged to the bad value.
+    drive_apply(&harness).await;
+    assert_eq!(
+        worker.current_config().level,
+        None,
+        "the failed level must keep retrying, not mask the drift"
+    );
+}
+
+fn make_span(i: u64) -> iii::workers::observability::otel::StoredSpan {
+    iii::workers::observability::otel::StoredSpan {
+        trace_id: format!("trace-{i}"),
+        span_id: format!("span-{i}"),
+        parent_span_id: None,
+        name: format!("op-{i}"),
+        start_time_unix_nano: 1_000_000_000 + i,
+        end_time_unix_nano: 2_000_000_000 + i,
+        status: "OK".to_string(),
+        status_description: None,
+        attributes: Vec::new(),
+        service_name: "e2e".to_string(),
+        events: Vec::new(),
+        links: Vec::new(),
+        instrumentation_scope_name: None,
+        instrumentation_scope_version: None,
+        flags: None,
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn memory_max_spans_retune_bounds_the_live_span_store() {
+    // T3: prove the LIMITS tier wires `memory_max_spans` through apply_config to
+    // the live span store (the log path was covered; spans were not).
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "memory_max_spans": 1000 })).await;
+    // The lean e2e harness skips full OTEL init, so the in-memory span store
+    // isn't created at boot. Bootstrap it (as the engine's memory exporter
+    // would) so the LIMITS tier has a live store to retune.
+    let _ = iii::workers::observability::otel::InMemorySpanExporter::new(1000, "e2e".to_string());
+    let storage =
+        iii::workers::observability::otel::get_span_storage().expect("span storage exists");
+    storage.clear();
+
+    set_value(&harness, json!({ "memory_max_spans": 2 })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().memory_max_spans == Some(2),
+        "memory_max_spans to apply",
+    )
+    .await;
+
+    storage.add_spans((0..6).map(make_span).collect());
+    assert!(
+        storage.len() <= 2,
+        "retuned span cap must bound the live store, got {}",
+        storage.len()
+    );
+}

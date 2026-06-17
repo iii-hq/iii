@@ -1967,6 +1967,28 @@ mod tests {
             .store(0, Ordering::Relaxed);
     }
 
+    #[test]
+    fn alert_state_reads_tolerate_a_poisoned_lock() {
+        // A panic while holding the `states` write guard poisons the lock.
+        // `get_states` / `get_firing_alerts` must degrade gracefully (recover
+        // the inner guard) rather than panic, matching their sibling rule
+        // readers. Pre-fix they used `.read().unwrap()` and would panic here.
+        let manager = AlertManager::new(Vec::new());
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = manager.states.write().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(panicked.is_err(), "the helper closure must have panicked");
+        assert!(
+            manager.states.is_poisoned(),
+            "the states lock must be poisoned for this test to be meaningful"
+        );
+
+        // Must not panic on the poisoned lock.
+        let _ = manager.get_states();
+        let _ = manager.get_firing_alerts();
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn alert_manager_resurrection_filter_hides_removed_rule() {
