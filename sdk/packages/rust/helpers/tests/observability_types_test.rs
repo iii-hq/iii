@@ -1,4 +1,4 @@
-use iii_observability::{OtelConfig, ReconnectionConfig};
+use iii_helpers::observability::{OtelConfig, ReconnectionConfig};
 
 #[test]
 fn otel_config_default_disabled() {

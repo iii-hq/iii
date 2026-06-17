@@ -1,4 +1,4 @@
-use iii_observability::{REDACTED_PLACEHOLDER, redact};
+use iii_helpers::observability::{REDACTED_PLACEHOLDER, redact};
 
 #[test]
 fn redact_replaces_sensitive_keys() {
