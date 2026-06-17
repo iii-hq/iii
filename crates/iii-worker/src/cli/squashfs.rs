@@ -98,21 +98,114 @@ fn add_dir(w: &mut FilesystemWriter, root: &Path, dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
-/// Return the cached squashfs path for a base rootfs dir, building it
-/// (host-side) on first use. The cache file is `<dir>.sqfs` next to the
-/// source. Rebuilds only when missing.
-pub fn ensure_base_squashfs(base_dir: &Path) -> Result<std::path::PathBuf, String> {
+/// The cache path for a base rootfs dir's squashfs: `<dir>.sqfs` next to it.
+pub fn base_squashfs_path(base_dir: &Path) -> std::path::PathBuf {
     let name = base_dir
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("base");
-    let out = base_dir.with_file_name(format!("{name}.sqfs"));
-    if !out.exists() {
+    base_dir.with_file_name(format!("{name}.sqfs"))
+}
+
+/// Return the cached squashfs path for a base rootfs dir, building it
+/// (host-side) on first use and rebuilding when stale. The cache file is
+/// `<dir>.sqfs` next to the source.
+///
+/// Staleness: rebuild when the `.sqfs` is missing OR older than the source
+/// dir's mtime. OCI/base rootfs cache dirs are immutable once extracted (a
+/// re-pull replaces the dir, bumping its mtime), so a top-level mtime compare
+/// catches re-extraction without walking the whole tree on every boot. The
+/// build is atomic (temp + rename) so an interrupted build never leaves a
+/// torn `.sqfs` that a later boot would attach as a corrupt overlay lower.
+pub fn ensure_base_squashfs(base_dir: &Path) -> Result<std::path::PathBuf, String> {
+    let out = base_squashfs_path(base_dir);
+
+    let stale = match (fs::metadata(&out), fs::metadata(base_dir)) {
+        // Both present: rebuild if the cache predates the source dir.
+        (Ok(o), Ok(b)) => match (o.modified(), b.modified()) {
+            (Ok(om), Ok(bm)) => om < bm,
+            // mtime unavailable on this fs: trust the existing cache.
+            _ => false,
+        },
+        // Cache exists, source dir stat failed: keep the cache.
+        (Ok(_), Err(_)) => false,
+        // No cache yet: build.
+        (Err(_), _) => true,
+    };
+
+    if stale {
         eprintln!(
             "iii: building read-only base squashfs (host-side, image-independent) from {}...",
             base_dir.display()
         );
-        build_squashfs(base_dir, &out)?;
+        let tmp = base_dir.with_file_name(format!(
+            "{}.sqfs.partial",
+            base_dir.file_name().and_then(|s| s.to_str()).unwrap_or("base")
+        ));
+        let _ = fs::remove_file(&tmp);
+        build_squashfs(base_dir, &tmp).inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })?;
+        fs::rename(&tmp, &out)
+            .map_err(|e| format!("finalize squashfs {}: {e}", out.display()))?;
     }
     Ok(out)
+}
+
+/// Remove the cached squashfs (and any leftover partial) for a base rootfs
+/// dir. Call when the underlying image/rootfs cache is freed so the shared
+/// `.sqfs` doesn't outlive its source. Best-effort; missing files are fine.
+pub fn remove_base_squashfs(base_dir: &Path) {
+    let out = base_squashfs_path(base_dir);
+    let _ = fs::remove_file(&out);
+    let name = base_dir.file_name().and_then(|s| s.to_str()).unwrap_or("base");
+    let _ = fs::remove_file(base_dir.with_file_name(format!("{name}.sqfs.partial")));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::time::UNIX_EPOCH;
+
+    fn make_src(dir: &Path) {
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        let mut f = File::create(dir.join("bin/sh")).unwrap();
+        f.write_all(b"#!/bin/sh\necho hi\n").unwrap();
+        std::os::unix::fs::symlink("sh", dir.join("bin/ash")).unwrap();
+    }
+
+    #[test]
+    fn builds_caches_rebuilds_on_stale_and_removes() {
+        let tmp = std::env::temp_dir().join(format!("iii-sqfs-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let src = tmp.join("rootfs");
+        make_src(&src);
+
+        // First call builds the cache next to the source.
+        let out = ensure_base_squashfs(&src).unwrap();
+        assert_eq!(out, base_squashfs_path(&src));
+        assert!(out.exists());
+        // Readable as a squashfs (magic "hsqs" for LE v4).
+        let magic = fs::read(&out).unwrap()[..4].to_vec();
+        assert_eq!(&magic, b"hsqs", "output is not a squashfs image");
+
+        // Force the cache to look older than the source dir -> stale -> rebuild.
+        filetime::set_file_mtime(&out, filetime::FileTime::from_unix_time(1_000_000, 0)).unwrap();
+        ensure_base_squashfs(&src).unwrap();
+        let m = fs::metadata(&out)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(m > 1_000_000, "stale squashfs should have been rebuilt");
+
+        // GC removes the cache (and any partial).
+        remove_base_squashfs(&src);
+        assert!(!out.exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
