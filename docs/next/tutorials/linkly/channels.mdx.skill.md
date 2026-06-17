@@ -76,22 +76,24 @@ With the engine running, let's bulk-load some links.
 ### Upload a CSV
 
 The uploader is a small standalone script that creates the channel, writes the CSV to the writer
-end, and hands the reader end to `bulk-importer::import_csv`. `createChannel` returns serializable
-`readerRef`/`writerRef` handles you can pass through a normal trigger payload. It is not a worker,
-so give it its own throwaway directory outside your project:
+end, and hands the reader end to `bulk-importer::import_csv`. `createChannel` (from
+`iii-sdk/helpers`) returns serializable `readerRef`/`writerRef` handles you can pass through a
+normal trigger payload. It is not a worker, so give it its own throwaway directory outside your
+project:
 
 ```bash
 mkdir test-channels
 cd test-channels
 npm init -y
 npm pkg set type=module
-npm install iii-sdk
+npm install iii-sdk@0.19.4-alpha.2
 ```
 
 Save this as `test-channels/import-links.js`:
 
 ```javascript import-links.js
 import { registerWorker } from "iii-sdk";
+import { createChannel } from "iii-sdk/helpers";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "uploader",
@@ -99,7 +101,7 @@ const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
 
 const csv = ["code,url", "mylink,https://iii.dev", "mydocslink,https://iii.dev/docs"].join("\n");
 
-const channel = await worker.createChannel();
+const channel = await createChannel(worker);
 channel.writer.stream.write(Buffer.from(csv));
 channel.writer.stream.end();
 
@@ -123,11 +125,17 @@ node import-links.js
 Both new links resolve immediately:
 
 ```bash
+iii trigger link::resolve code=mylink
 iii trigger link::resolve code=mydocslink
 ```
 
 ```json
-{ "url": "https://iii.dev/docs" }
+{
+  "url": "https://iii.dev"
+}
+{
+  "url": "https://iii.dev/docs"
+}
 ```
 
 ## Conclusion
