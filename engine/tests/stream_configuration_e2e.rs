@@ -94,6 +94,27 @@ async fn set_value(harness: &Harness, value: Value) {
     }
 }
 
+/// Assert `configuration::set` rejects a value against the closed adapter schema
+/// with `SCHEMA_INVALID` (the bus guard that keeps an unknown adapter name or a
+/// stray config key from ever reaching the worker).
+async fn set_value_expect_rejection(harness: &Harness, value: Value) {
+    let result = harness
+        .configuration
+        .set_fn(ConfigurationSetInput {
+            id: CONFIG_ID.to_string(),
+            value: value.clone(),
+        })
+        .await;
+    match result {
+        FunctionResult::Failure(err) => assert_eq!(
+            err.code, "SCHEMA_INVALID",
+            "expected schema rejection for {value}: {err:?}"
+        ),
+        FunctionResult::Success(_) => panic!("configuration::set must reject {value}"),
+        _ => panic!("unexpected configuration::set result for {value}"),
+    }
+}
+
 /// Invoke the config-change handler synchronously so assertions can't pass
 /// vacuously before the (also async) trigger fan-out applies the change.
 async fn drive_apply(harness: &Harness) {
@@ -318,14 +339,32 @@ async fn boot_resolve_failure_reconciles_config_to_served_adapter() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
+    // First boot seeds + persists a valid `iii-stream` entry to disk.
     let first = start_stream_worker(&harness, json!({ "host": "127.0.0.1", "port": 0 })).await;
-    // Bindable port, but an adapter name with no registered factory.
-    set_value(
-        &harness,
-        json!({ "host": "127.0.0.1", "port": 0, "adapter": { "name": "does-not-exist" } }),
-    )
-    .await;
     first.destroy().await.expect("destroy");
+
+    // Hand-edit the persisted yaml so its stored adapter is an unresolvable name.
+    // This bypasses `configuration::set`'s closed-schema guard exactly as a
+    // manual edit of the persisted file would; deserialization stays lenient, so
+    // the bad value loads on the next prime.
+    let entry_path = dir.path().join("iii-stream.yaml");
+    let mut entry: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&entry_path).expect("read persisted entry"))
+            .expect("parse persisted entry");
+    entry
+        .get_mut("value")
+        .and_then(|v| v.as_mapping_mut())
+        .expect("persisted value mapping")
+        .insert(
+            serde_yaml::Value::String("adapter".to_string()),
+            serde_yaml::from_str("name: does-not-exist").unwrap(),
+        );
+    std::fs::write(&entry_path, serde_yaml::to_string(&entry).unwrap())
+        .expect("write hand-edited entry");
+
+    // A fresh harness re-primes the configuration store from disk, loading the
+    // unresolvable adapter that the bus would never have accepted.
+    let harness = build_harness(dir.path()).await;
 
     let restarted = StreamWorker::for_test(
         harness.engine.clone(),
@@ -387,32 +426,38 @@ async fn adapter_hot_swap_rebuilds_backend() {
 }
 
 #[tokio::test]
-async fn unresolvable_adapter_keeps_previous_backend() {
+async fn set_rejects_unknown_adapter_and_stray_config() {
+    // The closed per-adapter schema guards `configuration::set`: an unknown
+    // adapter name or a config key outside the chosen adapter's schema is
+    // rejected at the bus, so the worker never has to resolve a backend that
+    // can't exist. (The worker's defensive keep-previous behavior for a
+    // hand-edited persisted file that bypasses this guard is covered by the
+    // `configuration.rs` unit tests.)
     let _serial = PORT_SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
-    let worker = start_stream_worker(&harness, json!({ "host": "127.0.0.1", "port": 0 })).await;
-    let before = worker.adapter_snapshot();
+    let _worker = start_stream_worker(&harness, json!({ "host": "127.0.0.1", "port": 0 })).await;
 
-    // An adapter name with no registered factory deserializes fine and passes
-    // the JSON schema, so it reaches the apply gate — where resolving the
-    // backend fails and the previous adapter/config must stand.
-    set_value(
+    // Unknown adapter name.
+    set_value_expect_rejection(
         &harness,
         json!({ "host": "127.0.0.1", "port": 0, "adapter": { "name": "does-not-exist" } }),
     )
     .await;
-    drive_apply(&harness).await;
-
-    assert!(
-        Arc::ptr_eq(&before, &worker.adapter_snapshot()),
-        "a failed resolve must keep the previous backend"
-    );
-    assert!(
-        worker.config_snapshot().adapter.is_none(),
-        "a failed resolve must keep the previous config"
-    );
+    // Stray config key for a known adapter (kv reads store_method/file_path/
+    // save_interval_ms/channel_size).
+    set_value_expect_rejection(
+        &harness,
+        json!({ "host": "127.0.0.1", "port": 0, "adapter": { "name": "kv", "config": { "bogus": 1 } } }),
+    )
+    .await;
+    // A valid known adapter is still accepted.
+    set_value(
+        &harness,
+        json!({ "host": "127.0.0.1", "port": 0, "adapter": { "name": "redis", "config": { "redis_url": "redis://localhost:6379" } } }),
+    )
+    .await;
 }
 
 #[tokio::test]

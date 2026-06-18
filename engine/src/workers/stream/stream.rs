@@ -351,7 +351,18 @@ impl Worker for StreamWorker {
             Self::effective_adapter(seed) != Self::effective_adapter(&served_config)
         });
         if adapter_outdated {
-            match Self::resolve_adapter(&self.engine, &served_config).await {
+            // Time-bounded like the boot `configuration::*` calls above: a
+            // backend whose `build` hangs must not wedge the serial worker
+            // startup loop. A timeout degrades like any resolve failure —
+            // keep the seed adapter.
+            let resolved = tokio::time::timeout(
+                super::configuration::CONFIG_BUS_TIMEOUT,
+                Self::resolve_adapter(&self.engine, &served_config),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("stream adapter build timed out"))
+            .and_then(|result| result);
+            match resolved {
                 Ok(adapter) => self.set_adapter(adapter),
                 Err(err) => {
                     // Keep the live config consistent with the adapter actually
@@ -708,9 +719,26 @@ impl StreamWorker {
         }
 
         // Resolve every fallible prerequisite BEFORE mutating live state, so a
-        // failure leaves the previous config/adapter/server untouched.
+        // failure leaves the previous config/adapter/server untouched. The
+        // adapter build is time-bounded (like the `configuration::*` bus calls):
+        // a custom backend whose `build` hangs must not wedge `apply_lock` —
+        // and with it `destroy`, which also takes that lock.
         let new_adapter = if adapter_changed {
-            Some(Self::resolve_adapter(&self.engine, &new_config).await?)
+            match tokio::time::timeout(
+                super::configuration::CONFIG_BUS_TIMEOUT,
+                Self::resolve_adapter(&self.engine, &new_config),
+            )
+            .await
+            {
+                Ok(result) => Some(result?),
+                // Keep the `Elapsed` downcastable so `on_config_change` retries
+                // a transient build timeout once, like a `configuration::get`
+                // timeout.
+                Err(elapsed) => {
+                    return Err(anyhow::Error::new(elapsed)
+                        .context("stream adapter build timed out; keeping previous config"));
+                }
+            }
         } else {
             None
         };

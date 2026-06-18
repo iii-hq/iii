@@ -62,7 +62,11 @@ Each field applies on its own tier:
 - **`host`/`port`** trigger a **listener rebind**: the new address is bound, the
   WebSocket server is respawned on it, and the old listener is torn down. Live
   connections on the old address are dropped (clients reconnect). The rebind is
-  gated — a value that fails to bind keeps the previous server running.
+  gated — a value that fails to bind keeps the previous server running. Note that
+  changing **only the host on the same port** between overlapping interfaces (e.g.
+  `0.0.0.0` ↔ `127.0.0.1`) won't rebind: the new address can't bind while the old
+  listener still holds the port, so the change is logged and the previous server
+  kept. Change the port too, or restart, to move between overlapping interfaces.
 - **`adapter`** triggers a **full backend hot-swap**: the new pub/sub backend is
   built, swapped in, and its event pump restarted. New connections use it; the
   swap is gated (a value that fails to build the backend keeps the previous one).

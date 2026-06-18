@@ -15,6 +15,14 @@ type: "reference"
   The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `local` and `redis` adapters. Each branch is closed: `redis` carries a typed `redis_url`, and `local` (which takes no config) is a closed empty object, so `configuration::set` rejects an unknown adapter name *and* a junk config key on either branch, while a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
 
   As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-pubsub.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read.
+
+  ## `iii-stream` runtime settings live in the configuration worker
+
+  The WebSocket stream worker now registers its config schema under the `iii-stream` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart. The schema carries per-field descriptions, rejects unknown keys at set time, and expands `${VAR:default}` placeholders on read. As with the other workers, the config.yaml block is **seed-only** once a value is persisted — change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-stream.yaml` with the default `fs` adapter), and a runtime edit survives engine restarts.
+
+  Each field applies on its own tier. `auth_function` applies to new connections immediately — no rebind. A `host`/`port` change **rebinds the listener**: the new address is bound and the server respawned before the old listener is torn down, a failed bind keeps the previous server, and live connections on the old address are dropped (clients reconnect). An `adapter` change **hot-swaps the pub/sub backend**: the new backend is built, swapped in, and its event pump restarted; the swap is gated (a value that fails to build keeps the previous backend), and existing connections stay bound to the previous backend until they close, so prefer a quiet moment to repoint the adapter in a multi-instance deployment.
+
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `kv`, `redis`, and `bridge` adapters, each with its own typed `config` (`kv`: `store_method` / `file_path` / `save_interval_ms` / `channel_size`; `redis`: `redis_url`; `bridge`: `bridge_url`). `configuration::set` validates adapter settings against it and rejects an unknown adapter name or stray config key, and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
 </Update>
 
 <Update label="0.19.4" description="June 2026">
