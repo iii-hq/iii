@@ -72,7 +72,8 @@
                 "pages": [
                   "next/index",
                   "next/install",
-                  "next/quickstart"
+                  "next/quickstart",
+                  "next/troubleshooting"
                 ]
               },
               {
@@ -175,7 +176,8 @@
                 "pages": [
                   "index",
                   "install",
-                  "quickstart"
+                  "quickstart",
+                  "troubleshooting"
                 ]
               },
               {

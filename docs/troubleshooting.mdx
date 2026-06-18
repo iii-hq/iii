@@ -1,0 +1,24 @@
+---
+title: "Troubleshooting"
+description: "Fixes for common errors when running the iii engine and workers."
+owner: "devrel"
+type: "how-to"
+---
+
+Solutions to errors you may hit while running the iii engine and workers.
+
+## `KVM not accessible`
+
+Workers boot inside a microVM that needs read/write access to `/dev/kvm`. On Linux hosts where your
+user is not in the `kvm` group (common on WSL2), starting a worker fails with `KVM not accessible`.
+
+Add your user to the `kvm` group:
+
+```bash
+sudo usermod -aG kvm $USER
+```
+
+Then restart your session so the new group membership applies. On WSL2, run `wsl --shutdown` from a
+Windows terminal and reopen your distribution.
+
+<Callout type="info">For why workers run in microVMs, see [Engine](./understanding-iii/engine).</Callout>

@@ -213,7 +213,7 @@ fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
     if !kvm.exists() {
         return Err("KVM not available -- /dev/kvm does not exist. \
              Ensure KVM is enabled in your kernel and loaded (modprobe kvm_intel or kvm_amd). \
-             See https://iii.dev/docs/quickstart#3-start-the-python-worker"
+             See https://iii.dev/docs/troubleshooting#kvm-not-accessible"
             .to_string());
     }
     match std::fs::File::options().read(true).write(true).open(kvm) {
@@ -221,7 +221,7 @@ fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(
             "KVM not accessible -- /dev/kvm exists but current user lacks permission. \
              Add your user to the 'kvm' group: sudo usermod -aG kvm $USER. \
-             See https://iii.dev/docs/quickstart#3-start-the-python-worker"
+             See https://iii.dev/docs/troubleshooting#kvm-not-accessible"
                 .to_string(),
         ),
         Err(e) => Err(format!("KVM check failed: {}", e)),
