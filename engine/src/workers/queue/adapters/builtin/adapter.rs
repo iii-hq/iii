@@ -803,6 +803,10 @@ mod tests {
 
     #[tokio::test]
     async fn function_handler_maps_engine_results_to_queue_worker_results() {
+        // Engine::new() builds EngineMetrics, which requires GLOBAL_METER to be
+        // set. Under nextest each test is its own process, so initialize the
+        // default (noop) meter here instead of relying on a sibling test.
+        crate::workers::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
         register_test_function(&engine, "queue.success", true);
         register_test_function(&engine, "queue.failure", false);

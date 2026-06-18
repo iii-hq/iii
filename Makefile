@@ -53,22 +53,17 @@ install-iii-worker:
 	mkdir -p $(LOCAL_BIN)
 	install -m755 target/debug/iii-worker $(LOCAL_BIN)/iii-worker
 
-# Mirrors the CI test set (Engine Coverage job) without instrumentation: nextest
-# runs every crate's tests in parallel; doctests run separately (nextest skips
-# them). VM crates use default features (--all-features would pull in the
-# KVM-only integration-vm/-oci suites); iii runs with --all-features.
+# Mirrors the CI test set (Engine Coverage job). VM crates use default features
+# (--all-features would pull in the KVM-only integration-vm/-oci suites); iii
+# runs with --all-features. cargo test includes doctests.
 engine-test: install-iii-worker
-	cargo nextest run -p iii-worker -p iii-filesystem -p iii-network -p iii-init
-	cargo nextest run -p iii --all-features
-	cargo test --doc -p iii-worker -p iii-filesystem -p iii-network -p iii-init
-	cargo test --doc -p iii --all-features
+	cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init
+	cargo test -p iii --all-features
 
 coverage: install-iii-worker ## Run the engine test suite under llvm-cov (same as CI), prints a report
 	@eval "$$(cargo llvm-cov show-env --export-prefix)" && \
-		cargo nextest run -p iii-worker -p iii-filesystem -p iii-network -p iii-init && \
-		cargo nextest run -p iii --all-features && \
-		cargo test --doc -p iii-worker -p iii-filesystem -p iii-network -p iii-init && \
-		cargo test --doc -p iii --all-features && \
+		cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init && \
+		cargo test -p iii --all-features && \
 		cargo llvm-cov report
 
 engine-fmt-check:
