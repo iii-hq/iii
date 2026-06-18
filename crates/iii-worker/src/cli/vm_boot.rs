@@ -767,11 +767,32 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             use std::os::unix::io::AsRawFd;
             match std::fs::OpenOptions::new().read(true).write(true).open(&upper) {
                 Ok(lock) => {
-                    let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-                    if rc != 0 {
+                    // Bounded retry: on a restart, kill_stale_worker SIGKILLs the
+                    // old __vm-boot but returns before the kernel has reaped it
+                    // and dropped its leaked lock fd, so the first LOCK_NB here
+                    // can lose the race against the dying VM. Retry for ~2s
+                    // before giving up, so a normal restart doesn't surface as a
+                    // spurious "already attached" that leaves the worker down. A
+                    // genuine concurrent second start still fails after the
+                    // window (the old VM never exits).
+                    let mut waited_ms = 0u32;
+                    let acquired = loop {
+                        let rc =
+                            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                        if rc == 0 {
+                            break true;
+                        }
+                        if waited_ms >= 2000 {
+                            break false;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        waited_ms += 100;
+                    };
+                    if !acquired {
                         return Err(format!(
-                            "overlay upper {upper} is already attached to a running VM; \
-                             refusing to double-mount (concurrent start?)"
+                            "overlay upper {upper} is still attached to a running VM after 2s; \
+                             refusing to double-mount (concurrent start, or a prior VM that \
+                             won't exit?)"
                         ));
                     }
                     std::mem::forget(lock);

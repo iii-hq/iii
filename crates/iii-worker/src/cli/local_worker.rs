@@ -241,17 +241,28 @@ if ! command -v tar >/dev/null 2>&1; then
   echo "iii: ERROR workspace copy-in requires 'tar' in the base image" >&2
   exit 1
 fi
+# Re-sync deletions: /workspace lives on the persistent ext4 upper and tar -x
+# only adds/overwrites (never deletes), so a source file removed on the host
+# would keep running across a watcher restart. Clear every top-level entry
+# EXCEPT the VM-local dep/build dirs (excluded from the copy, must persist),
+# then re-extract the current source. On first boot /workspace is empty so this
+# is a no-op. (Exclusion list MUST match the tar --exclude list below.)
+find /workspace -mindepth 1 -maxdepth 1 \
+  ! -name node_modules ! -name .venv ! -name target ! -name dist \
+  ! -name __pycache__ ! -name .pytest_cache ! -name .next ! -name .git \
+  -exec rm -rf {} +
 # Copy host source into the VM-local /workspace, excluding dep/build dirs (at
 # any depth) so VM-local installs persist across a re-copy and host clutter
 # isn't pulled in. Only /mnt/host-src is read; the host project is never
 # written, so no empty dep folders appear there.
 ( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
-# Enforce "host project untouched": drop the writable handle to the host source
-# now that it's copied in, so worker code can't write back to the host repo via
-# /mnt/host-src. The host-side watcher re-copies on the next boot, so live edits
-# still propagate. cd out first so the mount isn't busy.
+# Enforce "host project untouched": DETACH the host source now that it's copied
+# in, so worker code cannot write back to the host repo via /mnt/host-src. cd
+# out first so the mount isn't busy. The unmount is FATAL: the share is mounted
+# read-write, so if we can't detach it we refuse to run user code rather than
+# risk mutating the host repo. The host-side watcher re-copies on the next boot.
 cd /
-umount "$SRC" 2>/dev/null || true
+umount "$SRC" || { echo "iii: ERROR could not detach $SRC; refusing to run with host source writable" >&2; exit 1; }
 cd /workspace
 echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project untouched)" >&2"#
                 .to_string(),
@@ -1083,14 +1094,16 @@ async fn start_worker_impl(
         }
     }
 
-    // 5. Host project dir is shared live into the VM via virtiofs at
-    //    /mnt/host-workspace; /workspace is assembled inside the VM as an
-    //    overlay on top of that (see build_libkrun_local_script). No copy
-    //    step — host edits flow through immediately, VM-side writes never
-    //    touch the host.
-    //
-    //    Ensure the overlay mountpoint dir exists in the rootfs so the init
-    //    doesn't fail cd-ing into it before the overlay is assembled.
+    // 5. Workspace staging. The actual strategy lives in the boot script
+    //    (build_libkrun_local_script) and depends on mode:
+    //      - legacy/bundle: the host project (or install dir) is shared LIVE at
+    //        guest /workspace via virtiofs; legacy also bind-mounts dep dirs
+    //        VM-local.
+    //      - overlay: the host project is shared at /mnt/host-src and COPIED
+    //        into a VM-local /workspace on the ext4 upper (W1 copy-in), so the
+    //        host repo is never written.
+    //    Pre-create the managed-dir mountpoint so the legacy clone (which IS
+    //    the guest root) has /workspace to mount onto; harmless under overlay.
     let workspace_dir = managed_dir.join("workspace");
     if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
         eprintln!(
@@ -1102,7 +1115,7 @@ async fn start_worker_impl(
         return 1;
     }
 
-    // 5. Check .iii-prepared marker. Silent when true — the boot script
+    // Check the .iii-prepared marker. Silent when true — the boot script
     //    skips setup_cmd/install_cmd and nothing user-visible is happening
     //    in the fast path. Printing a "Using cached deps" banner every
     //    start made it look like install was running every restart (it
@@ -1177,6 +1190,15 @@ async fn start_worker_impl(
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+    }
+    // Overlay: clear the prior boot's host-visible readiness marker so status
+    // reports Preparing until THIS boot's guest re-touches /opt/iii/.iii-ready
+    // after provisioning. It persists in managed_dir/runtime across boots, so
+    // without this a restart flashes a stale Ready and `--wait` returns before
+    // the new VM actually serves. (Legacy reads the in-clone /var marker, which
+    // the VM teardown leaves consistent, so this only applies to overlay.)
+    if overlay {
+        let _ = std::fs::remove_file(script_dir.join(".iii-ready"));
     }
     // The script sets up the workspace; no pre-cd needed (and /workspace is
     // empty until virtiofs mounts, so cd-before-exec would be racy).
@@ -1579,13 +1601,25 @@ mod tests {
         assert!(script.contains("if [ ! -e /var/.iii-prepared ]; then"));
         assert!(script.contains("apt-get install nodejs"));
         assert!(script.contains("npm install"));
-        assert!(script.contains("touch /var/.iii-prepared"));
+        // Durability: the marker write is followed by `sync` so deps + marker
+        // flush to the ext4 upper before a fast worker exit tears the VM down.
+        assert!(script.contains("touch /var/.iii-prepared && sync"));
         assert!(script.contains("node server.js"));
         // W1 copy-in: overlay copies host source from /mnt/host-src into a
         // VM-local /workspace and does NOT bind-mount dep dirs (which would
         // mkdir empty folders in the host repo).
         assert!(script.contains("SRC=/mnt/host-src"));
         assert!(script.contains("tar -cf -"));
+        // Re-sync deletions: clear /workspace (minus dep dirs) before extract so
+        // host-deleted files don't keep running on the persistent upper.
+        assert!(script.contains("find /workspace -mindepth 1 -maxdepth 1"));
+        assert!(script.contains("! -name node_modules"));
+        // Host-untouched: the unmount is FATAL, not best-effort.
+        assert!(script.contains("refusing to run with host source writable"));
+        assert!(
+            !script.contains("umount \"$SRC\" 2>/dev/null || true"),
+            "overlay host-src unmount must be fatal, not swallowed"
+        );
         assert!(
             !script.contains("mount --bind"),
             "overlay must not use the dep-dir bind loop (W1 copy-in replaces it)"

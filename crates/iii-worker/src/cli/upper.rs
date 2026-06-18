@@ -78,6 +78,17 @@ pub fn ensure_upper_ext4(managed_dir: &Path) -> io::Result<PathBuf> {
     write_sparse_image(GOLDEN, &tmp).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })?;
+    // 0600 before the rename: the upper is a single file holding the worker's
+    // ENTIRE copied source tree + installed deps (+ anything the worker writes),
+    // so it must not be readable by other local users. Set on the temp so the
+    // final path is never momentarily world-readable. (The local start path
+    // doesn't tighten managed_dir the way the OCI path does, so don't rely on
+    // the directory mode for this.)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
     std::fs::rename(&tmp, &dest)?;
     Ok(dest)
 }
