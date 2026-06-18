@@ -310,7 +310,7 @@ async fn adapter_hot_swap_rebuilds_backend_and_rebinds_subscriptions() {
 }
 
 #[tokio::test]
-async fn unresolvable_adapter_keeps_previous_backend() {
+async fn unbuildable_adapter_keeps_previous_backend() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
@@ -323,15 +323,21 @@ async fn unresolvable_adapter_keeps_previous_backend() {
 
     let backend_before = worker.adapter_snapshot();
 
-    // A syntactically valid value naming an adapter the registry doesn't know.
-    // It passes the schema (free-form AdapterEntry) but the build is gated.
-    set_value(&harness, json!({ "adapter": { "name": "does-not-exist" } })).await;
+    // A schema-valid value (the `redis` branch) whose backend cannot be built:
+    // nothing listens on this port, so the adapter factory's connect is refused
+    // and `apply_config` gates the swap, keeping the previous backend. (Connection
+    // refused on loopback is immediate — no server and no timeout wait.)
+    set_value(
+        &harness,
+        json!({ "adapter": { "name": "redis", "config": { "redis_url": "redis://127.0.0.1:6390" } } }),
+    )
+    .await;
     drive_apply(&harness).await;
 
     // The build failure kept the previous backend and config.
     assert!(
         Arc::ptr_eq(&backend_before, &worker.adapter_snapshot()),
-        "an unresolvable adapter must keep the previous backend instance"
+        "an unbuildable adapter must keep the previous backend instance"
     );
     assert_eq!(
         worker
@@ -340,12 +346,24 @@ async fn unresolvable_adapter_keeps_previous_backend() {
             .expect("adapter unchanged")
             .name,
         "local",
-        "an unresolvable adapter must not mutate the live config"
+        "an unbuildable adapter must not mutate the live config"
     );
 
     // Delivery still works on the retained backend.
     publish(&worker, "events", json!({ "n": 2 })).await;
     wait_for_count(&counter, 2).await;
+}
+
+#[tokio::test]
+async fn unknown_adapter_name_is_rejected_at_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let _worker = start_pubsub_worker(&harness, json!({ "adapter": { "name": "local" } })).await;
+
+    // The adapter schema is a closed union over `local`/`redis`; an unknown name
+    // is rejected by `configuration::set` (it matches no `oneOf` branch) rather
+    // than reaching the apply path.
+    set_value_expect_rejection(&harness, json!({ "adapter": { "name": "does-not-exist" } })).await;
 }
 
 #[tokio::test]

@@ -12,7 +12,9 @@ type: "reference"
 
   The pub/sub `adapter` is a **full hot-swap tier** (unlike `iii-state`'s restart-tier storage adapter): a runtime edit rebuilds the backend — `local` (in-process broadcast) or `redis` (cross-instance delivery) — re-subscribes the live subscriptions onto the new backend before swapping it in so there is no delivery gap, then tears down the previous backend, aborting its per-topic tasks rather than leaking them. A value that fails to build the backend is gated and keeps the previous one running.
 
-  As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-pubsub.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read. The schema carries a per-field description and rejects unknown top-level keys at `configuration::set` time.
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `local` and `redis` adapters (`redis` carries a typed `redis_url`). `configuration::set` validates against it and rejects an unknown adapter name, and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
+  As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-pubsub.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read.
 </Update>
 
 <Update label="0.19.4" description="June 2026">
