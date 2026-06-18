@@ -59,7 +59,6 @@ jobs:
             benches:
               - 'engine/benches/**'
               - 'engine/Cargo.toml'
-              - '.github/workflows/ci.yml'
 
   # ──────────────────────────────────────────────────────────────
   # Engine Build — critical path, produces iii binary for downstream
