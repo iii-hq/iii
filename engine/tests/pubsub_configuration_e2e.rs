@@ -412,6 +412,8 @@ async fn schema_rejects_unknown_top_level_key() {
 async fn env_placeholder_expands_on_read() {
     // The default in the placeholder applies regardless of ambient env; scrub
     // the var so the assertion is deterministic.
+    // SAFETY: `PUBSUB_E2E_LABEL` is specific to this test and read by no other
+    // code, so the data-race risk of mutating the environment is negligible.
     unsafe {
         std::env::remove_var("PUBSUB_E2E_LABEL");
     }
