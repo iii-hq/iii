@@ -156,12 +156,12 @@ pub fn derive_phase(inputs: DeriveInputs) -> Phase {
         };
     }
     if is_local && overlay {
-        // Overlay local worker: the host can't observe the in-guest prepared
-        // marker (it's on the ext4 upper block device), so a live VM is the
-        // honest signal — same as OCI. The worker process only execs after the
-        // in-guest install finishes, so `running` implies provisioning is done
-        // far more reliably than a host marker we can never see here.
-        return if running {
+        // Overlay local worker: `prepared` here is the host-visible
+        // `runtime/.iii-ready` marker the guest touches AFTER provisioning
+        // (the /var marker is on the host-invisible ext4 upper). So a running
+        // VM whose install is still going reads as Preparing, not a premature
+        // Ready — fixes `--wait` returning before the worker actually serves.
+        return if running && prepared {
             Phase::Ready
         } else if managed_dir_exists {
             Phase::Preparing
@@ -249,12 +249,21 @@ impl WorkerStatus {
         let home = dirs::home_dir().unwrap_or_default();
         let managed_dir = managed_worker_dir(name);
         let managed_dir_exists = managed_dir.is_dir();
-        let prepared = prepared_marker_in(&managed_dir).exists();
         // How this worker actually booted (per-worker layout marker), not the
         // global flag — a worker started before overlay was enabled stays on
         // its recorded layout. Drives the overlay-aware readiness rule below.
         let overlay = crate::cli::overlay::read_layout(&managed_dir).as_deref()
             == Some(crate::cli::overlay::LAYOUT_OVERLAY);
+        // Prepared signal. Legacy: the in-clone `/var/.iii-prepared` marker is
+        // host-visible. Overlay: that marker lives on the ext4 upper (a block
+        // device the host can't read), so the guest instead touches
+        // `runtime/.iii-ready` via the host-backed /opt/iii virtiofs mount —
+        // that's the host-visible "provisioning done" signal.
+        let prepared = if overlay {
+            managed_dir.join("runtime").join(".iii-ready").exists()
+        } else {
+            prepared_marker_in(&managed_dir).exists()
+        };
 
         let pid = read_pid(name);
         let running = is_worker_running(name);
@@ -1432,18 +1441,33 @@ mod tests {
     }
 
     #[test]
-    fn derive_phase_overlay_local_worker_running_is_ready_without_host_marker() {
-        // Regression for the overlay gap: the prepared marker lives on the
-        // ext4 upper (a block device) the host can't read, so `prepared` is
-        // structurally false. A running overlay worker must still be Ready —
-        // otherwise it sticks in Preparing forever. `running` is the honest
-        // signal here (the worker only execs after the in-guest install).
+    fn derive_phase_overlay_local_worker_running_but_installing_is_preparing() {
+        // `prepared` is the host-visible runtime/.iii-ready marker. While the
+        // in-guest install runs, the VM is up but the marker isn't there yet →
+        // Preparing, NOT a premature Ready (which would make `--wait` return
+        // before the worker serves).
         let p = derive_phase(DeriveInputs {
             engine_running: true,
             is_binary: false,
             is_local: true,
             running: true,
             prepared: false,
+            managed_dir_exists: true,
+            overlay: true,
+        });
+        assert_eq!(p, Phase::Preparing);
+    }
+
+    #[test]
+    fn derive_phase_overlay_local_worker_running_and_ready_is_ready() {
+        // Provisioning done: the guest touched runtime/.iii-ready → host sees
+        // it → Ready.
+        let p = derive_phase(DeriveInputs {
+            engine_running: true,
+            is_binary: false,
+            is_local: true,
+            running: true,
+            prepared: true,
             managed_dir_exists: true,
             overlay: true,
         });

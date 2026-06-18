@@ -313,6 +313,11 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
         parts.push(format!(
             "if [ ! -e /var/.iii-prepared ]; then\n{prov}mkdir -p /var && touch /var/.iii-prepared\nfi"
         ));
+        // Host-visible readiness: /opt/iii is a virtiofs mount of the host's
+        // managed_dir/runtime, so the host (status / `--wait`) can see this
+        // even though the /var marker lives on the host-invisible ext4 upper.
+        // Touched every boot after provisioning, just before exec.
+        parts.push("touch /opt/iii/.iii-ready 2>/dev/null || true".to_string());
     } else if !prepared {
         if !project.setup_cmd.is_empty() {
             parts.push(project.setup_cmd.clone());

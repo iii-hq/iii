@@ -756,6 +756,28 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
                 .read_only(true)
         });
         if let Some(upper) = args.rootfs_upper.clone() {
+            // Advisory flock guards the rw ext4 upper against a SECOND VM
+            // attaching it concurrently (ext4 has no multi-mount protection →
+            // silent corruption). kill_stale_worker covers the sequential
+            // restart; this catches a concurrent same-worker start. The lock
+            // fd is leaked so the lock is held for the VM's whole lifetime and
+            // released automatically when this __vm-boot process exits.
+            // ponytail: flock is per-host; a cross-host lock manager only if
+            // workers ever share storage across machines.
+            use std::os::unix::io::AsRawFd;
+            match std::fs::OpenOptions::new().read(true).write(true).open(&upper) {
+                Ok(lock) => {
+                    let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                    if rc != 0 {
+                        return Err(format!(
+                            "overlay upper {upper} is already attached to a running VM; \
+                             refusing to double-mount (concurrent start?)"
+                        ));
+                    }
+                    std::mem::forget(lock);
+                }
+                Err(e) => return Err(format!("cannot lock overlay upper {upper}: {e}")),
+            }
             eprintln!("iii: overlay writable upper -> /dev/vdb: {upper}");
             builder = builder.disk(move |d| {
                 d.path(&upper)
