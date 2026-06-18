@@ -94,61 +94,11 @@ jobs:
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Engine Tests — parallel; does not gate downstream jobs.
-  # ──────────────────────────────────────────────────────────────
-
-  engine-test:
-    name: Engine Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Free up disk space to avoid "No space left on device" during the
-      # post-job rust-cache save step on ubuntu-latest runners.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/microsoft
-          df -h /
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: engine
-
-      - name: Install system dependencies
-        run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
-
-      - name: Build and install iii-worker (needed by iii integration tests)
-        run: |
-          cargo build -p iii-worker
-          mkdir -p ~/.local/bin
-          cp target/debug/iii-worker ~/.local/bin/iii-worker
-          chmod +x ~/.local/bin/iii-worker
-
-      - name: Run crate tests
-        run: |
-          cargo test -p iii-worker
-          cargo test -p iii-filesystem
-          cargo test -p iii-network
-          cargo test -p iii-init
-
-      - name: Run engine tests
-        run: cargo test -p iii --all-features
-
-  # ──────────────────────────────────────────────────────────────
-  # Engine Coverage — scoped: runs on push/dispatch, and on PRs
-  # only when engine/crates/Cargo paths change. Parallel, does not
-  # gate downstream.
+  # Engine Coverage — runs the full engine + crate test suite under
+  # llvm-cov instrumentation. This is the single test gate (it supersedes
+  # the old separate "Engine Tests" job, which re-ran the same tests
+  # uninstrumented). Scoped: always on push/dispatch, and on PRs only when
+  # engine/crates/Cargo paths change. Parallel, does not gate downstream.
   # ──────────────────────────────────────────────────────────────
 
   engine-coverage:
@@ -159,6 +109,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Free up disk space to avoid "No space left on device" — the
+      # coverage-instrumented build is large.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/microsoft
+          df -h /
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -185,7 +146,7 @@ jobs:
           cp target/debug/iii-worker ~/.local/bin/iii-worker
           chmod +x ~/.local/bin/iii-worker
 
-      - name: Run coverage
+      - name: Run tests with coverage
         run: |
           eval "$(cargo llvm-cov show-env --export-prefix)"
           # The coverage-instrumented `iii` test binary is large enough that the
@@ -194,6 +155,12 @@ jobs:
           # lld, which links large binaries with far less peak memory. Appended
           # so the `-C instrument-coverage` RUSTFLAGS exported above are kept.
           export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=lld"
+          # Crate unit tests (formerly the standalone Engine Tests job) run here
+          # too so this job is the single test gate, all under instrumentation.
+          cargo test -p iii-worker
+          cargo test -p iii-filesystem
+          cargo test -p iii-network
+          cargo test -p iii-init
           cargo test -p iii --all-features
           cargo llvm-cov report \
             --ignore-filename-regex \
