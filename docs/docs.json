@@ -101,11 +101,6 @@
                 "group": "Creating Workers",
                 "pages": [
                   "next/creating-workers/index",
-                  "next/creating-workers/workers",
-                  "next/creating-workers/worker-manifest",
-                  "next/creating-workers/triggers",
-                  "next/creating-workers/functions",
-                  "next/creating-workers/channels",
                   {
                     "group": "Common Workers",
                     "pages": [
@@ -115,7 +110,12 @@
                       "next/creating-workers/sandboxes",
                       "next/creating-workers/worker-manager"
                     ]
-                  }
+                  },
+                  "next/creating-workers/workers",
+                  "next/creating-workers/worker-manifest",
+                  "next/creating-workers/triggers",
+                  "next/creating-workers/functions",
+                  "next/creating-workers/channels"
                 ]
               }
             ]
