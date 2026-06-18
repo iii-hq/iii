@@ -112,7 +112,8 @@
                       "next/creating-workers/http",
                       "next/creating-workers/queues",
                       "next/creating-workers/observability",
-                      "next/creating-workers/sandboxes"
+                      "next/creating-workers/sandboxes",
+                      "next/creating-workers/worker-manager"
                     ]
                   }
                 ]
