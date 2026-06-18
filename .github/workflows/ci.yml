@@ -78,8 +78,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Build iii (debug, all-features)
         run: cargo build -p iii --all-features
@@ -119,8 +122,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Build and install iii-worker (needed by iii integration tests)
         run: |
@@ -166,8 +172,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev lld
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev lld \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev lld; }
 
       - name: Build and install iii-worker (needed by iii integration tests)
         run: |
@@ -213,8 +222,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Check benches compile
         run: cargo bench --benches --no-run
@@ -260,8 +272,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Regenerate CLI reference pages
         run: ./scripts/generate-cli-docs.sh
@@ -382,8 +397,11 @@ jobs:
       - name: Install system dependencies (x86_64 Linux)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Install cross-compilation tools (aarch64 Linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -429,8 +447,11 @@ jobs:
       - name: Install system dependencies (Linux only)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run iii-worker tests
         run: cargo nextest run -p iii-worker --profile ci
@@ -480,8 +501,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run VM feature-gated tests
         run: cargo nextest run -p iii-worker --features integration-vm --profile ci
@@ -535,8 +559,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run OCI feature-gated tests
         run: cargo nextest run -p iii-worker --features integration-oci --profile ci
