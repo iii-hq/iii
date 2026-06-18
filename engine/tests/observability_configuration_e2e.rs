@@ -764,3 +764,77 @@ async fn memory_max_spans_retune_bounds_the_live_span_store() {
         storage.len()
     );
 }
+
+#[tokio::test]
+#[serial]
+async fn collapse_rules_hot_apply_through_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({})).await;
+    assert!(worker.current_config().collapse_spans.is_empty());
+
+    // SWAP tier: a collapse rule recompiles the cache through apply_config.
+    set_value(
+        &harness,
+        json!({ "collapse_spans": [{ "name": "wrapper *" }] }),
+    )
+    .await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().collapse_spans.len() == 1,
+        "collapse rule to hot-apply",
+    )
+    .await;
+
+    // Clearing the rules recompiles the cache back to empty.
+    set_value(&harness, json!({ "collapse_spans": [] })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().collapse_spans.is_empty(),
+        "collapse rules to clear",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn sampler_rebuilds_on_trace_sampling_ratio_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let worker = start_observability_worker(&harness, json!({ "sampling_ratio": 1.0 })).await;
+
+    // Changing the TRACE sampling_ratio (not logs_sampling_ratio) drives the
+    // SWAP-tier otel::refresh_sampler() path; assert it applies and the worker
+    // stays healthy.
+    set_value(&harness, json!({ "sampling_ratio": 0.1 })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().sampling_ratio == Some(0.1),
+        "sampler rebuild to apply",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn logs_exporter_respawns_on_batch_size_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    // `both` runs the OTLP logs exporter alongside the memory store. The
+    // default endpoint is unreachable in tests, but the OTLP exporter connects
+    // lazily in the background, so the apply path exercises the respawn_exporter
+    // branch (a TASK-REBUILD tier) without a live collector.
+    let worker = start_observability_worker(
+        &harness,
+        json!({ "logs_exporter": "both", "logs_batch_size": 100 }),
+    )
+    .await;
+
+    set_value(&harness, json!({ "logs_batch_size": 200 })).await;
+    drive_apply(&harness).await;
+    wait_for(
+        || worker.current_config().logs_batch_size == Some(200),
+        "logs exporter respawn to apply the new batch size",
+    )
+    .await;
+}

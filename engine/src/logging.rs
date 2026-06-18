@@ -816,6 +816,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reload_log_level_rejects_invalid_directive() {
+        // The directive is parsed (and rejected) before the reload-handle
+        // lookup, so an invalid directive errors deterministically regardless
+        // of whether logging was initialized in this test binary — and the
+        // current filter is left untouched.
+        let err = reload_log_level("engine=notalevel")
+            .expect_err("an invalid directive must be rejected");
+        assert!(
+            err.to_string().contains("invalid log level"),
+            "unexpected error: {err}"
+        );
+    }
+
     /// Helper: builds a `FieldSet` (and backing static metadata) that contains
     /// the given field names, and returns a closure that can look up any of
     /// those names to produce a `Field`.

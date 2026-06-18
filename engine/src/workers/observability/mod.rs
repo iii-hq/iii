@@ -1114,7 +1114,14 @@ impl ObservabilityWorker {
         if otel::logs_enabled(Some(&new)) {
             otel::init_log_storage(new.logs_max_count);
         }
-        metrics::init_metric_storage(new.metrics_max_count, new.metrics_retention_seconds);
+        // Retune the metric store only when it already exists; never CREATE it
+        // here. Unlike init_log_storage, init_metric_storage builds a store when
+        // absent, and `metrics_enabled` is restart-tier — so a worker that
+        // booted with metrics off (no store) must not lazily acquire one on an
+        // unrelated config edit. The boot store is built by init_metrics().
+        if metrics::get_metric_storage().is_some() {
+            metrics::init_metric_storage(new.metrics_max_count, new.metrics_retention_seconds);
+        }
 
         // SWAP tier: rebuild only what changed.
         if old.collapse_spans != new.collapse_spans {
@@ -1157,19 +1164,18 @@ impl ObservabilityWorker {
         let logs_reenabled = otel::logs_enabled(Some(&new)) && !otel::logs_enabled(Some(&old));
         let respawn_retention =
             old.logs_retention_seconds != new.logs_retention_seconds || logs_reenabled;
+        // `endpoint` / `service_name` / `service_version` are deliberately NOT
+        // respawn triggers: they are restart-tier for the trace exporter, and
+        // rebuilding only the logs exporter against a new endpoint/identity
+        // would split logs onto the new collector while traces stay on the old
+        // one until restart. Keeping them restart-tier moves every signal
+        // together at the next boot (see the restart-tier warning below).
         let respawn_exporter = logs_reenabled
             || old.logs_exporter != new.logs_exporter
             || old.logs_batch_size != new.logs_batch_size
-            || old.logs_flush_interval_ms != new.logs_flush_interval_ms
-            || old.endpoint != new.endpoint
-            || old.service_name != new.service_name
-            || old.service_version != new.service_version;
-        if respawn_retention || respawn_exporter || logs_reenabled {
-            let started = self
-                .worker_shutdown_rx
-                .lock()
-                .expect("worker_shutdown_rx mutex poisoned")
-                .is_some();
+            || old.logs_flush_interval_ms != new.logs_flush_interval_ms;
+        if respawn_retention || respawn_exporter {
+            let started = self.is_active();
             // Only (re)spawn when the worker is started AND enabled: a
             // disabled worker runs no log tasks, and `enabled` is
             // restart-tier, so a config change must not start them mid-life.
@@ -1209,13 +1215,13 @@ impl ObservabilityWorker {
             restart_fields.push("exporter");
         }
         if old.endpoint != new.endpoint {
-            restart_fields.push("endpoint (trace exporter/forwarder; logs exporter rebuilt live)");
+            restart_fields.push("endpoint (trace + logs exporters)");
         }
         if old.service_name != new.service_name
             || old.service_version != new.service_version
             || old.service_namespace != new.service_namespace
         {
-            restart_fields.push("service identity on the trace resource");
+            restart_fields.push("service identity (trace resource + logs exporter)");
         }
         if old.format != new.format {
             restart_fields.push("format");

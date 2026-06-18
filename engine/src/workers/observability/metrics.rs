@@ -1369,6 +1369,37 @@ impl std::fmt::Debug for AlertManager {
     }
 }
 
+/// SSRF guard for alert webhook targets. Alert rules are operator-set over the
+/// configuration bus (or via a hand-edited persisted file), so a webhook URL is
+/// the trust boundary for an outbound request the engine itself makes. Allow
+/// only http(s) to a non-private host; reject loopback / link-local (incl. the
+/// 169.254.169.254 cloud-metadata address) / private / unspecified targets.
+async fn validate_alert_webhook_url(url: &str) -> Result<(), String> {
+    let scheme = reqwest::Url::parse(url)
+        .map_err(|_| "invalid URL".to_string())?
+        .scheme()
+        .to_string();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("unsupported scheme '{scheme}' (only http/https)"));
+    }
+    let validator = crate::invocation::url_validator::UrlValidator::new(
+        crate::invocation::url_validator::UrlValidatorConfig {
+            allowlist: vec!["*".to_string()],
+            block_private_ips: true,
+            require_https: false,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    validator.validate(url).await.map_err(|e| e.to_string())
+}
+
+/// Guard for alert function-action targets: a built-in/internal function id
+/// (`engine::*`, `configuration::*`, `iii-*::*`, ...) must not be invokable as
+/// an alert action set over the configuration bus.
+fn alert_function_target_allowed(path: &str) -> bool {
+    !crate::workers::telemetry::is_iii_builtin_function_id(path)
+}
+
 impl AlertManager {
     pub fn new(rules: Vec<AlertRule>) -> Self {
         let states = HashMap::new();
@@ -1651,6 +1682,14 @@ impl AlertManager {
                 );
             }
             AlertAction::Webhook { url } => {
+                if let Err(reason) = validate_alert_webhook_url(url).await {
+                    tracing::warn!(
+                        alert_name = %event.name,
+                        reason = %reason,
+                        "iii-observability: alert webhook target rejected (SSRF guard); not sending"
+                    );
+                    return;
+                }
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(30))
                     .build()
@@ -1714,6 +1753,15 @@ impl AlertManager {
                 });
             }
             AlertAction::Function { path } => {
+                if !alert_function_target_allowed(path) {
+                    tracing::warn!(
+                        alert_name = %event.name,
+                        function_id = %path,
+                        "iii-observability: alert function target rejected; built-in/internal \
+                         function ids cannot be invoked as alert actions"
+                    );
+                    return;
+                }
                 if let Some(engine) = &self.engine {
                     let engine = engine.clone();
                     let function_id = path.clone();
@@ -1891,6 +1939,60 @@ mod tests {
             enabled: true,
             cooldown_seconds: 60,
         }
+    }
+
+    #[tokio::test]
+    async fn webhook_ssrf_guard_blocks_private_and_bad_scheme() {
+        // Alert webhook targets are operator-set over the config bus; the SSRF
+        // guard must reject cloud-metadata / loopback / private / link-local
+        // hosts and any non-http(s) scheme. IP literals avoid DNS in the test.
+        assert!(
+            validate_alert_webhook_url("http://169.254.169.254/latest/meta-data")
+                .await
+                .is_err(),
+            "cloud-metadata IP must be blocked"
+        );
+        assert!(
+            validate_alert_webhook_url("http://127.0.0.1/hook")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_alert_webhook_url("http://10.0.0.5/hook")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_alert_webhook_url("file:///etc/passwd")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_alert_webhook_url("ftp://example.com/x")
+                .await
+                .is_err()
+        );
+        // A public host over http is allowed (8.8.8.8 is an IP literal, so the
+        // guard resolves it without a DNS lookup).
+        assert!(
+            validate_alert_webhook_url("http://8.8.8.8/hook")
+                .await
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn function_action_guard_rejects_builtin_ids() {
+        // Built-in/internal function ids must not be invocable as alert actions.
+        assert!(!alert_function_target_allowed("engine::shutdown"));
+        assert!(!alert_function_target_allowed("configuration::set"));
+        assert!(!alert_function_target_allowed(
+            "iii-observability::on-config-change"
+        ));
+        assert!(!alert_function_target_allowed("state::set"));
+        // A user worker's own function id is allowed.
+        assert!(alert_function_target_allowed("my-worker::on-alert"));
+        assert!(alert_function_target_allowed("notifications.page-oncall"));
     }
 
     #[test]
