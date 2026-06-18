@@ -22,9 +22,9 @@
 use std::path::{Path, PathBuf};
 
 const LAYOUT_MARKER: &str = ".iii-layout";
-/// Legacy per-worker full-clone layout.
-pub const LAYOUT_LEGACY: &str = "legacy";
-/// Shared read-only base + per-worker overlay upper layout.
+/// Shared read-only base + per-worker overlay upper layout. (Legacy workers
+/// carry no marker — `read_layout` returns `None` — so there is no constant
+/// for it.)
 pub const LAYOUT_OVERLAY: &str = "overlay";
 
 /// Overlay is on by default; `legacy|off|0|false|no` disables it.
@@ -53,21 +53,16 @@ fn mode_value_enables_overlay(v: &str) -> bool {
     )
 }
 
-/// True only when an overlay-capable (embedded) iii-init is available — see
-/// the capability-handshake rationale in the module docs.
-pub fn init_overlay_capable() -> bool {
-    iii_filesystem::init::has_init()
-}
-
-/// Decide whether to boot in overlay mode: flag on AND init capable. Emits a
-/// one-line reason when the flag is on but we must fall back to legacy, so a
-/// non-embedded build (or a deliberate `III_ROOTFS_MODE=legacy`) is visible in
-/// the worker log rather than silent.
+/// Decide whether to boot in overlay mode: flag on AND an overlay-capable
+/// (embedded) iii-init is available — see the capability-handshake rationale in
+/// the module docs. Emits a one-line reason when the flag is on but we must
+/// fall back to legacy, so a non-embedded build (or a deliberate
+/// `III_ROOTFS_MODE=legacy`) is visible in the worker log rather than silent.
 pub fn overlay_active() -> bool {
     if !overlay_enabled() {
         return false;
     }
-    if !init_overlay_capable() {
+    if !iii_filesystem::init::has_init() {
         // Common+expected in non-embed (dev) builds, so keep it quiet — a
         // per-start stderr warning would spam every worker boot. Operators
         // who expect overlay can see this at debug level.
@@ -115,34 +110,13 @@ pub fn migrate_to_overlay(managed_dir: &Path) {
     }
     let deps = managed_dir.join("var/iii/deps");
     if deps.is_dir() {
-        let freed = dir_size(&deps);
         match std::fs::remove_dir_all(&deps) {
-            Ok(()) if freed > 0 => eprintln!(
-                "iii: reclaimed {:.1} MB of orphaned legacy dep cache (overlay migration)",
-                freed as f64 / 1_048_576.0
-            ),
-            Ok(()) => {}
+            Ok(()) => eprintln!("iii: reclaimed orphaned legacy dep cache (overlay migration)"),
             Err(e) => tracing::debug!("gc legacy deps {}: {e}", deps.display()),
         }
     }
     let _ = std::fs::remove_file(managed_dir.join("var/.iii-prepared"));
     write_layout(managed_dir, LAYOUT_OVERLAY);
-}
-
-/// Total bytes under a directory (best-effort; symlinks not followed).
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0;
-    if let Ok(rd) = std::fs::read_dir(path) {
-        for entry in rd.flatten() {
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
-                total += dir_size(&entry.path());
-            } else if meta.is_file() {
-                total += meta.len();
-            }
-        }
-    }
-    total
 }
 
 #[cfg(test)]
@@ -162,8 +136,8 @@ mod tests {
         assert_eq!(read_layout(&d), None);
         write_layout(&d, LAYOUT_OVERLAY);
         assert_eq!(read_layout(&d).as_deref(), Some(LAYOUT_OVERLAY));
-        write_layout(&d, LAYOUT_LEGACY);
-        assert_eq!(read_layout(&d).as_deref(), Some(LAYOUT_LEGACY));
+        write_layout(&d, "legacy");
+        assert_eq!(read_layout(&d).as_deref(), Some("legacy"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

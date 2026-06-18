@@ -97,8 +97,12 @@ fn write_sparse_image(gz: &[u8], dest: &Path) -> io::Result<()> {
             "golden image: bad magic",
         ));
     }
-    let total_len = read_u64(&mut r)?;
-    let block_size = read_u32(&mut r)? as usize;
+    let mut len_buf = [0u8; 8];
+    r.read_exact(&mut len_buf)?;
+    let total_len = u64::from_le_bytes(len_buf);
+    let mut bs_buf = [0u8; 4];
+    r.read_exact(&mut bs_buf)?;
+    let block_size = u32::from_le_bytes(bs_buf) as usize;
     if block_size == 0 || block_size > 1 << 20 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -183,18 +187,6 @@ fn fill<R: Read>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
         }
     }
     Ok(filled)
-}
-
-fn read_u64<R: Read>(r: &mut R) -> io::Result<u64> {
-    let mut b = [0u8; 8];
-    r.read_exact(&mut b)?;
-    Ok(u64::from_le_bytes(b))
-}
-
-fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
-    let mut b = [0u8; 4];
-    r.read_exact(&mut b)?;
-    Ok(u32::from_le_bytes(b))
 }
 
 /// Read a u64, returning `None` on a clean EOF before any byte (end of the
