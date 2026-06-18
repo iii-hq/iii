@@ -178,3 +178,54 @@ ON). Live boot confirmed the embedded-init handshake passes, the flag defaults o
 - Build the base squashfs from the prepared rootfs (incl. iii's /opt/iii) as part of rootfs prep,
   cached per base image; switch zlib→zstd for size.
 - Proper trigger plumbing (thread overlay mode through the worker-mgmt spawn, not a file).
+
+---
+
+## PRODUCTION IMPLEMENTATION — Phases 0–8 (all committed on this branch)
+
+The spike above is now a real, host-tested implementation. Final design and where each
+concern landed:
+
+**Boot model.** Shared read-only **squashfs base** (`<slug>.sqfs`, host-built with `backhand`,
+gzip, image-independent) is the overlay LOWER on `/dev/vda`; a per-worker **ext4 upper** on
+`/dev/vdb` is the writable layer; iii-init assembles overlayfs + `pivot_root`s. No per-worker
+rootfs clone; the worker `managed_dir` is a minimal trampoline (embedded init injects
+`/init.krun` from memory).
+
+**Persistent upper = vendored golden image (NOT format-in-guest).** `crates/iii-worker/src/cli/
+upper.rs` embeds `vendor/upper-golden.iiu.gz` — an empty 16 GiB ext4 stored as ONLY its non-zero
+4 KiB blocks (sparse-extent format, gzip via `flate2`, ~40 KiB). `ensure_upper_ext4` writes a
+sparse `upper.ext4` (~6 MiB on disk, 16 GiB logical) per worker, near-instant. Arch-independent
+(one artifact for aarch64+x86_64). Regen via `vendor/regen-golden.sh` (Docker mke2fs ->
+`gen-golden` example). e2fsck-validated. No `mke2fs` in-guest, no per-arch binaries — supersedes
+the embed-mke2fs plan. **Mac contributors build/test with no extra toolchain** (consume is pure
+host I/O; only regenerating the golden needs Docker).
+
+**Gating.** Overlay is ON by default but activates only when an EMBEDDED init is present
+(`has_init()` — version-matched), so default dev builds (no embed) keep the exact legacy
+clone/file behavior. Operator opt-out: `III_ROOTFS_MODE=legacy` env or config.yaml `rootfs.mode`.
+
+**Phase map (commit per phase):**
+- P0 spike baseline · P1 overlay decision as real `__vm-boot` args · P2 inline worker script
+  under overlay (host `/opt/iii/dev-run.sh` is invisible under the squashfs lower) · P3 golden
+  ext4 upper · P4 eliminate per-worker clone (local + OCI; OCI reads image config from the cache
+  dir) · P5 overlay-aware prepared/status (guest-decides install via the persistent marker; status
+  treats a live overlay VM as Ready) · P6 squashfs rebuild-on-stale + GC · P7 config.yaml
+  `rootfs.mode` · P8 host tests.
+
+**Host test coverage (runnable, all green):** golden sparse decode + idempotency + e2fsck-valid;
+squashfs build/readback/rebuild-on-stale/GC; overlay marker roundtrip + migrate GC + mode mapping;
+arg-builders emit `--rootfs-lower/-mode/-upper`; status overlay readiness; config `rootfs.mode`
+parse; overlay script guest-guard.
+
+### VM E2E acceptance checklist (Linux+KVM or macOS+HVF; build with `--features embed-init`)
+These require a real VM boot and are the manual/CI lane (not host unit tests):
+1. Local overlay boot → Ready (not stuck Preparing); `managed_dir` has NO full clone, has a sparse
+   `upper.ext4`; shared `<slug>.sqfs` in `~/.iii/cache`.
+2. Restart same worker → deps persist on the upper, install does NOT re-run (guest marker guard).
+3. OCI overlay boot via image entrypoint; no clone; image config read from the cache dir.
+4. Minimal base image (no fs tools) → boots, because the upper is the prebuilt golden (no in-guest
+   format needed).
+5. `III_ROOTFS_MODE=legacy` (or config.yaml) → legacy clone path, boots, no disks attached.
+6. `iii worker remove` frees `upper.ext4` (in managed_dir); re-pull frees + rebuilds the `.sqfs`.
+7. squashfs/upper materialize failure → `start` exits non-zero, NO silent fall back to a clone.

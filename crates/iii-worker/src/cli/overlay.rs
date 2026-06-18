@@ -39,12 +39,18 @@ pub fn overlay_enabled() -> bool {
         .ok()
         .or_else(crate::cli::config_file::rootfs_mode);
     match val {
-        Some(v) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "legacy" | "off" | "0" | "false" | "no"
-        ),
+        Some(v) => mode_value_enables_overlay(&v),
         None => true,
     }
+}
+
+/// Pure mapping of a mode string to "overlay on?". Anything other than the
+/// recognized disable words (case-insensitive) enables overlay.
+fn mode_value_enables_overlay(v: &str) -> bool {
+    !matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "legacy" | "off" | "0" | "false" | "no"
+    )
 }
 
 /// True only when an overlay-capable (embedded) iii-init is available — see
@@ -137,4 +143,62 @@ fn dir_size(path: &Path) -> u64 {
         }
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("iii-overlay-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn layout_marker_roundtrips_and_is_none_when_absent() {
+        let d = tmp("marker");
+        assert_eq!(read_layout(&d), None);
+        write_layout(&d, LAYOUT_OVERLAY);
+        assert_eq!(read_layout(&d).as_deref(), Some(LAYOUT_OVERLAY));
+        write_layout(&d, LAYOUT_LEGACY);
+        assert_eq!(read_layout(&d).as_deref(), Some(LAYOUT_LEGACY));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn migrate_gcs_legacy_artifacts_and_marks_overlay() {
+        let d = tmp("migrate");
+        // Simulate a legacy clone's orphaned artifacts.
+        std::fs::create_dir_all(d.join("var/iii/deps/node_modules")).unwrap();
+        std::fs::write(d.join("var/iii/deps/node_modules/x"), b"payload").unwrap();
+        std::fs::create_dir_all(d.join("var")).unwrap();
+        std::fs::write(d.join("var/.iii-prepared"), b"").unwrap();
+
+        migrate_to_overlay(&d);
+
+        assert!(!d.join("var/iii/deps").exists(), "legacy dep cache not GC'd");
+        assert!(
+            !d.join("var/.iii-prepared").exists(),
+            "stale prepared marker not removed"
+        );
+        assert_eq!(read_layout(&d).as_deref(), Some(LAYOUT_OVERLAY));
+
+        // Idempotent: a second call is a no-op (already overlay) and must not
+        // error or change the marker.
+        migrate_to_overlay(&d);
+        assert_eq!(read_layout(&d).as_deref(), Some(LAYOUT_OVERLAY));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn mode_value_mapping_disables_on_legacy_words_only() {
+        for v in ["legacy", "off", "0", "false", "no", "LEGACY", " Off "] {
+            assert!(!mode_value_enables_overlay(v), "{v} should disable overlay");
+        }
+        for v in ["overlay", "on", "1", "true", "yes", "anything-else"] {
+            assert!(mode_value_enables_overlay(v), "{v} should enable overlay");
+        }
+    }
 }
