@@ -254,7 +254,18 @@ Fixed by delivering the script as a file virtiofs-mounted at `/opt/iii` (commit
 
 Caveats: persistence relies on the guest committing ext4 (5 s journal timer) before VM exit — a
 real worker runs well past that; a hard-kill within 5 s of a write can lose it (optional hardening:
-`sync`/unmount-on-SIGTERM in iii-init). NOT yet live-tested: OCI overlay boot, legacy fallback.
+`sync`/unmount-on-SIGTERM in iii-init).
+
+**OCI overlay — VALIDATED ✅** (OCI worker on the cached node image, `iii-worker start`): logs show
+`overlay base squashfs -> /dev/vda` + `overlay writable upper -> /dev/vdb` + `overlay root mode …
+assembled and pivoted`; `rootfs` is a trampoline (no `/bin` → no clone), sparse `upper.ext4`,
+`.iii-layout=overlay`; and the `__vm-boot` cmdline proves entrypoint/workdir/env are read from the
+CACHE (`--exec docker-entrypoint.sh --workdir /home/node/work --env NODE_VERSION=… --arg tail -f
+/dev/null`), not a per-worker clone — the Phase 4 read-from-cache path. Worker process alive.
+
+**Legacy fallback — VALIDATED ✅** (`III_ROOTFS_MODE=legacy iii-worker start`): managed_dir is a
+full clone (`/bin` present), NO `upper.ext4`, no layout marker, ZERO overlay-disk and ZERO
+overlay-pivot log lines (no disks attached), bind-loop workspace, VM running. Clean opt-out.
 
 ### W1 workspace copy-in — VALIDATED ✅ (fixes the original empty-folders bug)
 The empty `node_modules`/`.venv`/`dist`/… in the host project came from the workspace bind-mount
