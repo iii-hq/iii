@@ -85,10 +85,6 @@
                   "next/using-iii/engine",
                   "next/using-iii/console",
                   "next/using-iii/cli",
-                  "next/using-iii/sandboxes",
-                  "next/using-iii/observability",
-                  "next/using-iii/http",
-                  "next/using-iii/queues",
                   "next/using-iii/deployment"
                 ]
               },
@@ -109,7 +105,16 @@
                   "next/creating-workers/worker-manifest",
                   "next/creating-workers/triggers",
                   "next/creating-workers/functions",
-                  "next/creating-workers/channels"
+                  "next/creating-workers/channels",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "next/creating-workers/http",
+                      "next/creating-workers/queues",
+                      "next/creating-workers/observability",
+                      "next/creating-workers/sandboxes"
+                    ]
+                  }
                 ]
               }
             ]
