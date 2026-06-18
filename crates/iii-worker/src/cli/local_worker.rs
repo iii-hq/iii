@@ -1093,38 +1093,47 @@ async fn start_worker_impl(
     //    which sets `III_CONTROL_PORT` in the guest env for iii-init.
     let script = build_libkrun_local_script(&project, is_prepared, is_bundle, overlay);
 
-    // Choose how the boot script reaches the guest:
-    //   - overlay: the per-worker rootfs is the shared READ-ONLY squashfs
-    //     lower (iii-init assembles the overlay + pivots). A host-written
-    //     /opt/iii/dev-run.sh would sit under that read-only lower and be
-    //     invisible in-guest, so pass the script INLINE via III_WORKER_CMD
-    //     (`bash -c <script>`). No host file, no managed_dir/opt dir.
-    //   - legacy: the per-worker clone is the writable PassthroughFs root,
-    //     so keep the host-file indirection exactly as before.
-    let (exec_path, args): (&str, Vec<String>) = if overlay {
-        ("bash", vec!["-c".to_string(), script.clone()])
+    // Both modes exec `bash /opt/iii/dev-run.sh`; only the SOURCE of that file
+    // differs:
+    //   - legacy: written into the per-worker clone at managed_dir/opt/iii,
+    //     which IS the guest root (PassthroughFs) — directly visible.
+    //   - overlay: after pivot the guest root is the read-only squashfs lower
+    //     + ext4 upper, which the host can't write into directly. Write the
+    //     script to a host runtime dir and virtiofs-mount it at /opt/iii
+    //     (iii-init mounts virtiofs shares POST-pivot, so it lands in the
+    //     overlay root).
+    //
+    // The script is delivered as a FILE, never inlined into III_WORKER_CMD:
+    // msb_krun passes the whole guest env via the kernel cmdline (krun_env),
+    // and a multi-KB inlined script overflows CMDLINE_MAX_SIZE and panics the
+    // VM builder. Keeping III_WORKER_CMD tiny (`exec bash /opt/iii/dev-run.sh`)
+    // keeps the env within the cmdline budget for both modes.
+    let script_dir = if overlay {
+        managed_dir.join("runtime")
     } else {
-        let script_path = managed_dir.join("opt").join("iii").join("dev-run.sh");
-        std::fs::create_dir_all(managed_dir.join("opt").join("iii")).ok();
-        if let Err(e) = std::fs::write(&script_path, &script) {
-            eprintln!("{} Failed to write run script: {}", "error:".red(), e);
-            return 1;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-        }
-        // The script sets up the workspace; no pre-cd needed (and /workspace
-        // is empty until virtiofs mounts, so cd-before-exec would be racy).
-        (
-            "/bin/sh",
-            vec![
-                "-c".to_string(),
-                "exec bash /opt/iii/dev-run.sh".to_string(),
-            ],
-        )
+        managed_dir.join("opt").join("iii")
     };
+    if let Err(e) = std::fs::create_dir_all(&script_dir) {
+        eprintln!("{} Failed to create run-script dir: {}", "error:".red(), e);
+        return 1;
+    }
+    let script_path = script_dir.join("dev-run.sh");
+    if let Err(e) = std::fs::write(&script_path, &script) {
+        eprintln!("{} Failed to write run script: {}", "error:".red(), e);
+        return 1;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+    }
+    // The script sets up the workspace; no pre-cd needed (and /workspace is
+    // empty until virtiofs mounts, so cd-before-exec would be racy).
+    let exec_path = "/bin/sh";
+    let args = vec![
+        "-c".to_string(),
+        "exec bash /opt/iii/dev-run.sh".to_string(),
+    ];
 
     // 8. Copy iii-init if needed
     let init_path = match super::firmware::download::ensure_init_binary().await {
@@ -1201,7 +1210,17 @@ async fn start_worker_impl(
         parse_manifest_resources(&manifest_path)
     };
 
-    let mounts = build_local_mounts(project_path);
+    let mut mounts = build_local_mounts(project_path);
+    if overlay {
+        // Make the host-written dev-run.sh visible in the (post-pivot) overlay
+        // root at /opt/iii. iii-init mkdir_p's the guest path before mounting,
+        // and overlayfs makes /opt writable (upper) even though the squashfs
+        // lower is read-only.
+        mounts.push((
+            script_dir.to_string_lossy().into_owned(),
+            "/opt/iii".to_string(),
+        ));
+    }
 
     // Overlay: build the shared read-only base squashfs from the prepared base
     // rootfs (host-side, image-independent) and materialize this worker's
