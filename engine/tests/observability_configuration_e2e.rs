@@ -273,6 +273,10 @@ async fn alert_rules_hot_swap_and_prune() {
         }),
     )
     .await;
+    // Drive the handler synchronously so the assertion cannot time out waiting
+    // on async trigger fan-out (that 5s window flakes under slow coverage
+    // instrumentation); the other config tests use the same pattern.
+    drive_apply(&harness).await;
 
     wait_for(
         || {
@@ -286,6 +290,7 @@ async fn alert_rules_hot_swap_and_prune() {
 
     // Removing every rule prunes them (and their states) again.
     set_value(&harness, json!({ "alerts": [] })).await;
+    drive_apply(&harness).await;
     wait_for(
         || {
             iii::workers::observability::metrics::get_alert_manager()
