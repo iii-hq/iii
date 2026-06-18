@@ -229,3 +229,30 @@ These require a real VM boot and are the manual/CI lane (not host unit tests):
 5. `III_ROOTFS_MODE=legacy` (or config.yaml) → legacy clone path, boots, no disks attached.
 6. `iii worker remove` frees `upper.ext4` (in managed_dir); re-pull frees + rebuilds the `.sqfs`.
 7. squashfs/upper materialize failure → `start` exits non-zero, NO silent fall back to a clone.
+
+### LIVE BOOT — production impl VALIDATED ✅ (macOS + HVF, embed-init debug build)
+Built `iii-init` for `aarch64-unknown-linux-musl` (rust-lld, no C toolchain), then
+`iii-worker --features embed-init`; drove `iii-worker start todo-app` directly (current_exe →
+`__vm-boot` = the embed-init binary). libkrunfw resolved from `~/.iii/lib`.
+
+**Bug caught (would never surface in host tests):** msb_krun passes the WHOLE guest env via the
+kernel cmdline (`krun_env`, bounded by `CMDLINE_MAX_SIZE`). Phase 2's inlined script in
+`III_WORKER_CMD` overflowed it → panic at `msb_krun_vmm builder.rs:600` before the guest started.
+Fixed by delivering the script as a file virtiofs-mounted at `/opt/iii` (commit
+`fix(iii-worker): deliver overlay worker script via virtiofs, not inline`).
+
+**Proven after the fix:**
+- Overlay activates (embedded-init handshake); `.iii-layout=overlay`.
+- NO per-worker clone: managed_dir is an **8.8 MiB trampoline** (dev/new-root/overlay-lower/
+  overlay-upperfs/runtime/workspace + upper.ext4) vs the **731 MiB** legacy clone it replaced.
+- Sparse golden ext4 upper: **16 GiB logical / ~7–9 MiB on disk**, attached `/dev/vdb`.
+- Shared squashfs lower attached `/dev/vda`; both disks attach without panic.
+- `iii-init: overlay root mode … assembled and pivoted`; workspace + deps mount from the upper.
+- Image-independent: node v24 / npm come from the base-image squashfs.
+- **Deps persist across a clean restart**: boot #1 runs `npm install`; boot #2 on the same upper
+  SKIPS it (0 install lines) via the on-upper `/var/.iii-prepared` guard.
+
+Caveats: persistence relies on the guest committing ext4 (5 s journal timer) before VM exit — a
+real worker runs well past that; a hard-kill within 5 s of a write can lose it (optional hardening:
+`sync`/unmount-on-SIGTERM in iii-init). NOT yet live-tested: OCI overlay boot, legacy fallback,
+the W1 empty-folders fix (still pending — the workspace bind-mount preamble is unchanged).
