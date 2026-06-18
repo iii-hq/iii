@@ -13,7 +13,7 @@ This chapter uses two workers. `iii-queue` is already in your project from `iii 
 `iii-pubsub` now; you publish your first event to it later in the chapter:
 
 ```bash
-iii worker add iii-pubsub@0.19.4-alpha.2
+iii worker add iii-pubsub@0.19.4-alpha.3
 ```
 
 ## Make redirects fast with a queue
@@ -49,7 +49,7 @@ with a `TriggerAction`.
 
 ```typescript {1} src/index.ts
 import { registerWorker, TriggerAction } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 ```
 
 Then add an `action` to the existing `link::record_click` call in `http::redirect` so the
@@ -228,7 +228,7 @@ import os
 from datetime import datetime, timezone
 
 from iii import register_worker, InitOptions
-from iii_observability import Logger
+from iii_helpers.observability import Logger
 
 worker = register_worker(
     os.environ.get("III_URL", "ws://localhost:49134"),

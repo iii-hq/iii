@@ -16,7 +16,7 @@ worker to manage the streaming, so scaffold it the same way you scaffolded `link
 `analytics` in Chapter 4:
 
 ```bash
-iii worker add iii-stream@0.19.4-alpha.2
+iii worker add iii-stream@0.19.4-alpha.3
 iii worker init click-streamer --language typescript
 ```
 
@@ -66,7 +66,7 @@ WebSocket subscribed to that stream and group. Replace the generated `click-stre
 
 ```typescript click-streamer/src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "click-streamer",

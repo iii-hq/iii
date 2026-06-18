@@ -70,7 +70,7 @@ arbitrary context). Throw to reject. Replace the generated `auth/src/index.ts`:
 
 ```typescript auth/src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "auth",

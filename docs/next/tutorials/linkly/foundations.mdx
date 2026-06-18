@@ -26,8 +26,8 @@ short-code → URL mappings in a key-value store (provided by `iii-state`). Add 
 ready when the `link` worker reaches for them:
 
 ```bash
-iii worker add iii-http@0.19.4-alpha.2
-iii worker add iii-state@0.19.4-alpha.2
+iii worker add iii-http@0.19.4-alpha.3
+iii worker add iii-state@0.19.4-alpha.3
 ```
 
 If you open `config.yaml` now you'll notice both workers have been added, plus a few that iii ships
@@ -109,8 +109,8 @@ directly and reloads the worker whenever you save a change.
     "start": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.19.4-alpha.2",
-    "@iii-dev/observability": "0.19.4-alpha.2",
+    "iii-sdk": "0.19.4-alpha.3",
+    "@iii-dev/helpers": "0.19.4-alpha.3",
     "tsx": "^4.22.3"
   },
   "devDependencies": {
@@ -137,7 +137,7 @@ pasting one large file at once.
 
 ```typescript src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "link",

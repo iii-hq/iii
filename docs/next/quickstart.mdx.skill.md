@@ -129,7 +129,7 @@ Start by adding the state worker, which gives every function access to a persist
 From the folder containing iii's `config.yaml` run:
 
 ```bash
-iii worker add iii-state
+iii worker add iii-state@0.19.4-alpha.3
 ```
 
 Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block so
@@ -188,7 +188,7 @@ Now let's add an HTTP worker to expose your functions as REST endpoints.
 From the folder containing iii's `config.yaml` run:
 
 ```bash
-iii worker add iii-http
+iii worker add iii-http@0.19.4-alpha.3
 ```
 
 Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the bottom of the file:

@@ -54,7 +54,7 @@ First add the `DB` constant **near the top of `link/src/index.ts`**:
 
 ```typescript {4} src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const DB = "primary"; // Matches db name in config.yaml
 ```

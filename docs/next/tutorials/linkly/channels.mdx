@@ -29,7 +29,7 @@ CSV in, and triggers `link::create` from the `link` worker for each row. Replace
 
 ```typescript bulk-importer/src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "bulk-importer",
@@ -90,7 +90,7 @@ mkdir test-channels
 cd test-channels
 npm init -y
 npm pkg set type=module
-npm install iii-sdk@0.19.4-alpha.2
+npm install iii-sdk@0.19.4-alpha.3
 ```
 
 Save this as `test-channels/import-links.js`:
