@@ -246,6 +246,12 @@ fi
 # isn't pulled in. Only /mnt/host-src is read; the host project is never
 # written, so no empty dep folders appear there.
 ( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=node_modules --exclude=.venv --exclude=target --exclude=dist --exclude=__pycache__ --exclude=.pytest_cache --exclude=.next --exclude=.git . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }
+# Enforce "host project untouched": drop the writable handle to the host source
+# now that it's copied in, so worker code can't write back to the host repo via
+# /mnt/host-src. The host-side watcher re-copies on the next boot, so live edits
+# still propagate. cd out first so the mount isn't busy.
+cd /
+umount "$SRC" 2>/dev/null || true
 cd /workspace
 echo "iii: workspace ready (copy-in from host; deps stay VM-local, host project untouched)" >&2"#
                 .to_string(),

@@ -69,10 +69,11 @@ pub fn ensure_upper_ext4(managed_dir: &Path) -> io::Result<PathBuf> {
         return Ok(dest);
     }
     std::fs::create_dir_all(managed_dir)?;
-    // Materialize into a temp sibling then atomically rename, so an
+    // Materialize into a per-process temp sibling then atomically rename, so an
     // interrupted first boot never leaves a half-written image that a later
-    // boot would mount as a valid (but corrupt) fs.
-    let tmp = managed_dir.join(format!("{UPPER_NAME}.partial"));
+    // boot would mount as a valid (but corrupt) fs, and two concurrent starts
+    // can't write the same temp.
+    let tmp = managed_dir.join(format!("{UPPER_NAME}.{}.partial", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     write_sparse_image(GOLDEN, &tmp).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
@@ -114,6 +115,10 @@ fn write_sparse_image(gz: &[u8], dest: &Path) -> io::Result<()> {
         out.write_all(&block)?;
     }
     out.set_len(total_len)?;
+    // Flush to disk before the caller renames over the final path, so a crash
+    // right after the rename can't leave a zero-length / partially-written
+    // upper that the next boot would mount as a valid (but empty) fs.
+    out.sync_all()?;
     Ok(())
 }
 

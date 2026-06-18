@@ -12,24 +12,41 @@
 //! toolchains.
 
 use std::fs::{self, File};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use backhand::compression::Compressor;
 use backhand::kind::{self, Kind};
 use backhand::{FilesystemCompressor, FilesystemWriter, NodeHeader, DEFAULT_BLOCK_SIZE};
 
+/// Per-call sequence so concurrent builds (even within ONE process — the
+/// engine starts workers as concurrent async tasks) never share a temp path.
+static SQFS_BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Build a read-only squashfs image at `out` from the rootfs tree at `src`.
 ///
 /// Preserves regular files, directories, and symlinks with their permission
-/// bits. Special files (character/block devices, FIFOs, sockets) are skipped:
-/// a base rootfs's `/dev` is populated by iii-init (devtmpfs) at boot, not
-/// carried in the image.
+/// bits AND their ownership (uid/gid) and mtime, so a base image that ships
+/// non-root-owned files (e.g. `/home/node` owned by uid 1000) boots with the
+/// same ownership instead of everything flattened to root.
+///
+/// Special files (character/block devices, FIFOs, sockets) are skipped: a base
+/// rootfs's `/dev` is populated by iii-init (devtmpfs) at boot, not carried in
+/// the image.
+///
+/// Limitation: extended attributes are NOT carried (backhand's `NodeHeader`
+/// has no xattr field), so `security.capability` file capabilities are dropped.
+/// This is benign for iii because the worker runs as PID 1 / root, which holds
+/// all capabilities regardless of per-file caps; revisit if a non-root worker
+/// mode is ever added.
 pub fn build_squashfs(src: &Path, out: &Path) -> Result<(), String> {
     let mut w = FilesystemWriter::default();
     w.set_current_time();
     w.set_block_size(DEFAULT_BLOCK_SIZE);
-    w.set_only_root_id();
+    // Do NOT set_only_root_id(): we preserve per-node uid/gid below, so the id
+    // table must hold the real owners, not just root.
     w.set_kind(Kind::from_const(kind::LE_V4_0).map_err(|e| format!("squashfs kind: {e}"))?);
     w.set_compressor(
         FilesystemCompressor::new(Compressor::Gzip, None)
@@ -73,9 +90,9 @@ fn add_dir(w: &mut FilesystemWriter, root: &Path, dir: &Path) -> Result<(), Stri
         };
         let header = NodeHeader {
             permissions: (meta.permissions().mode() & 0o7777) as u16,
-            uid: 0,
-            gid: 0,
-            mtime: 0,
+            uid: meta.uid(),
+            gid: meta.gid(),
+            mtime: meta.mtime().clamp(0, u32::MAX as i64) as u32,
         };
         let ft = meta.file_type();
         if ft.is_symlink() {
@@ -138,9 +155,18 @@ pub fn ensure_base_squashfs(base_dir: &Path) -> Result<std::path::PathBuf, Strin
             "iii: building read-only base squashfs (host-side, image-independent) from {}...",
             base_dir.display()
         );
+        // Per-CALL temp name: the `.sqfs` cache is SHARED across workers on the
+        // same base image, so two concurrent first-boots (the engine starting
+        // many same-image workers at once, whether as separate processes OR
+        // concurrent async tasks in one process) would otherwise build to the
+        // same `.partial` path and interleave into a corrupt squashfs. pid +
+        // a process-local sequence makes every build's temp unique; the atomic
+        // rename then makes it last-writer-wins, each a complete valid image.
         let tmp = base_dir.with_file_name(format!(
-            "{}.sqfs.partial",
-            base_dir.file_name().and_then(|s| s.to_str()).unwrap_or("base")
+            "{}.sqfs.{}.{}.partial",
+            base_dir.file_name().and_then(|s| s.to_str()).unwrap_or("base"),
+            std::process::id(),
+            SQFS_BUILD_SEQ.fetch_add(1, Ordering::Relaxed),
         ));
         let _ = fs::remove_file(&tmp);
         build_squashfs(base_dir, &tmp).inspect_err(|_| {
@@ -158,8 +184,21 @@ pub fn ensure_base_squashfs(base_dir: &Path) -> Result<std::path::PathBuf, Strin
 pub fn remove_base_squashfs(base_dir: &Path) {
     let out = base_squashfs_path(base_dir);
     let _ = fs::remove_file(&out);
+    // Sweep any leftover build partials (`<name>.sqfs.partial` and the
+    // per-pid `<name>.sqfs.<pid>.partial`) orphaned by a crashed build.
     let name = base_dir.file_name().and_then(|s| s.to_str()).unwrap_or("base");
-    let _ = fs::remove_file(base_dir.with_file_name(format!("{name}.sqfs.partial")));
+    let prefix = format!("{name}.sqfs");
+    if let Some(parent) = out.parent()
+        && let Ok(rd) = fs::read_dir(parent)
+    {
+        for entry in rd.flatten() {
+            let fname = entry.file_name();
+            let Some(f) = fname.to_str() else { continue };
+            if f.starts_with(&prefix) && f.ends_with(".partial") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
