@@ -5,6 +5,16 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.19.5" description="June 2026">
+  ## `iii-pubsub` runtime settings live in the configuration worker
+
+  The pub/sub worker now registers its config schema under the `iii-pubsub` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart.
+
+  The pub/sub `adapter` is a **full hot-swap tier** (unlike `iii-state`'s restart-tier storage adapter): a runtime edit rebuilds the backend — `local` (in-process broadcast) or `redis` (cross-instance delivery) — re-subscribes the live subscriptions onto the new backend before swapping it in so there is no delivery gap, then tears down the previous backend, aborting its per-topic tasks rather than leaking them. A value that fails to build the backend is gated and keeps the previous one running.
+
+  As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-pubsub.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read. The schema carries a per-field description and rejects unknown top-level keys at `configuration::set` time.
+</Update>
+
 <Update label="0.19.4" description="June 2026">
   ## `iii.worker.yaml` is validated before anything is installed
 
