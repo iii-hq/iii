@@ -310,8 +310,15 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
             prov.push_str(&project.install_cmd);
             prov.push('\n');
         }
+        // `&& sync` flushes the just-installed deps + the marker from the guest
+        // page cache to the ext4 upper (/dev/vdb) the instant install finishes.
+        // Without it, a worker that exits within ext4's ~5s commit window tears
+        // the VM down before the write lands, losing both and re-running install
+        // next boot. ponytail: belt-and-suspenders with iii-init's sync-on-exit
+        // (supervisor::sync_and_exit); this also covers a SIGKILL that lands
+        // after install but before the worker exits.
         parts.push(format!(
-            "if [ ! -e /var/.iii-prepared ]; then\n{prov}mkdir -p /var && touch /var/.iii-prepared\nfi"
+            "if [ ! -e /var/.iii-prepared ]; then\n{prov}mkdir -p /var && touch /var/.iii-prepared && sync\nfi"
         ));
         // Host-visible readiness: /opt/iii is a virtiofs mount of the host's
         // managed_dir/runtime, so the host (status / `--wait`) can see this
