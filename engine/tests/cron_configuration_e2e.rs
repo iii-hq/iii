@@ -95,6 +95,28 @@ async fn set_value(harness: &Harness, value: Value) {
     }
 }
 
+/// Like `set_value`, but asserts the configuration worker REJECTS the value with
+/// a `SCHEMA_INVALID` error — the closed per-adapter schema in action.
+async fn set_value_expect_rejection(harness: &Harness, value: Value) {
+    let result = harness
+        .configuration
+        .set_fn(ConfigurationSetInput {
+            id: CONFIG_ID.to_string(),
+            value,
+        })
+        .await;
+    match result {
+        FunctionResult::Failure(err) => assert_eq!(
+            err.code, "SCHEMA_INVALID",
+            "expected a schema rejection, got: {err:?}"
+        ),
+        FunctionResult::Success(_) => {
+            panic!("expected SCHEMA_INVALID rejection, but configuration::set succeeded")
+        }
+        _ => panic!("expected SCHEMA_INVALID rejection, got an unexpected result"),
+    }
+}
+
 /// Invoke the config-change handler synchronously so assertions can't pass
 /// vacuously before the (also async) trigger fan-out applies the change.
 async fn drive_apply(harness: &Harness) {
@@ -252,26 +274,157 @@ async fn adapter_hot_swap_rebinds_live_jobs() {
 }
 
 #[tokio::test]
-async fn unresolvable_adapter_keeps_previous_scheduler() {
+async fn set_rejects_unknown_adapter_and_stray_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let _worker = start_cron_worker(&harness, json!({})).await;
+
+    // The closed per-adapter schema rejects an unknown adapter name, a bad enum
+    // value, a stray config key, and a redis key the adapter does not read (its
+    // TTL is hardcoded) — all at `configuration::set` time, before they could
+    // reach the apply gate.
+    set_value_expect_rejection(&harness, json!({ "adapter": { "name": "does-not-exist" } })).await;
+    set_value_expect_rejection(
+        &harness,
+        json!({ "adapter": { "name": "kv", "config": { "store_method": "weird" } } }),
+    )
+    .await;
+    set_value_expect_rejection(
+        &harness,
+        json!({ "adapter": { "name": "kv", "config": { "bogus": true } } }),
+    )
+    .await;
+    set_value_expect_rejection(
+        &harness,
+        json!({ "adapter": { "name": "redis", "config": { "lock_ttl_ms": 5000 } } }),
+    )
+    .await;
+
+    // A valid redis adapter is accepted (set only validates + persists; it does
+    // not connect, so no Redis is required here).
+    set_value(
+        &harness,
+        json!({ "adapter": { "name": "redis", "config": { "redis_url": "redis://localhost:6379" } } }),
+    )
+    .await;
+    let stored = stored_value(&harness, false).await;
+    assert_eq!(stored["value"]["adapter"]["name"], "redis");
+}
+
+// Regression: the shipped `iii.worker.yaml` seeds `{ adapter: { name: kv } }`
+// with NO config block. With the closed per-adapter schema, that seed must still
+// register — `AdapterEntry.config` is omitted (not serialized as `config: null`,
+// which matches no `oneOf` branch and would silently fail `register`, leaving the
+// console with nothing to render).
+#[tokio::test]
+async fn default_adapter_seed_without_config_is_registered() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
-    let worker = start_cron_worker(&harness, json!({})).await;
-    let before = worker.adapter_snapshot();
+    let _worker = start_cron_worker(&harness, json!({ "adapter": { "name": "kv" } })).await;
 
-    // An adapter name that isn't registered deserializes fine and passes the
-    // JSON schema, so it reaches the apply gate — where resolving the transport
-    // fails and the previous scheduler/config must stand.
-    set_value(&harness, json!({ "adapter": { "name": "does-not-exist" } })).await;
-    drive_apply(&harness).await;
-
-    assert!(
-        Arc::ptr_eq(&before, &worker.adapter_snapshot()),
-        "a failed resolve must keep the previous scheduler"
+    let stored = stored_value(&harness, false).await;
+    assert_eq!(
+        stored["id"], CONFIG_ID,
+        "the config-less default seed must register the iii-cron entry: {stored}"
     );
+    assert_eq!(stored["value"]["adapter"]["name"], "kv");
+}
+
+// Disk-path guard for the iii-stream split-brain bug class: a persisted adapter
+// that cannot be resolved at boot must NOT be advertised by `config_snapshot()`.
+// An unresolvable adapter can only reach the apply gate via a hand-edited file
+// (the closed schema rejects it at `configuration::set`), so inject it directly.
+#[tokio::test]
+async fn boot_resolve_failure_keeps_config_consistent() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // First boot persists a valid kv adapter with a distinguishing lock index.
+    {
+        let harness = build_harness(dir.path()).await;
+        let _worker = start_cron_worker(
+            &harness,
+            json!({ "adapter": { "name": "kv", "config": { "lock_index": "seed-backend" } } }),
+        )
+        .await;
+        let stored = stored_value(&harness, false).await;
+        assert_eq!(
+            stored["value"]["adapter"]["config"]["lock_index"], "seed-backend",
+            "first boot must persist the seed adapter"
+        );
+    }
+
+    // Hand-edit the persisted entry to an unregistered adapter, bypassing the
+    // closed-schema validation `configuration::set` enforces.
+    let path = dir.path().join("iii-cron.yaml");
+    let raw = std::fs::read_to_string(&path).expect("persisted iii-cron entry");
+    let mut entry: serde_yaml::Value = serde_yaml::from_str(&raw).expect("parse persisted entry");
+    let value = entry
+        .get_mut("value")
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .expect("persisted entry has a value mapping");
+    let mut adapter = serde_yaml::Mapping::new();
+    adapter.insert(
+        serde_yaml::Value::from("name"),
+        serde_yaml::Value::from("does-not-exist"),
+    );
+    value.insert(
+        serde_yaml::Value::from("adapter"),
+        serde_yaml::Value::Mapping(adapter),
+    );
+    std::fs::write(
+        &path,
+        serde_yaml::to_string(&entry).expect("serialize entry"),
+    )
+    .expect("rewrite persisted entry");
+    // Confirm the corrupt value actually reached disk (the read path is what the
+    // booting worker will fetch).
+    let reread = std::fs::read_to_string(&path).expect("reread entry");
     assert!(
-        worker.config_snapshot().adapter.is_none(),
-        "a failed resolve must keep the previous config"
+        reread.contains("does-not-exist"),
+        "the hand-edited unresolvable adapter must be on disk before boot"
+    );
+
+    // Restart against the same dir: the fresh configuration worker re-reads the
+    // hand-edited file. The cron worker boots with a valid kv seed; its boot
+    // adoption fetches `does-not-exist`, fails to resolve it, and must keep the
+    // live config consistent with the seed backend actually serving — never
+    // advertising the unresolved adapter (that would be the iii-stream
+    // split-brain regression).
+    let harness = build_harness(dir.path()).await;
+    let worker = start_cron_worker(
+        &harness,
+        json!({ "adapter": { "name": "kv", "config": { "lock_index": "seed-backend" } } }),
+    )
+    .await;
+
+    let adapter = worker
+        .config_snapshot()
+        .adapter
+        .clone()
+        .expect("seed adapter retained after a failed resolve");
+    assert_eq!(
+        adapter.name, "kv",
+        "the unresolvable persisted adapter must never be advertised by config_snapshot"
+    );
+    assert_eq!(
+        adapter
+            .config
+            .as_ref()
+            .and_then(|c| c["lock_index"].as_str()),
+        Some("seed-backend"),
+        "the live config must reflect the seed backend, not the bad persisted adapter"
+    );
+
+    // The seed scheduler must still be live and accept job registrations.
+    worker
+        .register_trigger(cron_trigger("post-fail-job", "test::noop", "0 0 * * * *"))
+        .await
+        .expect("seed scheduler must remain usable after a failed boot adoption");
+    assert_eq!(
+        worker.adapter_snapshot().job_count().await,
+        1,
+        "the retained seed scheduler must register the job"
     );
 }
 
