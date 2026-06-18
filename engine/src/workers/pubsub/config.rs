@@ -9,11 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::workers::traits::AdapterEntry;
 
-#[allow(dead_code)] // this is used as default value
-fn default_redis_url() -> String {
-    "redis://localhost:6379".to_string()
-}
-
 /// Runtime configuration for the builtin `iii-pubsub` worker. The doc comment on
 /// each field flows into the JSON Schema (via `schemars`) that the `iii-pubsub`
 /// configuration entry registers, so an agent introspecting the schema sees the
