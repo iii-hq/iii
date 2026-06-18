@@ -12,8 +12,11 @@
 //!
 //! Modeled on `engine/tests/state_configuration_e2e.rs` — composes the two
 //! workers against a real `FsAdapter` on a `tempfile::tempdir()`. No engine
-//! boot, no subprocess. The pub/sub adapters used here (`local`) need no
-//! external server, so no Redis and no port serialization.
+//! boot, no subprocess. The pub/sub adapters used here (`local` and the
+//! test-only `memory` backend, registered under the `test-adapters` feature)
+//! need no external server, so no Redis and no port serialization. `memory` is
+//! a `local` clone under a second name with an open config, so the suite can
+//! hot-swap between two buildable backends and carry opaque markers.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -223,13 +226,13 @@ async fn first_boot_seeds_configuration_entry() {
 
     let _worker = start_pubsub_worker(
         &harness,
-        json!({ "adapter": { "name": "local", "config": { "label": "seeded" } } }),
+        json!({ "adapter": { "name": "memory", "config": { "label": "seeded" } } }),
     )
     .await;
 
     let stored = stored_value(&harness).await;
     assert_eq!(stored["id"], CONFIG_ID);
-    assert_eq!(stored["value"]["adapter"]["name"], "local");
+    assert_eq!(stored["value"]["adapter"]["name"], "memory");
     assert_eq!(stored["value"]["adapter"]["config"]["label"], "seeded");
 }
 
@@ -238,19 +241,19 @@ async fn runtime_edit_survives_worker_restart() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
-    let _worker = start_pubsub_worker(&harness, json!({ "adapter": { "name": "local" } })).await;
+    let _worker = start_pubsub_worker(&harness, json!({ "adapter": { "name": "memory" } })).await;
 
     // Operator repoints the adapter at runtime (config differs so it's a real
-    // change, but stays on the in-process `local` backend — no Redis needed).
+    // change, but stays on the in-process `memory` backend — no Redis needed).
     set_value(
         &harness,
-        json!({ "adapter": { "name": "local", "config": { "label": "edited" } } }),
+        json!({ "adapter": { "name": "memory", "config": { "label": "edited" } } }),
     )
     .await;
 
     // "Restart": a fresh worker with a different seed must NOT clobber the
     // stored value, and must adopt it as the runtime source of truth.
-    let restarted = start_pubsub_worker(&harness, json!({ "adapter": { "name": "local" } })).await;
+    let restarted = start_pubsub_worker(&harness, json!({ "adapter": { "name": "memory" } })).await;
 
     let stored = stored_value(&harness).await;
     assert_eq!(
@@ -285,13 +288,9 @@ async fn adapter_hot_swap_rebuilds_backend_and_rebinds_subscriptions() {
 
     let backend_before = worker.adapter_snapshot();
 
-    // Repoint the adapter at runtime: a config difference forces a real backend
-    // rebuild while staying on the in-process `local` adapter (no Redis needed).
-    set_value(
-        &harness,
-        json!({ "adapter": { "name": "local", "config": { "generation": 2 } } }),
-    )
-    .await;
+    // Repoint the adapter at runtime: a name change (`local` -> the in-process
+    // `memory` backend) forces a real backend rebuild without needing Redis.
+    set_value(&harness, json!({ "adapter": { "name": "memory" } })).await;
     drive_apply(&harness).await;
 
     // The backend instance was rebuilt...
@@ -393,12 +392,8 @@ async fn subscription_registered_after_swap_uses_new_backend() {
 
     let worker = start_pubsub_worker(&harness, json!({ "adapter": { "name": "local" } })).await;
 
-    // Swap the backend first (a config difference forces a rebuild).
-    set_value(
-        &harness,
-        json!({ "adapter": { "name": "local", "config": { "generation": 2 } } }),
-    )
-    .await;
+    // Swap the backend first (a name change to `memory` forces a rebuild).
+    set_value(&harness, json!({ "adapter": { "name": "memory" } })).await;
     drive_apply(&harness).await;
 
     // A subscription registered AFTER the swap must land on the new backend
@@ -443,7 +438,7 @@ async fn env_placeholder_expands_on_read() {
         &harness,
         json!({
             "adapter": {
-                "name": "local",
+                "name": "memory",
                 "config": { "label": "${PUBSUB_E2E_LABEL:default-label}" }
             }
         }),

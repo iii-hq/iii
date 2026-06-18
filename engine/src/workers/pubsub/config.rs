@@ -36,8 +36,9 @@ pub struct PubSubModuleConfig {
 
 /// Schema for an adapter `config`: an object (or `null`/absent — the seed
 /// serializes an absent `AdapterEntry.config` as `null`). `properties` names the
-/// adapter's typed keys; passing `&[]` with `strict = false` yields an open
-/// object (for adapters like `local` that ignore their config).
+/// adapter's typed keys; `strict` adds `additionalProperties = false`. Passing
+/// `&[]` with `strict = true` yields a closed empty object (for adapters like
+/// `local` that take no config — any key is rejected).
 fn adapter_config_schema(properties: &[(&str, &str)], strict: bool) -> Schema {
     let mut object = SchemaObject {
         // Accept both an object and `null` so a seed with no config (serialized
@@ -71,10 +72,13 @@ fn adapter_config_schema(properties: &[(&str, &str)], strict: bool) -> Schema {
 /// permissive via the `AdapterEntry` field type, so a hand-edited persisted file
 /// is still tolerated at boot.
 fn pubsub_adapter_schema(_generator: &mut SchemaGenerator) -> Schema {
-    let branches = vec![
+    #[allow(unused_mut)]
+    let mut branches = vec![
         // `local` ignores its config entirely (the factory takes `_config`), so
-        // its branch carries an open object rather than a typed shape.
-        adapter_branch("local", adapter_config_schema(&[], false)),
+        // its branch carries a closed empty object: the console shows no config
+        // fields and `configuration::set` rejects any junk key (the `null`/absent
+        // seed still validates — the config schema allows `null`).
+        adapter_branch("local", adapter_config_schema(&[], true)),
         // `redis` carries a typed `redis_url`.
         adapter_branch(
             "redis",
@@ -87,6 +91,12 @@ fn pubsub_adapter_schema(_generator: &mut SchemaGenerator) -> Schema {
             ),
         ),
     ];
+
+    // The `test-adapters` feature registers an in-process `memory` backend for
+    // the pubsub config e2e suite; advertise it in the schema so
+    // `configuration::set` accepts it. Open config — it's an opaque test carrier.
+    #[cfg(feature = "test-adapters")]
+    branches.push(adapter_branch("memory", adapter_config_schema(&[], false)));
 
     let mut schema = SchemaObject::default();
     schema.metadata().description = Some(
@@ -181,7 +191,17 @@ mod tests {
             .iter()
             .filter_map(|b| b["properties"]["name"]["enum"][0].as_str())
             .collect();
+        // The `test-adapters` feature appends a `memory` branch (see
+        // `pubsub_adapter_schema`); this crate's own test build enables it via the
+        // self dev-dependency, so the closed set is exactly local/redis (+ memory).
+        #[cfg(not(feature = "test-adapters"))]
         assert_eq!(names, vec!["local", "redis"], "closed set: {schema}");
+        #[cfg(feature = "test-adapters")]
+        assert_eq!(
+            names,
+            vec!["local", "redis", "memory"],
+            "closed set incl. test adapter: {schema}"
+        );
 
         // The redis branch carries a typed `redis_url` (so the console renders a
         // field instead of a free-form object).
@@ -192,6 +212,18 @@ mod tests {
         assert!(
             redis["properties"]["config"]["properties"]["redis_url"].is_object(),
             "redis config must expose a typed redis_url: {schema}"
+        );
+
+        // `local` takes no config, so its branch is a closed empty object: the
+        // console renders no fields and junk keys are rejected at set time.
+        let local = branches
+            .iter()
+            .find(|b| b["properties"]["name"]["enum"][0] == "local")
+            .expect("local branch present");
+        assert_eq!(
+            local["properties"]["config"]["additionalProperties"],
+            json!(false),
+            "local config must be a closed empty object: {schema}"
         );
     }
 }
