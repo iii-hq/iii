@@ -145,7 +145,7 @@ Node `Readable` plus `.sendMessage()` and `.onMessage()`; `ChannelWriter` expose
 ## Logger
 
 `Logger` is a runtime class with `info`, `warn`, `error`, and `debug` methods, each
-`(message: string, data?: unknown) => void`. Import it from `@iii-dev/observability`; it is no
+`(message: string, data?: unknown) => void`. Import it from `@iii-dev/helpers/observability`; it is no
 longer re-exported from `iii-sdk`. The output integrates with the SDK's OpenTelemetry setup; see
 iii-observability for the export side.
 

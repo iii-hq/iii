@@ -155,7 +155,7 @@ Both classes are constructed with the engine's WS base URL and a `StreamChannelR
 ## Logger
 
 `Logger` exposes `info`, `warn`, `error`, and `debug`, each accepting a message and an optional
-data dict. Import it from `iii_observability`; it is no longer re-exported from `iii`. The output
+data dict. Import it from `iii_helpers.observability`; it is no longer re-exported from `iii`. The output
 integrates with the SDK's OpenTelemetry setup; see iii-observability for the export side.
 
 ## Info types
