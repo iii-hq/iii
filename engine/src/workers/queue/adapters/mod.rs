@@ -6,6 +6,8 @@
 
 pub mod bridge;
 pub mod builtin;
+#[cfg(feature = "test-adapters")]
+pub mod memory_adapter;
 #[cfg(feature = "rabbitmq")]
 pub mod rabbitmq;
 pub mod redis_adapter;

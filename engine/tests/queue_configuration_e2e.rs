@@ -30,7 +30,7 @@ use iii::workers::configuration::adapters::ConfigurationAdapter;
 use iii::workers::configuration::adapters::fs::FsAdapter;
 use iii::workers::configuration::structs::ConfigurationSetInput;
 use iii::workers::queue::QueueWorker;
-use iii::workers::traits::{ConfigurableWorker, Worker};
+use iii::workers::traits::Worker;
 
 use common::queue_helpers::{enqueue, register_counting_function};
 
@@ -93,6 +93,25 @@ async fn set_value(harness: &Harness, value: Value) {
     match result {
         FunctionResult::Success(_) => {}
         FunctionResult::Failure(err) => panic!("configuration::set failed: {err:?}"),
+        _ => panic!("unexpected configuration::set result"),
+    }
+}
+
+/// Set a value expected to be rejected by the registered JSON schema at
+/// `configuration::set` (the closed adapter union is the gate).
+async fn set_value_expect_rejection(harness: &Harness, value: Value) {
+    let result = harness
+        .configuration
+        .set_fn(ConfigurationSetInput {
+            id: "iii-queue".to_string(),
+            value,
+        })
+        .await;
+    match result {
+        FunctionResult::Failure(_) => {}
+        FunctionResult::Success(_) => {
+            panic!("expected configuration::set to be rejected, but it succeeded")
+        }
         _ => panic!("unexpected configuration::set result"),
     }
 }
@@ -259,19 +278,10 @@ async fn adapter_hot_swap_rebinds_consumers() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
-    // Register a second transport name that delegates to the in-process builtin
-    // factory, so switching to it is a real transport rebuild without needing
-    // an external broker.
-    let builtin = QueueWorker::get_adapter("builtin")
-        .await
-        .expect("builtin adapter is registered");
-    QueueWorker::add_adapter("builtin_alt", move |engine, config| {
-        let builtin = builtin.clone();
-        async move { builtin(engine, config).await }
-    })
-    .await
-    .expect("register builtin_alt");
-
+    // Swap to the `memory` transport: a `test-adapters`-gated in-process backend
+    // that aliases `builtin`, so the swap is a real transport rebuild without an
+    // external broker. It is advertised in the schema (under the same feature),
+    // so `configuration::set` accepts it.
     let counter = Arc::new(AtomicU64::new(0));
     register_counting_function(&harness.engine, "e2e::swap", counter.clone());
 
@@ -297,7 +307,7 @@ async fn adapter_hot_swap_rebinds_consumers() {
     set_value(
         &harness,
         json!({
-            "adapter": { "name": "builtin_alt" },
+            "adapter": { "name": "memory" },
             "queue_configs": { "jobs": { "concurrency": 1 } }
         }),
     )
@@ -308,7 +318,7 @@ async fn adapter_hot_swap_rebinds_consumers() {
                 .config_snapshot()
                 .adapter
                 .as_ref()
-                .map(|a| a.name.as_str() == "builtin_alt")
+                .map(|a| a.name.as_str() == "memory")
                 .unwrap_or(false)
         },
         "transport to hot-swap",
@@ -333,6 +343,87 @@ async fn adapter_hot_swap_rebinds_consumers() {
         "handler on the new transport",
     )
     .await;
+}
+
+#[tokio::test]
+async fn unbuildable_adapter_keeps_previous_transport() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let counter = Arc::new(AtomicU64::new(0));
+    register_counting_function(&harness.engine, "e2e::swap_fail", counter.clone());
+
+    let worker = start_queue_worker(
+        &harness,
+        json!({ "queue_configs": { "jobs": { "concurrency": 1 } } }),
+    )
+    .await;
+    // Capture the live transport instance before the failed swap.
+    let old_adapter = worker.adapter_snapshot();
+
+    // Point the transport at `redis` with a dead URL: schema-valid (an advertised
+    // adapter) and past `validate()`, so it reaches the transport-swap branch
+    // where `resolve_adapter` fails to *build* (connection refused). That failure
+    // must keep the previous config, adapter, and consumers — the all-or-nothing
+    // guarantee for a transport swap (`resolve_adapter().await?` returns before
+    // `set_live`).
+    set_value(
+        &harness,
+        json!({
+            "adapter": { "name": "redis", "config": { "redis_url": "redis://127.0.0.1:6390" } },
+            "queue_configs": { "jobs": { "concurrency": 1 } }
+        }),
+    )
+    .await;
+
+    // Drive the handler synchronously so the assertion observes a completed apply
+    // attempt. The build fails deterministically, so neither this call nor the
+    // trigger-fired apply can mutate state — they don't race.
+    let _ = harness
+        .engine
+        .call("iii-queue::on-config-change", json!({}))
+        .await
+        .expect("on-config-change call");
+
+    // The transport instance was NOT rebuilt — pointer identity is preserved.
+    assert!(
+        Arc::ptr_eq(&old_adapter, &worker.adapter_snapshot()),
+        "an unbuildable adapter must retain the previous transport"
+    );
+    // The unbuildable adapter was not adopted into the live config.
+    assert!(
+        worker.config_snapshot().adapter.is_none(),
+        "an unbuildable adapter must not be adopted into the live config"
+    );
+
+    // Consumers on the original transport are intact: a job is still delivered.
+    enqueue(&harness.engine, "jobs", "e2e::swap_fail", json!({}))
+        .await
+        .expect("enqueue on the retained transport");
+    wait_for(
+        || counter.load(Ordering::SeqCst) >= 1,
+        "handler on the retained transport",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn unknown_adapter_name_is_rejected_at_set() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let _worker = start_queue_worker(
+        &harness,
+        json!({ "queue_configs": { "jobs": { "concurrency": 1 } } }),
+    )
+    .await;
+
+    // The closed adapter union rejects an unknown transport name at the schema
+    // gate, before it can ever reach the worker — so a typo can't strand the
+    // queue on an unbuildable transport.
+    set_value_expect_rejection(&harness, json!({ "adapter": { "name": "does_not_exist" } })).await;
 }
 
 #[tokio::test]

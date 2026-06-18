@@ -966,13 +966,16 @@ mod tests {
             .await
             .expect("consume should return receiver");
 
+        // max_retries = 1 so the consumer-stop nack exhausts the job and routes
+        // it to the DLQ — a signal that an `ack`/drop would NOT produce, letting
+        // the assertion below prove the delivery was nacked, not silently lost.
         adapter
             .publish_to_function_queue(
                 "test-q",
                 "fn::handler",
                 json!({"k": "v"}),
                 "msg-1",
-                3,
+                1,
                 1000,
                 None,
                 None,
@@ -994,13 +997,23 @@ mod tests {
         drop(rx);
 
         // The poll task must nack the buffered delivery back to the queue rather
-        // than leaving it stranded in delivery_map. (Redelivery itself is covered
-        // by BuiltinQueue::nack's own tests.)
+        // than leaving it stranded in delivery_map.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while !adapter.delivery_map.read().await.is_empty() {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "stranded delivery should be nacked when the consumer stops"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // And it must actually be NACKED, not acked/dropped: the exhausted job
+        // lands in the DLQ. An ack would leave the DLQ empty.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while adapter.queue.dlq_count("__fn_queue::test-q").await < 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "consumer-stop must nack the buffered delivery (here to the DLQ), not drop it"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -1026,6 +1039,9 @@ mod tests {
             .await
             .expect("consume should return receiver");
 
+        // max_retries = 1 so each consumer-stop nack exhausts its job to the DLQ,
+        // which the assertion below uses to prove every delivery was nacked (not
+        // acked/dropped), including the oldest that was at risk of early eviction.
         for i in 0..3 {
             adapter
                 .publish_to_function_queue(
@@ -1033,7 +1049,7 @@ mod tests {
                     "fn::handler",
                     json!({ "i": i }),
                     &format!("msg-{i}"),
-                    3,
+                    1,
                     1000,
                     None,
                     None,
@@ -1067,6 +1083,21 @@ mod tests {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "no delivery may be stranded when the consumer stops, {remaining} left"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // All three were NACKED, not acked/dropped: each exhausted job lands in
+        // the DLQ. A regression that acked on stop would leave the DLQ empty.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let dlq = adapter.queue.dlq_count("__fn_queue::test-q").await;
+            if dlq >= 3 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "every consumer-stop nack must route to the DLQ, only {dlq}/3 did"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
