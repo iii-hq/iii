@@ -116,22 +116,28 @@ impl ConfigurationStore {
     ) -> Result<RegisterOutcome, StoreError> {
         Self::validate_id(&id)?;
 
-        // Determine the value being installed. Existing entries keep their
-        // value unless `initial_value` is supplied. New entries default to
-        // `Value::Null`.
+        // Determine the value being installed and whether to validate it.
+        // Existing entries keep their value unless `initial_value` is supplied.
+        // New entries default to `Value::Null`.
         let prior = self.entries.read().await.get(&id).cloned();
-        let value = match (initial_value, prior.as_ref()) {
-            (Some(v), _) => v,
-            (None, Some(existing)) => existing.value.clone(),
-            (None, None) => Value::Null,
+        let (value, validate) = match (initial_value, prior.as_ref()) {
+            // A caller-supplied value is always validated against the schema.
+            (Some(v), _) => (v, true),
+            // Re-registration without a new value reuses the stored value as-is
+            // and does NOT re-validate it against the (possibly newly-tightened)
+            // schema. A schema refresh must always go through so the console and
+            // `set` see the current schema; `set` enforces it on the next write.
+            // Re-validating here would let a now-invalid stored value — e.g. an
+            // older seed persisted before the schema tightened — silently block
+            // every future schema update (the worker swallows the register error
+            // at boot, so the console would keep rendering the stale schema).
+            (None, Some(existing)) => (existing.value.clone(), false),
+            // Brand-new entry with no seed: the implicit `Null` placeholder is
+            // never validated (the schema may legitimately disallow null).
+            (None, None) => (Value::Null, false),
         };
 
-        // Skip schema validation when the seeded value is the implicit
-        // `Null` placeholder for a brand-new entry — the schema may legitimately
-        // disallow null, and the entry has no caller-supplied value yet.
-        if !(prior.is_none() && value.is_null())
-            && let Err(errs) = validate_against_schema(&value, &schema)
-        {
+        if validate && let Err(errs) = validate_against_schema(&value, &schema) {
             return Err(StoreError::SchemaInvalid(errs.join("; ")));
         }
 
@@ -285,6 +291,69 @@ mod tests {
         let err = validate_against_schema(&json!({ "port": "nope" }), &schema)
             .expect_err("string is not integer");
         assert!(!err.is_empty());
+    }
+
+    // Schema evolution: re-registering with a tightened schema must refresh the
+    // stored schema even when the existing value no longer satisfies it. Workers
+    // re-send their schema on every boot; if a value persisted under an older,
+    // looser schema (e.g. a seed with `config: null`) blocked re-registration,
+    // the console would keep rendering the stale schema forever.
+    #[tokio::test]
+    async fn register_refreshes_schema_over_now_invalid_existing_value() {
+        use crate::workers::configuration::adapters::ConfigurationAdapter;
+        use crate::workers::configuration::adapters::fs::FsAdapter;
+
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = Arc::new(
+            FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+                .await
+                .unwrap(),
+        ) as Arc<dyn ConfigurationAdapter>;
+        let store = ConfigurationStore::new(adapter);
+
+        // An older, looser schema accepts `config: null` (the shape an old seed
+        // serialized to).
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                json!({ "type": "object" }),
+                Some(json!({ "adapter": { "name": "kv", "config": null } })),
+                None,
+            )
+            .await
+            .expect("seed registers under the lenient schema");
+
+        // The tightened schema rejects `config: null`. Re-registering with NO new
+        // value (what a worker does on every boot) must still refresh the schema.
+        let strict = json!({
+            "type": "object",
+            "properties": {
+                "adapter": {
+                    "type": "object",
+                    "required": ["config"],
+                    "properties": { "config": { "type": "object" } }
+                }
+            }
+        });
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                strict.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("a now-invalid existing value must not block the schema refresh");
+
+        let view = store.schema_view("demo").await.expect("entry exists");
+        assert_eq!(
+            view.schema, strict,
+            "the stored schema must be refreshed to the tightened version"
+        );
     }
 
     #[test]
