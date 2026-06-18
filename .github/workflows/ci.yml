@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       engine: ${{ steps.filter.outputs.engine }}
+      benches: ${{ steps.filter.outputs.benches }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -54,6 +55,10 @@ jobs:
               - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            benches:
+              - 'engine/benches/**'
+              - 'engine/Cargo.toml'
               - '.github/workflows/ci.yml'
 
   # ──────────────────────────────────────────────────────────────
@@ -70,7 +75,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: engine-build
+          shared-key: engine
 
       - name: Install system dependencies
         run: |
@@ -111,7 +116,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: engine-test
+          shared-key: engine
 
       - name: Install system dependencies
         run: |
@@ -192,6 +197,11 @@ jobs:
 
   engine-benches:
     name: Engine Benches Compile
+    # Bench compile (~20m cold) is redundant with bench-release.yml, which
+    # compiles and runs benches on every release tag. On PRs/pushes only run it
+    # when bench sources actually change, so the common path skips it entirely.
+    needs: changes
+    if: needs.changes.outputs.benches == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -247,7 +257,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: cli-docs
+          shared-key: engine
 
       - name: Install system dependencies
         run: |
@@ -288,6 +298,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine
 
       - name: Run RabbitMQ integration tests
         env:
@@ -329,8 +341,11 @@ jobs:
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
+      # Debug build: this matrix only validates that iii compiles on every
+      # target. Optimized release builds are produced separately at tag time by
+      # release-iii.yml (which always uses --release).
       - name: Build for target
-        run: cargo build -p iii --release --target ${{ matrix.target }}
+        run: cargo build -p iii --target ${{ matrix.target }}
 
   # ──────────────────────────────────────────────────────────────
   # Worker Build Matrix (matches release targets)
@@ -376,8 +391,9 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
           sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          MIRROR=http://azure.ports.ubuntu.com/ubuntu-ports/
+          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross libcap-ng-dev:arm64
 
@@ -755,6 +771,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sdk-rust
 
       - name: Check formatting
         run: cargo fmt -p iii-sdk -- --check
@@ -861,6 +879,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: console
 
       - name: Build console binary
         run: cargo build -p iii-console --release
