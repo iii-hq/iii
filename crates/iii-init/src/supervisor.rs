@@ -75,10 +75,9 @@ const III_SHELL_PORT_ENV: &str = "III_SHELL_PORT";
 const PREPARED_MARKER: &str = "/var/.iii-prepared";
 
 /// If the worker child exits non-zero within this window of its initial
-/// spawn, treat it as a failed boot (broken deps / bad install) rather
-/// than a runtime crash and invalidate the prepared marker. A worker that
-/// ran longer than this booted fine, so a later exit is a runtime failure
-/// and the deps are not suspect.
+/// spawn — or shortly after this boot creates the prepared marker — treat it
+/// as a failed boot (broken deps / bad install) rather than a runtime crash
+/// and invalidate the prepared marker.
 const BOOT_CRASH_WINDOW: Duration = Duration::from_secs(30);
 
 /// Stores the current child worker PID for async-signal-safe signal
@@ -139,10 +138,23 @@ fn invalidate_prepared_marker_at(path: &str) {
 
 /// True when a child exit should invalidate the prepared marker: a real
 /// process exit (not a signal — `kill_for_shutdown` uses SIGTERM and must
-/// not be mistaken for a crash) with a non-zero code, soon enough after
-/// the initial spawn to implicate the boot/deps rather than the runtime.
-fn is_boot_failure(was_exit: bool, code: i32, spawned_at: Instant) -> bool {
-    was_exit && code != 0 && spawned_at.elapsed() < BOOT_CRASH_WINDOW
+/// not be mistaken for a crash) with a non-zero code, either soon enough
+/// after initial spawn or soon enough after this boot created the marker to
+/// implicate the boot/deps rather than runtime behavior.
+fn should_invalidate_prepared_marker(
+    was_exit: bool,
+    code: i32,
+    spawned_at: Instant,
+    marker_existed_at_spawn: bool,
+) -> bool {
+    crate::prepared_marker::should_invalidate(
+        was_exit,
+        code,
+        spawned_at,
+        BOOT_CRASH_WINDOW,
+        marker_existed_at_spawn,
+        crate::prepared_marker::marker_is_recent(Path::new(PREPARED_MARKER), BOOT_CRASH_WINDOW),
+    )
 }
 
 /// Entry point called from `main::run` after all boot setup is complete.
@@ -209,6 +221,7 @@ fn maybe_spawn_shell_dispatcher() {
 /// Legacy path: spawn worker, reap zombies, exit with child's code.
 /// Identical to the pre-merge behavior of this module.
 fn run_legacy(cmd: String) -> Result<(), InitError> {
+    let marker_existed_at_spawn = Path::new(PREPARED_MARKER).exists();
     let child = Command::new("/bin/sh")
         .arg("-c")
         .arg(&cmd)
@@ -253,7 +266,7 @@ fn run_legacy(cmd: String) -> Result<(), InitError> {
         }
     };
 
-    if is_boot_failure(was_exit, status, spawned_at) {
+    if should_invalidate_prepared_marker(was_exit, status, spawned_at, marker_existed_at_spawn) {
         invalidate_prepared_marker_at(PREPARED_MARKER);
     }
 
@@ -271,6 +284,7 @@ fn run_supervised(cmd: String, workdir: String, port_name: String) -> Result<(),
         workdir,
     });
 
+    let marker_existed_at_spawn = Path::new(PREPARED_MARKER).exists();
     let initial_pid = state.spawn_initial().map_err(|e| {
         InitError::SpawnWorker(std::io::Error::other(format!(
             "supervisor spawn_initial failed: {e}"
@@ -278,10 +292,10 @@ fn run_supervised(cmd: String, workdir: String, port_name: String) -> Result<(),
     })?;
     CHILD_PID.store(initial_pid as i32, Ordering::SeqCst);
     attach_to_worker_cgroup(initial_pid as i32);
-    // Timed from the initial spawn, not from any host-driven restart: a
-    // worker that booted, ran, then crashed after a source-edit restart is
-    // a runtime failure, and its deps are fine. Only a crash close to the
-    // first spawn implicates the install.
+    // Timed from the initial spawn, not from any host-driven restart. The
+    // marker-recency check below covers slow setup/install flows where the
+    // marker is created long after this instant, just before the worker
+    // crashes on incomplete deps.
     let spawned_at = Instant::now();
 
     // Open the named virtio-console port and spawn the control loop on
@@ -344,7 +358,7 @@ fn run_supervised(cmd: String, workdir: String, port_name: String) -> Result<(),
         }
     };
 
-    if is_boot_failure(was_exit, status, spawned_at) {
+    if should_invalidate_prepared_marker(was_exit, status, spawned_at, marker_existed_at_spawn) {
         invalidate_prepared_marker_at(PREPARED_MARKER);
     }
 
@@ -464,26 +478,6 @@ mod tests {
         state.kill_for_shutdown().unwrap();
         // After shutdown, state has no child → terminal.
         assert!(exit_is_terminal(&state, new_pid as i32));
-    }
-
-    #[test]
-    fn is_boot_failure_classifies_exits() {
-        let now = Instant::now();
-
-        // Real non-zero exit, just after spawn → boot failure.
-        assert!(is_boot_failure(true, 1, now));
-
-        // Clean exit → not a failure.
-        assert!(!is_boot_failure(true, 0, now));
-
-        // Signal death (e.g. SIGTERM shutdown) → never a boot failure,
-        // even with a non-zero "128 + sig" code.
-        assert!(!is_boot_failure(false, 143, now));
-
-        // Non-zero exit, but long after spawn → runtime crash, deps fine.
-        if let Some(old) = now.checked_sub(BOOT_CRASH_WINDOW + Duration::from_secs(5)) {
-            assert!(!is_boot_failure(true, 1, old));
-        }
     }
 
     #[test]

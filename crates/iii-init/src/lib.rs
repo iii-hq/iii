@@ -22,6 +22,8 @@ pub mod rlimit;
 // Linux syscalls. Keeping it unconditional makes unit tests on
 // macOS developer machines work without cross-compiling.
 pub mod child_exits;
+#[cfg(any(target_os = "linux", test))]
+mod prepared_marker;
 #[cfg(target_os = "linux")]
 pub mod shell_dispatcher;
 #[cfg(target_os = "linux")]
