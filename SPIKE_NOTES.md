@@ -254,5 +254,16 @@ Fixed by delivering the script as a file virtiofs-mounted at `/opt/iii` (commit
 
 Caveats: persistence relies on the guest committing ext4 (5 s journal timer) before VM exit — a
 real worker runs well past that; a hard-kill within 5 s of a write can lose it (optional hardening:
-`sync`/unmount-on-SIGTERM in iii-init). NOT yet live-tested: OCI overlay boot, legacy fallback,
-the W1 empty-folders fix (still pending — the workspace bind-mount preamble is unchanged).
+`sync`/unmount-on-SIGTERM in iii-init). NOT yet live-tested: OCI overlay boot, legacy fallback.
+
+### W1 workspace copy-in — VALIDATED ✅ (fixes the original empty-folders bug)
+The empty `node_modules`/`.venv`/`dist`/… in the host project came from the workspace bind-mount
+preamble (`mkdir /workspace/$d` into the writable virtiofs-shared host project), NOT the clone — so
+the overlay phases alone didn't fix it. W1 (overlay local only) mounts the host project READ-ONLY
+at `/mnt/host-src` and copies it into a VM-local `/workspace` on the ext4 upper (dep/build dirs
+excluded at any depth); the host project is only ever read. Bundles + legacy keep the live mount.
+
+Validated live (todo-app, embed-init, HVF): boot logs `workspace ready (copy-in …)`, npm finds the
+copied `package.json` and runs in `/workspace`, and **the host project gains ZERO dep folders across
+a full boot** (cleaned the stale ones first; they did not reappear). Limitation: a re-copy doesn't
+delete host-deleted source files from `/workspace` (no `rsync --delete`); minor, restart-bounded.
