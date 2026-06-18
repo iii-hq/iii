@@ -385,8 +385,17 @@ jobs:
           MIRROR=http://azure.ports.ubuntu.com/ubuntu-ports/
           echo "deb [arch=arm64] $MIRROR $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] $MIRROR $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross libcap-ng-dev:arm64
+          # The amd64 cross toolchain is already indexed on the runner image, so
+          # install it directly (full `apt-get update` only as a fallback).
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            || { sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross; }
+          # The arm64 runtime lib needs the freshly-added arm64 source indexed.
+          # Scope the update to just that list so we don't refresh every index.
+          sudo apt-get update \
+            -o Dir::Etc::sourcelist="sources.list.d/arm64.list" \
+            -o Dir::Etc::sourceparts="-" \
+            -o APT::Get::List-Cleanup="0"
+          sudo apt-get install -y libcap-ng-dev:arm64
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
