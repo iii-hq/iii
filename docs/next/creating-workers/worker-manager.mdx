@@ -26,17 +26,27 @@ call anything. That is fine for workers you run yourself, but not for a browser 
 worker. An RBAC listener runs on its own port, gates every connection through an `auth` function,
 and restricts each session to an allowlist of functions.
 
-Add a second `iii-worker-manager` entry to `config.yaml` for the untrusted port (here `3111`, the
-port the browser SDK connects to by default):
+<Warning>
+  Declaring **any** `iii-worker-manager` in `config.yaml` replaces the engine's built-in `49134`
+  trusted listener. You must also declare the trusted `49134` listener yourself alongside
+  the RBAC one, otherwise your own workers lose the port they connect through.
+</Warning>
+
+Declare both listeners: the trusted one your own workers keep using on `49134`, and an RBAC-gated
+one on a separate port (here `3110`, for browsers and other untrusted connections):
 
 ```yaml config.yaml
 workers:
   # ...
-  # Browser-facing, RBAC-gated listener. The trusted 49134 listener stays as is.
+  # Trusted listener for your own workers. Replaces the engine's built-in 49134.
+  - name: iii-worker-manager
+    config:
+      port: 49134
+  # Browser-facing, RBAC-gated listener on a separate port.
   - name: iii-worker-manager
     config:
       host: 127.0.0.1
-      port: 3111
+      port: 3110
       rbac:
         auth_function_id: auth::browser
         expose_functions:
@@ -44,8 +54,8 @@ workers:
           - match("stream::*")
 ```
 
-`auth_function_id` names a function the worker invokes once per connection to authenticate the
-worker to connect (or reject it if authentication fails). That is covered in the next section.
+`auth_function_id` names a function the worker invokes once per connection to authorize the worker
+to connect (or reject it if authorization fails). That is covered in the next section.
 
 `expose_functions` is the allowlist of function IDs a session may call. Each entry is either a glob
 `match("...")` on the function ID or a `metadata:` selector that matches any function registered
@@ -76,6 +86,13 @@ The auth function runs during the WebSocket upgrade, before the client is connec
 request's headers, query parameters, and client IP, and returns the session's permissions. **Throw
 to reject the connection.**
 
+<Note>
+  The auth function can grant multiple authorizations so a single function can be used to authorize
+  multiple types of workers. In practice this is a balance between authorizing similar workers and
+  separating dissimilar workers to separate `iii-worker-manager` definitions. You can define any
+  number of `iii-worker-manager`s in iii's configuration.
+</Note>
+
 ```typescript src/index.ts
 import { registerWorker } from "iii-sdk";
 
@@ -96,9 +113,9 @@ worker.registerFunction(
     }
     return {
       allowed_functions: [], // extra IDs to allow beyond expose_functions
-      forbidden_functions: [], // denied even if matched; wins over allowed
-      allow_trigger_type_registration: false,
-      allow_function_registration: true, // the browser registers its own callbacks
+      forbidden_functions: [], // denied even if matched; supersedes allowed
+      allow_trigger_type_registration: false, // can the worker register its own trigger types
+      allow_function_registration: true, // can the worker register its own callbacks
       context: { source: "browser" }, // forwarded to middleware on every call
     };
   },
@@ -106,7 +123,7 @@ worker.registerFunction(
 ```
 
 The auth worker itself connects to the **trusted** `49134` port; it is one of your own workers. Only
-the untrusted client connects through `3111`.
+the untrusted client connects through `3110`.
 
 The returned object is an `AuthResult`:
 
@@ -129,7 +146,7 @@ WebSocket headers, so the token travels as a query parameter, the same one `auth
 import { registerWorker } from "iii-browser-sdk";
 
 const token = import.meta.env.VITE_BROWSER_TOKEN ?? "dev-token";
-export const worker = registerWorker(`ws://localhost:3111?token=${encodeURIComponent(token)}`);
+export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`);
 ```
 
 The session can now call only the functions `expose_functions` (plus `allowed_functions`) permit.
@@ -145,7 +162,7 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
 ```yaml config.yaml
 - name: iii-worker-manager
   config:
-    port: 3111
+    port: 3110
     middleware_function_id: auth::middleware
     rbac:
       auth_function_id: auth::browser
