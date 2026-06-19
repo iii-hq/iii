@@ -141,10 +141,16 @@ pub fn infer_scripts(kind: &str, package_manager: &str, entry: &str) -> (String,
             "python3 -m venv .venv && .venv/bin/pip install -e .".to_string(),
             format!(".venv/bin/python -m {}", entry),
         ),
+        // ponytail: --release on purpose, for disk not speed. A worker's
+        // per-VM `target` dir is never shared (no CARGO_TARGET_DIR), so debug's
+        // full debuginfo (130 MB binaries) + `incremental=true` churn pile up
+        // per worker (MOT-3459 Defect 1). Release defaults to no debuginfo and
+        // `incremental=false`. Must match the auto-detect path below and keep
+        // build/run on the same profile (mismatch = a second full target tree).
         ("rust", _) => (
             "command -v cargo >/dev/null || (curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y)".to_string(),
-            "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo build".to_string(),
-            "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo run".to_string(),
+            "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo build --release".to_string(),
+            "[ -f \"$HOME/.cargo/env\" ] && . \"$HOME/.cargo/env\"; cargo run --release".to_string(),
         ),
         _ => (String::new(), String::new(), entry.to_string()),
     }
@@ -760,8 +766,11 @@ runtime:
     fn infer_scripts_rust() {
         let (setup, install, run) = infer_scripts("rust", "cargo", "src/main.rs");
         assert!(setup.contains("rustup"));
-        assert!(install.contains("cargo build"));
-        assert!(run.contains("cargo run"));
+        // MOT-3459 Defect 1: the inferred build must be --release (no debuginfo,
+        // no incremental) so per-worker `target` dirs don't bloat, and build/run
+        // must share the profile or `cargo run` rebuilds a second debug tree.
+        assert!(install.contains("cargo build --release"));
+        assert!(run.contains("cargo run --release"));
     }
 
     #[test]
