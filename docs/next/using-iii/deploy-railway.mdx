@@ -29,8 +29,11 @@ install script instead. Railway builds it from this repo
 # Dockerfile: clean iii base. Contains NO workers.
 FROM debian:bookworm-slim
 
+# curl, ca-certificates, and jq drive the installer. libssl3 and libcap2 are
+# engine runtime deps; libcap-ng0 provides libcap-ng.so.0, which the iii-worker
+# daemon needs to launch binary registry workers (for example `database`).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates jq libssl3 libcap2 \
+    && apt-get install -y --no-install-recommends curl ca-certificates jq libssl3 libcap2 libcap-ng0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Installs both `iii` (engine) and `iii-worker` (the add-on worker daemon).
@@ -43,6 +46,12 @@ COPY config.yaml /app/config.yaml
 EXPOSE 49134 3111 3112
 CMD ["iii", "--config", "/app/config.yaml"]
 ```
+
+<Note>
+  A ready-to-fork starter with this `Dockerfile`, a `config.yaml`, and a
+  `railway.json` (Dockerfile builder + restart policy) lives at
+  [iii-experimental/railway-template](https://github.com/iii-experimental/railway-template).
+</Note>
 
 ## A Railway-ready config.yaml
 
@@ -125,6 +134,16 @@ Railway [private networking](https://docs.railway.com/private-networking) is
 IPv6-only, which is why the engine manager binds `[::]`. A worker that binds or
 dials `127.0.0.1` will not find the engine across services; always use the
 `.railway.internal` hostname.
+
+<Note>
+  Set the engine service's
+  [restart policy](https://docs.railway.com/deployments/restarts) to **`ALWAYS`**. The
+  engine exits cleanly (exit code 0) when it reloads `config.yaml`, and Railway's default
+  `ON_FAILURE` policy only restarts on a non-zero exit, so a clean exit would leave the
+  engine stopped. The `railway.json` in the
+  [starter template](https://github.com/iii-experimental/railway-template) is the place to
+  set this.
+</Note>
 
 ## Public domain, TLS, and routing
 
@@ -243,3 +262,47 @@ to your worker to the `database` worker on the volume.
   redeploy when only restarting, and restart dependent worker services after an
   engine redeploy so they reconnect and re-register.
 </Note>
+
+## Railway deployment checklist
+
+This is the Railway-specific layer on top of the general
+[Deployment checklist](./deployment#deployment-checklist).
+
+**Image and build**
+
+- [ ] Clean engine base built from the install script (not the distroless image) when you
+      use registry workers; distroless is engine-only with no shell to extend.
+- [ ] `config.yaml` baked into the image; rebuild and redeploy to change it (Railway builds
+      from the Dockerfile, with no live file mount).
+- [ ] `libcap-ng0` installed in the image if you run binary registry workers (for example
+      `database`); the `iii-worker` daemon needs it to launch them.
+- [ ] Registry workers pinned with `RUN iii worker add <name>` for fast, reproducible
+      starts and no runtime registry dependency.
+
+**Networking**
+
+- [ ] Engine binds `[::]`; worker services dial `ws://engine.railway.internal:49134`, never
+      `127.0.0.1`.
+- [ ] Public domain on the engine targets port `3111`; worker services have no public
+      domain.
+- [ ] Raw `49134` exposed (via TCP proxy) only behind an RBAC listener
+      ([RBAC](./deployment#rbac)); otherwise keep it on the private network.
+
+**State and resiliency**
+
+- [ ] Volume mounted at `/data`; every worker `file_path` lives under it.
+- [ ] `RAILWAY_RUN_UID=0` set so a non-root image can write the root-owned volume.
+- [ ] No `DO NOT USE IN_MEMORY` warnings in the boot logs.
+- [ ] Single engine service while on `file_based` storage; move to Redis/RabbitMQ before
+      scaling to multiple replicas.
+- [ ] Engine restart policy set to `ALWAYS`, so a clean exit from a config reload does not
+      leave the service stopped (Railway's default `ON_FAILURE` skips code-0 exits).
+
+**Security and operations**
+
+- [ ] CORS narrowed to real origins (the sample uses `*`).
+- [ ] Secrets supplied through Railway variables, never the image or git.
+- [ ] Dependent worker services restarted after an engine redeploy (HTTP-route
+      re-registration race).
+- [ ] Health check path pointed at a real `iii-http` route; observability exporter chosen
+      deliberately ([Observability](./deployment#observability)).
