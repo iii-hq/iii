@@ -925,9 +925,22 @@ where
 
     // Build the sampler using advanced configuration if available, wrapped
     // in the swappable indirection so runtime configuration changes apply
-    // without a provider rebuild.
-    let sampler = DynamicSampler::new(build_sampler(config));
-    let _ = DYNAMIC_SAMPLER.set(sampler.clone());
+    // without a provider rebuild. If init_otel runs again in-process, reuse
+    // the already-registered handle (swapping its inner) instead of building a
+    // detached one — otherwise the provider would hold a sampler that
+    // refresh_sampler() no longer drives, silently freezing runtime sampling.
+    let built = build_sampler(config);
+    let sampler = match DYNAMIC_SAMPLER.get() {
+        Some(existing) => {
+            existing.swap(built);
+            existing.clone()
+        }
+        None => {
+            let sampler = DynamicSampler::new(built);
+            let _ = DYNAMIC_SAMPLER.set(sampler.clone());
+            sampler
+        }
+    };
 
     // Build resource attributes with OTEL semantic conventions
     // Using string keys for attributes not available in the crate version

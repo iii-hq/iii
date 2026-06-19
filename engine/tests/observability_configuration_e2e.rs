@@ -667,13 +667,14 @@ async fn concurrent_applies_converge_under_apply_lock() {
     for _ in 0..5 {
         let engine = harness.engine.clone();
         handles.push(tokio::spawn(async move {
-            let _ = engine
+            engine
                 .call("iii-observability::on-config-change", json!({}))
-                .await;
+                .await
+                .expect("concurrent on-config-change call must succeed");
         }));
     }
     for h in handles {
-        let _ = h.await;
+        h.await.expect("spawned apply task panicked");
     }
     wait_for(
         || worker.current_config().logs_max_count == Some(77),
