@@ -150,8 +150,8 @@ against the registry.
 
 ```yaml
 dependencies:
-  iii-http: "^0.19"
-  iii-state: "^0.19"
+  iii-http: "^0.20"
+  iii-state: "^0.20"
 ```
 
 Rules:
