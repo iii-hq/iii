@@ -6,6 +6,16 @@ type: "reference"
 ---
 
 <Update label="0.19.5" description="June 2026">
+  ## Workers share one read-only rootfs instead of cloning it per worker
+
+  A managed worker used to get a **full private copy** of its base-image rootfs under `~/.iii/managed/<worker>/`. With several workers on a box that duplication dominated disk use. Workers now boot from a **shared read-only base** — a squashfs image built once per base image, host-side — layered with a **per-worker writable ext4 upper** via overlayfs; `iii-init` assembles the overlay and `pivot_root`s into it. The per-worker managed directory drops from a full clone to a small trampoline plus a sparse upper file — in a node-worker test, **731 MiB → ~9 MiB on disk** — and the base image is stored once and reused across every worker built on it. The model is image-independent: the upper ships as a prebuilt golden ext4, so even a minimal or distroless base with no filesystem tools boots, and nothing inside the image is used to assemble the overlay.
+
+  Overlay is **on by default**, but activates only when `iii-worker` is built with an embedded, version-matched `iii-init` — so default development builds keep the exact legacy clone behavior. Opt out explicitly with `III_ROOTFS_MODE=legacy` (env) or a top-level `rootfs.mode: legacy` in `config.yaml`; both fall back to the per-worker-clone boot with no overlay disks attached. The env var wins over `config.yaml` when both are set. On a worker's first overlay boot, the orphaned dep cache from the old layout is reclaimed.
+
+  ## Local workers no longer leave empty dependency folders in your project
+
+  A local-path worker mounted your project directory writable into the VM, so the dep and build directories created during install (`node_modules`, `.venv`, `dist`, …) leaked back onto the host as empty folders. Under overlay, a local worker now mounts the host project **read-only** and copies the source into a VM-local workspace on the upper (dep and build dirs excluded at any depth), so the host project is only ever read — those phantom folders no longer appear. Bundle and legacy workers keep the live mount.
+
   ## `iii-pubsub` runtime settings live in the configuration worker
 
   The pub/sub worker now registers its config schema under the `iii-pubsub` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart.
