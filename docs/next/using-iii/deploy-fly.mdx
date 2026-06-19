@@ -26,7 +26,7 @@ guide:
 - **The private network is IPv6-only** ([6PN](https://fly.io/docs/networking/private-networking/)).
   Apps in one organization reach each other at `<app>.internal`, so the engine must
   bind `[::]` and workers dial it by app name.
-- **Durable state lives on a Fly volume**, an NVMe slice pinned to one Machine in one
+- **Durable state is stored on a Fly volume**, an NVMe slice pinned to one Machine in one
   region. It is not network storage and is not replicated.
 - **Fly Proxy is your reverse proxy.** It terminates TLS at the edge and forwards a
   public port to your app, so you do not run Caddy or nginx yourself.
@@ -270,7 +270,7 @@ processes and work on Fly. Supply their secrets from `fly secrets` (below).
 
 ## Key workers and their adapters
 
-The engine is stateless; state lives in workers, and each stateful worker picks a
+The engine is stateless; state is held in workers, and each stateful worker picks a
 storage **adapter** in `config.yaml`. The defaults are in-memory, so choosing durable
 adapters is the main production step. The full table is in
 [Configure workers and adapters](./deployment#configure-workers-and-adapters); the
@@ -309,7 +309,7 @@ Two Fly-specific points:
 
 When you outgrow single-instance file storage, swap the `file_based`/`builtin` adapters
 for external backends. This is what lets you run more than one engine Machine, since the
-state no longer lives on a per-Machine volume. The adapter config is identical to
+state is no longer stored on a per-Machine volume. The adapter config is identical to
 self-hosting (see
 [Scale out with Redis and RabbitMQ](./deployment#scale-out-with-redis-and-rabbitmq));
 only the **hostnames and credentials** are Fly-specific:
