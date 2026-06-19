@@ -23,9 +23,10 @@ The root SDK surface continues to be grouped into named submodules. This slice a
 | internal | `InternalHttpRequest` |
 | utils (Python) | `extract_request_format`, `extract_response_format`, `python_type_to_format` |
 | runtime | `IIIConnectionState` now joins the runtime group |
-| trigger (Python) | `TriggerActionVoid` now joins the trigger group |
 
 Per-language differences are respected: a symbol that does not exist in a language is not added there.
+
+`TriggerActionVoid` (Python) is also grouped under `iii.trigger`, but it stays exported from the package root as the companion to `TriggerActionEnqueue`, so it is reachable from both `iii` and `iii.trigger`.
 
 ## Migration
 

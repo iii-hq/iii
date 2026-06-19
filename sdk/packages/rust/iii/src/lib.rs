@@ -63,6 +63,7 @@ pub use iii::TelemetryOptions as WorkerTelemetryMeta;
 #[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
 pub use iii::{FunctionInfo, FunctionRef, TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata};
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
+pub use iii_helpers::queue::EnqueueResult;
 pub use protocol::{Message, TriggerAction};
 pub use stream_provider::IStream;
 pub use structs::MiddlewareFunctionInput;
@@ -321,3 +322,14 @@ fn _ensure_protocol_submodule_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_protocol_types_not_top_level() {}
+
+// ---------------------------------------------------------------------------
+// EnqueueResult is re-exported at the crate root for convenience alongside
+// `TriggerAction`, mirroring its canonical home in `iii_helpers::queue`.
+// ---------------------------------------------------------------------------
+
+/// ```rust,no_run
+/// use iii_sdk::EnqueueResult;
+/// ```
+#[allow(dead_code)]
+fn _ensure_enqueue_result_at_root() {}

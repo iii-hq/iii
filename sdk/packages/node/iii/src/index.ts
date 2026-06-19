@@ -9,6 +9,8 @@ export { IIIInvocationError, type IIIInvocationErrorInit } from './errors'
 
 export { type InitOptions, registerWorker, type TelemetryOptions, TriggerAction } from './iii'
 
+export type { EnqueueResult } from '@iii-dev/helpers/queue'
+
 export type { MiddlewareFunctionInput } from './iii-types'
 
 /** @deprecated Import trigger types from `iii-sdk/trigger`. */
