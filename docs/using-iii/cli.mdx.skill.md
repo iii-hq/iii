@@ -13,6 +13,11 @@ iii subcommand --help #lists the specific actions each sucommand accepts
 Each subcommand's help also provides the defaults and environment variables that affect each
 command.
 
+<Note>
+  The full CLI surface, including `iii worker` and `iii console`, is also published as an
+  automatically generated [CLI reference](../cli-reference/index).
+</Note>
+
 ## Trigger a function from the CLI
 
 `iii trigger <function-id> [arg=value ...]` invokes a registered function against a running engine.
@@ -25,20 +30,20 @@ iii trigger math::add a=2 b=3
 
 <Note>
   For the full invocation surface, payload formats, fire-and-forget, queue-routed actions, and the
-  equivalent SDK call from worker code, see [Triggers / Call a function
-  directly](./triggers#call-a-function-directly).
+  equivalent SDK call from worker code, see [Functions / Triggering
+  functions](./functions#triggering-invoking-functions).
 </Note>
 
 ## Subcommands
 
-| Subcommand    | What it does                                                                                              |
-| ------------- | --------------------------------------------------------------------------------------------------------- |
-| `iii trigger` | Invoke a registered function on a running engine.                                                         |
-| `iii worker`  | Manage workers: add, remove, list, start/stop, update, verify. See [Workers](./workers).         |
-| `iii project` | Manage iii projects: scaffold a new one, generate Docker assets. See [Deployment](./deployment). |
-| `iii console` | Launch the iii web console. See [Console](./console).                                            |
-| `iii cloud`   | Manage hosted iii deployments. See [Managing iii Cloud deployments](#managing-iii-cloud-deployments).     |
-| `iii update`  | Update iii and its managed binaries. See [Updating iii itself](#updating-iii-itself).                     |
+| Subcommand    | What it does                                                                                          |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| `iii trigger` | Invoke a registered function on a running engine.                                                     |
+| `iii worker`  | Manage workers: add, remove, list, start/stop, update, verify. See [Workers](./workers).              |
+| `iii project` | Manage iii projects: scaffold a new one, generate Docker assets. See [Deployment](./deployment).      |
+| `iii console` | Launch the iii web console. See [Console](./console).                                                 |
+| `iii cloud`   | Manage hosted iii deployments. See [Managing iii Cloud deployments](#managing-iii-cloud-deployments). |
+| `iii update`  | Update iii and its managed binaries. See [Updating iii itself](#updating-iii-itself).                 |
 
 Running `iii` with no subcommand starts the engine from `./config.yaml` (or the path passed to
 `--config`); pass `--use-default-config` to start with the built-in defaults instead.

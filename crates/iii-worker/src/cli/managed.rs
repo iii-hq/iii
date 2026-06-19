@@ -2647,6 +2647,36 @@ pub fn is_engine_running() -> bool {
     is_engine_running_on(super::config_file::manager_port())
 }
 
+/// Absolute path to a worker's managed directory: `~/.iii/managed/{name}`.
+/// Single source of truth for the managed-dir scheme so call sites can't
+/// drift apart.
+pub fn managed_worker_dir(worker_name: &str) -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".iii/managed")
+        .join(worker_name)
+}
+
+/// Appends the `.iii-prepared` marker suffix to an already-resolved managed
+/// dir: `{managed_dir}/var/.iii-prepared`. Prefer this at call sites that
+/// already hold a `managed_dir` (e.g. one built behind a strict `home_dir()`
+/// guard) so the marker inherits that resolution instead of recomputing
+/// `home_dir()` with the weaker `unwrap_or_default()` fallback below.
+pub fn prepared_marker_in(managed_dir: &std::path::Path) -> std::path::PathBuf {
+    managed_dir.join("var").join(".iii-prepared")
+}
+
+/// Absolute path to a worker's `.iii-prepared` marker:
+/// `~/.iii/managed/{name}/var/.iii-prepared`. The marker gates the in-VM
+/// setup_cmd/install_cmd in `build_libkrun_local_script`; if it drifts or
+/// survives a `--force`, a changed lock file silently reuses stale deps
+/// (MOT-3585). Keeping the path in one helper is what prevents that drift.
+/// Use at call sites that only have a worker name; otherwise prefer
+/// `prepared_marker_in` with an already-resolved `managed_dir`.
+pub fn prepared_marker_path(worker_name: &str) -> std::path::PathBuf {
+    prepared_marker_in(&managed_worker_dir(worker_name))
+}
+
 /// Deletes local artifacts for a worker (binary dir or OCI image dir).
 /// Returns the number of bytes freed, or 0 if nothing was found.
 ///
@@ -2708,20 +2738,21 @@ pub fn delete_worker_artifacts(worker_name: &str) -> u64 {
         }
     }
 
-    // Local-path worker: ~/.iii/managed/{name}/ (same as OCI)
+    // Local-path worker: ~/.iii/managed/{name}/. This is a DISTINCT path from
+    // the OCI image cache (~/.iii/images/{hash}/), so there is no double-count
+    // to guard against. Always remove it when present — leaving it behind on
+    // --force strands the `.iii-prepared` marker and the /var/iii/deps caches,
+    // which silently skips the in-VM dependency reinstall (MOT-3585).
     let managed_dir = home.join(".iii/managed").join(worker_name);
     if managed_dir.is_dir() {
-        // Only count if we haven't already freed anything (avoid double-counting with OCI)
-        if freed == 0 {
-            freed += dir_size(&managed_dir);
-            if let Err(e) = std::fs::remove_dir_all(&managed_dir) {
-                eprintln!(
-                    "  {} Failed to remove {}: {}",
-                    "warning:".yellow(),
-                    managed_dir.display(),
-                    e
-                );
-            }
+        freed += dir_size(&managed_dir);
+        if let Err(e) = std::fs::remove_dir_all(&managed_dir) {
+            eprintln!(
+                "  {} Failed to remove {}: {}",
+                "warning:".yellow(),
+                managed_dir.display(),
+                e
+            );
         }
     }
 
@@ -6072,6 +6103,125 @@ dependencies:
     fn delete_worker_artifacts_nothing_to_delete() {
         let freed = delete_worker_artifacts("__iii_test_no_artifacts_exist__");
         assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn delete_worker_artifacts_removes_managed_dir_even_when_binary_exists() {
+        // Regression for MOT-3585: a leftover binary artifact must NOT stop the
+        // managed dir (which holds the `.iii-prepared` marker and the
+        // /var/iii/deps caches) from being wiped. Before the fix, managed-dir
+        // removal was gated behind `if freed == 0`, so any earlier freed bytes
+        // (a co-named binary or OCI image) stranded the marker, which silently
+        // skipped the in-VM dependency reinstall on `--force`.
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let name = "mot3585-mixed-artifacts";
+
+            // Binary artifact at ~/.iii/workers/{name}/ — frees > 0 bytes, which
+            // is exactly the condition that used to trip the `if freed == 0`
+            // guard and leave the managed dir behind.
+            let binary_dir = home.join(".iii/workers").join(name);
+            std::fs::create_dir_all(&binary_dir).unwrap();
+            std::fs::write(binary_dir.join("blob"), "fake binary bytes").unwrap();
+
+            // Managed dir as a prepared local worker would have it: a populated
+            // `/bin`, the `.iii-prepared` marker, and a dep cache under
+            // /var/iii/deps.
+            let managed_dir = home.join(".iii/managed").join(name);
+            let marker = managed_dir.join("var").join(".iii-prepared");
+            std::fs::create_dir_all(managed_dir.join("bin")).unwrap();
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, "").unwrap();
+            std::fs::create_dir_all(managed_dir.join("var/iii/deps/.venv")).unwrap();
+            std::fs::write(managed_dir.join("var/iii/deps/.venv/pyvenv.cfg"), "stale").unwrap();
+
+            let freed = delete_worker_artifacts(name);
+
+            assert!(
+                !managed_dir.exists(),
+                "managed dir must be removed even when a binary artifact was freed first"
+            );
+            assert!(
+                !marker.exists(),
+                "prepared marker must be gone so the next boot reruns install"
+            );
+            assert!(!binary_dir.exists(), "binary artifact must be removed too");
+            assert!(
+                freed > 0,
+                "freed byte total should account for the removed artifacts"
+            );
+        });
+    }
+
+    #[test]
+    fn delete_worker_artifacts_removes_managed_dir_when_oci_image_freed_first() {
+        // MOT-3585 sibling case: the old `if freed == 0` guard tripped on ANY
+        // earlier freed bytes, not just a binary artifact — the OCI image cache
+        // branch frees bytes too. Here the freed>0 trigger comes from the OCI
+        // image dir, and we assert the managed dir is still wiped AND that
+        // `freed` sums both trees with no double-count (they are DISTINCT:
+        // ~/.iii/images/{hash} vs ~/.iii/managed/{name}), exercising the
+        // claim in delete_worker_artifacts' source comment.
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let name = "mot3585-oci-artifacts";
+            let image_ref = "ghcr.io/iii-hq/mot3585-oci:1.0";
+
+            // config.yaml is read from the CWD by get_worker_start_info; mapping
+            // the worker to an image makes delete_worker_artifacts enter the OCI
+            // branch (the freed>0 trigger here, instead of a binary artifact).
+            std::fs::write(
+                dir.join("config.yaml"),
+                format!("workers:\n  - name: {name}\n    image: {image_ref}\n"),
+            )
+            .unwrap();
+
+            let image_dir = image_cache_dir(image_ref);
+            std::fs::create_dir_all(&image_dir).unwrap();
+            std::fs::write(image_dir.join("layer.tar"), "fake image bytes").unwrap();
+            let image_bytes = dir_size(&image_dir);
+            assert!(
+                image_bytes > 0,
+                "OCI image dir must free > 0 bytes (the trigger)"
+            );
+
+            let managed_dir = home.join(".iii/managed").join(name);
+            let marker = managed_dir.join("var").join(".iii-prepared");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, "").unwrap();
+            std::fs::create_dir_all(managed_dir.join("var/iii/deps/.venv")).unwrap();
+            std::fs::write(managed_dir.join("var/iii/deps/.venv/pyvenv.cfg"), "stale").unwrap();
+            let managed_bytes = dir_size(&managed_dir);
+
+            let freed = delete_worker_artifacts(name);
+
+            assert!(
+                !managed_dir.exists(),
+                "managed dir must be removed even when the OCI image was freed first"
+            );
+            assert!(
+                !marker.exists(),
+                "prepared marker must be gone so the next boot reruns install"
+            );
+            assert!(!image_dir.exists(), "OCI image cache must be removed too");
+            assert_eq!(
+                freed,
+                image_bytes + managed_bytes,
+                "freed must sum the distinct image and managed trees with no double-count"
+            );
+        });
     }
 
     #[test]

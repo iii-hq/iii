@@ -32,21 +32,26 @@ pub struct ProjectArgs {
 pub enum ProjectAction {
     /// Initialize a new iii project in the current directory
     Init(InitArgs),
-    /// Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing project
+    /// Generate Docker assets (Dockerfile, docker-compose.yml, .env) for an existing iii project
     GenerateDocker(GenerateDockerArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
-    /// Project directory (positional). Equivalent to --directory.
+    /// Target directory for the new project (positional). Ignored when
+    /// --directory is given. The project name is the resolved directory's
+    /// name.
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
 
-    /// Target directory (defaults to current directory). Takes precedence over the positional name.
+    /// Target directory. Takes precedence over NAME. If neither NAME nor
+    /// --directory is provided, the directory defaults to the current
+    /// directory.
     #[arg(short, long)]
     pub directory: Option<String>,
 
-    /// Also generate Docker assets (Dockerfile, docker-compose.yml, .env)
+    /// Also generate Docker assets (Dockerfile, docker-compose.yml, .env).
+    /// Equivalent to running `iii project generate-docker` separately.
     #[arg(long)]
     pub docker: bool,
 
@@ -64,11 +69,10 @@ pub struct InitArgs {
     #[arg(long = "skip-iii")]
     pub skip_iii: bool,
 
-    /// Allow scaffolding into a non-empty directory. Without this flag, init
+    /// Allow initialization into a non-empty directory. Without this flag, init
     /// errors out if the target dir contains anything other than hidden
-    /// dotfiles (e.g. `.git/`) or iii-managed paths (`.iii/`, `data/`). An
-    /// existing `.iii/project.ini` is always rejected — delete the marker
-    /// or pick a different directory.
+    /// dotfiles (e.g. `.git/`). Re-running init in a directory with
+    /// `.iii/project.ini` is always allowed (idempotent re-init).
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
 }

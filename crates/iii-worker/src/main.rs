@@ -83,7 +83,7 @@ async fn async_main() -> anyhow::Result<()> {
     // are logged but never propagated. See T18 in the bundle plan.
     let _ = iii_worker::cli::bundle_download::sweep_orphans();
 
-    // The `iii` dispatcher routes `iii sandbox ...` here, but our root
+    // The `iii` dispatcher routes `iii worker sandbox ...` here, but our root
     // bin_name is "iii worker" so clap renders `Usage: iii worker sandbox`.
     // Peek at argv: if the first non-flag arg is `sandbox`, override the
     // root bin_name to `iii` for that one invocation. Per-subcommand bin_name
@@ -104,6 +104,11 @@ async fn async_main() -> anyhow::Result<()> {
         Cli::from_arg_matches(&matches).map_err(|e| anyhow::anyhow!("cli parse: {e}"))?;
 
     let exit_code = match cli_args.command {
+        // Offline build tooling: render the committed MDX CLI reference.
+        Commands::GenDocs { out } => {
+            iii_worker::cli::gen_docs::run(Cli::command(), out.as_deref())?;
+            0
+        }
         Commands::Add {
             args,
             force,

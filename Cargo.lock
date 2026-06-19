@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2704,6 +2704,8 @@ dependencies = [
  "hex",
  "http-body-util",
  "iana-time-zone",
+ "iii",
+ "iii-clap-docs",
  "iii-observability",
  "iii-sdk",
  "iii-worker",
@@ -2757,13 +2759,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-clap-docs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "regex",
+]
+
+[[package]]
 name = "iii-console"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
  "futures-util",
+ "iii-clap-docs",
  "iii-observability",
  "iii-sdk",
  "mime_guess",
@@ -2835,7 +2846,7 @@ dependencies = [
 
 [[package]]
 name = "iii-observability"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -2853,7 +2864,7 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "async-trait",
  "ctor",
@@ -2915,7 +2926,7 @@ dependencies = [
 
 [[package]]
 name = "iii-worker"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2933,6 +2944,7 @@ dependencies = [
  "futures",
  "hex",
  "humantime",
+ "iii-clap-docs",
  "iii-filesystem",
  "iii-network",
  "iii-observability",
@@ -3645,7 +3657,7 @@ dependencies = [
 
 [[package]]
 name = "motia-tools"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -5347,7 +5359,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "anyhow",
  "cliclack",

@@ -76,11 +76,15 @@ impl WorkerLanguage {
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
-    /// Worker directory (positional). Equivalent to --directory.
+    /// Target directory for the new worker (positional). Ignored when
+    /// --directory is given. The worker name is the resolved directory's
+    /// name.
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
 
-    /// Target directory (defaults to current directory). Takes precedence over the positional name.
+    /// Target directory. Takes precedence over NAME. If neither NAME nor
+    /// --directory is provided, the directory defaults to the current
+    /// directory.
     #[arg(short, long)]
     pub directory: Option<String>,
 
@@ -89,15 +93,14 @@ pub struct InitArgs {
     #[arg(long = "template-dir")]
     pub template_dir: Option<String>,
 
-    /// Allow scaffolding into a non-empty directory. Re-running init in a
+    /// Allow initialization into a non-empty directory. Re-running init in a
     /// directory with `.iii/worker.ini` is always allowed (idempotent re-init).
     #[arg(long = "allow-non-empty")]
     pub allow_non_empty: bool,
 
-    /// Worker language (typescript | javascript | python | rust). Accepts
+    /// Worker language (`typescript` | `javascript` | `python` | `rust`). Accepts
     /// short aliases (`ts`, `js`, `py`, `rust`, `rs`). When omitted, the
-    /// user is prompted interactively. Providing this flag fully scripts
-    /// the scaffold.
+    /// user is prompted interactively.
     #[arg(short = 'l', long, value_name = "LANG", value_parser = parse_language_arg)]
     pub language: Option<String>,
 

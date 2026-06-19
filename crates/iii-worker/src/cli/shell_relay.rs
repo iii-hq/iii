@@ -738,13 +738,23 @@ async fn read_frame<R: AsyncReadExt + Unpin>(
             format!("frame length {frame_len} out of range"),
         ));
     }
-    let total = 4 + frame_len;
-    // Zero-init then overwrite via copy_from_slice + read_exact. The
-    // memset is noise next to the socket read, and it keeps the buffer
-    // free of uninit bytes (clippy::uninit_vec is deny-by-default).
-    let mut buf: FrameBytes = vec![0u8; total];
-    buf[..4].copy_from_slice(&len_buf);
-    reader.read_exact(&mut buf[4..]).await?;
+    // Incremental read with a capped initial allocation (no uninit memory,
+    // no full-size zero-fill): memory grows only as payload arrives, so a
+    // peer sending a max-size length prefix and stalling costs at most
+    // FRAME_READ_INITIAL_CAP, not MAX_FRAME_SIZE.
+    let mut buf: FrameBytes =
+        Vec::with_capacity((4 + frame_len).min(iii_shell_proto::FRAME_READ_INITIAL_CAP));
+    buf.extend_from_slice(&len_buf);
+    let read = (&mut *reader)
+        .take(frame_len as u64)
+        .read_to_end(&mut buf)
+        .await?;
+    if read != frame_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "partial frame body",
+        ));
+    }
     Ok(Some(buf))
 }
 

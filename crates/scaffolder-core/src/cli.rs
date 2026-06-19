@@ -29,9 +29,10 @@ pub fn resolve_root(dir: Option<&str>) -> Result<PathBuf, String> {
 /// `allow_non_empty`, OR the directory is already initialized (detected by
 /// the presence of `.iii/<marker_file>`).
 ///
-/// Hidden dotfiles (`.git/`, `.gitignore`, etc.) and a `data/` runtime
-/// directory are not considered "user content" -- they're dev tooling or
-/// iii-managed state.
+/// Hidden dotfiles (`.git/`, `.gitignore`, etc.) are not considered "user
+/// content"; anything else, including a `data/` directory, blocks the
+/// scaffold (an existing `data/` belongs to some engine and clobbering its
+/// project would orphan that state).
 ///
 /// `marker_file` lets each caller specify its own marker: project init uses
 /// `"project.ini"`, worker init uses `"worker.ini"`.
@@ -56,7 +57,7 @@ pub fn check_directory_state(
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| !name.starts_with('.') && name != "data")
+            .filter(|name| !name.starts_with('.'))
             .collect(),
         Err(e) => return Err(format!("read {}: {e}", root.display())),
     };

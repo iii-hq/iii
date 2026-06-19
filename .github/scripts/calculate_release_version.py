@@ -128,12 +128,25 @@ def calculate_version(
         beyond the current level, restart from the latest stable.
       - Otherwise apply the requested bump to the current base.
     """
+    cur = parse_version(current)
+
+    if bump_type == "none":
+        # Alpha-from-stable mode: keep the base anchored on the latest
+        # stable release (fall back to the current base if none exists)
+        # and only iterate the prerelease counter. Never bumps the base,
+        # so the official version is never advanced.
+        if prerelease not in PRERELEASE_LABELS:
+            raise ValueError(
+                f"bump_type 'none' requires a prerelease label, got {prerelease!r}"
+            )
+        new_base = latest_stable if latest_stable else cur.base
+        counter = next_prerelease_counter(new_base, prerelease, existing_tags, tag_prefix)
+        return f"{new_base}-{prerelease}.{counter}"
+
     if bump_type not in BUMP_RANK:
         raise ValueError(f"unknown bump_type: {bump_type!r}")
     if prerelease != "none" and prerelease not in PRERELEASE_LABELS:
         raise ValueError(f"unknown prerelease: {prerelease!r}")
-
-    cur = parse_version(current)
 
     if prerelease == "none" and cur.prerelease_label is not None:
         # Promote prerelease to stable.
@@ -216,16 +229,27 @@ def _emit(name: str, value: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
-    parser.add_argument("--bump", required=True, choices=list(BUMP_RANK))
+    parser.add_argument("--bump", required=True, choices=list(BUMP_RANK) + ["none"])
     parser.add_argument("--prerelease", required=True)
+    parser.add_argument(
+        "--counter-tag-prefix",
+        default=None,
+        help=(
+            "Tag prefix used when scanning for the prerelease counter "
+            "(default: --target). Lets alpha releases accumulate under a "
+            "separate namespace, e.g. iii-alpha, without colliding with the "
+            "official iii/v* tags."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--current-version-file", required=True)
     args = parser.parse_args(argv)
 
     current = _read_cargo_version(args.current_version_file)
     tags = _git_tags()
-    tag_prefix = args.target
-    latest_stable = latest_stable_from_tags(tags, tag_prefix)
+    stable_prefix = args.target
+    counter_prefix = args.counter_tag_prefix or args.target
+    latest_stable = latest_stable_from_tags(tags, stable_prefix)
 
     new_ver = calculate_version(
         current=current,
@@ -233,12 +257,12 @@ def main(argv: list[str] | None = None) -> int:
         prerelease=args.prerelease,
         latest_stable=latest_stable,
         existing_tags=tags,
-        tag_prefix=tag_prefix,
+        tag_prefix=counter_prefix,
     )
 
     if args.dry_run:
         base_ver = new_ver.split("-", 1)[0]
-        counter = next_dry_run_counter(base_ver, tags, tag_prefix)
+        counter = next_dry_run_counter(base_ver, tags, counter_prefix)
         new_ver = f"{base_ver}-dry-run.{counter}"
 
     py_ver = to_pep440(new_ver)
@@ -247,11 +271,11 @@ def main(argv: list[str] | None = None) -> int:
 
     _emit("version", new_ver)
     _emit("python_version", py_ver)
-    _emit("tag", f"{tag_prefix}/v{new_ver}")
+    _emit("tag", f"{counter_prefix}/v{new_ver}")
     _emit("current", current)
     _emit("is_prerelease", "true" if is_prerelease else "false")
     _emit("npm_tag", npm_tag)
-    print(f"::notice::{tag_prefix}: {current} -> {new_ver} (python: {py_ver})", file=sys.stderr)
+    print(f"::notice::{counter_prefix}: {current} -> {new_ver} (python: {py_ver})", file=sys.stderr)
     return 0
 
 

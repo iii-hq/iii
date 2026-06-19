@@ -7,6 +7,11 @@ on:
         description: 'Package directory (e.g., sdk/packages/python/iii)'
         required: true
         type: string
+      ref:
+        description: 'Git ref to checkout (default: the triggering ref)'
+        required: false
+        type: string
+        default: ''
       dry_run:
         description: 'Build and validate without publishing'
         required: false
@@ -52,6 +57,8 @@ jobs:
             text: ":large_yellow_circle: ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — in progress"
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-python@v5
         with:

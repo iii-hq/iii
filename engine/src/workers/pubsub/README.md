@@ -33,6 +33,22 @@ npx skills add iii-hq/iii --full-depth --skill iii-pubsub
 |---|---|---|
 | `adapter` | Adapter | Adapter for pub/sub distribution. Defaults to `local` (in-memory). |
 
+## Configure
+
+Runtime settings live in the **`configuration` worker** under id **`iii-pubsub`**. The worker registers its JSON Schema at startup, reads the live value via `configuration::get` (so `${VAR:default}` placeholders in string fields expand against the process env), and hot-applies changes when the value updates.
+
+The config.yaml block above is **seed-only**: it is installed as the initial value on first boot, when no value is stored yet. After that, the configuration worker entry is the source of truth — change the adapter via `configuration::set` or by editing the persisted file (`./data/configuration/iii-pubsub.yaml` with the default `fs` adapter); both propagate without an engine restart. Edits to the config.yaml block are ignored once a value is stored.
+
+### Hot Reload
+
+When the `iii-pubsub` configuration changes, the worker re-reads the authoritative value and applies it in place:
+
+- The `adapter` is a **full backend hot-swap**: the new pub/sub backend is built, every live `subscribe` trigger is re-subscribed onto it, the live backend is swapped so new publishes route through it, and the previous backend's subscriptions are torn down (aborting its redis tasks rather than leaking them).
+- The swap is **gated**: a value that fails to build the backend is rejected and the previous backend keeps running.
+- Invalid values are rejected by schema validation at `configuration::set` time; a stored value that fails to deserialize is logged and the previous config is kept.
+
+Because pub/sub is fire-and-forget, a publish in the brief window mid-swap may be observed by both backends; prefer a quiet moment to repoint the adapter in a multi-instance deployment.
+
 ## Adapters
 
 ### local

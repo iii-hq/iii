@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! `iii sandbox {run, create, exec, list, stop}` handlers. Thin CLI wrapper
+//! `iii worker sandbox {run, create, exec, list, stop}` handlers. Thin CLI wrapper
 //! that calls the sandbox daemon directly via `iii.trigger(TriggerRequest{...})`.
 
 use iii_sdk::{III, IIIError, InitOptions, TriggerRequest, register_worker};
@@ -97,7 +97,7 @@ fn handler_error_message(err: &IIIError) -> String {
     }
 }
 
-/// `iii sandbox run <image> [--cpus N] [--memory MB] -- <cmd> [args...]`
+/// `iii worker sandbox run <image> [--cpus N] [--memory MB] -- <cmd> [args...]`
 pub async fn handle_run(image: String, cmd: Vec<String>, cpus: u32, memory: u32, port: u16) -> i32 {
     let (head, tail) = match cmd.split_first() {
         Some((h, t)) => (h.clone(), t.to_vec()),
@@ -198,8 +198,8 @@ pub async fn handle_run(image: String, cmd: Vec<String>, cpus: u32, memory: u32,
     exit_code
 }
 
-/// `iii sandbox create <image> [flags]` -- prints the sandbox id on success.
-/// The sandbox persists until `iii sandbox stop <id>` or the idle timeout
+/// `iii worker sandbox create <image> [flags]` -- prints the sandbox id on success.
+/// The sandbox persists until `iii worker sandbox stop <id>` or the idle timeout
 /// fires.
 pub async fn handle_create(
     image: String,
@@ -247,7 +247,7 @@ pub async fn handle_create(
             // On a TTY, leave a one-line "ready" breadcrumb on stderr so the
             // user sees what actually happened before the uuid appears. On a
             // pipe, stderr is silent and the uuid goes straight to stdout so
-            // `SB=$(iii sandbox create ...)` still works unchanged.
+            // `SB=$(iii worker sandbox create ...)` still works unchanged.
             if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
                 let elapsed = started_at.elapsed().as_millis() as f64 / 1000.0;
                 eprintln!("✓ sandbox ready in {elapsed:.1}s");
@@ -265,7 +265,7 @@ pub async fn handle_create(
     code
 }
 
-/// `iii sandbox exec <id> [--timeout DUR] [-e KEY=VAL]... -- <cmd> [args...]`
+/// `iii worker sandbox exec <id> [--timeout DUR] [-e KEY=VAL]... -- <cmd> [args...]`
 ///
 /// Stdin is not piped -- sandbox::exec is pipe-mode by protocol and the
 /// current wire shape only carries base64-encoded stdin as an optional
@@ -360,7 +360,7 @@ pub async fn handle_exec(
     exit_code
 }
 
-/// `iii sandbox list`
+/// `iii worker sandbox list`
 ///
 /// Sends an empty payload; the daemon's list handler returns every
 /// sandbox unconditionally. The `--all` flag is a silent no-op, kept
@@ -404,7 +404,7 @@ pub async fn handle_list(_all: bool, port: u16) -> i32 {
     0
 }
 
-/// `iii sandbox stop <id>`
+/// `iii worker sandbox stop <id>`
 pub async fn handle_stop(id: String, port: u16) -> i32 {
     let iii = connect(port);
 
@@ -453,7 +453,7 @@ fn engine_ws_base(port: u16) -> String {
     format!("ws://127.0.0.1:{port}")
 }
 
-/// `iii sandbox upload <SB> <LOCAL_PATH | -> <REMOTE_PATH> [--mode 0644] [--parents]`
+/// `iii worker sandbox upload <SB> <LOCAL_PATH | -> <REMOTE_PATH> [--mode 0644] [--parents]`
 pub async fn handle_upload(
     id: String,
     local_path: String,
@@ -577,7 +577,7 @@ pub async fn handle_upload(
     code
 }
 
-/// `iii sandbox download <SB> <REMOTE_PATH> <LOCAL_PATH | ->`
+/// `iii worker sandbox download <SB> <REMOTE_PATH> <LOCAL_PATH | ->`
 pub async fn handle_download(
     id: String,
     remote_path: String,

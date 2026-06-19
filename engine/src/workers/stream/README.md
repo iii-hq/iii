@@ -45,6 +45,35 @@ npx skills add iii-hq/iii --full-depth --skill iii-stream
 | `auth_function` | string | Function ID to authenticate WebSocket connections. |
 | `adapter` | Adapter | Adapter for stream storage and real-time delivery. |
 
+## Runtime configuration (hot reload)
+
+`iii-stream` registers its configuration with the builtin `configuration` worker
+under the id **`iii-stream`**, so the fields above can be read and changed at
+runtime (e.g. `configuration::set { id: "iii-stream", value: { ... } }`) without
+restarting the engine. The config.yaml block is the **seed** used on first boot
+only; afterwards the configuration entry is the runtime source of truth and a
+runtime edit survives engine restarts. Values are validated against the schema
+at set time, and `${VAR:default}` placeholders are expanded on read.
+
+Each field applies on its own tier:
+
+- **`auth_function`** applies to new connections immediately — no rebind. (It is
+  consulted only when a client connects, so existing connections are unaffected.)
+- **`host`/`port`** trigger a **listener rebind**: the new address is bound, the
+  WebSocket server is respawned on it, and the old listener is torn down. Live
+  connections on the old address are dropped (clients reconnect). The rebind is
+  gated — a value that fails to bind keeps the previous server running. Note that
+  changing **only the host on the same port** between overlapping interfaces (e.g.
+  `0.0.0.0` ↔ `127.0.0.1`) won't rebind: the new address can't bind while the old
+  listener still holds the port, so the change is logged and the previous server
+  kept. Change the port too, or restart, to move between overlapping interfaces.
+- **`adapter`** triggers a **full backend hot-swap**: the new pub/sub backend is
+  built, swapped in, and its event pump restarted. New connections use it; the
+  swap is gated (a value that fails to build the backend keeps the previous one).
+  Existing connections remain bound to the **previous** backend until they close,
+  so they no longer receive new events — prefer a quiet moment to repoint the
+  adapter in a multi-instance deployment.
+
 ## Adapters
 
 ### redis

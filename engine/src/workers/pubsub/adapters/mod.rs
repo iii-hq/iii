@@ -5,4 +5,6 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod local_adapter;
+#[cfg(feature = "test-adapters")]
+pub mod memory_adapter;
 pub mod redis_adapter;

@@ -1,0 +1,429 @@
+name: Alpha Release
+
+# Publishes an isolated alpha prerelease of every SDK + engine-internal lib
+# from ANY feature branch, without touching main. The version anchors on the
+# latest stable tag and appends an accumulating -alpha.N suffix
+# (0.19.2-alpha.1, .2, .3 ...).
+#
+# Publishes:
+#   * SDK packages — npm + pypi + crates + go.
+#   * Engine binaries — iii / iii-worker / iii-init, attached to a GitHub
+#     prerelease on the iii-alpha/v* tag.
+#   * Builtin workers + skills — to the workers registry under a dedicated
+#     `alpha` tag (never next/latest).
+#   Console, docker and homebrew are intentionally excluded.
+#
+# Isolation guarantees:
+#   * Tags live under the iii-alpha/v* namespace, so release-iii.yml
+#     (trigger iii/v*) never fires.
+#   * No commit or push to main or to the feature branch — the version bump
+#     lives only in an ephemeral commit that the alpha tag points at.
+#   * Engine binaries land on their own prerelease and workers use the
+#     dedicated `alpha` registry tag, so nothing collides with the official
+#     iii/v* releases or the next/latest channels.
+#
+# Run from: Actions -> Alpha Release -> "Use workflow from: <feature-branch>".
+# Note: dry_run still creates the iii-alpha tag (publishers need it to check
+# out the bumped commit) and increments the counter; it just skips uploads.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and validate without publishing (still pushes the iii-alpha tag)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # prepare tag push, go tag, GitHub prerelease + binary uploads
+  id-token: write # OIDC / npm + pypi provenance (sdk-node, _py.yml)
+
+jobs:
+  prepare:
+    name: Bump & tag alpha
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.versions.outputs.tag }}
+      version: ${{ steps.versions.outputs.version }}
+      python_version: ${{ steps.versions.outputs.python_version }}
+      npm_tag: ${{ steps.versions.outputs.npm_tag }}
+      dry_run: ${{ inputs.dry_run }}
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Default GITHUB_TOKEN (contents: write) is persisted in git config
+          # and reused by the tag push below. No app token needed: we only
+          # push a tag in the fresh iii-alpha/* namespace, never a branch.
+
+      - name: Refuse to run on main
+        run: |
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          if [[ "$BRANCH" == "main" ]]; then
+            echo "::error::alpha-release is for feature branches; use create-tag for main releases"
+            exit 1
+          fi
+          echo "Alpha release from branch: $BRANCH"
+
+      - name: Calculate alpha version
+        id: versions
+        run: |
+          python3 .github/scripts/calculate_release_version.py \
+            --target iii \
+            --bump none \
+            --prerelease alpha \
+            --counter-tag-prefix iii-alpha \
+            --current-version-file engine/Cargo.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure git identity
+        run: |
+          git config user.name "iii-ci[bot]"
+          git config user.email "iii-ci[bot]@users.noreply.github.com"
+
+      - name: Bump all manifests in lockstep
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+          PY_VERSION: ${{ steps.versions.outputs.python_version }}
+        run: |
+          python3 .github/scripts/bump_manifests.py \
+            --root . \
+            --version "$VERSION" \
+            --python-version "$PY_VERSION"
+
+      - name: Sync Cargo.lock
+        run: cargo update --workspace
+
+      - name: Commit bump (ephemeral) and push the alpha tag only
+        env:
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          git add -A
+          git commit -m "chore(alpha): $TAG [skip ci]"
+          git tag -a "$TAG" -m "Alpha release $TAG"
+          # Push ONLY the tag. The branch (and main) are never modified on
+          # the remote — the bump commit is reachable solely via this tag.
+          git push origin "$TAG"
+          echo "Pushed alpha tag: $TAG"
+
+  sdk-node:
+    name: SDK Node (npm)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build node SDK packages
+        run: >-
+          pnpm
+          --filter "@iii-dev/observability"
+          --filter "@iii-dev/helpers"
+          --filter iii-sdk
+          --filter iii-browser-sdk
+          build
+
+      - name: Setup NPM authentication
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+
+      # Recursive publish: pnpm resolves topological order (observability
+      # before iii / iii-browser) and rewrites `workspace:*` deps to the
+      # concrete alpha version automatically — no manual ordering needed.
+      - name: Publish node SDK packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >-
+          pnpm
+          --filter "@iii-dev/observability"
+          --filter "@iii-dev/helpers"
+          --filter iii-sdk
+          --filter iii-browser-sdk
+          -r publish
+          --no-git-checks
+          --tag "${{ needs.prepare.outputs.npm_tag }}"
+          --access public
+          ${{ needs.prepare.outputs.dry_run == 'true' && '--dry-run' || '' }}
+
+  observability-py:
+    name: Observability Python (pypi)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/observability
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  helpers-py:
+    name: Helpers Python (pypi)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/helpers
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  sdk-py:
+    name: SDK Python (pypi)
+    # iii depends on iii-observability and iii-helpers; publish them first
+    # so the package is installable from PyPI.
+    needs: [prepare, observability-py, helpers-py]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/iii
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+
+  observability-rust:
+    name: Observability Rust (cargo)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/observability
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  helpers-rust:
+    name: Helpers Rust (cargo)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/helpers
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  sdk-rust:
+    name: SDK Rust (cargo)
+    # iii-sdk depends on both iii-observability and iii-helpers; cargo
+    # publish resolves those from crates.io, so both must be published first.
+    needs: [prepare, observability-rust, helpers-rust]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/iii
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  sdk-go:
+    name: SDK Go (module)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_go.yml
+    with:
+      package_path: sdk/packages/go/iii
+      module_path: github.com/iii-hq/iii/sdk/packages/go/iii
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.tag }}
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine pipeline (isolated): binaries -> GitHub prerelease on the
+  # iii-alpha/v* tag, builtin workers -> dedicated `alpha` registry tag.
+  # Nothing here touches the official iii/v* releases or the next/latest
+  # worker channels. Console, docker and homebrew are intentionally out.
+  # ──────────────────────────────────────────────────────────────
+
+  create-alpha-release:
+    name: Create alpha GitHub prerelease
+    needs: prepare
+    if: ${{ !failure() && !cancelled() && needs.prepare.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The tag was already pushed by `prepare`; this attaches a prerelease
+      # to it. Uses the default GITHUB_TOKEN (contents: write).
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: iii ${{ needs.prepare.outputs.version }} (alpha)
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+
+  init-build:
+    name: Build iii-init (${{ matrix.target }})
+    needs: [prepare, create-alpha-release]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            publish_aliases: 'x86_64-unknown-linux-gnu x86_64-apple-darwin'
+          - target: aarch64-unknown-linux-musl
+            publish_aliases: 'aarch64-unknown-linux-gnu aarch64-apple-darwin'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          # Build runs checked-out code; uploads go through softprops (token
+          # via env), so the write token never needs to sit in git config.
+          persist-credentials: false
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: iii-init-${{ matrix.target }}
+
+      - name: Build iii-init
+        run: cargo build -p iii-init --target ${{ matrix.target }} --release
+
+      - name: Upload init binary as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iii-init-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/iii-init
+          retention-days: 1
+
+      - name: Package and upload to release
+        if: needs.prepare.outputs.dry_run != 'true'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf iii-init-${{ matrix.target }}.tar.gz iii-init
+          sha256sum iii-init-${{ matrix.target }}.tar.gz | awk '{print $1}' > iii-init-${{ matrix.target }}.sha256
+          for alias in ${{ matrix.publish_aliases }}; do
+            cp iii-init-${{ matrix.target }}.tar.gz "iii-init-${alias}.tar.gz"
+            sha256sum "iii-init-${alias}.tar.gz" | awk '{print $1}' > "iii-init-${alias}.sha256"
+          done
+
+      - name: Upload release assets
+        if: needs.prepare.outputs.dry_run != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          files: target/${{ matrix.target }}/release/iii-init-*.tar.gz,target/${{ matrix.target }}/release/iii-init-*.sha256
+
+  engine-release:
+    name: Engine Binary (alpha)
+    needs: [prepare, create-alpha-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-binary.yml
+    with:
+      bin_name: iii
+      manifest_path: engine/Cargo.toml
+      tag_name: ${{ needs.prepare.outputs.tag }}
+      tag_prefix: iii-alpha/
+      is_prerelease: true
+      skip_create_release: true
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+  worker-release:
+    name: Worker Binary (alpha)
+    needs: [prepare, create-alpha-release, init-build]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-binary.yml
+    with:
+      bin_name: iii-worker
+      manifest_path: crates/iii-worker/Cargo.toml
+      tag_name: ${{ needs.prepare.outputs.tag }}
+      tag_prefix: iii-alpha/
+      is_prerelease: true
+      skip_create_release: true
+      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
+      features: embed-init,embed-libkrunfw
+      init_artifacts: true
+      targets: '["aarch64-apple-darwin","x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu"]'
+      system_deps: libcap-ng-dev
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+  publish-builtin-workers:
+    name: Publish builtin workers (alpha)
+    needs: [prepare, create-alpha-release, engine-release, worker-release]
+    if: ${{ !failure() && !cancelled() && needs.prepare.outputs.dry_run != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { worker: iii-worker-manager, worker_dir: engine/src/workers/worker }
+          - { worker: iii-http, worker_dir: engine/src/workers/rest_api }
+          - { worker: iii-stream, worker_dir: engine/src/workers/stream }
+          - { worker: iii-state, worker_dir: engine/src/workers/state }
+          - { worker: iii-queue, worker_dir: engine/src/workers/queue }
+          - { worker: iii-pubsub, worker_dir: engine/src/workers/pubsub }
+          - { worker: iii-cron, worker_dir: engine/src/workers/cron }
+          - { worker: iii-observability, worker_dir: engine/src/workers/observability }
+          - { worker: iii-exec, worker_dir: engine/src/workers/shell }
+          - { worker: iii-bridge, worker_dir: engine/src/workers/bridge_client }
+          - { worker: configuration, worker_dir: engine/src/workers/configuration }
+          - { worker: iii-sandbox, worker_dir: crates/iii-worker/src/sandbox_daemon }
+          - { worker: iii-engine-functions, worker_dir: engine/src/workers/engine_fn }
+    uses: ./.github/workflows/_publish-engine-workers.yml
+    with:
+      worker: ${{ matrix.worker }}
+      worker_dir: ${{ matrix.worker_dir }}
+      version: ${{ needs.prepare.outputs.version }}
+      release_tag: ${{ needs.prepare.outputs.tag }}
+      # Checkout the version-bumped commit: build_engine_publish_payload.py
+      # asserts engine/Cargo.toml matches the published version.
+      ref: ${{ needs.prepare.outputs.tag }}
+      registry_tag: alpha
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+
+  publish-worker-skills:
+    name: Publish worker skills (alpha)
+    needs: [prepare, publish-builtin-workers]
+    if: ${{ !failure() && !cancelled() && needs.prepare.outputs.dry_run != 'true' }}
+    uses: ./.github/workflows/_publish-worker-skills.yml
+    with:
+      registry_tag: alpha
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}

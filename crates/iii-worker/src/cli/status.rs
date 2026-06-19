@@ -16,7 +16,9 @@ use colored::Colorize;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::config_file::{ResolvedWorkerType, resolve_worker_type, worker_exists};
-use super::managed::{is_engine_running_on, is_worker_running};
+use super::managed::{
+    is_engine_running_on, is_worker_running, managed_worker_dir, prepared_marker_in,
+};
 
 /// Live-progress overlay for `render_with_progress` / `headline_with_progress`.
 /// Bumped from `watch_until_ready` so each redraw visibly changes even when
@@ -223,9 +225,9 @@ impl WorkerStatus {
         let is_local = matches!(resolved, ResolvedWorkerType::Local { .. });
 
         let home = dirs::home_dir().unwrap_or_default();
-        let managed_dir = home.join(".iii/managed").join(name);
+        let managed_dir = managed_worker_dir(name);
         let managed_dir_exists = managed_dir.is_dir();
-        let prepared = managed_dir.join("var").join(".iii-prepared").exists();
+        let prepared = prepared_marker_in(&managed_dir).exists();
 
         let pid = read_pid(name);
         let running = is_worker_running(name);

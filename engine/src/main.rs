@@ -96,11 +96,11 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to the config file (default: config.yaml)
+    /// Path to the config file.
     #[arg(short, long, default_value = "config.yaml")]
     config: String,
 
-    /// Print version and exit
+    /// Print version and exit.
     #[arg(short = 'v', long)]
     version: bool,
 
@@ -109,7 +109,7 @@ struct Cli {
     #[arg(long, conflicts_with = "config")]
     use_default_config: bool,
 
-    /// Disable background update and advisory checks
+    /// Disable background update and security advisory checks.
     #[arg(long)]
     no_update_check: bool,
 
@@ -167,15 +167,28 @@ enum Commands {
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
+    /// Generate the committed MDX CLI reference page from this binary's
+    /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
+    #[command(name = "gen-cli-docs", hide = true)]
+    GenDocs {
+        /// Write the page to this file instead of stdout
+        #[arg(long, value_name = "FILE")]
+        out: Option<std::path::PathBuf>,
+    },
+
     /// Update iii and managed binaries to their latest versions
     Update {
         /// Specific command or binary to update (e.g., "console", "self").
         /// Use "self" or "iii" to update only iii.
         /// If omitted, updates iii and all installed binaries.
-        #[arg(name = "command", conflicts_with = "list_targets")]
+        #[arg(
+            name = "command",
+            value_name = "COMMAND",
+            conflicts_with = "list_targets"
+        )]
         target: Option<String>,
 
-        /// List the targets you can pass to `iii update <target>` and exit.
+        /// List the targets you can pass to `iii update [COMMAND]` and exit.
         #[arg(long = "list-targets")]
         list_targets: bool,
     },
@@ -186,13 +199,10 @@ fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
 }
 
 fn passthrough_command_path(command: &str, args: &[String]) -> String {
-    for arg in args {
-        if arg.starts_with('-') {
-            break;
-        }
-        return format!("{command} {arg}");
+    match args.first() {
+        Some(arg) if !arg.starts_with('-') => format!("{command} {arg}"),
+        _ => command.to_string(),
     }
-    command.to_string()
 }
 
 fn cli_usage_command_path(cli: &Cli) -> String {
@@ -212,6 +222,7 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
+        Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
         }) => "update list-targets".to_string(),
@@ -263,6 +274,13 @@ async fn main() -> anyhow::Result<()> {
         },
     };
 
+    // Docs generation is offline build tooling: handle it before telemetry
+    // and any engine setup so the output stays deterministic.
+    if let Some(Commands::GenDocs { out }) = &cli_args.command {
+        cli::gen_docs::run(Cli::command(), out.as_deref())?;
+        return Ok(());
+    }
+
     cli::telemetry::send_cli_usage(&cli_usage_command_path(&cli_args));
 
     if cli_args.version {
@@ -310,6 +328,8 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
+        // Handled before telemetry above.
+        Some(Commands::GenDocs { .. }) => unreachable!("gen-cli-docs returns early"),
         Some(Commands::Update {
             target,
             list_targets,
@@ -647,7 +667,8 @@ mod tests {
 
     #[test]
     fn sandbox_is_no_longer_a_valid_subcommand() {
-        // `iii sandbox` was removed in favor of `iii trigger sandbox::<op>`.
+        // `iii sandbox` was moved to `iii worker sandbox` for managing ephemeral VMs.
+        // As well as `iii trigger sandbox::<op>` for working with the sandbox through the sandbox worker.
         // Bare `iii sandbox` should now fail to parse.
         let result = Cli::try_parse_from(["iii", "sandbox"]);
         assert!(
