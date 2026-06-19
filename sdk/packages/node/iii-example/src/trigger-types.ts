@@ -7,8 +7,9 @@
  * 3. Listing all available trigger types with their schemas
  */
 
-import { EngineFunctions } from 'iii-sdk'
-import type { TriggerConfig, TriggerHandler, TriggerTypeRef } from 'iii-sdk'
+import { EngineFunctions } from 'iii-sdk/engine'
+import type { TriggerConfig, TriggerHandler } from 'iii-sdk/trigger'
+import type { TriggerTypeRef } from 'iii-sdk/runtime'
 import { iii } from './iii'
 
 /**

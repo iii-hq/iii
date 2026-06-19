@@ -52,7 +52,7 @@ use iii_sdk::engine::EngineFunctions;
 
 ## Note on the earlier submodule slice
 
-The first submodule slice (`errors`, `channel`, `trigger`, `runtime`) kept the old root paths working as deprecated aliases. The groups in this slice and the types extracted into `@iii-dev/helpers` instead remove the root export. Prefer the submodule and helpers paths for everything; the remaining deprecated root aliases will be removed in a future release.
+The first submodule slice (`errors`, `channel`, `trigger`, `runtime`) and the groups in this slice, along with the types extracted into `@iii-dev/helpers`, all remove the root export in 0.20.0. Use the submodule and helpers paths for everything; the old root paths no longer work in this release.
 
 ## Why
 

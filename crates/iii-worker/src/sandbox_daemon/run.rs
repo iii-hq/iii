@@ -328,7 +328,7 @@ fn step_error(step: &str, sandbox_id: Option<&str>, e: SandboxError) -> SandboxE
 // ---------------------------------------------------------------------------
 
 pub(super) fn register(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     cfg: Arc<SandboxConfig>,
     launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,

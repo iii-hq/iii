@@ -67,20 +67,12 @@ describe('isErrorBody', () => {
   })
 })
 
-describe('errors subpath and back-compat', () => {
+describe('errors subpath', () => {
   it('exports InvocationError from the iii-sdk/errors subpath', async () => {
     const errs = await import('../src/errors')
     expect(errs.InvocationError).toBeDefined()
     expect(typeof errs.InvocationError).toBe('function')
     const root = await import('../src/index')
     expect(root.InvocationError).toBe(errs.InvocationError)
-  })
-
-  it('keeps the deprecated IIIInvocationError alias pointing at InvocationError', async () => {
-    const errs = await import('../src/errors')
-    const root = await import('../src/index')
-    expect(root.IIIInvocationError).toBe(errs.InvocationError)
-    const err = new root.IIIInvocationError({ code: 'FORBIDDEN', message: 'nope' })
-    expect(err).toBeInstanceOf(errs.InvocationError)
   })
 })

@@ -1,18 +1,18 @@
-use iii_sdk::IIIError;
+use iii_sdk::Error;
 use serde_json::{json, Value};
 
-/// Maps a IIIError to an HTTP response format
-pub fn error_response(error: IIIError) -> Value {
+/// Maps a Error to an HTTP response format
+pub fn error_response(error: Error) -> Value {
     let (status_code, message) = match error {
-        IIIError::NotConnected => (503, "Bridge is not connected".to_string()),
-        IIIError::Timeout => (504, "Invocation timed out".to_string()),
-        IIIError::Remote { code, message, .. } => {
+        Error::NotConnected => (503, "Bridge is not connected".to_string()),
+        Error::Timeout => (504, "Invocation timed out".to_string()),
+        Error::Remote { code, message, .. } => {
             (502, format!("Remote error ({}): {}", code, message))
         }
-        IIIError::Handler(msg) => (500, format!("Handler error: {}", msg)),
-        IIIError::Serde(msg) => (500, format!("Serialization error: {}", msg)),
-        IIIError::WebSocket(msg) => (503, format!("WebSocket error: {}", msg)),
-        IIIError::Runtime(msg) => (500, format!("Runtime error: {}", msg)),
+        Error::Handler(msg) => (500, format!("Handler error: {}", msg)),
+        Error::Serde(msg) => (500, format!("Serialization error: {}", msg)),
+        Error::WebSocket(msg) => (503, format!("WebSocket error: {}", msg)),
+        Error::Runtime(msg) => (500, format!("Runtime error: {}", msg)),
     };
 
     json!({

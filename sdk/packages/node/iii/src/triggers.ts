@@ -17,7 +17,7 @@ export type TriggerConfig<TConfig> = {
 
 /**
  * Handler interface for custom trigger types. Passed to
- * `ISdk.registerTriggerType`.
+ * `IIIClient.registerTriggerType`.
  *
  * @typeParam TConfig - Type of the trigger-specific configuration.
  *

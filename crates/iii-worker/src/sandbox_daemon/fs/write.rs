@@ -45,7 +45,7 @@ use crate::sandbox_daemon::{
 pub struct ChannelReaderAdapter {
     reader: Arc<ChannelReader>,
     pending_buf: Vec<u8>,
-    pending_task: Option<tokio::task::JoinHandle<Result<Option<Vec<u8>>, iii_sdk::IIIError>>>,
+    pending_task: Option<tokio::task::JoinHandle<Result<Option<Vec<u8>>, iii_sdk::Error>>>,
     eof: bool,
 }
 
@@ -303,7 +303,7 @@ pub async fn handle_write<R: FsRunner + ?Sized>(
 // ---------------------------------------------------------------------------
 
 pub(super) fn register(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) {

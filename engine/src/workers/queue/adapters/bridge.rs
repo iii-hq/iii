@@ -8,7 +8,8 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{III, IIIError, InitOptions, Trigger, TriggerAction, register_worker};
+use iii_sdk::trigger::Trigger;
+use iii_sdk::{Error, IIIClient, InitOptions, TriggerAction, register_worker};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -54,7 +55,7 @@ struct SubscriptionInfo {
 /// - Functions registered via bridge persist for bridge lifetime
 pub struct BridgeAdapter {
     engine: Arc<Engine>,
-    bridge: Arc<III>,
+    bridge: Arc<IIIClient>,
     subscriptions: Arc<RwLock<HashMap<String, SubscriptionInfo>>>,
 }
 
@@ -225,7 +226,7 @@ impl QueueAdapter for BridgeAdapter {
                                         "Error invoking condition function"
                                     );
                                     tracing::Span::current().record("otel.status_code", "ERROR");
-                                    return Err(IIIError::Remote {
+                                    return Err(Error::Remote {
                                         code: err.code,
                                         message: err.message,
                                         stacktrace: err.stacktrace,
@@ -238,11 +239,11 @@ impl QueueAdapter for BridgeAdapter {
                         match engine.call(&function_id, data).await {
                             Ok(result) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
-                                Ok::<Value, IIIError>(result.unwrap_or(Value::Null))
+                                Ok::<Value, Error>(result.unwrap_or(Value::Null))
                             }
                             Err(err) => {
                                 tracing::Span::current().record("otel.status_code", "ERROR");
-                                Err(IIIError::Remote {
+                                Err(Error::Remote {
                                     code: err.code,
                                     message: err.message,
                                     stacktrace: err.stacktrace,

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{III, InitOptions, register_worker};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::Value;
 
 use crate::{
@@ -34,7 +34,7 @@ pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
     handler_function_id: String,
-    bridge: Arc<III>,
+    bridge: Arc<IIIClient>,
 }
 
 impl BridgeAdapter {
@@ -263,7 +263,7 @@ impl StreamAdapter for BridgeAdapter {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Failed to deserialize stream message");
-                            Err(iii_sdk::IIIError::Remote {
+                            Err(iii_sdk::Error::Remote {
                                 code: "DESERIALIZATION_ERROR".to_string(),
                                 message: format!("Failed to deserialize stream message: {}", e),
                                 stacktrace: None,

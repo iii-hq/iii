@@ -132,7 +132,7 @@ export type MiddlewareFunctionInput = {
 }
 
 /**
- * Request object passed to {@link ISdk.trigger}.
+ * Request object passed to {@link IIIClient.trigger}.
  *
  * @typeParam TInput - Type of the payload.
  */

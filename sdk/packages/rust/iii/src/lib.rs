@@ -45,32 +45,13 @@ pub mod errors {
 // types into the SDK, which the `compile_fail` doctests below deliberately
 // forbid. Hence the `internal` grouping is a no-op for Rust.
 
-#[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
-pub use builtin_triggers::IIITrigger;
-#[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
-pub use channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-#[deprecated(
-    since = "0.19.0",
-    note = "renamed to Error; import from iii_sdk::errors"
-)]
-pub use error::Error as IIIError;
 pub use error::{Error, InvocationError};
-#[deprecated(since = "0.20.0", note = "renamed to IIIClient")]
-pub use iii::IIIClient as III;
 pub use iii::TelemetryOptions;
-#[deprecated(since = "0.20.0", note = "renamed to TelemetryOptions")]
-pub use iii::TelemetryOptions as WorkerTelemetryMeta;
-#[deprecated(since = "0.19.0", note = "import from iii_sdk::runtime")]
-pub use iii::{FunctionInfo, FunctionRef, TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata};
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
 pub use iii_helpers::queue::EnqueueResult;
 pub use protocol::{Message, TriggerAction};
 pub use stream_provider::IStream;
 pub use structs::MiddlewareFunctionInput;
-#[deprecated(since = "0.19.0", note = "import from iii_sdk::trigger")]
-pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
-#[deprecated(since = "0.19.0", note = "import from iii_sdk::channel")]
-pub use types::Channel;
 pub use types::{StreamRequest, StreamResponse};
 
 /// Configuration options passed to [`register_worker`].
@@ -233,6 +214,49 @@ fn _ensure_channel_submodule_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_errors_submodule_path() {}
+
+// ---------------------------------------------------------------------------
+// 0.20 clean break: the deprecated crate-root re-exports and renamed aliases
+// are removed. The relocated types live under their canonical submodule paths
+// (`iii_sdk::{trigger,channel,runtime}`) and the renamed types use their new
+// names (`IIIClient`, `Error`, `TelemetryOptions`).
+// ---------------------------------------------------------------------------
+
+/// ```compile_fail
+/// use iii_sdk::{Channel, ChannelReader, ChannelWriter, StreamChannelRef};
+/// ```
+#[allow(dead_code)]
+fn _ensure_channel_types_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::{IIITrigger, Trigger, TriggerConfig, TriggerHandler};
+/// ```
+#[allow(dead_code)]
+fn _ensure_trigger_types_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::{FunctionInfo, FunctionRef, TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata};
+/// ```
+#[allow(dead_code)]
+fn _ensure_runtime_types_not_top_level() {}
+
+/// ```compile_fail
+/// use iii_sdk::III;
+/// ```
+#[allow(dead_code)]
+fn _ensure_renamed_client_alias_removed() {}
+
+/// ```compile_fail
+/// use iii_sdk::IIIError;
+/// ```
+#[allow(dead_code)]
+fn _ensure_renamed_error_alias_removed() {}
+
+/// ```compile_fail
+/// use iii_sdk::WorkerTelemetryMeta;
+/// ```
+#[allow(dead_code)]
+fn _ensure_renamed_telemetry_alias_removed() {}
 
 // ---------------------------------------------------------------------------
 // Stream types relocated to `iii_helpers::stream`: they are no longer reachable

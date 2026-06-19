@@ -29,7 +29,7 @@ function registerWorker(address: string, options?: InitOptions): IIIClient;
 Pass the engine's SDK WebSocket URL (e.g. `process.env.III_URL`) as `address`. `options` configures
 worker identity (`workerName`, plus an optional `workerDescription`, a one-line summary surfaced
 in `engine::workers::list` / `engine::workers::info`), timeouts, reconnection, and OpenTelemetry. The returned `IIIClient` carries every
-method below. (`ISdk` remains as a deprecated alias for `IIIClient`.)
+method below. (The handle is named `IIIClient`; the former name `ISdk` has been removed.)
 
 `TelemetryOptions` is the public type for the worker's telemetry labels (`language`, `project_name`,
 `framework`, `amplitude_api_key`), exported from `iii-sdk` to match the Python and Rust SDKs.
@@ -50,8 +50,8 @@ worker.registerFunction(
 JSON Schemas (stored alongside the function for the iii console and agent-readable skills).
 
 The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii-sdk/runtime`
-subpath (`import type { FunctionRef } from 'iii-sdk/runtime'`). They stay re-exported from the
-package root as deprecated aliases.
+subpath (`import type { FunctionRef } from 'iii-sdk/runtime'`). They are not exported from the
+package root.
 
 The `IIIConnectionState` type is provided only by the `iii-sdk/runtime` subpath
 (`import type { IIIConnectionState } from 'iii-sdk/runtime'`). It is not exported from the
@@ -83,8 +83,8 @@ The returned `Trigger` carries the runtime handle. Drop the trigger with `Trigge
 there is no top-level `unregisterTrigger` function.
 
 The `Trigger`, `TriggerConfig`, and `TriggerHandler` types are exported from the `iii-sdk/trigger`
-subpath (`import type { TriggerHandler } from 'iii-sdk/trigger'`). They stay re-exported from the
-package root as deprecated aliases.
+subpath (`import type { TriggerHandler } from 'iii-sdk/trigger'`). They are not exported from the
+package root.
 
 ### `registerTriggerType`
 
@@ -152,8 +152,8 @@ class InvocationError extends Error {
 }
 ```
 
-The former name `IIIInvocationError` is still exported from the package root as a deprecated alias.
-Prefer `InvocationError` from `iii-sdk/errors`.
+The former name `IIIInvocationError` has been removed. Import `InvocationError` from
+`iii-sdk/errors`.
 
 Common `code` values come from the engine: `invocation_failed` (handler threw), `invocation_stopped`
 (engine timeout), `function_not_found`, `function_not_invokable`, `TIMEOUT` (client-side timeout),
@@ -162,8 +162,8 @@ Common `code` values come from the engine: `invocation_failed` (handler threw), 
 ## Channels
 
 Import channel symbols from the `iii-sdk/channel` subpath
-(`import { ChannelReader, ChannelWriter } from 'iii-sdk/channel'`). They stay exported from the
-package root as deprecated re-exports.
+(`import { ChannelReader, ChannelWriter } from 'iii-sdk/channel'`). They are not exported from the
+package root.
 
 `ChannelReader` and `ChannelWriter` are runtime classes wrapping the engine's stream WebSockets.
 `StreamChannelRef` is the type passed between SDK calls to identify a channel:
@@ -183,9 +183,9 @@ Node `Readable` plus `.sendMessage()` and `.onMessage()`; `ChannelWriter` expose
 ## Logger
 
 `Logger` is a runtime class with `info`, `warn`, `error`, and `debug` methods, each
-`(message: string, data?: unknown) => void`. Import it from `@iii-dev/observability`; it is no
-longer re-exported from `iii-sdk`. The output integrates with the SDK's OpenTelemetry setup; see
-iii-observability for the export side.
+`(message: string, data?: unknown) => void`. Import it from `@iii-dev/helpers/observability`; it is
+not exported from `iii-sdk`. The output integrates with the SDK's OpenTelemetry setup; see
+the iii-observability worker for the export side.
 
 ## Info types
 

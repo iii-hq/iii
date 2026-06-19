@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{III, InitOptions, register_worker};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::Value;
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
 };
 
 pub struct BridgeAdapter {
-    bridge: Arc<III>,
+    bridge: Arc<IIIClient>,
 }
 
 impl BridgeAdapter {

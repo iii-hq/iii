@@ -11,7 +11,7 @@ import type {
 } from '@iii-dev/helpers/stream'
 
 /**
- * Interface for custom stream implementations. Passed to `ISdk.createStream`
+ * Interface for custom stream implementations. Passed to `IIIClient.createStream`
  * to override the engine's built-in stream storage.
  *
  * @typeParam TData - Type of the data stored in the stream.

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { registerWorker } from '../src/iii'
-import type { ISdk } from '../src/types'
+import type { IIIClient } from '../src/types'
 
 describe('trigger registration error surfacing', () => {
   let wss: WebSocketServer
   let url: string
-  let sdk: ISdk | undefined
+  let sdk: IIIClient | undefined
   let serverSocket: WebSocket | undefined
 
   beforeEach(async () => {
