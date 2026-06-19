@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from iii_helpers.queue import EnqueueResult
+
 from .channels import ChannelReader, ChannelWriter
 from .errors import InvocationError
 from .iii import TriggerAction, register_worker
@@ -13,6 +15,7 @@ from .iii_constants import (
 from .iii_types import (
     MiddlewareFunctionInput,
     TriggerActionEnqueue,
+    TriggerActionVoid,
 )
 from .stream import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
@@ -39,6 +42,9 @@ __all__ = [
     "MiddlewareFunctionInput",
     # Message types
     "TriggerActionEnqueue",
+    "TriggerActionVoid",
+    # Queue
+    "EnqueueResult",
     # Triggers
     "Trigger",
     "TriggerConfig",
