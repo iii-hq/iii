@@ -20,6 +20,14 @@
 set -euo pipefail
 
 SIZE_GIB="${SIZE_GIB:-16}"
+# Positive integer only: a non-numeric value mints a wrong-capacity (or no)
+# golden that gets committed and embedded into every worker, and it is
+# interpolated unquoted into the container command below. Validate self-check:
+# test-regen-golden.sh.
+if ! [[ "$SIZE_GIB" =~ ^[0-9]+$ ]] || [ "$SIZE_GIB" -eq 0 ]; then
+  echo "SIZE_GIB must be a positive integer (GiB); got: '$SIZE_GIB'" >&2
+  exit 2
+fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CRATE_DIR="$(cd "$HERE/.." && pwd)"
 RAW="$HERE/raw-golden.ext4"
