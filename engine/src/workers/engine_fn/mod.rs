@@ -173,6 +173,11 @@ pub struct FunctionSummary {
     pub worker_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Registration metadata. `metadata.internal == true` marks an
+    /// engine-internal handler that the default `engine::functions::list`
+    /// hides (pass `include_internal: true` to see it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -519,6 +524,7 @@ impl EngineFunctionsWorker {
                     function_id: f._function_id.clone(),
                     worker_name,
                     description: f._description.clone(),
+                    metadata: f.metadata.clone(),
                 }
             })
             .collect()
@@ -787,6 +793,7 @@ impl EngineFunctionsWorker {
                     function_id: fn_id.clone(),
                     worker_name: Self::worker_name_for_function_id(&index, &fn_id),
                     description: func._description.clone(),
+                    metadata: func.metadata.clone(),
                 })
             })
             .collect();
@@ -1061,9 +1068,20 @@ impl EngineFunctionsWorker {
             // dlq_topics / dlq_messages). Those are a public queue/DLQ API a
             // client legitimately needs to discover — keeping them out of the
             // default list left agents unable to find the DLQ-inspection surface.
+            // Also hide any handler explicitly tagged `metadata.internal == true`
+            // (e.g. `iii-observability::on-config-change`,
+            // `iii-http::on-config-change`). These are configuration-trigger
+            // fan-out targets, invoked by id — never meant for discovery.
             functions.retain(|f| {
-                !f.function_id.starts_with("engine::")
-                    || f.function_id.starts_with("engine::queue::")
+                let is_engine_internal = f.function_id.starts_with("engine::")
+                    && !f.function_id.starts_with("engine::queue::");
+                let is_tagged_internal = f
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("internal"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                !is_engine_internal && !is_tagged_internal
             });
         }
 
@@ -1833,6 +1851,7 @@ mod tests {
             function_id: "my::func".to_string(),
             worker_name: "my".to_string(),
             description: Some("desc".to_string()),
+            metadata: None,
         };
         let json = serde_json::to_value(&summary).expect("serialize");
         assert_eq!(json["function_id"], "my::func");
@@ -1846,9 +1865,36 @@ mod tests {
             function_id: "my::func".to_string(),
             worker_name: "my".to_string(),
             description: None,
+            metadata: None,
         };
         let json = serde_json::to_value(&summary).expect("serialize");
         assert!(json.get("description").is_none());
+    }
+
+    #[test]
+    fn function_summary_metadata_skips_when_none_surfaces_when_some() {
+        // None metadata is omitted from the wire (skip_serializing_if).
+        let without = FunctionSummary {
+            function_id: "my::func".to_string(),
+            worker_name: "my".to_string(),
+            description: None,
+            metadata: None,
+        };
+        let json = serde_json::to_value(&without).expect("serialize");
+        assert!(
+            json.get("metadata").is_none(),
+            "None metadata must be omitted, not serialized as null"
+        );
+
+        // Some metadata is surfaced so callers can distinguish internal handlers.
+        let with = FunctionSummary {
+            function_id: "my::on-config-change".to_string(),
+            worker_name: "my".to_string(),
+            description: None,
+            metadata: Some(serde_json::json!({ "internal": true })),
+        };
+        let json = serde_json::to_value(&with).expect("serialize");
+        assert_eq!(json["metadata"]["internal"], true);
     }
 
     #[test]
@@ -2010,6 +2056,76 @@ mod tests {
         match all {
             FunctionResult::Success(result) => {
                 assert_eq!(result.functions.len(), 2);
+            }
+            _ => panic!("expected functions_list success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn functions_list_filters_metadata_internal_by_default() {
+        let (engine, module) = setup_engine_and_module();
+
+        // A non-engine:: handler tagged internal (mirrors the config-change
+        // handlers iii-observability::on-config-change / iii-http::on-config-change).
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: "worker::on-config-change".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: Some(serde_json::json!({ "internal": true })),
+            },
+            crate::engine::Handler::new(
+                |_input: Value| async move { FunctionResult::Success(None) },
+            ),
+        );
+        register_simple_function(&engine, "user::visible", None);
+
+        let filtered = module
+            .functions_list(
+                FunctionsListInput {
+                    include_internal: None,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match filtered {
+            FunctionResult::Success(result) => {
+                let ids: Vec<&str> = result
+                    .functions
+                    .iter()
+                    .map(|f| f.function_id.as_str())
+                    .collect();
+                assert!(
+                    !ids.contains(&"worker::on-config-change"),
+                    "internal-tagged handler must be hidden by default: {ids:?}"
+                );
+                assert!(ids.contains(&"user::visible"));
+            }
+            _ => panic!("expected functions_list success"),
+        }
+
+        let all = module
+            .functions_list(
+                FunctionsListInput {
+                    include_internal: Some(true),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match all {
+            FunctionResult::Success(result) => {
+                let ids: Vec<&str> = result
+                    .functions
+                    .iter()
+                    .map(|f| f.function_id.as_str())
+                    .collect();
+                assert!(
+                    ids.contains(&"worker::on-config-change"),
+                    "include_internal must surface the internal handler: {ids:?}"
+                );
             }
             _ => panic!("expected functions_list success"),
         }

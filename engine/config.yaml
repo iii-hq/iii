@@ -110,7 +110,11 @@ workers:
       logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}  # Output SDK logs to engine console (default: true)
       # === Alert Rules (Optional) ===
       # Alert rules for metric threshold monitoring - see docs/OTEL-IMPLEMENTATION.md
-      # Alerts are evaluated every 10 seconds
+      # Alerts are evaluated every 10 seconds.
+      # `action` is a tagged object: { type: log } | { type: webhook, url: ... }
+      # | { type: function, path: ... }. Symbol operators (">", "<", ...) work
+      # in config.yaml; edits via configuration::set must use the canonical
+      # names (greaterthan, lessthan, ...) the JSON schema advertises.
       # alerts:
       #   - name: high_error_rate
       #     metric: iii.invocations.error
@@ -118,15 +122,15 @@ workers:
       #     operator: ">"  # Options: >, >=, <, <=, ==, !=
       #     window_seconds: 60
       #     cooldown_seconds: 300  # Min time between alert triggers
-      #     action: log  # Options: log, webhook, function
-      #     # webhook_url: https://hooks.example.com/alert
-      #     # function_id: alerts.handle_error
+      #     action:
+      #       type: log
       #   - name: low_workers
       #     metric: iii.workers.active
       #     threshold: 1
       #     operator: "<"
-      #     action: webhook
-      #     webhook_url: https://hooks.slack.com/services/xxx
+      #     action:
+      #       type: webhook
+      #       url: https://hooks.slack.com/services/xxx
 
   - name: iii-queue
     config:

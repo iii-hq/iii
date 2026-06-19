@@ -31,6 +31,28 @@ type: "reference"
   Cron's only setting is the distributed-lock `adapter`, and a change is a **full hot-swap**: the new lock backend is built first (gated — a value that fails to build keeps the previous backend, config, and jobs), the old backend is shut down, then every live cron job is re-registered onto the new one (best-effort per job), and the `(config, scheduler)` pair is swapped in atomically. The brief swap window is a scheduling gap on this instance — a job whose fire time lands in it is skipped, not double-run — while across a multi-instance fleet the old and new lock backends cannot coordinate mid-migration, so prefer a quiet moment to repoint the adapter.
 
   The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `kv` and `redis` lock backends, each with its own typed `config` (`kv`: `store_method` / `file_path` / `save_interval_ms` / `lock_ttl_ms` / `lock_index`; `redis`: `redis_url` only, since the lock TTL and key prefix are fixed by the adapter). `configuration::set` validates adapter settings against it and rejects an unknown adapter name or a stray config key (e.g. a `redis` `lock_ttl_ms`), and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
+  ## `iii-observability` is fully configurable through the configuration worker
+
+  The engine's observability worker registers its complete configuration surface — trace/metric/log exporters, sampling (ratio, per-operation rules, rate limits), in-memory store limits and retention, alert rules, span-collapse rules, and the engine log level/format — under the `iii-observability` configuration entry. The config.yaml block seeds the entry on first boot and is ignored afterwards; runtime edits survive restarts.
+
+  Changes hot-apply per field tier: ingest gates, `logs_console_output`, and `logs_sampling_ratio` are read live; store limits retune on the next insert/sweep; the sampler, alert rules (with cooldown/firing continuity for surviving rules), span-collapse cache, and engine log level rebuild and swap in place; the OTLP logs exporter and log-retention tasks restart with new settings. Restart-tier fields (trace exporter wiring, resource identity, log format) are warned about and apply at the next engine start — the persisted entry is read at boot, before logging init, so they genuinely take effect.
+
+  The schema rejects invalid values at `configuration::set` time (unknown fields, sampling ratios outside `0..=1`, zero counts, log batch/flush sizes outside the exporter's accepted range), and out-of-range values that predate a schema tightening are clamped on read.
+
+  `engine::alerts::list` now also returns the configured `rules` alongside the live alert states, so a caller sees the active thresholds and their firing status in one call.
+
+  This work also fixed three latent dead-config bugs: `metrics_max_count`/`metrics_retention_seconds` and `logs_max_count` were silently shadowed by defaults claimed before the worker booted, and advanced `sampling` rules never reached the engine tracer because the sampler was built before the global config existed. All three now apply — and the first two are live-tunable.
+
+  ## `iii-queue` runtime settings live in the configuration worker
+
+  The queue worker now registers its config schema under the `iii-queue` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart. Per-queue settings live in `queue_configs`, keyed by queue name (with the always-present built-in `default` queue): `max_retries`, `concurrency`, `type` (`standard` or `fifo`), `message_group_field`, `backoff_ms`, and `poll_interval_ms`. A runtime edit diffs `queue_configs` and restarts only the consumers that changed — added queues start a consumer, removed queues stop theirs, untouched queues keep running. The schema carries per-field descriptions and rejects invalid values at set time, including `concurrency: 0` (which would otherwise panic the consumer's bounded channel) and a `fifo` queue with no `message_group_field`; the same guards re-run on the config.yaml seed, which bypasses the schema.
+
+  The `adapter` is a **full hot-swap tier** (like `iii-pubsub`, unlike `iii-state`'s restart-tier storage adapter): a runtime edit re-instantiates the transport and restarts every consumer on it, with no engine restart. The new transport is built first and the swap is gated — a value that fails to build keeps the previous transport, config, and consumers running. Because the new transport starts empty, messages still queued on the old one do not migrate, and in-flight deliveries finish acking against the old transport before it is dropped — so prefer a quiet moment to repoint the adapter.
+
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `builtin` (in-process, the default), `redis`, and `bridge` adapters, each with its own typed `config` (`builtin`: `store_method` (`in_memory` / `file_based`) / `file_path` / `save_interval_ms`; `redis`: `redis_url`; `bridge`: `bridge_url`). The `rabbitmq` adapter and its config (`amqp_url` / `max_attempts` / `prefetch_count` / `queue_mode`) join the union only when the `rabbitmq` feature is compiled in, so `configuration::set` never accepts an adapter name the engine cannot build. The set is closed: `configuration::set` rejects an unknown adapter name or a stray config key, and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
+  As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-queue.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read.
 </Update>
 
 <Update label="0.19.4" description="June 2026">
@@ -109,6 +131,7 @@ type: "reference"
   The config.yaml block is **seed-only**: once a value is persisted, later edits to that block are ignored — change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-http.yaml` with the default `fs` adapter).
 
   **Breaking — HTTP error envelope:** errors generated by the `iii-http` server itself (handler invocation failure, middleware failure/timeout, unmet route condition, route-miss 404s, and response-stream build failures) now return `{"error": {"code", "message", "error_id"?}}` instead of flat strings or plain-text bodies. `code` is machine-readable (e.g. `MIDDLEWARE_TIMEOUT`, `CONDITION_NOT_MET`, `INTERNAL_ERROR`, `NOT_FOUND`); `error_id` correlates 5xx responses with server logs. Bodies returned by your own handlers and middleware pass through unchanged. Clients parsing the old flat string must read `error.message` instead.
+
 </Update>
 
 <Update label="0.19.3" description="June 2026">

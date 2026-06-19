@@ -50,6 +50,7 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         // Check global config from YAML first, then fall back to environment variables
         let global_cfg = super::otel::get_otel_config();
+        let global_cfg = global_cfg.as_deref();
 
         let enabled = global_cfg
             .and_then(|c| c.metrics_enabled)
@@ -128,8 +129,17 @@ pub fn ensure_default_meter() {
         return;
     }
 
-    // Initialize metric storage with defaults (needed for SDK metrics ingestion)
-    init_metric_storage(None, None);
+    // Initialize metric storage for SDK metrics ingestion. The global
+    // observability config is already populated on the serve path (logging
+    // init precedes EngineBuilder::build), so configured limits apply here
+    // instead of being silently shadowed by defaults.
+    {
+        let cfg = super::otel::get_otel_config();
+        init_metric_storage(
+            cfg.as_ref().and_then(|c| c.metrics_max_count),
+            cfg.as_ref().and_then(|c| c.metrics_retention_seconds),
+        );
+    }
 
     let provider = SdkMeterProvider::builder().build();
     let meter = provider.meter("iii");
@@ -742,9 +752,11 @@ pub struct TimeIndexedMetricStorage {
     /// Secondary index: name -> timestamps (for name+time queries)
     metrics_by_name:
         std::sync::RwLock<std::collections::HashMap<String, std::collections::BTreeSet<u64>>>,
-    /// Configuration
-    max_age_ns: u64,
-    max_metrics: usize,
+    /// Configuration. Atomic so the configuration-worker apply path can
+    /// retune limits at runtime; enforcement happens per insert
+    /// (`evict_if_needed`) and per 60s retention sweep (`apply_retention`).
+    max_age_ns: std::sync::atomic::AtomicU64,
+    max_metrics: std::sync::atomic::AtomicUsize,
     /// Maximum unique metric names (cardinality limit)
     max_unique_names: usize,
     /// Metric counter for eviction
@@ -758,8 +770,14 @@ impl std::fmt::Debug for TimeIndexedMetricStorage {
         f.debug_struct("TimeIndexedMetricStorage")
             .field("metrics_by_time", &self.metrics_by_time)
             .field("metrics_by_name", &self.metrics_by_name)
-            .field("max_age_ns", &self.max_age_ns)
-            .field("max_metrics", &self.max_metrics)
+            .field(
+                "max_age_ns",
+                &self.max_age_ns.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field(
+                "max_metrics",
+                &self.max_metrics.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("max_unique_names", &self.max_unique_names)
             .finish()
     }
@@ -770,11 +788,31 @@ impl TimeIndexedMetricStorage {
         Self {
             metrics_by_time: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             metrics_by_name: std::sync::RwLock::new(std::collections::HashMap::new()),
-            max_age_ns,
-            max_metrics,
+            max_age_ns: std::sync::atomic::AtomicU64::new(max_age_ns),
+            max_metrics: std::sync::atomic::AtomicUsize::new(max_metrics),
             max_unique_names: 10000, // Default cardinality limit
             total_metrics: std::sync::atomic::AtomicUsize::new(0),
             cardinality_warned: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Retune capacity and retention at runtime. `None` keeps the current
+    /// value. A shrink takes effect on the next insert (capacity) and the
+    /// next 60s retention sweep (age).
+    pub fn set_limits(&self, max_metrics: Option<usize>, retention_seconds: Option<u64>) {
+        if let Some(max) = max_metrics {
+            self.max_metrics
+                .store(max.max(1), std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(seconds) = retention_seconds {
+            match seconds.checked_mul(1_000_000_000) {
+                Some(ns) => self
+                    .max_age_ns
+                    .store(ns, std::sync::atomic::Ordering::Relaxed),
+                None => tracing::error!(
+                    "retention_seconds overflow when converting to nanoseconds; keeping current retention"
+                ),
+            }
         }
     }
 
@@ -825,10 +863,11 @@ impl TimeIndexedMetricStorage {
         by_time: &mut std::collections::BTreeMap<u64, Vec<StoredMetric>>,
         by_name: &mut std::collections::HashMap<String, std::collections::BTreeSet<u64>>,
     ) {
+        let max_metrics = self.max_metrics.load(std::sync::atomic::Ordering::Relaxed);
         while self
             .total_metrics
             .load(std::sync::atomic::Ordering::Relaxed)
-            > self.max_metrics
+            > max_metrics
         {
             // Remove oldest timestamp bucket
             if let Some((oldest_ts, metrics)) = by_time.iter().next() {
@@ -1034,7 +1073,7 @@ impl TimeIndexedMetricStorage {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        let cutoff = now.saturating_sub(self.max_age_ns);
+        let cutoff = now.saturating_sub(self.max_age_ns.load(std::sync::atomic::Ordering::Relaxed));
 
         let mut by_time = self.metrics_by_time.write().unwrap();
         let mut by_name = self.metrics_by_name.write().unwrap();
@@ -1094,8 +1133,14 @@ const DEFAULT_MAX_METRICS: usize = 10000;
 /// Default retention period (1 hour in nanoseconds)
 const DEFAULT_RETENTION_NS: u64 = 3600 * 1_000_000_000;
 
-/// Initialize metric storage with the given capacity and retention
+/// Initialize metric storage with the given capacity and retention, or
+/// retune the limits of an existing one when explicit values are supplied
+/// (`None` never resets a configured limit back to the default).
 pub fn init_metric_storage(max_metrics: Option<usize>, retention_seconds: Option<u64>) {
+    if let Some(existing) = IN_MEMORY_METRIC_STORAGE.get() {
+        existing.set_limits(max_metrics, retention_seconds);
+        return;
+    }
     let max_metrics = max_metrics.unwrap_or(DEFAULT_MAX_METRICS);
     let retention_ns = if let Some(seconds) = retention_seconds {
         match seconds.checked_mul(1_000_000_000) {
@@ -1303,8 +1348,10 @@ pub struct AlertEvent {
 
 /// Alert manager for evaluating and triggering alerts
 pub struct AlertManager {
-    /// Configured alert rules
-    rules: Vec<AlertRule>,
+    /// Configured alert rules. RwLock'd so the configuration-worker apply
+    /// path can swap them at runtime; the 10s evaluation task snapshots
+    /// under a read lock each cycle.
+    rules: std::sync::RwLock<Vec<AlertRule>>,
     /// Current state of each alert
     states: std::sync::RwLock<HashMap<String, AlertState>>,
     /// Engine reference for function invocation (optional for backward compatibility)
@@ -1314,16 +1361,50 @@ pub struct AlertManager {
 impl std::fmt::Debug for AlertManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AlertManager")
-            .field("rules_count", &self.rules.len())
+            .field(
+                "rules_count",
+                &self.rules.read().map(|r| r.len()).unwrap_or(0),
+            )
             .finish()
     }
+}
+
+/// SSRF guard for alert webhook targets. Alert rules are operator-set over the
+/// configuration bus (or via a hand-edited persisted file), so a webhook URL is
+/// the trust boundary for an outbound request the engine itself makes. Allow
+/// only http(s) to a non-private host; reject loopback / link-local (incl. the
+/// 169.254.169.254 cloud-metadata address) / private / unspecified targets.
+async fn validate_alert_webhook_url(url: &str) -> Result<(), String> {
+    let scheme = reqwest::Url::parse(url)
+        .map_err(|_| "invalid URL".to_string())?
+        .scheme()
+        .to_string();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("unsupported scheme '{scheme}' (only http/https)"));
+    }
+    let validator = crate::invocation::url_validator::UrlValidator::new(
+        crate::invocation::url_validator::UrlValidatorConfig {
+            allowlist: vec!["*".to_string()],
+            block_private_ips: true,
+            require_https: false,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    validator.validate(url).await.map_err(|e| e.to_string())
+}
+
+/// Guard for alert function-action targets: a built-in/internal function id
+/// (`engine::*`, `configuration::*`, `iii-*::*`, ...) must not be invokable as
+/// an alert action set over the configuration bus.
+fn alert_function_target_allowed(path: &str) -> bool {
+    !crate::workers::telemetry::is_iii_builtin_function_id(path)
 }
 
 impl AlertManager {
     pub fn new(rules: Vec<AlertRule>) -> Self {
         let states = HashMap::new();
         Self {
-            rules,
+            rules: std::sync::RwLock::new(rules),
             states: std::sync::RwLock::new(states),
             engine: None,
         }
@@ -1332,10 +1413,34 @@ impl AlertManager {
     pub fn with_engine(rules: Vec<AlertRule>, engine: Arc<crate::engine::Engine>) -> Self {
         let states = HashMap::new();
         Self {
-            rules,
+            rules: std::sync::RwLock::new(rules),
             states: std::sync::RwLock::new(states),
             engine: Some(engine),
         }
+    }
+
+    /// The currently configured rules.
+    pub fn get_rules(&self) -> Vec<AlertRule> {
+        self.rules
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Replace the rule set at runtime. States for surviving rule names are
+    /// preserved (cooldown / firing continuity); states for removed rules
+    /// are pruned so stale entries do not linger in `engine::alerts::list`.
+    pub fn update_rules(&self, rules: Vec<AlertRule>) {
+        let names: std::collections::HashSet<&str> =
+            rules.iter().map(|r| r.name.as_str()).collect();
+        self.states
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|name, _| names.contains(name.as_str()));
+        *self
+            .rules
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = rules;
     }
 
     /// Evaluate all alert rules against current metrics
@@ -1348,7 +1453,14 @@ impl AlertManager {
         let accumulator = get_metrics_accumulator();
         let mut events = Vec::new();
 
-        for rule in &self.rules {
+        // Snapshot: `take_action` is awaited inside the loop, and a held std
+        // read guard across an await point would make this future !Send.
+        let rules = self
+            .rules
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        for rule in &rules {
             if !rule.enabled {
                 continue;
             }
@@ -1570,6 +1682,14 @@ impl AlertManager {
                 );
             }
             AlertAction::Webhook { url } => {
+                if let Err(reason) = validate_alert_webhook_url(url).await {
+                    tracing::warn!(
+                        alert_name = %event.name,
+                        reason = %reason,
+                        "iii-observability: alert webhook target rejected (SSRF guard); not sending"
+                    );
+                    return;
+                }
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(30))
                     .build()
@@ -1633,6 +1753,15 @@ impl AlertManager {
                 });
             }
             AlertAction::Function { path } => {
+                if !alert_function_target_allowed(path) {
+                    tracing::warn!(
+                        alert_name = %event.name,
+                        function_id = %path,
+                        "iii-observability: alert function target rejected; built-in/internal \
+                         function ids cannot be invoked as alert actions"
+                    );
+                    return;
+                }
                 if let Some(engine) = &self.engine {
                     let engine = engine.clone();
                     let function_id = path.clone();
@@ -1676,18 +1805,37 @@ impl AlertManager {
 
     /// Get current state of all alerts
     pub fn get_states(&self) -> Vec<AlertState> {
-        self.states.read().unwrap().values().cloned().collect()
+        self.states
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|s| self.is_live_rule(&s.name))
+            .cloned()
+            .collect()
     }
 
     /// Get alerts that are currently firing
     pub fn get_firing_alerts(&self) -> Vec<AlertState> {
         self.states
             .read()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
-            .filter(|s| s.firing)
+            .filter(|s| s.firing && self.is_live_rule(&s.name))
             .cloned()
             .collect()
+    }
+
+    /// True if `name` matches a currently-configured rule. Used to filter out
+    /// states for rules that were removed at runtime — `update_rules` prunes
+    /// them, but a concurrent in-flight `evaluate` (which snapshots the rules
+    /// then re-inserts state per rule) can resurrect a removed rule's state;
+    /// this read-side check keeps such a straggler out of `engine::alerts::list`.
+    fn is_live_rule(&self, name: &str) -> bool {
+        self.rules
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .any(|r| r.name == name)
     }
 }
 
@@ -1774,6 +1922,206 @@ pub fn process_metrics_for_rollups(metrics: &[StoredMetric]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Coverage: runtime metric-store retune + alert rule/state hot-swap ──
+    use crate::workers::observability::config::AlertOperator;
+
+    fn engine_metric_rule(name: &str, threshold: f64) -> AlertRule {
+        // Engine metrics resolve their value from the global accumulator, so a
+        // rule on one fires deterministically once the accumulator is set.
+        AlertRule {
+            name: name.to_string(),
+            metric: "iii.invocations.total".to_string(),
+            threshold,
+            operator: AlertOperator::GreaterThan,
+            window_seconds: 60,
+            action: AlertAction::Log,
+            enabled: true,
+            cooldown_seconds: 60,
+        }
+    }
+
+    #[tokio::test]
+    async fn webhook_ssrf_guard_blocks_private_and_bad_scheme() {
+        // Alert webhook targets are operator-set over the config bus; the SSRF
+        // guard must reject cloud-metadata / loopback / private / link-local
+        // hosts and any non-http(s) scheme. IP literals avoid DNS in the test.
+        assert!(
+            validate_alert_webhook_url("http://169.254.169.254/latest/meta-data")
+                .await
+                .is_err(),
+            "cloud-metadata IP must be blocked"
+        );
+        assert!(
+            validate_alert_webhook_url("http://127.0.0.1/hook")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_alert_webhook_url("http://10.0.0.5/hook")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_alert_webhook_url("file:///etc/passwd")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_alert_webhook_url("ftp://example.com/x")
+                .await
+                .is_err()
+        );
+        // A public host over http is allowed (8.8.8.8 is an IP literal, so the
+        // guard resolves it without a DNS lookup).
+        assert!(
+            validate_alert_webhook_url("http://8.8.8.8/hook")
+                .await
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn function_action_guard_rejects_builtin_ids() {
+        // Built-in/internal function ids must not be invocable as alert actions.
+        assert!(!alert_function_target_allowed("engine::shutdown"));
+        assert!(!alert_function_target_allowed("configuration::set"));
+        assert!(!alert_function_target_allowed(
+            "iii-observability::on-config-change"
+        ));
+        assert!(!alert_function_target_allowed("state::set"));
+        // A user worker's own function id is allowed.
+        assert!(alert_function_target_allowed("my-worker::on-alert"));
+        assert!(alert_function_target_allowed("notifications.page-oncall"));
+    }
+
+    #[test]
+    fn set_limits_shrinks_capacity_on_next_insert() {
+        let storage = InMemoryMetricStorage::new(10, DEFAULT_RETENTION_NS);
+        for i in 0..5u64 {
+            storage.add_metrics(vec![make_number_metric(
+                &format!("m{i}"),
+                "svc",
+                StoredMetricType::Gauge,
+                &[(i as f64, (i + 1) * 1_000_000_000)],
+                vec![],
+            )]);
+        }
+        assert_eq!(storage.len(), 5);
+
+        // Tighten the cap; eviction applies on the next insert (LIMITS tier).
+        storage.set_limits(Some(2), None);
+        storage.add_metrics(vec![make_number_metric(
+            "m-new",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(9.0, 9_000_000_000)],
+            vec![],
+        )]);
+        assert!(
+            storage.len() <= 2,
+            "tightened cap must bound the store, got {}",
+            storage.len()
+        );
+    }
+
+    #[test]
+    fn set_limits_retention_overflow_is_safe() {
+        let storage = InMemoryMetricStorage::new(5, DEFAULT_RETENTION_NS);
+        // A retention whose ms->ns conversion overflows must not panic; the
+        // current retention is kept and the store keeps working.
+        storage.set_limits(None, Some(u64::MAX));
+        storage.add_metrics(vec![make_number_metric(
+            "m",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(1.0, 1_000_000_000)],
+            vec![],
+        )]);
+        assert_eq!(storage.len(), 1);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn alert_manager_fires_then_prunes_state_on_rule_removal() {
+        use std::sync::atomic::Ordering;
+        get_metrics_accumulator()
+            .invocations_total
+            .store(100, Ordering::Relaxed);
+
+        let manager = AlertManager::new(vec![engine_metric_rule("too-many", 10.0)]);
+        let events = manager.evaluate().await;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].firing);
+        assert_eq!(manager.get_firing_alerts().len(), 1);
+
+        // Removing the rule prunes its lingering AlertState (no resurrection
+        // via engine::alerts::list).
+        manager.update_rules(Vec::new());
+        assert!(
+            manager.get_states().is_empty(),
+            "state must be pruned together with its rule"
+        );
+        assert!(manager.get_firing_alerts().is_empty());
+
+        get_metrics_accumulator()
+            .invocations_total
+            .store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn alert_state_reads_tolerate_a_poisoned_lock() {
+        // A panic while holding the `states` write guard poisons the lock.
+        // `get_states` / `get_firing_alerts` must degrade gracefully (recover
+        // the inner guard) rather than panic, matching their sibling rule
+        // readers. Pre-fix they used `.read().unwrap()` and would panic here.
+        let manager = AlertManager::new(Vec::new());
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = manager.states.write().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(panicked.is_err(), "the helper closure must have panicked");
+        assert!(
+            manager.states.is_poisoned(),
+            "the states lock must be poisoned for this test to be meaningful"
+        );
+
+        // Must not panic on the poisoned lock.
+        let _ = manager.get_states();
+        let _ = manager.get_firing_alerts();
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn alert_manager_resurrection_filter_hides_removed_rule() {
+        use std::sync::atomic::Ordering;
+        get_metrics_accumulator()
+            .invocations_total
+            .store(100, Ordering::Relaxed);
+
+        let manager = AlertManager::new(vec![
+            engine_metric_rule("keep", 10.0),
+            engine_metric_rule("drop-me", 10.0),
+        ]);
+        manager.evaluate().await;
+        assert_eq!(manager.get_firing_alerts().len(), 2, "both rules fire");
+
+        // Keep only "keep". The read-side live_rule_names filter hides
+        // "drop-me" from get_states/get_firing_alerts even though its state may
+        // linger from a concurrent evaluate.
+        manager.update_rules(vec![engine_metric_rule("keep", 10.0)]);
+        let firing = manager.get_firing_alerts();
+        assert_eq!(firing.len(), 1);
+        assert_eq!(firing[0].name, "keep");
+        assert!(
+            manager.get_states().iter().all(|s| s.name != "drop-me"),
+            "removed rule's state must not surface"
+        );
+
+        get_metrics_accumulator()
+            .invocations_total
+            .store(0, Ordering::Relaxed);
+    }
 
     #[test]
     fn test_ensure_default_meter_makes_get_meter_available() {

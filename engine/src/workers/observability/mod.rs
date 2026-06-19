@@ -4,13 +4,14 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod configuration;
 pub mod logs_layer;
 pub mod metrics;
 pub mod otel;
 pub(crate) mod otlp_exporter;
 mod sampler;
 
-pub(crate) mod config;
+pub mod config;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -100,7 +101,7 @@ pub struct TracesGroupByInput {
     include_internal: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TraceGroup {
     pub value: String,
     pub trace_ids: Vec<String>,
@@ -116,6 +117,239 @@ pub struct SpanTreeNode {
     #[serde(flatten)]
     pub span: otel::StoredSpan,
     pub children: Vec<SpanTreeNode>,
+}
+
+// =========================================================================
+// Response types for the engine::traces / metrics / logs / alerts / sampling
+// / health query functions. Typed so engine::functions::info surfaces a
+// response_schema (the macro emits no schema for `Option<Value>`). Heavy or
+// dynamic leaves (spans, logs, raw metric points) stay `serde_json::Value`:
+// their leaf types don't derive JsonSchema, and `to_value(Vec<Leaf>)` equals
+// `to_value(Vec<Value>)`, so serialization is byte-identical while the
+// envelope schema (the top-level contract an agent needs) is still exposed.
+// Field declaration order matches the prior `json!` literals.
+// =========================================================================
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TracesListResult {
+    /// Stored spans (each a serialized span record).
+    pub spans: Vec<Value>,
+    /// Total matching spans before pagination.
+    pub total: usize,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TracesTreeResult {
+    /// Root span-tree nodes (each a serialized, flattened span with nested children).
+    pub roots: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TracesGroupByResult {
+    pub groups: Vec<TraceGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OkResult {
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LogsClearResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LogsListResult {
+    /// Stored OTEL log records (serialized).
+    pub logs: Vec<Value>,
+    /// Total matching logs before pagination.
+    pub total: usize,
+    /// Echo of the applied filters (present only when storage exists).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<LogsListQuery>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LogsListQuery {
+    pub trace_id: Option<String>,
+    pub span_id: Option<String>,
+    pub severity_min: Option<i32>,
+    pub severity_text: Option<String>,
+    pub start_time: Option<u64>,
+    pub end_time: Option<u64>,
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MetricsListResult {
+    pub engine_metrics: EngineMetricsView,
+    /// Stored SDK metric points (serialized).
+    pub sdk_metrics: Vec<Value>,
+    pub timestamp: i64,
+    /// Time-bucketed aggregates (present only when an aggregate_interval was requested and produced data).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub aggregated_metrics: Vec<Value>,
+    /// Echo of the applied query filters (present only when a filter was supplied).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<MetricsListQuery>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct EngineMetricsView {
+    pub invocations: InvocationsView,
+    pub workers: WorkersView,
+    pub performance: PerformanceView,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct InvocationsView {
+    pub total: u64,
+    pub success: u64,
+    pub error: u64,
+    pub deferred: u64,
+    /// Per-function invocation counts.
+    pub by_function: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct WorkersView {
+    pub spawns: u64,
+    pub deaths: u64,
+    pub active: u64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PerformanceView {
+    pub avg_duration_ms: f64,
+    pub p50_duration_ms: f64,
+    pub p95_duration_ms: f64,
+    pub p99_duration_ms: f64,
+    pub min_duration_ms: f64,
+    pub max_duration_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MetricsListQuery {
+    pub start_time: Option<u64>,
+    pub end_time: Option<u64>,
+    pub aggregate_interval: Option<u64>,
+    pub metric_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SamplingRulesResult {
+    pub traces: SamplingTracesView,
+    pub logs: SamplingLogsView,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SamplingTracesView {
+    pub default_ratio: f64,
+    pub rules: Vec<SamplingRuleView>,
+    pub parent_based: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SamplingRuleView {
+    // No skip_serializing_if: the prior json! always emitted these (null when unset).
+    pub operation: Option<String>,
+    pub service: Option<String>,
+    pub rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SamplingLogsView {
+    pub sampling_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct HealthCheckResult {
+    pub status: String,
+    pub components: HealthComponentsView,
+    pub timestamp: i64,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct HealthComponentsView {
+    /// Each component is `{ status: "healthy"|"disabled", details: <object|null> }`.
+    pub otel: Value,
+    pub metrics: Value,
+    pub logs: Value,
+    pub spans: Value,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AlertsListResult {
+    /// Current evaluated alert states (serialized).
+    pub alerts: Vec<Value>,
+    /// Configured alert rules (present when the alert manager is initialized).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<config::AlertRule>>,
+    pub firing_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AlertsEvaluateResult {
+    pub evaluated: bool,
+    /// Alerts triggered by this evaluation pass (present when the manager is initialized).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triggered_alerts: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RollupsListResult {
+    /// Pre-aggregated metric rollups (serialized).
+    pub rollups: Vec<Value>,
+    /// Pre-aggregated histogram rollups (serialized).
+    pub histogram_rollups: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<usize>,
+    /// "on_the_fly" when computed live because no rollup storage exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<RollupsListQuery>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RollupsListQuery {
+    pub start_time: Option<u64>,
+    pub end_time: Option<u64>,
+    pub metric_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BaggageGetResult {
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BaggageSetResult {
+    pub success: bool,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BaggageGetAllResult {
+    pub baggage: HashMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Default, JsonSchema)]
@@ -220,7 +454,7 @@ fn parse_env_var<T: std::str::FromStr>(name: &str) -> Option<T> {
     }
 }
 
-fn memory_exporter_not_enabled_error() -> FunctionResult<Option<Value>, ErrorBody> {
+fn memory_exporter_not_enabled_error<T>() -> FunctionResult<T, ErrorBody> {
     FunctionResult::Failure(ErrorBody {
         code: "memory_exporter_not_enabled".to_string(),
         message: "In-memory span storage is not available. Set exporter: memory or both in config."
@@ -391,12 +625,33 @@ pub struct BaggageGetAllInput {}
 /// It sets the global OTEL configuration from YAML before logging is initialized.
 #[derive(Clone)]
 pub struct ObservabilityWorker {
+    /// The config.yaml block passed to `create()` (or built-in defaults).
+    /// Used as the seed for first-time `configuration::register` and as the
+    /// fetch fallback; the configuration worker entry is the runtime source
+    /// of truth afterwards.
     _config: config::ObservabilityWorkerConfig,
     triggers: Arc<OtelLogTriggers>,
     trace_triggers: Arc<OtelTraceTriggers>,
     engine: Arc<Engine>,
     /// Shutdown signal sender for background tasks
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// The live worker shutdown receiver, stored by `start_background_tasks`
+    /// so `apply_config` can hand respawned tasks the same lifecycle. `None`
+    /// until started / after destroy — task rebuilds are refused then (the
+    /// other apply tiers still run).
+    worker_shutdown_rx: Arc<std::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>>>,
+    /// Stop signal for the current log-retention task instance (respawned on
+    /// `logs_retention_seconds` changes).
+    logs_retention_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Stop signal for the current OTLP logs exporter task instance
+    /// (respawned on exporter/batch/flush/endpoint/identity changes).
+    logs_exporter_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Stop signal for the current log-trigger subscriber task instance.
+    /// Respawned when `logs_enabled` flips false->true at runtime so the `log`
+    /// trigger fan-out reactivates without an engine restart.
+    logs_trigger_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    /// Serializes concurrent `apply_config` runs (rapid configuration edits).
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// A compiled [`config::SpanCollapseRule`] with precompiled regex patterns.
@@ -448,17 +703,42 @@ fn prune_empty_trigger_spans(mut spans: Vec<otel::StoredSpan>) -> Vec<otel::Stor
     spans
 }
 
-/// Compiled collapse rules for the global config, cached after first use.
-/// `GLOBAL_OTEL_CONFIG` is a set-once `OnceLock`, so the compiled form never
-/// changes; callers on the hot path (one per coalesce tick / REST request)
-/// must not recompile the regexes each time. Returns an empty slice — without
-/// poisoning the cache — if the config is not set yet.
-fn cached_collapse_rules() -> &'static [CompiledCollapseRule] {
-    static RULES: std::sync::OnceLock<Vec<CompiledCollapseRule>> = std::sync::OnceLock::new();
-    match otel::get_otel_config() {
-        Some(config) => RULES.get_or_init(|| compile_collapse_rules(&config.collapse_spans)),
-        None => &[],
+/// Compiled collapse rules for the global config, cached after first use and
+/// recompiled by `refresh_collapse_rules` when the configuration-worker
+/// apply path changes them. Callers on the hot path (one per coalesce tick /
+/// REST request) must not recompile the regexes each time. Returns an empty
+/// set — without poisoning the cache — if the config is not set yet.
+static COLLAPSE_RULES: std::sync::RwLock<Option<Arc<Vec<CompiledCollapseRule>>>> =
+    std::sync::RwLock::new(None);
+
+fn cached_collapse_rules() -> Arc<Vec<CompiledCollapseRule>> {
+    {
+        let cached = COLLAPSE_RULES
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(rules) = cached.as_ref() {
+            return rules.clone();
+        }
     }
+    match otel::get_otel_config() {
+        Some(config) => {
+            let compiled = Arc::new(compile_collapse_rules(&config.collapse_spans));
+            let mut cached = COLLAPSE_RULES
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cached.get_or_insert_with(|| compiled.clone()).clone()
+        }
+        None => Arc::new(Vec::new()),
+    }
+}
+
+/// Recompile the collapse-rule cache from the given rules (configuration
+/// apply path).
+pub(crate) fn refresh_collapse_rules(rules: &[config::SpanCollapseRule]) {
+    let compiled = Arc::new(compile_collapse_rules(rules));
+    *COLLAPSE_RULES
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(compiled);
 }
 
 /// Compile the configured collapse rules, skipping any with invalid patterns.
@@ -648,13 +928,592 @@ fn build_span_tree_node(
 
 #[service(name = "otel")]
 impl ObservabilityWorker {
+    /// The authoritative log-storage capacity: the live global configuration
+    /// (kept current by the configuration-worker apply path) with the yaml
+    /// seed as fallback. Passing the seed directly would revert a runtime
+    /// edit on the next lazy re-init.
+    fn effective_logs_max_count(&self) -> Option<usize> {
+        otel::get_otel_config()
+            .and_then(|c| c.logs_max_count)
+            .or(self._config.logs_max_count)
+    }
+
+    fn from_config(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
+        let otel_config: config::ObservabilityWorkerConfig = match config {
+            Some(cfg) => serde_json::from_value(cfg)?,
+            None => config::ObservabilityWorkerConfig::default(),
+        };
+        let otel_config = otel_config.normalized();
+
+        // Seed the global OTEL config so logging can use it. On the serve
+        // path the global is already populated during logging init (from the
+        // persisted configuration entry or this same yaml block); first-set
+        // semantics keep that value authoritative.
+        if !otel::set_otel_config(otel_config.clone()) {
+            tracing::debug!(
+                "ObservabilityWorker created with the global config already set; keeping it"
+            );
+        }
+
+        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
+        Ok(ObservabilityWorker {
+            _config: otel_config,
+            triggers: Arc::new(OtelLogTriggers::new()),
+            trace_triggers: Arc::new(OtelTraceTriggers::new()),
+            engine,
+            shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    /// Construct a worker from a raw config value — mirrors
+    /// `ConfigurationWorker::for_test` so integration tests in `engine/tests/`
+    /// can drive the concrete worker without booting the full engine.
+    #[doc(hidden)]
+    pub fn for_test(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Self> {
+        Self::from_config(engine, config)
+    }
+
+    /// The live effective configuration: the global snapshot kept current by
+    /// the configuration-worker apply path, with the yaml seed as fallback.
+    pub fn current_config(&self) -> config::ObservabilityWorkerConfig {
+        otel::get_otel_config()
+            .map(|cfg| (*cfg).clone())
+            .unwrap_or_else(|| self._config.clone())
+    }
+
+    /// True while the worker is started and has not been destroyed.
+    ///
+    /// `worker_shutdown_rx` is set at the top of `start_background_tasks`
+    /// (before the change trigger that drives `on_config_change` is registered)
+    /// and cleared by `destroy`, so a deferred apply — the timeout retry in
+    /// `on_config_change` — checks this before touching process-global
+    /// telemetry state. A retry that fires after the owning worker was torn
+    /// down becomes a no-op instead of mutating globals on behalf of a worker
+    /// that no longer exists.
+    pub(crate) fn is_active(&self) -> bool {
+        self.worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .is_some()
+    }
+
+    /// Register the `iii-observability::on-config-change` handler. Idempotent
+    /// (replace-by-id), so it is safe to call from both `register_functions`
+    /// (which runs inside the worker scope for destroy/reload cleanup) and
+    /// `start_background_tasks` (which registers the trigger and runs first
+    /// on reload).
+    fn register_config_handler(&self, engine: &Arc<Engine>) {
+        let worker = self.clone();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: configuration::CONFIG_FN_ID.to_string(),
+                description: Some(
+                    "Internal: re-apply the iii-observability configuration when the \
+                     authoritative configuration entry changes."
+                        .to_string(),
+                ),
+                request_format: None,
+                response_format: None,
+                metadata: Some(serde_json::json!({ "internal": true })),
+            },
+            crate::engine::Handler::new(move |_payload: Value| {
+                let worker = worker.clone();
+                async move {
+                    configuration::on_config_change(&worker).await;
+                    crate::function::FunctionResult::Success(Some(
+                        serde_json::json!({ "ok": true }),
+                    ))
+                }
+            }),
+        );
+    }
+
+    /// Fetch the authoritative configuration and apply it per field tier.
+    ///
+    /// - LIVE: the global config snapshot is swapped unconditionally —
+    ///   per-use readers (ingest gates, `logs_console_output`,
+    ///   `logs_sampling_ratio`, resource attributes) pick it up immediately.
+    /// - LIMITS: storage capacities/retention are re-applied unconditionally
+    ///   (idempotent atomics), so a catch-up apply converges even when the
+    ///   value itself did not change.
+    /// - SWAP: sampler, alert rules, collapse-rule cache, and the engine log
+    ///   level are rebuilt only when their fields changed.
+    /// - TASK-REBUILD: the log-retention, OTLP-logs-exporter, and log-trigger
+    ///   subscriber tasks are respawned when their captured settings changed or
+    ///   when `logs_enabled` flips false->true (which revives the store in the
+    ///   LIMITS tier); refused (warn) when the worker has not started or was
+    ///   destroyed.
+    /// - RESTART-ONLY: trace exporter wiring, resource identity on traces,
+    ///   pipeline enablement, metrics exporter, and the log format are baked
+    ///   in at process start; changes are reported with a warning and take
+    ///   effect at the next engine start (the persisted entry is read at
+    ///   boot).
+    pub(crate) async fn apply_config(&self) -> anyhow::Result<()> {
+        let _guard = self.apply_lock.lock().await;
+        if !self.is_active() {
+            tracing::debug!(
+                "iii-observability: worker no longer active; skipping configuration apply"
+            );
+            return Ok(());
+        }
+
+        let old = self.current_config();
+        let new = tokio::time::timeout(
+            configuration::CONFIG_BUS_TIMEOUT,
+            configuration::fetch_config(self.engine.as_ref(), &old),
+        )
+        .await
+        .map_err(|elapsed| anyhow::Error::new(elapsed).context("configuration::get timed out"))??;
+
+        // Apply the engine log level BEFORE publishing the global snapshot, so
+        // current_config() never advertises a level we failed to install. On a
+        // failed reload we keep the previous level in the published config,
+        // leaving old.level != new.level so the next apply retries instead of
+        // silently masking the drift.
+        let mut effective = new.clone();
+        if old.level != new.level {
+            match &new.level {
+                Some(level) => {
+                    if let Err(err) = crate::logging::reload_log_level(level) {
+                        tracing::warn!(
+                            error = %err,
+                            "iii-observability: log level not applied; keeping current level"
+                        );
+                        effective.level = old.level.clone();
+                    }
+                }
+                // Removing the key does not revert to a default: the boot
+                // level may have come from env/CLI, not this entry.
+                None => tracing::debug!(
+                    "iii-observability: level removed from configuration; keeping current level"
+                ),
+            }
+        }
+
+        // LIVE tier: swap the global snapshot (carrying the level we actually
+        // installed, per the reload above).
+        otel::update_otel_config(effective);
+
+        // LIMITS tier: idempotent, applied unconditionally.
+        if let Some(storage) = otel::get_span_storage()
+            && let Some(max) = new.memory_max_spans
+        {
+            storage.set_max_spans(max);
+        }
+        // Only retune the log store; never CREATE it when logs are disabled —
+        // initialize() deliberately skips log storage in that case and the
+        // ingest path must not lazily revive it. init_log_storage is
+        // update-if-exists, so this retunes an enabled store and no-ops when
+        // logs are off and the store was never created.
+        if otel::logs_enabled(Some(&new)) {
+            otel::init_log_storage(new.logs_max_count);
+        }
+        // Retune the metric store only when it already exists; never CREATE it
+        // here. Unlike init_log_storage, init_metric_storage builds a store when
+        // absent, and `metrics_enabled` is restart-tier — so a worker that
+        // booted with metrics off (no store) must not lazily acquire one on an
+        // unrelated config edit. The boot store is built by init_metrics().
+        if metrics::get_metric_storage().is_some() {
+            metrics::init_metric_storage(new.metrics_max_count, new.metrics_retention_seconds);
+        }
+
+        // SWAP tier: rebuild only what changed.
+        if old.collapse_spans != new.collapse_spans {
+            refresh_collapse_rules(&new.collapse_spans);
+            tracing::info!("iii-observability: span collapse rules recompiled");
+        }
+        if old.alerts != new.alerts {
+            match metrics::get_alert_manager() {
+                Some(manager) => {
+                    manager.update_rules(new.alerts.clone());
+                    tracing::info!(
+                        rules = new.alerts.len(),
+                        "iii-observability: alert rules replaced"
+                    );
+                }
+                None => tracing::warn!(
+                    "iii-observability: alert manager not initialized; alert changes \
+                     apply at the next engine start"
+                ),
+            }
+        }
+        if old.sampling != new.sampling
+            || old.sampling_ratio != new.sampling_ratio
+            || old.service_name != new.service_name
+        {
+            otel::refresh_sampler();
+            tracing::info!("iii-observability: sampler rebuilt");
+        }
+
+        // TASK-REBUILD tier.
+        //
+        // `logs_enabled` false->true revives the log store in the LIMITS tier
+        // above, but the log-trigger subscriber, OTLP exporter, and retention
+        // task all bailed at boot when the store was absent. Treat that
+        // transition as a respawn trigger for all three so the `log` trigger
+        // fan-out and OTLP export reactivate without an engine restart. Only
+        // the false->true edge fires this (a true->false edge is handled by
+        // the per-call ingest gate, leaving the idle tasks as-is, matching the
+        // prior behavior).
+        let logs_reenabled = otel::logs_enabled(Some(&new)) && !otel::logs_enabled(Some(&old));
+        let respawn_retention =
+            old.logs_retention_seconds != new.logs_retention_seconds || logs_reenabled;
+        // `endpoint` / `service_name` / `service_version` are deliberately NOT
+        // respawn triggers: they are restart-tier for the trace exporter, and
+        // rebuilding only the logs exporter against a new endpoint/identity
+        // would split logs onto the new collector while traces stay on the old
+        // one until restart. Keeping them restart-tier moves every signal
+        // together at the next boot (see the restart-tier warning below).
+        let respawn_exporter = logs_reenabled
+            || old.logs_exporter != new.logs_exporter
+            || old.logs_batch_size != new.logs_batch_size
+            || old.logs_flush_interval_ms != new.logs_flush_interval_ms;
+        if respawn_retention || respawn_exporter {
+            let started = self.is_active();
+            // Only (re)spawn when the worker is started AND enabled: a
+            // disabled worker runs no log tasks, and `enabled` is
+            // restart-tier, so a config change must not start them mid-life.
+            if started && new.enabled.unwrap_or(true) {
+                if respawn_retention {
+                    self.spawn_logs_retention(&new);
+                }
+                if respawn_exporter {
+                    self.spawn_logs_exporter(&new);
+                }
+                if logs_reenabled {
+                    self.spawn_log_trigger_subscriber();
+                    tracing::info!(
+                        "iii-observability: logs re-enabled; log trigger subscriber and \
+                         exporter reactivated"
+                    );
+                }
+            } else if started {
+                tracing::debug!(
+                    "iii-observability: observability disabled; log exporter/retention \
+                     changes apply at the next engine start"
+                );
+            } else {
+                tracing::warn!(
+                    "iii-observability: background tasks not running; log exporter/retention \
+                     changes apply when the worker starts"
+                );
+            }
+        }
+
+        // RESTART-ONLY tier: report what will only apply at the next boot.
+        let mut restart_fields = Vec::new();
+        if old.enabled != new.enabled {
+            restart_fields.push("enabled (pipeline construction; ingest gate applies live)");
+        }
+        if old.exporter != new.exporter {
+            restart_fields.push("exporter");
+        }
+        if old.endpoint != new.endpoint {
+            restart_fields.push("endpoint (trace + logs exporters)");
+        }
+        if old.service_name != new.service_name
+            || old.service_version != new.service_version
+            || old.service_namespace != new.service_namespace
+        {
+            restart_fields.push("service identity (trace resource + logs exporter)");
+        }
+        if old.format != new.format {
+            restart_fields.push("format");
+        }
+        if old.metrics_enabled != new.metrics_enabled {
+            restart_fields.push("metrics_enabled");
+        }
+        if old.metrics_exporter != new.metrics_exporter {
+            restart_fields.push("metrics_exporter");
+        }
+        if !restart_fields.is_empty() {
+            tracing::warn!(
+                fields = ?restart_fields,
+                "iii-observability: restart-tier fields changed; they apply at the next \
+                 engine start (the stored entry is read at boot)"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// (Re)spawn the log-trigger subscriber that fans `log` ingest events out
+    /// to registered `log` triggers, stopping any previous instance. Returns
+    /// early (after parking the stop sender) when log storage has not been
+    /// created — so a `logs_enabled` false->true toggle, which creates storage
+    /// in the LIMITS tier, can respawn this without an engine restart. Follows
+    /// both its per-instance stop signal and the worker shutdown signal.
+    fn spawn_log_trigger_subscriber(&self) {
+        // Verify the prerequisites first so we never stop the previous
+        // subscriber without replacing it. A `logs_enabled` false->true toggle
+        // creates log storage in the LIMITS tier before this is called, so the
+        // early returns here are only hit when the worker is destroyed or the
+        // store was never initialized.
+        let Some(storage) = otel::get_log_storage() else {
+            tracing::debug!(
+                "[ObservabilityWorker] Log storage not available; log trigger subscriber not started"
+            );
+            return;
+        };
+        let Some(mut shutdown_rx) = self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .clone()
+        else {
+            return;
+        };
+
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        // Subscribe BEFORE replacing the old stop sender so the handoff window
+        // carries bounded duplicates (the broadcast reaches every live receiver
+        // and `log` trigger delivery is at-least-once) rather than dropped logs.
+        let mut rx = storage.subscribe();
+        let previous = self
+            .logs_trigger_stop
+            .lock()
+            .expect("logs_trigger_stop mutex poisoned")
+            .replace(stop_tx);
+        if let Some(previous) = previous {
+            let _ = previous.send(true);
+        }
+
+        let triggers = self.triggers.clone();
+        let engine = self.engine.clone();
+
+        tokio::spawn(async move {
+            tracing::debug!("[ObservabilityWorker] Log trigger subscriber started");
+            loop {
+                tokio::select! {
+                    result = shutdown_rx.changed() => {
+                        if result.is_err() || *shutdown_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log trigger subscriber shutting down");
+                            break;
+                        }
+                    }
+                    result = stop_rx.changed() => {
+                        if result.is_err() || *stop_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log trigger subscriber replaced");
+                            break;
+                        }
+                    }
+                    result = rx.recv() => {
+                        match result {
+                            Ok(log) => {
+                                ObservabilityWorker::invoke_triggers_for_log(&triggers, &engine, &log).await;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                tracing::warn!(skipped, "Log trigger subscriber lagged, some logs were skipped");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                tracing::debug!("[ObservabilityWorker] Log broadcast channel closed");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            tracing::debug!("[ObservabilityWorker] Log trigger subscriber stopped");
+        });
+    }
+
+    /// (Re)spawn the log-retention sweep from `cfg`, stopping any previous
+    /// instance. The task also follows the worker shutdown signal.
+    fn spawn_logs_retention(&self, cfg: &config::ObservabilityWorkerConfig) {
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let previous = self
+            .logs_retention_stop
+            .lock()
+            .expect("logs_retention_stop mutex poisoned")
+            .replace(stop_tx);
+        if let Some(previous) = previous {
+            let _ = previous.send(true);
+        }
+
+        let Some(retention_seconds) = cfg.logs_retention_seconds.filter(|&s| s > 0) else {
+            return; // retention disabled: previous task stopped, nothing to spawn
+        };
+        let Some(retention_ns) = retention_seconds.checked_mul(1_000_000_000) else {
+            tracing::warn!(
+                "logs_retention_seconds overflow when converting to nanoseconds; \
+                 disabling log retention task"
+            );
+            return;
+        };
+        let Some(log_storage) = otel::get_log_storage() else {
+            return;
+        };
+        let Some(mut shutdown_rx) = self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .clone()
+        else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    result = shutdown_rx.changed() => {
+                        if result.is_err() || *shutdown_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log retention task shutting down");
+                            break;
+                        }
+                    }
+                    result = stop_rx.changed() => {
+                        if result.is_err() || *stop_rx.borrow() {
+                            tracing::debug!("[ObservabilityWorker] Log retention task replaced");
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        log_storage.apply_retention(retention_ns);
+                    }
+                }
+            }
+        });
+    }
+
+    /// (Re)spawn the OTLP logs exporter from `cfg`, stopping any previous
+    /// instance. The exporter task follows both its per-instance stop signal
+    /// and the worker shutdown signal.
+    fn spawn_logs_exporter(&self, cfg: &config::ObservabilityWorkerConfig) {
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        // Hold the previous instance's stop sender; it is signaled only once
+        // the replacement is ready to consume (or immediately on the
+        // disabled-exit paths below). Stopping it before the new receiver
+        // subscribes would drop every log broadcast in the gap.
+        let previous = self
+            .logs_exporter_stop
+            .lock()
+            .expect("logs_exporter_stop mutex poisoned")
+            .replace(stop_tx);
+        let stop_previous = move || {
+            if let Some(previous) = previous {
+                let _ = previous.send(true);
+            }
+        };
+
+        // Resolve the exporter type with the OTEL_LOGS_EXPORTER env fallback
+        // (the field is None when the yaml block omits it; the Default impl's
+        // Some(Memory) only applies when the whole block is absent).
+        let exporter_type = cfg
+            .logs_exporter
+            .clone()
+            .or_else(|| {
+                std::env::var("OTEL_LOGS_EXPORTER")
+                    .ok()
+                    .map(|v| match v.to_lowercase().as_str() {
+                        "otlp" => config::LogsExporterType::Otlp,
+                        "both" => config::LogsExporterType::Both,
+                        _ => config::LogsExporterType::Memory,
+                    })
+            })
+            .unwrap_or(config::LogsExporterType::Memory);
+        if exporter_type == config::LogsExporterType::Memory {
+            stop_previous(); // OTLP export disabled: stop the old instance
+            return;
+        }
+        let Some(log_storage) = otel::get_log_storage() else {
+            stop_previous();
+            return;
+        };
+        let Some(worker_shutdown_rx) = self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .clone()
+        else {
+            stop_previous();
+            return;
+        };
+
+        let endpoint = cfg
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| "http://localhost:4317".to_string());
+        let service_name = cfg
+            .service_name
+            .clone()
+            .unwrap_or_else(|| "iii".to_string());
+        let service_version = cfg
+            .service_version
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Subscribe the new receiver BEFORE stopping the old exporter, so the
+        // window between the two carries bounded duplicates rather than
+        // dropped logs (the broadcast delivers to every live receiver).
+        let rx = log_storage.subscribe();
+        stop_previous();
+        let mut exporter =
+            otel::OtlpLogsExporter::new(endpoint.clone(), service_name, service_version);
+
+        if let Some(batch_size) = cfg
+            .logs_batch_size
+            .or_else(|| parse_env_var("OTEL_LOGS_BATCH_SIZE"))
+        {
+            exporter = exporter.with_batch_size(batch_size);
+        }
+
+        if let Some(flush_interval_ms) = cfg
+            .logs_flush_interval_ms
+            .or_else(|| parse_env_var("OTEL_LOGS_FLUSH_INTERVAL_MS"))
+        {
+            exporter =
+                exporter.with_flush_interval(std::time::Duration::from_millis(flush_interval_ms));
+        }
+
+        // The exporter consumes a single shutdown receiver; bridge the
+        // per-instance stop and the worker-wide shutdown into one channel.
+        let (bridge_tx, bridge_rx) = tokio::sync::watch::channel(false);
+        {
+            let mut stop_rx = stop_rx;
+            let mut worker_rx = worker_shutdown_rx;
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        result = stop_rx.changed() => {
+                            if result.is_err() || *stop_rx.borrow() {
+                                let _ = bridge_tx.send(true);
+                                break;
+                            }
+                        }
+                        result = worker_rx.changed() => {
+                            if result.is_err() || *worker_rx.borrow() {
+                                let _ = bridge_tx.send(true);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        exporter.start_with_shutdown(rx, bridge_rx);
+
+        tracing::info!(
+            "{} OTLP logs exporter started (endpoint: {})",
+            "[LOGS]".cyan(),
+            endpoint
+        );
+    }
+
     // =========================================================================
     // OTEL-native Log Functions (recommended over legacy logger.*)
     // =========================================================================
 
     #[function(
         id = "engine::log::info",
-        description = "Log an info message using OTEL"
+        description = "Record an INFO-level OTEL log (severity 9) with optional trace/span correlation and structured data. No-op when logs_enabled is false or dropped by logs_sampling_ratio."
     )]
     pub async fn log_info(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.store_and_emit_log(&input, "INFO", 9).await;
@@ -663,7 +1522,7 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::log::warn",
-        description = "Log a warning message using OTEL"
+        description = "Record a WARN-level OTEL log (severity 13) with optional trace/span correlation and structured data. No-op when logs_enabled is false or dropped by logs_sampling_ratio."
     )]
     pub async fn log_warn(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.store_and_emit_log(&input, "WARN", 13).await;
@@ -672,7 +1531,7 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::log::error",
-        description = "Log an error message using OTEL"
+        description = "Record an ERROR-level OTEL log (severity 17) with optional trace/span correlation and structured data. No-op when logs_enabled is false or dropped by logs_sampling_ratio."
     )]
     pub async fn log_error(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.store_and_emit_log(&input, "ERROR", 17).await;
@@ -681,7 +1540,7 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::log::debug",
-        description = "Log a debug message using OTEL"
+        description = "Record a DEBUG-level OTEL log (severity 5) with optional trace/span correlation and structured data. No-op when logs_enabled is false or dropped by logs_sampling_ratio."
     )]
     pub async fn log_debug(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.store_and_emit_log(&input, "DEBUG", 5).await;
@@ -690,7 +1549,7 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::log::trace",
-        description = "Log a trace-level message using OTEL"
+        description = "Record a TRACE-level OTEL log (severity 1) with optional trace/span correlation and structured data. No-op when logs_enabled is false or dropped by logs_sampling_ratio."
     )]
     pub async fn log_trace(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.store_and_emit_log(&input, "TRACE", 1).await;
@@ -703,28 +1562,28 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::baggage::get",
-        description = "Get a baggage item value from the current context"
+        description = "Read one baggage entry by key from the current OTEL context, returning { value } (null if unset). Diagnostic only: reads ambient process context, not per-invocation baggage."
     )]
     pub async fn baggage_get(
         &self,
         input: BaggageGetInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<BaggageGetResult, ErrorBody> {
         use opentelemetry::baggage::BaggageExt;
 
         let cx = opentelemetry::Context::current();
         let baggage = cx.baggage();
         let value = baggage.get(&input.key).map(|v| v.to_string());
-        FunctionResult::Success(Some(serde_json::json!({ "value": value })))
+        FunctionResult::Success(BaggageGetResult { value })
     }
 
     #[function(
         id = "engine::baggage::set",
-        description = "Set a baggage item value (returns new context, does not modify global)"
+        description = "Set a baggage key/value on a fresh OTEL context for verification only; the new context is not propagated to the caller or global state. Use SDK-level headers for real propagation."
     )]
     pub async fn baggage_set(
         &self,
         input: BaggageSetInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<BaggageSetResult, ErrorBody> {
         use opentelemetry::KeyValue;
         use opentelemetry::baggage::BaggageExt;
 
@@ -735,20 +1594,21 @@ impl ObservabilityWorker {
         let cx = opentelemetry::Context::current();
         let _new_cx = cx.with_baggage([KeyValue::new(input.key.clone(), input.value.clone())]);
 
-        FunctionResult::Success(Some(serde_json::json!({
-            "success": true,
-            "note": "Baggage set in new context. For propagation, use SDK-level baggage headers."
-        })))
+        FunctionResult::Success(BaggageSetResult {
+            success: true,
+            note: "Baggage set in new context. For propagation, use SDK-level baggage headers."
+                .to_string(),
+        })
     }
 
     #[function(
         id = "engine::baggage::get_all",
-        description = "Get all baggage items from the current context"
+        description = "Read all baggage entries from the current OTEL context as a { baggage } map. Diagnostic only: reflects ambient process context, not per-invocation baggage."
     )]
     pub async fn baggage_get_all(
         &self,
         _input: BaggageGetAllInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<BaggageGetAllResult, ErrorBody> {
         use opentelemetry::baggage::BaggageExt;
 
         let cx = opentelemetry::Context::current();
@@ -757,7 +1617,7 @@ impl ObservabilityWorker {
             .iter()
             .map(|(k, (v, _))| (k.to_string(), v.to_string()))
             .collect();
-        FunctionResult::Success(Some(serde_json::json!({ "baggage": items })))
+        FunctionResult::Success(BaggageGetAllResult { baggage: items })
     }
 
     /// Store a log in OTEL format and emit tracing event
@@ -768,7 +1628,7 @@ impl ObservabilityWorker {
         severity_number: i32,
     ) {
         // Respect logs_enabled: if explicitly disabled, skip storage/emit entirely.
-        if !otel::logs_enabled(otel::get_otel_config()) {
+        if !otel::logs_enabled(otel::get_otel_config().as_deref()) {
             return;
         }
 
@@ -786,7 +1646,7 @@ impl ObservabilityWorker {
 
         // Initialize storage if not already done, honoring the configured cap.
         if otel::get_log_storage().is_none() {
-            otel::init_log_storage(self._config.logs_max_count);
+            otel::init_log_storage(self.effective_logs_max_count());
         }
 
         let service_name = input
@@ -1032,6 +1892,7 @@ impl ObservabilityWorker {
             return; // No in-memory store → nothing to correct against.
         };
         let collapse_rules = cached_collapse_rules();
+        let collapse_rules = collapse_rules.as_slice();
 
         let mut arrived_by_trace: HashMap<&str, HashSet<String>> = HashMap::new();
         for span in batch {
@@ -1058,12 +1919,12 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::traces::list",
-        description = "List stored traces (only available when exporter is 'memory' or 'both')"
+        description = "List root spans of stored traces with filtering (service, name, status, duration, time, attributes), pagination, and sort; hides engine-internal spans unless include_internal. Requires exporter memory or both, else fails memory_exporter_not_enabled."
     )]
     pub async fn list_traces(
         &self,
         input: TracesListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<TracesListResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(storage) => {
                 let all_spans = match input.trace_id {
@@ -1242,13 +2103,15 @@ impl ObservabilityWorker {
 
                 let spans: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
 
-                let response = serde_json::json!({
-                    "spans": spans,
-                    "total": total,
-                    "offset": offset,
-                    "limit": limit,
-                });
-                FunctionResult::Success(Some(response))
+                FunctionResult::Success(TracesListResult {
+                    spans: spans
+                        .into_iter()
+                        .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+                        .collect(),
+                    total,
+                    offset,
+                    limit,
+                })
             }
             None => memory_exporter_not_enabled_error(),
         }
@@ -1256,30 +2119,30 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::traces::tree",
-        description = "Get trace tree with nested children (only available when exporter is 'memory' or 'both')"
+        description = "Build the nested span tree for one trace_id as { roots }, pruning no-op trigger wrappers and collapsing configured pass-through spans. Requires exporter memory or both, else fails memory_exporter_not_enabled."
     )]
     pub async fn get_trace_tree(
         &self,
         input: TracesTreeInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<TracesTreeResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(storage) => {
                 let all_spans = storage.get_spans_by_trace_id(&input.trace_id);
 
                 if all_spans.is_empty() {
-                    return FunctionResult::Success(Some(serde_json::json!({
-                        "roots": [],
-                    })));
+                    return FunctionResult::Success(TracesTreeResult { roots: Vec::new() });
                 }
 
-                let all_spans = correct_trace_spans(all_spans, cached_collapse_rules());
+                let all_spans = correct_trace_spans(all_spans, &cached_collapse_rules());
 
                 let roots = build_span_tree(all_spans);
 
-                let response = serde_json::json!({
-                    "roots": roots,
-                });
-                FunctionResult::Success(Some(response))
+                FunctionResult::Success(TracesTreeResult {
+                    roots: roots
+                        .into_iter()
+                        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+                        .collect(),
+                })
             }
             None => memory_exporter_not_enabled_error(),
         }
@@ -1287,16 +2150,16 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::traces::clear",
-        description = "Clear all stored traces (only available when exporter is 'memory' or 'both')"
+        description = "Drop every span from the in-memory trace store, returning { success: true }. Requires exporter memory or both, else fails memory_exporter_not_enabled."
     )]
     pub async fn clear_traces(
         &self,
         _input: TracesClearInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<OkResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(storage) => {
                 storage.clear();
-                FunctionResult::Success(Some(serde_json::json!({ "success": true })))
+                FunctionResult::Success(OkResult { success: true })
             }
             None => memory_exporter_not_enabled_error(),
         }
@@ -1307,12 +2170,12 @@ impl ObservabilityWorker {
     /// duration, and error_count.
     #[function(
         id = "engine::traces::group_by",
-        description = "Group stored spans by an attribute value (only available when exporter is 'memory' or 'both')"
+        description = "Aggregate stored spans by one attribute into groups (trace_ids, span_count, duration, error_count), newest-first, capped at limit (default 100); skips spans lacking the attribute and engine-internal spans unless include_internal. Requires exporter memory or both."
     )]
     pub async fn group_traces_by(
         &self,
         input: TracesGroupByInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<TracesGroupByResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(storage) => {
                 let all_spans = storage.get_spans();
@@ -1394,7 +2257,7 @@ impl ObservabilityWorker {
                 result.sort_by(|a, b| b.first_seen_ms.cmp(&a.first_seen_ms));
                 result.truncate(limit);
 
-                FunctionResult::Success(Some(serde_json::json!({ "groups": result })))
+                FunctionResult::Success(TracesGroupByResult { groups: result })
             }
             None => memory_exporter_not_enabled_error(),
         }
@@ -1406,12 +2269,12 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::metrics::list",
-        description = "List current metrics values"
+        description = "Return engine invocation/worker counters and span-derived latency percentiles, plus stored SDK metrics filtered by name/time and optionally aggregated by interval. engine_metrics is always present; sdk_metrics is empty when no metric storage exists."
     )]
     pub async fn list_metrics(
         &self,
         input: MetricsListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<MetricsListResult, ErrorBody> {
         use std::sync::atomic::Ordering;
 
         let accumulator = metrics::get_metrics_accumulator();
@@ -1424,22 +2287,22 @@ impl ObservabilityWorker {
                     Some(ns) => ns,
                     None => {
                         tracing::warn!("start_time overflow when converting to nanoseconds");
-                        return FunctionResult::Success(Some(serde_json::json!({
-                            "error": "start_time value too large",
-                            "sdk_metrics": [],
-                            "aggregated_metrics": [],
-                        })));
+                        return FunctionResult::Failure(ErrorBody {
+                            code: "time_value_overflow".to_string(),
+                            message: "start_time value too large".to_string(),
+                            stacktrace: None,
+                        });
                     }
                 };
                 let end_ns = match end.checked_mul(1_000_000) {
                     Some(ns) => ns,
                     None => {
                         tracing::warn!("end_time overflow when converting to nanoseconds");
-                        return FunctionResult::Success(Some(serde_json::json!({
-                            "error": "end_time value too large",
-                            "sdk_metrics": [],
-                            "aggregated_metrics": [],
-                        })));
+                        return FunctionResult::Failure(ErrorBody {
+                            code: "time_value_overflow".to_string(),
+                            message: "end_time value too large".to_string(),
+                            stacktrace: None,
+                        });
                     }
                 };
 
@@ -1466,22 +2329,22 @@ impl ObservabilityWorker {
                         Some(ns) => ns,
                         None => {
                             tracing::warn!("start_time overflow in aggregated metrics");
-                            return FunctionResult::Success(Some(serde_json::json!({
-                                "error": "start_time value too large",
-                                "sdk_metrics": [],
-                                "aggregated_metrics": [],
-                            })));
+                            return FunctionResult::Failure(ErrorBody {
+                                code: "time_value_overflow".to_string(),
+                                message: "start_time value too large".to_string(),
+                                stacktrace: None,
+                            });
                         }
                     };
                     let end_ns = match end.checked_mul(1_000_000) {
                         Some(ns) => ns,
                         None => {
                             tracing::warn!("end_time overflow in aggregated metrics");
-                            return FunctionResult::Success(Some(serde_json::json!({
-                                "error": "end_time value too large",
-                                "sdk_metrics": [],
-                                "aggregated_metrics": [],
-                            })));
+                            return FunctionResult::Failure(ErrorBody {
+                                code: "time_value_overflow".to_string(),
+                                message: "end_time value too large".to_string(),
+                                stacktrace: None,
+                            });
                         }
                     };
                     let interval_ns = match interval_secs.checked_mul(1_000_000_000) {
@@ -1490,11 +2353,11 @@ impl ObservabilityWorker {
                             tracing::warn!(
                                 "aggregate_interval overflow when converting to nanoseconds"
                             );
-                            return FunctionResult::Success(Some(serde_json::json!({
-                                "error": "aggregate_interval value too large",
-                                "sdk_metrics": [],
-                                "aggregated_metrics": [],
-                            })));
+                            return FunctionResult::Failure(ErrorBody {
+                                code: "time_value_overflow".to_string(),
+                                message: "aggregate_interval value too large".to_string(),
+                                stacktrace: None,
+                            });
                         }
                     };
                     storage.get_aggregated_metrics(start_ns, end_ns, interval_ns)
@@ -1530,63 +2393,73 @@ impl ObservabilityWorker {
             (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         };
 
-        let mut response = serde_json::json!({
-            "engine_metrics": {
-                "invocations": {
-                    "total": invocations_total,
-                    "success": invocations_success,
-                    "error": invocations_error,
-                    "deferred": invocations_deferred,
-                    "by_function": accumulator.get_by_function(),
-                },
-                "workers": {
-                    "spawns": workers_spawns,
-                    "deaths": workers_deaths,
-                    "active": workers_spawns.saturating_sub(workers_deaths),
-                },
-                "performance": {
-                    "avg_duration_ms": avg_duration_ms,
-                    "p50_duration_ms": p50_duration_ms,
-                    "p95_duration_ms": p95_duration_ms,
-                    "p99_duration_ms": p99_duration_ms,
-                    "min_duration_ms": min_duration_ms,
-                    "max_duration_ms": max_duration_ms,
-                }
-            },
-            "sdk_metrics": sdk_metrics,
-            "timestamp": chrono::Utc::now().timestamp_millis(),
-        });
+        // `aggregated_metrics` serializes only when non-empty (skip_serializing_if),
+        // matching the prior "add only if non-empty" behavior.
+        let aggregated_metrics: Vec<Value> = aggregated_metrics
+            .into_iter()
+            .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+            .collect();
 
-        // Add aggregated metrics if available
-        if !aggregated_metrics.is_empty() {
-            response["aggregated_metrics"] = serde_json::json!(aggregated_metrics);
-        }
-
-        // Add query parameters to response for reference
-        if input.start_time.is_some()
+        // `query` echoes the applied filters, present only when one was supplied.
+        let query = if input.start_time.is_some()
             || input.end_time.is_some()
             || input.aggregate_interval.is_some()
         {
-            response["query"] = serde_json::json!({
-                "start_time": input.start_time,
-                "end_time": input.end_time,
-                "aggregate_interval": input.aggregate_interval,
-                "metric_name": input.metric_name,
-            });
-        }
+            Some(MetricsListQuery {
+                start_time: input.start_time,
+                end_time: input.end_time,
+                aggregate_interval: input.aggregate_interval,
+                metric_name: input.metric_name,
+            })
+        } else {
+            None
+        };
 
-        FunctionResult::Success(Some(response))
+        FunctionResult::Success(MetricsListResult {
+            engine_metrics: EngineMetricsView {
+                invocations: InvocationsView {
+                    total: invocations_total,
+                    success: invocations_success,
+                    error: invocations_error,
+                    deferred: invocations_deferred,
+                    by_function: accumulator.get_by_function(),
+                },
+                workers: WorkersView {
+                    spawns: workers_spawns,
+                    deaths: workers_deaths,
+                    active: workers_spawns.saturating_sub(workers_deaths),
+                },
+                performance: PerformanceView {
+                    avg_duration_ms,
+                    p50_duration_ms,
+                    p95_duration_ms,
+                    p99_duration_ms,
+                    min_duration_ms,
+                    max_duration_ms,
+                },
+            },
+            sdk_metrics: sdk_metrics
+                .into_iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+                .collect(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            aggregated_metrics,
+            query,
+        })
     }
 
     // =========================================================================
     // Logs Functions
     // =========================================================================
 
-    #[function(id = "engine::logs::list", description = "List stored OTEL logs")]
+    #[function(
+        id = "engine::logs::list",
+        description = "List stored OTEL logs filtered by trace/span id, severity, and time range, with pagination and a total count. Returns an empty result when logs_enabled is false (no log storage)."
+    )]
     pub async fn list_logs(
         &self,
         input: LogsListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<LogsListResult, ErrorBody> {
         match otel::get_log_storage() {
             Some(storage) => {
                 let (total, logs) = storage.get_logs_filtered(
@@ -1599,53 +2472,64 @@ impl ObservabilityWorker {
                     input.offset,
                     input.limit,
                 );
-                let response = serde_json::json!({
-                    "logs": logs,
-                    "total": total,
-                    "query": {
-                        "trace_id": input.trace_id,
-                        "span_id": input.span_id,
-                        "severity_min": input.severity_min,
-                        "severity_text": input.severity_text,
-                        "start_time": input.start_time,
-                        "end_time": input.end_time,
-                        "offset": input.offset,
-                        "limit": input.limit,
-                    },
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                });
-                FunctionResult::Success(Some(response))
+                FunctionResult::Success(LogsListResult {
+                    logs: logs
+                        .into_iter()
+                        .map(|l| serde_json::to_value(l).unwrap_or(Value::Null))
+                        .collect(),
+                    total,
+                    query: Some(LogsListQuery {
+                        trace_id: input.trace_id,
+                        span_id: input.span_id,
+                        severity_min: input.severity_min,
+                        severity_text: input.severity_text,
+                        start_time: input.start_time,
+                        end_time: input.end_time,
+                        offset: input.offset,
+                        limit: input.limit,
+                    }),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                })
             }
             None => {
                 // Honor logs_enabled: do NOT lazily revive storage when logs
                 // are disabled at config time. Return an empty result so API
-                // consumers get a consistent shape.
-                if otel::logs_enabled(Some(&self._config)) {
-                    otel::init_log_storage(self._config.logs_max_count);
+                // consumers get a consistent shape. Gate on the LIVE config
+                // (not the boot seed `_config`) so a runtime logs_enabled
+                // toggle agrees with the ingest path in `store_and_emit_log`.
+                if otel::logs_enabled(otel::get_otel_config().as_deref()) {
+                    otel::init_log_storage(self.effective_logs_max_count());
                 }
-                let response = serde_json::json!({
-                    "logs": [],
-                    "total": 0,
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                });
-                FunctionResult::Success(Some(response))
+                FunctionResult::Success(LogsListResult {
+                    logs: Vec::new(),
+                    total: 0,
+                    query: None,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                })
             }
         }
     }
 
-    #[function(id = "engine::logs::clear", description = "Clear all stored OTEL logs")]
+    #[function(
+        id = "engine::logs::clear",
+        description = "Drop every stored OTEL log, returning { success: true }. Succeeds as a no-op when log storage was never initialized (logs_enabled false)."
+    )]
     pub async fn clear_logs(
         &self,
         _input: LogsClearInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<LogsClearResult, ErrorBody> {
         match otel::get_log_storage() {
             Some(storage) => {
                 storage.clear();
-                FunctionResult::Success(Some(serde_json::json!({ "success": true })))
+                FunctionResult::Success(LogsClearResult {
+                    success: true,
+                    message: None,
+                })
             }
-            None => FunctionResult::Success(Some(
-                serde_json::json!({ "success": true, "message": "No log storage initialized" }),
-            )),
+            None => FunctionResult::Success(LogsClearResult {
+                success: true,
+                message: Some("No log storage initialized".to_string()),
+            }),
         }
     }
 
@@ -1655,12 +2539,12 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::sampling::rules",
-        description = "Get active sampling rules configuration"
+        description = "Report the active trace sampling config (default ratio, per-operation/service rules, parent_based) and the logs sampling_ratio, read from live config. Defaults to ratio 1.0 with no rules when sampling is unconfigured."
     )]
     pub async fn get_sampling_rules(
         &self,
         _input: LogsClearInput, // Reusing empty input type
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<SamplingRulesResult, ErrorBody> {
         let config = otel::get_otel_config();
 
         let (default_ratio, rules, parent_based, logs_sampling_ratio) = match config {
@@ -1672,18 +2556,16 @@ impl ObservabilityWorker {
                     .or(cfg.sampling_ratio)
                     .unwrap_or(1.0);
 
-                let rules: Vec<Value> = cfg
+                let rules: Vec<SamplingRuleView> = cfg
                     .sampling
                     .as_ref()
                     .map(|s| {
                         s.rules
                             .iter()
-                            .map(|r| {
-                                serde_json::json!({
-                                    "operation": r.operation,
-                                    "service": r.service,
-                                    "rate": r.rate,
-                                })
+                            .map(|r| SamplingRuleView {
+                                operation: r.operation.clone(),
+                                service: r.service.clone(),
+                                rate: r.rate,
                             })
                             .collect()
                     })
@@ -1700,19 +2582,17 @@ impl ObservabilityWorker {
             None => (1.0, Vec::new(), true, 1.0),
         };
 
-        let response = serde_json::json!({
-            "traces": {
-                "default_ratio": default_ratio,
-                "rules": rules,
-                "parent_based": parent_based,
+        FunctionResult::Success(SamplingRulesResult {
+            traces: SamplingTracesView {
+                default_ratio,
+                rules,
+                parent_based,
             },
-            "logs": {
-                "sampling_ratio": logs_sampling_ratio,
+            logs: SamplingLogsView {
+                sampling_ratio: logs_sampling_ratio,
             },
-            "timestamp": chrono::Utc::now().timestamp_millis(),
-        });
-
-        FunctionResult::Success(Some(response))
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        })
     }
 
     // =========================================================================
@@ -1721,12 +2601,12 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::health::check",
-        description = "Check system health status"
+        description = "Report observability subsystem health: per-component status (otel, metrics, logs, spans) marked healthy with counts or disabled, plus engine version. Always succeeds regardless of configuration."
     )]
     pub async fn health_check(
         &self,
         _input: HealthCheckInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<HealthCheckResult, ErrorBody> {
         // Check OTEL configuration
         let otel_component = if let Some(config) = otel::get_otel_config() {
             let enabled = config.enabled.unwrap_or(false);
@@ -1770,77 +2650,85 @@ impl ObservabilityWorker {
             disabled_component()
         };
 
-        let response = serde_json::json!({
-            "status": "healthy",
-            "components": {
-                "otel": otel_component,
-                "metrics": metrics_component,
-                "logs": logs_component,
-                "spans": spans_component,
+        FunctionResult::Success(HealthCheckResult {
+            status: "healthy".to_string(),
+            components: HealthComponentsView {
+                otel: otel_component,
+                metrics: metrics_component,
+                logs: logs_component,
+                spans: spans_component,
             },
-            "timestamp": chrono::Utc::now().timestamp_millis(),
-            "version": env!("CARGO_PKG_VERSION"),
-        });
-
-        FunctionResult::Success(Some(response))
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        })
     }
 
     // =========================================================================
     // Alerts Functions
     // =========================================================================
 
-    #[function(id = "engine::alerts::list", description = "List current alert states")]
+    #[function(
+        id = "engine::alerts::list",
+        description = "List configured alert rules with their current evaluated states and a firing_count. Returns empty when no alert rules are configured or the alert manager is not initialized."
+    )]
     pub async fn list_alerts(
         &self,
         _input: AlertsListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<AlertsListResult, ErrorBody> {
         if let Some(manager) = metrics::get_alert_manager() {
             let states = manager.get_states();
             let firing = manager.get_firing_alerts();
 
-            let response = serde_json::json!({
-                "alerts": states,
-                "firing_count": firing.len(),
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-            });
-
-            FunctionResult::Success(Some(response))
+            FunctionResult::Success(AlertsListResult {
+                alerts: states
+                    .into_iter()
+                    .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+                    .collect(),
+                rules: Some(manager.get_rules()),
+                firing_count: firing.len(),
+                message: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })
         } else {
-            let response = serde_json::json!({
-                "alerts": [],
-                "firing_count": 0,
-                "message": "Alert manager not initialized",
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-            });
-            FunctionResult::Success(Some(response))
+            FunctionResult::Success(AlertsListResult {
+                alerts: Vec::new(),
+                rules: None,
+                firing_count: 0,
+                message: Some("Alert manager not initialized".to_string()),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })
         }
     }
 
     #[function(
         id = "engine::alerts::evaluate",
-        description = "Manually trigger alert evaluation"
+        description = "Force an immediate alert-rule evaluation against current metrics and return any triggered_alerts, bypassing the periodic tick. Returns evaluated:false when the alert manager is not initialized; produces nothing without configured rules."
     )]
     pub async fn evaluate_alerts(
         &self,
         _input: AlertsEvaluateInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<AlertsEvaluateResult, ErrorBody> {
         if let Some(manager) = metrics::get_alert_manager() {
             let events = manager.evaluate().await;
 
-            let response = serde_json::json!({
-                "evaluated": true,
-                "triggered_alerts": events,
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-            });
-
-            FunctionResult::Success(Some(response))
+            FunctionResult::Success(AlertsEvaluateResult {
+                evaluated: true,
+                triggered_alerts: Some(
+                    events
+                        .into_iter()
+                        .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                        .collect(),
+                ),
+                message: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })
         } else {
-            let response = serde_json::json!({
-                "evaluated": false,
-                "message": "Alert manager not initialized",
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-            });
-            FunctionResult::Success(Some(response))
+            FunctionResult::Success(AlertsEvaluateResult {
+                evaluated: false,
+                triggered_alerts: None,
+                message: Some("Alert manager not initialized".to_string()),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })
         }
     }
 
@@ -1850,12 +2738,12 @@ impl ObservabilityWorker {
 
     #[function(
         id = "engine::rollups::list",
-        description = "Get pre-aggregated metrics rollups"
+        description = "Return pre-aggregated metric rollups and histograms for a level (0=1m, 1=5m, 2=1h) over a time range (default last hour), optionally by metric name. Falls back to on-the-fly aggregation over metric storage when no rollup storage exists."
     )]
     pub async fn list_rollups(
         &self,
         input: RollupsListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<RollupsListResult, ErrorBody> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1867,11 +2755,11 @@ impl ObservabilityWorker {
                 Some(ns) => ns,
                 None => {
                     tracing::warn!("end_time overflow when converting to nanoseconds in rollups");
-                    return FunctionResult::Success(Some(serde_json::json!({
-                        "error": "end_time value too large",
-                        "rollups": [],
-                        "histogram_rollups": [],
-                    })));
+                    return FunctionResult::Failure(ErrorBody {
+                        code: "time_value_overflow".to_string(),
+                        message: "end_time value too large".to_string(),
+                        stacktrace: None,
+                    });
                 }
             }
         } else {
@@ -1883,11 +2771,11 @@ impl ObservabilityWorker {
                 Some(ns) => ns,
                 None => {
                     tracing::warn!("start_time overflow when converting to nanoseconds in rollups");
-                    return FunctionResult::Success(Some(serde_json::json!({
-                        "error": "start_time value too large",
-                        "rollups": [],
-                        "histogram_rollups": [],
-                    })));
+                    return FunctionResult::Failure(ErrorBody {
+                        code: "time_value_overflow".to_string(),
+                        message: "start_time value too large".to_string(),
+                        stacktrace: None,
+                    });
                 }
             }
         } else {
@@ -1906,19 +2794,25 @@ impl ObservabilityWorker {
                 input.metric_name.as_deref(),
             );
 
-            let response = serde_json::json!({
-                "rollups": rollups,
-                "histogram_rollups": histograms,
-                "level": level,
-                "query": {
-                    "start_time": input.start_time,
-                    "end_time": input.end_time,
-                    "metric_name": input.metric_name,
-                },
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-            });
-
-            FunctionResult::Success(Some(response))
+            FunctionResult::Success(RollupsListResult {
+                rollups: rollups
+                    .into_iter()
+                    .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+                    .collect(),
+                histogram_rollups: histograms
+                    .into_iter()
+                    .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
+                    .collect(),
+                level: Some(level),
+                source: None,
+                query: Some(RollupsListQuery {
+                    start_time: input.start_time,
+                    end_time: input.end_time,
+                    metric_name: input.metric_name,
+                }),
+                message: None,
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            })
         } else {
             // Rollup storage not initialized, fall back to on-the-fly aggregation
             let interval_ns = match level {
@@ -1931,28 +2825,35 @@ impl ObservabilityWorker {
                 let rollups = storage.get_aggregated_metrics(start_ns, end_ns, interval_ns);
                 let histograms = storage.get_aggregated_histograms(start_ns, end_ns, interval_ns);
 
-                let response = serde_json::json!({
-                    "rollups": rollups,
-                    "histogram_rollups": histograms,
-                    "level": level,
-                    "source": "on_the_fly",
-                    "query": {
-                        "start_time": input.start_time,
-                        "end_time": input.end_time,
-                        "metric_name": input.metric_name,
-                    },
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                });
-
-                FunctionResult::Success(Some(response))
+                FunctionResult::Success(RollupsListResult {
+                    rollups: rollups
+                        .into_iter()
+                        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+                        .collect(),
+                    histogram_rollups: histograms
+                        .into_iter()
+                        .map(|h| serde_json::to_value(h).unwrap_or(Value::Null))
+                        .collect(),
+                    level: Some(level),
+                    source: Some("on_the_fly".to_string()),
+                    query: Some(RollupsListQuery {
+                        start_time: input.start_time,
+                        end_time: input.end_time,
+                        metric_name: input.metric_name,
+                    }),
+                    message: None,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                })
             } else {
-                let response = serde_json::json!({
-                    "rollups": [],
-                    "histogram_rollups": [],
-                    "message": "Metric storage not initialized",
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                });
-                FunctionResult::Success(Some(response))
+                FunctionResult::Success(RollupsListResult {
+                    rollups: Vec::new(),
+                    histogram_rollups: Vec::new(),
+                    level: None,
+                    source: None,
+                    query: None,
+                    message: Some("Metric storage not initialized".to_string()),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                })
             }
         }
     }
@@ -2042,35 +2943,28 @@ impl Worker for ObservabilityWorker {
     }
 
     async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
-        let otel_config: config::ObservabilityWorkerConfig = match config {
-            Some(cfg) => serde_json::from_value(cfg)?,
-            None => config::ObservabilityWorkerConfig::default(),
-        };
-
-        // Set the global OTEL config so logging can use it
-        if !otel::set_otel_config(otel_config.clone()) {
-            tracing::warn!(
-                "ObservabilityWorker created but global config was already set - using existing config"
-            );
-        }
-
-        let (shutdown_tx, _) = tokio::sync::watch::channel(false);
-
-        Ok(Box::new(ObservabilityWorker {
-            _config: otel_config,
-            triggers: Arc::new(OtelLogTriggers::new()),
-            trace_triggers: Arc::new(OtelTraceTriggers::new()),
-            engine,
-            shutdown_tx: Arc::new(shutdown_tx),
-        }))
+        Ok(Box::new(Self::from_config(engine, config)?))
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
-        self.register_functions(engine);
+        self.register_functions(engine.clone());
+        // Registered here so the worker scope tracks the handler and removes
+        // it automatically on destroy/reload. The hook order differs by
+        // pipeline: initial boot runs `register_functions` BEFORE
+        // `start_background_tasks` (workers/config.rs), reload runs it AFTER
+        // (reload.rs) — so `start_background_tasks` also registers the
+        // handler (if absent) before subscribing to configuration events.
+        self.register_config_handler(&engine);
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        let enabled = self._config.enabled.unwrap_or(true);
+        // Read the authoritative config, not the yaml seed: on the serve path
+        // the boot merge has already published the persisted entry as the
+        // global, so initialize() and start_background_tasks must agree on the
+        // same source or they half-initialize the worker (one registers the
+        // trigger types / alert manager, the other skips them).
+        let config = self.current_config();
+        let enabled = config.enabled.unwrap_or(true);
         if !enabled {
             tracing::info!(
                 "{} Observability disabled by configuration",
@@ -2079,16 +2973,19 @@ impl Worker for ObservabilityWorker {
             return Ok(());
         }
 
-        // Initialize metrics if enabled
+        // Initialize metrics. Called even when the metrics signal is
+        // disabled: init_metrics returns false in that case but still
+        // applies the configured storage limits, which SDK metric ingestion
+        // uses regardless of the export toggle.
         let metrics_config = metrics::MetricsConfig::default();
-        if metrics_config.enabled && metrics::init_metrics(&metrics_config) {
+        if metrics::init_metrics(&metrics_config) {
             // Pre-initialize global engine metrics only if init succeeded
             let _ = metrics::get_engine_metrics();
         }
 
         // Initialize log storage only when logs are enabled
-        if otel::logs_enabled(Some(&self._config)) {
-            otel::init_log_storage(self._config.logs_max_count);
+        if otel::logs_enabled(Some(&config)) {
+            otel::init_log_storage(self.effective_logs_max_count());
         } else {
             tracing::info!(
                 "{} OTEL logs disabled via logs_enabled=false; skipping log storage",
@@ -2103,18 +3000,21 @@ impl Worker for ObservabilityWorker {
             "[ROLLUPS]".cyan()
         );
 
-        // Initialize alert manager if alerts are configured
-        if !self._config.alerts.is_empty() {
+        // Always initialize the alert manager (even with zero rules) so a
+        // later configuration-worker edit can hot-add rules via
+        // update_rules; the 10s evaluation tick is a no-op while empty.
+        // Seed from the authoritative config (not the yaml seed): on a restart
+        // the first apply_config sees old == new and skips the alert SWAP
+        // tier, so a manager seeded from the stale yaml rules would silently
+        // revert a runtime edit until the next alerts change.
+        if !config.alerts.is_empty() {
             tracing::info!(
                 "{} {} alert rules configured",
                 "[ALERTS]".cyan(),
-                self._config.alerts.len()
-            );
-            metrics::init_alert_manager_with_engine(
-                self._config.alerts.clone(),
-                self.engine.clone(),
+                config.alerts.len()
             );
         }
+        metrics::init_alert_manager_with_engine(config.alerts.clone(), self.engine.clone());
 
         // Register log trigger type
         let log_trigger_type = TriggerType::new(
@@ -2149,64 +3049,83 @@ impl Worker for ObservabilityWorker {
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
-        // Skip all background tasks when observability is disabled
-        if !self._config.enabled.unwrap_or(true) {
-            tracing::debug!("[ObservabilityWorker] Skipping background tasks (disabled)");
+        // Stored unconditionally (before the enabled gate) so `apply_config`
+        // can hand respawned tasks the worker lifecycle even on deployments
+        // that boot disabled.
+        *self
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned") = Some(shutdown_rx.clone());
+
+        // Adopt the configuration worker as the runtime source of truth
+        // BEFORE the enabled gate — mirroring iii-http, which always adopts.
+        // This runs even when observability boots disabled, so the
+        // `iii-observability` entry is always registered (a remote
+        // `enabled: true` can be persisted and applied at the next start), the
+        // change trigger always watches, and the restart-tier warning fires.
+        // `configuration::*` is callable here on both pipelines; failures
+        // degrade to the static config.yaml block. Every bus call is bounded.
+        let register = tokio::time::timeout(
+            configuration::CONFIG_BUS_TIMEOUT,
+            configuration::register_config(self.engine.as_ref(), Some(&self._config)),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("configuration::register timed out"))
+        .and_then(|result| result);
+        if let Err(err) = register {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: configuration::register failed; continuing with static config"
+            );
+        }
+
+        // Initial sync: fetch the authoritative value and apply it per tier
+        // (apply_config carries its own bus timeout).
+        if let Err(err) = self.apply_config().await {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: failed to read configuration; continuing with static config"
+            );
+        }
+
+        // Register the handler before the trigger so a configuration event can
+        // never fan out to a missing function. On reload, `register_functions`
+        // runs after this hook and re-registers the handler inside the worker
+        // scope; the `get` check keeps the initial-boot path (where it already
+        // ran) from logging a spurious "already registered" overwrite.
+        if self
+            .engine
+            .functions
+            .get(configuration::CONFIG_FN_ID)
+            .is_none()
+        {
+            self.register_config_handler(&self.engine);
+        }
+        if let Err(err) = configuration::register_config_trigger(&self.engine).await {
+            tracing::warn!(
+                error = %err,
+                "iii-observability: failed to watch configuration changes; hot-reload disabled"
+            );
+        } else {
+            // Catch-up pass: replay any `configuration::set` that landed
+            // between the initial sync above and the trigger subscription.
+            configuration::on_config_change(self).await;
+        }
+
+        // Live background tasks run only when observability is enabled. The
+        // trace/log pipeline is built at process start, so `enabled` is
+        // restart-tier; this gate controls only the per-process task set, not
+        // configuration adoption (done above).
+        if !self.current_config().enabled.unwrap_or(true) {
+            tracing::debug!(
+                "[ObservabilityWorker] Observability disabled; skipping background tasks"
+            );
             return Ok(());
         }
 
-        // Start log subscriber to invoke triggers for all logs
-        {
-            let triggers = self.triggers.clone();
-            let engine = self.engine.clone();
-            let mut shutdown_rx = shutdown_rx.clone();
-
-            tokio::spawn(async move {
-                // Wait a bit for log storage to be initialized
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-                if let Some(storage) = otel::get_log_storage() {
-                    let mut rx = storage.subscribe();
-
-                    tracing::debug!("[ObservabilityWorker] Log trigger subscriber started");
-
-                    loop {
-                        tokio::select! {
-                            result = shutdown_rx.changed() => {
-                                if result.is_err() {
-                                    tracing::debug!("[ObservabilityWorker] Shutdown channel closed");
-                                    break;
-                                }
-                                if *shutdown_rx.borrow() {
-                                    tracing::debug!("[ObservabilityWorker] Log trigger subscriber shutting down");
-                                    break;
-                                }
-                            }
-                            result = rx.recv() => {
-                                match result {
-                                    Ok(log) => {
-                                        ObservabilityWorker::invoke_triggers_for_log(&triggers, &engine, &log).await;
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                        tracing::warn!(skipped, "Log trigger subscriber lagged, some logs were skipped");
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                        tracing::debug!("[ObservabilityWorker] Log broadcast channel closed");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    tracing::debug!("[ObservabilityWorker] Log trigger subscriber stopped");
-                } else {
-                    tracing::warn!(
-                        "[ObservabilityWorker] Log storage not available, log triggers will not work"
-                    );
-                }
-            });
-        }
+        // Start the log-trigger subscriber (respawnable: a runtime
+        // logs_enabled false->true toggle re-runs this via apply_config).
+        self.spawn_log_trigger_subscriber();
 
         // Start span subscriber: coalesce span activity into periodic `trace`
         // trigger fan-outs, excluding engine-internal spans and the trigger's
@@ -2303,40 +3222,8 @@ impl Worker for ObservabilityWorker {
             });
         }
 
-        // Spawn background task for log retention cleanup
-        if let Some(retention_seconds) = self._config.logs_retention_seconds
-            && retention_seconds > 0
-            && let Some(log_storage) = otel::get_log_storage()
-        {
-            let retention_ns = match retention_seconds.checked_mul(1_000_000_000) {
-                Some(ns) => ns,
-                None => {
-                    tracing::warn!(
-                        "logs_retention_seconds overflow when converting to nanoseconds; disabling log retention task"
-                    );
-                    0
-                }
-            };
-            if retention_ns > 0 {
-                let mut shutdown_rx = shutdown_rx.clone();
-                tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
-                    loop {
-                        tokio::select! {
-                            result = shutdown_rx.changed() => {
-                                if result.is_err() || *shutdown_rx.borrow() {
-                                    tracing::debug!("[ObservabilityWorker] Log retention task shutting down");
-                                    break;
-                                }
-                            }
-                            _ = interval.tick() => {
-                                log_storage.apply_retention(retention_ns);
-                            }
-                        }
-                    }
-                });
-            }
-        }
+        // Log retention runs as a respawnable task; spawned below from the
+        // post-adoption effective configuration.
 
         // Spawn background task for metrics retention cleanup and rollup processing
         if let Some(storage) = metrics::get_metric_storage() {
@@ -2367,8 +3254,10 @@ impl Worker for ObservabilityWorker {
             });
         }
 
-        // Spawn background task for alert evaluation
-        if !self._config.alerts.is_empty() {
+        // Spawn background task for alert evaluation. Always spawned (the
+        // 10s tick is a no-op while the rule set is empty) so rules hot-added
+        // through the configuration worker are evaluated without a restart.
+        {
             let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
@@ -2398,63 +3287,49 @@ impl Worker for ObservabilityWorker {
             });
         }
 
-        // Start OTLP logs exporter if configured
-        let logs_exporter_type = otel::get_logs_exporter_type();
-        if (logs_exporter_type == config::LogsExporterType::Otlp
-            || logs_exporter_type == config::LogsExporterType::Both)
-            && let Some(log_storage) = otel::get_log_storage()
-        {
-            let endpoint = self
-                ._config
-                .endpoint
-                .clone()
-                .unwrap_or_else(|| "http://localhost:4317".to_string());
-            let service_name = self
-                ._config
-                .service_name
-                .clone()
-                .unwrap_or_else(|| "iii".to_string());
-            let service_version = self
-                ._config
-                .service_version
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
-
-            let rx = log_storage.subscribe();
-            let mut exporter =
-                otel::OtlpLogsExporter::new(endpoint.clone(), service_name, service_version);
-
-            if let Some(batch_size) = self
-                ._config
-                .logs_batch_size
-                .or_else(|| parse_env_var("OTEL_LOGS_BATCH_SIZE"))
-            {
-                exporter = exporter.with_batch_size(batch_size);
-            }
-
-            if let Some(flush_interval_ms) = self
-                ._config
-                .logs_flush_interval_ms
-                .or_else(|| parse_env_var("OTEL_LOGS_FLUSH_INTERVAL_MS"))
-            {
-                exporter = exporter
-                    .with_flush_interval(std::time::Duration::from_millis(flush_interval_ms));
-            }
-
-            exporter.start_with_shutdown(rx, shutdown_rx.clone());
-
-            tracing::info!(
-                "{} OTLP logs exporter started (endpoint: {})",
-                "[LOGS]".cyan(),
-                endpoint
-            );
-        }
+        // Spawn the respawnable log tasks from the effective configuration.
+        // The helpers stop any instance the initial apply_config above may
+        // already have spawned, so this cannot double-spawn.
+        let effective = self.current_config();
+        self.spawn_logs_retention(&effective);
+        self.spawn_logs_exporter(&effective);
 
         Ok(())
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Shutting down ObservabilityWorker...");
+
+        // Best-effort: the trigger is registered outside the worker scope, so
+        // remove it explicitly to keep ReloadManager restarts duplicate-free.
+        let _ = self
+            .engine
+            .trigger_registry
+            .unregister_trigger(
+                configuration::CONFIG_TRIGGER_ID.to_string(),
+                Some(configuration::CONFIG_TRIGGER_TYPE.to_string()),
+            )
+            .await;
+
+        // Serialize with any in-flight `apply_config` so a task respawn
+        // cannot land after the shutdown below; clearing the stored receiver
+        // makes later applies refuse the task-rebuild tier entirely.
+        {
+            let _guard = self.apply_lock.lock().await;
+            self.worker_shutdown_rx
+                .lock()
+                .expect("worker_shutdown_rx mutex poisoned")
+                .take();
+        }
+        for stop in [
+            &self.logs_retention_stop,
+            &self.logs_exporter_stop,
+            &self.logs_trigger_stop,
+        ] {
+            if let Some(stop) = stop.lock().expect("stop mutex poisoned").take() {
+                let _ = stop.send(true);
+            }
+        }
 
         // Signal all background tasks to stop
         let _ = self.shutdown_tx.send(true);
@@ -2483,6 +3358,196 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::collections::{HashMap, HashSet};
+
+    // ── Coverage: log-trigger level filter, ingest gate, is_active, collapse ──
+
+    #[test]
+    fn should_trigger_for_level_matches_all_and_exact() {
+        assert!(should_trigger_for_level("all", "info"));
+        assert!(should_trigger_for_level("error", "error"));
+        assert!(!should_trigger_for_level("error", "warn"));
+        assert!(!should_trigger_for_level("info", "debug"));
+    }
+
+    #[test]
+    fn is_active_reflects_worker_shutdown_rx() {
+        let module = make_test_module(Arc::new(Engine::new()));
+        assert!(
+            !module.is_active(),
+            "for_test/make_test_module leaves rx None"
+        );
+
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        *module
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned") = Some(rx);
+        assert!(module.is_active(), "set receiver -> active");
+
+        module
+            .worker_shutdown_rx
+            .lock()
+            .expect("worker_shutdown_rx mutex poisoned")
+            .take();
+        assert!(
+            !module.is_active(),
+            "destroy clears the receiver -> inactive"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn store_and_emit_log_respects_logs_enabled_gate() {
+        reset_observability_test_state();
+        let module = make_test_module(Arc::new(Engine::new()));
+        let storage = otel::get_log_storage().expect("log storage");
+        storage.clear();
+
+        let make_input = |body: &str| OtelLogInput {
+            trace_id: None,
+            span_id: None,
+            message: body.to_string(),
+            data: None,
+            service_name: Some("gate-test".to_string()),
+        };
+
+        // Logs disabled -> ingest is a no-op at the gate.
+        otel::update_otel_config(config::ObservabilityWorkerConfig {
+            logs_enabled: Some(false),
+            ..config::ObservabilityWorkerConfig::default()
+        });
+        let _ = module.log_info(make_input("dropped")).await;
+        assert_eq!(storage.len(), 0, "disabled logs must not be stored");
+
+        // Re-enabled -> ingest stores again.
+        otel::update_otel_config(config::ObservabilityWorkerConfig {
+            logs_enabled: Some(true),
+            ..config::ObservabilityWorkerConfig::default()
+        });
+        let _ = module.log_info(make_input("kept")).await;
+        assert_eq!(storage.len(), 1, "re-enabled logs must be stored");
+        assert_eq!(storage.get_logs()[0].body, "kept");
+
+        // Leave the process-global config at its unset baseline so serial
+        // siblings (e.g. test_initialize_returns_ok_when_disabled) still fall
+        // back to their own _config.
+        otel::clear_otel_config_for_test();
+    }
+
+    #[tokio::test]
+    async fn invoke_triggers_for_log_filters_by_level() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let engine = Arc::new(Engine::new());
+        let all_hits = Arc::new(AtomicUsize::new(0));
+        let error_hits = Arc::new(AtomicUsize::new(0));
+
+        for (fid, counter) in [
+            ("test::rec-all", all_hits.clone()),
+            ("test::rec-error", error_hits.clone()),
+        ] {
+            let counter = counter.clone();
+            engine.register_function_handler(
+                crate::engine::RegisterFunctionRequest {
+                    function_id: fid.to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                crate::engine::Handler::new(move |_payload: Value| {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                    }
+                }),
+            );
+        }
+
+        let triggers = Arc::new(OtelLogTriggers::new());
+        {
+            let mut guard = triggers.triggers.write().await;
+            guard.insert(Trigger {
+                id: "t-all".to_string(),
+                trigger_type: LOG_TRIGGER_TYPE.to_string(),
+                function_id: "test::rec-all".to_string(),
+                config: serde_json::json!({ "level": "all" }),
+                worker_id: None,
+                metadata: None,
+            });
+            guard.insert(Trigger {
+                id: "t-error".to_string(),
+                trigger_type: LOG_TRIGGER_TYPE.to_string(),
+                function_id: "test::rec-error".to_string(),
+                config: serde_json::json!({ "level": "error" }),
+                worker_id: None,
+                metadata: None,
+            });
+        }
+
+        // A WARN log: matches the "all" trigger, not the "error" one.
+        let warn_log = otel::StoredLog {
+            timestamp_unix_nano: 1,
+            observed_timestamp_unix_nano: 1,
+            severity_number: 13,
+            severity_text: "WARN".to_string(),
+            body: "warn".to_string(),
+            attributes: HashMap::new(),
+            trace_id: None,
+            span_id: None,
+            resource: HashMap::new(),
+            service_name: "svc".to_string(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+        ObservabilityWorker::invoke_triggers_for_log(&triggers, &engine, &warn_log).await;
+
+        // Fan-out is fire-and-forget tokio::spawn; poll for the effect.
+        for _ in 0..40 {
+            if all_hits.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            all_hits.load(Ordering::SeqCst),
+            1,
+            "level=all must fire on WARN"
+        );
+        assert_eq!(
+            error_hits.load(Ordering::SeqCst),
+            0,
+            "level=error must NOT fire on WARN"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn refresh_collapse_rules_recompiles_cache() {
+        refresh_collapse_rules(&[
+            config::SpanCollapseRule {
+                name: "wrapper*".to_string(),
+                service: None,
+            },
+            config::SpanCollapseRule {
+                name: "proxy*".to_string(),
+                service: None,
+            },
+        ]);
+        assert_eq!(
+            cached_collapse_rules().len(),
+            2,
+            "refresh must recompile the cache from the new rules"
+        );
+
+        refresh_collapse_rules(&[]);
+        assert_eq!(
+            cached_collapse_rules().len(),
+            0,
+            "clearing rules must empty the cache"
+        );
+    }
 
     // =========================================================================
     // Helper: create a StoredSpan with configurable fields
@@ -2554,6 +3619,11 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine,
             shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -5182,7 +6252,9 @@ mod tests {
             })
             .await;
         match get_result {
-            FunctionResult::Success(Some(value)) => assert!(value["value"].is_null()),
+            FunctionResult::Success(value) => {
+                assert!(serde_json::to_value(&value).unwrap()["value"].is_null())
+            }
             _ => panic!("expected baggage_get to succeed"),
         }
 
@@ -5193,13 +6265,16 @@ mod tests {
             })
             .await;
         match set_result {
-            FunctionResult::Success(Some(value)) => assert_eq!(value["success"], true),
+            FunctionResult::Success(value) => {
+                assert_eq!(serde_json::to_value(&value).unwrap()["success"], true)
+            }
             _ => panic!("expected baggage_set to succeed"),
         }
 
         let get_all_result = module.baggage_get_all(BaggageGetAllInput {}).await;
         match get_all_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 assert!(value["baggage"].is_object());
             }
             _ => panic!("expected baggage_get_all to succeed"),
@@ -5275,9 +6350,9 @@ mod tests {
             search_all_spans: None,
         };
 
-        let order = |result: FunctionResult<Option<Value>, ErrorBody>| -> Vec<String> {
+        let order = |result: FunctionResult<TracesListResult, ErrorBody>| -> Vec<String> {
             match result {
-                FunctionResult::Success(Some(value)) => value["spans"]
+                FunctionResult::Success(value) => serde_json::to_value(&value).unwrap()["spans"]
                     .as_array()
                     .expect("spans array")
                     .iter()
@@ -5403,7 +6478,8 @@ mod tests {
             .await;
 
         match traces_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let spans = value["spans"].as_array().expect("spans array");
                 assert_eq!(spans.len(), 1);
                 assert_eq!(spans[0]["trace_id"], "trace-visible");
@@ -5417,7 +6493,8 @@ mod tests {
             })
             .await;
         match tree_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let roots = value["roots"].as_array().expect("roots array");
                 assert_eq!(roots.len(), 1);
                 assert_eq!(roots[0]["children"].as_array().unwrap().len(), 1);
@@ -5438,10 +6515,13 @@ mod tests {
             })
             .await;
         match metrics_overflow {
-            FunctionResult::Success(Some(value)) => {
-                assert_eq!(value["error"], "start_time value too large");
+            // Arithmetic overflow on the ms->ns conversion is a real input
+            // error, surfaced as a Failure (not a Success with an error field).
+            FunctionResult::Failure(err) => {
+                assert_eq!(err.code, "time_value_overflow");
+                assert_eq!(err.message, "start_time value too large");
             }
-            _ => panic!("expected list_metrics overflow response"),
+            _ => panic!("expected list_metrics overflow failure"),
         }
 
         let metrics_ok = module
@@ -5453,7 +6533,8 @@ mod tests {
             })
             .await;
         match metrics_ok {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 assert!(value["sdk_metrics"].is_array());
                 assert!(value.get("query").is_some());
             }
@@ -5485,7 +6566,8 @@ mod tests {
             })
             .await;
         match logs_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 assert_eq!(value["total"], 1);
                 assert_eq!(value["logs"].as_array().unwrap().len(), 1);
             }
@@ -5493,10 +6575,7 @@ mod tests {
         }
 
         let clear_logs_result = module.clear_logs(LogsClearInput {}).await;
-        assert!(matches!(
-            clear_logs_result,
-            FunctionResult::Success(Some(_))
-        ));
+        assert!(matches!(clear_logs_result, FunctionResult::Success(_)));
         assert_eq!(log_storage.len(), 0);
 
         let rollups_result = module
@@ -5508,7 +6587,8 @@ mod tests {
             })
             .await;
         match rollups_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 assert!(value["rollups"].is_array());
             }
             _ => panic!("expected list_rollups success"),
@@ -5516,7 +6596,8 @@ mod tests {
 
         let health_result = module.health_check(HealthCheckInput {}).await;
         match health_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 assert_eq!(value["status"], "healthy");
                 assert!(value["components"].is_object());
             }
@@ -5525,7 +6606,8 @@ mod tests {
 
         let alerts_result = module.list_alerts(AlertsListInput {}).await;
         match alerts_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 assert!(value["alerts"].is_array());
             }
             _ => panic!("expected list_alerts success"),
@@ -5533,7 +6615,8 @@ mod tests {
 
         let evaluate_result = module.evaluate_alerts(AlertsEvaluateInput {}).await;
         match evaluate_result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 assert!(value.get("evaluated").is_some());
             }
             _ => panic!("expected evaluate_alerts success"),
@@ -5541,7 +6624,7 @@ mod tests {
 
         assert!(matches!(
             module.clear_traces(TracesClearInput {}).await,
-            FunctionResult::Success(Some(_))
+            FunctionResult::Success(_)
         ));
         assert_eq!(span_storage.len(), 0);
     }
@@ -5616,7 +6699,8 @@ mod tests {
             .await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let spans = value["spans"].as_array().expect("spans array");
                 assert_eq!(
                     spans.len(),
@@ -5692,7 +6776,8 @@ mod tests {
             })
             .await;
         match result_root_only {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let spans = value["spans"].as_array().expect("spans array");
                 assert_eq!(spans.len(), 1, "default mode = root only");
                 assert_eq!(spans[0]["span_id"], "root-1");
@@ -5720,7 +6805,8 @@ mod tests {
             })
             .await;
         match result_all {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let spans = value["spans"].as_array().expect("spans array");
                 assert_eq!(spans.len(), 2, "widened mode = root + children");
                 let names: std::collections::HashSet<String> = spans
@@ -5793,7 +6879,8 @@ mod tests {
             .await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let spans = value["spans"].as_array().expect("spans array");
                 assert_eq!(
                     spans.len(),
@@ -5895,7 +6982,8 @@ mod tests {
             .await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let groups = value["groups"].as_array().expect("groups array");
                 assert_eq!(
                     groups.len(),
@@ -5966,7 +7054,8 @@ mod tests {
             .await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let groups = value["groups"].as_array().expect("groups array");
                 assert_eq!(groups.len(), 1, "only M-new should survive since_ms filter");
                 assert_eq!(groups[0]["value"], "M-new");
@@ -6014,7 +7103,8 @@ mod tests {
             .await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let groups = value["groups"].as_array().expect("groups array");
                 assert_eq!(groups.len(), 2, "limit=2 must truncate the 5 groups to 2");
                 // Sorted by first_seen_ms DESC.
@@ -6087,7 +7177,8 @@ mod tests {
             .await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
                 let groups = value["groups"].as_array().expect("groups array");
                 assert_eq!(
                     groups.len(),
@@ -6143,6 +7234,11 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let result = worker.initialize().await;
@@ -6178,6 +7274,11 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let result = worker.initialize().await;
@@ -6213,6 +7314,11 @@ mod tests {
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
             shutdown_tx: Arc::new(shutdown_tx.clone()),
+            worker_shutdown_rx: Arc::new(std::sync::Mutex::new(None)),
+            logs_retention_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_exporter_stop: Arc::new(std::sync::Mutex::new(None)),
+            logs_trigger_stop: Arc::new(std::sync::Mutex::new(None)),
+            apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         let result = worker

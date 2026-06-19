@@ -211,6 +211,7 @@ pub fn is_iii_builtin_function_id(id: &str) -> bool {
         || id.starts_with("iii-stream::")
         || id.starts_with("iii-cron::")
         || id.starts_with("iii-queue::")
+        || id.starts_with("iii-observability::")
         || id.starts_with("bridge.")
         || id.starts_with("motia::")
         || id == "publish"
