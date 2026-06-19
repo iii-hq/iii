@@ -16,7 +16,7 @@ worker to manage the streaming, so scaffold it the same way you scaffolded `link
 `analytics` in Chapter 4:
 
 ```bash
-iii worker add iii-stream@0.19.4-alpha.3
+iii worker add iii-stream
 iii worker init click-streamer --language typescript
 ```
 
