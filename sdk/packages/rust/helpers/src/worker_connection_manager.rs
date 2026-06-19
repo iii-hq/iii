@@ -38,8 +38,8 @@ pub struct AuthResult {
     /// When `None`, all types are allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_trigger_types: Option<Vec<String>>,
-    /// Whether the worker may register new trigger types.
-    #[serde(default = "default_true")]
+    /// Whether the worker may register new trigger types. Defaults to `false`.
+    #[serde(default)]
     pub allow_trigger_type_registration: bool,
     /// Whether the worker may register new functions. Defaults to `true`.
     #[serde(default = "default_true")]
@@ -157,4 +157,23 @@ pub struct OnFunctionRegistrationResult {
     /// Mapped metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Defaults must match the engine's canonical AuthResult
+    // (engine/src/workers/worker/rbac_session.rs).
+    #[test]
+    fn auth_result_defaults_match_engine() {
+        let result: AuthResult = serde_json::from_str("{}").unwrap();
+        assert_eq!(result.allowed_functions, Vec::<String>::new());
+        assert_eq!(result.forbidden_functions, Vec::<String>::new());
+        assert_eq!(result.allowed_trigger_types, None);
+        assert!(!result.allow_trigger_type_registration);
+        assert!(result.allow_function_registration);
+        assert_eq!(result.context, Value::Object(Default::default()));
+        assert_eq!(result.function_registration_prefix, None);
+    }
 }

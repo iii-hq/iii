@@ -54,9 +54,11 @@ class AuthResult(BaseModel):
     """
 
     allowed_functions: list[str] = Field(
+        default_factory=list,
         description="Additional function IDs to allow beyond ``expose_functions``.",
     )
     forbidden_functions: list[str] = Field(
+        default_factory=list,
         description="Function IDs to deny even if they match ``expose_functions``.",
     )
     allowed_trigger_types: list[str] | None = Field(
@@ -64,7 +66,8 @@ class AuthResult(BaseModel):
         description="Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed.",
     )
     allow_trigger_type_registration: bool = Field(
-        description="Whether the worker may register new trigger types.",
+        default=False,
+        description="Whether the worker may register new trigger types. Defaults to ``False``.",
     )
     allow_function_registration: bool = Field(
         default=True,
@@ -75,6 +78,7 @@ class AuthResult(BaseModel):
         description="Optional prefix applied to all function IDs registered by this worker.",
     )
     context: dict[str, Any] = Field(
+        default_factory=dict,
         description="Arbitrary context forwarded to the middleware function on every invocation.",
     )
 
