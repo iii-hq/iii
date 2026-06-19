@@ -70,6 +70,11 @@ by default the call waits for the function to return its result, or for the conf
 fire. Pass a different `TriggerAction` to change that.
 
 <Tabs>
+  <Tab title="CLI">
+    ```bash
+    iii trigger math::add a=2 b=3
+    ```
+  </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
     import { TriggerAction } from "iii-sdk";
@@ -114,11 +119,6 @@ fire. Pass a different `TriggerAction` to change that.
         .await?;
     ```
 
-  </Tab>
-  <Tab title="CLI">
-    ```bash
-    iii trigger math::add a=2 b=3
-    ```
   </Tab>
 </Tabs>
 
