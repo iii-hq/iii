@@ -463,7 +463,7 @@ crate::register_adapter!(<StreamAdapterRegistration> name: "redis", make_adapter
 
 #[cfg(test)]
 mod tests {
-    use iii_sdk::UpdateOp;
+    use iii_helpers::stream::UpdateOp;
     use serde_json::json;
 
     use super::*;

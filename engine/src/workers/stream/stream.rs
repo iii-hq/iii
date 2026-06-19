@@ -1897,7 +1897,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
-                ops: vec![iii_sdk::UpdateOp::set("", updated_data.clone())],
+                ops: vec![iii_helpers::stream::UpdateOp::set("", updated_data.clone())],
             })
             .await;
 
@@ -1962,7 +1962,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
-                ops: vec![iii_sdk::UpdateOp::set("", new_data.clone())],
+                ops: vec![iii_helpers::stream::UpdateOp::set("", new_data.clone())],
             })
             .await;
 

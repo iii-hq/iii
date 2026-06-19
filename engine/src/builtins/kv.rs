@@ -579,7 +579,7 @@ impl BuiltinKvStore {
 
 #[cfg(test)]
 mod test {
-    use iii_sdk::UpdateOp;
+    use iii_helpers::stream::UpdateOp;
 
     use super::*;
 

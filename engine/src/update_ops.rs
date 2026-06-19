@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use iii_sdk::{UpdateOp, UpdateOpError, types::MergePath};
+use iii_helpers::stream::{MergePath, UpdateOp, UpdateOpError};
 use serde_json::{Map, Number, Value};
 
 // Validation bounds for merge ops. Mirrored in
@@ -656,7 +656,7 @@ fn initial_append_value(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use iii_sdk::{UpdateOp, types::MergePath};
+    use iii_helpers::stream::{MergePath, UpdateOp};
     use serde_json::{Number, json};
 
     use super::apply_update_ops;

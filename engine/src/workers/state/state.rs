@@ -1475,7 +1475,7 @@ mod tests {
         let update_input = StateUpdateInput {
             scope: "scope".to_string(),
             key: "k".to_string(),
-            ops: vec![iii_sdk::UpdateOp::Set {
+            ops: vec![iii_helpers::stream::UpdateOp::Set {
                 path: "count".to_string(),
                 value: Some(serde_json::json!(42)),
             }],

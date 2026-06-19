@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use iii_sdk::UpdateOp;
+use iii_helpers::stream::UpdateOp;
 
 pub struct Subscription {
     pub subscription_id: String,

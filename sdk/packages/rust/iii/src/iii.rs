@@ -460,28 +460,28 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
 /// Build the dispatchable handler for a typed async function: deserialize
 /// the JSON input as `T`, run `f`, serialize the result. Deserialization
 /// failures map through `on_bad_request` — [`IntoAsyncHandler`] passes the
-/// default [`IIIError::Serde`] mapper,
+/// default [`Error::Serde`] mapper,
 /// [`RegisterFunction::new_async_with_bad_request`] a caller-supplied one.
 fn async_handler_with<F, T, Fut, R>(
     f: F,
-    on_bad_request: impl Fn(serde_json::Error) -> IIIError + Send + Sync + 'static,
+    on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
 ) -> RemoteFunctionHandler
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + 'static,
-    Fut: std::future::Future<Output = Result<R, IIIError>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
     R: serde::Serialize + Send + 'static,
 {
     Arc::new(
         move |input: Value| -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+            Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
         > {
             match serde_json::from_value::<T>(input) {
                 Ok(arg) => {
                     let fut = f(arg);
                     Box::pin(async move {
                         fut.await.and_then(|val| {
-                            serde_json::to_value(&val).map_err(|e| IIIError::Serde(e.to_string()))
+                            serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
                         })
                     })
                 }
@@ -547,7 +547,7 @@ fn empty_message() -> RegisterFunctionMessage {
 /// - [`RegisterFunction::new_async`] — async equivalent of `new`.
 /// - [`RegisterFunction::new_async_with_bad_request`] — typed async handler
 ///   that routes payload-deserialization failures through a caller-supplied
-///   mapper instead of the SDK's generic [`IIIError::Serde`].
+///   mapper instead of the SDK's generic [`Error::Serde`].
 /// - [`RegisterFunction::http`] — function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
 ///
@@ -598,18 +598,18 @@ impl RegisterFunction {
 
     /// Like [`RegisterFunction::new_async`], but payload-deserialization
     /// failures are routed through `on_bad_request` instead of becoming the
-    /// SDK's generic [`IIIError::Serde`] (which the dispatch loop surfaces as
+    /// SDK's generic [`Error::Serde`] (which the dispatch loop surfaces as
     /// `invocation_failed`). Lets a registration keep typed-handler schema
     /// extraction while owning its wire error contract for malformed
     /// payloads — e.g. a stable error code plus a recovery hint.
     pub fn new_async_with_bad_request<F, T, Fut, R>(
         f: F,
-        on_bad_request: impl Fn(serde_json::Error) -> IIIError + Send + Sync + 'static,
+        on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
     ) -> Self
     where
         F: Fn(T) -> Fut + Send + Sync + 'static,
         T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
-        Fut: std::future::Future<Output = Result<R, IIIError>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
         R: serde::Serialize + schemars::JsonSchema + Send + 'static,
     {
         let mut message = empty_message();
@@ -2053,7 +2053,7 @@ mod tests {
                     message: format!("Hello, {}!", input.name),
                 })
             },
-            |e| IIIError::Remote {
+            |e| Error::Remote {
                 code: "W105".to_string(),
                 message: e.to_string(),
                 stacktrace: None,
@@ -2072,7 +2072,7 @@ mod tests {
         // Malformed payload routes through the custom mapper, not Serde.
         let err = handler(json!({"name": 42})).await.unwrap_err();
         match err {
-            IIIError::Remote {
+            Error::Remote {
                 code, stacktrace, ..
             } => {
                 assert_eq!(code, "W105");
