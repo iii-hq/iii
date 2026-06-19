@@ -10,6 +10,11 @@ type: "reference"
 
   The Node, Python, and Rust SDKs are reorganized for a consistent, well-factored public surface. Names are aligned across the three languages, the shared types move into a new package, and the rest of the root surface is grouped into named submodules. This release is breaking: many symbols move out of the SDK root.
 
+  <Callout type="tip">
+    Upgrading an existing app? Follow the step-by-step
+    [Upgrading from 0.19.x to 0.20.x](/next/upgrading/from-0-19-x) guide.
+  </Callout>
+
   ### Shared types extracted into `@iii-dev/helpers`
 
   The HTTP, queue, stream, and worker-connection-manager types move out of the root SDK into a new separately published package, **`@iii-dev/helpers`** (npm), **`iii-helpers`** (crate and PyPI, import `iii_helpers`), organized into four submodules. The root exports are removed; import these types from the helpers package.
