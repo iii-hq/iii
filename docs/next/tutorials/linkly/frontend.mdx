@@ -132,9 +132,9 @@ worker.registerFunction("link::delete", async (payload: { code: string }) => {
 
 Now add a wrapper that asks the connected browser first, then deletes only if the browser confirms.
 The server-side `worker.trigger` of a browser-registered function is the same primitive you've used
-between server workers, in reverse. This allows us to not just do the typical thing of having the
-browser ask the server for confirmation but doing the reverse and having the server ask the browser.
-Other implementations would achieve this with SSE but here it works just like normal synchronous
+between server workers, in reverse. This lets us reverse the typical pattern: instead of the browser asking the server for
+confirmation, the server asks the browser.
+Other implementations would achieve this with SSE but here it works like normal synchronous
 code.
 
 ```typescript link/src/index.ts

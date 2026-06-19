@@ -161,7 +161,7 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
 ## Add click tracking
 
 Since we have a database now, you can start click tracking. Make a new function
-(`link::record_click`) to do just that and save it to the database. The next chapter will move this
+(`link::record_click`) to do that and save it to the database. The next chapter will move this
 work onto a queue so that it can run without touching the redirect's logic. Add it below
 `link::resolve`:
 

@@ -27,7 +27,7 @@ worker. An RBAC listener runs on its own port, gates every connection through an
 and restricts each session to an allowlist of functions.
 
 <Warning>
-  Declaring **any** `iii-worker-manager` in `config.yaml` replaces the engine's built-in `49134`
+  Declaring **any** `iii-worker-manager` in `config.yaml` replaces the default `49134`
   trusted listener. You must also declare the trusted `49134` listener yourself alongside
   the RBAC one, otherwise your own workers lose the port they connect through.
 </Warning>
@@ -38,7 +38,7 @@ one on a separate port (here `3110`, for browsers and other untrusted connection
 ```yaml config.yaml
 workers:
   # ...
-  # Trusted listener for your own workers. Replaces the engine's built-in 49134.
+  # Trusted listener for your own workers. Replaces the default 49134.
   - name: iii-worker-manager
     config:
       port: 49134
@@ -73,12 +73,12 @@ A function's [`metadata`](./functions#attach-metadata) is an arbitrary JSON obje
 function is registered, so you can shape it however your access model needs and gate on exactly the
 fields you choose, for example `{ public: true }`, `{ tier: "premium" }`, or `{ scopes: ["read"] }`.
 
-<Warn>
+<Warning>
   All access should be gated system-side. You should never rely on an untrusted worker to define
   what they can or can't have access to. For example `metadata.public = true` in the above example
   is defined and managed by the trusted `iii-worker-manager` and is not part of a payload sent by
   the worker.
-</Warn>
+</Warning>
 
 ## Write the auth function
 
