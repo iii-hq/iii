@@ -77,8 +77,9 @@ The protocol message and register-input types (`MessageType`, `RegisterFunctionM
 the `iii.protocol` submodule (`from iii.protocol import MessageType`). They are not importable from
 the package root.
 
-The `TriggerActionVoid` type is provided only by the `iii.trigger` submodule
-(`from iii.trigger import TriggerActionVoid`). It is not importable from the package root.
+The `TriggerActionVoid` type is exported from the package root (`from iii import TriggerActionVoid`),
+alongside `TriggerActionEnqueue`, and is also grouped under the `iii.trigger` submodule
+(`from iii.trigger import TriggerActionVoid`).
 
 The `extract_request_format`, `extract_response_format`, and `python_type_to_format` helpers are
 provided only by the `iii.utils` submodule (`from iii.utils import python_type_to_format`). They are

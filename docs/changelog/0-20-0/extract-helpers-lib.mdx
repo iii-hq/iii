@@ -19,13 +19,15 @@ The user-facing types that the three SDKs share with the engine move out of the 
 | Submodule | Symbols |
 | --- | --- |
 | http | `HttpAuthConfig`, `HttpInvocationConfig`, `HttpMethod`, the `http` handler helper, buffered `HttpRequest` and `HttpResponse` |
-| queue | `EnqueueResult` |
+| queue | `EnqueueResult` (also re-exported from the root SDK, see below) |
 | stream | the stream trigger configs, events, IO inputs, auth and result types, and the update operations (`UpdateOp`, `UpdateOpError`, `MergePath`, `UpdateSet`, `UpdateMerge`, and the other `Update*` variants) |
 | worker-connection-manager | `AuthInput`, `AuthResult`, and the six `On{Function,Trigger,TriggerType}Registration{Input,Result}` types |
 
 ## What stays in the root SDK
 
 Types that reference core-only types stay in the root SDK in all three languages, because moving them would create a dependency cycle from the helpers package back into the core SDK: `IStream`, the streaming `StreamRequest` and `StreamResponse`, `MiddlewareFunctionInput`, and `TriggerActionEnqueue`. The root SDK depends on `iii-helpers` and imports the moved types from the submodules internally where its own code needs them.
+
+`EnqueueResult` is the exception in the `queue` submodule: its canonical home is `iii_helpers::queue`, but it is also re-exported from the root SDK as the return companion to `TriggerAction.Enqueue`, so it remains importable from `iii-sdk` / `iii` / `iii_sdk` without a migration.
 
 ## Migration
 
@@ -35,10 +37,10 @@ Node:
 
 ```ts
 // Before
-import { HttpAuthConfig, EnqueueResult } from 'iii-sdk'
+import { HttpAuthConfig } from 'iii-sdk'
 // After
 import { HttpAuthConfig } from '@iii-dev/helpers/http'
-import { EnqueueResult } from '@iii-dev/helpers/queue'
+// EnqueueResult needs no migration; it stays importable from 'iii-sdk'
 ```
 
 Python:

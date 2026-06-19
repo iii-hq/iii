@@ -28,8 +28,9 @@ The `queue` submodule defines the types used for queue-routed invocations.
 ### `EnqueueResult`
 
 Result returned when a function is invoked with the `enqueue` action. The engine acknowledges the
-enqueue and returns a receipt identifier. `EnqueueResult` is provided by the `queue` submodule and
-must be imported from there (`@iii-dev/helpers/queue`, `iii_helpers.queue`, `iii_helpers::queue`).
+enqueue and returns a receipt identifier. `EnqueueResult` is defined by the `queue` submodule
+(`@iii-dev/helpers/queue`, `iii_helpers.queue`, `iii_helpers::queue`) and is also re-exported from
+the root SDK (`iii-sdk`, `iii`, `iii_sdk`) as the return companion to `TriggerAction.Enqueue`.
 
 <CodeGroup>
 

@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import type { EnqueueResult } from '../src/index'
 import { registerWorker } from '../src/index'
 import { iii } from './utils'
 
@@ -49,5 +50,11 @@ describe('Package Exports', () => {
   it('exposes the TelemetryOptions type via the barrel', async () => {
     // Type-only; presence is enforced by tsc. This asserts the module resolves.
     await expect(import('../src/index')).resolves.toBeDefined()
+  })
+
+  it('re-exports the EnqueueResult type from the barrel', () => {
+    // Type-only; presence is enforced by tsc.
+    const receipt: EnqueueResult = { messageReceiptId: 'abc' }
+    expect(receipt.messageReceiptId).toBe('abc')
   })
 })
