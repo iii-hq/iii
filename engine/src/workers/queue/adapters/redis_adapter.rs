@@ -353,6 +353,7 @@ impl QueueAdapter for RedisAdapter {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn publish_to_function_queue(
         &self,
         queue_name: &str,
@@ -363,6 +364,8 @@ impl QueueAdapter for RedisAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        // RabbitMQ-only feature; the redis pub/sub adapter ignores it.
+        _priority: Option<u8>,
     ) {
         let channel = format!("__queue::{}", queue_name);
         let publisher = Arc::clone(&self.publisher);

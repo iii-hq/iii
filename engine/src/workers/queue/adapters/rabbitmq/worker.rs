@@ -27,6 +27,7 @@ pub struct Worker {
     engine: Arc<Engine>,
     semaphore: Option<Arc<Semaphore>>,
     queue_mode: QueueMode,
+    prefetch_count: u16,
 }
 
 impl Worker {
@@ -48,6 +49,7 @@ impl Worker {
             engine,
             semaphore,
             queue_mode,
+            prefetch_count,
         }
     }
 
@@ -59,6 +61,20 @@ impl Worker {
         consumer_tag: String,
         queue_name: String,
     ) {
+        // Apply per-consumer prefetch (QoS) so the broker keeps a backlog in the
+        // queue instead of shipping everything to this consumer at once. Without
+        // it a priority subscriber queue can't reorder (the broker only orders
+        // messages it has yet to deliver), and the queue loses backpressure. The
+        // function-queue consumer sets QoS the same way.
+        if let Err(e) = self
+            .channel
+            .basic_qos(self.prefetch_count, BasicQosOptions::default())
+            .await
+        {
+            tracing::error!(topic = %topic, error = ?e, "Failed to set consumer QoS");
+            return;
+        }
+
         let mut consumer = match self
             .channel
             .basic_consume(

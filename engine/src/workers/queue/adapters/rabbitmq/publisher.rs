@@ -128,10 +128,16 @@ impl Publisher {
     ) -> Result<()> {
         let payload = serde_json::to_vec(job)?;
 
-        let properties = lapin::BasicProperties::default()
+        let mut properties = lapin::BasicProperties::default()
             .with_content_type("application/json".into())
             .with_delivery_mode(2)
             .with_headers(headers.unwrap_or_default());
+        // Carry the job's priority through fanout publishes, requeues, and
+        // DLQ-redrive republishes so ordering survives retries on priority
+        // queues. No-op on queues without `x-max-priority`.
+        if let Some(p) = job.priority {
+            properties = properties.with_priority(p);
+        }
 
         self.channel
             .basic_publish(

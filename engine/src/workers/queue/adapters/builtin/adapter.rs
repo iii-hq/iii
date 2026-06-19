@@ -395,6 +395,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn publish_to_function_queue(
         &self,
         queue_name: &str,
@@ -405,6 +406,9 @@ impl QueueAdapter for BuiltinQueueAdapter {
         backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        // Priority is a RabbitMQ-only feature; the in-process builtin queue
+        // ignores it.
+        _priority: Option<u8>,
     ) {
         let namespaced_queue = format!("__fn_queue::{}", queue_name);
         let job = Job {
@@ -700,6 +704,7 @@ mod tests {
             delay_seconds: None,
             backoff_type: None,
             backoff_delay_ms: Some(1000),
+            max_priority: None,
         };
 
         let subscription_config = Some(config).map(|c| SubscriptionConfig {
@@ -729,6 +734,7 @@ mod tests {
             delay_seconds: None,
             backoff_type: None,
             backoff_delay_ms: None,
+            max_priority: None,
         };
 
         let subscription_config = Some(config).map(|c| SubscriptionConfig {
@@ -756,6 +762,7 @@ mod tests {
             delay_seconds: None,
             backoff_type: None,
             backoff_delay_ms: None,
+            max_priority: None,
         };
 
         let subscription_config = Some(config).map(|c| SubscriptionConfig {
@@ -782,6 +789,7 @@ mod tests {
             delay_seconds: None,
             backoff_type: None,
             backoff_delay_ms: None,
+            max_priority: None,
         };
 
         let subscription_config = Some(config).map(|c| SubscriptionConfig {
@@ -859,6 +867,7 @@ mod tests {
             delay_seconds: None,
             backoff_type: None,
             backoff_delay_ms: Some(25),
+            max_priority: None,
         };
         adapter
             .subscribe("jobs", "sub-fifo", "queue.success", None, Some(fifo_config))
@@ -872,6 +881,7 @@ mod tests {
             delay_seconds: None,
             backoff_type: None,
             backoff_delay_ms: Some(10),
+            max_priority: None,
         };
         adapter
             .subscribe(
@@ -936,6 +946,7 @@ mod tests {
                 1000,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -981,6 +992,7 @@ mod tests {
                 "msg-1",
                 1,
                 1000,
+                None,
                 None,
                 None,
             )
@@ -1055,6 +1067,7 @@ mod tests {
                     &format!("msg-{i}"),
                     1,
                     1000,
+                    None,
                     None,
                     None,
                 )
@@ -1133,6 +1146,7 @@ mod tests {
                 1000,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -1174,6 +1188,7 @@ mod tests {
                 "test-msg-id",
                 3,
                 1000,
+                None,
                 None,
                 None,
             )
@@ -1220,6 +1235,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                 )
@@ -1277,6 +1293,7 @@ mod tests {
                     1000,
                     None,
                     None,
+                    None,
                 )
                 .await;
         }
@@ -1319,6 +1336,7 @@ mod tests {
                 1000,
                 Some("00-abc-def-01".to_string()),
                 Some("key=value".to_string()),
+                None,
             )
             .await;
 

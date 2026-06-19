@@ -320,6 +320,7 @@ impl QueueAdapter for BridgeAdapter {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn publish_to_function_queue(
         &self,
         queue_name: &str,
@@ -330,6 +331,9 @@ impl QueueAdapter for BridgeAdapter {
         _backoff_ms: u64,
         _traceparent: Option<String>,
         _baggage: Option<String>,
+        // Priority is resolved by the remote engine via its own adapter; the
+        // bridge forwards the enqueue unchanged.
+        _priority: Option<u8>,
     ) {
         if let Err(e) = self
             .bridge

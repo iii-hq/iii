@@ -24,6 +24,10 @@ pub struct SubscriberQueueConfig {
     pub delay_seconds: Option<u64>,
     pub backoff_type: Option<String>,
     pub backoff_delay_ms: Option<u64>,
+    /// Declares this subscriber's queue as a RabbitMQ priority queue with this
+    /// many levels (`x-max-priority`, 1–255). RabbitMQ-only; the priority value
+    /// of each message comes from the adapter-level `priority_field`.
+    pub max_priority: Option<u8>,
 }
 
 impl SubscriberQueueConfig {
@@ -93,6 +97,14 @@ impl SubscriberQueueConfig {
             as_u64,
             |v| v
         );
+        extract_field!(
+            config,
+            "maxPriority",
+            subscriber_config.max_priority,
+            has_any_value,
+            as_u64,
+            |v| v as u8
+        );
 
         if has_any_value {
             Some(subscriber_config)
@@ -133,6 +145,18 @@ mod tests {
             Some("exponential".to_string())
         );
         assert_eq!(subscriber_config.backoff_delay_ms, Some(2000));
+    }
+
+    #[test]
+    fn test_from_value_parses_max_priority() {
+        let config = json!({ "maxPriority": 10 });
+        let result = SubscriberQueueConfig::from_value(Some(&config)).expect("should parse");
+        assert_eq!(result.max_priority, Some(10));
+
+        // Absent maxPriority leaves it unset (not a priority queue).
+        let without = json!({ "type": "standard" });
+        let parsed = SubscriberQueueConfig::from_value(Some(&without)).expect("should parse");
+        assert_eq!(parsed.max_priority, None);
     }
 
     #[test]

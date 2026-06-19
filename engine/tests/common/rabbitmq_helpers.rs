@@ -75,6 +75,53 @@ pub fn rabbitmq_queue_config_custom(
     })
 }
 
+/// Creates a RabbitMQ adapter queue config with a single priority queue named
+/// `"{prefix}-priority"`: `concurrency: 1` (so priority ordering is observable),
+/// `max_priority`, and `priority_field` reading the per-message priority from
+/// `data`.
+pub fn rabbitmq_priority_queue_config(
+    amqp_url: &str,
+    prefix: &str,
+    max_priority: u8,
+    priority_field: &str,
+) -> Value {
+    json!({
+        "adapter": {
+            "name": "rabbitmq",
+            "config": {
+                "amqp_url": amqp_url
+            }
+        },
+        "queue_configs": {
+            format!("{prefix}-priority"): {
+                "type": "standard",
+                "concurrency": 1,
+                "max_retries": 3,
+                "backoff_ms": 200,
+                "poll_interval_ms": 100,
+                "max_priority": max_priority,
+                "priority_field": priority_field
+            }
+        }
+    })
+}
+
+/// Creates a RabbitMQ adapter config whose **adapter-level** `priority_field` is
+/// used to stamp the priority of messages published to topics (pub/sub fanout).
+/// No function queues are declared — the subscriber declares its own priority
+/// queue via its `queue_config.maxPriority`.
+pub fn rabbitmq_priority_topic_config(amqp_url: &str, priority_field: &str) -> Value {
+    json!({
+        "adapter": {
+            "name": "rabbitmq",
+            "config": {
+                "amqp_url": amqp_url,
+                "priority_field": priority_field
+            }
+        }
+    })
+}
+
 /// Creates a RabbitMQ adapter queue config with the given AMQP URL and prefix.
 /// Defines two queues: "{prefix}-default" (standard) and "{prefix}-payment" (fifo).
 pub fn rabbitmq_queue_config(amqp_url: &str, prefix: &str) -> Value {
