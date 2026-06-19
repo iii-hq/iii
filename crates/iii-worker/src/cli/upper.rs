@@ -143,8 +143,8 @@ fn write_sparse_image(gz: &[u8], dest: &Path) -> io::Result<()> {
 /// `gen-golden` example at vendor-regen time; the result is committed and
 /// `include_bytes!`d above.
 pub fn build_golden(raw_ext4: &Path, out_gz: &Path) -> io::Result<GoldenStats> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     let mut src = BufReader::new(File::open(raw_ext4)?);
     let total_len = std::fs::metadata(raw_ext4)?.len();
@@ -302,10 +302,16 @@ mod tests {
         let restored = std::fs::read(&dest).unwrap();
         assert_eq!(restored.len() as u64, total);
         assert!(restored[..BLOCK_SIZE].iter().all(|&b| b == 0xAB));
-        assert!(restored[BLOCK_SIZE..100 * BLOCK_SIZE].iter().all(|&b| b == 0));
-        assert!(restored[100 * BLOCK_SIZE..101 * BLOCK_SIZE]
-            .iter()
-            .all(|&b| b == 0xCD));
+        assert!(
+            restored[BLOCK_SIZE..100 * BLOCK_SIZE]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        assert!(
+            restored[100 * BLOCK_SIZE..101 * BLOCK_SIZE]
+                .iter()
+                .all(|&b| b == 0xCD)
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

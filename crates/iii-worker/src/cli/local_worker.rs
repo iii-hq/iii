@@ -1288,7 +1288,11 @@ async fn start_worker_impl(
     // so dep installs/build outputs never write the host repo (no empty dep
     // folders). Bundles and legacy keep the live /workspace virtiofs mount.
     let copy_in = overlay && !is_bundle;
-    let workspace_guest = if copy_in { "/mnt/host-src" } else { "/workspace" };
+    let workspace_guest = if copy_in {
+        "/mnt/host-src"
+    } else {
+        "/workspace"
+    };
     let mut mounts = build_local_mounts(project_path, workspace_guest);
     if overlay {
         // Make the host-written dev-run.sh visible in the (post-pivot) overlay
@@ -1319,7 +1323,11 @@ async fn start_worker_impl(
             match crate::cli::upper::ensure_upper_ext4(&managed_dir) {
                 Ok(p) => Some(p),
                 Err(e) => {
-                    eprintln!("{} failed to materialize overlay upper: {}", "error:".red(), e);
+                    eprintln!(
+                        "{} failed to materialize overlay upper: {}",
+                        "error:".red(),
+                        e
+                    );
                     return 1;
                 }
             }
@@ -1547,8 +1555,9 @@ mod tests {
             env: HashMap::new(),
             base_image: None,
         };
-        let script =
-            build_libkrun_local_script(&project, false, /*is_bundle=*/ false, /*overlay=*/ false);
+        let script = build_libkrun_local_script(
+            &project, false, /*is_bundle=*/ false, /*overlay=*/ false,
+        );
         assert!(script.contains("apt-get install nodejs"));
         assert!(script.contains("npm install"));
         assert!(script.contains("node server.js"));
@@ -1574,8 +1583,9 @@ mod tests {
             env: HashMap::new(),
             base_image: None,
         };
-        let script =
-            build_libkrun_local_script(&project, true, /*is_bundle=*/ false, /*overlay=*/ false);
+        let script = build_libkrun_local_script(
+            &project, true, /*is_bundle=*/ false, /*overlay=*/ false,
+        );
         assert!(!script.contains("apt-get install nodejs"));
         assert!(!script.contains("npm install"));
         assert!(script.contains("node server.js"));
@@ -1596,8 +1606,9 @@ mod tests {
         // Under overlay the host `prepared` flag is ignored: the block is
         // always emitted but guarded in-guest on the persistent marker, so the
         // install runs once and is skipped on later boots from the same upper.
-        let script =
-            build_libkrun_local_script(&project, /*prepared=*/ true, /*is_bundle=*/ false, true);
+        let script = build_libkrun_local_script(
+            &project, /*prepared=*/ true, /*is_bundle=*/ false, true,
+        );
         assert!(script.contains("if [ ! -e /var/.iii-prepared ]; then"));
         assert!(script.contains("apt-get install nodejs"));
         assert!(script.contains("npm install"));
@@ -1643,8 +1654,9 @@ mod tests {
             env: HashMap::new(),
             base_image: None,
         };
-        let script =
-            build_libkrun_local_script(&project, /*prepared=*/ false, /*is_bundle=*/ false, false);
+        let script = build_libkrun_local_script(
+            &project, /*prepared=*/ false, /*is_bundle=*/ false, false,
+        );
         assert!(script.contains("mount --bind"));
         assert!(script.contains("/var/iii/deps"));
         assert!(!script.contains("SRC=/mnt/host-src"));

@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use backhand::compression::Compressor;
 use backhand::kind::{self, Kind};
-use backhand::{FilesystemCompressor, FilesystemWriter, NodeHeader, DEFAULT_BLOCK_SIZE};
+use backhand::{DEFAULT_BLOCK_SIZE, FilesystemCompressor, FilesystemWriter, NodeHeader};
 
 /// Per-call sequence so concurrent builds (even within ONE process — the
 /// engine starts workers as concurrent async tasks) never share a temp path.
@@ -105,8 +105,7 @@ fn add_dir(w: &mut FilesystemWriter, root: &Path, dir: &Path) -> Result<(), Stri
                 .map_err(|e| format!("push_dir {}: {e}", sqfs_path.display()))?;
             add_dir(w, root, &path)?;
         } else if ft.is_file() {
-            let file =
-                File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+            let file = File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
             w.push_file(file, &sqfs_path, header)
                 .map_err(|e| format!("push_file {}: {e}", sqfs_path.display()))?;
         }
@@ -164,7 +163,10 @@ pub fn ensure_base_squashfs(base_dir: &Path) -> Result<std::path::PathBuf, Strin
         // rename then makes it last-writer-wins, each a complete valid image.
         let tmp = base_dir.with_file_name(format!(
             "{}.sqfs.{}.{}.partial",
-            base_dir.file_name().and_then(|s| s.to_str()).unwrap_or("base"),
+            base_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("base"),
             std::process::id(),
             SQFS_BUILD_SEQ.fetch_add(1, Ordering::Relaxed),
         ));
@@ -172,8 +174,7 @@ pub fn ensure_base_squashfs(base_dir: &Path) -> Result<std::path::PathBuf, Strin
         build_squashfs(base_dir, &tmp).inspect_err(|_| {
             let _ = fs::remove_file(&tmp);
         })?;
-        fs::rename(&tmp, &out)
-            .map_err(|e| format!("finalize squashfs {}: {e}", out.display()))?;
+        fs::rename(&tmp, &out).map_err(|e| format!("finalize squashfs {}: {e}", out.display()))?;
     }
     Ok(out)
 }
@@ -186,7 +187,10 @@ pub fn remove_base_squashfs(base_dir: &Path) {
     let _ = fs::remove_file(&out);
     // Sweep any leftover build partials (`<name>.sqfs.partial` and the
     // per-pid `<name>.sqfs.<pid>.partial`) orphaned by a crashed build.
-    let name = base_dir.file_name().and_then(|s| s.to_str()).unwrap_or("base");
+    let name = base_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("base");
     let prefix = format!("{name}.sqfs");
     if let Some(parent) = out.parent()
         && let Ok(rd) = fs::read_dir(parent)

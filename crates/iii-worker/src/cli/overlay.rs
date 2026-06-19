@@ -152,7 +152,10 @@ mod tests {
 
         migrate_to_overlay(&d);
 
-        assert!(!d.join("var/iii/deps").exists(), "legacy dep cache not GC'd");
+        assert!(
+            !d.join("var/iii/deps").exists(),
+            "legacy dep cache not GC'd"
+        );
         assert!(
             !d.join("var/.iii-prepared").exists(),
             "stale prepared marker not removed"

@@ -771,24 +771,24 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         // when overlay is active. Built in START so a failure fails the start
         // loudly (never a silent fall back to a per-worker clone).
         let (oci_rootfs_lower, oci_rootfs_mode, oci_rootfs_upper) = if overlay {
-                let sqfs = match crate::cli::squashfs::ensure_base_squashfs(&rootfs_dir) {
-                    Ok(s) => s,
-                    Err(e) => return Err(anyhow::anyhow!("failed to build base squashfs: {e}")),
-                };
-                let upper = if crate::cli::upper::has_golden() {
-                    match crate::cli::upper::ensure_upper_ext4(&worker_dir) {
-                        Ok(p) => Some(p),
-                        Err(e) => {
-                            return Err(anyhow::anyhow!("failed to materialize overlay upper: {e}"));
-                        }
-                    }
-                } else {
-                    None
-                };
-                (Some(sqfs), "overlay".to_string(), upper)
-            } else {
-                (None, String::new(), None)
+            let sqfs = match crate::cli::squashfs::ensure_base_squashfs(&rootfs_dir) {
+                Ok(s) => s,
+                Err(e) => return Err(anyhow::anyhow!("failed to build base squashfs: {e}")),
             };
+            let upper = if crate::cli::upper::has_golden() {
+                match crate::cli::upper::ensure_upper_ext4(&worker_dir) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("failed to materialize overlay upper: {e}"));
+                    }
+                }
+            } else {
+                None
+            };
+            (Some(sqfs), "overlay".to_string(), upper)
+        } else {
+            (None, String::new(), None)
+        };
 
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("__vm-boot");

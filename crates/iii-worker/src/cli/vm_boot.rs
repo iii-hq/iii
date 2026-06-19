@@ -765,7 +765,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             // ponytail: flock is per-host; a cross-host lock manager only if
             // workers ever share storage across machines.
             use std::os::unix::io::AsRawFd;
-            match std::fs::OpenOptions::new().read(true).write(true).open(&upper) {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&upper)
+            {
                 Ok(lock) => {
                     // Bounded retry: on a restart, kill_stale_worker SIGKILLs the
                     // old __vm-boot but returns before the kernel has reaped it
