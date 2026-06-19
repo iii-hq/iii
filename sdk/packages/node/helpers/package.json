@@ -37,6 +37,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "docs:json": "typedoc",
     "test": "vitest run",
     "type-check": "tsc --noEmit"
   },
@@ -59,6 +60,7 @@
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^2.1.0",
     "tsdown": "^0.21.4",
+    "typedoc": "^0.28.17",
     "typescript": "^5.9.3",
     "vitest": "^2.1.0"
   }

@@ -140,23 +140,27 @@
               },
               {
                 "group": "Language SDKs",
+                "expanded": true,
                 "pages": [
-                  "next/sdk-reference/node-sdk",
-                  "next/sdk-reference/python-sdk",
-                  "next/sdk-reference/rust-sdk",
-                  "next/sdk-reference/browser-sdk"
+                  "next/api-reference/sdk-node",
+                  "next/api-reference/sdk-python",
+                  "next/api-reference/sdk-rust",
+                  "next/api-reference/sdk-browser"
+                ]
+              },
+              {
+                "group": "Helpers",
+                "expanded": true,
+                "pages": [
+                  "next/api-reference/helpers-node",
+                  "next/api-reference/helpers-python",
+                  "next/api-reference/helpers-rust"
                 ]
               },
               {
                 "group": "CLI reference",
                 "pages": [
                   "next/cli-reference/index"
-                ]
-              },
-              {
-                "group": "Helpers",
-                "pages": [
-                  "next/sdk-reference/helpers-lib"
                 ]
               }
             ]

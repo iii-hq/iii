@@ -1,0 +1,617 @@
+---
+title: "Python SDK"
+description: "API reference for the iii SDK for Python."
+---
+
+{/* AUTO-GENERATED FILE. Do not edit manually. Run docs/next/scripts/generate-api-docs.mts (see the Generate API Docs workflow). */}
+
+## Installation
+
+```bash
+pip install iii-sdk
+```
+
+## Initialization
+
+### register_worker
+
+Create an III client and connect to the engine.
+
+Blocks until the WebSocket connection is established and ready.
+
+**Signature**
+
+```python
+register_worker(address: str, options: InitOptions | None = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | `str` | Yes | - |
+| `options` | [`InitOptions`](#initoptions) \| None | No | - |
+
+#### Example
+
+```python
+from iii import register_worker, InitOptions
+iii = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
+```
+
+## Methods
+
+### register_function
+
+
+
+**Signature**
+
+```python
+register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `str` | Yes | - |
+| `handler_or_invocation` | `RemoteFunctionHandler \| HttpInvocationConfig` | Yes | - |
+
+### register_trigger
+
+
+
+**Signature**
+
+```python
+register_trigger(trigger: RegisterTriggerInput | dict[str, Any])
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger` | [`RegisterTriggerInput`](#registertriggerinput) \| dict[str, Any] | Yes | - |
+
+### register_trigger_type
+
+
+
+**Signature**
+
+```python
+register_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any], handler: TriggerHandler[Any])
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_type` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) \| dict[str, Any] | Yes | - |
+| `handler` | [`TriggerHandler`](#triggerhandler)[Any] | Yes | - |
+
+### shutdown
+
+
+
+**Signature**
+
+```python
+shutdown()
+```
+
+### trigger
+
+
+
+**Signature**
+
+```python
+trigger(request: dict[str, Any] | TriggerRequest)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | dict[str, Any] \| [`TriggerRequest`](#triggerrequest) | Yes | - |
+
+### unregister_trigger_type
+
+
+
+**Signature**
+
+```python
+unregister_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any])
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_type` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) \| dict[str, Any] | Yes | - |
+
+## Types
+
+### iii
+
+[`InitOptions`](#initoptions) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse) · [`TelemetryOptions`](#telemetryoptions) · [`TriggerAction`](#triggeraction) · [`TriggerActionEnqueue`](#triggeractionenqueue)
+
+#### InitOptions
+
+Options for configuring the III SDK.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enable_metrics_reporting` | `bool` | No | Enable worker metrics via OpenTelemetry. Default ``True``. |
+| `headers` | `dict[str, str] \| None` | No | - |
+| `invocation_timeout_ms` | `int` | No | Default timeout for ``trigger()`` in milliseconds. Default ``30000``. |
+| `otel` | `OtelConfig \| dict[str, Any] \| None` | No | OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable. |
+| `reconnection_config` | `ReconnectionConfig \| None` | No | WebSocket reconnection behavior. |
+| `telemetry` | [`TelemetryOptions`](#telemetryoptions) \| None | No | Internal telemetry metadata. |
+| `worker_description` | `str \| None` | No | One-line, human/LLM-readable summary of what this worker does. Surfaces in ``engine::workers::list`` / ``engine::workers::info``. |
+| `worker_name` | `str \| None` | No | Display name for this worker. Defaults to ``hostname:pid``. |
+
+#### MiddlewareFunctionInput
+
+Input passed to the RBAC middleware function on every function invocation
+through the RBAC port.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Routing action, if any. |
+| `context` | `dict[str, Any]` | No | Auth context returned by the auth function for this session. |
+| `function_id` | `str` | No | ID of the function being invoked. |
+| `payload` | `dict[str, Any]` | No | Payload sent by the caller. |
+
+#### StreamRequest
+
+Streaming request without the response writer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | `Any` | Yes | - |
+| `headers` | `dict[str, str \| list[str]]` | Yes | - |
+| `method` | `str` | Yes | - |
+| `path_params` | `dict[str, str]` | Yes | - |
+| `query_params` | `dict[str, str \| list[str]]` | Yes | - |
+| `request_body` | [`ChannelReader`](#channelreader) | Yes | - |
+
+#### StreamResponse
+
+Streaming response built on top of a ChannelWriter.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream` | `WritableStream` | Yes | - |
+| `writer` | [`ChannelWriter`](#channelwriter) | Yes | - |
+
+#### TelemetryOptions
+
+Telemetry metadata to be reported to the engine.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `amplitude_api_key` | `str \| None` | No | Amplitude API key for product analytics. |
+| `framework` | `str \| None` | No | Framework name (e.g. ``motia``) if applicable. |
+| `language` | `str \| None` | No | Programming language of the worker (e.g. ``python``). |
+| `project_name` | `str \| None` | No | Name of the project this worker belongs to. |
+
+#### TriggerAction
+
+Factory for creating trigger actions used with ``trigger()``.
+
+#### TriggerActionEnqueue
+
+Routes the invocation through a named queue for async processing.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `queue` | `str` | Yes | Name of the target queue. |
+| `type` | `Literal['enqueue']` | No | Always ``'enqueue'``. |
+
+### iii.channel
+
+[`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`StreamChannelRef`](#streamchannelref)
+
+#### Channel
+
+A streaming channel pair for worker-to-worker data transfer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reader` | [`ChannelReader`](#channelreader) | Yes | - |
+| `reader_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
+| `writer` | [`ChannelWriter`](#channelwriter) | Yes | - |
+| `writer_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
+
+#### ChannelReader
+
+WebSocket-backed reader for streaming binary data and text messages.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream` | `Any` | No | - |
+
+#### ChannelWriter
+
+WebSocket-backed writer for streaming binary data and text messages.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream` | `Any` | No | - |
+
+#### StreamChannelRef
+
+Reference to a streaming channel for worker-to-worker data transfer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `access_key` | `str` | No | Secret key for authenticating channel access. |
+| `channel_id` | `str` | No | Unique channel identifier. |
+| `direction` | `Literal['read', 'write']` | No | Channel direction (``read`` or ``write``). |
+
+### iii.engine
+
+[`EngineFunctions`](#enginefunctions) · [`EngineTriggers`](#enginetriggers)
+
+#### EngineFunctions
+
+Engine function ids for internal operations (parity with the Node SDK).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `INFO_FUNCTIONS` | `Final[str]` | No | - |
+| `INFO_REGISTERED_TRIGGERS` | `Final[str]` | No | - |
+| `INFO_TRIGGERS` | `Final[str]` | No | - |
+| `INFO_WORKERS` | `Final[str]` | No | - |
+| `LIST_FUNCTIONS` | `Final[str]` | No | - |
+| `LIST_REGISTERED_TRIGGERS` | `Final[str]` | No | - |
+| `LIST_TRIGGERS` | `Final[str]` | No | - |
+| `LIST_WORKERS` | `Final[str]` | No | - |
+| `REGISTER_WORKER` | `Final[str]` | No | - |
+
+#### EngineTriggers
+
+Engine trigger ids (parity with the Node SDK).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `FUNCTIONS_AVAILABLE` | `Final[str]` | No | - |
+| `LOG` | `Final[str]` | No | - |
+
+### iii.errors
+
+[`InvocationError`](#invocationerror)
+
+#### InvocationError
+
+Raised when an invocation dispatched by the SDK fails.
+
+Inspect ``err.code`` to react to a specific category (e.g.
+``'FORBIDDEN'`` for RBAC denials, ``'TIMEOUT'`` for timeouts). Catch
+this class to handle every rejection. ``except Exception`` continues to
+work because ``InvocationError`` inherits from ``Exception``.
+
+Attributes are read-only after construction. ``stacktrace`` is the
+engine-side trace when the remote handler raised; it may include
+internal file paths and should not be surfaced to end users. ``str(err)``
+intentionally never includes the stacktrace.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `Any` | No | - |
+| `function_id` | `Any` | No | - |
+| `invocation_id` | `Any` | No | - |
+| `message` | `Any` | No | - |
+| `stacktrace` | `Any` | No | - |
+
+### iii.internal
+
+[`InternalHttpRequest`](#internalhttprequest)
+
+#### InternalHttpRequest
+
+HTTP request with embedded channel references for streaming.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | `Any` | Yes | - |
+| `headers` | `dict[str, str \| list[str]]` | Yes | - |
+| `method` | `str` | Yes | - |
+| `path_params` | `dict[str, str]` | Yes | - |
+| `query_params` | `dict[str, str \| list[str]]` | Yes | - |
+| `request_body` | [`ChannelReader`](#channelreader) | Yes | - |
+| `response` | [`ChannelWriter`](#channelwriter) | Yes | - |
+
+### iii.protocol
+
+[`MessageType`](#messagetype) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`TriggerRequest`](#triggerrequest)
+
+#### MessageType
+
+Message types for iii communication.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `INVOCATION_RESULT` | `Any` | No | - |
+| `INVOKE_FUNCTION` | `Any` | No | - |
+| `REGISTER_FUNCTION` | `Any` | No | - |
+| `REGISTER_SERVICE` | `Any` | No | - |
+| `REGISTER_TRIGGER` | `Any` | No | - |
+| `REGISTER_TRIGGER_TYPE` | `Any` | No | - |
+| `TRIGGER_REGISTRATION_RESULT` | `Any` | No | - |
+| `UNREGISTER_FUNCTION` | `Any` | No | - |
+| `UNREGISTER_TRIGGER` | `Any` | No | - |
+| `UNREGISTER_TRIGGER_TYPE` | `Any` | No | - |
+| `WORKER_REGISTERED` | `Any` | No | - |
+
+#### RegisterFunctionFormat
+
+Format definition for function parameters.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | list[[`RegisterFunctionFormat`](#registerfunctionformat)] \| None | No | Nested fields for object types. |
+| `description` | `str \| None` | No | Human-readable description of the parameter. |
+| `items` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | Item schema for array types. |
+| `name` | `str` | Yes | Parameter name. |
+| `required` | `bool` | No | Whether the parameter is required. |
+| `type` | `str` | Yes | Type string (``string``, ``number``, ``boolean``, ``object``, ``array``, ``null``, ``map``). |
+
+#### RegisterFunctionInput
+
+Input for registering a function — matches Node.js RegisterFunctionInput.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `str \| None` | No | Human-readable description. |
+| `id` | `str` | No | Unique function identifier. |
+| `invocation` | `HttpInvocationConfig \| None` | No | HTTP invocation config for externally hosted functions. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. |
+
+#### RegisterFunctionMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `str \| None` | No | - |
+| `id` | `str` | No | - |
+| `invocation` | `HttpInvocationConfig \| None` | No | - |
+| `message_type` | [`MessageType`](#messagetype) | No | - |
+| `metadata` | `dict[str, Any] \| None` | No | - |
+| `model_config` | `Any` | No | - |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | - |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | - |
+
+#### RegisterTriggerInput
+
+Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `Any` | No | Trigger-type-specific configuration. |
+| `function_id` | `str` | No | ID of the function this trigger invokes. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
+| `type` | `str` | No | Trigger type identifier (e.g. ``http``, ``queue``, ``cron``). |
+
+#### RegisterTriggerMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `Any` | Yes | - |
+| `function_id` | `str` | No | - |
+| `id` | `str` | Yes | - |
+| `message_type` | [`MessageType`](#messagetype) | No | - |
+| `metadata` | `dict[str, Any] \| None` | No | - |
+| `model_config` | `Any` | No | - |
+| `trigger_type` | `str` | No | - |
+
+#### RegisterTriggerTypeInput
+
+Input for registering a trigger type.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `call_request_format` | `Any \| None` | No | JSON Schema describing the payload sent to functions. |
+| `description` | `str` | No | Human-readable description of the trigger type. |
+| `id` | `str` | No | Unique identifier for the trigger type. |
+| `trigger_request_format` | `Any \| None` | No | JSON Schema describing the expected trigger config. |
+
+#### RegisterTriggerTypeMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `call_request_format` | `Any \| None` | No | - |
+| `description` | `str` | Yes | - |
+| `id` | `str` | Yes | - |
+| `message_type` | [`MessageType`](#messagetype) | No | - |
+| `model_config` | `Any` | No | - |
+| `trigger_request_format` | `Any \| None` | No | - |
+
+#### TriggerRequest
+
+Request object for ``trigger()``.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Routing action — ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget. |
+| `function_id` | `str` | No | ID of the function to invoke. |
+| `payload` | `Any` | No | Data to pass to the function. |
+| `timeout_ms` | `int \| None` | No | Override the default invocation timeout. |
+
+### iii.runtime
+
+[`FunctionRef`](#functionref) · [`TriggerTypeRef`](#triggertyperef)
+
+#### FunctionRef
+
+Reference to a registered function, allowing programmatic unregistration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `str` | Yes | - |
+| `unregister` | `Callable[None]` | Yes | - |
+
+#### TriggerTypeRef
+
+Typed handle returned by :meth:`iii.III.register_trigger_type`.
+
+Type parameters:
+
+- ``C`` — configuration type for :meth:`register_trigger`
+- ``R`` — call-request type for :meth:`register_function`
+
+### iii.state
+
+[`DeleteResult`](#deleteresult) · [`IState`](#istate) · [`StateDeleteInput`](#statedeleteinput) · [`StateDeleteResult`](#statedeleteresult) · [`StateEventData`](#stateeventdata) · [`StateEventType`](#stateeventtype) · [`StateGetInput`](#stategetinput) · [`StateListInput`](#statelistinput) · [`StateSetInput`](#statesetinput) · [`StateSetResult`](#statesetresult) · [`StateUpdateInput`](#stateupdateinput) · [`StateUpdateResult`](#stateupdateresult)
+
+#### DeleteResult
+
+Result of a state delete operation (alias).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `Any \| None` | No | - |
+
+#### IState
+
+Abstract interface for state management operations.
+
+#### StateDeleteInput
+
+Input for deleting a state value.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | `str` | Yes | - |
+| `scope` | `str` | Yes | - |
+
+#### StateDeleteResult
+
+Result of a state delete operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `Any \| None` | No | - |
+
+#### StateEventData
+
+Payload for state change events.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `event_type` | [`StateEventType`](#stateeventtype) | Yes | - |
+| `key` | `str` | Yes | - |
+| `new_value` | `TData \| None` | No | - |
+| `old_value` | `TData \| None` | No | - |
+| `scope` | `str` | Yes | - |
+| `type` | `str` | No | - |
+
+#### StateEventType
+
+Types of state change events.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `CREATED` | `Any` | No | - |
+| `DELETED` | `Any` | No | - |
+| `UPDATED` | `Any` | No | - |
+
+#### StateGetInput
+
+Input for retrieving a state value.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | `str` | Yes | - |
+| `scope` | `str` | Yes | - |
+
+#### StateListInput
+
+Input for listing all values in a state scope.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scope` | `str` | Yes | - |
+
+#### StateSetInput
+
+Input for setting a state value.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | `str` | Yes | - |
+| `scope` | `str` | Yes | - |
+| `value` | `Any` | Yes | - |
+
+#### StateSetResult
+
+Result of a state set operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new_value` | `TData` | Yes | - |
+| `old_value` | `TData \| None` | No | - |
+
+#### StateUpdateInput
+
+Input for atomically updating a state value.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | `str` | Yes | - |
+| `ops` | `list[UpdateOp]` | Yes | - |
+| `scope` | `str` | Yes | - |
+
+#### StateUpdateResult
+
+Result of a state update operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new_value` | `TData` | Yes | - |
+| `old_value` | `TData \| None` | No | - |
+
+### iii.stream
+
+[`IStream`](#istream)
+
+#### IStream
+
+Abstract interface for stream operations.
+
+### iii.trigger
+
+[`Trigger`](#trigger) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerConfig`](#triggerconfig) · [`TriggerHandler`](#triggerhandler)
+
+#### Trigger
+
+Represents a registered trigger.
+
+#### TriggerActionVoid
+
+Fire-and-forget routing. No response is returned.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | `Literal['void']` | No | Always ``'void'``. |
+
+#### TriggerConfig
+
+Configuration for a trigger.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `Any` | Yes | - |
+| `function_id` | `str` | Yes | - |
+| `id` | `str` | Yes | - |
+| `metadata` | `dict[str, Any] \| None` | No | - |
+| `model_config` | `Any` | No | - |
+
+#### TriggerHandler
+
+Abstract base class for trigger handlers.
