@@ -51,16 +51,3 @@ export function isErrorBody(value: unknown): value is {
     (v.stacktrace === undefined || typeof v.stacktrace === 'string')
   )
 }
-
-/**
- * @deprecated Renamed to {@link InvocationError}; import from `iii-sdk/errors`.
- */
-export const IIIInvocationError = InvocationError
-/**
- * @deprecated Renamed to {@link InvocationError}.
- */
-export type IIIInvocationError = InvocationError
-/**
- * @deprecated Renamed to {@link InvocationErrorInit}.
- */
-export type IIIInvocationErrorInit = InvocationErrorInit

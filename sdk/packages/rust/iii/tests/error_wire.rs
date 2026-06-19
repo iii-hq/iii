@@ -1,6 +1,6 @@
 //! Wire-level tests for handler error mapping (no running engine needed).
 //!
-//! `IIIError::Remote` is a structured, expected error owned by the handler:
+//! `Error::Remote` is a structured, expected error owned by the handler:
 //! its `code` must reach the wire `ErrorBody.code` verbatim and
 //! `stacktrace: None` must NOT be backfilled with a dispatch-loop backtrace.
 //! Non-`Remote` handler errors keep the legacy `invocation_failed` code with
@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use common::mock_engine::{MockEngine, count_type};
-use iii_sdk::{IIIError, InitOptions, RegisterFunction, register_worker};
+use iii_sdk::{Error, InitOptions, RegisterFunction, register_worker};
 
 fn find_result<'a>(msgs: &'a [Value], invocation_id: &str) -> Option<&'a Value> {
     msgs.iter()
@@ -28,7 +28,7 @@ async fn remote_error_passes_code_through_without_backfilled_stacktrace() {
     let _f = iii.register_function(
         "test::remote_err",
         RegisterFunction::new_async(|_: Value| async move {
-            Err::<Value, _>(IIIError::Remote {
+            Err::<Value, _>(Error::Remote {
                 code: "W105".to_string(),
                 message: "{\"code\":\"W105\",\"type\":\"WorkerOpError\"}".to_string(),
                 stacktrace: None,
@@ -82,7 +82,7 @@ async fn non_remote_error_keeps_invocation_failed_with_backfilled_stacktrace() {
     let _f = iii.register_function(
         "test::handler_err",
         RegisterFunction::new_async(|_: Value| async move {
-            Err::<Value, _>(IIIError::Handler("boom".to_string()))
+            Err::<Value, _>(Error::Handler("boom".to_string()))
         }),
     );
 

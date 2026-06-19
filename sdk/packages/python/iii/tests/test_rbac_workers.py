@@ -9,10 +9,9 @@ from iii import (
     InitOptions,
     InvocationError,
     MiddlewareFunctionInput,
-    TriggerConfig,
-    TriggerHandler,
     register_worker,
 )
+from iii.trigger import TriggerConfig, TriggerHandler
 from iii_helpers.worker_connection_manager import (
     AuthInput,
     AuthResult,

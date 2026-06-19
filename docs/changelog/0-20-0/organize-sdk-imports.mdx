@@ -1,11 +1,11 @@
 ---
 title: 'Grouping SDK exports into submodules'
-description: 'The invocation error types are renamed (InvocationError, Error) and the channel, trigger, and runtime types move to named submodules across the Node, Python, and Rust SDKs. The old root paths keep working as deprecated aliases.'
+description: 'The invocation error types are renamed (InvocationError, Error) and the channel, trigger, and runtime types move to named submodules across the Node, Python, and Rust SDKs. The old root paths are removed in 0.20.0; code must move to the new submodule and name paths.'
 ---
 
 ## What changed
 
-The flat root export surface of the three SDKs is being reorganized into named submodules. This slice covers four groups. Old import paths continue to work as deprecated re-exports, so upgrading requires no immediate code changes.
+The flat root export surface of the three SDKs is reorganized into named submodules. This slice covers four groups. The old root import paths are removed in 0.20.0, so upgrading requires moving these imports to their new paths.
 
 | Group | Node subpath | Python submodule | Rust module |
 | --- | --- | --- | --- |
@@ -25,7 +25,7 @@ The `III` prefix is dropped from the invocation error types.
 | Python | `IIIInvocationError` | `InvocationError` | `iii.errors` |
 | Rust | `IIIError` | `Error` | `iii_sdk::errors::Error` |
 
-Behavior is unchanged. In Node, the thrown error's `name` is now `InvocationError`. In Python, importing `IIIInvocationError` from the package root emits a `DeprecationWarning`. The old names stay exported from the package root as deprecated aliases.
+Behavior is unchanged. In Node, the thrown error's `name` is now `InvocationError`. The old names are removed from the package root in 0.20.0; import the new names from their canonical paths.
 
 ## Submodule contents
 
@@ -39,7 +39,7 @@ The set per language matches each SDK's existing surface. Symbols absent from a 
 
 ## Migration
 
-Update imports to the new paths. No runtime change is required until the deprecated root re-exports are removed in a future breaking release.
+Update imports to the new paths. The old root paths are removed in 0.20.0, so this move is required.
 
 Node:
 
@@ -76,4 +76,4 @@ use iii_sdk::runtime::FunctionRef;
 
 ## Why
 
-The SDK root re-exported dozens of symbols flatly. Grouping them into `errors`, `channel`, `trigger`, and `runtime` submodules makes the surface navigable and prepares for extracting standalone libraries later. Shipping the moves with deprecated aliases keeps the change backward compatible while consumers migrate.
+The SDK root re-exported dozens of symbols flatly. Grouping them into `errors`, `channel`, `trigger`, and `runtime` submodules makes the surface navigable and prepares for extracting standalone libraries later. 0.20.0 is a clean break: the old root paths are removed rather than kept as aliases.

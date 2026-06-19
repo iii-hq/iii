@@ -153,18 +153,16 @@ class TestWrapWireError:
         assert err.stacktrace is None
 
 
-class TestErrorsSubmoduleAndBackCompat:
+class TestErrorsSubmodule:
     def test_subpath_import(self) -> None:
         from iii.errors import InvocationError as FromErrors
 
         assert FromErrors is InvocationError
 
-    def test_deprecated_alias_warns(self) -> None:
-        import warnings
+    def test_removed_alias_not_at_root(self) -> None:
+        import pytest
 
         import iii
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            assert iii.IIIInvocationError is InvocationError
-        assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        with pytest.raises(AttributeError):
+            _ = iii.IIIInvocationError

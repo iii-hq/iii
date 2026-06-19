@@ -160,12 +160,12 @@ async fn main() -> Result<()> {
     let bridge = iii_sdk::register_worker(
         &bridge_url,
         iii_sdk::InitOptions {
-            metadata: Some(iii_sdk::WorkerMetadata {
+            metadata: Some(iii_sdk::runtime::WorkerMetadata {
                 name: "iii-console".to_string(),
                 description: Some(
                     "Web console UI and observability dashboard for the iii engine.".to_string(),
                 ),
-                ..iii_sdk::WorkerMetadata::default()
+                ..iii_sdk::runtime::WorkerMetadata::default()
             }),
             otel: otel_config,
             headers: None,

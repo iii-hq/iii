@@ -70,7 +70,3 @@ def _wrap_wire_error(
         function_id=function_id,
         invocation_id=invocation_id,
     )
-
-
-# Back-compat alias; renamed to InvocationError in Stage 1. Deprecated.
-IIIInvocationError = InvocationError

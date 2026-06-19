@@ -32,8 +32,8 @@ The streaming request and response types keep the `StreamRequest` and `StreamRes
 | `IIIForbiddenError`, `IIITimeoutError` | Python | check the error `code` on the invocation error, matching Node and Rust |
 | `TriggerActionType` alias | Node | use the `TriggerAction` value |
 | `FieldPath` (separate path helper) | Rust | use `UpdateSet` and `UpdateMerge`; the merge and append path argument is the retained `MergePath` |
-| `Logger` re-export | Node | import from `@iii-dev/observability` |
-| OpenTelemetry suite re-export | Python | import from `iii-observability` |
+| `Logger` re-export | Node | import from `@iii-dev/helpers/observability` |
+| OpenTelemetry suite re-export | Python | import from `iii_helpers.observability` |
 
 ## Migration
 

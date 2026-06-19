@@ -31,7 +31,7 @@ pub fn register_worker(address: &str, options: InitOptions) -> IIIClient;
 ```
 
 The returned `IIIClient` carries every method below. Spawned async tasks are driven on the SDK's
-internal tokio runtime. (`III` remains as a deprecated alias for `IIIClient`.)
+internal tokio runtime. (The handle is named `IIIClient`; the former name `III` has been removed.)
 
 ### `register_function`
 
@@ -65,8 +65,8 @@ Drop the trigger with `trigger.unregister()` on the returned handle. There is no
 `unregister_trigger`.
 
 The `Trigger`, `TriggerConfig`, `TriggerHandler`, and `IIITrigger` types are exported from the
-`iii_sdk::trigger` submodule (`use iii_sdk::trigger::IIITrigger`). They stay reachable at the crate
-root as deprecated re-exports.
+`iii_sdk::trigger` submodule (`use iii_sdk::trigger::IIITrigger`). They are not reachable at the
+crate root.
 
 ### `register_trigger_type`
 
@@ -146,8 +146,7 @@ pub enum Error {
 }
 ```
 
-The former name `IIIError` stays reachable at the crate root as a deprecated alias; prefer
-`iii_sdk::errors::Error`.
+The former name `IIIError` has been removed; use `iii_sdk::errors::Error`.
 
 `ErrorBody` carries the engine's `{ code, message, stacktrace? }` payload; match on
 `Error::Remote(body) => body.code.as_str()` to branch on engine error codes
@@ -162,8 +161,8 @@ and `None` for transport, serde, or handler errors. Exported as `iii_sdk::Invoca
 ## Channels
 
 Import channel types from the `iii_sdk::channel` submodule
-(`use iii_sdk::channel::{ChannelReader, ChannelWriter}`). They stay reachable at the crate root as
-deprecated re-exports.
+(`use iii_sdk::channel::{ChannelReader, ChannelWriter}`). They are not reachable at the crate
+root.
 
 `ChannelReader` and `ChannelWriter` wrap the engine's stream WebSockets. `StreamChannelRef`
 identifies a channel:
@@ -204,8 +203,7 @@ pub enum IIIConnectionState {
 
 The runtime/worker types (`FunctionRef`, `TriggerTypeRef`, `IIIConnectionState`, `WorkerMetadata`,
 `FunctionInfo`, `TriggerInfo`, `WorkerInfo`) are exported from the `iii_sdk::runtime` submodule
-(`use iii_sdk::runtime::FunctionInfo`). They stay reachable at the crate root as deprecated
-re-exports.
+(`use iii_sdk::runtime::FunctionInfo`). They are not reachable at the crate root.
 
 The SDK re-exports the engine's structured introspection types:
 
@@ -222,7 +220,7 @@ The SDK re-exports the engine's structured introspection types:
   framework / project labels plus an Amplitude key, used by iii-telemetry for anonymous usage
   reporting; distinct from the OpenTelemetry observability surfaces owned by iii-observability),
   `isolation`. `TelemetryOptions` is exported at the crate root (matching Node and Python);
-  the former name `WorkerTelemetryMeta` stays as a deprecated alias.
+  the former name `WorkerTelemetryMeta` has been removed.
 
 ## `MessageType`
 

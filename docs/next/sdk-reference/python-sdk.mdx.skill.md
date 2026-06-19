@@ -58,8 +58,7 @@ def register_function(
 helper. They are stored alongside the function for the iii console and the agent-readable skills.
 
 The `FunctionRef` and `TriggerTypeRef` handle types are exported from the `iii.runtime` submodule
-(`from iii.runtime import FunctionRef`). They stay importable from the package root as deprecated
-re-exports.
+(`from iii.runtime import FunctionRef`). They are not importable from the package root.
 
 The `IIIConnectionState` type is provided only by the `iii.runtime` submodule
 (`from iii.runtime import IIIConnectionState`). It is not importable from the package root.
@@ -97,8 +96,8 @@ Drop the trigger with `trigger.unregister()` on the returned handle. There is no
 `unregister_trigger` method.
 
 The `Trigger`, `TriggerConfig`, and `TriggerHandler` types are exported from the `iii.trigger`
-submodule (`from iii.trigger import TriggerHandler`). They stay importable from the package root as
-deprecated re-exports.
+submodule (`from iii.trigger import TriggerHandler`). They are not importable from the package
+root.
 
 ### `register_trigger_type`
 
@@ -169,13 +168,13 @@ Every invocation failure raises `InvocationError`, imported from the `iii.errors
 | other         | Any other engine-side rejection.  |
 
 `InvocationError` has `code`, `message`, `function_id`, and `stacktrace` attributes. The former
-name `IIIInvocationError` stays importable from the package root as a deprecated alias.
+name `IIIInvocationError` has been removed; import `InvocationError` from `iii.errors`.
 
 ## Channels
 
 Import channel types from the `iii.channel` submodule
-(`from iii.channel import ChannelReader, ChannelWriter`). They stay importable from the package root
-as deprecated re-exports.
+(`from iii.channel import ChannelReader, ChannelWriter`). They are not importable from the package
+root.
 
 `ChannelReader` and `ChannelWriter` wrap the engine's stream WebSockets. `StreamChannelRef`
 identifies a channel:
@@ -192,8 +191,8 @@ Both classes are constructed with the engine's WS base URL and a `StreamChannelR
 ## Logger
 
 `Logger` exposes `info`, `warn`, `error`, and `debug`, each accepting a message and an optional
-data dict. Import it from `iii_observability`; it is no longer re-exported from `iii`. The output
-integrates with the SDK's OpenTelemetry setup; see iii-observability for the export side.
+data dict. Import it from `iii_helpers.observability`; it is not exported from `iii`. The output
+integrates with the SDK's OpenTelemetry setup; see the iii-observability worker for the export side.
 
 ## Info types
 

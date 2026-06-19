@@ -1,4 +1,4 @@
-"""The iii.trigger submodule exposes the trigger types; the root keeps the shims."""
+"""The iii.trigger submodule exposes the trigger types; the root no longer does."""
 
 
 def test_trigger_subpath() -> None:
@@ -7,11 +7,11 @@ def test_trigger_subpath() -> None:
     assert all(x is not None for x in (Trigger, TriggerConfig, TriggerHandler))
 
 
-def test_trigger_root_shim() -> None:
+def test_trigger_types_not_at_root() -> None:
     import iii
-    from iii.trigger import Trigger as SubTrigger
 
-    assert iii.Trigger is SubTrigger
+    for name in ("Trigger", "TriggerConfig", "TriggerHandler", "TriggerTypeRef"):
+        assert not hasattr(iii, name)
 
 
 def test_trigger_action_void_at_root() -> None:

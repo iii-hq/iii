@@ -26,7 +26,7 @@ describe('helpers module', () => {
   })
 })
 
-describe('ISdk public surface', () => {
+describe('IIIClient public surface', () => {
   it('no longer exposes relocated methods', async () => {
     const iii = registerWorker('ws://localhost:9') as unknown as Record<string, unknown>
     try {

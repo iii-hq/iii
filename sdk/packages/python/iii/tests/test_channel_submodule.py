@@ -1,4 +1,4 @@
-"""The iii.channel submodule exposes the channel types; the root keeps the shims."""
+"""The iii.channel submodule exposes the channel types; the root no longer does."""
 
 
 def test_channel_subpath() -> None:
@@ -7,8 +7,8 @@ def test_channel_subpath() -> None:
     assert all(x is not None for x in (ChannelReader, ChannelWriter, StreamChannelRef, Channel))
 
 
-def test_channel_root_shim() -> None:
+def test_channel_types_not_at_root() -> None:
     import iii
-    from iii.channel import ChannelReader as SubReader
 
-    assert iii.ChannelReader is SubReader
+    for name in ("Channel", "ChannelReader", "ChannelWriter", "StreamChannelRef"):
+        assert not hasattr(iii, name)

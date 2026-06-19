@@ -8,12 +8,9 @@ Shows three patterns:
 
 from typing import Any
 
-from iii import (
-    IIIClient,
-    RegisterTriggerTypeInput,
-    TriggerConfig,
-    TriggerHandler,
-)
+from iii import IIIClient
+from iii.protocol import RegisterTriggerTypeInput
+from iii.trigger import TriggerConfig, TriggerHandler
 from pydantic import BaseModel, Field
 
 # ── Webhook trigger type ─────────────────────────────────────────────────

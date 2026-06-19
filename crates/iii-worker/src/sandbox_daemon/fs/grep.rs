@@ -114,7 +114,7 @@ pub async fn handle_grep<R: FsRunner + ?Sized>(
 }
 
 pub(super) fn register(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) {

@@ -939,11 +939,12 @@ impl IIIClient {
     /// # Examples
     /// ```rust,no_run
     /// # use iii_sdk::{IIIClient, RegisterTriggerType};
+    /// # use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
     /// # struct MyHandler;
     /// # #[async_trait::async_trait]
-    /// # impl iii_sdk::TriggerHandler for MyHandler {
-    /// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
-    /// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
+    /// # impl TriggerHandler for MyHandler {
+    /// #     async fn register_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
+    /// #     async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
     /// # }
     /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
     /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }

@@ -1,4 +1,4 @@
-"""The iii.runtime submodule exposes the runtime types; the root keeps the shims."""
+"""The iii.runtime submodule exposes the runtime types; the root no longer does."""
 
 
 def test_runtime_subpath() -> None:
@@ -8,8 +8,8 @@ def test_runtime_subpath() -> None:
     assert TriggerTypeRef is not None
 
 
-def test_runtime_root_shim() -> None:
+def test_runtime_types_not_at_root() -> None:
     import iii
-    from iii.runtime import FunctionRef as SubFunctionRef
 
-    assert iii.FunctionRef is SubFunctionRef
+    for name in ("FunctionRef", "TriggerTypeRef"):
+        assert not hasattr(iii, name)

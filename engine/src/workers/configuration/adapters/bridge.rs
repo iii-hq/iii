@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{III, InitOptions, RegisterFunction, register_worker};
+use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -40,10 +40,10 @@ const RELAY_FUNCTION_ID: &str = "configuration::__bridge_relay";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 pub struct BridgeAdapter {
-    bridge: Arc<III>,
-    /// Holds onto the relay [`iii_sdk::Trigger`] handle so the SDK keeps
+    bridge: Arc<IIIClient>,
+    /// Holds onto the relay [`iii_sdk::trigger::Trigger`] handle so the SDK keeps
     /// the remote subscription alive for the worker's lifetime.
-    relay_trigger: Mutex<Option<iii_sdk::Trigger>>,
+    relay_trigger: Mutex<Option<iii_sdk::trigger::Trigger>>,
     /// Set lazily by `watch` — used by the relay function below.
     sender: OnceCell<ExternalChangeSender>,
 }
@@ -128,7 +128,7 @@ impl ConfigurationAdapter for BridgeAdapter {
 
     async fn get(&self, id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
         // We treat any remote error as "absent" here because the SDK's
-        // `IIIError` is already string-wrapped by `call` above, so we can't
+        // `Error` is already string-wrapped by `call` above, so we can't
         // cleanly distinguish a NOT_FOUND from a network/timeout failure
         // without a wider refactor. Log the underlying error so transient
         // remote failures aren't completely silent.
@@ -246,7 +246,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                 let sender_lookup = sender_lookup.clone();
                 async move {
                     let event: ConfigurationEventData = serde_json::from_value(payload)
-                        .map_err(|e| iii_sdk::IIIError::Handler(e.to_string()))?;
+                        .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
                     if let Some(tx) = sender_lookup.get() {
                         let entry = ConfigurationEntry {
                             id: event.id.clone(),
@@ -266,7 +266,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                         };
                         let _ = tx.send(change);
                     }
-                    Ok::<Value, iii_sdk::IIIError>(Value::Null)
+                    Ok::<Value, iii_sdk::Error>(Value::Null)
                 }
             }),
         );

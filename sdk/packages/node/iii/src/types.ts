@@ -213,9 +213,6 @@ export interface IIIClient {
   shutdown(): Promise<void>
 }
 
-/** @deprecated Renamed to `IIIClient`. */
-export type ISdk = IIIClient
-
 /**
  * Handle returned by {@link IIIClient.registerTrigger}. Use `unregister()` to
  * remove the trigger from the engine.

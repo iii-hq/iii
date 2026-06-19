@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TriggerAction, registerWorker } from '../src/index'
-import type { ISdk } from '../src/types'
+import type { IIIClient } from '../src/types'
 import type { TriggerConfig } from '../src/triggers'
 import { engineWsUrl, sleep } from './utils'
 
@@ -12,14 +12,14 @@ const TRIGGER_CONFIG = { tag: 'test' }
 type TestTriggerConfig = { tag: string }
 
 describe('Trigger type lifecycle (two workers)', () => {
-  let provider: ISdk
-  let consumer: ISdk
+  let provider: IIIClient
+  let consumer: IIIClient
   const bindings = new Map<string, TriggerConfig<TestTriggerConfig>>()
   let registerTriggerSpy: ReturnType<typeof vi.fn>
   let unregisterTriggerSpy: ReturnType<typeof vi.fn>
   let handlerSpy: ReturnType<typeof vi.fn>
 
-  function createProvider(): ISdk {
+  function createProvider(): IIIClient {
     bindings.clear()
     registerTriggerSpy = vi.fn(async (cfg: TriggerConfig<TestTriggerConfig>) => {
       bindings.set(cfg.id, cfg)
@@ -130,7 +130,7 @@ describe('Trigger type lifecycle (two workers)', () => {
     unregisterTriggerSpy.mockClear()
 
     await consumer.shutdown()
-    consumer = undefined as unknown as ISdk
+    consumer = undefined as unknown as IIIClient
     await sleep(400)
 
     expect(unregisterTriggerSpy).toHaveBeenCalledTimes(1)

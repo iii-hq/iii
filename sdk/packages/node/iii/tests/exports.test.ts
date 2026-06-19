@@ -30,13 +30,13 @@ describe('Package Exports', () => {
     expect(Object.keys(stateModule).length).toBeGreaterThan(0)
   })
 
-  it('should export channel symbols from the subpath and keep the deprecated root shim', async () => {
+  it('should export channel symbols from the subpath only, not the root', async () => {
     const ch = await import('../src/channel')
     expect(ch.ChannelReader).toBeDefined()
     expect(ch.ChannelWriter).toBeDefined()
-    const root = await import('../src/index')
-    expect(root.ChannelReader).toBe(ch.ChannelReader)
-    expect(root.ChannelWriter).toBe(ch.ChannelWriter)
+    const root = (await import('../src/index')) as Record<string, unknown>
+    expect(root.ChannelReader).toBeUndefined()
+    expect(root.ChannelWriter).toBeUndefined()
   })
 
   it('should import the trigger subpath module', async () => {
