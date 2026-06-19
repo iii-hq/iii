@@ -93,34 +93,88 @@ to reject the connection.**
   number of `iii-worker-manager`s in iii's configuration.
 </Note>
 
-```typescript src/index.ts
-import { registerWorker } from "iii-sdk";
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript src/index.ts
+    import { registerWorker } from "iii-sdk";
 
-const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
-  workerName: "auth",
-});
+    const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+      workerName: "auth",
+    });
 
-worker.registerFunction(
-  "auth::browser",
-  async (input: {
-    headers: Record<string, string>;
-    query_params: Record<string, string[]>;
-    ip_address: string;
-  }) => {
-    const token = input.query_params.token?.[0];
-    if (token !== (process.env.BROWSER_TOKEN ?? "dev-token")) {
-      throw new Error("unauthorized");
-    }
-    return {
-      allowed_functions: [], // extra IDs to allow beyond expose_functions
-      forbidden_functions: [], // denied even if matched; supersedes allowed
-      allow_trigger_type_registration: false, // can the worker register its own trigger types
-      allow_function_registration: true, // can the worker register its own callbacks
-      context: { source: "browser" }, // forwarded to middleware on every call
-    };
-  },
-);
-```
+    worker.registerFunction(
+      "auth::browser",
+      async (input: {
+        headers: Record<string, string>;
+        query_params: Record<string, string[]>;
+        ip_address: string;
+      }) => {
+        const token = input.query_params.token?.[0];
+        if (token !== (process.env.BROWSER_TOKEN ?? "dev-token")) {
+          throw new Error("unauthorized");
+        }
+        return {
+          allowed_functions: [], // extra IDs to allow beyond expose_functions
+          forbidden_functions: [], // denied even if matched; supersedes allowed
+          allow_trigger_type_registration: false, // can the worker register its own trigger types
+          allow_function_registration: true, // can the worker register its own callbacks
+          context: { source: "browser" }, // forwarded to middleware on every call
+        };
+      },
+    );
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python src/main.py
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL", "ws://localhost:49134"),
+        InitOptions(worker_name="auth"),
+    )
+
+    def browser(req: dict) -> dict:
+        token = (req.get("query_params", {}).get("token") or [None])[0]
+        if token != os.environ.get("BROWSER_TOKEN", "dev-token"):
+            raise Exception("unauthorized")
+        return {
+            "allowed_functions": [],  # extra IDs to allow beyond expose_functions
+            "forbidden_functions": [],  # denied even if matched; supersedes allowed
+            "allow_trigger_type_registration": False,  # register its own trigger types
+            "allow_function_registration": True,  # register its own callbacks
+            "context": {"source": "browser"},  # forwarded to middleware on every call
+        }
+
+    worker.register_function("auth::browser", browser)
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust src/main.rs
+    use iii_sdk::{AuthInput, InitOptions, RegisterFunction, register_worker};
+    use serde_json::json;
+
+    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_function("auth::browser", RegisterFunction::new(|input: AuthInput| {
+        let token = input.query_params.get("token").and_then(|v| v.first());
+        let expected = std::env::var("BROWSER_TOKEN").unwrap_or_else(|_| "dev-token".into());
+        if token.map(String::as_str) != Some(expected.as_str()) {
+            return Err(iii_sdk::IIIError::Handler("unauthorized".into()));
+        }
+        Ok(json!({
+            "allowed_functions": [],          // extra IDs to allow beyond expose_functions
+            "forbidden_functions": [],        // denied even if matched; supersedes allowed
+            "allow_trigger_type_registration": false, // register its own trigger types
+            "allow_function_registration": true,      // register its own callbacks
+            "context": { "source": "browser" },       // forwarded to middleware on every call
+        }))
+    }));
+    ```
+
+  </Tab>
+</Tabs>
 
 The auth worker itself connects to the **trusted** `49134` port; it is one of your own workers. Only
 the untrusted client connects through `3110`.
@@ -170,20 +224,63 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
         - match("link::create")
 ```
 
-```typescript src/index.ts
-worker.registerFunction(
-  "auth::middleware",
-  async (input: {
-    function_id: string;
-    payload: Record<string, unknown>;
-    context: Record<string, unknown>;
-  }) => {
-    // stamp the authenticated caller onto every payload, then forward the call
-    const payload = { ...input.payload, _source: input.context.source };
-    return worker.trigger({ function_id: input.function_id, payload });
-  },
-);
-```
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript src/index.ts
+    worker.registerFunction(
+      "auth::middleware",
+      async (input: {
+        function_id: string;
+        payload: Record<string, unknown>;
+        context: Record<string, unknown>;
+      }) => {
+        // stamp the authenticated caller onto every payload, then forward the call
+        const payload = { ...input.payload, _source: input.context.source };
+        return worker.trigger({ function_id: input.function_id, payload });
+      },
+    );
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python src/main.py
+    def middleware(req: dict) -> dict:
+        # stamp the authenticated caller onto every payload, then forward the call
+        payload = {**req["payload"], "_source": req["context"]["source"]}
+        return worker.trigger({"function_id": req["function_id"], "payload": payload})
+
+    worker.register_function("auth::middleware", middleware)
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust src/main.rs
+    let mw = worker.clone();
+    worker.register_function(
+        "auth::middleware",
+        RegisterFunction::new_async(move |input: MiddlewareFunctionInput| {
+            let worker = mw.clone();
+            async move {
+                // stamp the authenticated caller onto every payload, then forward the call
+                let mut payload = input.payload.clone();
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert(
+                        "_source".into(),
+                        input.context.get("source").cloned().unwrap_or(Value::Null),
+                    );
+                }
+                worker
+                    .trigger(TriggerRequest {
+                        function_id: input.function_id,
+                        payload,
+                        action: None,
+                        timeout_ms: None,
+                    })
+                    .await
+            }
+        }),
+    );
+    ```
+  </Tab>
+</Tabs>
 
 The `rbac` block also accepts `on_function_registration_function_id`,
 `on_trigger_registration_function_id`, and `on_trigger_type_registration_function_id` hooks. Each

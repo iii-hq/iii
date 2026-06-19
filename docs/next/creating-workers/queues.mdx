@@ -34,25 +34,84 @@ acknowledges the message; throwing nacks it, so it is retried and eventually dea
 iii worker init email-worker --language typescript
 ```
 
-```typescript
-import { registerWorker } from "iii-sdk";
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
 
-const url = process.env.III_URL;
-if (!url) throw new Error("III_URL must be set");
-const worker = registerWorker(url, { workerName: "email-worker" });
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "email-worker" });
 
-// receives the `data` from each published message
-worker.registerFunction("email::send", async (msg: { to: string; subject: string }) => {
-  // do the work here; throw to nack and let the message retry
-  return { sent: true };
-});
+    // receives the `data` from each published message
+    worker.registerFunction("email::send", async (msg: { to: string; subject: string }) => {
+      // do the work here; throw to nack and let the message retry
+      return { sent: true };
+    });
 
-worker.registerTrigger({
-  type: "durable:subscriber",
-  function_id: "email::send",
-  config: { topic: "emails" },
-});
-```
+    worker.registerTrigger({
+      type: "durable:subscriber",
+      function_id: "email::send",
+      config: { topic: "emails" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="email-worker"),
+    )
+
+    # receives the `data` from each published message
+    def send(msg: dict) -> dict:
+        # do the work here; raise to nack and let the message retry
+        return {"sent": True}
+
+    worker.register_function("email::send", send)
+
+    worker.register_trigger({
+        "type": "durable:subscriber",
+        "function_id": "email::send",
+        "config": {"topic": "emails"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, RegisterFunction, RegisterTriggerInput, register_worker};
+    use serde::Deserialize;
+    use schemars::JsonSchema;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct Email {
+        to: String,
+        subject: String,
+    }
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    // receives the `data` from each published message
+    worker.register_function("email::send", RegisterFunction::new(|_msg: Email| {
+        // do the work here; return an error to nack and let the message retry
+        Ok(json!({ "sent": true }))
+    }));
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "durable:subscriber".into(),
+        function_id: "email::send".into(),
+        config: json!({ "topic": "emails" }),
+        metadata: None,
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
 
 2. Add the worker to start it:
 
@@ -113,17 +172,50 @@ To see the DLQ populated, make `email::send` fail: change the handler to throw, 
 `maxRetries: 0` in the trigger's `queue_config` so the first failure dead-letters immediately
 instead of after the default three attempts.
 
-```typescript
-worker.registerFunction("email::send", async () => {
-  throw new Error("forced failure");
-});
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.registerFunction("email::send", async () => {
+      throw new Error("forced failure");
+    });
 
-worker.registerTrigger({
-  type: "durable:subscriber",
-  function_id: "email::send",
-  config: { topic: "emails", queue_config: { maxRetries: 0 } },
-});
-```
+    worker.registerTrigger({
+      type: "durable:subscriber",
+      function_id: "email::send",
+      config: { topic: "emails", queue_config: { maxRetries: 0 } },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def send(_msg: dict) -> dict:
+        raise Exception("forced failure")
+
+    worker.register_function("email::send", send)
+
+    worker.register_trigger({
+        "type": "durable:subscriber",
+        "function_id": "email::send",
+        "config": {"topic": "emails", "queue_config": {"maxRetries": 0}},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    worker.register_function("email::send", RegisterFunction::new(|_msg: serde_json::Value| {
+        Err::<serde_json::Value, _>(iii_sdk::IIIError::Handler("forced failure".into()))
+    }));
+
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "durable:subscriber".into(),
+        function_id: "email::send".into(),
+        config: json!({ "topic": "emails", "queue_config": { "maxRetries": 0 } }),
+        metadata: None,
+    })?;
+    ```
+
+  </Tab>
+</Tabs>
 
 Now publish a message; it fails and lands in the DLQ (exact ids, timestamps, and sizes vary per
 run):

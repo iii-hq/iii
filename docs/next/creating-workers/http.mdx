@@ -39,25 +39,95 @@ iii --config config.yaml
 iii worker init my-worker --language typescript
 ```
 
-```typescript
-import { registerWorker } from "iii-sdk";
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
 
-const url = process.env.III_URL;
-if (!url) throw new Error("III_URL must be set");
-const worker = registerWorker(url, { workerName: "my-worker" });
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "my-worker" });
 
-worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
-  status_code: 200,
-  body: { c: payload.body.a + payload.body.b },
-  headers: { "Content-Type": "application/json" },
-}));
+    worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
+      status_code: 200,
+      body: { c: payload.body.a + payload.body.b },
+      headers: { "Content-Type": "application/json" },
+    }));
 
-worker.registerTrigger({
-  type: "http",
-  function_id: "http::add",
-  config: { api_path: "/math/add", http_method: "POST" },
-});
-```
+    worker.registerTrigger({
+      type: "http",
+      function_id: "http::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="my-worker"),
+    )
+
+    def add(payload: dict) -> dict:
+        body = payload["body"]
+        return {
+            "status_code": 200,
+            "body": {"c": body["a"] + body["b"]},
+            "headers": {"Content-Type": "application/json"},
+        }
+
+    worker.register_function("http::add", add)
+
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "http::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
+    use iii_sdk::{IIITrigger, InitOptions, RegisterFunction, register_worker};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct AddRequest {
+        body: AddBody,
+    }
+    #[derive(Deserialize, JsonSchema)]
+    struct AddBody {
+        a: i64,
+        b: i64,
+    }
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_function(
+        "http::add",
+        RegisterFunction::new(|req: AddRequest| {
+            Ok(json!({
+                "status_code": 200,
+                "body": { "c": req.body.a + req.body.b },
+                "headers": { "Content-Type": "application/json" }
+            }))
+        }),
+    );
+
+    worker.register_trigger(
+        IIITrigger::Http(HttpTriggerConfig::new("/math/add").method(HttpMethod::Post))
+            .for_function("http::add"),
+    )?;
+    ```
+
+  </Tab>
+</Tabs>
 
 3. Add the worker to start it, pointing at its directory:
 

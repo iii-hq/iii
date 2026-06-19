@@ -29,17 +29,49 @@ Worker code emits structured logs through the `Logger` from the observability SD
 into the same OpenTelemetry pipeline (so log lines correlate with the trace they happened in) rather
 than to raw stdout.
 
-```typescript
-import { Logger } from "@iii-dev/helpers/observability";
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { Logger } from "@iii-dev/helpers/observability";
 
-const logger = new Logger();
+    const logger = new Logger();
 
-// each level takes a message and optional structured data
-logger.debug("cache lookup", { key });
-logger.info("processing link", { slug });
-logger.warn("retrying upstream", { attempt });
-logger.error("failed to persist", { slug, err });
-```
+    // each level takes a message and optional structured data
+    logger.debug("cache lookup", { key });
+    logger.info("processing link", { slug });
+    logger.warn("retrying upstream", { attempt });
+    logger.error("failed to persist", { slug, err });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii_helpers.observability import Logger
+
+    logger = Logger()
+
+    # each level takes a message and optional structured data
+    logger.debug("cache lookup", {"key": key})
+    logger.info("processing link", {"slug": slug})
+    logger.warn("retrying upstream", {"attempt": attempt})
+    logger.error("failed to persist", {"slug": slug, "err": str(err)})
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_helpers::observability::Logger;
+    use serde_json::json;
+
+    let logger = Logger::new();
+
+    // each level takes a message and optional structured data
+    logger.debug("cache lookup", Some(json!({ "key": key })));
+    logger.info("processing link", Some(json!({ "slug": slug })));
+    logger.warn("retrying upstream", Some(json!({ "attempt": attempt })));
+    logger.error("failed to persist", Some(json!({ "slug": slug, "err": err.to_string() })));
+    ```
+
+  </Tab>
+</Tabs>
 
 You can also query recorded logs and emit one-off log lines through the observability worker's
 triggers, for example:
