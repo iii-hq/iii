@@ -48,7 +48,7 @@ and returns the result.
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(&url, InitOptions::default());
 
-    worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+    worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
     }));
     ```

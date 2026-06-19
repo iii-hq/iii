@@ -65,7 +65,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(&url, InitOptions::default());
 
-    worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+    worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
     }));
     ```
@@ -215,7 +215,8 @@ you gate access on the fields you define.
   <Tab title="Rust">
     ```rust
     worker.register_function(
-        RegisterFunction::new("math::add", |input: AddInput| {
+        "math::add",
+        RegisterFunction::new(|input: AddInput| {
             Ok(serde_json::json!({ "c": input.a + input.b }))
         })
         .metadata(serde_json::json!({ "owner": "math-team", "public": true })),
@@ -380,7 +381,7 @@ pending invocations error out.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let add = worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+    let add = worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
     }));
 
