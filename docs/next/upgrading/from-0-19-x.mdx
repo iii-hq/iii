@@ -18,13 +18,13 @@ Two backward-compatible exceptions need no migration:
 - `EnqueueResult` (all languages) and `TriggerActionVoid` (Python) stay exported
   from the root SDK as companions to `TriggerAction`.
 - The standalone `iii-observability` packages remain published as deprecated
-  shims — migrate those at your own pace (Step 5).
+  shims. Migrate those at your own pace (Step 5).
 
 <Callout type="info">
   For the rationale behind each change, see the [0.20.0 changelog](/changelog).
 </Callout>
 
-## Step 1 — Add the new packages
+## Step 1: Add the new packages
 
 Install the helpers package alongside the bumped SDK.
 
@@ -48,7 +48,7 @@ Install the helpers package alongside the bumped SDK.
 
 Observability users can keep `iii-observability` (deprecated shim) for now or migrate it in Step 5.
 
-## Step 2 — Rename the client handle
+## Step 2: Rename the client handle
 
 Rename `ISdk` (Node) and `III` (Rust) to `IIIClient`. Python already used `IIIClient`. In the same pass, rename the Rust telemetry config `WorkerTelemetryMeta` to `TelemetryOptions`.
 
@@ -78,7 +78,7 @@ Rename `ISdk` (Node) and `III` (Rust) to `IIIClient`. Python already used `IIICl
   </Tab>
 </Tabs>
 
-## Step 3 — Update HTTP request/response types
+## Step 3: Update HTTP request/response types
 
 Rename the buffered `ApiRequest` / `ApiResponse` types to `HttpRequest` / `HttpResponse`. They now live in the helpers `http` submodule, along with `HttpAuthConfig` and `HttpInvocationConfig`.
 
@@ -111,10 +111,10 @@ Rename the buffered `ApiRequest` / `ApiResponse` types to `HttpRequest` / `HttpR
 
 <Callout type="warn">
   Only the buffered `Api*` types moved and were renamed. The streaming
-  `StreamRequest` / `StreamResponse` types stay in the root SDK — do not change them.
+  `StreamRequest` / `StreamResponse` types stay in the root SDK. Do not change them.
 </Callout>
 
-## Step 4 — Move shared types into @iii-dev/helpers
+## Step 4: Move shared types into @iii-dev/helpers
 
 Shared types are grouped into four helpers submodules.
 
@@ -168,7 +168,7 @@ Shared types are grouped into four helpers submodules.
   [Helpers reference](/next/sdk-reference/helpers-lib).
 </Callout>
 
-## Step 5 — Update observability imports
+## Step 5: Update observability imports
 
 Move observability imports into the helpers `observability` submodule.
 
@@ -206,7 +206,7 @@ Move observability imports into the helpers `observability` submodule.
   with no shim.
 </Callout>
 
-## Step 6 — Update error types and handling
+## Step 6: Update error types and handling
 
 Rename `IIIInvocationError` to `InvocationError` (Node `iii-sdk/errors`, Python `iii.errors`) and the Rust `IIIError` to `Error` (`iii_sdk::errors::Error`). The old names are removed from the root with no deprecated alias.
 
@@ -237,7 +237,7 @@ Rename `IIIInvocationError` to `InvocationError` (Node `iii-sdk/errors`, Python 
   </Tab>
 </Tabs>
 
-`IIIForbiddenError` and `IIITimeoutError` (Python) are removed — branch on `err.code` instead, matching Node and Rust.
+`IIIForbiddenError` and `IIITimeoutError` (Python) are removed. Branch on `err.code` instead, matching Node and Rust.
 
 ```python
 # Before
@@ -251,7 +251,7 @@ except InvocationError as err:
         ...
 ```
 
-## Step 7 — Adopt submodule paths: engine / protocol / internal / utils
+## Step 7: Adopt submodule paths (engine / protocol / internal / utils)
 
 The root exports for these groups are removed with no alias. In Rust, `IIIConnectionState` moves to `iii_sdk::runtime`.
 
@@ -287,11 +287,11 @@ The root exports for these groups are removed with no alias. In Rust, `IIIConnec
 
 <Callout type="info">
   `TriggerActionVoid` (Python) is also grouped under `iii.trigger`, but it stays
-  exported from the package root as the companion to `TriggerActionEnqueue` — it
+  exported from the package root as the companion to `TriggerActionEnqueue`. It
   is reachable from both `iii` and `iii.trigger`. No migration needed.
 </Callout>
 
-## Step 8 — Adopt the errors / channel / trigger / runtime submodules
+## Step 8: Adopt the errors / channel / trigger / runtime submodules
 
 The old root paths for these four groups are also removed in 0.20.0. Import each type from its submodule.
 
@@ -325,7 +325,7 @@ The old root paths for these four groups are also removed in 0.20.0. Import each
   </Tab>
 </Tabs>
 
-## Step 9 — Replace removed APIs
+## Step 9: Replace removed APIs
 
 A few APIs were removed outright:
 
