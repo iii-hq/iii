@@ -248,25 +248,25 @@ invoke and what context is forwarded to the middleware.
 
 ```typescript Node
 export type AuthResult = {
-  allowed_functions: string[]
-  forbidden_functions: string[]
+  allowed_functions?: string[]
+  forbidden_functions?: string[]
   allowed_trigger_types?: string[]
-  allow_trigger_type_registration: boolean
+  allow_trigger_type_registration?: boolean
   allow_function_registration?: boolean
-  context: Record<string, unknown>
+  context?: Record<string, unknown>
   function_registration_prefix?: string
 }
 ```
 
 ```python Python
 class AuthResult(BaseModel):
-    allowed_functions: list[str]
-    forbidden_functions: list[str]
+    allowed_functions: list[str] = []
+    forbidden_functions: list[str] = []
     allowed_trigger_types: list[str] | None = None
-    allow_trigger_type_registration: bool
+    allow_trigger_type_registration: bool = False
     allow_function_registration: bool = True
     function_registration_prefix: str | None = None
-    context: dict[str, Any]
+    context: dict[str, Any] = {}
 ```
 
 ```rust Rust
@@ -277,7 +277,7 @@ pub struct AuthResult {
     pub forbidden_functions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_trigger_types: Option<Vec<String>>,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub allow_trigger_type_registration: bool,
     #[serde(default = "default_true")]
     pub allow_function_registration: bool,
