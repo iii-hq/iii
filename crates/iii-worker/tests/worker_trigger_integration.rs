@@ -525,6 +525,67 @@ fn logs_outcome_every_field_has_description() {
 }
 
 #[test]
+fn status_options_every_field_has_description() {
+    let schema = serde_json::to_value(schema_for!(iii_worker::core::StatusOptions)).unwrap();
+    let missing = fields_missing_description(&schema);
+    assert!(
+        missing.is_empty(),
+        "StatusOptions fields missing description: {missing:?}"
+    );
+}
+
+#[test]
+fn status_outcome_every_field_has_description() {
+    let schema = serde_json::to_value(schema_for!(iii_worker::core::StatusOutcome)).unwrap();
+    let missing = fields_missing_description(&schema);
+    assert!(
+        missing.is_empty(),
+        "StatusOutcome fields missing description: {missing:?}"
+    );
+}
+
+#[test]
+fn validate_options_every_field_has_description() {
+    let schema = serde_json::to_value(schema_for!(
+        iii_worker::cli::worker_manifest::ValidateOptions
+    ))
+    .unwrap();
+    let missing = fields_missing_description(&schema);
+    assert!(
+        missing.is_empty(),
+        "ValidateOptions fields missing description: {missing:?}"
+    );
+}
+
+#[test]
+fn manifest_report_every_field_has_description() {
+    let schema = serde_json::to_value(schema_for!(
+        iii_worker::cli::worker_manifest::ManifestReport
+    ))
+    .unwrap();
+    let missing = fields_missing_description(&schema);
+    assert!(
+        missing.is_empty(),
+        "ManifestReport fields missing description: {missing:?}"
+    );
+}
+
+#[test]
+fn worker_manifest_schema_is_closed_world_with_descriptions() {
+    // The iii.worker.yaml schema served via worker::schema must reject
+    // unknown keys, require `name`, and describe every field — it is the
+    // authoring contract LLMs build manifests from.
+    let schema = iii_worker::cli::worker_manifest::manifest_schema_json();
+    assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+    assert_eq!(schema["required"], serde_json::json!(["name"]));
+    let missing = fields_missing_description(&schema);
+    assert!(
+        missing.is_empty(),
+        "WorkerManifest fields missing description: {missing:?}"
+    );
+}
+
+#[test]
 fn clear_options_every_field_has_description() {
     let schema = serde_json::to_value(schema_for!(ClearOptions)).unwrap();
     let missing = fields_missing_description(&schema);
@@ -619,6 +680,8 @@ const ALL_OPS: &[&str] = &[
     "worker::clear",
     "worker::logs",
     "worker::schema",
+    "worker::status",
+    "worker::validate",
 ];
 
 #[test]
@@ -667,6 +730,8 @@ fn read_only_ops_are_idempotent() {
         "worker::schema",
         "worker::clear",
         "worker::logs",
+        "worker::status",
+        "worker::validate",
     ] {
         let (_, idempotent) = op_metadata(op);
         assert!(idempotent, "{op} should be declared idempotent");

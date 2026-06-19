@@ -32,8 +32,17 @@ use crate::workers::configuration::registry::{
 };
 use crate::workers::configuration::structs::ConfigurationEntry;
 
-const DEFAULT_DIRECTORY: &str = "./data/configuration";
-const FILE_EXTENSION: &str = "yaml";
+/// Registered name of the file-backed configuration adapter, and the default
+/// adapter the configuration worker selects when none is configured. Exposed so
+/// the boot-time persisted-config read (`crate::logging`) resolves the same
+/// adapter/dir/extension this adapter actually uses, instead of duplicating the
+/// literals and risking silent drift.
+pub(crate) const ADAPTER_NAME: &str = "fs";
+// `DEFAULT_DIRECTORY` / `FILE_EXTENSION` are `pub(crate)` so boot-time
+// persisted-config readers (e.g. the `iii-state` boot-read) resolve the same
+// on-disk location the configuration worker persists entries under.
+pub(crate) const DEFAULT_DIRECTORY: &str = "./data/configuration";
+pub(crate) const FILE_EXTENSION: &str = "yaml";
 
 pub struct FsAdapter {
     directory: PathBuf,
@@ -323,7 +332,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> ConfigurationAda
     )
 }
 
-crate::register_adapter!(<ConfigurationAdapterRegistration> name: "fs", make_adapter);
+crate::register_adapter!(<ConfigurationAdapterRegistration> name: ADAPTER_NAME, make_adapter);
 
 #[cfg(test)]
 mod tests {

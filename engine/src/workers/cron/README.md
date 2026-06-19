@@ -35,6 +35,29 @@ npx skills add iii-hq/iii --full-depth --skill iii-cron
 |---|---|---|
 | `adapter` | Adapter | Adapter for distributed locking. Defaults to `kv`. Use `redis` for multi-instance deployments. |
 
+## Runtime configuration (hot reload)
+
+`iii-cron` registers its configuration with the builtin `configuration` worker
+under the id **`iii-cron`**, so the adapter above can be read and changed at
+runtime (e.g. `configuration::set { id: "iii-cron", value: { ... } }`) without
+restarting the engine. The config.yaml block is the **seed** used on first boot
+only; afterwards the configuration entry is the runtime source of truth and a
+runtime edit survives engine restarts. Values are validated against the schema
+at set time, and `${VAR:default}` placeholders are expanded on read.
+
+A change to `adapter` is a **full hot-swap**, all without a restart: the new lock
+backend is built first (the swap is **gated** — a value that fails to build keeps
+the previous backend, config, and jobs), then the old backend is shut down
+(stopping its tasks and releasing its locks), and finally every live cron job is
+re-registered onto the new backend **best-effort** (a single job that fails to
+re-register is logged while the rest move over). Shutting the old backend down
+before re-registering avoids a window where a job runs on both backends at once;
+the trade-off is a brief scheduling gap on this instance — a job whose fire time
+lands in the swap window is skipped, not run twice. Across a multi-instance
+deployment the old and new lock backends still cannot coordinate while instances
+sit on different backends mid-migration, so a job could run on more than one
+instance — prefer a quiet moment to repoint the adapter.
+
 ## Adapters
 
 ### kv
@@ -52,18 +75,27 @@ config:
 
 | Field | Type | Description |
 |---|---|---|
-| `lock_ttl_ms` | integer | Duration in milliseconds for which a lock is held. Defaults to `30000`. |
+| `lock_ttl_ms` | integer | Duration in milliseconds for which a lock is held before auto-release. Defaults to `30000`. |
 | `lock_index` | string | Key namespace for lock entries. Defaults to `cron_locks`. |
+| `store_method` | string | Backing key-value store: `in_memory` (default; volatile, lost on shutdown) or `file_based` (persisted under `file_path`). |
+| `file_path` | string | Directory for `file_based` storage. Defaults to `kv_store_data.db`. |
+| `save_interval_ms` | integer | Flush cadence (ms) for `file_based` storage. Range `100`–`3600000`, defaults to `5000`. |
+
+> `store_method` / `file_path` / `save_interval_ms` configure the shared backing store and take effect only for the first `kv` adapter built in the process; `lock_ttl_ms` and `lock_index` apply per adapter instance.
 
 ### redis
 
-Uses Redis for distributed locking to prevent duplicate job execution across multiple engine instances.
+Uses Redis for distributed locking to prevent duplicate job execution across multiple engine instances. The lock TTL and key prefix are fixed by the adapter; only the connection URL is configurable.
 
 ```yaml
 name: redis
 config:
   redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
+
+| Field | Type | Description |
+|---|---|---|
+| `redis_url` | string | Redis connection URL. Defaults to `redis://localhost:6379`. |
 
 ## Trigger Type: `cron`
 

@@ -14,7 +14,7 @@ pub const WORKER_MANIFEST: &str = "iii.worker.yaml";
 /// First-gate check on `runtime.base_image` — rejects shell
 /// metacharacters, whitespace, NUL, etc. Does not replace
 /// `Reference::parse`'s own grammar check.
-fn is_plausible_image_ref(s: &str) -> bool {
+pub(crate) fn is_plausible_image_ref(s: &str) -> bool {
     if s.is_empty() || s.len() > 512 {
         return false;
     }
@@ -32,6 +32,23 @@ fn is_plausible_image_ref(s: &str) -> bool {
 /// Keep in sync with the match arms in `infer_scripts()` and
 /// `oci::oci_image_for_kind()`.
 const SUPPORTED_KINDS: &[&str] = &["typescript", "javascript", "bun", "python", "rust"];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Manifest schema source of truth: `cli::worker_manifest::WorkerManifest`.
+// The typed struct defines the supported fields (mirroring the formal sections
+// in docs/creating-workers/worker-manifest.mdx), carries the deprecated legacy
+// fields (runtime.kind/package_manager/entry/language, top-level config/
+// language/entry — warned, still honored), and catches unknown keys via
+// `#[serde(flatten)]` maps. `validate_manifest_keys` / `warn_deprecated_
+// manifest_keys` below are thin wrappers over it for the add/start paths.
+// `env` and `dependencies` are arbitrary user-defined maps — their inner keys
+// are never allowlist-checked.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Max size of a local `iii.worker.yaml` we will read, mirroring the bundle
+/// path's `MAX_BUNDLE_MANIFEST_BYTES`. Guards against a hostile or accidental
+/// multi-GB manifest in a cloned worker dir being slurped into host memory.
+pub const MAX_LOCAL_MANIFEST_BYTES: u64 = 64 * 1024;
 
 pub struct ProjectInfo {
     pub name: String,
@@ -141,14 +158,14 @@ pub fn load_project_info(path: &std::path::Path) -> Option<ProjectInfo> {
     auto_detect_project(path)
 }
 
-/// Resolve `scripts.install` from a manifest's `scripts` block. Returns
+/// Resolve `scripts.install` from a manifest's `scripts` section. Returns
 /// the install command plus whether the key was *omitted* entirely.
 /// An omitted key yields `("", true)` so the caller can warn that the
 /// dependency install will be skipped; an explicit `install: ""`
 /// is an intentional opt-out and reports `("", false)`.
-fn resolve_install(scripts: Option<&serde_yaml::Value>) -> (String, bool) {
-    match scripts.and_then(|s| s.get("install")) {
-        Some(v) => (v.as_str().unwrap_or("").trim().to_string(), false),
+fn resolve_install(scripts: &super::worker_manifest::ScriptsSection) -> (String, bool) {
+    match &scripts.install {
+        Some(v) => (v.trim().to_string(), false),
         None => (String::new(), true),
     }
 }
@@ -165,47 +182,183 @@ fn install_skipped_warning(manifest_path: &std::path::Path) -> String {
     )
 }
 
+/// Read, size-cap, and parse an `iii.worker.yaml` exactly once.
+///
+/// Returns `Ok(None)` when the manifest is absent (the auto-detect path), so
+/// callers can branch without a second `exists()` check. Returns `Err` when
+/// the file exceeds [`MAX_LOCAL_MANIFEST_BYTES`] or fails to read/parse — the
+/// size cap mirrors the bundle path and bounds every downstream read, since
+/// callers thread the returned `Value` instead of re-reading.
+pub fn read_manifest_doc(
+    manifest_path: &std::path::Path,
+) -> Result<Option<serde_yaml::Value>, String> {
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+    let len = std::fs::metadata(manifest_path)
+        .map_err(|e| format!("cannot stat {}: {e}", manifest_path.display()))?
+        .len();
+    if len > MAX_LOCAL_MANIFEST_BYTES {
+        return Err(format!(
+            "{} is {len} bytes; iii.worker.yaml is capped at {MAX_LOCAL_MANIFEST_BYTES} bytes",
+            manifest_path.display(),
+        ));
+    }
+    let content = std::fs::read_to_string(manifest_path)
+        .map_err(|e| format!("cannot read {}: {e}", manifest_path.display()))?;
+    let doc = serde_yaml::from_str(&content)
+        .map_err(|e| format!("invalid YAML in {}: {e}", manifest_path.display()))?;
+    Ok(Some(doc))
+}
+
+/// Strict key/shape validation, delegating to the typed
+/// [`super::worker_manifest::WorkerManifest`] (the schema's single source of
+/// truth). Returns `Err` listing every UNKNOWN key (typo / unsupported),
+/// collected and sorted so a manifest with several mistakes surfaces them all
+/// in one run, or an `invalid manifest shape` error when a section has the
+/// wrong type (e.g. `runtime: node` where a mapping is required). Pure — emits
+/// NO warnings — so it can run on both the `add` and the `start` paths (start
+/// would otherwise re-warn about deprecated keys on every engine boot).
+///
+/// An empty manifest (`null`) or empty mapping returns `Ok(())`: there are no
+/// keys to police. Missing `name` is a separate required-field rule —
+/// [`require_manifest_name`], enforced on the add path. A non-mapping top
+/// level (a list, a bare scalar) is a shape error.
+pub fn validate_manifest_keys(
+    doc: &serde_yaml::Value,
+    manifest_path: &std::path::Path,
+) -> Result<(), String> {
+    if matches!(doc, serde_yaml::Value::Null) {
+        return Ok(());
+    }
+    if doc.as_mapping().is_none() {
+        return Err(format!(
+            "{}: manifest top level must be a YAML mapping of fields, e.g. `name: my-worker`",
+            manifest_path.display(),
+        ));
+    }
+    let manifest = super::worker_manifest::WorkerManifest::from_value(doc)
+        .map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let (unknown, _deprecated) = manifest.classify_keys();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "unknown key(s) in {}: [{}]. Supported fields are: name, description, \
+         runtime.base_image, scripts.(setup|install|start), env, dependencies, \
+         resources.(cpus|memory).",
+        manifest_path.display(),
+        unknown.join(", "),
+    ))
+}
+
+/// Require a non-empty `name` on a parsed `iii.worker.yaml`. Add-path gate,
+/// run right after [`validate_manifest_keys`] (which stays pure key/shape
+/// policing). Without this, a nameless manifest fell through
+/// `load_from_manifest → None` and was misreported as "No project manifest
+/// detected" — a false diagnosis when the file plainly exists (caught by the
+/// live DX audit). Deliberately NOT enforced on the start path: workers
+/// added via auto-detect before this rule may sit next to a nameless
+/// placeholder manifest, and start must not brick them.
+pub fn require_manifest_name(
+    doc: &serde_yaml::Value,
+    manifest_path: &std::path::Path,
+) -> Result<(), String> {
+    if matches!(doc, serde_yaml::Value::Null) {
+        return Err(format!(
+            "{} is empty; at least `name` and `scripts.start` are required",
+            manifest_path.display(),
+        ));
+    }
+    let has_name = doc
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty());
+    if has_name {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: missing required field `name` (a single path segment, e.g. `name: my-worker`)",
+        manifest_path.display(),
+    ))
+}
+
+/// Emit a single batched DEPRECATION warning (gated by
+/// `III_NO_DEPRECATION_WARN`) for keys the parser still honors but the docs no
+/// longer define. Add-path only — the start path stays silent so engine boots
+/// don't spam the warning. Side-effect only; never fails (shape errors are
+/// `validate_manifest_keys`' job and have already gated the add by the time
+/// this runs).
+pub fn warn_deprecated_manifest_keys(doc: &serde_yaml::Value, manifest_path: &std::path::Path) {
+    if std::env::var_os("III_NO_DEPRECATION_WARN").is_some() {
+        return;
+    }
+    let Ok(manifest) = super::worker_manifest::WorkerManifest::from_value(doc) else {
+        return;
+    };
+    let (_unknown, deprecated) = manifest.classify_keys();
+    if deprecated.is_empty() {
+        return;
+    }
+    // Only print the remediation bullet for a group that is actually present,
+    // so a `config:`-only manifest isn't told how to migrate keys it lacks.
+    let has_inference = deprecated.iter().any(|d| {
+        matches!(
+            d.as_str(),
+            "runtime.kind"
+                | "runtime.package_manager"
+                | "runtime.entry"
+                | "runtime.language"
+                | "language"
+                | "entry"
+        )
+    });
+    let has_config = deprecated.iter().any(|d| d == "config");
+    let mut bullets = String::new();
+    if has_inference {
+        bullets.push_str(
+            "\n  - `runtime.kind`/`package_manager`/`entry`/`language` (and the legacy \
+             top-level `language`/`entry`): define `scripts.setup`/`install`/`start` \
+             explicitly instead.",
+        );
+    }
+    if has_config {
+        bullets.push_str(
+            "\n  - `config`: set per-worker config directly in your project's \
+             `config.yaml` entry for this worker.",
+        );
+    }
+    eprintln!(
+        "{} {}: deprecated manifest key(s) [{}]. Still honored for now but no \
+         longer part of the documented schema; they will be removed in a \
+         future version.{}\n  (set III_NO_DEPRECATION_WARN=1 to silence.)",
+        "warning:".yellow(),
+        manifest_path.display(),
+        deprecated.join(", "),
+        bullets,
+    );
+}
+
 pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo> {
     let content = std::fs::read_to_string(manifest_path).ok()?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
-    let name = doc.get("name")?.as_str()?.to_string();
+    // Typed view — the manifest schema's single source of truth. A shape
+    // mismatch (e.g. `runtime: node`) yields None here; on the add/start
+    // paths `validate_manifest_keys` has already surfaced the precise error.
+    let manifest = super::worker_manifest::WorkerManifest::from_value(&doc).ok()?;
+    let name = manifest.name.clone()?;
 
-    let runtime = doc.get("runtime");
-    // Prefer `runtime.kind`; fall back to the legacy `runtime.language`
-    // so older manifests keep working. When only `language` is set,
-    // print a one-line deprecation note so the user knows to migrate.
-    let kind_str = runtime.and_then(|r| r.get("kind")).and_then(|v| v.as_str());
-    let legacy_language = runtime
-        .and_then(|r| r.get("language"))
-        .and_then(|v| v.as_str());
-    let kind = match (kind_str, legacy_language) {
-        (Some(k), _) => k,
-        (None, Some(l)) => {
-            if std::env::var_os("III_NO_DEPRECATION_WARN").is_none() {
-                eprintln!(
-                    "{} {}: `runtime.language` is deprecated; rename to \
-                     `runtime.kind`. Still accepted in v0.11.x; scheduled \
-                     for removal in v0.13 (set III_NO_DEPRECATION_WARN=1 \
-                     to silence).",
-                    "warning:".yellow(),
-                    manifest_path.display()
-                );
-            }
-            l
-        }
-        (None, None) => "",
-    };
-    let package_manager = runtime
-        .and_then(|r| r.get("package_manager"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let entry = runtime
-        .and_then(|r| r.get("entry"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let base_image = runtime
-        .and_then(|r| r.get("base_image"))
-        .and_then(|v| v.as_str())
+    let rt = manifest.runtime.clone().unwrap_or_default();
+    // Prefer `runtime.kind`; fall back to the legacy `runtime.language` so
+    // older manifests keep working. Deprecation warnings come from
+    // `warn_deprecated_manifest_keys` on the `worker add` path.
+    let kind = rt.kind.as_deref().or(rt.language.as_deref()).unwrap_or("");
+    let package_manager = rt.package_manager.as_deref().unwrap_or("");
+    let entry = rt.entry.as_deref().unwrap_or("");
+    let base_image = rt
+        .base_image
+        .as_deref()
         .filter(|s| !s.trim().is_empty())
         .and_then(|s| {
             let trimmed = s.trim();
@@ -224,14 +377,8 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
             }
         });
 
-    let scripts = doc.get("scripts");
-    let (setup_cmd, install_cmd, run_cmd) = if scripts.is_some() {
-        let setup = scripts
-            .and_then(|s| s.get("setup"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+    let (setup_cmd, install_cmd, run_cmd) = if let Some(scripts) = &manifest.scripts {
+        let setup = scripts.setup.as_deref().unwrap_or("").trim().to_string();
         // `scripts.install` omitted means no dependency install runs.
         // That silently breaks workers whose code imports those deps
         // (e.g. ModuleNotFoundError at boot), so warn loudly.
@@ -240,12 +387,7 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
         if install_omitted {
             eprintln!("{}", install_skipped_warning(manifest_path));
         }
-        let start = scripts
-            .and_then(|s| s.get("start"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let start = scripts.start.as_deref().unwrap_or("").trim().to_string();
         (setup, install, start)
     } else {
         // `package_manager` is required for typescript/javascript
@@ -254,11 +396,15 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
         let needs_pm = matches!(kind, "typescript" | "javascript");
         if needs_pm && package_manager.is_empty() {
             eprintln!(
-                "{} missing `package_manager` in {}\n\n  runtime:\n    kind: {}\n    package_manager: npm    <-- add this line\n    entry: {}\n\nhint: valid options are: npm, yarn, pnpm, bun. Or use `kind: bun` directly and drop `package_manager`.",
+                "{} cannot infer install/start for `{}` in {} without `runtime.package_manager`.\n\nhint: prefer defining explicit lifecycle scripts (these are the documented, supported fields):\n\n  scripts:\n    install: \"npm install\"\n    start: \"npx tsx {}\"\n\n(the legacy inference path via `runtime.package_manager: npm|yarn|pnpm|bun` is deprecated.)",
                 "error:".red(),
-                manifest_path.display(),
                 kind,
-                entry
+                manifest_path.display(),
+                if entry.is_empty() {
+                    "src/index.ts"
+                } else {
+                    entry
+                },
             );
             return None;
         }
@@ -266,13 +412,10 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     };
 
     let mut env = HashMap::new();
-    if let Some(env_map) = doc.get("env").and_then(|e| e.as_mapping()) {
-        for (k, v) in env_map {
-            if let (Some(key), Some(val)) = (k.as_str(), v.as_str())
-                && key != "III_URL"
-                && key != "III_ENGINE_URL"
-            {
-                env.insert(key.to_string(), val.to_string());
+    if let Some(env_map) = &manifest.env {
+        for (key, val) in env_map {
+            if key != "III_URL" && key != "III_ENGINE_URL" {
+                env.insert(key.clone(), val.clone());
             }
         }
     }
@@ -304,6 +447,16 @@ pub fn load_manifest_dependencies(
         .map_err(|e| format!("failed to parse {}: {e}", manifest_path.display()))?;
     let self_name = doc.get("name").and_then(|v| v.as_str());
     super::worker_manifest_deps::parse_dependencies(&doc, self_name)
+}
+
+/// Same as [`load_manifest_dependencies`] but operates on an already-parsed
+/// document, so callers that read the manifest once can thread it through
+/// instead of re-reading from disk.
+pub fn manifest_dependencies_from_doc(
+    doc: &serde_yaml::Value,
+) -> Result<BTreeMap<String, String>, String> {
+    let self_name = doc.get("name").and_then(|v| v.as_str());
+    super::worker_manifest_deps::parse_dependencies(doc, self_name)
 }
 
 pub fn auto_detect_project(path: &std::path::Path) -> Option<ProjectInfo> {
@@ -412,19 +565,23 @@ scripts:
     // The omitted/opt-out/explicit decision that drives the warning.
     #[test]
     fn resolve_install_reports_omission() {
-        let omitted: serde_yaml::Value = serde_yaml::from_str("start: run").unwrap();
-        assert_eq!(resolve_install(Some(&omitted)), (String::new(), true));
+        use super::super::worker_manifest::ScriptsSection;
+        fn scripts(yaml: &str) -> ScriptsSection {
+            serde_yaml::from_str(yaml).unwrap()
+        }
 
-        let opt_out: serde_yaml::Value = serde_yaml::from_str("install: \"\"").unwrap();
-        assert_eq!(resolve_install(Some(&opt_out)), (String::new(), false));
-
-        let explicit: serde_yaml::Value = serde_yaml::from_str("install: npm install").unwrap();
         assert_eq!(
-            resolve_install(Some(&explicit)),
+            resolve_install(&scripts("start: run")),
+            (String::new(), true)
+        );
+        assert_eq!(
+            resolve_install(&scripts("install: \"\"")),
+            (String::new(), false)
+        );
+        assert_eq!(
+            resolve_install(&scripts("install: npm install")),
             ("npm install".to_string(), false)
         );
-
-        assert_eq!(resolve_install(None), (String::new(), true));
     }
 
     // The skipped-install warning text is generic (not python-specific)
@@ -554,8 +711,9 @@ env:
     #[test]
     fn load_manifest_accepts_legacy_language_field() {
         // Backwards compat: old manifests with `runtime.language`
-        // keep working. Emits a deprecation warning to stderr but
-        // parses equivalently.
+        // keep working and parse equivalently. The deprecation warning
+        // now comes from `validate_manifest_keys` on the `worker add`
+        // path, not from `load_from_manifest`.
         let dir = tempfile::tempdir().unwrap();
         let manifest_path = dir.path().join("iii.worker.yaml");
         let yaml = r#"
@@ -820,5 +978,314 @@ dependencies:
         let manifest_path = dir.path().join("iii.worker.yaml");
         let deps = super::load_manifest_dependencies(&manifest_path).unwrap();
         assert!(deps.is_empty());
+    }
+
+    // ── validate_manifest_keys ──────────────────────────────────────────────
+
+    fn doc(s: &str) -> serde_yaml::Value {
+        serde_yaml::from_str(s).unwrap()
+    }
+
+    fn dummy_manifest_path() -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/iii.worker.yaml")
+    }
+
+    #[test]
+    fn validate_keys_accepts_fully_documented_manifest() {
+        let d = doc(r#"
+name: my-worker
+description: A worker that does things.
+runtime:
+  base_image: oven/bun:1
+scripts:
+  setup: "apt-get update"
+  install: "npm install"
+  start: "node server.js"
+env:
+  FOO: bar
+dependencies:
+  iii-http: "^0.19"
+resources:
+  cpus: 2
+  memory: 2048
+"#);
+        assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
+    }
+
+    #[test]
+    fn validate_keys_supports_description() {
+        // `description` is read by managed.rs and documented in workers.mdx;
+        // it must be a supported top-level field, not an unknown key.
+        let d = doc("name: w\ndescription: does things\n");
+        assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
+        let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
+        let (unknown, deprecated) = m.classify_keys();
+        assert!(
+            unknown.is_empty(),
+            "description must not be unknown: {unknown:?}"
+        );
+        assert!(
+            !deprecated.iter().any(|d| d == "description"),
+            "description must not be deprecated: {deprecated:?}"
+        );
+    }
+
+    #[test]
+    fn validate_keys_rejects_unknown_top_level() {
+        let d = doc("name: w\nruntimee:\n  kind: bun\n");
+        let err = validate_manifest_keys(&d, &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("runtimee"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_keys_rejects_unknown_nested_keys() {
+        let scripts = doc("name: w\nscripts:\n  instal: \"npm i\"\n  start: \"x\"\n");
+        let err = validate_manifest_keys(&scripts, &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("scripts.instal"), "got: {err}");
+
+        let runtime = doc("name: w\nruntime:\n  foo: bar\n");
+        let err = validate_manifest_keys(&runtime, &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("runtime.foo"), "got: {err}");
+
+        let resources = doc("name: w\nresources:\n  disk: 10\n");
+        let err = validate_manifest_keys(&resources, &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("resources.disk"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_keys_collects_multiple_unknowns_sorted() {
+        // Document order is zzz_bad then aaa_bad; the error must list BOTH and
+        // sort them (aaa_bad before zzz_bad), proving collect-all + sort.
+        let d = doc("name: w\nzzz_bad:\n  x: 1\naaa_bad:\n  y: 2\n");
+        let err = validate_manifest_keys(&d, &dummy_manifest_path()).unwrap_err();
+        let first = err.find("aaa_bad").expect("aaa_bad listed");
+        let second = err.find("zzz_bad").expect("zzz_bad listed");
+        assert!(first < second, "expected sorted order, got: {err}");
+    }
+
+    #[test]
+    fn validate_keys_deprecated_keys_are_not_errors() {
+        // Deprecated keys (runtime.* inference keys, top-level config, and the
+        // legacy top-level language/entry) classify as deprecated, never
+        // unknown, so strict validation passes. The warning is a separate
+        // concern (warn_deprecated_manifest_keys).
+        for (manifest, expect_dep) in [
+            ("name: w\nruntime:\n  kind: bun\n", "runtime.kind"),
+            (
+                "name: w\nruntime:\n  package_manager: npm\n",
+                "runtime.package_manager",
+            ),
+            (
+                "name: w\nruntime:\n  entry: src/index.ts\n",
+                "runtime.entry",
+            ),
+            (
+                "name: w\nruntime:\n  language: typescript\n",
+                "runtime.language",
+            ),
+            ("name: w\nconfig:\n  port: 3000\n", "config"),
+            ("name: w\nlanguage: typescript\n", "language"),
+            ("name: w\nentry: src/index.ts\n", "entry"),
+        ] {
+            let d = doc(manifest);
+            assert!(
+                validate_manifest_keys(&d, &dummy_manifest_path()).is_ok(),
+                "deprecated key must not error: {manifest}"
+            );
+            let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
+            let (unknown, deprecated) = m.classify_keys();
+            assert!(
+                unknown.is_empty(),
+                "no unknowns expected for {manifest}: {unknown:?}"
+            );
+            assert!(
+                deprecated.iter().any(|x| x == expect_dep),
+                "expected `{expect_dep}` deprecated for {manifest}: {deprecated:?}"
+            );
+            // warn path must not panic regardless of which keys are present.
+            warn_deprecated_manifest_keys(&d, &dummy_manifest_path());
+        }
+    }
+
+    #[test]
+    fn validate_keys_treats_env_and_dependencies_as_opaque() {
+        let d = doc("name: w\nenv:\n  MY_WEIRD_KEY: v\n  ANYTHING_GOES: w\n\
+             dependencies:\n  some-worker: \"^1\"\n  another-one: \"~2\"\n");
+        assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
+    }
+
+    #[test]
+    fn require_manifest_name_enforces_the_required_field() {
+        let path = dummy_manifest_path();
+        assert!(require_manifest_name(&doc("name: w\n"), &path).is_ok());
+
+        for (manifest, label) in [
+            ("scripts:\n  start: x\n", "missing name"),
+            ("name: \"\"\nscripts:\n  start: x\n", "empty name"),
+            ("name: \"   \"\n", "whitespace name"),
+        ] {
+            let err = require_manifest_name(&doc(manifest), &path).unwrap_err();
+            assert!(
+                err.contains("missing required field `name`"),
+                "{label}: got {err}"
+            );
+        }
+
+        // Empty file: the message says the manifest is empty rather than
+        // pretending the file was never found.
+        let err = require_manifest_name(&doc(""), &path).unwrap_err();
+        assert!(err.contains("is empty"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_keys_empty_is_ok_non_mapping_is_shape_error() {
+        // Empty file (null) and empty mapping: nothing to police; missing
+        // `name` is require_manifest_name's job on the add path.
+        assert!(validate_manifest_keys(&doc("{}"), &dummy_manifest_path()).is_ok());
+        assert!(validate_manifest_keys(&doc(""), &dummy_manifest_path()).is_ok());
+        // A list or bare scalar was never a functional manifest — with the
+        // typed WorkerManifest it is now a clear shape error instead of being
+        // silently waved through to a confusing downstream failure.
+        let err = validate_manifest_keys(&doc("- a\n- b\n"), &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("mapping"), "got: {err}");
+        let err =
+            validate_manifest_keys(&doc("\"just a string\""), &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("mapping"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_keys_runtime_scalar_is_shape_error() {
+        // `runtime: node` used to be silently skipped (the old key-walker
+        // couldn't express type errors). The typed manifest reports it as a
+        // clear shape error instead of letting the add fail later with the
+        // confusing "no run command could be determined".
+        let d = doc("name: w\nruntime: node\n");
+        let err = validate_manifest_keys(&d, &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("invalid manifest shape"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_keys_unknown_errors_even_with_deprecated_present() {
+        // The deprecation-collection path must not swallow the hard error when
+        // both a deprecated and an unknown key are present. (The interaction
+        // with III_NO_DEPRECATION_WARN is covered separately below.)
+        let d = doc("name: w\nconfig:\n  port: 3000\nruntimee:\n  kind: bun\n");
+        let err = validate_manifest_keys(&d, &dummy_manifest_path()).unwrap_err();
+        assert!(err.contains("runtimee"), "got: {err}");
+    }
+
+    /// Serializes the two tests that mutate the process-global
+    /// `III_NO_DEPRECATION_WARN` env var so they don't race each other (or
+    /// other tests that read it) under cargo's parallel test runner.
+    static DEPRECATION_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn env_gate_silences_warning_but_validation_still_errors() {
+        let _g = DEPRECATION_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // SAFETY: serialized via DEPRECATION_ENV_LOCK and restored before any
+        // assertion (so a panic can't leak the var into other tests).
+        unsafe { std::env::set_var("III_NO_DEPRECATION_WARN", "1") };
+        // warn path is a no-op under the gate (can't observe stderr in-process,
+        // but it must run without panicking).
+        warn_deprecated_manifest_keys(
+            &doc("name: w\nconfig:\n  port: 1\n"),
+            &dummy_manifest_path(),
+        );
+        // The hard error is independent of the env var.
+        let unknown_err =
+            validate_manifest_keys(&doc("name: w\nruntimee:\n  x: 1\n"), &dummy_manifest_path())
+                .is_err();
+        unsafe { std::env::remove_var("III_NO_DEPRECATION_WARN") };
+
+        assert!(
+            unknown_err,
+            "III_NO_DEPRECATION_WARN must never suppress the unknown-key error"
+        );
+    }
+
+    #[test]
+    fn warn_returns_silently_when_manifest_shape_is_invalid() {
+        let _g = DEPRECATION_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // SAFETY: serialized via DEPRECATION_ENV_LOCK; the env gate must be
+        // open or the function returns before reaching the typed-parse branch.
+        unsafe { std::env::remove_var("III_NO_DEPRECATION_WARN") };
+        let d = doc("name: w\nruntime: node\n");
+        assert!(
+            crate::cli::worker_manifest::WorkerManifest::from_value(&d).is_err(),
+            "precondition: `runtime: node` must fail the typed parse"
+        );
+
+        // Shape errors are validate_manifest_keys' job: the warn helper must
+        // bail out of the let-else without panicking or classifying keys.
+        warn_deprecated_manifest_keys(&d, &dummy_manifest_path());
+    }
+
+    #[test]
+    fn validate_keys_sanitizes_control_chars_in_echoed_keys() {
+        // A hostile third-party manifest must not inject terminal escapes
+        // through an unknown key name. Build the key programmatically so the
+        // ESC byte is exact regardless of YAML escaping rules.
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::from("name"),
+            serde_yaml::Value::from("w"),
+        );
+        m.insert(
+            serde_yaml::Value::from("ev\u{1b}\u{7}il"),
+            serde_yaml::Value::from(1),
+        );
+        let d = serde_yaml::Value::Mapping(m);
+        let err = validate_manifest_keys(&d, &dummy_manifest_path()).unwrap_err();
+        assert!(
+            !err.contains('\u{1b}') && !err.contains('\u{7}'),
+            "control bytes must be stripped from echoed key: {err:?}"
+        );
+        assert!(
+            err.contains("evil"),
+            "printable key text should survive sanitization: {err}"
+        );
+    }
+
+    #[test]
+    fn read_manifest_doc_absent_is_ok_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WORKER_MANIFEST);
+        assert!(matches!(read_manifest_doc(&path), Ok(None)));
+    }
+
+    #[test]
+    fn read_manifest_doc_valid_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WORKER_MANIFEST);
+        std::fs::write(&path, "name: w\nscripts:\n  start: x\n").unwrap();
+        let doc = read_manifest_doc(&path).unwrap().expect("Some");
+        assert_eq!(doc.get("name").and_then(|v| v.as_str()), Some("w"));
+    }
+
+    #[test]
+    fn read_manifest_doc_malformed_is_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WORKER_MANIFEST);
+        std::fs::write(&path, "name: w\n  : : bad\n:\n").unwrap();
+        let err = read_manifest_doc(&path).unwrap_err();
+        assert!(err.contains("invalid YAML"), "got: {err}");
+    }
+
+    #[test]
+    fn read_manifest_doc_oversize_is_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(WORKER_MANIFEST);
+        // Valid YAML, but larger than the cap.
+        let big = format!(
+            "name: w\nbloat: \"{}\"\n",
+            "a".repeat(MAX_LOCAL_MANIFEST_BYTES as usize)
+        );
+        std::fs::write(&path, big).unwrap();
+        let err = read_manifest_doc(&path).unwrap_err();
+        assert!(err.contains("capped at"), "got: {err}");
     }
 }

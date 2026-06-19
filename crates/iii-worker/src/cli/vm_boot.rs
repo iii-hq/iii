@@ -212,14 +212,17 @@ fn check_kvm_available() -> Result<(), String> {
 fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
     if !kvm.exists() {
         return Err("KVM not available -- /dev/kvm does not exist. \
-             Ensure KVM is enabled in your kernel and loaded (modprobe kvm_intel or kvm_amd)."
+             Ensure KVM is enabled in your kernel and loaded (modprobe kvm_intel or kvm_amd). \
+             This can also occur on Windows with WSL. \
+             See https://iii.dev/docs/troubleshooting#kvm-not-accessible"
             .to_string());
     }
     match std::fs::File::options().read(true).write(true).open(kvm) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(
             "KVM not accessible -- /dev/kvm exists but current user lacks permission. \
-             Add your user to the 'kvm' group: sudo usermod -aG kvm $USER"
+             Add your user to the 'kvm' group: sudo usermod -aG kvm $USER. \
+             See https://iii.dev/docs/troubleshooting#kvm-not-accessible"
                 .to_string(),
         ),
         Err(e) => Err(format!("KVM check failed: {}", e)),

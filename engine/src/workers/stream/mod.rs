@@ -6,6 +6,7 @@
 
 pub mod adapters;
 mod config;
+mod configuration;
 mod connection;
 mod socket;
 #[allow(clippy::module_inception)]

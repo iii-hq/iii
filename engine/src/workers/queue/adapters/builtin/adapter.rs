@@ -445,6 +445,16 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
         tokio::spawn(async move {
             let poll_interval = std::time::Duration::from_millis(poll_interval_ms);
+            // Delivery ids this task popped and pushed toward the consumer that
+            // may not yet have been acked/nacked. Bounded by the channel
+            // capacity: at most `prefetch` messages can sit unconsumed in the
+            // channel, so once an id ages out of this window the consumer has
+            // necessarily received it and it needs no cleanup. Without this we
+            // would leak/strand channel-buffered messages on a consumer restart
+            // (this adapter has no visibility-timeout reclaim).
+            let window = (prefetch as usize).max(1);
+            let mut outstanding: std::collections::VecDeque<u64> =
+                std::collections::VecDeque::with_capacity(window);
             loop {
                 if tx.is_closed() {
                     break;
@@ -465,6 +475,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
                             job_id: job.id.clone(),
                         },
                     );
+                    outstanding.push_back(delivery_id);
 
                     let msg = QueueMessage {
                         delivery_id,
@@ -477,18 +488,36 @@ impl QueueAdapter for BuiltinQueueAdapter {
                     };
 
                     if tx.send(msg).await.is_err() {
-                        // Channel closed — nack the job so it returns to the queue
-                        if let Some(info) = delivery_map.write().await.remove(&delivery_id)
-                            && let Err(e) = queue
-                                .nack(&info.queue_name, &info.job_id, "consumer channel closed")
-                                .await
-                        {
-                            tracing::error!(error = %e, "Failed to nack stranded job");
-                        }
                         break;
+                    }
+
+                    // Trim only AFTER a successful send. A send unblocks when the
+                    // consumer makes room in the channel, so once `outstanding`
+                    // exceeds the channel window the oldest entry has necessarily
+                    // been received and no longer needs nack-on-stop cleanup.
+                    // Trimming before the send (while it can still block) would
+                    // drop a still-buffered delivery id and strand it.
+                    while outstanding.len() > window {
+                        outstanding.pop_front();
                     }
                 } else {
                     tokio::time::sleep(poll_interval).await;
+                }
+            }
+
+            // Channel closed: the consumer was aborted (a config-driven restart
+            // or shutdown). Nack every still-outstanding delivery so it returns
+            // to the queue instead of being silently stranded in `delivery_map`.
+            // A message already acked/nacked by its worker is gone from the map
+            // and skipped here; an in-flight one may be redelivered — at-least-
+            // once, which is the correct bias for a durable queue (vs. losing it).
+            for delivery_id in outstanding {
+                if let Some(info) = delivery_map.write().await.remove(&delivery_id)
+                    && let Err(e) = queue
+                        .nack(&info.queue_name, &info.job_id, "consumer stopped")
+                        .await
+                {
+                    tracing::error!(error = %e, "Failed to nack stranded job on consumer stop");
                 }
             }
         });
@@ -916,6 +945,162 @@ mod tests {
         assert_eq!(msg.attempt, 0);
         // delivery_id is assigned, just verify it exists (u64)
         let _ = msg.delivery_id;
+    }
+
+    #[tokio::test]
+    async fn consumer_stop_nacks_buffered_delivery() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        // Consume but never receive: the poll task pops the job into the channel
+        // buffer + delivery_map, where it would be stranded if the consumer
+        // stopped (this adapter has no visibility-timeout reclaim).
+        let rx = adapter
+            .consume_function_queue("test-q", 1)
+            .await
+            .expect("consume should return receiver");
+
+        // max_retries = 1 so the consumer-stop nack exhausts the job and routes
+        // it to the DLQ — a signal that an `ack`/drop would NOT produce, letting
+        // the assertion below prove the delivery was nacked, not silently lost.
+        adapter
+            .publish_to_function_queue(
+                "test-q",
+                "fn::handler",
+                json!({"k": "v"}),
+                "msg-1",
+                1,
+                1000,
+                None,
+                None,
+            )
+            .await;
+
+        // Wait until the poll task has popped the job (tracked in delivery_map)
+        // without it being received.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while adapter.delivery_map.read().await.is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "job should be popped into delivery_map"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Abort the consumer without acking by dropping the receiver.
+        drop(rx);
+
+        // The poll task must nack the buffered delivery back to the queue rather
+        // than leaving it stranded in delivery_map.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !adapter.delivery_map.read().await.is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "stranded delivery should be nacked when the consumer stops"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // And it must actually be NACKED, not acked/dropped: the exhausted job
+        // lands in the DLQ. An ack would leave the DLQ empty.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while adapter.queue.dlq_count("__fn_queue::test-q").await < 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "consumer-stop must nack the buffered delivery (here to the DLQ), not drop it"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn consumer_stop_nacks_oldest_when_buffer_full() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let config = FunctionQueueConfig::default();
+
+        adapter
+            .setup_function_queue("test-q", &config)
+            .await
+            .expect("setup should succeed");
+
+        // prefetch = 2 → a channel buffer of 2. Publish 3 jobs and never receive:
+        // the poll task buffers the first two, pops the third, and blocks on a
+        // full-channel send. The oldest delivery must NOT be stranded when the
+        // consumer stops (regression test for premature eviction).
+        let rx = adapter
+            .consume_function_queue("test-q", 2)
+            .await
+            .expect("consume should return receiver");
+
+        // max_retries = 1 so each consumer-stop nack exhausts its job to the DLQ,
+        // which the assertion below uses to prove every delivery was nacked (not
+        // acked/dropped), including the oldest that was at risk of early eviction.
+        for i in 0..3 {
+            adapter
+                .publish_to_function_queue(
+                    "test-q",
+                    "fn::handler",
+                    json!({ "i": i }),
+                    &format!("msg-{i}"),
+                    1,
+                    1000,
+                    None,
+                    None,
+                )
+                .await;
+        }
+
+        // Wait until all three are popped into delivery_map (the third leaves
+        // the poll task blocked on a full-channel send).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while adapter.delivery_map.read().await.len() < 3 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "all three jobs should be popped into delivery_map"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Abort the consumer.
+        drop(rx);
+
+        // Every delivery — including the oldest, which was buffered but would be
+        // evicted from the tracking window before its send completed — must be
+        // nacked, not stranded.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = adapter.delivery_map.read().await.len();
+            if remaining == 0 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no delivery may be stranded when the consumer stops, {remaining} left"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // All three were NACKED, not acked/dropped: each exhausted job lands in
+        // the DLQ. A regression that acked on stop would leave the DLQ empty.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let dlq = adapter.queue.dlq_count("__fn_queue::test-q").await;
+            if dlq >= 3 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "every consumer-stop nack must route to the DLQ, only {dlq}/3 did"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]

@@ -122,7 +122,7 @@ impl ConfigurableWorker for ConfigurationWorker {
     type Config = ConfigurationModuleConfig;
     type Adapter = dyn ConfigurationAdapter;
     type AdapterRegistration = super::registry::ConfigurationAdapterRegistration;
-    const DEFAULT_ADAPTER_NAME: &'static str = "fs";
+    const DEFAULT_ADAPTER_NAME: &'static str = super::adapters::fs::ADAPTER_NAME;
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<

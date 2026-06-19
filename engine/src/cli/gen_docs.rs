@@ -24,7 +24,7 @@ fn delegated() -> BTreeMap<String, Delegated> {
         "worker".to_string(),
         Delegated {
             link: Some("#iii-worker".to_string()),
-            note: "Manage workers (add, remove, list).".to_string(),
+            note: "Manage workers (add, remove, list, info).".to_string(),
         },
     );
     map.insert(

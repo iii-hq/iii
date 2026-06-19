@@ -6,6 +6,7 @@
 
 mod api_core;
 mod config;
+mod configuration;
 mod hot_router;
 mod types;
 mod views;

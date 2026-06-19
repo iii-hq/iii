@@ -6,6 +6,7 @@
 
 pub mod adapters;
 mod config;
+mod configuration;
 mod message;
 #[allow(clippy::module_inception)]
 mod queue;

@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 fn default_port() -> u16 {
@@ -22,26 +23,66 @@ fn default_concurrency_request_limit() -> usize {
     1024
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// HTTP server settings. Doc comments on each field flow into the JSON Schema
+/// (via `schemars`) that the `iii-http` configuration entry registers, so an
+/// agent introspecting the schema sees the same descriptions and defaults
+/// documented here.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RestApiConfig {
+    /// TCP port the HTTP server binds to. Defaults to 3111. Use 0 to bind an
+    /// OS-assigned ephemeral port (handy in tests).
     #[serde(default = "default_port")]
     pub port: u16,
 
+    /// Host/interface to bind. Defaults to "0.0.0.0" (all interfaces).
+    /// Supports `${VAR:default}` env expansion since it is a string field.
     #[serde(default = "default_host")]
     pub host: String,
 
+    /// Per-request timeout in milliseconds; on expiry the server returns
+    /// 504 Gateway Timeout. Defaults to 30000 (30s).
     #[serde(default = "default_timeout")]
     pub default_timeout: u64,
 
+    /// CORS policy. When omitted, a permissive layer (any origin/method) is
+    /// used. Set this to restrict allowed origins and methods.
     #[serde(default)]
     pub cors: Option<CorsConfig>,
 
+    /// Maximum number of in-flight requests; requests over the limit wait for
+    /// a slot. Must be at least 1 — a zero-permit limit would hang every
+    /// request, so the schema rejects 0 at `configuration::set` time and any
+    /// 0 loaded from a file (bypassing the schema) is clamped to 1.
+    /// Defaults to 1024.
     #[serde(default = "default_concurrency_request_limit")]
+    #[schemars(range(min = 1))]
     pub concurrency_request_limit: usize,
 
+    /// Global middleware run on every route before the handler, in ascending
+    /// `priority` order. Per-route middleware is set on the trigger instead.
     #[serde(default)]
     pub middleware: Vec<MiddlewareConfig>,
+}
+
+impl RestApiConfig {
+    /// Normalize a freshly-loaded config. Runs on every load path (static
+    /// block, seed, or a value read back from the configuration worker):
+    /// - Sort global middleware by priority — views iterate in stored order.
+    /// - Clamp `concurrency_request_limit` to ≥ 1. The schema's `minimum: 1`
+    ///   only guards `configuration::set`; values loaded from a hand-edited
+    ///   adapter file or static yaml bypass it, and a zero-permit
+    ///   `ConcurrencyLimitLayer` would hang every request.
+    pub fn normalized(mut self) -> Self {
+        self.middleware.sort_by_key(|m| m.priority);
+        if self.concurrency_request_limit == 0 {
+            tracing::warn!(
+                "iii-http: concurrency_request_limit 0 would block all requests; clamped to 1"
+            );
+            self.concurrency_request_limit = 1;
+        }
+        self
+    }
 }
 
 impl Default for RestApiConfig {
@@ -57,11 +98,16 @@ impl Default for RestApiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MiddlewareConfig {
+    /// ID of the function to invoke as middleware (e.g. `middleware::auth`).
     pub function_id: String,
+    /// Lifecycle phase. Currently only "preHandler" (runs before the handler)
+    /// is supported. Defaults to "preHandler".
     #[serde(default = "default_phase")]
     pub phase: String,
+    /// Execution order among global middleware; lower runs first. Defaults to 0.
     #[serde(default)]
     pub priority: i64,
 }
@@ -70,12 +116,18 @@ fn default_phase() -> String {
     "preHandler".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CorsConfig {
+    /// Allowed CORS origins (e.g. "https://app.example.com"). Use "*" to allow
+    /// any origin. An EMPTY list also allows any origin (permissive fallback)
+    /// — to restrict origins, list them explicitly.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
 
+    /// Allowed CORS methods (e.g. "GET", "POST"). An EMPTY list allows any
+    /// method (permissive fallback) — to restrict methods, list them
+    /// explicitly.
     #[serde(default)]
     pub allowed_methods: Vec<String>,
 }
@@ -163,6 +215,31 @@ mod tests {
         let cors = deserialized.cors.unwrap();
         assert_eq!(cors.allowed_origins, vec!["*"]);
         assert_eq!(cors.allowed_methods, vec!["GET"]);
+    }
+
+    #[test]
+    fn middleware_config_deny_unknown_fields() {
+        // A typo'd key inside a middleware object (e.g. "priorty") must fail
+        // loudly instead of silently running the middleware at priority 0 —
+        // global middleware is the auth/rate-limit chain, so ordering typos
+        // are security-relevant.
+        let json = r#"{
+            "middleware": [
+                {"function_id": "fn::auth", "priorty": 5}
+            ]
+        }"#;
+        let result: Result<RestApiConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in middleware entries"
+        );
+    }
+
+    #[test]
+    fn normalized_clamps_zero_concurrency_limit() {
+        let config: RestApiConfig =
+            serde_json::from_str(r#"{"concurrency_request_limit": 0}"#).unwrap();
+        assert_eq!(config.normalized().concurrency_request_limit, 1);
     }
 
     #[test]

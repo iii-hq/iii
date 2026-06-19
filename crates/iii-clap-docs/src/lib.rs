@@ -352,7 +352,8 @@ fn render_args_tables(out: &mut String, cmd: &Command) {
                 wrapped
             };
             out.push_str(&format!(
-                "| `{display}` | {} |\n",
+                "| `{}` | {} |\n",
+                esc_code_cell(&display),
                 esc_cell(&arg_description(arg))
             ));
         }
@@ -394,7 +395,8 @@ fn render_args_tables(out: &mut String, cmd: &Command) {
                 flag.push_str(&format!(" <{value_name}>"));
             }
             out.push_str(&format!(
-                "| `{flag}` | {} |\n",
+                "| `{}` | {} |\n",
+                esc_code_cell(&flag),
                 esc_cell(&arg_description(arg))
             ));
         }
@@ -499,6 +501,14 @@ fn backtick_flags(s: &str) -> String {
 /// collapsed so a multi-line help string cannot split the row.
 fn esc_cell(s: &str) -> String {
     esc_mdx(s).replace(['\n', '\t'], " ").replace('|', "\\|")
+}
+
+/// Escape content that is emitted INSIDE a backtick code span within a table
+/// cell (e.g. an argument name like `<WORKER[@VERSION]|PATH>`). MDX treats the
+/// span contents literally, so the only table hazard is a bare `|`, which GFM
+/// reads as a column separator even inside inline code; `\|` keeps it literal.
+fn esc_code_cell(s: &str) -> String {
+    s.replace('|', "\\|")
 }
 
 fn yaml_escape(s: &str) -> String {
@@ -692,6 +702,11 @@ mod tests {
         let cmd = Command::new("iii")
             .about("Use <ID> and {braces} carefully")
             .arg(
+                Arg::new("target")
+                    .value_name("WORKER[@VERSION]|PATH")
+                    .required(true),
+            )
+            .arg(
                 Arg::new("filter")
                     .long("filter")
                     .value_name("EXPR")
@@ -700,6 +715,9 @@ mod tests {
         let mdx = render_mdx(cmd, &meta());
         assert!(mdx.contains("Use \\<ID> and \\{braces\\} carefully"));
         assert!(mdx.contains("Match a\\|b pairs"));
+        // A pipe in the argument-name column must be escaped too, or GFM splits
+        // the cell and the leftover `<WORKER[` is parsed as a broken JSX tag.
+        assert!(mdx.contains("| `<WORKER[@VERSION]\\|PATH>` |"));
     }
 
     #[test]

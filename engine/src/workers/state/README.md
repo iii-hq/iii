@@ -37,9 +37,39 @@ npx skills add iii-hq/iii --full-depth --skill iii-state
 
 | Field | Type | Description |
 |---|---|---|
-| `adapter` | Adapter | Adapter for state persistence. Defaults to `kv`. |
+| `adapter` | Adapter | Storage adapter selected by `name` — one of `kv` (default), `redis`, or `bridge` — with a per-adapter `config`. Validated against the concrete per-adapter schema at set time. Restart-tier (see below). |
+| `triggers_enabled` | boolean | Globally enable/disable state change-trigger fan-out. Defaults to `true`. Applied live. |
+| `max_value_bytes` | number | Reject `state::set` writes whose JSON-serialized value exceeds this many bytes (`VALUE_TOO_LARGE`). Minimum `1`; unset means no limit. Applied live. |
+| `save_interval_ms` | number | Persistence flush cadence (ms) for the file-backed `kv` adapter. `100`–`3600000`; defaults to `5000`. Task-rebuild (respawns the save loop). |
+
+## Runtime configuration (hot reload)
+
+`iii-state` registers its configuration with the builtin `configuration` worker
+under the id **`iii-state`**, so the settings above can be read and changed at
+runtime (e.g. `configuration::set { id: "iii-state", value: { ... } }`) without
+restarting the engine. The config.yaml block is the **seed** used on first boot
+only; afterwards the configuration entry is the runtime source of truth and a
+runtime edit survives engine restarts (read back via a boot-read). Values are
+validated against the schema at set time, and `${VAR:default}` placeholders are
+expanded on read.
+
+Apply tiers:
+
+| Tier | Fields | Behavior |
+|---|---|---|
+| **Live** | `triggers_enabled`, `max_value_bytes` | Take effect on the next state write — no restart. |
+| **Task-rebuild** | `save_interval_ms` | Respawns the file-backed kv save loop at the new cadence (no-op for in-memory / non-kv adapters). |
+| **Restart-tier** | `adapter` | A change is logged and applies at the next engine start; the persisted entry drives adapter construction at boot. |
+
+> The configuration worker must be file-backed (the default `fs` adapter) at its
+> default directory for the restart-tier boot-read to pick up persisted `adapter`
+> edits; otherwise the config.yaml block is used at boot.
 
 ## Adapters
+
+The adapter set is closed: `configuration::set` accepts only the built-in adapters
+below, each with its own typed `config` schema, so an agent introspecting the schema
+(or the console) sees concrete per-adapter fields rather than a free-form object.
 
 ### kv
 

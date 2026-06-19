@@ -200,6 +200,50 @@ export class SharedEngineConnection {
   }
 
   /**
+   * Whether the connection is shutting down. While shutting down, exporters
+   * fail-fast instead of queueing when there is no live connection, so a final
+   * forceFlush() can't hang waiting for a reconnect that will never happen.
+   */
+  isShuttingDown(): boolean {
+    return this.shuttingDown
+  }
+
+  /**
+   * Begin shutdown: stop reconnecting and stop accepting new queued exports,
+   * while leaving an open connection in place so buffered telemetry can still
+   * be flushed. Call before flushing, then call shutdown() to close fully.
+   */
+  beginShutdown(): void {
+    if (this.shuttingDown) {
+      return
+    }
+    this.shuttingDown = true
+
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = null
+    }
+
+    // With no live connection there's nothing to flush to, so fail queued work
+    // now instead of leaving callbacks unresolved for the flush below to wait on
+    if (this.state !== 'connected') {
+      const pending = this.pendingMessages.splice(0, this.pendingMessages.length)
+      const shutdownError = new Error('Connection shutdown before message could be sent')
+      for (const { callback } of pending) {
+        callback?.(shutdownError)
+      }
+
+      for (const cb of this.onFailedCallbacks) {
+        try {
+          cb()
+        } catch (err) {
+          console.error('[OTel] onFailed callback threw:', err)
+        }
+      }
+    }
+  }
+
+  /**
    * Shutdown the connection.
    */
   async shutdown(): Promise<void> {

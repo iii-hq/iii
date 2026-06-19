@@ -881,6 +881,9 @@ mod tests {
     /// stdlib has loosened the rule and the production code can be
     /// simplified.
     #[test]
+    // The nonsensical combination is the point: this test asserts the stdlib
+    // still rejects it. Clippy flagging it is a true positive on intent.
+    #[allow(clippy::nonsensical_open_options)]
     fn truncate_plus_append_open_options_combination_is_illegal() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("combo.log");

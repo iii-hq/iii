@@ -32,6 +32,20 @@ fn generate_error_id() -> String {
     format!("{:x}", timestamp & 0xFFFFFFFFFFFF)
 }
 
+/// Build the standardized error envelope returned by every engine-generated
+/// HTTP error. The shape is stable so clients (and AI agents) can parse it
+/// without guessing: `{"error": {"code", "message", "error_id"?}}`. `code` is
+/// a machine-readable identifier, `message` is human-facing, and `error_id`
+/// (when present) correlates the response with server logs. Handler- and
+/// middleware-returned bodies pass through unchanged and are not wrapped.
+fn error_body(code: &str, message: &str, error_id: Option<&str>) -> serde_json::Value {
+    let mut error = json!({ "code": code, "message": message });
+    if let Some(id) = error_id {
+        error["error_id"] = json!(id);
+    }
+    json!({ "error": error })
+}
+
 /// Map an HTTP response status code to an OTel span status string.
 ///
 /// Only responses with status >= 400 are treated as errors; 1xx/2xx/3xx
@@ -233,7 +247,7 @@ async fn execute_middleware(
             );
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": err.message, "error_id": error_id})),
+                Json(error_body(&err.code, &err.message, Some(&error_id))),
             )
                 .into_response())
         }
@@ -241,7 +255,7 @@ async fn execute_middleware(
             tracing::error!(middleware_fn = %mw_fn_id, "Middleware timed out");
             Err((
                 StatusCode::GATEWAY_TIMEOUT,
-                Json(json!({"error": "Middleware timeout"})),
+                Json(error_body("MIDDLEWARE_TIMEOUT", "Middleware timeout", None)),
             )
                 .into_response())
         }
@@ -346,7 +360,8 @@ pub async fn dynamic_handler(
 
             // Global middleware (from rest_api_config, sorted by priority at config load time)
             // These run before channel creation, so on short-circuit we return directly.
-            let rest_api_config = &api_handler.config;
+            // One snapshot per request: hot-reloads never mix old and new values mid-request.
+            let rest_api_config = api_handler.config_snapshot();
             for mw_config in &rest_api_config.middleware {
                 if mw_config.phase != "preHandler" {
                     continue;
@@ -478,11 +493,10 @@ pub async fn dynamic_handler(
                         );
                         channel_mgr.remove_channel(&req_ch_id);
                         channel_mgr.remove_channel(&res_ch_id);
-                        return (
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            Json(json!({"error": "Request condition not met", "skipped": true})),
-                        )
-                            .into_response();
+                        let mut body =
+                            error_body("CONDITION_NOT_MET", "Request condition not met", None);
+                        body["skipped"] = json!(true);
+                        return (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response();
                     }
                     Err(err) => {
                         let error_id = generate_error_id();
@@ -501,7 +515,7 @@ pub async fn dynamic_handler(
                         channel_mgr.remove_channel(&res_ch_id);
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error": err.message, "error_id": error_id})),
+                            Json(error_body(&err.code, &err.message, Some(&error_id))),
                         )
                             .into_response();
                     }
@@ -605,7 +619,7 @@ pub async fn dynamic_handler(
                                     );
                                     return (
                                         StatusCode::INTERNAL_SERVER_ERROR,
-                                        Json(json!({"error": err.message, "error_id": error_id})),
+                                        Json(error_body(&err.code, &err.message, Some(&error_id))),
                                     ).into_response();
                                 }
                                 Err(join_err) => {
@@ -624,7 +638,11 @@ pub async fn dynamic_handler(
                                     );
                                     return (
                                         StatusCode::INTERNAL_SERVER_ERROR,
-                                        Json(json!({"error": "internal server error", "error_id": error_id})),
+                                        Json(error_body(
+                                            "INTERNAL_ERROR",
+                                            "internal server error",
+                                            Some(&error_id),
+                                        )),
                                     ).into_response();
                                 }
                             }
@@ -691,8 +709,21 @@ pub async fn dynamic_handler(
                 return match response_builder.body(Body::from_stream(stream)) {
                     Ok(resp) => resp.into_response(),
                     Err(err) => {
-                        tracing::error!(error = ?err, "Failed to build streaming response");
-                        (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+                        let error_id = generate_error_id();
+                        tracing::error!(
+                            error = ?err,
+                            error_id = %error_id,
+                            "Failed to build streaming response"
+                        );
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(error_body(
+                                "INTERNAL_ERROR",
+                                "internal server error",
+                                Some(&error_id),
+                            )),
+                        )
+                            .into_response()
                     }
                 };
             }
@@ -727,7 +758,7 @@ pub async fn dynamic_handler(
                     );
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": err.message, "error_id": error_id})),
+                        Json(error_body(&err.code, &err.message, Some(&error_id))),
                     ).into_response()
                 }
                 Err(join_err) => {
@@ -744,7 +775,11 @@ pub async fn dynamic_handler(
                     );
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": "internal server error", "error_id": error_id})),
+                        Json(error_body(
+                            "INTERNAL_ERROR",
+                            "internal server error",
+                            Some(&error_id),
+                        )),
                     ).into_response()
                 }
             };
@@ -759,10 +794,26 @@ pub async fn dynamic_handler(
             "Route not found: {} {}", method, actual_path
         );
 
-        (StatusCode::NOT_FOUND, "Not Found").into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(error_body("NOT_FOUND", "Not Found", None)),
+        )
+            .into_response()
     }
     .instrument(span)
     .await
+}
+
+/// Router-level fallback for requests that match no registered route at all.
+/// Without this, axum's default fallback returns an empty-body 404, breaking
+/// the stable error envelope that every other engine-generated error uses.
+/// No `error_id`: it is documented as 5xx-only (log correlation).
+pub async fn not_found_handler(method: axum::http::Method, uri: Uri) -> impl IntoResponse {
+    tracing::debug!(method = %method, path = %uri.path(), "No route matched");
+    (
+        StatusCode::NOT_FOUND,
+        Json(error_body("NOT_FOUND", "Not Found", None)),
+    )
 }
 
 #[cfg(test)]
@@ -818,6 +869,23 @@ mod tests {
             id.chars().all(|c| c.is_ascii_hexdigit()),
             "Error ID should contain only hex digits, got '{}'",
             id
+        );
+    }
+
+    #[test]
+    fn error_body_has_stable_envelope() {
+        let with_id = error_body("HANDLER_ERROR", "boom", Some("abc123"));
+        assert_eq!(with_id["error"]["code"], "HANDLER_ERROR");
+        assert_eq!(with_id["error"]["message"], "boom");
+        assert_eq!(with_id["error"]["error_id"], "abc123");
+
+        // error_id is omitted (not null) when absent, so the key simply
+        // doesn't appear.
+        let without_id = error_body("MIDDLEWARE_TIMEOUT", "Middleware timeout", None);
+        assert_eq!(without_id["error"]["code"], "MIDDLEWARE_TIMEOUT");
+        assert!(
+            without_id["error"].get("error_id").is_none(),
+            "error_id must be omitted when not provided: {without_id}"
         );
     }
 

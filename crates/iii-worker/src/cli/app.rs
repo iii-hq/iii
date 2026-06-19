@@ -13,9 +13,10 @@ pub const DEFAULT_PORT: u16 = 49134;
 /// Shared arguments for `add` and `reinstall` commands.
 #[derive(Args, Debug)]
 pub struct AddArgs {
-    /// iii registry worker names (ex. `database`), local worker paths (ex. `./my_worker`),
-    /// or Docker / OCI image references (ex. `ghcr.io/org/worker:tag`)
-    #[arg(value_name = "WORKER[@VERSION]", required = true, num_args = 1..)]
+    /// iii registry worker names (ex. `database` or `pdfkit@1.0.0`), local worker
+    /// paths (ex. `./my_worker`, a directory containing `iii.worker.yaml`), or
+    /// Docker / OCI image references (ex. `ghcr.io/org/worker:tag`)
+    #[arg(value_name = "WORKER[@VERSION]|PATH", required = true, num_args = 1..)]
     pub worker_names: Vec<String>,
 
     /// Discard the worker's config.yaml entry and recreate it from registry
@@ -39,7 +40,10 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install a worker from the iii registry, a local directory, or by OCI image reference.
+    /// Install a worker from the iii registry, a path to a local worker directory (ex.
+    /// `./myWorker` with a `iii.worker.yaml` file within it)
+    /// or by OCI image reference. To create a NEW worker from scratch, use
+    /// `iii worker init`.
     /// By default `add` waits up to 120s for the worker to report ready.
     /// After which the worker will continue to boot but the command will
     /// return to the shell. See `iii worker status` to continue observing

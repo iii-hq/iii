@@ -74,6 +74,11 @@ Path  /Users/tony/iii/projects/testing/quickstart/workers/math-worker
 ✓ Worker auto-started
 ```
 
+<Warning title="Linux: `KVM not accessible`">
+  Workers boot in a microVM that needs access to `/dev/kvm`. If the worker fails with `KVM not
+  accessible`, see [Troubleshooting](./troubleshooting#kvm-not-accessible).
+</Warning>
+
 This worker registered the function `math::add` with the engine. You could call this function right
 now using the command below.
 

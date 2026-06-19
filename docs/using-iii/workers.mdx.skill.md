@@ -48,11 +48,20 @@ workers which you can learn more about in
 ```bash
 iii worker add iii-state # Downloads and adds a worker from iii registry
 iii worker add ./workers/my_worker # Adds a local worker created with `iii worker init`
-iii worker add ghcr.io/org/worker:tag # Adds a local worker from a Docker or OCI image registry
+iii worker add ghcr.io/org/worker:tag # Pulls and adds a worker from a Docker or OCI image registry
 ```
 
 The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
+
+<Note>
+  `iii worker add` downloads worker images from remote repositories (the iii registry or an OCI
+  registry) or from a local folder, then runs them in a microVM. A bare reference such as
+  `caller-worker:latest` is looked up in those remote repositories; iii does not read images from
+  your local Docker daemon, so an image you built locally with `docker build` is not found by name.
+  A locally-built Docker image can be run and tested like any other Docker image (`docker run -it
+  caller-worker:latest`).
+</Note>
 
 #### Pinning worker versions
 
@@ -140,7 +149,7 @@ and its workers.
 
 Functions and triggers come from connected workers. To use a trigger of a given type, you need the
 worker that provides it to be connected. For example if you add `http` triggers via the iii-http
-worker then you can now expose endpoints for your function just as you would in a web framework like
+worker then you can now expose endpoints for your function as you would in a web framework like
 Express or FastAPI.
 
 ## Versioning

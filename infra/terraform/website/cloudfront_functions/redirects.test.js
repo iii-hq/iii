@@ -169,6 +169,24 @@ test('www.iii.dev/manifesto → 301 https://iii.dev/manifesto (host-redirect run
   assert.equal(locationOf(result), 'https://iii.dev/manifesto')
 })
 
+test('/privacy-policy → rewrite uri to /privacy-policy.html (flat HTML, Option A)', () => {
+  const result = handler(buildEvent('/privacy-policy', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/privacy-policy.html')
+})
+
+test('/privacy-policy.html → pass through unchanged', () => {
+  const result = handler(buildEvent('/privacy-policy.html', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/privacy-policy.html')
+})
+
+test('www.iii.dev/privacy-policy → 301 https://iii.dev/privacy-policy (host-redirect runs before pretty-URL rewrite)', () => {
+  const result = handler(buildEvent('/privacy-policy', 'www.iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/privacy-policy')
+})
+
 test('/AGENTS.md → pass through unchanged', () => {
   const result = handler(buildEvent('/AGENTS.md', 'iii.dev'))
   assert.ok(!isRedirect(result))
