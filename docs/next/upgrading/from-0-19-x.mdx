@@ -370,3 +370,10 @@ A few APIs were removed outright:
 - [ ] Adopt `engine`/`protocol`/`internal`/`utils` paths
 - [ ] Adopt `errors`/`channel`/`trigger`/`runtime` paths
 - [ ] Replace removed Rust/Node APIs
+
+## Result
+
+The worker builds against `iii-sdk` 0.20.x with shared types imported from
+`@iii-dev/helpers`, aligned names across the three languages, and submodule
+import paths throughout. Only the `iii-observability` shim still emits a
+deprecation signal until Step 5 is applied.
