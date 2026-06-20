@@ -169,7 +169,9 @@ jobs:
 
   observability-py:
     name: Observability Python (pypi)
-    needs: prepare
+    # The shim pins iii-helpers at the release version; publish helpers first so
+    # PyPI can resolve the dependency.
+    needs: [prepare, helpers-py]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_py.yml
     with:
@@ -207,7 +209,9 @@ jobs:
 
   observability-rust:
     name: Observability Rust (cargo)
-    needs: prepare
+    # The shim depends on iii-helpers; cargo publish resolves it from crates.io,
+    # so helpers must be published first.
+    needs: [prepare, helpers-rust]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-cargo.yml
     with:
