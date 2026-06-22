@@ -5,3 +5,4 @@ The following users make all of their contributions to iii under the Apache 2 li
 - @CryptoQuaternions
 - @MarcusElwin
 - @McHersheys
+- @mikkel-arturo
