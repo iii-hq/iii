@@ -142,7 +142,7 @@ class III:
 
     Examples:
         >>> from iii import register_worker, InitOptions
-        >>> iii = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
+        >>> worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
 
     def __init__(self, address: str, options: InitOptions | None = None) -> None:
@@ -207,9 +207,9 @@ class III:
         instance must not be reused.
 
         Examples:
-            >>> iii = register_worker('ws://localhost:49134')
+            >>> worker = register_worker('ws://localhost:49134')
             >>> # ... do work ...
-            >>> iii.shutdown()
+            >>> worker.shutdown()
         """
         self._run_on_loop(self.shutdown_async())
         self._loop.call_soon_threadsafe(self._loop.stop)
@@ -247,9 +247,9 @@ class III:
         instance must not be reused.
 
         Examples:
-            >>> iii = register_worker('ws://localhost:49134')
+            >>> worker = register_worker('ws://localhost:49134')
             >>> # ... do work ...
-            >>> await iii.shutdown_async()
+            >>> await worker.shutdown_async()
         """
         self._running = False
 
@@ -800,7 +800,7 @@ class III:
             ``register_function`` methods.
 
         Examples:
-            >>> webhook = iii.register_trigger_type(
+            >>> webhook = worker.register_trigger_type(
             ...     RegisterTriggerTypeInput(
             ...         id="webhook",
             ...         description="Webhook trigger",
@@ -853,8 +853,8 @@ class III:
             trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id`` and optional ``description``.
 
         Examples:
-            >>> iii.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
-            >>> iii.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
+            >>> worker.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
+            >>> worker.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
         """
         if isinstance(trigger_type, dict):
             type_id = trigger_type["id"]
@@ -878,12 +878,12 @@ class III:
             the engine as part of the registration message.
 
         Examples:
-            >>> trigger = iii.register_trigger({
+            >>> trigger = worker.register_trigger({
             ...   'type': 'http',
             ...   'function_id': 'greet',
             ...   'config': {'api_path': '/greet', 'http_method': 'GET'}
             ... })
-            >>> trigger = iii.register_trigger(RegisterTriggerInput(
+            >>> trigger = worker.register_trigger(RegisterTriggerInput(
             ...     type="http", function_id="greet",
             ...     config={'api_path': '/greet', 'http_method': 'GET'}
             ... ))
@@ -967,7 +967,7 @@ class III:
         Examples:
             >>> def greet(data):
             ...     return {'message': f"Hello, {data['name']}!"}
-            >>> fn = iii.register_function("greet", greet, description="Greets a user")
+            >>> fn = worker.register_function("greet", greet, description="Greets a user")
             >>> fn.unregister()
 
             >>> from pydantic import BaseModel
@@ -977,7 +977,7 @@ class III:
             ...     message: str
             >>> async def greet(data: GreetInput) -> GreetOutput:
             ...     return GreetOutput(message=f"Hello, {data.name}!")
-            >>> fn = iii.register_function("greet", greet, description="Greets a user")
+            >>> fn = worker.register_function("greet", greet, description="Greets a user")
         """
         if not isinstance(function_id, str):
             raise TypeError(
@@ -1086,8 +1086,8 @@ class III:
                 RBAC denied it.
 
         Examples:
-            >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
-            >>> iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+            >>> result = worker.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
+            >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
         return self._run_on_loop(self.trigger_async(request))
 
@@ -1308,8 +1308,8 @@ class TriggerAction:
 
     Examples:
         >>> from iii import TriggerAction
-        >>> iii.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
-        >>> iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+        >>> worker.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
+        >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
     """
 
     @staticmethod
@@ -1344,7 +1344,7 @@ def register_worker(address: str, options: InitOptions | None = None) -> III:
 
     Examples:
         >>> from iii import register_worker, InitOptions
-        >>> iii = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
+        >>> worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
     client = III(address, options)
     client._wait_until_connected()

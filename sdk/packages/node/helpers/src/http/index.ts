@@ -124,7 +124,7 @@ type HttpInternalRequest = HttpStreamingRequest & { response: HttpStreamWriter }
  * ```typescript
  * import { http } from '@iii-dev/helpers/http'
  *
- * iii.registerFunction(
+ * worker.registerFunction(
  *   'my-api',
  *   http(async (req, res) => {
  *     res.status(200)

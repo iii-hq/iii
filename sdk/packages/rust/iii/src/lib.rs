@@ -60,7 +60,7 @@ pub use types::{StreamRequest, StreamResponse};
 /// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+/// let worker = register_worker("ws://localhost:49134", InitOptions::default());
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
@@ -89,9 +89,9 @@ pub struct InitOptions {
 /// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+/// let worker = register_worker("ws://localhost:49134", InitOptions::default());
 /// // register functions, handle events, etc.
-/// iii.shutdown(); // cleanly stops the connection thread
+/// worker.shutdown(); // cleanly stops the connection thread
 /// ```
 pub fn register_worker(address: &str, options: InitOptions) -> IIIClient {
     let InitOptions {

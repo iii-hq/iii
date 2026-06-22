@@ -61,7 +61,7 @@ class TriggerTypeRef(Generic[C, R]):
 
     Example::
 
-        webhook = iii.register_trigger_type(
+        webhook = worker.register_trigger_type(
             RegisterTriggerTypeInput(
                 id="webhook",
                 description="Incoming webhook trigger",

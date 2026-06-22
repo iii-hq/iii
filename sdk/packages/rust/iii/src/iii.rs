@@ -217,7 +217,7 @@ where
     }
 }
 
-/// Telemetry metadata provided by the SDK to the engine.
+/// Worker metadata provided by the SDK to the engine.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TelemetryOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -792,7 +792,7 @@ impl IIIClient {
     /// Shutdown the III client and wait for the connection thread to finish.
     ///
     /// This stops the connection loop, sends a shutdown signal, and joins
-    /// the background connection thread. Telemetry is flushed inside the
+    /// the background connection thread. OpenTelemetry is flushed inside the
     /// connection thread before it exits.
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
@@ -812,7 +812,7 @@ impl IIIClient {
     /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
     /// to wait for `run_connection()` to finish, making it safe to call from
     /// an async context without stalling the executor.
-    /// `telemetry::shutdown_otel()` still runs inside the connection thread
+    /// The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
     /// after `run_connection()` returns, so it may not complete unless
     /// [`shutdown`](Self::shutdown) is used to join the thread.
     pub async fn shutdown_async(&self) {
@@ -888,8 +888,8 @@ impl IIIClient {
     ///     Ok(Output { message: format!("Hello, {}!", input.name) })
     /// }
     ///
-    /// let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function(
+    /// let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.register_function(
     ///     "greetings::greet",
     ///     RegisterFunction::new_async(greet).description("Greets a user"),
     /// );
@@ -899,8 +899,8 @@ impl IIIClient {
     /// ```rust,no_run
     /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction};
     /// # use serde_json::{json, Value};
-    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function(
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.register_function(
     ///     "debug::echo",
     ///     RegisterFunction::new_async(|input: Value| async move { Ok(json!({"echo": input})) }),
     /// );
@@ -911,7 +911,7 @@ impl IIIClient {
     /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction};
     /// # use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
     /// # use std::collections::HashMap;
-    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
     /// let config = HttpInvocationConfig {
     ///     url: "https://example.com/invoke".into(),
     ///     method: HttpMethod::Post,
@@ -919,7 +919,7 @@ impl IIIClient {
     ///     headers: HashMap::new(),
     ///     auth: None,
     /// };
-    /// iii.register_function("ext::lambda", RegisterFunction::http(config));
+    /// worker.register_function("ext::lambda", RegisterFunction::http(config));
     /// ```
     pub fn register_function(
         &self,
@@ -949,7 +949,7 @@ impl IIIClient {
     /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
     /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
     /// # let iii = IIIClient::new("ws://localhost:49134");
-    /// let my_trigger = iii.register_trigger_type(
+    /// let my_trigger = worker.register_trigger_type(
     ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
     ///         .trigger_request_format::<MyConfig>()
     ///         .call_request_format::<MyRequest>(),
@@ -1013,7 +1013,7 @@ impl IIIClient {
     /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
     /// # let iii = IIIClient::new("ws://localhost:49134");
-    /// let trigger = iii.register_trigger(RegisterTriggerInput {
+    /// let trigger = worker.register_trigger(RegisterTriggerInput {
     ///     trigger_type: "http".to_string(),
     ///     function_id: "greet".to_string(),
     ///     config: json!({ "api_path": "/greet", "http_method": "GET" }),
@@ -1068,7 +1068,7 @@ impl IIIClient {
     /// # use serde_json::json;
     /// # async fn example(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
     /// // Synchronous
-    /// let result = iii.trigger(TriggerRequest {
+    /// let result = worker.trigger(TriggerRequest {
     ///     function_id: "greet".to_string(),
     ///     payload: json!({"name": "World"}),
     ///     action: None,
@@ -1076,7 +1076,7 @@ impl IIIClient {
     /// }).await?;
     ///
     /// // Fire-and-forget
-    /// iii.trigger(TriggerRequest {
+    /// worker.trigger(TriggerRequest {
     ///     function_id: "notify".to_string(),
     ///     payload: json!({}),
     ///     action: Some(TriggerAction::Void),
@@ -1084,7 +1084,7 @@ impl IIIClient {
     /// }).await?;
     ///
     /// // Enqueue
-    /// let receipt = iii.trigger(TriggerRequest {
+    /// let receipt = worker.trigger(TriggerRequest {
     ///     function_id: "iii::durable::publish".to_string(),
     ///     payload: json!({"topic": "test"}),
     ///     action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),

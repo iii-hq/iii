@@ -26,7 +26,7 @@ class FunctionRef:
 
 @dataclass
 class TelemetryOptions:
-    """Telemetry metadata to be reported to the engine.
+    """Worker metadata reported to the engine.
 
     Attributes:
         language: Programming language of the worker (e.g. ``python``).
@@ -54,7 +54,7 @@ class InitOptions:
         reconnection_config: WebSocket reconnection behavior.
         otel: OpenTelemetry configuration. Enabled by default.
             Set ``{'enabled': False}`` or env ``OTEL_ENABLED=false`` to disable.
-        telemetry: Internal telemetry metadata.
+        telemetry: Internal worker metadata reported to the engine.
     """
 
     worker_name: str | None = None

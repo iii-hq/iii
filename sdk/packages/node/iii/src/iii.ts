@@ -69,7 +69,7 @@ function getDefaultWorkerName(): string {
   return `${os.hostname()}:${process.pid}`
 }
 
-/** Telemetry labels reported by the worker (language, framework, project). */
+/** Worker labels reported to the engine (language, framework, project). */
 export type TelemetryOptions = {
   language?: string
   project_name?: string
@@ -82,7 +82,7 @@ export type TelemetryOptions = {
  *
  * @example
  * ```typescript
- * const iii = registerWorker('ws://localhost:49134', {
+ * const worker = registerWorker('ws://localhost:49134', {
  *   workerName: 'my-worker',
  *   invocationTimeoutMs: 10000,
  *   reconnectionConfig: { maxRetries: 5 },
@@ -167,7 +167,7 @@ class Sdk implements IIIClient {
    *
    * @example
    * ```typescript
-   * iii.registerTriggerType(
+   * worker.registerTriggerType(
    *   { id: 'my-trigger', description: 'Custom trigger' },
    *   {
    *     async registerTrigger({ id, function_id, config }) { },
@@ -234,7 +234,7 @@ class Sdk implements IIIClient {
    *
    * @example
    * ```typescript
-   * const trigger = iii.registerTrigger({
+   * const trigger = worker.registerTrigger({
    *   type: 'http',
    *   function_id: 'greet',
    *   config: { api_path: '/greet', http_method: 'GET' },
@@ -280,7 +280,7 @@ class Sdk implements IIIClient {
    *
    * @example
    * ```typescript
-   * const fn = iii.registerFunction(
+   * const fn = worker.registerFunction(
    *   'greet',
    *   async (input: { name: string }) => {
    *     return { message: `Hello, ${input.name}!` }
@@ -444,17 +444,17 @@ class Sdk implements IIIClient {
    * import { TriggerAction } from 'iii-sdk'
    *
    * // Synchronous
-   * const result = await iii.trigger({ function_id: 'get-order', payload: { id: '123' } })
+   * const result = await worker.trigger({ function_id: 'get-order', payload: { id: '123' } })
    *
    * // Enqueue
-   * const { messageReceiptId } = await iii.trigger({
+   * const { messageReceiptId } = await worker.trigger({
    *   function_id: 'payments::charge',
    *   payload: { orderId: '123', amount: 49.99 },
    *   action: TriggerAction.Enqueue({ queue: 'payment' }),
    * })
    *
    * // Fire-and-forget
-   * iii.trigger({
+   * worker.trigger({
    *   function_id: 'notifications::send',
    *   payload: { userId: '123' },
    *   action: TriggerAction.Void(),
@@ -1046,14 +1046,14 @@ class Sdk implements IIIClient {
  * import { TriggerAction } from 'iii-sdk'
  *
  * // Enqueue to a named queue
- * iii.trigger({
+ * worker.trigger({
  *   function_id: 'process',
  *   payload: { data: 'hello' },
  *   action: TriggerAction.Enqueue({ queue: 'jobs' }),
  * })
  *
  * // Fire-and-forget
- * iii.trigger({
+ * worker.trigger({
  *   function_id: 'notify',
  *   payload: {},
  *   action: TriggerAction.Void(),
@@ -1089,7 +1089,7 @@ export const TriggerAction = {
  * ```typescript
  * import { registerWorker } from 'iii-sdk'
  *
- * const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
+ * const worker = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
  *   workerName: 'my-worker',
  * })
  * ```
