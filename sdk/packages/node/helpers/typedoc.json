@@ -1,0 +1,14 @@
+{
+  "entryPoints": [
+    "src/http/index.ts",
+    "src/queue/index.ts",
+    "src/stream/index.ts",
+    "src/worker-connection-manager/index.ts",
+    "src/observability/index.ts"
+  ],
+  "json": "api-docs.json",
+  "tsconfig": "tsconfig.json",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "excludeExternals": true
+}

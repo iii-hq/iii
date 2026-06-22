@@ -1,5 +1,5 @@
 // import { iii } from 'iii-sdk'
-import { Logger } from '@iii-dev/observability'
+import { Logger } from '@iii-dev/helpers/observability'
 import { registerWorker } from '../src/index'
 
 const ENGINE_WS_URL = process.env.III_URL ?? 'ws://localhost:49199'

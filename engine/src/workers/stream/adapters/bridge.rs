@@ -7,11 +7,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{
-    III, InitOptions, RegisterTriggerInput, TriggerRequest, UpdateOp, UpdateResult,
-    register_worker,
-    types::{DeleteResult, SetResult},
-};
+use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::Value;
 
 use crate::{
@@ -36,7 +34,7 @@ pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
     handler_function_id: String,
-    bridge: Arc<III>,
+    bridge: Arc<IIIClient>,
 }
 
 impl BridgeAdapter {
@@ -62,7 +60,7 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult> {
+    ) -> anyhow::Result<StreamUpdateResult> {
         let data = StreamUpdateInput {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
@@ -81,7 +79,7 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update value via bridge: {}", e))?;
 
-        serde_json::from_value::<UpdateResult>(result)
+        serde_json::from_value::<StreamUpdateResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize update result: {}", e))
     }
 
@@ -117,7 +115,7 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
         data: Value,
-    ) -> anyhow::Result<SetResult> {
+    ) -> anyhow::Result<StreamSetResult> {
         let input = StreamSetInput {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
@@ -135,7 +133,7 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value via bridge: {}", e))?;
 
-        serde_json::from_value::<SetResult>(result)
+        serde_json::from_value::<StreamSetResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
     }
 
@@ -170,7 +168,7 @@ impl StreamAdapter for BridgeAdapter {
         stream_name: &str,
         group_id: &str,
         item_id: &str,
-    ) -> anyhow::Result<DeleteResult> {
+    ) -> anyhow::Result<StreamDeleteResult> {
         let data = StreamDeleteInput {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
@@ -187,7 +185,7 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value via bridge: {}", e))?;
 
-        serde_json::from_value::<DeleteResult>(result)
+        serde_json::from_value::<StreamDeleteResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize delete result: {}", e))
     }
 
@@ -265,7 +263,7 @@ impl StreamAdapter for BridgeAdapter {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Failed to deserialize stream message");
-                            Err(iii_sdk::IIIError::Remote {
+                            Err(iii_sdk::Error::Remote {
                                 code: "DESERIALIZATION_ERROR".to_string(),
                                 message: format!("Failed to deserialize stream message: {}", e),
                                 stacktrace: None,

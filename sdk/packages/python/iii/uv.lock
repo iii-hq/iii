@@ -545,13 +545,14 @@ wheels = [
 ]
 
 [[package]]
-name = "iii-observability"
-version = "0.18.0"
-source = { editable = "../observability" }
+name = "iii-helpers"
+version = "0.19.5.dev1"
+source = { editable = "../helpers" }
 dependencies = [
     { name = "httpx" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
     { name = "websockets" },
 ]
 
@@ -561,6 +562,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "opentelemetry-api", specifier = ">=1.25" },
     { name = "opentelemetry-sdk", specifier = ">=1.25" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
@@ -572,10 +574,10 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "iii-sdk"
-version = "0.18.0"
+version = "0.19.5.dev1"
 source = { editable = "." }
 dependencies = [
-    { name = "iii-observability" },
+    { name = "iii-helpers" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "websockets" },
@@ -598,7 +600,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'dev'", specifier = ">=3.9" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "griffe", marker = "extra == 'dev'", specifier = ">=1.0" },
-    { name = "iii-observability", editable = "../observability" },
+    { name = "iii-helpers", editable = "../helpers" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "opentelemetry-api", specifier = ">=1.25" },
     { name = "pydantic", specifier = ">=2.0" },

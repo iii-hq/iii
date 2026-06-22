@@ -11,12 +11,14 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use serial_test::serial;
 
-use iii_sdk::{
-    AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
-    OnFunctionRegistrationInput, OnFunctionRegistrationResult, OnTriggerRegistrationInput,
-    OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
-    RegisterFunction, TriggerRequest, register_worker,
+use iii_helpers::worker_connection_manager::{
+    AuthInput, AuthResult, OnFunctionRegistrationInput, OnFunctionRegistrationResult,
+    OnTriggerRegistrationInput, OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput,
+    OnTriggerTypeRegistrationResult,
 };
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::runtime::IIIConnectionState;
+use iii_sdk::{InitOptions, MiddlewareFunctionInput, RegisterFunction, register_worker};
 use serde::Deserialize;
 
 /// Minimal deserialization target for `engine::functions::list` rows used
@@ -142,7 +144,7 @@ fn ensure_functions_registered() {
                             context: json!({ "role": "prefixed", "user_id": "user-prefix" }),
                             function_registration_prefix: Some("test-prefix".to_string()),
                         }),
-                        _ => Err(iii_sdk::IIIError::Handler("invalid token".to_string())),
+                        _ => Err(iii_sdk::Error::Handler("invalid token".to_string())),
                     }
                 }
             }),
@@ -181,11 +183,11 @@ fn ensure_functions_registered() {
             "test::rbac-worker::on-function-reg",
             RegisterFunction::new_async(|input: OnFunctionRegistrationInput| async move {
                 if input.function_id.starts_with("denied::") {
-                    return Err(iii_sdk::IIIError::Handler(
+                    return Err(iii_sdk::Error::Handler(
                         "denied function registration".into(),
                     ));
                 }
-                Ok::<_, iii_sdk::IIIError>(OnFunctionRegistrationResult {
+                Ok::<_, iii_sdk::Error>(OnFunctionRegistrationResult {
                     function_id: Some(input.function_id),
                     ..Default::default()
                 })
@@ -201,11 +203,11 @@ fn ensure_functions_registered() {
                     let denied = input.trigger_type_id.starts_with("denied-tt::");
                     tt_reg_calls.lock().unwrap().push(input);
                     if denied {
-                        return Err(iii_sdk::IIIError::Handler(
+                        return Err(iii_sdk::Error::Handler(
                             "denied trigger type registration".into(),
                         ));
                     }
-                    Ok::<_, iii_sdk::IIIError>(OnTriggerTypeRegistrationResult::default())
+                    Ok::<_, iii_sdk::Error>(OnTriggerTypeRegistrationResult::default())
                 }
             }),
         ));
@@ -219,11 +221,11 @@ fn ensure_functions_registered() {
                     let denied = input.function_id.starts_with("denied-trig::");
                     trig_reg_calls.lock().unwrap().push(input);
                     if denied {
-                        return Err(iii_sdk::IIIError::Handler(
+                        return Err(iii_sdk::Error::Handler(
                             "denied trigger registration".into(),
                         ));
                     }
-                    Ok::<_, iii_sdk::IIIError>(OnTriggerRegistrationResult::default())
+                    Ok::<_, iii_sdk::Error>(OnTriggerRegistrationResult::default())
                 }
             }),
         ));
@@ -231,17 +233,17 @@ fn ensure_functions_registered() {
         {
             struct NoopHandler;
             #[async_trait::async_trait]
-            impl iii_sdk::TriggerHandler for NoopHandler {
+            impl iii_sdk::trigger::TriggerHandler for NoopHandler {
                 async fn register_trigger(
                     &self,
-                    _config: iii_sdk::TriggerConfig,
-                ) -> Result<(), iii_sdk::IIIError> {
+                    _config: iii_sdk::trigger::TriggerConfig,
+                ) -> Result<(), iii_sdk::Error> {
                     Ok(())
                 }
                 async fn unregister_trigger(
                     &self,
-                    _config: iii_sdk::TriggerConfig,
-                ) -> Result<(), iii_sdk::IIIError> {
+                    _config: iii_sdk::trigger::TriggerConfig,
+                ) -> Result<(), iii_sdk::Error> {
                     Ok(())
                 }
             }
@@ -475,17 +477,17 @@ async fn should_deny_trigger_type_registration_via_hook() {
     {
         struct DeniedHandler;
         #[async_trait::async_trait]
-        impl iii_sdk::TriggerHandler for DeniedHandler {
+        impl iii_sdk::trigger::TriggerHandler for DeniedHandler {
             async fn register_trigger(
                 &self,
-                _config: iii_sdk::TriggerConfig,
-            ) -> Result<(), iii_sdk::IIIError> {
+                _config: iii_sdk::trigger::TriggerConfig,
+            ) -> Result<(), iii_sdk::Error> {
                 Ok(())
             }
             async fn unregister_trigger(
                 &self,
-                _config: iii_sdk::TriggerConfig,
-            ) -> Result<(), iii_sdk::IIIError> {
+                _config: iii_sdk::trigger::TriggerConfig,
+            ) -> Result<(), iii_sdk::Error> {
                 Ok(())
             }
         }
@@ -534,7 +536,7 @@ async fn should_deny_trigger_registration_via_hook() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let _ = iii_client.register_trigger(iii_sdk::RegisterTriggerInput {
+    let _ = iii_client.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
         trigger_type: "test-rbac-trigger".to_string(),
         function_id: "denied-trig::my-fn".to_string(),
         config: json!({ "key": "value" }),
@@ -808,13 +810,13 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
                     })
                     .await
                     .map_err(|e| {
-                        iii_sdk::IIIError::Handler(format!(
+                        iii_sdk::Error::Handler(format!(
                             "engine::log::info must be allowed via \
                              INFRASTRUCTURE_FUNCTIONS carve-out under a \
                              restricted expose; got: {e}"
                         ))
                     })?;
-                Ok::<_, iii_sdk::IIIError>(json!({ "logged": true }))
+                Ok::<_, iii_sdk::Error>(json!({ "logged": true }))
             }
         }),
     );

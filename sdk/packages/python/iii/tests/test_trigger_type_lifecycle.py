@@ -6,8 +6,9 @@ from typing import Any
 
 import pytest
 
-from iii import TriggerAction, TriggerConfig, TriggerHandler, register_worker
+from iii import TriggerAction, register_worker
 from iii.iii import III
+from iii.trigger import TriggerConfig, TriggerHandler
 
 ENGINE_WS_URL = os.environ.get("III_URL", "ws://localhost:49199")
 

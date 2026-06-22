@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Instant};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures::future::join_all;
 use iii::builtins::kv::BuiltinKvStore;
-use iii_sdk::UpdateOp;
+use iii_helpers::stream::UpdateOp;
 use serde_json::json;
 use tokio::runtime::Runtime;
 

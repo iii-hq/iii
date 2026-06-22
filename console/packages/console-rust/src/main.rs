@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
             "OpenTelemetry enabled (service: {})",
             args.otel_service_name
         );
-        Some(iii_observability::OtelConfig {
+        Some(iii_helpers::observability::OtelConfig {
             enabled: Some(true),
             service_name: Some(args.otel_service_name),
             service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -160,12 +160,12 @@ async fn main() -> Result<()> {
     let bridge = iii_sdk::register_worker(
         &bridge_url,
         iii_sdk::InitOptions {
-            metadata: Some(iii_sdk::WorkerMetadata {
+            metadata: Some(iii_sdk::runtime::WorkerMetadata {
                 name: "iii-console".to_string(),
                 description: Some(
                     "Web console UI and observability dashboard for the iii engine.".to_string(),
                 ),
-                ..iii_sdk::WorkerMetadata::default()
+                ..iii_sdk::runtime::WorkerMetadata::default()
             }),
             otel: otel_config,
             headers: None,

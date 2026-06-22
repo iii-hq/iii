@@ -7,7 +7,8 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use iii_sdk::{III, IIIError, InitOptions, TriggerAction, TriggerRequest, register_worker};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{Error, IIIClient, InitOptions, TriggerAction, register_worker};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -58,7 +59,7 @@ pub struct InvokeInput {
 #[derive(Clone)]
 pub struct BridgeClientWorker {
     engine: Arc<Engine>,
-    bridge: III,
+    bridge: IIIClient,
     config: BridgeClientConfig,
 }
 
@@ -254,7 +255,7 @@ impl Worker for BridgeClientWorker {
                     async move {
                         match engine.call(&local_function, input).await {
                             Ok(result) => Ok(result.unwrap_or(Value::Null)),
-                            Err(err) => Err(IIIError::Remote {
+                            Err(err) => Err(Error::Remote {
                                 code: err.code,
                                 message: err.message,
                                 stacktrace: err.stacktrace,

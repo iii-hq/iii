@@ -146,7 +146,7 @@ Some common actions are:
 <Note>
   In Python, every blocking method has an awaitable twin (`trigger_async`, `shutdown_async`,
   `create_channel_async`) for use inside `asyncio`. See the [Python SDK
-  reference](../sdk-reference/python-sdk).
+  reference](../api-reference/sdk-python).
 </Note>
 
 ## Trigger functions from the CLI

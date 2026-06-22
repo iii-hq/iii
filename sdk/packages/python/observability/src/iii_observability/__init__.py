@@ -1,58 +1,27 @@
-"""iii-observability: shared OTel + Logger primitives."""
+"""Deprecated: import from ``iii_helpers.observability`` instead.
 
-from .baggage_span_processor import DEFAULT_ALLOWLIST, BaggageSpanProcessor
-from .http_instrumentation import execute_traced_request
-from .logger import Logger
-from .payload import (
-    REDACTED_PLACEHOLDER,
-    redact,
-    redact_and_truncate,
-    resolve_max_bytes_from_env,
-)
-from .reconnection import ReconnectionConfig
-from .span_ops import (
-    current_span_is_recording,
-    record_span_event,
-    set_current_span_attribute,
-    set_current_span_error,
-)
-from .telemetry import (
-    current_span_id,
-    current_trace_id,
-    extract_baggage,
-    extract_traceparent,
-    flush_otel,
-    init_otel,
-    inject_baggage,
-    inject_traceparent,
-    shutdown_otel,
-    with_span,
-)
-from .telemetry_types import OtelConfig
+This package is a thin re-export shim. All public symbols now live in
+``iii_helpers.observability``.
+"""
 
-__all__ = [
-    "BaggageSpanProcessor",
-    "DEFAULT_ALLOWLIST",
-    "Logger",
-    "OtelConfig",
-    "REDACTED_PLACEHOLDER",
-    "ReconnectionConfig",
-    "current_span_id",
-    "current_span_is_recording",
-    "current_trace_id",
-    "execute_traced_request",
-    "extract_baggage",
-    "extract_traceparent",
-    "flush_otel",
-    "init_otel",
-    "inject_baggage",
-    "inject_traceparent",
-    "record_span_event",
-    "redact",
-    "redact_and_truncate",
-    "resolve_max_bytes_from_env",
-    "set_current_span_attribute",
-    "set_current_span_error",
-    "shutdown_otel",
-    "with_span",
-]
+from typing import Any
+
+from iii_helpers.observability import __all__ as _all
+
+__all__ = list(_all)
+
+
+def __getattr__(name: str) -> Any:
+    if name in _all:
+        import warnings
+
+        warnings.warn(
+            f"Importing {name} from iii_observability is deprecated; "
+            f"import it from iii_helpers.observability",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        import iii_helpers.observability as _obs
+
+        return getattr(_obs, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

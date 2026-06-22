@@ -1,9 +1,11 @@
+use iii_helpers::stream::StreamTriggerConfig;
 use iii_sdk::builtin_triggers::*;
-use iii_sdk::{III, IIIError, IIITrigger, RegisterFunction};
+use iii_sdk::trigger::IIITrigger;
+use iii_sdk::{Error, IIIClient, RegisterFunction};
 use serde_json::json;
 
 /// Examples using built-in trigger types with the typed `IIITrigger` enum.
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     // ── Cron trigger ────────────────────────────────────────────────
     iii.register_function(
         "example::scheduled_cleanup",
@@ -97,7 +99,7 @@ struct CronEvent {
     job_id: String,
 }
 
-fn scheduled_cleanup(input: CronEvent) -> Result<serde_json::Value, IIIError> {
+fn scheduled_cleanup(input: CronEvent) -> Result<serde_json::Value, Error> {
     Ok(json!({ "cleaned": true, "trigger": input.trigger, "job_id": input.job_id }))
 }
 
@@ -110,19 +112,19 @@ struct StateEvent {
     new_value: serde_json::Value,
 }
 
-fn on_user_updated(input: StateEvent) -> Result<serde_json::Value, IIIError> {
+fn on_user_updated(input: StateEvent) -> Result<serde_json::Value, Error> {
     Ok(json!({ "event": input.event_type, "scope": input.scope, "key": input.key }))
 }
 
-fn health_check(_input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
+fn health_check(_input: serde_json::Value) -> Result<serde_json::Value, Error> {
     Ok(json!({ "status": "ok" }))
 }
 
-fn on_order_created(input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
+fn on_order_created(input: serde_json::Value) -> Result<serde_json::Value, Error> {
     Ok(json!({ "processed": true, "order": input }))
 }
 
-fn process_email(input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
+fn process_email(input: serde_json::Value) -> Result<serde_json::Value, Error> {
     Ok(json!({ "sent": true, "email": input }))
 }
 
@@ -132,10 +134,10 @@ struct LogEvent {
     body: String,
 }
 
-fn on_error_log(input: LogEvent) -> Result<serde_json::Value, IIIError> {
+fn on_error_log(input: LogEvent) -> Result<serde_json::Value, Error> {
     Ok(json!({ "alerted": true, "severity": input.severity_text, "message": input.body }))
 }
 
-fn on_chat_message(input: serde_json::Value) -> Result<serde_json::Value, IIIError> {
+fn on_chat_message(input: serde_json::Value) -> Result<serde_json::Value, Error> {
     Ok(json!({ "received": true, "event": input }))
 }

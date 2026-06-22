@@ -1,4 +1,5 @@
-use iii_sdk::{RegisterFunction, TriggerRequest, III};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,7 +15,7 @@ fn validate_flow_id(id: &str) -> Result<String, Value> {
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        return Err(error_response(iii_sdk::IIIError::Handler(format!(
+        return Err(error_response(iii_sdk::Error::Handler(format!(
             "Invalid flow_id: {}",
             id
         ))));
@@ -32,7 +33,7 @@ fn parse_bool_param(input: &Value, key: &str) -> bool {
     }
 }
 
-async fn handle_health(bridge: &III) -> Value {
+async fn handle_health(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::health::check".to_string(),
@@ -47,7 +48,7 @@ async fn handle_health(bridge: &III) -> Value {
     }
 }
 
-async fn handle_workers(bridge: &III) -> Value {
+async fn handle_workers(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::workers::list".to_string(),
@@ -62,7 +63,7 @@ async fn handle_workers(bridge: &III) -> Value {
     }
 }
 
-async fn handle_triggers_list(bridge: &III, input: Value) -> Value {
+async fn handle_triggers_list(bridge: &IIIClient, input: Value) -> Value {
     // The console `/triggers` route historically returned INSTANCES (subscriber
     // rows). After the engine_fn rework, `engine::triggers::list` returns
     // trigger TYPES, while instances now live behind
@@ -96,7 +97,7 @@ async fn handle_triggers_list(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_functions_list(bridge: &III, input: Value) -> Value {
+async fn handle_functions_list(bridge: &IIIClient, input: Value) -> Value {
     let include_internal = parse_bool_param(&input, "include_internal");
     let effective_input = json!({ "include_internal": include_internal });
     match bridge
@@ -113,7 +114,7 @@ async fn handle_functions_list(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_function_detail(bridge: &III, input: Value) -> Value {
+async fn handle_function_detail(bridge: &IIIClient, input: Value) -> Value {
     // The list route (`engine::functions::list`) returns slim summaries with no
     // schemas after the engine_fn rework. `engine::functions::info` is the only
     // surface that carries `request_schema`/`response_schema`, so the console
@@ -128,7 +129,7 @@ async fn handle_function_detail(bridge: &III, input: Value) -> Value {
     let function_id = match function_id {
         Some(id) if !id.is_empty() => id.to_string(),
         _ => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing function_id in path parameters".to_string(),
             ))
         }
@@ -148,7 +149,7 @@ async fn handle_function_detail(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_status(bridge: &III) -> Value {
+async fn handle_status(bridge: &IIIClient) -> Value {
     let (workers_result, functions_result, metrics_result) = tokio::join!(
         bridge.trigger(TriggerRequest {
             function_id: "engine::workers::list".to_string(),
@@ -198,7 +199,7 @@ async fn handle_status(bridge: &III) -> Value {
     }))
 }
 
-async fn handle_trigger_types(bridge: &III) -> Value {
+async fn handle_trigger_types(bridge: &IIIClient) -> Value {
     // After the engine_fn rework, `engine::triggers::list` returns trigger
     // TYPES directly with their `id` field. We just collect the ids — no need
     // to derive them from instances. The legacy static seeds are preserved as
@@ -253,7 +254,7 @@ async fn handle_trigger_types(bridge: &III) -> Value {
     }
 }
 
-async fn handle_alerts_list(bridge: &III) -> Value {
+async fn handle_alerts_list(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::alerts::list".to_string(),
@@ -268,7 +269,7 @@ async fn handle_alerts_list(bridge: &III) -> Value {
     }
 }
 
-async fn handle_sampling_rules(bridge: &III) -> Value {
+async fn handle_sampling_rules(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::sampling::rules".to_string(),
@@ -283,7 +284,7 @@ async fn handle_sampling_rules(bridge: &III) -> Value {
     }
 }
 
-async fn handle_otel_logs_list(bridge: &III, input: Value) -> Value {
+async fn handle_otel_logs_list(bridge: &IIIClient, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
         .trigger(TriggerRequest {
@@ -299,7 +300,7 @@ async fn handle_otel_logs_list(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_otel_logs_clear(bridge: &III) -> Value {
+async fn handle_otel_logs_clear(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::logs::clear".to_string(),
@@ -314,7 +315,7 @@ async fn handle_otel_logs_clear(bridge: &III) -> Value {
     }
 }
 
-async fn handle_otel_traces_list(bridge: &III, input: Value) -> Value {
+async fn handle_otel_traces_list(bridge: &IIIClient, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
         .trigger(TriggerRequest {
@@ -330,7 +331,7 @@ async fn handle_otel_traces_list(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_otel_traces_clear(bridge: &III) -> Value {
+async fn handle_otel_traces_clear(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::traces::clear".to_string(),
@@ -345,7 +346,7 @@ async fn handle_otel_traces_clear(bridge: &III) -> Value {
     }
 }
 
-async fn handle_otel_traces_tree(bridge: &III, input: Value) -> Value {
+async fn handle_otel_traces_tree(bridge: &IIIClient, input: Value) -> Value {
     // Extract trace_id from body wrapper or top-level input
     // API triggers wrap POST body inside a "body" field
     let trace_id = input
@@ -357,7 +358,7 @@ async fn handle_otel_traces_tree(bridge: &III, input: Value) -> Value {
     let trace_id = match trace_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing trace_id in request".to_string(),
             ))
         }
@@ -379,7 +380,7 @@ async fn handle_otel_traces_tree(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_metrics_detailed(bridge: &III, input: Value) -> Value {
+async fn handle_metrics_detailed(bridge: &IIIClient, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
         .trigger(TriggerRequest {
@@ -395,7 +396,7 @@ async fn handle_metrics_detailed(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_rollups_list(bridge: &III, input: Value) -> Value {
+async fn handle_rollups_list(bridge: &IIIClient, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
         .trigger(TriggerRequest {
@@ -411,7 +412,7 @@ async fn handle_rollups_list(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_state_groups_list(bridge: &III, _input: Value) -> Value {
+async fn handle_state_groups_list(bridge: &IIIClient, _input: Value) -> Value {
     // Always use state::list_groups - no filtering by stream_name needed
     match bridge
         .trigger(TriggerRequest {
@@ -442,7 +443,7 @@ async fn handle_state_groups_list(bridge: &III, _input: Value) -> Value {
     }
 }
 
-async fn handle_state_group_items(bridge: &III, input: Value) -> Value {
+async fn handle_state_group_items(bridge: &IIIClient, input: Value) -> Value {
     // Extract scope from body or top-level input
     let scope = input
         .get("body")
@@ -480,13 +481,13 @@ async fn handle_state_group_items(bridge: &III, input: Value) -> Value {
                 Err(err) => error_response(err),
             }
         }
-        None => error_response(iii_sdk::IIIError::Handler(
+        None => error_response(iii_sdk::Error::Handler(
             "Missing scope in request".to_string(),
         )),
     }
 }
 
-async fn handle_state_item_set(bridge: &III, input: Value) -> Value {
+async fn handle_state_item_set(bridge: &IIIClient, input: Value) -> Value {
     // Extract path parameters (from URL: /states/:group/item)
     let path_params = input.get("path_params");
     let body = input.get("body");
@@ -499,7 +500,7 @@ async fn handle_state_item_set(bridge: &III, input: Value) -> Value {
     let group_id = match group_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing group in path parameters".to_string(),
             ))
         }
@@ -514,7 +515,7 @@ async fn handle_state_item_set(bridge: &III, input: Value) -> Value {
     let item_id = match item_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing key in request body".to_string(),
             ))
         }
@@ -527,7 +528,7 @@ async fn handle_state_item_set(bridge: &III, input: Value) -> Value {
     let data = match data {
         Some(value) => value.clone(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing value in request body".to_string(),
             ))
         }
@@ -553,7 +554,7 @@ async fn handle_state_item_set(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_state_item_delete(bridge: &III, input: Value) -> Value {
+async fn handle_state_item_delete(bridge: &IIIClient, input: Value) -> Value {
     // Extract path parameters (from URL: /states/:group/item/:key)
     let path_params = input.get("path_params");
 
@@ -566,7 +567,7 @@ async fn handle_state_item_delete(bridge: &III, input: Value) -> Value {
     let group_id = match group_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing group in path parameters".to_string(),
             ))
         }
@@ -580,7 +581,7 @@ async fn handle_state_item_delete(bridge: &III, input: Value) -> Value {
     let item_id = match item_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing key in path parameters".to_string(),
             ))
         }
@@ -605,7 +606,7 @@ async fn handle_state_item_delete(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_adapters(bridge: &III) -> Value {
+async fn handle_adapters(bridge: &IIIClient) -> Value {
     // `handle_adapters` reads INSTANCE rows to derive which modules + trigger
     // handlers are active, so it points at `engine::registered-triggers::list`
     // now (the old `engine::triggers::list` returns TYPES post-rework).
@@ -766,7 +767,7 @@ async fn handle_adapters(bridge: &III) -> Value {
     }))
 }
 
-async fn handle_streams_list(bridge: &III) -> Value {
+async fn handle_streams_list(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "stream::list_all".to_string(),
@@ -819,7 +820,7 @@ async fn handle_streams_list(bridge: &III) -> Value {
     }
 }
 
-async fn handle_flow_config_get(bridge: &III, input: Value) -> Value {
+async fn handle_flow_config_get(bridge: &IIIClient, input: Value) -> Value {
     // Get flow_id from path_params or query_params
     let flow_id = input
         .get("path_params")
@@ -836,7 +837,7 @@ async fn handle_flow_config_get(bridge: &III, input: Value) -> Value {
     let flow_id = match flow_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing flow_id parameter".to_string(),
             ))
         }
@@ -876,7 +877,7 @@ async fn handle_flow_config_get(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_invoke(bridge: &III, input: Value) -> Value {
+async fn handle_invoke(bridge: &IIIClient, input: Value) -> Value {
     let body = input.get("body").unwrap_or(&input);
 
     let function_id = body
@@ -887,7 +888,7 @@ async fn handle_invoke(bridge: &III, input: Value) -> Value {
     let function_id = match function_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing function_id in request".to_string(),
             ))
         }
@@ -913,7 +914,7 @@ async fn handle_invoke(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
+async fn handle_cron_trigger(bridge: &IIIClient, input: Value) -> Value {
     let body = input.get("body").unwrap_or(&input);
 
     let trigger_id = body
@@ -924,7 +925,7 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
     let trigger_id = match trigger_id {
         Some(id) if !id.is_empty() => id.to_string(),
         _ => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing trigger_id in request".to_string(),
             ))
         }
@@ -971,7 +972,7 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
         let trigger = match trigger_match {
             Some(trigger) => trigger,
             None => {
-                return error_response(iii_sdk::IIIError::Handler(format!(
+                return error_response(iii_sdk::Error::Handler(format!(
                     "Cron trigger '{}' not found",
                     trigger_id
                 )))
@@ -984,7 +985,7 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
             .unwrap_or_default();
 
         if trigger_type != "cron" {
-            return error_response(iii_sdk::IIIError::Handler(format!(
+            return error_response(iii_sdk::Error::Handler(format!(
                 "Trigger '{}' is not a cron trigger",
                 trigger_id
             )));
@@ -993,7 +994,7 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
         match trigger.get("function_id").and_then(|v| v.as_str()) {
             Some(id) if !id.is_empty() => id.to_string(),
             _ => {
-                return error_response(iii_sdk::IIIError::Handler(format!(
+                return error_response(iii_sdk::Error::Handler(format!(
                     "Cron trigger '{}' has no function_id",
                     trigger_id
                 )))
@@ -1032,7 +1033,7 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_flow_config_save(bridge: &III, input: Value) -> Value {
+async fn handle_flow_config_save(bridge: &IIIClient, input: Value) -> Value {
     let body = input.get("body").cloned().unwrap_or(input.clone());
 
     let flow_id = input
@@ -1044,7 +1045,7 @@ async fn handle_flow_config_save(bridge: &III, input: Value) -> Value {
     let flow_id = match flow_id {
         Some(id) => id.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing flow_id parameter".to_string(),
             ))
         }
@@ -1078,7 +1079,7 @@ async fn handle_flow_config_save(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_queues_list(bridge: &III) -> Value {
+async fn handle_queues_list(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::queue::list_topics".to_string(),
@@ -1093,7 +1094,7 @@ async fn handle_queues_list(bridge: &III) -> Value {
     }
 }
 
-async fn handle_queue_detail(bridge: &III, input: Value) -> Value {
+async fn handle_queue_detail(bridge: &IIIClient, input: Value) -> Value {
     let topic = input
         .get("path_params")
         .and_then(|p| p.get("topic"))
@@ -1103,7 +1104,7 @@ async fn handle_queue_detail(bridge: &III, input: Value) -> Value {
     let topic = match topic {
         Some(t) => t.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing topic in path parameters".to_string(),
             ))
         }
@@ -1123,7 +1124,7 @@ async fn handle_queue_detail(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_queue_publish(bridge: &III, input: Value) -> Value {
+async fn handle_queue_publish(bridge: &IIIClient, input: Value) -> Value {
     let topic = input
         .get("path_params")
         .and_then(|p| p.get("topic"))
@@ -1133,7 +1134,7 @@ async fn handle_queue_publish(bridge: &III, input: Value) -> Value {
     let topic = match topic {
         Some(t) => t.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing topic in path parameters".to_string(),
             ))
         }
@@ -1156,7 +1157,7 @@ async fn handle_queue_publish(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_dlq_list(bridge: &III) -> Value {
+async fn handle_dlq_list(bridge: &IIIClient) -> Value {
     match bridge
         .trigger(TriggerRequest {
             function_id: "engine::queue::dlq_topics".to_string(),
@@ -1171,7 +1172,7 @@ async fn handle_dlq_list(bridge: &III) -> Value {
     }
 }
 
-async fn handle_dlq_messages(bridge: &III, input: Value) -> Value {
+async fn handle_dlq_messages(bridge: &IIIClient, input: Value) -> Value {
     let topic = input
         .get("path_params")
         .and_then(|p| p.get("topic"))
@@ -1181,7 +1182,7 @@ async fn handle_dlq_messages(bridge: &III, input: Value) -> Value {
     let topic = match topic {
         Some(t) => t.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing topic in path parameters".to_string(),
             ))
         }
@@ -1205,7 +1206,7 @@ async fn handle_dlq_messages(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_dlq_redrive(bridge: &III, input: Value) -> Value {
+async fn handle_dlq_redrive(bridge: &IIIClient, input: Value) -> Value {
     let topic = input
         .get("path_params")
         .and_then(|p| p.get("topic"))
@@ -1215,7 +1216,7 @@ async fn handle_dlq_redrive(bridge: &III, input: Value) -> Value {
     let topic = match topic {
         Some(t) => t.to_string(),
         None => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing topic in path parameters".to_string(),
             ))
         }
@@ -1235,7 +1236,7 @@ async fn handle_dlq_redrive(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_dlq_redrive_message(bridge: &III, input: Value) -> Value {
+async fn handle_dlq_redrive_message(bridge: &IIIClient, input: Value) -> Value {
     let topic = input
         .get("path_params")
         .and_then(|p| p.get("topic"))
@@ -1249,7 +1250,7 @@ async fn handle_dlq_redrive_message(bridge: &III, input: Value) -> Value {
     let (topic, message_id) = match (topic, message_id) {
         (Some(t), Some(m)) => (t.to_string(), m.to_string()),
         _ => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing topic or message id in path parameters".to_string(),
             ))
         }
@@ -1269,7 +1270,7 @@ async fn handle_dlq_redrive_message(bridge: &III, input: Value) -> Value {
     }
 }
 
-async fn handle_dlq_discard_message(bridge: &III, input: Value) -> Value {
+async fn handle_dlq_discard_message(bridge: &IIIClient, input: Value) -> Value {
     let topic = input
         .get("path_params")
         .and_then(|p| p.get("topic"))
@@ -1283,7 +1284,7 @@ async fn handle_dlq_discard_message(bridge: &III, input: Value) -> Value {
     let (topic, message_id) = match (topic, message_id) {
         (Some(t), Some(m)) => (t.to_string(), m.to_string()),
         _ => {
-            return error_response(iii_sdk::IIIError::Handler(
+            return error_response(iii_sdk::Error::Handler(
                 "Missing topic or message id in path parameters".to_string(),
             ))
         }
@@ -1303,7 +1304,7 @@ async fn handle_dlq_discard_message(bridge: &III, input: Value) -> Value {
     }
 }
 
-pub fn register_functions(bridge: &III) {
+pub fn register_functions(bridge: &IIIClient) {
     let b = bridge.clone();
     bridge.register_function(
         "engine::console::health",

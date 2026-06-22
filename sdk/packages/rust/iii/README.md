@@ -164,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Logger
 
 ```rust
-use iii_observability::Logger;
+use iii_helpers::observability::Logger;
 
 let logger = Logger::new(Some("my-function".to_string()));
 logger.info("Processing started", None);

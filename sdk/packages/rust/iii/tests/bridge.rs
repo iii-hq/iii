@@ -10,7 +10,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{FunctionInfo, RegisterFunction, TriggerAction, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::runtime::FunctionInfo;
+use iii_sdk::{RegisterFunction, TriggerAction};
 
 #[tokio::test]
 async fn connect_successfully() {

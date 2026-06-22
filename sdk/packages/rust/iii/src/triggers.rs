@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::error::IIIError;
+use crate::error::Error;
 
 /// Configuration passed to a [`TriggerHandler`] when a trigger instance is
 /// registered or unregistered.
@@ -20,16 +20,16 @@ pub struct TriggerConfig {
 }
 
 /// Handler trait for custom trigger types. Implement this and pass to
-/// [`III::register_trigger_type`](crate::III::register_trigger_type).
+/// [`IIIClient::register_trigger_type`](crate::IIIClient::register_trigger_type).
 #[async_trait]
 pub trait TriggerHandler: Send + Sync {
     /// Called when a trigger instance is registered.
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError>;
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error>;
     /// Called when a trigger instance is unregistered.
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError>;
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error>;
 }
 
-/// Handle returned by [`III::register_trigger`](crate::III::register_trigger).
+/// Handle returned by [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
 /// Call [`unregister`](Trigger::unregister) to remove the trigger from the engine.
 #[derive(Clone)]
 pub struct Trigger {

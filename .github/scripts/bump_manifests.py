@@ -60,8 +60,8 @@ def bump_json_top_level_version(text: str, new_version: str) -> str:
 def bump_pep440_dep_pin(text: str, dep_name: str, new_pep440: str) -> str:
     """Replace ``"<dep_name>==<old>"`` with ``"<dep_name>==<new_pep440>"``.
 
-    Used for the ``iii-observability`` pin inside the python iii
-    ``pyproject.toml`` ``dependencies = [...]`` array.
+    Replaces a pinned PEP 440 dependency version in a pyproject.toml
+    ``dependencies = [...]`` array.
     """
     line_re = re.compile(rf'"{re.escape(dep_name)}==[^"]*"')
     m = line_re.search(text)
@@ -93,12 +93,14 @@ _CARGO_PACKAGE_FILES = (
     "engine/Cargo.toml",
     "sdk/packages/rust/iii/Cargo.toml",
     "sdk/packages/rust/observability/Cargo.toml",
+    "sdk/packages/rust/helpers/Cargo.toml",
     "console/packages/console-rust/Cargo.toml",
 )
 _JSON_PACKAGE_FILES = (
     "sdk/packages/node/iii/package.json",
     "sdk/packages/node/iii-browser/package.json",
     "sdk/packages/node/observability/package.json",
+    "sdk/packages/node/helpers/package.json",
 )
 
 
@@ -109,11 +111,14 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
         path = root / rel
         path.write_text(bump_cargo_package_version(path.read_text(), new_version))
 
-    # Workspace root: bump both the workspace.package version and the
-    # iii-observability workspace-dep version pin.
+    # Workspace root: bump the workspace.package version and the internal
+    # workspace-dep version pins. The pins are plain "X.Y.Z" requirements, so
+    # they must move to the prerelease too — otherwise `cargo` can't match the
+    # prerelease candidate (e.g. ^0.19.4 won't accept 0.19.4-alpha.1).
     workspace_path = root / "Cargo.toml"
     body = bump_cargo_package_version(workspace_path.read_text(), new_version)
     body = bump_cargo_workspace_dep_version(body, "iii-observability", new_version)
+    body = bump_cargo_workspace_dep_version(body, "iii-helpers", new_version)
     workspace_path.write_text(body)
 
     # JSON package versions
@@ -121,21 +126,31 @@ def rewrite_all(root: Path, new_version: str, new_py_version: str) -> None:
         path = root / rel
         path.write_text(bump_json_top_level_version(path.read_text(), new_version))
 
-    # Python iii: top-level version + iii-observability pin
+    # Python iii: top-level version + internal pins (== requirements must
+    # move to the prerelease alongside the packages they point at).
+    # Note: iii-observability is no longer a direct dep of Python iii (replaced
+    # by iii-helpers after the observability-into-helpers refactor).
     py_iii = root / "sdk/packages/python/iii/pyproject.toml"
     body = bump_cargo_package_version(py_iii.read_text(), new_py_version)
-    body = bump_pep440_dep_pin(body, "iii-observability", new_py_version)
+    body = bump_pep440_dep_pin(body, "iii-helpers", new_py_version)
     py_iii.write_text(body)
 
-    # Python observability: top-level version only
+    # Python observability: top-level version + iii-helpers dep pin (shim must
+    # depend on the same version of iii-helpers being released alongside it).
     py_obs = root / "sdk/packages/python/observability/pyproject.toml"
-    py_obs.write_text(bump_cargo_package_version(py_obs.read_text(), new_py_version))
+    body = bump_cargo_package_version(py_obs.read_text(), new_py_version)
+    body = bump_pep440_dep_pin(body, "iii-helpers", new_py_version)
+    py_obs.write_text(body)
 
     # Go SDK: keep the reported sdkVersion const in lockstep. The module
     # itself is versioned by its git tag; this only updates the metadata
     # const, using the raw semver (not the PEP 440) version.
     go_client = root / "sdk/packages/go/iii/client.go"
     go_client.write_text(bump_go_const_version(go_client.read_text(), new_version))
+
+    # Python helpers: top-level version only
+    py_helpers = root / "sdk/packages/python/helpers/pyproject.toml"
+    py_helpers.write_text(bump_cargo_package_version(py_helpers.read_text(), new_py_version))
 
 
 import argparse

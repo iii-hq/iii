@@ -126,7 +126,7 @@ async fn invalid_utf8_under_threshold_falls_through_to_stream() {
         meta_size: size,
     };
 
-    // Note: handle_read requires a real `iii_sdk::III` to call create_channel
+    // Note: handle_read requires a real `iii_sdk::IIIClient` to call create_channel
     // on. We can't construct one cleanly in a unit test (it tries to
     // connect to the engine). Instead, this test asserts the easier
     // invariant: the buffering logic detects invalid UTF-8 by feeding the
@@ -158,7 +158,7 @@ async fn invalid_utf8_under_threshold_falls_through_to_stream() {
 async fn valid_utf8_under_threshold_returns_utf8_string_invariant() {
     // Pin the inverse invariant: valid UTF-8 under the cap must populate
     // `body: Some(s)`. As above, we assert at the structural level pending
-    // an integration harness with a live `iii_sdk::III`.
+    // an integration harness with a live `iii_sdk::IIIClient`.
     let small_text = "hello world\n".repeat(100);
     assert!(small_text.len() < 1024 * 1024);
     assert!(std::str::from_utf8(small_text.as_bytes()).is_ok());

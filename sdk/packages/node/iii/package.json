@@ -41,10 +41,45 @@
       "types": "./dist/helpers.d.ts",
       "import": "./dist/helpers.mjs",
       "require": "./dist/helpers.cjs"
+    },
+    "./channel": {
+      "types": "./dist/channel.d.ts",
+      "import": "./dist/channel.mjs",
+      "require": "./dist/channel.cjs"
+    },
+    "./trigger": {
+      "types": "./dist/trigger.d.ts",
+      "import": "./dist/trigger.mjs",
+      "require": "./dist/trigger.cjs"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.mjs",
+      "require": "./dist/runtime.cjs"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.mjs",
+      "require": "./dist/errors.cjs"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.mjs",
+      "require": "./dist/internal.cjs"
+    },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "import": "./dist/engine.mjs",
+      "require": "./dist/engine.cjs"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.mjs",
+      "require": "./dist/protocol.cjs"
     }
   },
   "dependencies": {
-    "@iii-dev/observability": "workspace:*",
+    "@iii-dev/helpers": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
     "ws": "^8.18.3"
   },

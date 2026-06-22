@@ -56,12 +56,12 @@ class TriggerTypeRef(Generic[C, R]):
 
     Type parameters:
 
-    - ``C`` — configuration type for :meth:`register_trigger`
-    - ``R`` — call-request type for :meth:`register_function`
+    - ``C``: configuration type for :meth:`register_trigger`
+    - ``R``: call-request type for :meth:`register_function`
 
     Example::
 
-        webhook = iii.register_trigger_type(
+        webhook = worker.register_trigger_type(
             RegisterTriggerTypeInput(
                 id="webhook",
                 description="Incoming webhook trigger",

@@ -1,0 +1,56 @@
+---
+title: 'Cross-language SDK parity: renames and removals'
+description: 'The Node, Python, and Rust SDKs are aligned to a consistent public surface. The main client handle, telemetry config, buffered HTTP types, and several stream types are renamed, and a set of redundant exports is removed.'
+---
+
+## What changed
+
+The three SDKs are aligned so the same concept has the same name everywhere. This slice renames several public types and removes redundant or dead exports. Behavior is unchanged; the wire format is unchanged.
+
+## Renames
+
+| Concept | Before | After |
+| --- | --- | --- |
+| Main client handle | Node `ISdk`, Rust `III` | `IIIClient` (all three) |
+| Telemetry config | Rust `WorkerTelemetryMeta` | `TelemetryOptions` |
+| Buffered HTTP request and response | `ApiRequest`, `ApiResponse` | `HttpRequest`, `HttpResponse` |
+| Stream change event (Rust) | `StreamCallRequest` | `StreamChangeEvent` |
+| Stream join and leave event (Rust) | `StreamJoinLeaveCallRequest` | `StreamJoinLeaveEvent` |
+| Stream change event detail | Rust `StreamEventDetail`, Node inline object | `StreamChangeEventDetail` (all three) |
+| Stream set result | Rust `SetResult` | `StreamSetResult` (all three) |
+| Stream update result | Rust `UpdateResult` | `StreamUpdateResult` (all three) |
+| Stream delete result | Rust and Node `DeleteResult` | `StreamDeleteResult` (all three) |
+
+The streaming request and response types keep the `StreamRequest` and `StreamResponse` names. The buffered types reclaim the `HttpRequest` and `HttpResponse` names from them. `EngineFunctions` and `EngineTriggers` are now present in the Python and Rust SDKs as well, not only Node. `MergePath` (the path argument for merge and append update operations) is now a named export in all three SDKs.
+
+## Removals
+
+| Removed | SDK | Replacement |
+| --- | --- | --- |
+| `UpdateBuilder` | Rust | use `UpdateSet` and `UpdateMerge` directly |
+| `Value` re-export | Rust | depend on `serde_json` directly |
+| `IIIForbiddenError`, `IIITimeoutError` | Python | check the error `code` on the invocation error, matching Node and Rust |
+| `TriggerActionType` alias | Node | use the `TriggerAction` value |
+| `FieldPath` (separate path helper) | Rust | use `UpdateSet` and `UpdateMerge`; the merge and append path argument is the retained `MergePath` |
+| `Logger` re-export | Node | import from `@iii-dev/helpers/observability` |
+| OpenTelemetry suite re-export | Python | import from `iii_helpers.observability` |
+
+## Migration
+
+Update any imports that reference the old names. The renames are mechanical. For the removed Python error subclasses, branch on the error `code` instead of catching the dedicated subclass:
+
+```python
+# Before
+try:
+    ...
+except IIIForbiddenError:
+    ...
+# After
+except InvocationError as err:
+    if err.code == "forbidden":
+        ...
+```
+
+## Why
+
+A flat, divergent surface made the SDKs harder to learn and harder to keep in sync. Aligning the names so the same import means the same thing in every language, and dropping exports that duplicated functionality available elsewhere, makes the surface smaller and predictable.

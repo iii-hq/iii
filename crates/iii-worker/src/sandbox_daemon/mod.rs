@@ -103,8 +103,9 @@ If detail.fix is non-null, your next call is fn(detail.fix).
 
 use std::sync::Arc;
 
-use iii_observability::OtelConfig;
-use iii_sdk::{InitOptions, RegisterFunction, WorkerMetadata, register_worker};
+use iii_helpers::observability::OtelConfig;
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 
 use crate::sandbox_daemon::config::SandboxConfig;
 use crate::sandbox_daemon::errors::SandboxErrorWire;
@@ -197,7 +198,7 @@ pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()
 }
 
 fn register_sandbox_create(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     cfg: Arc<crate::sandbox_daemon::config::SandboxConfig>,
     launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,
@@ -243,7 +244,7 @@ fn register_sandbox_create(
 }
 
 fn register_sandbox_exec(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     runner: Arc<crate::sandbox_daemon::adapters::ShellProtoRunner>,
 ) {
@@ -279,7 +280,7 @@ fn register_sandbox_exec(
 }
 
 fn register_sandbox_stop(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     stopper: Arc<crate::sandbox_daemon::adapters::SignalStopper>,
 ) {
@@ -310,7 +311,7 @@ fn register_sandbox_stop(
 }
 
 fn register_sandbox_list(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
 ) {
     // Note: pre-migration this handler used
@@ -338,7 +339,7 @@ fn register_sandbox_list(
                     &result,
                     start.elapsed().as_millis() as u64,
                 );
-                Ok::<_, iii_sdk::IIIError>(result.unwrap())
+                Ok::<_, iii_sdk::Error>(result.unwrap())
             }
         })
         .description("List active sandboxes"),
@@ -346,7 +347,7 @@ fn register_sandbox_list(
 }
 
 fn register_sandbox_catalog_list(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     cfg: Arc<crate::sandbox_daemon::config::SandboxConfig>,
 ) {
     let _ = iii.register_function(
@@ -365,7 +366,7 @@ fn register_sandbox_catalog_list(
                         &result,
                         start.elapsed().as_millis() as u64,
                     );
-                    Ok::<_, iii_sdk::IIIError>(result.unwrap())
+                    Ok::<_, iii_sdk::Error>(result.unwrap())
                 }
             },
         )

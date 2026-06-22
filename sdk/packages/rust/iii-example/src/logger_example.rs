@@ -1,8 +1,8 @@
-use iii_observability::Logger;
-use iii_sdk::{III, IIIError, RegisterFunction};
+use iii_helpers::observability::Logger;
+use iii_sdk::{Error, IIIClient, RegisterFunction};
 use serde_json::{Value, json};
 
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     iii.register_function(
         "example::logger_demo",
         RegisterFunction::new_async(|input: Value| async move {
@@ -22,7 +22,7 @@ pub fn setup(iii: &III) {
 
             logger.info("Request processed successfully", None);
 
-            Ok::<Value, IIIError>(json!({ "status": "ok" }))
+            Ok::<Value, Error>(json!({ "status": "ok" }))
         })
         .description("Demonstrates Logger with all log levels"),
     );

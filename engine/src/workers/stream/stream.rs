@@ -23,10 +23,7 @@ use axum::{
 use chrono::Utc;
 use colored::Colorize;
 use function_macros::{function, service};
-use iii_sdk::{
-    UpdateResult,
-    types::{DeleteResult, SetResult},
-};
+use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult};
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::{net::TcpListener, task::AbortHandle};
@@ -960,7 +957,7 @@ impl StreamWorker {
 #[service(name = "stream")]
 impl StreamWorker {
     #[function(id = "stream::set", description = "Set a value in a stream")]
-    pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
+    pub async fn set(&self, input: StreamSetInput) -> FunctionResult<StreamSetResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -971,7 +968,7 @@ impl StreamWorker {
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter_snapshot();
 
-        let result: anyhow::Result<SetResult> = match function {
+        let result: anyhow::Result<StreamSetResult> = match function {
             Some(_) => {
                 tracing::debug!(function_id = %function_id, "Calling custom stream.set function");
 
@@ -988,7 +985,7 @@ impl StreamWorker {
                 let result = self.engine.call(&function_id, input).await;
 
                 match result {
-                    Ok(Some(result)) => match serde_json::from_value::<SetResult>(result) {
+                    Ok(Some(result)) => match serde_json::from_value::<StreamSetResult>(result) {
                         Ok(result) => Ok(result),
                         Err(e) => {
                             return FunctionResult::Failure(ErrorBody {
@@ -1099,7 +1096,7 @@ impl StreamWorker {
     pub async fn delete(
         &self,
         input: StreamDeleteInput,
-    ) -> FunctionResult<DeleteResult, ErrorBody> {
+    ) -> FunctionResult<StreamDeleteResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -1108,7 +1105,7 @@ impl StreamWorker {
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter_snapshot();
 
-        let result: anyhow::Result<DeleteResult> = match function {
+        let result: anyhow::Result<StreamDeleteResult> = match function {
             Some(_) => {
                 tracing::debug!(function_id = %function_id, "Calling custom stream.delete function");
 
@@ -1125,7 +1122,7 @@ impl StreamWorker {
                 let result = self.engine.call(&function_id, input).await;
                 match result {
                     Ok(Some(result)) => {
-                        let result = match serde_json::from_value::<DeleteResult>(result) {
+                        let result = match serde_json::from_value::<StreamDeleteResult>(result) {
                             Ok(result) => result,
                             Err(e) => {
                                 return FunctionResult::Failure(ErrorBody {
@@ -1337,7 +1334,7 @@ impl StreamWorker {
     pub async fn update(
         &self,
         input: StreamUpdateInput,
-    ) -> FunctionResult<UpdateResult, ErrorBody> {
+    ) -> FunctionResult<StreamUpdateResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -1350,7 +1347,7 @@ impl StreamWorker {
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter_snapshot();
 
-        let result: anyhow::Result<UpdateResult> = match function {
+        let result: anyhow::Result<StreamUpdateResult> = match function {
             Some(_) => {
                 tracing::debug!(function_id = %function_id, "Calling custom stream.set function");
 
@@ -1367,16 +1364,18 @@ impl StreamWorker {
                 let result = self.engine.call(&function_id, input).await;
 
                 match result {
-                    Ok(Some(result)) => match serde_json::from_value::<UpdateResult>(result) {
-                        Ok(result) => Ok(result),
-                        Err(e) => {
-                            return FunctionResult::Failure(ErrorBody {
-                                message: format!("Failed to convert result to value: {}", e),
-                                code: "JSON_ERROR".to_string(),
-                                stacktrace: None,
-                            });
+                    Ok(Some(result)) => {
+                        match serde_json::from_value::<StreamUpdateResult>(result) {
+                            Ok(result) => Ok(result),
+                            Err(e) => {
+                                return FunctionResult::Failure(ErrorBody {
+                                    message: format!("Failed to convert result to value: {}", e),
+                                    code: "JSON_ERROR".to_string(),
+                                    stacktrace: None,
+                                });
+                            }
                         }
-                    },
+                    }
                     Ok(None) => Err(anyhow::anyhow!("Function returned no result")),
                     Err(error) => Err(anyhow::anyhow!("Failed to invoke function: {:?}", error)),
                 }
@@ -1438,10 +1437,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use iii_sdk::{
-        UpdateOp, UpdateResult,
-        types::{DeleteResult, SetResult},
-    };
+    use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
     use serde_json::Value;
     use tokio::sync::mpsc;
 
@@ -1546,14 +1542,14 @@ mod tests {
     }
 
     struct FakeStreamAdapter {
-        set_result: Mutex<Result<SetResult, String>>,
+        set_result: Mutex<Result<StreamSetResult, String>>,
         get_result: Mutex<Result<Option<Value>, String>>,
-        delete_result: Mutex<Result<DeleteResult, String>>,
+        delete_result: Mutex<Result<StreamDeleteResult, String>>,
         get_group_result: Mutex<Result<Vec<Value>, String>>,
         list_groups_result: Mutex<Result<Vec<String>, String>>,
         list_all_result: Mutex<Result<Vec<StreamMetadata>, String>>,
         emit_event_result: Mutex<Result<(), String>>,
-        update_result: Mutex<Result<UpdateResult, String>>,
+        update_result: Mutex<Result<StreamUpdateResult, String>>,
         emitted_messages: Mutex<Vec<StreamWrapperMessage>>,
         destroy_called: AtomicBool,
         watch_events_called: AtomicBool,
@@ -1562,17 +1558,17 @@ mod tests {
     impl Default for FakeStreamAdapter {
         fn default() -> Self {
             Self {
-                set_result: Mutex::new(Ok(SetResult {
+                set_result: Mutex::new(Ok(StreamSetResult {
                     old_value: None,
                     new_value: serde_json::json!({}),
                 })),
                 get_result: Mutex::new(Ok(None)),
-                delete_result: Mutex::new(Ok(DeleteResult { old_value: None })),
+                delete_result: Mutex::new(Ok(StreamDeleteResult { old_value: None })),
                 get_group_result: Mutex::new(Ok(Vec::new())),
                 list_groups_result: Mutex::new(Ok(Vec::new())),
                 list_all_result: Mutex::new(Ok(Vec::new())),
                 emit_event_result: Mutex::new(Ok(())),
-                update_result: Mutex::new(Ok(UpdateResult {
+                update_result: Mutex::new(Ok(StreamUpdateResult {
                     old_value: None,
                     new_value: serde_json::json!({}),
                     errors: Vec::new(),
@@ -1592,7 +1588,7 @@ mod tests {
             _group_id: &str,
             _item_id: &str,
             _data: Value,
-        ) -> anyhow::Result<SetResult> {
+        ) -> anyhow::Result<StreamSetResult> {
             self.set_result
                 .lock()
                 .expect("lock set_result")
@@ -1618,7 +1614,7 @@ mod tests {
             _stream_name: &str,
             _group_id: &str,
             _item_id: &str,
-        ) -> anyhow::Result<DeleteResult> {
+        ) -> anyhow::Result<StreamDeleteResult> {
             self.delete_result
                 .lock()
                 .expect("lock delete_result")
@@ -1694,7 +1690,7 @@ mod tests {
             _group_id: &str,
             _item_id: &str,
             _ops: Vec<UpdateOp>,
-        ) -> anyhow::Result<UpdateResult> {
+        ) -> anyhow::Result<StreamUpdateResult> {
             self.update_result
                 .lock()
                 .expect("lock update_result")
@@ -1901,7 +1897,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
-                ops: vec![iii_sdk::UpdateOp::set("", updated_data.clone())],
+                ops: vec![iii_helpers::stream::UpdateOp::set("", updated_data.clone())],
             })
             .await;
 
@@ -1966,7 +1962,7 @@ mod tests {
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
                 item_id: item_id.to_string(),
-                ops: vec![iii_sdk::UpdateOp::set("", new_data.clone())],
+                ops: vec![iii_helpers::stream::UpdateOp::set("", new_data.clone())],
             })
             .await;
 
@@ -2324,7 +2320,7 @@ mod tests {
                     data: serde_json::json!({ "ignored": true }),
                 })
                 .await,
-            FunctionResult::Success(SetResult { new_value, .. }) if new_value == serde_json::json!({ "from": "custom-set" })
+            FunctionResult::Success(StreamSetResult { new_value, .. }) if new_value == serde_json::json!({ "from": "custom-set" })
         ));
         assert!(matches!(
             module
@@ -2334,7 +2330,7 @@ mod tests {
                     item_id: "item".to_string(),
                 })
                 .await,
-            FunctionResult::Success(DeleteResult { old_value: Some(value) }) if value == serde_json::json!({ "from": "custom-delete" })
+            FunctionResult::Success(StreamDeleteResult { old_value: Some(value) }) if value == serde_json::json!({ "from": "custom-delete" })
         ));
         assert!(matches!(
             module
@@ -2345,7 +2341,7 @@ mod tests {
                     ops: vec![UpdateOp::set("", serde_json::json!({ "count": 2 }))],
                 })
                 .await,
-            FunctionResult::Success(UpdateResult { new_value, .. }) if new_value == serde_json::json!({ "count": 2 })
+            FunctionResult::Success(StreamUpdateResult { new_value, .. }) if new_value == serde_json::json!({ "count": 2 })
         ));
     }
 

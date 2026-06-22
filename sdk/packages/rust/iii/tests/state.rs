@@ -10,7 +10,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{III, RegisterFunction, RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, RegisterFunction};
 
 const SCOPE: &str = "test-scope-rs";
 
@@ -22,7 +23,7 @@ fn unique_key(test_name: &str) -> String {
     format!("{test_name}-{ts}")
 }
 
-async fn delete_state(iii: &III, key: &str) {
+async fn delete_state(iii: &IIIClient, key: &str) {
     let _ = iii
         .trigger(TriggerRequest {
             function_id: "state::delete".to_string(),

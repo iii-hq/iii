@@ -5,6 +5,59 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.20.0" description="June 2026">
+  ## SDK: a major, breaking reorganization of the public surface
+
+  The Node, Python, and Rust SDKs are reorganized for a consistent, well-factored public surface. Names are aligned across the three languages, the shared types move into a new package, and the rest of the root surface is grouped into named submodules. This release is breaking: many symbols move out of the SDK root.
+
+  <Callout type="tip">
+    Upgrading an existing app? Follow the step-by-step
+    [Upgrading from 0.19.x to 0.20.x](/next/upgrading/from-0-19-x) guide.
+  </Callout>
+
+  ### Shared types extracted into `@iii-dev/helpers`
+
+  The HTTP, queue, stream, and worker-connection-manager types move out of the root SDK into a new separately published package, **`@iii-dev/helpers`** (npm), **`iii-helpers`** (crate and PyPI, import `iii_helpers`), organized into four submodules. The root exports are removed; import these types from the helpers package.
+
+  | Submodule | Node | Python | Rust |
+  | --- | --- | --- | --- |
+  | http | `@iii-dev/helpers/http` | `iii_helpers.http` | `iii_helpers::http` |
+  | queue | `@iii-dev/helpers/queue` | `iii_helpers.queue` | `iii_helpers::queue` |
+  | stream | `@iii-dev/helpers/stream` | `iii_helpers.stream` | `iii_helpers::stream` |
+  | worker-connection-manager | `@iii-dev/helpers/worker-connection-manager` | `iii_helpers.worker_connection_manager` | `iii_helpers::worker_connection_manager` |
+
+  `IStream`, the streaming `StreamRequest` and `StreamResponse`, `MiddlewareFunctionInput`, and `TriggerActionEnqueue` stay in the root SDK. See [the helpers entry](./0-20-0/extract-helpers-lib) for the full symbol list and migration.
+
+  ### Cross-language parity: renames and removals
+
+  - Main client handle aligned to `IIIClient` (Node was `ISdk`, Rust was `III`).
+  - Telemetry config aligned to `TelemetryOptions` (Rust was `WorkerTelemetryMeta`).
+  - Buffered HTTP request and response renamed `ApiRequest` and `ApiResponse` to `HttpRequest` and `HttpResponse`; streaming keeps `StreamRequest` and `StreamResponse`. Rust `StreamCallRequest` and `StreamJoinLeaveCallRequest` become `StreamChangeEvent` and `StreamJoinLeaveEvent`.
+  - Stream helper type names aligned across the three SDKs: the change-event detail is `StreamChangeEventDetail` everywhere (Rust was `StreamEventDetail`, Node was an inline object), the result types are `StreamSetResult` / `StreamUpdateResult` / `StreamDeleteResult` (Rust had bare `SetResult` / `UpdateResult`, Node and Rust had a bare `DeleteResult`), and `MergePath` is now a named export in all three.
+  - Removed: `UpdateBuilder`, the Rust `Value` re-export, `IIIForbiddenError` and `IIITimeoutError` (Python), the `TriggerActionType` alias, the Rust `FieldPath` path helper, and the root `Logger` and OpenTelemetry re-exports (use `@iii-dev/observability`).
+
+  See [the parity entry](./0-20-0/cross-language-parity) for the full table.
+
+  ### Submodule grouping
+
+  The remaining root surface is grouped into submodules (`iii-sdk/<name>` / `iii.<name>` / `iii_sdk::<name>`):
+
+  - **errors** (`InvocationError`, `Error`), **channel**, **trigger**, **runtime**: the first slice. The `III` prefix is dropped from the invocation error types. These keep their old root paths working as deprecated aliases. See [the first slice](./0-20-0/organize-sdk-imports).
+  - **engine** (`EngineFunctions`, `EngineTriggers`, `RemoteFunctionHandler`), **protocol** (the message and register-input types), **internal** (`InternalHttpRequest`), and Python **utils** (the format helpers): these move out of the root with the root export removed. `IIIConnectionState` (runtime) and `TriggerActionVoid` (Python trigger) likewise leave the root. See [the submodule entry](./0-20-0/submodule-clean-break).
+
+  ### Compatibility
+
+  This release is not backward compatible. The first errors/channel/trigger/runtime slice keeps deprecated root aliases, but everything extracted into `@iii-dev/helpers`, the renamed types, and the `engine`/`protocol`/`internal`/`utils` groups are removed from the root SDK. Update imports to the submodule and helpers paths.
+
+  ### Observability moved into `@iii-dev/helpers`
+
+  The `Logger`, `initOtel`, `withSpan`, `executeTracedRequest`, and the rest of the public observability API move from the standalone `iii-observability` packages into a new `observability` submodule of the helpers package. The OpenTelemetry dependencies are now bundled in helpers (net-neutral for SDK users). The standalone `@iii-dev/observability` / `iii-observability` packages become deprecated shims that re-export from helpers; they continue to work but emit a deprecation signal. See [the observability entry](./0-20-0/observability-into-helpers) for the full path table and migration.
+
+  | Submodule | Node | Python | Rust |
+  | --- | --- | --- | --- |
+  | observability | `@iii-dev/helpers/observability` | `iii_helpers.observability` | `iii_helpers::observability` |
+</Update>
+
 <Update label="0.19.5" description="June 2026">
   ## Workers share one read-only rootfs instead of cloning it per worker
 

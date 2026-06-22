@@ -26,7 +26,7 @@ iii-filesystem = { path = "../iii-filesystem" }
 iii-network = { path = "../iii-network" }
 # TODO: switch to crates.io pin before shipping; path dep for co-development
 iii-sdk = { path = "../../sdk/packages/rust/iii" }
-iii-observability = { workspace = true }
+iii-helpers = { workspace = true }
 iii-shell-client = { path = "../iii-shell-client" }
 iii-shell-proto = { path = "../iii-shell-proto" }
 iii-supervisor = { path = "../iii-supervisor" }

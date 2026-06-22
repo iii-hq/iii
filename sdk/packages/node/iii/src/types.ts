@@ -1,6 +1,6 @@
+import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import type { ChannelReader, ChannelWriter } from './channels'
 import type {
-  HttpInvocationConfig,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
@@ -67,7 +67,7 @@ export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
 
-export interface ISdk {
+export interface IIIClient {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
    * @param trigger - The trigger to register
@@ -75,7 +75,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * const trigger = iii.registerTrigger({
+   * const trigger = worker.registerTrigger({
    *   type: 'cron',
    *   function_id: 'my-service::process-batch',
    *   config: { expression: '0 *\/5 * * * * *' },
@@ -97,14 +97,14 @@ export interface ISdk {
    * @example
    * ```typescript
    * // Local handler
-   * const ref = iii.registerFunction(
+   * const ref = worker.registerFunction(
    *   'greet',
    *   async (data: { name: string }) => ({ message: `Hello, ${data.name}!` }),
    *   { description: 'Returns a greeting' },
    * )
    *
    * // HTTP invocation
-   * const lambdaRef = iii.registerFunction(
+   * const lambdaRef = worker.registerFunction(
    *   'external::my-lambda',
    *   {
    *     url: 'https://abc123.lambda-url.us-east-1.on.aws',
@@ -134,7 +134,7 @@ export interface ISdk {
    * @example
    * ```typescript
    * // Synchronous invocation
-   * const result = await iii.trigger<{ name: string }, { message: string }>({
+   * const result = await worker.trigger<{ name: string }, { message: string }>({
    *   function_id: 'greet',
    *   payload: { name: 'World' },
    *   timeoutMs: 5000,
@@ -142,14 +142,14 @@ export interface ISdk {
    * console.log(result.message) // "Hello, World!"
    *
    * // Fire-and-forget
-   * await iii.trigger({
+   * await worker.trigger({
    *   function_id: 'send-email',
    *   payload: { to: 'user@example.com' },
    *   action: TriggerAction.Void(),
    * })
    *
    * // Enqueue for async processing
-   * const receipt = await iii.trigger({
+   * const receipt = await worker.trigger({
    *   function_id: 'process-order',
    *   payload: { orderId: '123' },
    *   action: TriggerAction.Enqueue({ queue: 'orders' }),
@@ -168,12 +168,12 @@ export interface ISdk {
    * ```typescript
    * type CronConfig = { expression: string }
    *
-   * iii.registerTriggerType<CronConfig>(
+   * worker.registerTriggerType<CronConfig>(
    *   { id: 'cron', description: 'Fires on a cron schedule' },
    *   {
    *     async registerTrigger({ id, function_id, config }) {
    *       startCronJob(id, config.expression, () =>
-   *         iii.trigger({ function_id, payload: {} }),
+   *         worker.trigger({ function_id, payload: {} }),
    *       )
    *     },
    *     async unregisterTrigger({ id }) {
@@ -194,7 +194,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * iii.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
+   * worker.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
    * ```
    */
   unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
@@ -205,7 +205,7 @@ export interface ISdk {
    * @example
    * ```typescript
    * process.on('SIGTERM', async () => {
-   *   await iii.shutdown()
+   *   await worker.shutdown()
    *   process.exit(0)
    * })
    * ```
@@ -214,7 +214,7 @@ export interface ISdk {
 }
 
 /**
- * Handle returned by {@link ISdk.registerTrigger}. Use `unregister()` to
+ * Handle returned by {@link IIIClient.registerTrigger}. Use `unregister()` to
  * remove the trigger from the engine.
  */
 export type Trigger = {
@@ -223,7 +223,7 @@ export type Trigger = {
 }
 
 /**
- * Handle returned by {@link ISdk.registerFunction}. Contains the function's
+ * Handle returned by {@link IIIClient.registerFunction}. Contains the function's
  * `id` and an `unregister()` method.
  */
 export type FunctionRef = {
@@ -234,7 +234,7 @@ export type FunctionRef = {
 }
 
 /**
- * Typed handle returned by {@link ISdk.registerTriggerType}.
+ * Typed handle returned by {@link IIIClient.registerTriggerType}.
  *
  * Provides convenience methods to register triggers and functions scoped
  * to this trigger type, so callers don't need to repeat the `type` field.
@@ -245,12 +245,12 @@ export type FunctionRef = {
  * ```typescript
  * type CronConfig = { expression: string }
  *
- * const cron = iii.registerTriggerType<CronConfig>(
+ * const cron = worker.registerTriggerType<CronConfig>(
  *   { id: 'cron', description: 'Fires on a cron schedule' },
  *   cronHandler,
  * )
  *
- * // Register a trigger — type is inferred as CronConfig
+ * // Register a trigger, type is inferred as CronConfig
  * cron.registerTrigger('my::fn', { expression: '0 *\/5 * * * * *' })
  *
  * // Register a function and bind a trigger in one call
@@ -320,11 +320,11 @@ export type InternalHttpRequest<TBody = unknown> = {
 }
 
 /**
- * Response object passed to HTTP function handlers. Use `status()` and
+ * Response object passed to streaming function handlers. Use `status()` and
  * `headers()` to set response metadata, write to `stream` for streaming
  * responses, and call `close()` when done.
  */
-export type HttpResponse = {
+export type StreamResponse = {
   /** Set the HTTP status code. */
   status: (statusCode: number) => void
   /** Set response headers. */
@@ -336,39 +336,8 @@ export type HttpResponse = {
 }
 
 /**
- * Incoming HTTP request received by a function registered with an HTTP trigger.
+ * Incoming streaming request received by a function registered with a stream trigger.
  *
  * @typeParam TBody - Type of the parsed request body.
  */
-export type HttpRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>
-
-/**
- * Alias for {@link HttpRequest}. Represents an incoming API request.
- *
- * @typeParam TBody - Type of the parsed request body.
- */
-export type ApiRequest<TBody = unknown> = HttpRequest<TBody>
-
-/**
- * Structured API response returned from HTTP function handlers.
- *
- * @typeParam TStatus - HTTP status code literal type.
- * @typeParam TBody - Type of the response body.
- *
- * @example
- * ```typescript
- * const response: ApiResponse = {
- *   status_code: 200,
- *   headers: { 'content-type': 'application/json' },
- *   body: { message: 'ok' },
- * }
- * ```
- */
-export type ApiResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
-  /** HTTP status code. */
-  status_code: TStatus
-  /** Response headers. */
-  headers?: Record<string, string>
-  /** Response body. */
-  body?: TBody
-}
+export type StreamRequest<TBody = unknown> = Omit<InternalHttpRequest<TBody>, 'response'>

@@ -34,7 +34,7 @@ class _IIIWithHelperShims(IIIClient, Protocol):
 
     The free functions below delegate to these private methods on the
     concrete :class:`III` instance. Defining the Protocol here mirrors the
-    Node SDK's ``IIIWithHelperShims`` intersection type — callers see the
+    Node SDK's ``IIIWithHelperShims`` intersection type, callers see the
     public :class:`IIIClient` Protocol; helpers see the shims internally.
     """
 
@@ -46,7 +46,7 @@ class _IIIWithHelperShims(IIIClient, Protocol):
 
     def _helpers_create_stream(
         self, stream_name: str, stream: IStream[Any]
-    ) -> None: ...  # noqa: D401 — internal shim, generic erased at the boundary
+    ) -> None: ...  # noqa: D401  (internal shim, generic erased at the boundary)
 
 
 def create_channel(iii: IIIClient, buffer_size: int | None = None) -> Channel:

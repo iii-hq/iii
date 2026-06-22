@@ -1,4 +1,5 @@
-use iii_sdk::{III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler};
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{Error, IIIClient, RegisterTriggerType};
 use serde_json::json;
 
 // ── Example 1: Typed trigger with full config ───────────────────────────
@@ -27,11 +28,11 @@ struct ScheduleHandler;
 
 #[async_trait::async_trait]
 impl TriggerHandler for ScheduleHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         println!("[schedule] Registered: {}", config.config);
         Ok(())
     }
-    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -67,11 +68,11 @@ struct FileWatchHandler;
 
 #[async_trait::async_trait]
 impl TriggerHandler for FileWatchHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         println!("[file-watch] Watching: {}", config.config);
         Ok(())
     }
-    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -82,17 +83,17 @@ struct NoopHandler;
 
 #[async_trait::async_trait]
 impl TriggerHandler for NoopHandler {
-    async fn register_trigger(&self, _config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
         Ok(())
     }
-    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, _config: TriggerConfig) -> Result<(), Error> {
         Ok(())
     }
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────
 
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     // ── Example 1: Schedule trigger (fully typed) ───────────────────
     let schedule = iii.register_trigger_type(
         RegisterTriggerType::new(
@@ -106,7 +107,7 @@ pub fn setup(iii: &III) {
 
     // register_function on the handle: enforces Fn(ScheduleCallRequest) -> ...
     schedule.register_function("example::send_report", |_input: ScheduleCallRequest| {
-        Ok::<_, IIIError>(json!({ "sent": true }))
+        Ok::<_, Error>(json!({ "sent": true }))
     });
 
     // register_trigger on the handle: enforces ScheduleTriggerConfig
@@ -134,7 +135,7 @@ pub fn setup(iii: &III) {
 
     // Compile-time safe: function input must be FileWatchCallRequest
     file_watch.register_function("example::process_csv", |input: FileWatchCallRequest| {
-        Ok::<_, IIIError>(json!({ "processed": true, "path": input.path }))
+        Ok::<_, Error>(json!({ "processed": true, "path": input.path }))
     });
 
     // Compile-time safe: config must be FileWatchConfig
@@ -157,7 +158,7 @@ pub fn setup(iii: &III) {
     ));
 
     custom.register_function("example::on_custom_event", |input: serde_json::Value| {
-        Ok::<_, IIIError>(json!({ "received": input }))
+        Ok::<_, Error>(json!({ "received": input }))
     });
 
     custom

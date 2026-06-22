@@ -44,7 +44,7 @@ def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
     if annotation is inspect.Parameter.empty or annotation is Any:
         return None
 
-    # Handle Optional[X] — produce {"type": ["<inner>", "null"]}
+    # Handle Optional[X], produce {"type": ["<inner>", "null"]}
     is_opt, inner = _is_optional(annotation)
     if is_opt:
         inner_schema = _to_json_schema(inner)
@@ -82,7 +82,7 @@ def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
                 schema_dict["additionalProperties"] = value_schema
         return schema_dict
 
-    # Handle Pydantic BaseModel — use its built-in JSON Schema generation
+    # Handle Pydantic BaseModel, use its built-in JSON Schema generation
     if _is_pydantic_model(annotation):
         model_schema: dict[str, Any] = annotation.model_json_schema()
         return model_schema

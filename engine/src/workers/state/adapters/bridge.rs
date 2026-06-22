@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{
-    III, InitOptions, TriggerRequest, UpdateOp, UpdateResult, register_worker, types::SetResult,
-};
+use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::Value;
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
 };
 
 pub struct BridgeAdapter {
-    bridge: Arc<III>,
+    bridge: Arc<IIIClient>,
 }
 
 impl BridgeAdapter {
@@ -45,7 +45,7 @@ impl StateAdapter for BridgeAdapter {
         scope: &str,
         key: &str,
         ops: Vec<UpdateOp>,
-    ) -> anyhow::Result<UpdateResult> {
+    ) -> anyhow::Result<StreamUpdateResult> {
         let data = StateUpdateInput {
             scope: scope.to_string(),
             key: key.to_string(),
@@ -63,7 +63,7 @@ impl StateAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update value via bridge: {}", e))?;
 
-        serde_json::from_value::<UpdateResult>(result)
+        serde_json::from_value::<StreamUpdateResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize update result: {}", e))
     }
 
@@ -72,7 +72,7 @@ impl StateAdapter for BridgeAdapter {
         Ok(())
     }
 
-    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult> {
         let data = StateSetInput {
             scope: scope.to_string(),
             key: key.to_string(),
@@ -89,7 +89,7 @@ impl StateAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value via bridge: {}", e))?;
 
-        serde_json::from_value::<SetResult>(result)
+        serde_json::from_value::<StreamSetResult>(result)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
     }
 

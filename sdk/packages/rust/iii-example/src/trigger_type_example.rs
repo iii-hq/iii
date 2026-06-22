@@ -1,4 +1,6 @@
-use iii_sdk::{III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{Error, IIIClient, RegisterTriggerType};
 use serde::Deserialize;
 
 /// Minimal deserialization target for `engine::triggers::list` rows used
@@ -41,7 +43,7 @@ struct WebhookHandler;
 
 #[async_trait::async_trait]
 impl TriggerHandler for WebhookHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         println!(
             "[webhook] Registered trigger {} for function {} with config: {}",
             config.id, config.function_id, config.config
@@ -49,7 +51,7 @@ impl TriggerHandler for WebhookHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         println!("[webhook] Unregistered trigger {}", config.id);
         Ok(())
     }
@@ -57,7 +59,7 @@ impl TriggerHandler for WebhookHandler {
 
 // ── Setup ───────────────────────────────────────────────────────────────
 
-pub fn setup(iii: &III) {
+pub fn setup(iii: &IIIClient) {
     // Register trigger type — returns a typed handle
     let webhook = iii.register_trigger_type(
         RegisterTriggerType::new("webhook", "Incoming webhook trigger", WebhookHandler)
@@ -81,7 +83,7 @@ pub fn setup(iii: &III) {
         .expect("failed to register webhook trigger");
 }
 
-fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, IIIError> {
+fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, Error> {
     Ok(serde_json::json!({
         "processed": true,
         "method": input.method,
@@ -91,7 +93,7 @@ fn handle_webhook(input: WebhookCallRequest) -> Result<serde_json::Value, IIIErr
 
 // ── List trigger types example ──────────────────────────────────────────
 
-pub async fn print_trigger_type_catalog(iii: &III) {
+pub async fn print_trigger_type_catalog(iii: &IIIClient) {
     println!("\n--- Listing all trigger types ---");
 
     // `engine::trigger-types::list` was retired in favor of

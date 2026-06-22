@@ -1,7 +1,6 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { StreamChannelRef } from './iii-types'
-import type { ApiResponse, HttpRequest, HttpResponse, InternalHttpRequest } from './types'
 
 /**
  * Returns a project identifier for telemetry, derived from the current working
@@ -9,7 +8,7 @@ import type { ApiResponse, HttpRequest, HttpResponse, InternalHttpRequest } from
  * back to the basename of `cwd`. Returns `undefined` only when both signals
  * are unavailable (e.g. cwd is the filesystem root).
  *
- * No directory walking — only inspects `cwd` itself, so the SDK never reads
+ * No directory walking, only inspects `cwd` itself, so the SDK never reads
  * files outside the user's explicit working directory.
  */
 export function detectProjectName(cwd: string = process.cwd()): string | undefined {
@@ -28,48 +27,6 @@ export function detectProjectName(cwd: string = process.cwd()): string | undefin
 
   const base = path.basename(cwd).trim()
   return base || undefined
-}
-
-/**
- * Helper that wraps an HTTP-style handler (with separate `req`/`res` arguments)
- * into the function handler format expected by the SDK.
- *
- * @param callback - Async handler receiving an {@link HttpRequest} and {@link HttpResponse}.
- * @returns A function handler compatible with {@link ISdk.registerFunction}.
- *
- * @example
- * ```typescript
- * import { http } from 'iii-sdk'
- *
- * iii.registerFunction(
- *   'my-api',
- *   http(async (req, res) => {
- *     res.status(200)
- *     res.headers({ 'content-type': 'application/json' })
- *     res.stream.end(JSON.stringify({ hello: 'world' }))
- *     res.close()
- *   }),
- * )
- * ```
- */
-export const http = (
-  // biome-ignore lint/suspicious/noConfusingVoidType: void is necessary here
-  callback: (req: HttpRequest, res: HttpResponse) => Promise<void | ApiResponse>,
-) => {
-  return async (req: InternalHttpRequest) => {
-    const { response, ...request } = req
-
-    const httpResponse: HttpResponse = {
-      status: (status_code: number) =>
-        response.sendMessage(JSON.stringify({ type: 'set_status', status_code })),
-      headers: (headers: Record<string, string>) =>
-        response.sendMessage(JSON.stringify({ type: 'set_headers', headers })),
-      stream: response.stream,
-      close: () => response.close(),
-    }
-
-    return callback(request, httpResponse)
-  }
 }
 
 /**

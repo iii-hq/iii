@@ -69,7 +69,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * const trigger = iii.registerTrigger({
+   * const trigger = worker.registerTrigger({
    *   type: 'cron',
    *   function_id: 'my-service::process-batch',
    *   config: { expression: '0 *\/5 * * * * *' },
@@ -91,7 +91,7 @@ export interface ISdk {
    * @example
    * ```typescript
    * // Local handler
-   * const ref = iii.registerFunction(
+   * const ref = worker.registerFunction(
    *   'greet',
    *   async (data: { name: string }) => ({ message: `Hello, ${data.name}!` }),
    *   { description: 'Returns a greeting' },
@@ -112,7 +112,7 @@ export interface ISdk {
    * @example
    * ```typescript
    * // Synchronous invocation
-   * const result = await iii.trigger<{ name: string }, { message: string }>({
+   * const result = await worker.trigger<{ name: string }, { message: string }>({
    *   function_id: 'greet',
    *   payload: { name: 'World' },
    *   timeoutMs: 5000,
@@ -120,14 +120,14 @@ export interface ISdk {
    * console.log(result.message) // "Hello, World!"
    *
    * // Fire-and-forget
-   * await iii.trigger({
+   * await worker.trigger({
    *   function_id: 'send-email',
    *   payload: { to: 'user@example.com' },
    *   action: TriggerAction.Void(),
    * })
    *
    * // Enqueue for async processing
-   * const receipt = await iii.trigger({
+   * const receipt = await worker.trigger({
    *   function_id: 'process-order',
    *   payload: { orderId: '123' },
    *   action: TriggerAction.Enqueue({ queue: 'orders' }),
@@ -146,12 +146,12 @@ export interface ISdk {
    * ```typescript
    * type CronConfig = { expression: string }
    *
-   * iii.registerTriggerType<CronConfig>(
+   * worker.registerTriggerType<CronConfig>(
    *   { id: 'cron', description: 'Fires on a cron schedule' },
    *   {
    *     async registerTrigger({ id, function_id, config }) {
    *       startCronJob(id, config.expression, () =>
-   *         iii.trigger({ function_id, payload: {} }),
+   *         worker.trigger({ function_id, payload: {} }),
    *       )
    *     },
    *     async unregisterTrigger({ id }) {
@@ -172,7 +172,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * iii.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
+   * worker.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
    * ```
    */
   unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
@@ -182,7 +182,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * await iii.shutdown()
+   * await worker.shutdown()
    * ```
    */
   shutdown(): Promise<void>
@@ -194,7 +194,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * const unsub = iii.addConnectionStateListener((state) => {
+   * const unsub = worker.addConnectionStateListener((state) => {
    *   console.log('connection state:', state)
    * })
    *
@@ -237,7 +237,7 @@ export type FunctionRef = {
  * ```typescript
  * type CronConfig = { expression: string }
  *
- * const cron = iii.registerTriggerType<CronConfig>(
+ * const cron = worker.registerTriggerType<CronConfig>(
  *   { id: 'cron', description: 'Fires on a cron schedule' },
  *   cronHandler,
  * )

@@ -10,7 +10,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{RegisterFunction, RegisterTriggerInput, TriggerRequest};
+use iii_sdk::RegisterFunction;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 
 fn unique_topic(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

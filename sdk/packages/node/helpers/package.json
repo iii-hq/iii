@@ -1,0 +1,67 @@
+{
+  "name": "@iii-dev/helpers",
+  "version": "0.19.5-next.1",
+  "private": false,
+  "publishConfig": { "access": "public" },
+  "type": "module",
+  "author": "III",
+  "license": "Apache-2.0",
+  "description": "Shared helper primitives across iii SDKs.",
+  "keywords": ["iii", "helpers"],
+  "files": ["dist", "README.md"],
+  "exports": {
+    "./http": {
+      "import": { "types": "./dist/http/index.d.mts", "default": "./dist/http/index.mjs" },
+      "require": { "types": "./dist/http/index.d.cts", "default": "./dist/http/index.cjs" }
+    },
+    "./queue": {
+      "import": { "types": "./dist/queue/index.d.mts", "default": "./dist/queue/index.mjs" },
+      "require": { "types": "./dist/queue/index.d.cts", "default": "./dist/queue/index.cjs" }
+    },
+    "./stream": {
+      "import": { "types": "./dist/stream/index.d.mts", "default": "./dist/stream/index.mjs" },
+      "require": { "types": "./dist/stream/index.d.cts", "default": "./dist/stream/index.cjs" }
+    },
+    "./worker-connection-manager": {
+      "import": { "types": "./dist/worker-connection-manager/index.d.mts", "default": "./dist/worker-connection-manager/index.mjs" },
+      "require": { "types": "./dist/worker-connection-manager/index.d.cts", "default": "./dist/worker-connection-manager/index.cjs" }
+    },
+    "./observability": {
+      "import": { "types": "./dist/observability/index.d.mts", "default": "./dist/observability/index.mjs" },
+      "require": { "types": "./dist/observability/index.d.cts", "default": "./dist/observability/index.cjs" }
+    },
+    "./observability/internal": {
+      "import": { "types": "./dist/observability/internal.d.mts", "default": "./dist/observability/internal.mjs" },
+      "require": { "types": "./dist/observability/internal.d.cts", "default": "./dist/observability/internal.cjs" }
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "docs:json": "typedoc",
+    "test": "vitest run",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api-logs": "^0.57.0",
+    "@opentelemetry/core": "^1.30.0",
+    "@opentelemetry/instrumentation": "^0.57.0",
+    "@opentelemetry/otlp-transformer": "^0.57.0",
+    "@opentelemetry/resources": "^1.30.0",
+    "@opentelemetry/sdk-logs": "^0.57.0",
+    "@opentelemetry/sdk-metrics": "^1.30.0",
+    "@opentelemetry/sdk-trace-base": "^1.30.0",
+    "@opentelemetry/sdk-trace-node": "^1.30.0",
+    "@opentelemetry/semantic-conventions": "^1.28.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^2.1.0",
+    "tsdown": "^0.21.4",
+    "typedoc": "^0.28.17",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.0"
+  }
+}

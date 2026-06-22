@@ -1,36 +1,34 @@
 use async_trait::async_trait;
-use iii_sdk::{
-    DeleteResult, IStream, SetResult, StreamDeleteInput, StreamGetInput, StreamListGroupsInput,
-    StreamListInput, StreamSetInput, StreamUpdateInput, UpdateResult,
+use iii_helpers::stream::{
+    StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput, StreamListInput,
+    StreamSetInput, StreamSetResult, StreamUpdateInput, StreamUpdateResult,
 };
+use iii_sdk::IStream;
 use serde_json::Value;
 
 struct DummyStream;
 
 #[async_trait]
 impl IStream for DummyStream {
-    async fn get(&self, _: StreamGetInput) -> Result<Option<Value>, iii_sdk::IIIError> {
+    async fn get(&self, _: StreamGetInput) -> Result<Option<Value>, iii_sdk::Error> {
         Ok(None)
     }
-    async fn set(&self, _: StreamSetInput) -> Result<Option<SetResult>, iii_sdk::IIIError> {
+    async fn set(&self, _: StreamSetInput) -> Result<Option<StreamSetResult>, iii_sdk::Error> {
         Ok(None)
     }
-    async fn delete(&self, _: StreamDeleteInput) -> Result<DeleteResult, iii_sdk::IIIError> {
-        Ok(DeleteResult::default())
+    async fn delete(&self, _: StreamDeleteInput) -> Result<StreamDeleteResult, iii_sdk::Error> {
+        Ok(StreamDeleteResult::default())
     }
-    async fn list(&self, _: StreamListInput) -> Result<Vec<Value>, iii_sdk::IIIError> {
+    async fn list(&self, _: StreamListInput) -> Result<Vec<Value>, iii_sdk::Error> {
         Ok(vec![])
     }
-    async fn list_groups(
-        &self,
-        _: StreamListGroupsInput,
-    ) -> Result<Vec<String>, iii_sdk::IIIError> {
+    async fn list_groups(&self, _: StreamListGroupsInput) -> Result<Vec<String>, iii_sdk::Error> {
         Ok(vec![])
     }
     async fn update(
         &self,
         _: StreamUpdateInput,
-    ) -> Result<Option<UpdateResult>, iii_sdk::IIIError> {
+    ) -> Result<Option<StreamUpdateResult>, iii_sdk::Error> {
         Ok(None)
     }
 }

@@ -1,4 +1,4 @@
-import { Logger } from '@iii-dev/observability'
+import { Logger } from '@iii-dev/helpers/observability'
 import { registerWorker } from '../src/index'
 
 const BRIDGE_WS_URL = process.env.III_BRIDGE_WS_URL ?? 'ws://localhost:49197'

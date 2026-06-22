@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use serial_test::serial;
 
 use async_trait::async_trait;
-use iii_sdk::{
-    IIIConnectionState, IIIError, InitOptions, RegisterFunction, RegisterTriggerInput,
-    TriggerConfig, TriggerHandler, TriggerRequest, register_worker,
-};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::runtime::IIIConnectionState;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{Error, InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use tokio::time::Duration;
 
@@ -32,13 +32,13 @@ struct LifecycleTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for LifecycleTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         self.state.bindings.lock().unwrap().push(config.clone());
         self.state.register_calls.lock().unwrap().push(config);
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let stored = {
             let mut bindings = self.state.bindings.lock().unwrap();
             let idx = bindings.iter().position(|b| b.id == config.id);
@@ -53,7 +53,7 @@ impl TriggerHandler for LifecycleTriggerHandler {
     }
 }
 
-async fn wait_connected(iii: &iii_sdk::III) {
+async fn wait_connected(iii: &iii_sdk::IIIClient) {
     for _ in 0..50 {
         if iii.get_connection_state() == IIIConnectionState::Connected {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -84,7 +84,7 @@ async fn wait_handler_calls(state: &LifecycleState, at_least: usize) {
     panic!("timed out waiting for handler invocations");
 }
 
-async fn create_provider(state: &LifecycleState) -> iii_sdk::III {
+async fn create_provider(state: &LifecycleState) -> iii_sdk::IIIClient {
     let handler_state = state.clone();
     let iii = register_worker(&common::engine_ws_url(), InitOptions::default());
     wait_connected(&iii).await;
@@ -125,7 +125,7 @@ async fn create_provider(state: &LifecycleState) -> iii_sdk::III {
     iii
 }
 
-async fn create_consumer(state: &LifecycleState) -> iii_sdk::III {
+async fn create_consumer(state: &LifecycleState) -> iii_sdk::IIIClient {
     let handler_state = state.clone();
     let iii = register_worker(&common::engine_ws_url(), InitOptions::default());
     wait_connected(&iii).await;

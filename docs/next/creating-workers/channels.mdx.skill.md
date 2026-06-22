@@ -323,6 +323,6 @@ ref in JSON and reconstructs the reader or writer explicitly with `ChannelReader
 
 <Note>
   For the per-language channel API surface, see the SDK reference:
-  [Node](../sdk-reference/node-sdk#channels), [Python](../sdk-reference/python-sdk#channels), and
-  [Rust](../sdk-reference/rust-sdk#channels).
+  [Node](../api-reference/sdk-node), [Python](../api-reference/sdk-python), and
+  [Rust](../api-reference/sdk-rust).
 </Note>

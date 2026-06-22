@@ -337,9 +337,9 @@ Each SDK accepts these in its own idiomatic way:
 
 | SDK                                                                                                                 | What you pass                                                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Node](../sdk-reference/node-sdk#registertriggertype) / [Browser](../sdk-reference/browser-sdk#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
-| [Python](../sdk-reference/python-sdk#register_trigger_type)                                                         | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
-| [Rust](../sdk-reference/rust-sdk#register_trigger_type)                                                             | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
+| [Node](../api-reference/sdk-node#registertriggertype) / [Browser](../api-reference/sdk-browser#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
+| [Python](../api-reference/sdk-python#register_trigger_type)                                                         | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
+| [Rust](../api-reference/sdk-rust#register_trigger_type)                                                             | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 
