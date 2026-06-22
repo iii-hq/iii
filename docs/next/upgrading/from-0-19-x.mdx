@@ -1,0 +1,379 @@
+---
+title: "Upgrading from 0.19.x to 0.20.x"
+description: "Move a Node, Python, or Rust worker from iii-sdk 0.19.x to the reorganized 0.20.x surface."
+owner: "devrel"
+type: "how-to"
+---
+
+The 0.20.0 release reorganizes the SDK in a single breaking step: shared types
+moved into the new `@iii-dev/helpers` package, names were aligned across Node,
+Python, and Rust, observability moved into helpers, and the rest of the root
+surface was grouped into submodules.
+
+0.20.0 is a **clean break**: the old root import paths are removed, not kept as
+deprecated aliases. Your app will not compile until every step below is applied.
+
+Two backward-compatible exceptions need no migration:
+
+- `EnqueueResult` (all languages) and `TriggerActionVoid` (Python) stay exported
+  from the root SDK as companions to `TriggerAction`.
+- The standalone `iii-observability` packages remain published as deprecated
+  shims. Migrate those at your own pace (Step 5).
+
+<Callout type="info">
+  For the rationale behind each change, see the [0.20.0 changelog](/changelog).
+</Callout>
+
+## Step 1: Add the new packages
+
+Install the helpers package alongside the bumped SDK.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```bash
+    npm install iii-sdk@^0.20 @iii-dev/helpers
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```bash
+    pip install "iii-sdk>=0.20" iii-helpers
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```bash
+    cargo add iii-sdk@0.20 iii-helpers
+    ```
+  </Tab>
+</Tabs>
+
+Observability users can keep `iii-observability` (deprecated shim) for now or migrate it in Step 5.
+
+## Step 2: Rename the client handle
+
+Rename `ISdk` (Node) and `III` (Rust) to `IIIClient`. Python already used `IIIClient`. In the same pass, rename the Rust telemetry config `WorkerTelemetryMeta` to `TelemetryOptions`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import type { ISdk } from 'iii-sdk'
+    // After
+    import type { IIIClient } from 'iii-sdk'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # No change. Python already used IIIClient.
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    let sdk: III = /* ... */;
+    use iii_sdk::WorkerTelemetryMeta;
+    // After
+    let sdk: IIIClient = /* ... */;
+    use iii_sdk::TelemetryOptions;
+    ```
+  </Tab>
+</Tabs>
+
+## Step 3: Update HTTP request/response types
+
+Rename the buffered `ApiRequest` / `ApiResponse` types to `HttpRequest` / `HttpResponse`. They now live in the helpers `http` submodule, along with `HttpAuthConfig` and `HttpInvocationConfig`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import { ApiRequest, ApiResponse } from 'iii-sdk'
+    // After
+    import { HttpRequest, HttpResponse } from '@iii-dev/helpers/http'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Before
+    from iii import ApiRequest, ApiResponse
+    # After
+    from iii_helpers.http import HttpRequest, HttpResponse
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    use iii_sdk::{ApiRequest, ApiResponse};
+    // After
+    use iii_helpers::http::{HttpRequest, HttpResponse};
+    ```
+  </Tab>
+</Tabs>
+
+<Callout type="warn">
+  Only the buffered `Api*` types moved and were renamed. The streaming
+  `StreamRequest` / `StreamResponse` types stay in the root SDK. Do not change them.
+</Callout>
+
+## Step 4: Move shared types into @iii-dev/helpers
+
+Shared types are grouped into four helpers submodules.
+
+| Group | Node | Python | Rust |
+| --- | --- | --- | --- |
+| http | `@iii-dev/helpers/http` | `iii_helpers.http` | `iii_helpers::http` |
+| queue | `@iii-dev/helpers/queue` | `iii_helpers.queue` | `iii_helpers::queue` |
+| stream | `@iii-dev/helpers/stream` | `iii_helpers.stream` | `iii_helpers::stream` |
+| worker-connection-manager | `@iii-dev/helpers/worker-connection-manager` | `iii_helpers.worker_connection_manager` | `iii_helpers::worker_connection_manager` |
+
+`UpdateOp`, `UpdateOpError`, `MergePath`, `UpdateSet`, and `UpdateMerge` now live in the `stream` submodule; `MergePath` is a named export.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import { HttpAuthConfig } from 'iii-sdk'
+    // After
+    import { HttpAuthConfig } from '@iii-dev/helpers/http'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Before
+    from iii import HttpInvocationConfig, AuthInput
+    # After
+    from iii_helpers.http import HttpInvocationConfig
+    from iii_helpers.worker_connection_manager import AuthInput
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    use iii_sdk::{HttpAuthConfig, StreamTriggerConfig};
+    // After
+    use iii_helpers::http::HttpAuthConfig;
+    use iii_helpers::stream::StreamTriggerConfig;
+    ```
+  </Tab>
+</Tabs>
+
+<Callout type="warn">
+  `EnqueueResult` is the exception in the `queue` submodule. Its canonical home is
+  `@iii-dev/helpers/queue` (`iii_helpers.queue` / `iii_helpers::queue`), but it is
+  also re-exported from the root SDK (`iii-sdk` / `iii` / `iii_sdk`) as the
+  companion to `TriggerAction.Enqueue`. Do not migrate `EnqueueResult`.
+</Callout>
+
+<Callout type="info">
+  For the complete list of moved symbols per submodule, see the
+  [Helpers reference](/next/sdk-reference/helpers-lib).
+</Callout>
+
+## Step 5: Update observability imports
+
+Move observability imports into the helpers `observability` submodule.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import { Logger, initOtel, withSpan } from '@iii-dev/observability'
+    // After
+    import { Logger, initOtel, withSpan } from '@iii-dev/helpers/observability'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Before
+    from iii_observability import Logger, init_otel, with_span
+    # After
+    from iii_helpers.observability import Logger, init_otel, with_span
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    use iii_observability::{Logger, init_otel, with_span};
+    // After
+    use iii_helpers::observability::{Logger, init_otel, with_span};
+    ```
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+  The standalone `iii-observability` packages remain published as deprecated
+  shims, so this is the one step you can defer. The internal-only Node entry
+  `@iii-dev/observability/internal` moved to `@iii-dev/helpers/observability/internal`
+  with no shim.
+</Callout>
+
+## Step 6: Update error types and handling
+
+Rename `IIIInvocationError` to `InvocationError` (Node `iii-sdk/errors`, Python `iii.errors`) and the Rust `IIIError` to `Error` (`iii_sdk::errors::Error`). The old names are removed from the root with no deprecated alias.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import { IIIInvocationError } from 'iii-sdk'
+    // After
+    import { InvocationError } from 'iii-sdk/errors'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Before
+    from iii import IIIInvocationError
+    # After
+    from iii.errors import InvocationError
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    use iii_sdk::IIIError;
+    // After
+    use iii_sdk::errors::Error;
+    ```
+  </Tab>
+</Tabs>
+
+`IIIForbiddenError` and `IIITimeoutError` (Python) are removed. Branch on `err.code` instead, matching Node and Rust.
+
+```python
+# Before
+try:
+    ...
+except IIIForbiddenError:
+    ...
+# After
+except InvocationError as err:
+    if err.code == "forbidden":
+        ...
+```
+
+## Step 7: Adopt submodule paths (engine / protocol / internal / utils)
+
+The root exports for these groups are removed with no alias. In Rust, `IIIConnectionState` moves to `iii_sdk::runtime`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import { RegisterTriggerInput, EngineFunctions } from 'iii-sdk'
+    // After
+    import { RegisterTriggerInput } from 'iii-sdk/protocol'
+    import { EngineFunctions } from 'iii-sdk/engine'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Before
+    from iii import TriggerRequest, extract_request_format
+    # After
+    from iii.protocol import TriggerRequest
+    from iii.utils import extract_request_format
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    use iii_sdk::{TriggerRequest, EngineFunctions};
+    // After
+    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::engine::EngineFunctions;
+    ```
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+  `TriggerActionVoid` (Python) is also grouped under `iii.trigger`, but it stays
+  exported from the package root as the companion to `TriggerActionEnqueue`. It
+  is reachable from both `iii` and `iii.trigger`. No migration needed.
+</Callout>
+
+## Step 8: Adopt the errors / channel / trigger / runtime submodules
+
+The old root paths for these four groups are also removed in 0.20.0. Import each type from its submodule.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import { ChannelReader, FunctionRef } from 'iii-sdk'
+    // After
+    import { ChannelReader } from 'iii-sdk/channel'
+    import type { FunctionRef } from 'iii-sdk/runtime'
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Before
+    from iii import ChannelReader, FunctionRef
+    # After
+    from iii.channel import ChannelReader
+    from iii.runtime import FunctionRef
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    use iii_sdk::{ChannelReader, FunctionRef};
+    // After
+    use iii_sdk::channel::ChannelReader;
+    use iii_sdk::runtime::FunctionRef;
+    ```
+  </Tab>
+</Tabs>
+
+## Step 9: Replace removed APIs
+
+A few APIs were removed outright:
+
+- Rust `UpdateBuilder` → use `UpdateSet` / `UpdateMerge` directly.
+- Rust `FieldPath` → the retained `MergePath` is the merge/append path argument.
+- Rust `Value` re-export removed → depend on `serde_json` directly.
+- Node `TriggerActionType` alias removed → use the `TriggerAction` value.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```ts
+    // Before
+    import { TriggerActionType } from 'iii-sdk'
+    // After
+    // Use the TriggerAction value directly; the TriggerActionType alias is gone.
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # No change.
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Before
+    use iii_sdk::{UpdateBuilder, FieldPath, Value};
+    // After
+    use iii_helpers::stream::{UpdateSet, UpdateMerge, MergePath};
+    use serde_json::Value;
+    ```
+  </Tab>
+</Tabs>
+
+## Migration checklist
+
+- [ ] Add `@iii-dev/helpers` and bump `iii-sdk` to 0.20.x
+- [ ] Rename `ISdk`/`III` → `IIIClient`
+- [ ] Move buffered `Api*` → `Http*` from `@iii-dev/helpers/http`
+- [ ] Move shared types to helpers submodules
+- [ ] Move observability imports (deferrable)
+- [ ] Rename `III*Error` → `InvocationError`/`Error`
+- [ ] Adopt `engine`/`protocol`/`internal`/`utils` paths
+- [ ] Adopt `errors`/`channel`/`trigger`/`runtime` paths
+- [ ] Replace removed Rust/Node APIs
+
+## Result
+
+The worker builds against `iii-sdk` 0.20.x with shared types imported from
+`@iii-dev/helpers`, aligned names across the three languages, and submodule
+import paths throughout. Only the `iii-observability` shim still emits a
+deprecation signal until Step 5 is applied.
