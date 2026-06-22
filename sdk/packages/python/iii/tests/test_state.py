@@ -175,9 +175,12 @@ async def test_state_list_all_items_in_scope(iii_client: III):
 
     assert isinstance(result, list)
     assert len(result) >= len(items)
-    sorted_result = sorted(result, key=lambda x: x["id"])
+    sorted_result = sorted(result, key=lambda x: x["key"])
     sorted_items = sorted(items, key=lambda x: x["id"])
-    assert sorted_result == sorted_items
+    assert sorted_result == [
+        {"key": item["id"], "value": item}
+        for item in sorted_items
+    ]
 
 
 @pytest.mark.asyncio

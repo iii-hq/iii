@@ -19,7 +19,7 @@ use crate::{
         registry::{StateAdapterFuture, StateAdapterRegistration},
         structs::{
             StateDeleteInput, StateGetGroupInput, StateGetInput, StateListGroupsInput,
-            StateSetInput, StateUpdateInput,
+            StateListItem, StateSetInput, StateUpdateInput,
         },
     },
 };
@@ -36,6 +36,77 @@ impl BridgeAdapter {
 
         Ok(Self { bridge })
     }
+}
+
+fn decode_list_item(item: Value, index: usize) -> StateListItem {
+    match item {
+        Value::Array(mut tuple) if tuple.len() >= 2 => {
+            if let Some(key) = tuple.first().and_then(Value::as_str).map(str::to_string) {
+                let value = tuple.swap_remove(1);
+                return StateListItem { key, value };
+            }
+            StateListItem {
+                key: format!("(missing key {index})"),
+                value: Value::Array(tuple),
+            }
+        }
+        Value::Object(mut object) => {
+            let key = object
+                .get("key")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    object
+                        .get("state_key")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            match key {
+                Some(key) => {
+                    let value = object
+                        .remove("value")
+                        .unwrap_or_else(|| Value::Object(object));
+                    StateListItem { key, value }
+                }
+                None => StateListItem {
+                    key: format!("(missing key {index})"),
+                    value: Value::Object(object),
+                },
+            }
+        }
+        value => StateListItem {
+            key: format!("(missing key {index})"),
+            value,
+        },
+    }
+}
+
+fn decode_list_result(result: Value) -> anyhow::Result<Vec<StateListItem>> {
+    if let Ok(items) = serde_json::from_value::<Vec<StateListItem>>(result.clone()) {
+        return Ok(items);
+    }
+
+    let result = result.get("items").cloned().unwrap_or(result);
+
+    if let Some(object) = result.as_object() {
+        return Ok(object
+            .iter()
+            .map(|(key, value)| StateListItem {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .collect());
+    }
+
+    if let Value::Array(items) = result {
+        return Ok(items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| decode_list_item(item, index))
+            .collect());
+    }
+
+    anyhow::bail!("invalid state::list response: expected array, object, or items field")
 }
 
 #[async_trait]
@@ -130,7 +201,7 @@ impl StateAdapter for BridgeAdapter {
         Ok(())
     }
 
-    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateListItem>> {
         let data = StateGetGroupInput {
             scope: scope.to_string(),
         };
@@ -146,8 +217,7 @@ impl StateAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list values via bridge: {}", e))?;
 
-        serde_json::from_value::<Vec<Value>>(result)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize list result: {}", e))
+        decode_list_result(result)
     }
 
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {

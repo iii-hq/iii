@@ -716,7 +716,10 @@ impl StateWorker {
         }
     }
 
-    #[function(id = "state::list", description = "Get a group from state")]
+    #[function(
+        id = "state::list",
+        description = "List key/value entries from a state scope"
+    )]
     pub async fn list(
         &self,
         input: StateGetGroupInput,
@@ -769,7 +772,7 @@ mod tests {
     use super::*;
     use crate::workers::{
         observability::metrics::ensure_default_meter,
-        state::adapters::kv_store::BuiltinKvStoreAdapter,
+        state::{adapters::kv_store::BuiltinKvStoreAdapter, structs::StateListItem},
     };
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -834,7 +837,7 @@ mod tests {
         set_result: SetResult,
         get_result: Option<Value>,
         update_result: UpdateResult,
-        list_values: Vec<Value>,
+        list_values: Vec<StateListItem>,
         groups: Vec<String>,
         destroy_called: AtomicBool,
     }
@@ -901,7 +904,7 @@ mod tests {
             }
         }
 
-        async fn list(&self, _scope: &str) -> anyhow::Result<Vec<Value>> {
+        async fn list(&self, _scope: &str) -> anyhow::Result<Vec<StateListItem>> {
             match self.list_error {
                 Some(message) => Err(anyhow::anyhow!(message)),
                 None => Ok(self.list_values.clone()),
@@ -1236,6 +1239,12 @@ mod tests {
             FunctionResult::Success(Some(value)) => {
                 let arr = value.as_array().expect("list should return array");
                 assert_eq!(arr.len(), 3);
+                let mut entries = arr.clone();
+                entries.sort_by(|a, b| a["key"].as_str().cmp(&b["key"].as_str()));
+                for (i, entry) in entries.iter().enumerate() {
+                    assert_eq!(entry["key"], format!("item-{i}"));
+                    assert_eq!(entry["value"], serde_json::json!({"index": i}));
+                }
             }
             _ => panic!("Expected Success with Some value"),
         }

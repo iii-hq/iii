@@ -12,6 +12,8 @@ use async_trait::async_trait;
 use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use serde_json::Value;
 
+use super::structs::StateListItem;
+
 #[async_trait]
 pub trait StateAdapter: Send + Sync {
     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult>;
@@ -23,7 +25,7 @@ pub trait StateAdapter: Send + Sync {
         key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult>;
-    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateListItem>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     async fn destroy(&self) -> anyhow::Result<()>;
 

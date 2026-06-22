@@ -17,6 +17,7 @@ use crate::{
     workers::state::{
         adapters::StateAdapter,
         registry::{StateAdapterFuture, StateAdapterRegistration},
+        structs::StateListItem,
     },
 };
 
@@ -70,8 +71,14 @@ impl StateAdapter for BuiltinKvStoreAdapter {
             .await)
     }
 
-    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
-        Ok(self.storage.list(scope.to_string()).await)
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateListItem>> {
+        Ok(self
+            .storage
+            .list_entries(scope.to_string())
+            .await
+            .into_iter()
+            .map(|(key, value)| StateListItem { key, value })
+            .collect())
     }
 
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
@@ -163,8 +170,14 @@ mod tests {
             .await
             .expect("List should succeed");
         assert_eq!(list.len(), 2);
-        assert!(list.contains(&data1));
-        assert!(list.contains(&data2));
+        assert!(list.contains(&StateListItem {
+            key: item1_id.to_string(),
+            value: data1
+        }));
+        assert!(list.contains(&StateListItem {
+            key: item2_id.to_string(),
+            value: data2
+        }));
     }
 
     #[tokio::test]

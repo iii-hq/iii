@@ -44,6 +44,13 @@ class StateListInput(BaseModel):
     scope: str
 
 
+class StateListItem(BaseModel, Generic[TData]):
+    """One entry returned when listing a state scope."""
+
+    key: str
+    value: TData
+
+
 class StateUpdateInput(BaseModel):
     """Input for atomically updating a state value."""
 
@@ -116,8 +123,8 @@ class IState(ABC, Generic[TData]):
         ...
 
     @abstractmethod
-    async def list(self, input: StateListInput) -> list[TData]:
-        """List all values in a scope."""
+    async def list(self, input: StateListInput) -> list[StateListItem[TData]]:
+        """List all key/value entries in a scope."""
         ...
 
     @abstractmethod

@@ -19,6 +19,7 @@ use crate::{
         state::{
             adapters::StateAdapter,
             registry::{StateAdapterFuture, StateAdapterRegistration},
+            structs::StateListItem,
         },
     },
 };
@@ -187,7 +188,7 @@ impl StateAdapter for StateRedisAdapter {
         Ok(())
     }
 
-    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<StateListItem>> {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
@@ -197,11 +198,10 @@ impl StateAdapter for StateRedisAdapter {
             .map_err(|e| anyhow::anyhow!("Failed to get group from Redis: {}", e))?;
 
         let mut result = Vec::new();
-        for v in values.into_values() {
-            result.push(
-                serde_json::from_str(&v)
-                    .map_err(|e| anyhow::anyhow!("Failed to deserialize value: {}", e))?,
-            );
+        for (key, v) in values {
+            let value = serde_json::from_str(&v)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize value: {}", e))?;
+            result.push(StateListItem { key, value });
         }
         Ok(result)
     }
