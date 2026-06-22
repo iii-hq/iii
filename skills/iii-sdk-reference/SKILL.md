@@ -34,7 +34,11 @@ cargo add iii-sdk
 | Node.js | `iii-sdk` | Server-side TypeScript/JavaScript workers | Supports custom headers, Logger, OpenTelemetry, HTTP-invoked functions |
 | Browser | `iii-browser-sdk` | Web apps and interactive UI callbacks | Connect through an RBAC-protected listener; keep secrets server-side |
 | Python | `iii-sdk` | Sync or async Python workers | Use `trigger_async` inside async handlers |
-| Rust | `iii-sdk` | High-performance tokio workers | Handler error type should map into `IIIError` |
+| Rust | `iii-sdk` | High-performance tokio workers | Handler error type should map into `iii_sdk::Error` |
+
+`Logger`/OpenTelemetry, HTTP request/response types, stream, queue, and worker-connection types live in
+the helpers package — `@iii-dev/helpers` (Node, with submodules like `/observability` and `/http`) or
+`iii-helpers` (Python `iii_helpers.*`, Rust `iii_helpers::*`) — installed alongside the SDK.
 
 ## Common API Map
 
@@ -50,7 +54,8 @@ cargo add iii-sdk
 ## Node.js
 
 ```typescript
-import { Logger, registerWorker } from "iii-sdk";
+import { registerWorker } from "iii-sdk";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const iii = registerWorker("ws://localhost:49134", {
   workerName: "node-worker",
@@ -91,7 +96,8 @@ custom WebSocket headers and must not hold backend secrets.
 ## Python
 
 ```python
-from iii import InitOptions, Logger, register_worker
+from iii import InitOptions, register_worker
+from iii_helpers.observability import Logger
 
 iii = register_worker(
     address="ws://localhost:49134",
@@ -106,7 +112,7 @@ iii.register_function("users::lookup", lookup_user)
 ```
 
 Python handlers may be sync or async. Use `await iii.trigger_async(request)` inside async handlers,
-and `iii.trigger(request)` in sync contexts. `ApiResponse` uses camelCase `statusCode`.
+and `iii.trigger(request)` in sync contexts. `HttpResponse` (from `iii_helpers.http`) uses camelCase `statusCode`.
 
 ## Rust
 
