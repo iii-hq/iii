@@ -23,6 +23,24 @@ capability is missing, the gap is filled by a Worker, not by a change to iii its
   Overview](../understanding-iii). To build Workers continue with this section.
 </Note>
 
+## Build on existing Workers
+
+Most Workers you create will use one or more existing Workers for their basic functionality, an HTTP
+endpoint, a key-value store, a queue, scheduling, observability, a sandbox, rather than building
+those from scratch. Reach for what already exists before writing your own.
+
+The ones you reach for most often are documented here under **Common Workers**:
+
+- [HTTP](./http), expose Functions as HTTP endpoints.
+- [Queues](./queues), async job processing with retries and a dead-letter queue.
+- [Observability](./observability), traces, metrics, and logs across Workers.
+- [Sandboxes](./sandboxes), run untrusted or short-lived code in an isolated microVM.
+- [Access Control](./worker-manager), accept untrusted connections through RBAC-gated listeners.
+
+The full catalog of Workers is published at [workers.iii.dev](https://workers.iii.dev). If you need
+common
+functionality for your Worker, look in these two places first.
+
 ## What's in this section
 
 <CardGroup cols={3}>

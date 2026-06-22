@@ -59,7 +59,7 @@ First add the `DB` constant **near the top of `link/src/index.ts`**:
 
 ```typescript {4} src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const DB = "primary"; // Matches db name in config.yaml
 ```
@@ -161,7 +161,7 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
 ## Add click tracking
 
 Since we have a database now, you can start click tracking. Make a new function
-(`link::record_click`) to do just that and save it to the database. The next chapter will move this
+(`link::record_click`) to do that and save it to the database. The next chapter will move this
 work onto a queue so that it can run without touching the redirect's logic. Add it below
 `link::resolve`:
 
@@ -186,7 +186,7 @@ worker.registerFunction(
 
 **Now update `http::redirect` to trigger it directly**, right before returning the redirect:
 
-```typescript src/index.ts {14-17}
+```typescript src/index.ts {14-18}
 worker.registerFunction("http::redirect", async (req) => {
   const code = req.path_params.code;
   const { url } = await worker.trigger<{ code: string }, { url: string | null }>({
@@ -200,7 +200,7 @@ worker.registerFunction("http::redirect", async (req) => {
       headers: { "Content-Type": "application/json" },
     };
   }
-  // This await is slow and unnecessary, we'll move it to a queue soon
+  // This Trigger is slow because it waits on link::record_click's completion, we'll move its work to a queue soon
   await worker.trigger({
     function_id: "link::record_click",
     payload: { code, clicked_at: new Date().toISOString() },
@@ -214,7 +214,10 @@ worker.registerFunction("http::redirect", async (req) => {
   durable queue that removes the latency while also adding recovery from database failures.
 </Note>
 
-Save the file, create a link, and follow it a few times:
+### Try the click tracking
+
+Now let's see the click tracking in action. Save the file, create a link, and simulate clicking it a
+few times:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
@@ -229,7 +232,20 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
 ```
 
 ```json
-{ "rows": [{ "clicks": 3 }], "row_count": 1 }
+{
+  "columns": [
+    {
+      "name": "clicks",
+      "type": ""
+    }
+  ],
+  "row_count": 1,
+  "rows": [
+    {
+      "clicks": 3
+    }
+  ]
+}
 ```
 
 ## Conclusion

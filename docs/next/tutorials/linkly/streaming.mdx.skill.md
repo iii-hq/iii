@@ -66,7 +66,7 @@ WebSocket subscribed to that stream and group. Replace the generated `click-stre
 
 ```typescript click-streamer/src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "click-streamer",
@@ -108,12 +108,17 @@ The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those
 
 ## See it work
 
-With the engine running, follow a link a few times and read the live `clicks` stream:
+With the engine running, create and follow a link a few times:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
   -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"stream-me"}'
 for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/stream-me; done
+```
+
+Then read the live `clicks` stream:
+
+```bash
 iii trigger stream::list stream_name=clicks group_id=all
 ```
 

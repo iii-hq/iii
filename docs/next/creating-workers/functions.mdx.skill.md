@@ -65,7 +65,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(&url, InitOptions::default());
 
-    worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+    worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
     }));
     ```
@@ -76,8 +76,8 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 ## Attach request and response schemas
 
 Attach JSON Schemas to the registration so the request and response shape are documented alongside
-the function. The schemas are stored with the function and surface in the iii console and the
-agent-readable skills.
+the function. The schemas are stored with the function and surface in the iii console,
+`iii trigger --help`, and elsewhere.
 
 <Note>
   Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not
@@ -174,6 +174,57 @@ agent-readable skills.
 </Tabs>
 
 The schemas also feed the iii console and the agent-readable skills.
+
+## Attach metadata
+
+`metadata` is an arbitrary JSON object stored with the function at registration. The engine never
+interprets it, it's stored with the function so other parts of the system can act on it. It surfaces
+in `engine::functions::info`, the iii console, and is commonly used with `iii-worker-manager` / Role
+based access control.
+
+Because the shape is entirely yours, metadata is a facility that can enable and enhance other
+functionality. For example,
+[worker-manager RBAC allowlists](./worker-manager#trusted-and-rbac-listeners) can expose functions
+by a `metadata:` selector, so tagging a function `{ public: true }` or `{ tier: "premium" }` lets
+you gate access on the fields you define.
+
+<Warn>
+  All access should be gated system-side. You should never rely on an untrusted worker to define
+  what they can or can't have access to.
+</Warn>
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.registerFunction("math::add", handler, {
+      metadata: { owner: "math-team", public: true },
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.register_function(
+        "math::add",
+        add_handler,
+        metadata={"owner": "math-team", "public": True},
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    worker.register_function(
+        "math::add",
+        RegisterFunction::new(|input: AddInput| {
+            Ok(serde_json::json!({ "c": input.a + input.b }))
+        })
+        .metadata(serde_json::json!({ "owner": "math-team", "public": true })),
+    );
+    ```
+
+  </Tab>
+</Tabs>
 
 ## HTTP-invokable functions
 
@@ -330,7 +381,7 @@ pending invocations error out.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let add = worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+    let add = worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
     }));
 

@@ -16,9 +16,9 @@ The engine has been running since Chapter 1. Start the console, a browser UI for
 iii console
 ```
 
-Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Every worker you added is listed with the
-functions and triggers it registered. Navigate to the traces tab and run the below command to watch
-the invocations stream live:
+Open it at [http://127.0.0.1:3113/traces](http://127.0.0.1:3113/traces). Every worker you added is
+listed with the functions and triggers it registered. Navigate to the traces tab and run the below
+command to watch the invocations stream live:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3111/links \
@@ -38,8 +38,8 @@ end-to-end observability is an inherent property of the system.
 
 <Info>
   **iii-observability emits OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
-  you aren't locked into the console. Point the worker at Honeycomb, Grafana, Datadog, or any other
-  OTel-compatible backend and your iii traces flow straight in. See the worker's configuration on
+  you aren't locked into the console. You can point the worker at Honeycomb, Grafana, Datadog, or
+  any other OTel-compatible backend. See the worker's configuration on
   [workers.iii.dev/workers/iii-observability](https://workers.iii.dev/workers/iii-observability).
 </Info>
 
@@ -99,8 +99,9 @@ the log to the trace it came from, which is where you look next.
 
 ## Follow a redirect across workers
 
-Every request is also a trace. Grab the most recent redirect's `trace_id` and walk the whole request
-as a tree. Capturing the id into a shell variable keeps this a single paste:
+Everything that happens on a iii system has a trace. So the http requests have traces that cover the
+full execution context of the request. Grab the most recent redirect's `trace_id` and walk the whole
+request as a tree. Capturing the id into a shell variable keeps this a single paste:
 
 ```bash
 trace_id=$(iii trigger engine::traces::list name="GET /s/:code" limit=1 | jq -r '.spans[0].trace_id')
@@ -130,13 +131,14 @@ This shows the redirect arriving through `/s/:code` via the `iii-http` worker's 
 The per-span timing shows where the request spends its time.
 
 <Note>
-  Worker spans export on a short delay, so a brand-new request's trace can look truncated for a
-  second or two. Give it a moment, or read a slightly older trace.
+  Worker spans export on a short delay, so a brand-new request's trace can be missing or look
+  truncated for a second or two. If you encounter this wait a few seconds and try again.
 </Note>
 
-## Find the slowest links
+## Compare traces to find the slowest links
 
-To compare many requests, list the redirect spans sorted by duration, slowest first:
+To compare many traces it's possible to filter, list, and sort them in one operation. Here are the
+redirect spans sorted by duration, slowest first:
 
 ```bash
 iii trigger engine::traces::list name="GET /s/:code" sort_by=duration_ms sort_order=desc limit=10 \

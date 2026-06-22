@@ -7,7 +7,7 @@ type: "how-to"
 
 ## How workers expand iii
 
-Workers add capability to an iii system. Each one contributes functions and triggers the engine can
+Workers add capability to a iii system. Each one contributes functions and triggers the engine can
 route to. This page covers deploying and wiring workers into a project.
 
 Once connected, a worker exposes:
@@ -29,6 +29,14 @@ Once connected, a worker exposes:
 language-specific project directory with the iii SDK installed, an `iii.worker.yaml` manifest, and
 example function and trigger registrations you can replace with your own.
 
+<Note>
+  `iii worker init` is a convenience that helps with managing and sandboxing workers but it is not a
+  requirement. A worker is any code that uses a iii SDK, connects to a iii instance, and calls
+  `registerWorker()`. You can write that by hand without scaffolding, run it on bare metal or in
+  your own virtualization, and deploy it anywhere; `iii worker` is one way to create and run a
+  worker, not the only one.
+</Note>
+
 ```bash
 # Interactive: prompts for the language
 iii worker init my-worker
@@ -39,10 +47,10 @@ iii worker init my-worker --language typescript
 
 Supported languages: `typescript` (`ts`), `javascript` (`js`), `python` (`py`), `rust` (`rs`).
 
-The positional `NAME` is the target directory; pass `--directory` to override it.
+Workers will typically store their program's entrypoint at `src/index.ext` or `src/main.ext` though
+this may vary slightly by programming language and template.
 
-Re-running `iii worker init` on a directory that already holds an iii worker (ie. has
-`.iii/worker.ini`) will make no changes to the worker.
+The positional `NAME` is used as the target directory; pass `--directory` to override it.
 
 Worker init will fail by default when targeting a non-empty directory, use `--allow-non-empty` to
 scaffold into any other non-empty directory.
@@ -58,6 +66,14 @@ A worker connects to the engine over WebSocket. The convention is to set the eng
 `III_URL` environment variable, but it can also be passed explicitly to `register_worker`. The
 connection string is the only coupling between a worker and the iii instance it joins, so the worker
 process can be deployed anywhere reachable on the network.
+
+<Note>
+  This connects with full trust, appropriate for workers you run. For an untrusted worker (a browser
+  client or a third party's), connect through the `iii-worker-manager` RBAC listener and gate it
+  with an auth function instead. See [Untrusted workers and access
+  control](../using-iii/workers#untrusted-workers-and-access-control) and the [iii-worker-manager
+  worker page](https://workers.iii.dev/workers/iii-worker-manager).
+</Note>
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -439,8 +455,8 @@ as they happen. This is particularly useful for continuing work when a Worker co
 
 `iii.worker.yaml` is the manifest at the worker's root that tells iii how to install dependencies,
 run the worker, and pass through configuration. This applies to both the iii worker CLI commands
-(e.g. [`start`, `stop`, `restart`](../using-iii/workers#starting-and-stopping-workers)) and to workers
-that iii starts automatically when they're specified in iii's
+(e.g. [`start`, `stop`, `restart`](../using-iii/workers#starting-and-stopping-workers)) and to
+workers that iii starts automatically when they're specified in iii's
 [`config.yaml`](../using-iii/engine#configuration-file-structure).
 
 ```yaml
@@ -454,8 +470,8 @@ scripts:
   start: "watchfiles 'python src/math_worker.py'"
 ```
 
-`description` is an optional one-line, human/LLM-readable summary of what the worker does; the
-iii CLI displays it when installing or inspecting the worker.
+`description` is an optional one-line, human/LLM-readable summary of what the worker does; the iii
+CLI displays it when installing or inspecting the worker.
 
 `scripts.install` runs once to fetch dependencies and `scripts.start` launches the worker. Here,
 `watchfiles` reloads it whenever you edit a source file. `runtime.base_image` selects the OCI image
@@ -512,9 +528,9 @@ dropped socket; graceful shutdown makes it deterministic and faster.
 </Tabs>
 
 <Note>
-  Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless
-  containers, or scheduled scripts can connect like any other Worker, do their work, and
-  `shutdown()` (`shutdown_async().await` in Rust).
+  Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless containers,
+  or scheduled scripts can connect like any other Worker, do their work, and `shutdown()`
+  (`shutdown_async().await` in Rust).
 </Note>
 
 {/* TODO: confirm the SDK shutdown call (e.g. `worker.shutdown()`) and add a minimal Node / TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits cleanly. */}

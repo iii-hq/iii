@@ -108,6 +108,16 @@
                 "group": "Creating Workers",
                 "pages": [
                   "next/creating-workers/index",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "next/creating-workers/http",
+                      "next/creating-workers/queues",
+                      "next/creating-workers/observability",
+                      "next/creating-workers/sandboxes",
+                      "next/creating-workers/worker-manager"
+                    ]
+                  },
                   "next/creating-workers/workers",
                   "next/creating-workers/worker-manifest",
                   "next/creating-workers/triggers",
