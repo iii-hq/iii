@@ -34,8 +34,8 @@
 //!   without a protocol rev since the field is a bitfield.
 //! - Payload is UTF-8 JSON, one `ShellMessage` per frame.
 //!
-//! Max frame size is [`MAX_FRAME_SIZE`] (4 MiB), matching microsandbox's
-//! ceiling so a wedged session can't OOM the host relay.
+//! Max frame size is [`MAX_FRAME_SIZE`] (4 MiB), a fixed ceiling so a
+//! wedged session can't OOM the host relay.
 
 use serde::{Deserialize, Serialize};
 
@@ -49,8 +49,8 @@ pub const SHELL_PORT_NAME: &str = "iii.exec";
 pub const FRAME_HEADER_SIZE: usize = 5;
 
 /// Hard cap on the total bytes of `corr_id + flags + payload` per frame.
-/// Matches microsandbox's 4 MiB ceiling. Prevents a wedged peer from
-/// asking the reader to allocate an arbitrary buffer.
+/// A 4 MiB ceiling. Prevents a wedged peer from asking the reader to
+/// allocate an arbitrary buffer.
 pub const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
 
 /// Initial allocation cap for frame-body reads. Bodies are read incrementally

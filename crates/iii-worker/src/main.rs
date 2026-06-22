@@ -563,9 +563,7 @@ async fn async_main() -> anyhow::Result<()> {
             //
             // TODO(msb_krun upstream): remove this std::thread dispatch
             // once virtio-blk Drop uses `Handle::try_current()` instead
-            // of unconditional `block_on`. Draft issue at
-            // ~/.claude/plans/msb_krun-upstream-issue-draft.md — file via
-            // `gh issue create` against microsandbox/microsandbox.
+            // of unconditional `block_on`.
             let handle = std::thread::Builder::new()
                 .name("iii-worker-vm-boot".to_string())
                 .spawn(move || iii_worker::cli::vm_boot::run(&args))

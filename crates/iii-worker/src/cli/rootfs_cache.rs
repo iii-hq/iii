@@ -148,11 +148,11 @@ pub async fn ensure_rootfs(
     if dest.exists() {
         let _ = std::fs::remove_dir_all(&dest);
     }
-    // Drop any stale sibling `<slug>.sqfs` so the freshly extracted rootfs is
+    // Drop any stale sibling `<slug>.erofs` so the freshly extracted rootfs is
     // never paired with an overlay lower built from the previous contents.
-    // (ensure_base_squashfs also rebuilds on stale mtime; this is the
+    // (ensure_base_erofs also rebuilds on stale mtime; this is the
     // belt-and-suspenders explicit GC at the re-extract boundary.)
-    crate::cli::squashfs::remove_base_squashfs(&dest);
+    crate::cli::erofs::remove_base_erofs(&dest);
     pull_and_extract_rootfs(oci_ref, &dest).await?;
     Ok(dest)
 }

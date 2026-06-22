@@ -1043,7 +1043,7 @@ async fn start_worker_impl(
     // instead of at `managed_dir/`. Anything the user cares about under
     // managed_dir is regenerated on boot (logs, vm.pid, dep caches come
     // back after pip install / npm install).
-    // Overlay mode serves the shared read-only squashfs base as the rootfs
+    // Overlay mode serves the shared read-only erofs base as the rootfs
     // lower (built later from the cache) plus a per-worker ext4 upper — so
     // there is NO per-worker rootfs clone. The managed_dir is just a minimal
     // trampoline: embed-init injects /init.krun from memory (overlay requires
@@ -1161,7 +1161,7 @@ async fn start_worker_impl(
     // differs:
     //   - legacy: written into the per-worker clone at managed_dir/opt/iii,
     //     which IS the guest root (PassthroughFs) — directly visible.
-    //   - overlay: after pivot the guest root is the read-only squashfs lower
+    //   - overlay: after pivot the guest root is the read-only erofs lower
     //     + ext4 upper, which the host can't write into directly. Write the
     //     script to a host runtime dir and virtiofs-mount it at /opt/iii
     //     (iii-init mounts virtiofs shares POST-pivot, so it lands in the
@@ -1297,7 +1297,7 @@ async fn start_worker_impl(
     if overlay {
         // Make the host-written dev-run.sh visible in the (post-pivot) overlay
         // root at /opt/iii. iii-init mkdir_p's the guest path before mounting,
-        // and overlayfs makes /opt writable (upper) even though the squashfs
+        // and overlayfs makes /opt writable (upper) even though the erofs
         // lower is read-only.
         mounts.push((
             script_dir.to_string_lossy().into_owned(),
@@ -1305,17 +1305,17 @@ async fn start_worker_impl(
         ));
     }
 
-    // Overlay: build the shared read-only base squashfs from the prepared base
+    // Overlay: build the shared read-only base erofs from the prepared base
     // rootfs (host-side, image-independent) and materialize this worker's
     // persistent ext4 upper from the embedded golden image, both when overlay
     // is active. Built in the start path so the cost is visible and a failure
     // fails the start cleanly (rather than inside the detached __vm-boot child),
     // and never silently falls back to a per-worker clone.
     let (rootfs_lower, rootfs_mode, rootfs_upper) = if overlay {
-        let sqfs = match crate::cli::squashfs::ensure_base_squashfs(&base_rootfs) {
+        let erofs_img = match crate::cli::erofs::ensure_base_erofs(&base_rootfs) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("{} failed to build base squashfs: {}", "error:".red(), e);
+                eprintln!("{} failed to build base erofs: {}", "error:".red(), e);
                 return 1;
             }
         };
@@ -1334,7 +1334,7 @@ async fn start_worker_impl(
         } else {
             None
         };
-        (Some(sqfs), "overlay".to_string(), upper)
+        (Some(erofs_img), "overlay".to_string(), upper)
     } else {
         (None, String::new(), None)
     };

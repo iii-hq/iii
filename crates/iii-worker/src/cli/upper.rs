@@ -27,8 +27,7 @@
 //! only the metadata on disk while presenting its full logical size.
 //!
 //! Compression is gzip via `flate2` (pure-Rust miniz_oxide backend) — no C
-//! build deps, consistent with the squashfs builder; `flate2` does both the
-//! encode (regen) and decode (runtime) sides.
+//! build deps; `flate2` does both the encode (regen) and decode (runtime) sides.
 //!
 //! Regenerate the golden with `crates/iii-worker/vendor/regen-golden.sh`
 //! (which drives the `gen-golden` example).

@@ -303,7 +303,7 @@ pub fn pivot_to_tmpfs_root() -> Result<(), InitError> {
 /// Read-only base block device, e.g. `/dev/vda`. Presence flips boot into
 /// overlay mode.
 const III_BLOCK_ROOT_LOWER: &str = "III_BLOCK_ROOT_LOWER";
-/// Filesystem of the base device, e.g. `squashfs`.
+/// Filesystem of the base device, e.g. `erofs`.
 const III_BLOCK_ROOT_LOWER_FSTYPE: &str = "III_BLOCK_ROOT_LOWER_FSTYPE";
 /// Writable upper: the literal `tmpfs`, or a device like `/dev/vdb`.
 const III_BLOCK_ROOT_UPPER: &str = "III_BLOCK_ROOT_UPPER";
@@ -328,7 +328,7 @@ pub fn overlay_root_requested() -> bool {
 pub fn overlay_root() -> Result<(), InitError> {
     let lower_dev = std::env::var(III_BLOCK_ROOT_LOWER).unwrap_or_default();
     let lower_fstype =
-        std::env::var(III_BLOCK_ROOT_LOWER_FSTYPE).unwrap_or_else(|_| "squashfs".into());
+        std::env::var(III_BLOCK_ROOT_LOWER_FSTYPE).unwrap_or_else(|_| "erofs".into());
     let upper = std::env::var(III_BLOCK_ROOT_UPPER).unwrap_or_else(|_| "tmpfs".into());
     let upper_fstype = std::env::var(III_BLOCK_ROOT_UPPER_FSTYPE).unwrap_or_else(|_| "ext4".into());
 
@@ -453,7 +453,7 @@ pub fn overlay_root() -> Result<(), InitError> {
         mkdir_ignore_exists(&format!("{NEW_ROOT}/{dir}"), *mode)?;
     }
 
-    // Phase 6 — pivot. The overlay superblock pins the lower (squashfs)
+    // Phase 6 — pivot. The overlay superblock pins the lower (erofs)
     // and upper superblocks, so the lazy MNT_DETACH of the old trampoline
     // root (which carried the /overlay-* staging mounts) keeps them live.
     mkdir_ignore_exists(PIVOT_PUT_OLD, 0o755)?;
@@ -475,7 +475,7 @@ pub fn overlay_root() -> Result<(), InitError> {
     })?;
     let _ = fs::remove_dir("/old-root");
 
-    eprintln!("iii-init: overlay root assembled and pivoted (lower=squashfs)");
+    eprintln!("iii-init: overlay root assembled and pivoted (lower=erofs)");
     Ok(())
 }
 

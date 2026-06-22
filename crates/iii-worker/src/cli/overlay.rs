@@ -1,7 +1,7 @@
 //! Shared read-only rootfs overlay: feature flag, init-capability handshake,
 //! per-worker layout marker, and GC of orphaned legacy-layout artifacts.
 //!
-//! The overlay model (shared read-only squashfs base + per-worker writable
+//! The overlay model (shared read-only erofs base + per-worker writable
 //! upper, assembled by iii-init) is ON BY DEFAULT. It is gated by two checks:
 //!
 //! 1. Feature flag — `III_ROOTFS_MODE`. Anything other than `legacy`/`off`/

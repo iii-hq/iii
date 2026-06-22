@@ -253,8 +253,7 @@ pub enum Commands {
     },
 }
 
-/// Arguments for `iii worker exec`. Mirrors `msb exec`'s shape so
-/// users moving between microsandbox and iii have muscle memory.
+/// Arguments for `iii worker exec`.
 #[derive(Args, Debug)]
 pub struct ExecArgs {
     /// Worker name whose VM to run the command in.

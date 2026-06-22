@@ -19,7 +19,7 @@ pub struct VmBootArgs {
     #[arg(long)]
     pub rootfs: String,
 
-    /// Overlay mode: host path to the prebuilt read-only base squashfs
+    /// Overlay mode: host path to the prebuilt read-only base erofs
     /// (attached as the overlay lower, /dev/vda). Built host-side by the
     /// start path; absent => legacy per-worker-rootfs boot.
     #[arg(long)]
@@ -735,23 +735,23 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // Overlay mode is decided by the START path (which evaluated the feature
     // flag + the embedded-init capability handshake — same binary, so the
     // decision is authoritative) and passed down as --rootfs-mode + the
-    // prebuilt --rootfs-lower squashfs. We attach it here; the squashfs is
+    // prebuilt --rootfs-lower erofs. We attach it here; the erofs is
     // built host-side in the start path, not in this detached child.
     let overlay_mode = args.rootfs_mode == "overlay" && args.rootfs_lower.is_some();
     if overlay_mode {
-        let sqfs = args
+        let lower_img = args
             .rootfs_lower
             .clone()
             .expect("overlay_mode implies --rootfs-lower");
         // Migrate this worker's on-disk layout to overlay: GC orphaned legacy
         // clone artifacts (dep cache + prepared marker) and stamp the marker.
         crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
-        eprintln!("iii: overlay base squashfs -> /dev/vda: {sqfs}");
+        eprintln!("iii: overlay base erofs -> /dev/vda: {lower_img}");
         // Disk attach ORDER is the guest device order: the lower MUST be the
         // first disk (/dev/vda) and the upper the second (/dev/vdb). iii-init
         // reads III_BLOCK_ROOT_LOWER=/dev/vda and III_BLOCK_ROOT_UPPER=/dev/vdb.
         builder = builder.disk(move |d| {
-            d.path(&sqfs)
+            d.path(&lower_img)
                 .format(msb_krun::DiskImageFormat::Raw)
                 .read_only(true)
         });
@@ -935,7 +935,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         // tmpfs upper so the overlay still boots — deps just don't persist.
         if overlay_mode {
             e = e.env("III_BLOCK_ROOT_LOWER", "/dev/vda");
-            e = e.env("III_BLOCK_ROOT_LOWER_FSTYPE", "squashfs");
+            e = e.env("III_BLOCK_ROOT_LOWER_FSTYPE", "erofs");
             if args.rootfs_upper.is_some() {
                 e = e.env("III_BLOCK_ROOT_UPPER", "/dev/vdb");
                 e = e.env("III_BLOCK_ROOT_UPPER_FSTYPE", "ext4");

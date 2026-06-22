@@ -336,7 +336,7 @@ fn vm_boot_args_oci(
 }
 
 /// Push `--rootfs-lower <sqfs> --rootfs-mode <mode>` when overlay mode is
-/// active (i.e. the start path built a base squashfs). No-op for legacy.
+/// active (i.e. the start path built a base erofs). No-op for legacy.
 fn push_overlay_args(
     out: &mut Vec<OsString>,
     rootfs_lower: Option<&Path>,
@@ -628,7 +628,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         };
 
         let worker_rootfs = worker_dir.join("rootfs");
-        // Overlay mode serves the shared read-only squashfs base (built below
+        // Overlay mode serves the shared read-only erofs base (built below
         // from `rootfs_dir`) plus a per-worker ext4 upper, so there is NO
         // per-worker rootfs clone: worker_rootfs is just a minimal trampoline
         // (embed-init injects /init.krun from memory). OCI image config
@@ -765,15 +765,15 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let merged_env = build_vm_env(caller_env);
         let env_pairs: Vec<(String, String)> = merged_env.into_iter().collect();
 
-        // Overlay: build the shared read-only base squashfs from the cached
+        // Overlay: build the shared read-only base erofs from the cached
         // image rootfs (host-side, image-independent) and materialize this
         // worker's persistent ext4 upper from the embedded golden image, both
         // when overlay is active. Built in START so a failure fails the start
         // loudly (never a silent fall back to a per-worker clone).
         let (oci_rootfs_lower, oci_rootfs_mode, oci_rootfs_upper) = if overlay {
-            let sqfs = match crate::cli::squashfs::ensure_base_squashfs(&rootfs_dir) {
+            let erofs_img = match crate::cli::erofs::ensure_base_erofs(&rootfs_dir) {
                 Ok(s) => s,
-                Err(e) => return Err(anyhow::anyhow!("failed to build base squashfs: {e}")),
+                Err(e) => return Err(anyhow::anyhow!("failed to build base erofs: {e}")),
             };
             let upper = if crate::cli::upper::has_golden() {
                 match crate::cli::upper::ensure_upper_ext4(&worker_dir) {
@@ -785,7 +785,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
             } else {
                 None
             };
-            (Some(sqfs), "overlay".to_string(), upper)
+            (Some(erofs_img), "overlay".to_string(), upper)
         } else {
             (None, String::new(), None)
         };
@@ -981,7 +981,7 @@ mod tests {
 
         let parsed = parse_vm_boot_args(vm_boot_args_oci(
             Path::new("/tmp/rootfs"),
-            Some(Path::new("/tmp/base.sqfs")),
+            Some(Path::new("/tmp/base.erofs")),
             "overlay",
             Some(Path::new("/tmp/upper.ext4")),
             "/bin/sh",
@@ -1008,7 +1008,7 @@ mod tests {
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
         assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
         assert_eq!(parsed.arg, exec_args);
-        assert_eq!(parsed.rootfs_lower.as_deref(), Some("/tmp/base.sqfs"));
+        assert_eq!(parsed.rootfs_lower.as_deref(), Some("/tmp/base.erofs"));
         assert_eq!(parsed.rootfs_mode, "overlay");
         assert_eq!(parsed.rootfs_upper.as_deref(), Some("/tmp/upper.ext4"));
     }
