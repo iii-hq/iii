@@ -82,3 +82,6 @@ TODOS.md
 # Per-contributor coding-agent state (not tracked)
 .serena/
 CLAUDE.md
+
+# Impeccable editor hook cache
+.impeccable/

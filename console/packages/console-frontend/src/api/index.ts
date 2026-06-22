@@ -19,12 +19,14 @@ export { ConfigProvider, useConfig } from './config-provider'
 // Events - Functions
 export type {
   EventsInfo,
+  FunctionDetail,
   FunctionInfo,
   TriggerInfo,
   TriggerTypeInfo,
 } from './events/functions'
 export {
   fetchEventsInfo,
+  fetchFunctionDetail,
   fetchFunctions,
   fetchTriggers,
   fetchTriggerTypes,

@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       engine: ${{ steps.filter.outputs.engine }}
+      benches: ${{ steps.filter.outputs.benches }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -55,6 +56,9 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
+            benches:
+              - 'engine/benches/**'
+              - 'engine/Cargo.toml'
 
   # ──────────────────────────────────────────────────────────────
   # Engine Build — critical path, produces iii binary for downstream
@@ -70,12 +74,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: engine-build
+          shared-key: engine
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Build iii (debug, all-features)
         run: cargo build -p iii --all-features
@@ -87,58 +94,11 @@ jobs:
           retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
-  # Engine Tests — parallel; does not gate downstream jobs.
-  # ──────────────────────────────────────────────────────────────
-
-  engine-test:
-    name: Engine Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Free up disk space to avoid "No space left on device" during the
-      # post-job rust-cache save step on ubuntu-latest runners.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/microsoft
-          df -h /
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: engine-test
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
-
-      - name: Build and install iii-worker (needed by iii integration tests)
-        run: |
-          cargo build -p iii-worker
-          mkdir -p ~/.local/bin
-          cp target/debug/iii-worker ~/.local/bin/iii-worker
-          chmod +x ~/.local/bin/iii-worker
-
-      - name: Run crate tests
-        run: |
-          cargo test -p iii-worker
-          cargo test -p iii-filesystem
-          cargo test -p iii-network
-          cargo test -p iii-init
-
-      - name: Run engine tests
-        run: cargo test -p iii --all-features
-
-  # ──────────────────────────────────────────────────────────────
-  # Engine Coverage — scoped: runs on push/dispatch, and on PRs
-  # only when engine/crates/Cargo paths change. Parallel, does not
-  # gate downstream.
+  # Engine Coverage — runs the full engine + crate test suite under
+  # llvm-cov instrumentation. This is the single test gate (it supersedes
+  # the old separate "Engine Tests" job, which re-ran the same tests
+  # uninstrumented). Scoped: always on push/dispatch, and on PRs only when
+  # engine/crates/Cargo paths change. Parallel, does not gate downstream.
   # ──────────────────────────────────────────────────────────────
 
   engine-coverage:
@@ -149,6 +109,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Free up disk space to avoid "No space left on device" — the
+      # coverage-instrumented build is large.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/microsoft
+          df -h /
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -162,8 +133,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev lld
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev lld \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev lld; }
 
       - name: Build and install iii-worker (needed by iii integration tests)
         run: |
@@ -172,7 +146,7 @@ jobs:
           cp target/debug/iii-worker ~/.local/bin/iii-worker
           chmod +x ~/.local/bin/iii-worker
 
-      - name: Run coverage
+      - name: Run tests with coverage
         run: |
           eval "$(cargo llvm-cov show-env --export-prefix)"
           # The coverage-instrumented `iii` test binary is large enough that the
@@ -181,10 +155,32 @@ jobs:
           # lld, which links large binaries with far less peak memory. Appended
           # so the `-C instrument-coverage` RUSTFLAGS exported above are kept.
           export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=lld"
+          # cargo test runs the crate's tests (incl. doctests) parallel within
+          # each binary in one process. The VM crates run with default features
+          # only (--all-features would enable integration-vm/-oci, which need KVM
+          # and have their own jobs); iii runs with --all-features. (Process-per-
+          # test runners like nextest aren't used here: several engine tests rely
+          # on shared in-process global state — tracing/metrics singletons,
+          # ports — and aren't isolation-safe.)
+          cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init
           cargo test -p iii --all-features
-          cargo llvm-cov report \
-            --ignore-filename-regex \
-            "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
+          # Reports re-read the merged profdata (no recompile), so emitting the
+          # terminal summary, an lcov file, and a browsable HTML tree is cheap.
+          IGNORE='engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/'
+          cargo llvm-cov report --ignore-filename-regex "$IGNORE"
+          cargo llvm-cov report --ignore-filename-regex "$IGNORE" --lcov --output-path coverage.lcov
+          cargo llvm-cov report --ignore-filename-regex "$IGNORE" --html
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-coverage-report
+          path: |
+            coverage.lcov
+            target/llvm-cov/html
+          if-no-files-found: ignore
+          retention-days: 7
 
   # ──────────────────────────────────────────────────────────────
   # Engine Benches — compile-only check, parallel, does not gate.
@@ -192,6 +188,11 @@ jobs:
 
   engine-benches:
     name: Engine Benches Compile
+    # Bench compile (~20m cold) is redundant with bench-release.yml, which
+    # compiles and runs benches on every release tag. On PRs/pushes only run it
+    # when bench sources actually change, so the common path skips it entirely.
+    needs: changes
+    if: needs.changes.outputs.benches == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -204,8 +205,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Check benches compile
         run: cargo bench --benches --no-run
@@ -247,12 +251,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: cli-docs
+          shared-key: engine
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Regenerate CLI reference pages
         run: ./scripts/generate-cli-docs.sh
@@ -288,6 +295,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: engine
 
       - name: Run RabbitMQ integration tests
         env:
@@ -323,14 +332,19 @@ jobs:
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
+          # Fast path: install directly; the slow `apt-get update` only runs as
+          # a fallback if the runner image's apt index is stale.
+          sudo apt-get install -y musl-tools \
+            || { sudo apt-get update && sudo apt-get install -y musl-tools; }
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
+      # Debug build: this matrix only validates that iii compiles on every
+      # target. Optimized release builds are produced separately at tag time by
+      # release-iii.yml (which always uses --release).
       - name: Build for target
-        run: cargo build -p iii --release --target ${{ matrix.target }}
+        run: cargo build -p iii --target ${{ matrix.target }}
 
   # ──────────────────────────────────────────────────────────────
   # Worker Build Matrix (matches release targets)
@@ -368,18 +382,31 @@ jobs:
       - name: Install system dependencies (x86_64 Linux)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Install cross-compilation tools (aarch64 Linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo dpkg --add-architecture arm64
           sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross libcap-ng-dev:arm64
+          MIRROR=http://azure.ports.ubuntu.com/ubuntu-ports/
+          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          # The amd64 cross toolchain is already indexed on the runner image, so
+          # install it directly (full `apt-get update` only as a fallback).
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            || { sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross; }
+          # The arm64 runtime lib needs the freshly-added arm64 source indexed.
+          # Scope the update to just that list so we don't refresh every index.
+          sudo apt-get update \
+            -o Dir::Etc::sourcelist="sources.list.d/arm64.list" \
+            -o Dir::Etc::sourceparts="-" \
+            -o APT::Get::List-Cleanup="0"
+          sudo apt-get install -y libcap-ng-dev:arm64
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
@@ -414,8 +441,11 @@ jobs:
       - name: Install system dependencies (Linux only)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run iii-worker tests
         run: cargo nextest run -p iii-worker --profile ci
@@ -465,8 +495,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run VM feature-gated tests
         run: cargo nextest run -p iii-worker --features integration-vm --profile ci
@@ -520,8 +553,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev
+          # Fast path: GitHub runner images ship with fresh apt lists, so
+          # install directly (the slow `apt-get update` refreshes every index).
+          # Fall back to a full update only if the cached index misses.
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Run OCI feature-gated tests
         run: cargo nextest run -p iii-worker --features integration-oci --profile ci
@@ -755,6 +791,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sdk-rust
 
       - name: Check formatting
         run: cargo fmt -p iii-sdk -- --check
@@ -861,6 +899,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: console
 
       - name: Build console binary
         run: cargo build -p iii-console --release

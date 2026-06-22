@@ -1504,6 +1504,7 @@ modules:
 "#;
 
         std::fs::write(&path, yaml).unwrap();
+        init_log_from_config(Some(path.to_str().unwrap()));
         let _ = std::fs::remove_file(&path);
 
         assert!(TRACING.get().is_some());

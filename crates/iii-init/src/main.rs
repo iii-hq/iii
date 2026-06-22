@@ -22,7 +22,14 @@ fn run() -> Result<(), iii_init::InitError> {
     // pivot replaces `/` with a well-behaved tmpfs and re-exposes
     // rootfs content via per-directory bind mounts. See root_pivot
     // module for the full rationale.
-    iii_init::root_pivot::pivot_to_tmpfs_root()?;
+    // Block-image overlay mode (shared read-only base image + writable
+    // upper) when the host signals it via III_BLOCK_ROOT_*; otherwise the
+    // legacy per-worker virtiofs rootfs + tmpfs-pivot path.
+    if iii_init::root_pivot::overlay_root_requested() {
+        iii_init::root_pivot::overlay_root()?;
+    } else {
+        iii_init::root_pivot::pivot_to_tmpfs_root()?;
+    }
     iii_init::mount::mount_filesystems()?;
     iii_init::mount::mount_virtiofs_shares();
     // Fakes `/proc/meminfo::MemTotal` to the per-worker cap so Bun's

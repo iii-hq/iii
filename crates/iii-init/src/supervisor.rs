@@ -205,6 +205,23 @@ fn run_legacy(cmd: String) -> Result<(), InitError> {
         }
     };
 
+    sync_and_exit(status);
+}
+
+/// Flush filesystems, then exit PID 1 (which tears the VM down).
+///
+/// On worker exit we go straight to teardown: libkrun calls `_exit()`, which
+/// skips every Drop-based flush, and nothing else syncs the writable overlay
+/// upper (ext4 on /dev/vdb). Installed deps + the `/var/.iii-prepared` marker
+/// would otherwise depend on ext4's ~5s background commit happening to fire
+/// before teardown, so a fast-exiting or crash-looping worker loses them and
+/// re-runs install next boot. One `sync()` here makes every clean PID-1 exit
+/// durable; it runs once as the VM is dying, so the cost is irrelevant.
+/// ponytail: covers clean + SIGTERM/SIGINT exits (those funnel back through the
+/// reap loop); a host `kill -9`/OOM mid-window runs no code — mount the upper
+/// with `commit=1` if that residual window ever matters.
+fn sync_and_exit(status: i32) -> ! {
+    nix::unistd::sync();
     std::process::exit(status);
 }
 
@@ -287,7 +304,7 @@ fn run_supervised(cmd: String, workdir: String, port_name: String) -> Result<(),
         }
     };
 
-    std::process::exit(status);
+    sync_and_exit(status);
 }
 
 /// Is this dead PID a terminal exit, or was it replaced by a restart?

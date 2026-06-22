@@ -286,6 +286,199 @@ pub fn pivot_to_tmpfs_root() -> Result<(), InitError> {
     Ok(())
 }
 
+// ── Block-image overlay root (shared read-only base + writable upper) ──
+//
+// Spike: instead of pivoting onto a tmpfs that bind-mounts a per-worker
+// virtiofs rootfs clone, assemble `/` as overlayfs(lower = a shared
+// read-only base block device, upper = a per-worker writable layer) and
+// pivot into it. The host (`iii-worker __vm-boot` overlay mode) boots the
+// VM on an empty trampoline virtiofs root that carries only `/init.krun`,
+// attaches the base image as a virtio-blk disk, and signals this path via
+// the III_BLOCK_ROOT_* env vars below.
+//
+// Milestone A uses a tmpfs upper (no mkfs needed) to prove the
+// lower+overlay+pivot+boot chain; the persistent ext4 upper is the next
+// milestone (the base image ships mkfs.ext4 for in-guest format).
+
+/// Read-only base block device, e.g. `/dev/vda`. Presence flips boot into
+/// overlay mode.
+const III_BLOCK_ROOT_LOWER: &str = "III_BLOCK_ROOT_LOWER";
+/// Filesystem of the base device, e.g. `squashfs`.
+const III_BLOCK_ROOT_LOWER_FSTYPE: &str = "III_BLOCK_ROOT_LOWER_FSTYPE";
+/// Writable upper: the literal `tmpfs`, or a device like `/dev/vdb`.
+const III_BLOCK_ROOT_UPPER: &str = "III_BLOCK_ROOT_UPPER";
+/// Filesystem of a device-backed upper, e.g. `ext4` (ignored for tmpfs).
+const III_BLOCK_ROOT_UPPER_FSTYPE: &str = "III_BLOCK_ROOT_UPPER_FSTYPE";
+
+const OVERLAY_LOWER: &str = "/overlay-lower";
+const OVERLAY_UPPERFS: &str = "/overlay-upperfs";
+
+/// True when the host asked us to build `/` from a shared read-only base
+/// image plus a writable overlay, rather than the virtiofs trampoline root.
+pub fn overlay_root_requested() -> bool {
+    std::env::var_os(III_BLOCK_ROOT_LOWER)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// Assemble overlayfs(lower, upper) as the new root and pivot into it.
+/// Reuses the same workspace-relocate + pivot_root + lazy-detach mechanics
+/// as [`pivot_to_tmpfs_root`]; only the construction of the new root
+/// differs (overlay vs tmpfs + binds).
+pub fn overlay_root() -> Result<(), InitError> {
+    let lower_dev = std::env::var(III_BLOCK_ROOT_LOWER).unwrap_or_default();
+    let lower_fstype =
+        std::env::var(III_BLOCK_ROOT_LOWER_FSTYPE).unwrap_or_else(|_| "squashfs".into());
+    let upper = std::env::var(III_BLOCK_ROOT_UPPER).unwrap_or_else(|_| "tmpfs".into());
+    let upper_fstype = std::env::var(III_BLOCK_ROOT_UPPER_FSTYPE).unwrap_or_else(|_| "ext4".into());
+
+    eprintln!(
+        "iii-init: overlay root mode: lower={lower_dev} ({lower_fstype}) upper={upper} ({upper_fstype})"
+    );
+
+    // Phase 0 — /dev must be populated before we can open the base block
+    // device (`/dev/vda`). The normal `mount_filesystems()` runs only AFTER
+    // the pivot, so mount a devtmpfs here on the trampoline root. Ignore
+    // EBUSY in case the kernel already auto-mounted one. After the pivot the
+    // overlay root gets its own fresh /dev from mount_filesystems().
+    mkdir_ignore_exists("/dev", 0o755)?;
+    match mount(
+        Some("devtmpfs"),
+        "/dev",
+        Some("devtmpfs"),
+        MsFlags::empty(),
+        None::<&str>,
+    ) {
+        Ok(()) | Err(nix::Error::EBUSY) => {}
+        Err(e) => {
+            return Err(InitError::Mount {
+                target: "/dev".into(),
+                source: e,
+            });
+        }
+    }
+
+    // Phase 1 — mount the shared read-only base.
+    mkdir_ignore_exists(OVERLAY_LOWER, 0o755)?;
+    mount(
+        Some(lower_dev.as_str()),
+        OVERLAY_LOWER,
+        Some(lower_fstype.as_str()),
+        MsFlags::MS_RDONLY,
+        None::<&str>,
+    )
+    .map_err(|e| InitError::Mount {
+        target: OVERLAY_LOWER.into(),
+        source: e,
+    })?;
+
+    // Phase 2 — mount the writable upper and create its upper/work dirs.
+    mkdir_ignore_exists(OVERLAY_UPPERFS, 0o755)?;
+    if upper == "tmpfs" {
+        mount(
+            Some("tmpfs"),
+            OVERLAY_UPPERFS,
+            Some("tmpfs"),
+            MsFlags::empty(),
+            Some("mode=755"),
+        )
+    } else {
+        // Device-backed upper (ext4 on /dev/vdb). The host materialized it
+        // from a pre-formatted golden image (iii-worker cli::upper), so it is
+        // ALWAYS already a valid ext4 — there is deliberately no in-guest
+        // format step (that would re-introduce a dependency on guest tooling
+        // the overlay model exists to avoid). A mount failure here is fatal
+        // (propagated below); we never silently reformat and lose persisted
+        // deps.
+        mount(
+            Some(upper.as_str()),
+            OVERLAY_UPPERFS,
+            Some(upper_fstype.as_str()),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+    }
+    .map_err(|e| InitError::Mount {
+        target: OVERLAY_UPPERFS.into(),
+        source: e,
+    })?;
+    let upper_dir = format!("{OVERLAY_UPPERFS}/upper");
+    let work_dir = format!("{OVERLAY_UPPERFS}/work");
+    mkdir_ignore_exists(&upper_dir, 0o755)?;
+    mkdir_ignore_exists(&work_dir, 0o755)?;
+
+    // Phase 3 — assemble the overlay as the new root, then make it private.
+    mkdir_ignore_exists(NEW_ROOT, 0o755)?;
+    let data = format!("lowerdir={OVERLAY_LOWER},upperdir={upper_dir},workdir={work_dir}");
+    mount(
+        Some("overlay"),
+        NEW_ROOT,
+        Some("overlay"),
+        MsFlags::empty(),
+        Some(data.as_str()),
+    )
+    .map_err(|e| InitError::Mount {
+        target: NEW_ROOT.into(),
+        source: e,
+    })?;
+    mount(
+        None::<&str>,
+        NEW_ROOT,
+        None::<&str>,
+        MsFlags::MS_PRIVATE,
+        None::<&str>,
+    )
+    .map_err(|e| InitError::Mount {
+        target: NEW_ROOT.into(),
+        source: e,
+    })?;
+
+    // Phase 4 — relocate the /workspace virtiofs mount so it survives the
+    // pivot (identical to the tmpfs path).
+    if is_mount_point("/workspace") {
+        let target = format!("{NEW_ROOT}/workspace");
+        mkdir_ignore_exists(&target, 0o755)?;
+        mount(
+            Some("/workspace"),
+            target.as_str(),
+            None::<&str>,
+            MsFlags::MS_MOVE,
+            None::<&str>,
+        )
+        .map_err(|e| InitError::Mount { target, source: e })?;
+    }
+
+    // Phase 5 — kernel-fs mount points for mount_filesystems().
+    for (dir, mode) in KERNEL_FS_DIRS {
+        mkdir_ignore_exists(&format!("{NEW_ROOT}/{dir}"), *mode)?;
+    }
+
+    // Phase 6 — pivot. The overlay superblock pins the lower (squashfs)
+    // and upper superblocks, so the lazy MNT_DETACH of the old trampoline
+    // root (which carried the /overlay-* staging mounts) keeps them live.
+    mkdir_ignore_exists(PIVOT_PUT_OLD, 0o755)?;
+    chdir(NEW_ROOT).map_err(|e| InitError::Mount {
+        target: NEW_ROOT.into(),
+        source: e,
+    })?;
+    pivot_root(".", "old-root").map_err(|e| InitError::Mount {
+        target: "pivot_root".into(),
+        source: e,
+    })?;
+    chdir("/").map_err(|e| InitError::Mount {
+        target: "/".into(),
+        source: e,
+    })?;
+    umount2("/old-root", MntFlags::MNT_DETACH).map_err(|e| InitError::Mount {
+        target: "/old-root".into(),
+        source: e,
+    })?;
+    let _ = fs::remove_dir("/old-root");
+
+    eprintln!("iii-init: overlay root assembled and pivoted (lower=squashfs)");
+    Ok(())
+}
+
 fn mkdir_ignore_exists(path: &str, mode: u32) -> Result<(), InitError> {
     match mkdir(path, Mode::from_bits_truncate(mode)) {
         Ok(()) | Err(nix::Error::EEXIST) => Ok(()),

@@ -9,11 +9,12 @@ STOP_SCRIPT         := bash scripts/stop-iii.sh
 III_URL             := ws://localhost:49199
 III_HTTP_URL        := http://localhost:3199
 PYTHON_SDK_DIR      := sdk/packages/python/iii
+LOCAL_BIN           := $(HOME)/.local/bin
 
 export III_TELEMETRY_ENABLED := false
 
 .PHONY: install install-node install-python install-hooks \
-        engine-build engine-test engine-fmt-check \
+        engine-build engine-test coverage install-iii-worker engine-fmt-check \
         engine-up engine-up-bridges engine-down \
         init-build-x86 init-build-aarch64 init-build-all \
         sandbox sandbox-debug \
@@ -46,8 +47,24 @@ install-hooks:
 engine-build:
 	cargo build -p iii --all-features
 
-engine-test:
+# Build iii-worker and put it on PATH — the iii integration tests shell out to it.
+install-iii-worker:
+	cargo build -p iii-worker
+	mkdir -p $(LOCAL_BIN)
+	install -m755 target/debug/iii-worker $(LOCAL_BIN)/iii-worker
+
+# Mirrors the CI test set (Engine Coverage job). VM crates use default features
+# (--all-features would pull in the KVM-only integration-vm/-oci suites); iii
+# runs with --all-features. cargo test includes doctests.
+engine-test: install-iii-worker
+	cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init
 	cargo test -p iii --all-features
+
+coverage: install-iii-worker ## Run the engine test suite under llvm-cov (same as CI), prints a report
+	@eval "$$(cargo llvm-cov show-env --export-prefix)" && \
+		cargo test -p iii-worker -p iii-filesystem -p iii-network -p iii-init && \
+		cargo test -p iii --all-features && \
+		cargo llvm-cov report
 
 engine-fmt-check:
 	cargo fmt --all -- --check

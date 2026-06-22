@@ -11,7 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 dashmap = "6"
 libc = "0.2"
-msb_krun = "0.1.9"
+msb_krun = "0.1.16"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile = "3"
