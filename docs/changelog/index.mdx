@@ -16,6 +16,14 @@ type: "reference"
 
   A local-path worker mounted your project directory writable into the VM, so the dep and build directories created during install (`node_modules`, `.venv`, `dist`, …) leaked back onto the host as empty folders. Under overlay, a local worker now mounts the host project **read-only** and copies the source into a VM-local workspace on the upper (dep and build dirs excluded at any depth), so the host project is only ever read — those phantom folders no longer appear. Bundle and legacy workers keep the live mount.
 
+  ## Overlay local workers boot reliably and pack large base images
+
+  Two reliability fixes for the new overlay boot path:
+
+  - **The host source share mounts reliably.** In copy-in mode the host project is shared into the VM as a virtio-fs device that `iii-init` mounts right after the root pivot. virtio-fs device registration is asynchronous, so a mount issued too early could transiently fail — and because that share is boot-critical (the worker aborts when it isn't mounted), it surfaced as an **intermittent** boot failure (`/mnt/host-src … is not a virtiofs mountpoint`). `iii-init` now retries each share mount for ~2s to ride out the device-probe race; a genuinely failed mount logs the cause instead of being silently swallowed.
+
+  - **Large base images build their squashfs without hitting the file-descriptor limit.** Building the shared read-only squashfs base keeps every file in the image open until the image is finalized, so a large base (the node image carries ~15k files) exceeded the default open-file limit on macOS and failed with "Too many open files". The builder now raises that limit before packing, so large images build cleanly.
+
   ## `iii-pubsub` runtime settings live in the configuration worker
 
   The pub/sub worker now registers its config schema under the `iii-pubsub` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart.

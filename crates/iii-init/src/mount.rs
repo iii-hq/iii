@@ -1,5 +1,6 @@
 use std::os::unix::fs::symlink;
 use std::path::Path;
+use std::time::Duration;
 
 use nix::mount::{MsFlags, mount};
 use nix::sys::stat::Mode;
@@ -150,12 +151,6 @@ fn mkdir_p(path: &str) -> Result<(), InitError> {
     Ok(())
 }
 
-/// Mount virtiofs shares passed via the `III_VIRTIOFS_MOUNTS` env var.
-///
-/// Format: `tag1=/guest/path1;tag2=/guest/path2`. The tag matches the virtiofs
-/// source tag attached in vm_boot. Each guest path is created with `mkdir -p`
-/// before mounting. Failures on individual mounts log a warning and continue
-/// so a bad share cannot wedge worker startup.
 pub fn mount_virtiofs_shares() {
     let spec = match std::env::var("III_VIRTIOFS_MOUNTS") {
         Ok(s) if !s.is_empty() => s,
@@ -172,16 +167,37 @@ pub fn mount_virtiofs_shares() {
             continue;
         }
 
+        mount_virtiofs_with_retry(&tag, &guest_path);
+    }
+}
+
+/// Mount one virtiofs share, retrying transient failures for ~2s before giving
+/// up. virtio-fs tag registration is async w.r.t. PID 1, so a mount right after
+/// the pivot can fail before the device is probed; `EBUSY` means already mounted.
+fn mount_virtiofs_with_retry(tag: &str, guest_path: &str) {
+    const TOTAL: Duration = Duration::from_millis(2000);
+    const STEP: Duration = Duration::from_millis(50);
+
+    let mut waited = Duration::ZERO;
+    loop {
         match mount(
-            Some(tag.as_str()),
-            guest_path.as_str(),
+            Some(tag),
+            guest_path,
             Some("virtiofs"),
             MsFlags::empty(),
             None::<&str>,
         ) {
-            Ok(()) | Err(nix::Error::EBUSY) => {}
-            Err(e) => {
-                eprintln!("iii-init: warning: mount virtiofs {tag} -> {guest_path} failed: {e}");
+            Ok(()) | Err(nix::Error::EBUSY) => return,
+            Err(e) if waited >= TOTAL => {
+                eprintln!(
+                    "iii-init: ERROR mount virtiofs {tag} -> {guest_path} failed after {}ms: {e}",
+                    waited.as_millis()
+                );
+                return;
+            }
+            Err(_) => {
+                std::thread::sleep(STEP);
+                waited += STEP;
             }
         }
     }
@@ -413,6 +429,23 @@ mod tests {
         assert!(
             proc_mount_pos < symlink_pos,
             "/proc mount must precede /dev/fd symlink"
+        );
+    }
+
+    #[test]
+    fn virtiofs_mount_retries_transient_failures() {
+        let source = include_str!("mount.rs");
+        assert!(
+            source.contains("fn mount_virtiofs_with_retry"),
+            "virtiofs shares must mount through the bounded-retry helper"
+        );
+        assert!(
+            source.contains("std::thread::sleep(STEP)"),
+            "the retry helper must back off between attempts"
+        );
+        assert!(
+            source.contains("waited >= TOTAL"),
+            "the retry helper must give up after a bounded budget"
         );
     }
 }

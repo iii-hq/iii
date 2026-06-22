@@ -25,6 +25,31 @@ use backhand::{DEFAULT_BLOCK_SIZE, FilesystemCompressor, FilesystemWriter, NodeH
 /// engine starts workers as concurrent async tasks) never share a temp path.
 static SQFS_BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Raise the soft fd limit before packing: backhand keeps an open `File` for
+/// every regular file until `write()`, so a large image (the node base has ~15k
+/// files) exceeds the default soft `RLIMIT_NOFILE` (256 on macOS) and the build
+/// fails with EMFILE. Mirrors `vm_boot::raise_fd_limit`.
+///
+/// Best-effort: a syscall failure is warned, not fatal. Raising is an
+/// optimization, not a correctness requirement — if the ambient limit is
+/// already adequate the build still succeeds, and if it genuinely isn't the
+/// open() in `add_dir` surfaces EMFILE with the offending path.
+fn raise_fd_limit() {
+    use nix::libc;
+    let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } != 0 {
+        tracing::warn!(error = %std::io::Error::last_os_error(), "getrlimit(RLIMIT_NOFILE) failed; keeping current fd limit");
+        return;
+    }
+    let target = rlim.rlim_max.min(1_048_576);
+    if rlim.rlim_cur < target {
+        rlim.rlim_cur = target;
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) } != 0 {
+            tracing::warn!(error = %std::io::Error::last_os_error(), "setrlimit(RLIMIT_NOFILE) failed; keeping current fd limit");
+        }
+    }
+}
+
 /// Build a read-only squashfs image at `out` from the rootfs tree at `src`.
 ///
 /// Preserves regular files, directories, and symlinks with their permission
@@ -42,6 +67,8 @@ static SQFS_BUILD_SEQ: AtomicU64 = AtomicU64::new(0);
 /// all capabilities regardless of per-file caps; revisit if a non-root worker
 /// mode is ever added.
 pub fn build_squashfs(src: &Path, out: &Path) -> Result<(), String> {
+    raise_fd_limit();
+
     let mut w = FilesystemWriter::default();
     w.set_current_time();
     w.set_block_size(DEFAULT_BLOCK_SIZE);
@@ -250,5 +277,50 @@ mod tests {
         assert!(!out.exists());
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn builds_image_with_many_files_without_fd_exhaustion() {
+        let tmp = std::env::temp_dir().join(format!("iii-sqfs-manyfd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let src = tmp.join("rootfs");
+        fs::create_dir_all(&src).unwrap();
+        for i in 0..400 {
+            let mut f = File::create(src.join(format!("f{i:04}"))).unwrap();
+            f.write_all(format!("file {i}\n").as_bytes()).unwrap();
+        }
+        let out = tmp.join("out.sqfs");
+        build_squashfs(&src, &out).expect("many-file build must not fail with EMFILE");
+        assert_eq!(
+            &fs::read(&out).unwrap()[..4],
+            b"hsqs",
+            "output is not a squashfs image"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn raise_fd_limit_never_lowers_and_reaches_target() {
+        use nix::libc;
+        let mut before: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut before) },
+            0
+        );
+        raise_fd_limit();
+        let mut after: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut after) },
+            0
+        );
+        assert!(
+            after.rlim_cur >= before.rlim_cur,
+            "raise_fd_limit must not lower the limit"
+        );
+        let want = before.rlim_max.min(1_048_576);
+        assert!(
+            after.rlim_cur >= want || after.rlim_cur == after.rlim_max,
+            "soft limit should reach the target or the hard cap"
+        );
     }
 }
