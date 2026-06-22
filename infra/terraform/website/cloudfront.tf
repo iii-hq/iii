@@ -25,12 +25,24 @@ resource "aws_cloudfront_origin_access_control" "site" {
   signing_protocol                  = "sigv4"
 }
 
+# Pretty-URL → *.html route map read by the redirects function at the edge.
+# Terraform owns the store; the key/value DATA is owned by deploy-website.yml,
+# which syncs it from website/*.html on every content deploy. That decoupling is
+# the whole point of this resource: adding a page no longer needs a `terraform
+# apply` to republish the function (MOT-3669).
+resource "aws_cloudfront_key_value_store" "routes" {
+  name    = "iii-website-prod-routes"
+  comment = "Pretty-URL → .html map for the redirects function; data synced by deploy-website.yml, not Terraform"
+}
+
 resource "aws_cloudfront_function" "redirects" {
   name    = "iii-website-prod-redirects"
   runtime = "cloudfront-js-2.0"
-  comment = "viewer-request (default behavior only): www->apex, SPA fallback"
+  comment = "viewer-request (default behavior only): www->apex, pretty-URL rewrite via KVS, real 404"
   publish = true
   code    = file("${path.module}/cloudfront_functions/redirects.js")
+
+  key_value_store_associations = [aws_cloudfront_key_value_store.routes.arn]
 }
 
 resource "aws_cloudfront_response_headers_policy" "site" {
