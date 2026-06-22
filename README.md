@@ -2,10 +2,18 @@
 
 ![iii: point-to-point integrations vs zero-integration via shared runtime](.github/assets/zero-integration.png)
 
+<!-- Release -->
 [![Docker](https://img.shields.io/docker/v/iiidev/iii?label=docker)](https://hub.docker.com/r/iiidev/iii)
 [![npm](https://img.shields.io/npm/v/iii-sdk?label=npm)](https://www.npmjs.com/package/iii-sdk)
 [![PyPI](https://img.shields.io/pypi/v/iii-sdk?label=pypi)](https://pypi.org/project/iii-sdk/)
 [![Crates.io](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcrates.io%2Fapi%2Fv1%2Fcrates%2Fiii-sdk&query=%24.crate.max_stable_version&label=crates.io&prefix=v&color=orange)](https://crates.io/crates/iii-sdk)
+
+<!-- Downloads -->
+[![Worker downloads](https://workers.iii.dev/badge/downloads.svg)](https://workers.iii.dev/)
+[![Weekly worker downloads](https://workers.iii.dev/badge/weekly.svg)](https://workers.iii.dev/)
+[![npm downloads](https://img.shields.io/npm/dt/iii-sdk?label=npm%20downloads&color=cb3837)](https://www.npmjs.com/package/iii-sdk)
+[![PyPI downloads](https://static.pepy.tech/personalized-badge/iii-sdk?period=total&units=international_system&left_color=grey&right_color=blue&left_text=pypi%20downloads)](https://pepy.tech/projects/iii-sdk)
+[![Crates.io downloads](https://img.shields.io/crates/d/iii-sdk?label=crates.io%20downloads&color=e6a04c)](https://crates.io/crates/iii-sdk)
 
 ## What is iii?
 
