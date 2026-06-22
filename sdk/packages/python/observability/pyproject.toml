@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iii-observability"
-version = "0.19.4"
+version = "0.19.5.dev1"
 description = "Deprecated shim: re-exports iii_helpers.observability. Import from iii-helpers instead."
 authors = [{ name = "III" }]
 license = { text = "Apache-2.0" }
