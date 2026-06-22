@@ -23,12 +23,13 @@
 
 <!-- Index -->
 <p align="center">
-  <a href="https://iii.dev/docs/quickstart">Quickstart</a> ·
-  <a href="https://iii.dev/docs">Docs</a> ·
-  <a href="https://workers.iii.dev/">Workers</a> ·
-  <a href="https://iii.dev/docs/using-iii/console">Console</a> ·
-  <a href="https://github.com/iii-hq/iii-examples">Examples</a> ·
-  <a href="https://discord.gg/iiidev">Discord</a>
+  <a href="#what-is-iii">What is iii?</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#add-workers">Add Workers</a> ·
+  <a href="#sdks">SDKs</a> ·
+  <a href="#agent-skills">Agent Skills</a> ·
+  <a href="#console">Console</a> ·
+  <a href="#resources">Resources</a>
 </p>
 
 ## What is iii?
