@@ -70,6 +70,10 @@ pub enum StoreError {
     InvalidId(String),
     #[error("schema validation failed: {0}")]
     SchemaInvalid(String),
+    #[error(
+        "configuration '{0}' has no schema available yet; the owning worker must register before values can be set"
+    )]
+    SchemaUnavailable(String),
     #[error(transparent)]
     Adapter(#[from] anyhow::Error),
 }
@@ -163,6 +167,11 @@ impl ConfigurationStore {
             None => return Err(StoreError::NotRegistered(id.to_string())),
         };
 
+        // No schema cached yet (the owning worker hasn't re-registered this
+        // session) — reject rather than validate against a null schema.
+        if entry.schema.is_null() {
+            return Err(StoreError::SchemaUnavailable(id.to_string()));
+        }
         if let Err(errs) = validate_against_schema(&value, &entry.schema) {
             return Err(StoreError::SchemaInvalid(errs.join("; ")));
         }
@@ -354,6 +363,57 @@ mod tests {
             view.schema, strict,
             "the stored schema must be refreshed to the tightened version"
         );
+    }
+
+    // `set` against an entry whose schema is null (the shape a disk-loaded entry
+    // has before its worker re-registers) must be rejected, then succeed once a
+    // real schema is registered.
+    #[tokio::test]
+    async fn set_without_schema_is_rejected_then_succeeds_after_register() {
+        use crate::workers::configuration::adapters::ConfigurationAdapter;
+        use crate::workers::configuration::adapters::fs::FsAdapter;
+
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = Arc::new(
+            FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+                .await
+                .unwrap(),
+        ) as Arc<dyn ConfigurationAdapter>;
+        let store = ConfigurationStore::new(adapter);
+
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                Value::Null,
+                None,
+                None,
+            )
+            .await
+            .expect("register with a null schema (no value validated)");
+
+        let err = store
+            .set("demo", json!({ "port": 1 }))
+            .await
+            .expect_err("set must be rejected while no schema is available");
+        assert!(matches!(err, StoreError::SchemaUnavailable(_)));
+
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                json!({ "type": "object" }),
+                None,
+                None,
+            )
+            .await
+            .expect("schema refresh");
+        store
+            .set("demo", json!({ "port": 1 }))
+            .await
+            .expect("set succeeds once a real schema is present");
     }
 
     #[test]

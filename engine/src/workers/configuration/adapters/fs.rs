@@ -6,8 +6,11 @@
 
 //! File-system adapter — one YAML file per configuration id.
 //!
-//! Layout: `<directory>/<id>.yaml` where each file is a serialised
-//! [`ConfigurationEntry`]. The adapter watches the directory with `notify`
+//! Layout: `<directory>/<id>.yaml` holding the entry's id/name/description,
+//! `value`, and optional `metadata`. The JSON Schema is deliberately NOT
+//! persisted — it is large and workers re-register it on every boot, so the
+//! disk file stays focused on the value a human edits. The adapter watches the
+//! directory with `notify`
 //! and surfaces external edits through the `ExternalChange` channel so the
 //! worker can fire `configuration` triggers without depending on the source
 //! of the change.
@@ -123,8 +126,14 @@ impl FsAdapter {
     }
 
     async fn write_entry(&self, entry: &ConfigurationEntry) -> anyhow::Result<()> {
+        // schema omitted — see module doc; rebuilt from re-registration.
         let path = self.entry_path(&entry.id);
-        let yaml = serde_yaml::to_string(entry)
+        let mut doc = serde_yaml::to_value(entry)
+            .map_err(|e| anyhow::anyhow!("failed to serialise entry: {}", e))?;
+        if let Some(map) = doc.as_mapping_mut() {
+            map.remove("schema");
+        }
+        let yaml = serde_yaml::to_string(&doc)
             .map_err(|e| anyhow::anyhow!("failed to serialise entry: {}", e))?;
         let tmp = path.with_extension(format!("{}.tmp", FILE_EXTENSION));
         tokio::fs::write(&tmp, yaml.as_bytes()).await?;
@@ -270,19 +279,26 @@ impl ConfigurationAdapter for FsAdapter {
                 for (id, fresh) in snapshot.iter() {
                     match cache_guard.get(id) {
                         None => {
+                            // New file with no cached entry; its schema stays
+                            // null until the owning worker registers it.
                             events.push(ExternalChange::Registered(fresh.clone()));
                         }
+                        // `schema` is intentionally absent from this diff: it no
+                        // longer lives on disk, so an external edit can't change
+                        // it. Comparing it would flag every write as changed
+                        // (cached real schema vs disk's null).
                         Some(existing)
                             if existing.value != fresh.value
-                                || existing.schema != fresh.schema
                                 || existing.name != fresh.name
                                 || existing.description != fresh.description =>
                         {
+                            // Carry the cached schema forward so the event (and
+                            // the cache update below) keep the real schema rather
+                            // than blanking it to the disk's null.
+                            let mut entry = fresh.clone();
+                            entry.schema = existing.schema.clone();
                             let old_value = Some(existing.value.clone());
-                            events.push(ExternalChange::Updated {
-                                entry: fresh.clone(),
-                                old_value,
-                            });
+                            events.push(ExternalChange::Updated { entry, old_value });
                         }
                         _ => {}
                     }
@@ -369,6 +385,13 @@ mod tests {
 
         let path = dir.path().join("iii-stream.yaml");
         assert!(path.exists(), "yaml file should be created on disk");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            !contents.contains("schema"),
+            "schema must not be persisted to disk; got:\n{contents}"
+        );
+        assert!(contents.contains("port"), "value must be persisted");
     }
 
     #[tokio::test]
@@ -461,6 +484,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loading_schemaless_file_defaults_schema_to_null() {
+        let dir = temp_dir();
+        // A value-only file (no `schema:` key) is exactly what `write_entry`
+        // now produces; loading it must default schema to null, not error.
+        let yaml = "id: noschema\nname: No Schema\ndescription: test\nvalue:\n  port: 3112\n";
+        tokio::fs::write(dir.path().join("noschema.yaml"), yaml)
+            .await
+            .unwrap();
+
+        let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+            .await
+            .unwrap();
+        let read = adapter.get("noschema").await.unwrap().unwrap();
+        assert!(
+            read.schema.is_null(),
+            "missing schema should default to null"
+        );
+        assert_eq!(read.value, json!({ "port": 3112 }));
+    }
+
+    #[tokio::test]
     async fn watcher_emits_registered_event_on_external_create() {
         let dir = temp_dir();
         let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
@@ -482,6 +526,46 @@ mod tests {
         match evt {
             ExternalChange::Registered(e) => assert_eq!(e.id, "external"),
             other => panic!("unexpected change: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn watcher_carries_cached_schema_forward_on_external_update() {
+        let dir = temp_dir();
+        let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+            .await
+            .unwrap();
+        // Register so the adapter cache holds the real schema; the file on disk
+        // is value-only (write_entry drops schema).
+        adapter.register(sample_entry("watched")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        adapter.watch(tx).await.unwrap();
+
+        // External edit changing only the value, in the value-only on-disk format.
+        let edited =
+            "id: watched\nname: watched display\ndescription: test\nvalue:\n  port: 9999\n";
+        tokio::fs::write(dir.path().join("watched.yaml"), edited)
+            .await
+            .unwrap();
+
+        let evt = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("watcher should report an event")
+            .expect("channel closed");
+        match evt {
+            ExternalChange::Updated { entry, old_value } => {
+                assert_eq!(entry.value, json!({ "port": 9999 }));
+                assert_eq!(old_value, Some(json!({ "port": 3112 })));
+                // Schema is absent on disk but must be carried forward from cache,
+                // not blanked to null — and the value edit must fire exactly one
+                // Updated event (schema is no longer part of the diff).
+                assert_eq!(
+                    entry.schema,
+                    json!({ "type": "object" }),
+                    "cached schema must survive an external value edit"
+                );
+            }
+            other => panic!("expected Updated, got {:?}", other),
         }
     }
 

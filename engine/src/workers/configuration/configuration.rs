@@ -316,6 +316,7 @@ fn store_error_to_failure(err: StoreError) -> ErrorBody {
         StoreError::NotRegistered(_) => "NOT_REGISTERED",
         StoreError::InvalidId(_) => "INVALID_ID",
         StoreError::SchemaInvalid(_) => "SCHEMA_INVALID",
+        StoreError::SchemaUnavailable(_) => "SCHEMA_UNAVAILABLE",
         StoreError::Adapter(_) => "ADAPTER_ERROR",
     };
     ErrorBody {
@@ -582,6 +583,33 @@ mod tests {
         match result {
             FunctionResult::Failure(err) => assert_eq!(err.code, "NOT_REGISTERED"),
             _ => panic!("expected NOT_REGISTERED"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_without_available_schema_returns_schema_unavailable() {
+        let (_engine, worker, _dir) = setup().await;
+        // Register with a null schema (the shape a disk-loaded entry has before
+        // its worker re-registers); no initial_value is validated.
+        worker
+            .register_fn(ConfigurationRegisterInput {
+                id: "iii-stream".into(),
+                name: "iii-stream display".into(),
+                description: "test".into(),
+                schema: Value::Null,
+                initial_value: None,
+                metadata: None,
+            })
+            .await;
+        let result = worker
+            .set_fn(ConfigurationSetInput {
+                id: "iii-stream".into(),
+                value: json!({ "port": 4242 }),
+            })
+            .await;
+        match result {
+            FunctionResult::Failure(err) => assert_eq!(err.code, "SCHEMA_UNAVAILABLE"),
+            _ => panic!("expected SCHEMA_UNAVAILABLE"),
         }
     }
 
