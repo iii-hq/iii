@@ -80,15 +80,22 @@ function renderType(type: TypeDoc, codeLang: string, knownTypes: Set<string>, de
 }
 
 function renderFrontmatter(doc: SdkDoc): string[] {
-  return [
-    '---',
-    `title: "${doc.metadata.title}"`,
+  const lines = ['---', `title: "${doc.metadata.title}"`]
+  // For the per-language helpers (library) pages the title is "Helpers (Lang)";
+  // shorten the sidebar entry to just the language so the Helpers nav group reads
+  // "Node.js / Python / Rust" while the page heading keeps the full title.
+  const langSuffix = doc.isLibrary ? doc.metadata.title.match(/\(([^)]+)\)\s*$/)?.[1] : undefined
+  if (langSuffix) {
+    lines.push(`sidebarTitle: "${langSuffix}"`)
+  }
+  lines.push(
     `description: "${doc.metadata.description}"`,
     '---',
     '',
     '{/* AUTO-GENERATED FILE. Do not edit manually. Run docs/next/scripts/generate-api-docs.mts (see the Generate API Docs workflow). */}',
     '',
-  ]
+  )
+  return lines
 }
 
 function renderLibraryMdx(doc: SdkDoc): string {
