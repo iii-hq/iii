@@ -11,6 +11,7 @@
 <!-- Downloads -->
 [![Worker downloads](https://workers.iii.dev/badge/downloads.svg)](https://workers.iii.dev/)
 [![Weekly worker downloads](https://workers.iii.dev/badge/weekly.svg)](https://workers.iii.dev/)
+[![Docker pulls](https://img.shields.io/docker/pulls/iiidev/iii?label=docker%20pulls&color=2496ed)](https://hub.docker.com/r/iiidev/iii)
 [![npm downloads](https://img.shields.io/npm/dt/iii-sdk?label=npm%20downloads&color=cb3837)](https://www.npmjs.com/package/iii-sdk)
 [![PyPI downloads](https://static.pepy.tech/personalized-badge/iii-sdk?period=total&units=international_system&left_color=grey&right_color=blue&left_text=pypi%20downloads)](https://pepy.tech/projects/iii-sdk)
 [![Crates.io downloads](https://img.shields.io/crates/d/iii-sdk?label=crates.io%20downloads&color=e6a04c)](https://crates.io/crates/iii-sdk)
