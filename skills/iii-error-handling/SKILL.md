@@ -44,12 +44,12 @@ Branch on exact `code` strings, but keep engine wire codes separate from SDK-loc
 ### Node
 
 ```typescript
-import { IIIInvocationError } from 'iii-sdk'
+import { InvocationError } from 'iii-sdk'
 
 try {
   await iii.trigger({ function_id: 'orders::charge', payload })
 } catch (error) {
-  if (error instanceof IIIInvocationError && error.code === 'FORBIDDEN') {
+  if (error instanceof InvocationError && error.code === 'FORBIDDEN') {
     throw new Error('Policy denied orders::charge')
   }
   throw error
@@ -59,16 +59,14 @@ try {
 ### Python
 
 ```python
-from iii import IIIForbiddenError, IIIInvocationError, IIITimeoutError
+from iii import InvocationError
 
 try:
     result = iii.trigger({"function_id": "orders::charge", "payload": payload})
-except IIIForbiddenError:
-    raise RuntimeError("Policy denied orders::charge")
-except IIITimeoutError:
-    raise RuntimeError("orders::charge timed out")
-except IIIInvocationError as exc:
-    if exc.code == "timeout":
+except InvocationError as exc:
+    if exc.code == "FORBIDDEN":
+        raise RuntimeError("Policy denied orders::charge")
+    if exc.code in ("TIMEOUT", "timeout"):
         raise RuntimeError("orders::charge timed out")
     raise RuntimeError(f"{exc.code}: {exc.message}")
 ```
@@ -78,10 +76,10 @@ except IIIInvocationError as exc:
 ```rust
 match iii.trigger(request).await {
     Ok(value) => value,
-    Err(iii_sdk::IIIError::Timeout) => {
+    Err(iii_sdk::Error::Timeout) => {
         return Err("orders::charge timed out".into());
     }
-    Err(iii_sdk::IIIError::Remote { code, message, .. }) if code == "FORBIDDEN" => {
+    Err(iii_sdk::Error::Remote { code, message, .. }) if code == "FORBIDDEN" => {
         return Err(format!("policy denied: {message}").into());
     }
     Err(err) => return Err(err.into()),
