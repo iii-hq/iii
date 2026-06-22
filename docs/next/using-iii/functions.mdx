@@ -52,7 +52,7 @@ and returns the result.
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(&url, InitOptions::default());
 
-    worker.register_function(RegisterFunction::new("math::add", |input: AddInput| {
+    worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))
     }));
     ```
@@ -74,6 +74,11 @@ by default the call waits for the function to return its result, or for the conf
 fire. Pass a different `TriggerAction` to change that.
 
 <Tabs>
+  <Tab title="CLI">
+    ```bash
+    iii trigger math::add a=2 b=3
+    ```
+  </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
     import { TriggerAction } from "iii-sdk";
@@ -118,11 +123,6 @@ fire. Pass a different `TriggerAction` to change that.
         .await?;
     ```
 
-  </Tab>
-  <Tab title="CLI">
-    ```bash
-    iii trigger math::add a=2 b=3
-    ```
   </Tab>
 </Tabs>
 
@@ -170,7 +170,7 @@ make state changes, or try any other manipulation or new code interactively. Tha
 tool for development and debugging.
 
 <Note>
-  Request and response formats are what make `iii trigger --help` work. Functions can carry JSON
+  Request and response formats are what make `iii trigger <function> --help` work. Functions can carry JSON
   Schemas for their request payload and response shape. For how to create these schemas when
   registering a function, see [Creating Workers /
   Functions](../creating-workers/functions#attach-request-and-response-schemas).

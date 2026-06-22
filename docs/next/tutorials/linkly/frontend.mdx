@@ -18,8 +18,12 @@ A browser worker connects through `iii-worker-manager`'s RBAC-gated listener, se
 trusted port your local workers use. We'll encapsulate the authentication logic in an `auth` worker
 to gate those connections, so scaffold it the same way you scaffolded `link` in Chapter 1:
 
+<Note>
+  If you're continuing from the previous channel you might still be in the `test-channels` folder.
+  Make sure to `cd ..`!
+</Note>
+
 ```bash
-iii worker add iii-worker-manager
 iii worker init auth --language typescript
 ```
 
@@ -66,7 +70,7 @@ arbitrary context). Throw to reject. Replace the generated `auth/src/index.ts`:
 
 ```typescript auth/src/index.ts
 import { registerWorker } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
   workerName: "auth",
@@ -128,7 +132,10 @@ worker.registerFunction("link::delete", async (payload: { code: string }) => {
 
 Now add a wrapper that asks the connected browser first, then deletes only if the browser confirms.
 The server-side `worker.trigger` of a browser-registered function is the same primitive you've used
-between server workers, in reverse:
+between server workers, in reverse. This lets us reverse the typical pattern: instead of the browser asking the server for
+confirmation, the server asks the browser.
+Other implementations would achieve this with SSE but here it works like normal synchronous
+code.
 
 ```typescript link/src/index.ts
 worker.registerFunction("link::request_delete", async (payload: { code: string }) => {
@@ -172,7 +179,8 @@ npm install iii-browser-sdk
 
 ### Setup a client-side worker
 
-Wire the SDK in `src/iii.ts`:
+Connect the SDK to our iii instance in `frontend/src/iii.ts`. Note how we're using a different URL
+format and port, this goes back to the setup we did with `iii-worker-manager` and RBAC.
 
 ```typescript src/iii.ts
 import { registerWorker } from "iii-browser-sdk";
