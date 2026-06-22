@@ -166,7 +166,7 @@ make state changes, or try any other manipulation or new code interactively. Tha
 tool for development and debugging.
 
 <Note>
-  Request and response formats are what make `iii trigger --help` work. Functions can carry JSON
+  Request and response formats are what make `iii trigger <function> --help` work. Functions can carry JSON
   Schemas for their request payload and response shape. For how to create these schemas when
   registering a function, see [Creating Workers /
   Functions](../creating-workers/functions#attach-request-and-response-schemas).

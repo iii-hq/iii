@@ -151,8 +151,8 @@ to reject the connection.**
   </Tab>
   <Tab title="Rust">
     ```rust src/main.rs
-    use iii_sdk::{AuthInput, InitOptions, RegisterFunction, register_worker};
-    use serde_json::json;
+    use iii_sdk::{AuthInput, InitOptions, MiddlewareFunctionInput, RegisterFunction, TriggerRequest, register_worker};
+    use serde_json::{json, Value};
 
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
     let worker = register_worker(&url, InitOptions::default());
