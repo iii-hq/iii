@@ -60,7 +60,7 @@ workers:
 Receives `AuthInput { headers, query_params, ip_address }`, returns `AuthResult`. Throw to reject the connection.
 
 ```typescript
-import type { AuthInput, AuthResult } from 'iii-sdk'
+import type { AuthInput, AuthResult } from '@iii-dev/helpers/worker-connection-manager'
 
 iii.registerFunction(
   'my-project::auth',
@@ -121,7 +121,7 @@ import type {
   OnFunctionRegistrationInput,
   OnTriggerRegistrationInput,
   OnTriggerTypeRegistrationInput,
-} from 'iii-sdk'
+} from '@iii-dev/helpers/worker-connection-manager'
 
 iii.registerFunction(
   'my-project::on-fn-reg',
