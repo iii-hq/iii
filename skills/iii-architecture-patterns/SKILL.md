@@ -95,7 +95,7 @@ use iii_sdk::TriggerAction;
 use iii_sdk::protocol::TriggerRequest;
 use serde_json::json;
 
-async fn enqueue_charge(iii: iii_sdk::III, order: serde_json::Value) -> Result<serde_json::Value, iii_sdk::IIIError> {
+async fn enqueue_charge(iii: iii_sdk::IIIClient, order: serde_json::Value) -> Result<serde_json::Value, iii_sdk::Error> {
     iii.trigger(TriggerRequest {
         function_id: "state::update".into(),
         payload: json!({
