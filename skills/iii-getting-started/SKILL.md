@@ -53,13 +53,13 @@ Pick your language:
 
 ```bash
 # TypeScript / Node.js
-npm install iii-sdk
+npm install iii-sdk @iii-dev/helpers
 
 # Python
-pip install iii-sdk
+pip install iii-sdk iii-helpers
 
 # Rust
-cargo add iii-sdk
+cargo add iii-sdk iii-helpers
 ```
 
 ## Step 5: Write Your First Worker
@@ -67,7 +67,8 @@ cargo add iii-sdk
 ### TypeScript
 
 ```typescript
-import { registerWorker, Logger, TriggerAction } from "iii-sdk";
+import { registerWorker, TriggerAction } from "iii-sdk";
+import { Logger } from "@iii-dev/helpers/observability";
 
 const iii = registerWorker(process.env.III_URL ?? "ws://localhost:49134");
 
@@ -92,7 +93,8 @@ iii.registerTrigger({
 ### Python
 
 ```python
-from iii import register_worker, InitOptions, Logger
+from iii import register_worker, InitOptions
+from iii_helpers.observability import Logger
 
 iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="hello-worker"))
 
@@ -109,7 +111,9 @@ iii.register_trigger({"type": "http", "function_id": "hello::greet", "config": {
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, RegisterTriggerInput};
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_helpers::observability::Logger;
 use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());

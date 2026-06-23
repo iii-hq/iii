@@ -92,9 +92,9 @@ When one fits, install it: `worker::add { source: { kind: 'registry', name: '<wo
 import {
   registerWorker, // factory; opens the WS from your code's perspective synchronously
   TriggerAction, // .Void() | .Enqueue({ queue })
-  IIIInvocationError, // typed error thrown by iii.trigger()
-  Logger, // OTel-aware structured logger; falls back to console.*
+  InvocationError, // typed error thrown by iii.trigger()
 } from 'iii-sdk'
+import { Logger } from '@iii-dev/helpers/observability' // OTel-aware structured logger; falls back to console.*
 
 const iii = registerWorker(process.env.III_ENGINE_URL!, {
   workerName: 'my-worker', // appears in engine::workers::list
@@ -139,7 +139,7 @@ Schemas in `registerFunction` (`description`, `request_format`, `response_format
 
 ### Errors
 
-- **Throw inside the handler** → propagates to the caller as `IIIInvocationError` (carries `code`, `function_id`, `stacktrace`). Use for unexpected failures a retry might fix.
+- **Throw inside the handler** → propagates to the caller as `InvocationError` (carries `code`, `function_id`, `stacktrace`). Use for unexpected failures a retry might fix.
 - **Return a structured value** (`{ ok: false, reason }`) → the call succeeds; the caller branches on the shape. Use for expected failures (validation, not-found, business rules).
 
 Rule of thumb: if a retry might succeed, throw; if it will fail the same way, return a value.
@@ -261,5 +261,5 @@ Install, run, and remove workers. Each op is also `iii worker <cmd>` on the CLI.
 - **Reinventing what exists.** Run the discovery steps (`engine::functions::list`, then `directory::registry::workers::list`) before authoring anything.
 - **Hardwiring a remembered worker.** Pick the capability the live engine and registry surface, in order — not the one you reached for last time.
 - **Side-channel state between workers.** Don't have workers read each other's files or hit each other's endpoints; route every cross-worker call through `iii.trigger`, and use a shared-state worker (discover one in the registry) for shared key/value.
-- **Catching the wrong error type.** `iii.trigger()` throws `IIIInvocationError`; catch that specifically or you lose `code` / `function_id` / `stacktrace`.
+- **Catching the wrong error type.** `iii.trigger()` throws `InvocationError`; catch that specifically or you lose `code` / `function_id` / `stacktrace`.
 - **Trusting introspection over runtime probes.** An empty `*::list` can mean lag, not absence — a successful `iii.trigger()` is the authoritative signal.
