@@ -5,6 +5,18 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.19.6" description="June 2026">
+  ## Overlay workers boot on every architecture
+
+  The shared read-only overlay base introduced in 0.19.5 was built as **squashfs**, but the libkrunfw guest kernel on **x86_64** ships without `CONFIG_SQUASHFS`. Mounting the lower returned `ENODEV`, the overlay never assembled, the VM never reached ready, and the worker timed out. It only surfaced on x86_64 — aarch64 (Apple Silicon) dev kernels carry squashfs, so local boots passed while Linux/x86_64 hosts and CI runners failed.
+
+  The overlay lower is now built as **erofs** — the one read-only filesystem the libkrunfw kernel mounts on **every** architecture (erofs + lz4 are present on both x86_64 and aarch64). The image is **uncompressed**, so the guest mounts it with no decompressor and pays no read-time decompression cost. The committed libkrunfw firmware is refreshed (kernel 6.12.68, ABI soname unchanged) to a build that carries erofs on every arch. Building the base is a pure-Rust, std-only erofs writer with no external dependency, and it streams through an on-disk spool to stay within bounded memory.
+
+  Trade-off: an uncompressed erofs base cache is **larger than the old squashfs+gzip** (~3.3×, observed 763 MB vs 230 MB for the node base). A worker's stale `<name>.sqfs` base from a 0.19.5 prerelease is garbage-collected the next time the base is extracted.
+
+  The overlay opt-out is unchanged — `III_ROOTFS_MODE=legacy` (env) or `rootfs.mode: legacy` in `config.yaml` falls back to the per-worker-clone boot.
+</Update>
+
 <Update label="0.19.5" description="June 2026">
   ## Workers share one read-only rootfs instead of cloning it per worker
 
