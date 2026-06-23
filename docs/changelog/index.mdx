@@ -10,7 +10,7 @@ type: "reference"
 
   Editing and saving a file in a local-path worker on the overlay copy-in path could fail on the **first** save with `iii: ERROR /mnt/host-src … is not a virtiofs mountpoint`, then work on the next save. The host source watcher tried an in-VM **fast restart** first — but that re-runs the boot script, and in copy-in mode the script **detaches** `/mnt/host-src` once it has copied your project into the VM. The re-run hit the now-absent share and aborted; the watcher then fell back to a full VM restart, which is why the second save worked.
 
-  The fast in-VM restart is now skipped for overlay copy-in workers — they always take a full VM restart, the only path that re-copies your edited source. (Even when it didn't error, a fast restart would have run **stale** source, since the project is copied at boot rather than live-mounted.) Live-mount workers — legacy and bundle — keep the fast restart. Net: one save, one clean restart, running your latest changes.
+  The fast in-VM restart is now skipped for overlay copy-in workers, so they take a full VM restart — the only path that re-copies your edited source. (Even when it didn't error, a fast restart would have run **stale** source, since the project is copied at boot rather than live-mounted.) Legacy live-mount workers keep the fast restart; bundle workers don't auto-restart on source edits at all. Net: one save, one clean restart, running your latest changes.
 </Update>
 
 <Update label="0.19.6" description="June 2026">

@@ -78,13 +78,27 @@ fn marker_path(managed_dir: &Path) -> PathBuf {
     managed_dir.join(LAYOUT_MARKER)
 }
 
-/// The worker's recorded layout, or `None` when unmarked (a pre-overlay
-/// install, or a fresh worker).
+/// Like [`read_layout`], but keeps the distinction between a *missing* marker
+/// (`Ok(None)` — a legacy/pre-overlay or fresh worker) and a marker that
+/// exists yet *can't be read* (`Err` — EACCES/EIO/ESTALE, a locked or
+/// truncated file, a path that isn't a regular file, …). Callers that must
+/// fail safe on an unreadable marker use this; [`read_layout`] collapses
+/// every error to `None`, which is the wrong default for a safety guard.
+pub fn try_read_layout(managed_dir: &Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(marker_path(managed_dir)) {
+        Ok(s) => {
+            let trimmed = s.trim();
+            Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 pub fn read_layout(managed_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(marker_path(managed_dir))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // Lossy by design: a missing OR unreadable marker both collapse to `None`.
+    // Callers that need to tell those apart use `try_read_layout`.
+    try_read_layout(managed_dir).ok().flatten()
 }
 
 /// Stamp the worker's layout marker.
@@ -139,6 +153,26 @@ mod tests {
         write_layout(&d, "legacy");
         assert_eq!(read_layout(&d).as_deref(), Some("legacy"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn try_read_layout_distinguishes_absent_from_unreadable() {
+        let d = tmp("try-read");
+        // Absent marker → Ok(None), NOT an error (a legacy/fresh worker).
+        assert!(matches!(try_read_layout(&d), Ok(None)));
+        // Present marker → Ok(Some(trimmed)).
+        write_layout(&d, LAYOUT_OVERLAY);
+        assert_eq!(
+            try_read_layout(&d).unwrap().as_deref(),
+            Some(LAYOUT_OVERLAY)
+        );
+        // Unreadable marker (a directory where the file should be) → Err, so
+        // callers can fail safe instead of mistaking it for "absent".
+        let d2 = tmp("try-read-dir");
+        std::fs::create_dir_all(d2.join(LAYOUT_MARKER)).unwrap();
+        assert!(try_read_layout(&d2).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&d2);
     }
 
     #[test]
