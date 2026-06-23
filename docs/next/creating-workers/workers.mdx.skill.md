@@ -266,7 +266,7 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
-      import { IIIInvocationError } from "iii-sdk";
+      import { InvocationError } from "iii-sdk/errors";
 
       try {
         const result = await worker.trigger({
@@ -274,7 +274,7 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
           payload: { a: 1, b: 2 },
         });
       } catch (err) {
-        if (err instanceof IIIInvocationError && err.code === "invocation_stopped") {
+        if (err instanceof InvocationError && err.code === "invocation_stopped") {
           // Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
           // (see "Subscribe to changes" below) to know when to retry.
           return;
@@ -285,14 +285,14 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
     </Tab>
     <Tab title="Python">
       ```python
-      from iii import IIIInvocationError
+      from iii.errors import InvocationError
 
       try:
           result = worker.trigger({
               "function_id": "math::add",
               "payload": {"a": 1, "b": 2},
           })
-      except IIIInvocationError as err:
+      except InvocationError as err:
           if err.code == "invocation_stopped":
               # Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
               # (see "Subscribe to changes" below) to know when to retry.
