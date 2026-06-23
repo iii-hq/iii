@@ -114,7 +114,10 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
 /// Poll until `predicate` returns true or the deadline elapses. Trigger
 /// fan-out is spawned, so observable effects are eventually consistent.
 async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    // ponytail: 20s, not 5s — the happy path returns the moment `predicate`
+    // holds (polled every 25ms), so this only bounds the failure case. 5s was
+    // borderline under llvm-cov instrumentation and flaked the coverage job.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         if predicate() {
             return;

@@ -131,7 +131,8 @@ pub(crate) fn apply_strip(path: &str, config_id: &str, location: &str) -> bool {
             return false;
         }
     };
-    let Some(updated) = strip_worker_config_block(&raw, config_id, &seed_comment(config_id, location))
+    let Some(updated) =
+        strip_worker_config_block(&raw, config_id, &seed_comment(config_id, location))
     else {
         return false; // nothing to strip (entry/block absent) — idempotent no-op
     };
