@@ -1371,7 +1371,7 @@ async fn start_worker_impl(
     if !disable_watcher
         && exit_code == 0
         && let Err(e) =
-            spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher).await
+            spawn_source_watcher(worker_name, project_path, &managed_dir_for_watcher, overlay).await
     {
         eprintln!(
             "  {} source watcher failed to start: {}. Source edits will not auto-restart.",
@@ -1396,6 +1396,7 @@ async fn spawn_source_watcher(
     worker_name: &str,
     project_path: &Path,
     managed_dir: &Path,
+    overlay: bool,
 ) -> std::io::Result<()> {
     use std::path::PathBuf;
 
@@ -1447,6 +1448,12 @@ async fn spawn_source_watcher(
         .stdin(std::process::Stdio::null())
         .stdout(log_file)
         .stderr(log_file2);
+    // Hand the authoritative workspace model to the watcher so it never has to
+    // re-derive overlay-ness from the (best-effort, ambiguous) .iii-layout
+    // marker. Only passed when overlay; absence means live-mount.
+    if overlay {
+        cmd.arg("--overlay");
+    }
 
     #[cfg(unix)]
     unsafe {

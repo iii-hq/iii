@@ -530,48 +530,21 @@ fn fast_restart_eligible(kind: ChangeKind, overlay_copyin: bool) -> bool {
     matches!(kind, ChangeKind::Source) && !overlay_copyin
 }
 
-/// Returns `true` if `worker_name` runs in the overlay copy-in layout, read
-/// from its on-disk `.iii-layout` marker under `~/.iii/managed`. An unmarked
-/// (legacy) worker yields `false`; an *unreadable* marker fails safe to `true`
-/// (see [`is_overlay_copyin_in`]). A missing home dir yields `false`: without
-/// `~/.iii` the supervisor control socket is also unreachable, so the fast
-/// path self-corrects via `try_fast_restart`'s fallback instead of sticking.
-fn is_overlay_copyin(worker_name: &str) -> bool {
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    is_overlay_copyin_in(&home.join(".iii").join("managed"), worker_name)
-}
-
-/// Path-injectable core of [`is_overlay_copyin`], so the marker→bool mapping
-/// (including the fail-safe-on-unreadable behavior) is testable without a real
-/// `$HOME`.
-fn is_overlay_copyin_in(managed_root: &Path, worker_name: &str) -> bool {
-    match crate::cli::overlay::try_read_layout(&managed_root.join(worker_name)) {
-        Ok(layout) => layout.as_deref() == Some(crate::cli::overlay::LAYOUT_OVERLAY),
-        // Marker exists but is unreadable (EACCES/EIO/ESTALE, truncated, not a
-        // regular file, …): we can't tell what this worker is, so fail safe
-        // toward a full VM restart — the path that works for EVERY worker
-        // model. The control socket is still reachable in this case, so a fast
-        // restart would "succeed" (RPC accepted) and skip the fallback,
-        // silently reintroducing the /mnt/host-src bug this guard prevents. A
-        // genuinely MISSING marker is `Ok(None)` → treated as legacy (fast path
-        // kept), since absence is overwhelmingly a legacy worker, not overlay.
-        Err(_) => true,
-    }
-}
-
-pub fn restart_via_cli(worker_name: &str, kind: ChangeKind) {
-    // Overlay copy-in workers detach /mnt/host-src after the boot-time copy
-    // (see local_worker's dev-run.sh), so an in-VM supervisor fast restart
-    // would re-run that whole script and fail its host-src mountpoint check
-    // (`iii: ERROR /mnt/host-src ... is not a virtiofs mountpoint`) — and even
-    // on success would serve stale source, since the project is copied into a
-    // VM-local /workspace at boot, not live-mounted. Only a full VM restart
-    // re-copies. So the fast path is valid only for a source edit on a
-    // live-mount (legacy/bundle) worker.
-    let overlay = is_overlay_copyin(worker_name);
-    if fast_restart_eligible(kind, overlay) {
+pub fn restart_via_cli(worker_name: &str, kind: ChangeKind, overlay_copyin: bool) {
+    // `overlay_copyin` is handed down from `iii worker start`, which decided
+    // the workspace model authoritatively (`overlay::overlay_active()`) at the
+    // moment it spawned this watcher. We deliberately do NOT re-derive it from
+    // the on-disk `.iii-layout` marker: that marker is written best-effort (a
+    // swallowed write failure leaves it absent), and an absent marker is
+    // ambiguous between a legacy worker and an overlay worker whose write
+    // failed — so inferring from it can fail OPEN to the unsafe fast path. The
+    // fast path is valid only for a source edit on a live-mount (legacy/bundle)
+    // worker, because overlay copy-in detaches /mnt/host-src after the
+    // boot-time copy: an in-VM fast restart re-runs dev-run.sh, fails its
+    // host-src mountpoint check (`iii: ERROR /mnt/host-src ... is not a
+    // virtiofs mountpoint`), and even on success would serve stale source.
+    // Only a full VM restart re-copies.
+    if fast_restart_eligible(kind, overlay_copyin) {
         match try_fast_restart(worker_name) {
             Ok(()) => {
                 tracing::info!(
@@ -725,41 +698,6 @@ mod tests {
         // Dep-manifest changes always force a full restart (reinstall at boot).
         assert!(!fast_restart_eligible(ChangeKind::DepManifest, false));
         assert!(!fast_restart_eligible(ChangeKind::DepManifest, true));
-    }
-
-    fn overlay_copyin_detected_from_layout_marker() {
-        let tmp = tempfile::tempdir().unwrap();
-        let managed_root = tmp.path();
-        let marker = |name: &str| managed_root.join(name).join(".iii-layout");
-        let mk = |name: &str| std::fs::create_dir_all(managed_root.join(name)).unwrap();
-
-        // Unmarked dir (legacy) and a never-started worker → not overlay (fast OK).
-        mk("legacy-worker");
-        assert!(!is_overlay_copyin_in(managed_root, "legacy-worker"));
-        assert!(!is_overlay_copyin_in(managed_root, "never-started"));
-
-        // `.iii-layout` == "overlay" → overlay copy-in (full restart).
-        mk("ov-worker");
-        std::fs::write(marker("ov-worker"), crate::cli::overlay::LAYOUT_OVERLAY).unwrap();
-        assert!(is_overlay_copyin_in(managed_root, "ov-worker"));
-
-        // Trim contract this guard depends on: a trailing newline still resolves
-        // to overlay (the marker is sometimes written with one).
-        mk("ov-worker-nl");
-        std::fs::write(marker("ov-worker-nl"), "overlay\n").unwrap();
-        assert!(is_overlay_copyin_in(managed_root, "ov-worker-nl"));
-
-        // A non-overlay marker value (e.g. a future "legacy" stamp) → fast OK.
-        mk("legacy-marked");
-        std::fs::write(marker("legacy-marked"), "legacy").unwrap();
-        assert!(!is_overlay_copyin_in(managed_root, "legacy-marked"));
-
-        // Fail-safe: an UNREADABLE marker (here a directory where the file
-        // should be, so read_to_string errors with a non-NotFound kind) must be
-        // treated as overlay, so the watcher takes the safe full VM restart
-        // rather than the fast path that reintroduces the /mnt/host-src bug.
-        std::fs::create_dir_all(marker("unreadable-worker")).unwrap();
-        assert!(is_overlay_copyin_in(managed_root, "unreadable-worker"));
     }
 
     #[test]
