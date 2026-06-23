@@ -269,3 +269,254 @@ async fn config_reload_removes_worker_function_registrations() {
 
     drop(tmp);
 }
+
+// ---------------------------------------------------------------------------
+// First-boot seed strips the worker's config: block from config.yaml and moves
+// the value into the configuration store.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn first_seed_strips_config_block_and_moves_value_to_store() {
+    disable_builtin_daemons();
+
+    // The configuration worker persists value-only YAML into this temp dir so we
+    // can assert the seed landed there. iii-pubsub's `local` adapter binds no
+    // ports and writes no side-effect files, so it is a clean seeding subject.
+    let store = tempfile::tempdir().expect("store dir");
+    let store_dir = store.path().to_str().unwrap().to_string();
+
+    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
+    let path = tmp.path().to_path_buf();
+
+    let yaml = format!(
+        "workers:
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: {store_dir}
+      ttl_seconds: 0
+  - name: iii-pubsub
+    config:
+      adapter:
+        name: local
+modules: []
+"
+    );
+    write_config(&path, &yaml);
+
+    let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load config");
+    let builder = EngineBuilder::new()
+        .with_config(cfg)
+        .with_config_path(path.to_str().unwrap())
+        .build()
+        .await
+        .expect("build engine");
+    let handle = tokio::spawn(async move { builder.serve().await });
+
+    // serve() runs the serial boot loop (pubsub seeds), then the strip pass
+    // rewrites config.yaml — all before the file watcher is created.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let rewritten = std::fs::read_to_string(&path).expect("read rewritten config");
+
+    // Seed block gone, replaced by the breadcrumb comment; entry kept; the
+    // non-seeding configuration block left intact.
+    assert!(
+        rewritten.contains("iii config set iii-pubsub"),
+        "expected seed-strip comment, got:\n{rewritten}"
+    );
+    assert!(
+        rewritten.contains(&format!("at {store_dir}/iii-pubsub.yaml")),
+        "comment should point at the store location, got:\n{rewritten}"
+    );
+    assert!(
+        !rewritten.contains("name: local"),
+        "pubsub seed block should be stripped, got:\n{rewritten}"
+    );
+    assert!(
+        rewritten.contains("- name: iii-pubsub"),
+        "the worker entry itself must be kept, got:\n{rewritten}"
+    );
+    assert!(
+        rewritten.contains(&format!("directory: {store_dir}")),
+        "the configuration worker block must be left intact, got:\n{rewritten}"
+    );
+
+    // The value moved into the configuration store (value-only YAML).
+    let stored = std::fs::read_to_string(store.path().join("iii-pubsub.yaml"))
+        .expect("store file should exist");
+    assert!(
+        stored.contains("local"),
+        "stored value should hold the seeded adapter, got:\n{stored}"
+    );
+
+    handle.abort();
+    let _ = handle.await;
+
+    drop(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// A value already persisted in the store (from a prior boot) means the
+// config.yaml block is being ignored — it must still get stripped, even though
+// nothing is seeded this boot.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn already_persisted_value_also_strips_stale_config_block() {
+    disable_builtin_daemons();
+
+    let store = tempfile::tempdir().expect("store dir");
+    let store_dir = store.path().to_str().unwrap().to_string();
+
+    // Simulate a prior boot: the store already holds iii-pubsub's value (empty
+    // config = default adapter). The config.yaml block below is therefore being
+    // ignored at runtime — it must still get stripped.
+    std::fs::write(
+        store.path().join("iii-pubsub.yaml"),
+        "id: iii-pubsub\nname: PubSub\ndescription: pre-existing from a prior boot\nvalue: {}\n",
+    )
+    .expect("pre-seed store");
+
+    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
+    let path = tmp.path().to_path_buf();
+
+    let yaml = format!(
+        "workers:
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: {store_dir}
+      ttl_seconds: 0
+  - name: iii-pubsub
+    config:
+      adapter:
+        name: local
+modules: []
+"
+    );
+    write_config(&path, &yaml);
+
+    let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load config");
+    let builder = EngineBuilder::new()
+        .with_config(cfg)
+        .with_config_path(path.to_str().unwrap())
+        .build()
+        .await
+        .expect("build engine");
+    let handle = tokio::spawn(async move { builder.serve().await });
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let rewritten = std::fs::read_to_string(&path).expect("read rewritten config");
+    assert!(
+        rewritten.contains("iii config set iii-pubsub"),
+        "expected seed-strip comment on the already-persisted path, got:\n{rewritten}"
+    );
+    assert!(
+        rewritten.contains(&format!("at {store_dir}/iii-pubsub.yaml")),
+        "comment should point at the store location, got:\n{rewritten}"
+    );
+    assert!(
+        !rewritten.contains("name: local"),
+        "stale pubsub block should be stripped even when not seeding, got:\n{rewritten}"
+    );
+
+    // The pre-existing stored value was NOT overwritten by the config.yaml block
+    // — proving this was the already-persisted path, not a re-seed.
+    let stored = std::fs::read_to_string(store.path().join("iii-pubsub.yaml"))
+        .expect("store file should exist");
+    assert!(
+        stored.contains("value: {}"),
+        "stored value must stay the pre-existing empty config, not the config.yaml block, got:\n{stored}"
+    );
+
+    handle.abort();
+    let _ = handle.await;
+
+    drop(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// External workers (e.g. `shell`) register over the bus and never call the
+// engine-side register_config. The strip is store-driven, so once their value
+// is in the store their stale config.yaml block is removed too — proven here
+// with a non-builtin worker that registers nothing in-process.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn external_worker_block_stripped_from_store_value_alone() {
+    disable_builtin_daemons();
+
+    let store = tempfile::tempdir().expect("store dir");
+    let store_dir = store.path().to_str().unwrap().to_string();
+
+    // Value already in the store from a prior boot, for a worker that never
+    // calls the engine-side register_config (the external-worker case).
+    std::fs::write(
+        store.path().join("fake-ext.yaml"),
+        "id: fake-ext\nname: Fake\ndescription: external stand-in\nvalue:\n  some_key: stored\n",
+    )
+    .expect("pre-seed store");
+
+    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
+    let path = tmp.path().to_path_buf();
+    let yaml = format!(
+        "workers:
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: {store_dir}
+      ttl_seconds: 0
+  - name: fake-ext
+    config:
+      some_key: from_config_yaml
+modules: []
+"
+    );
+    write_config(&path, &yaml);
+
+    let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load config");
+    let builder = EngineBuilder::new()
+        .register_worker::<TestEphemeralWorker>("fake-ext")
+        .with_config(cfg)
+        .with_config_path(path.to_str().unwrap())
+        .build()
+        .await
+        .expect("build engine");
+    let handle = tokio::spawn(async move { builder.serve().await });
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let rewritten = std::fs::read_to_string(&path).expect("read rewritten config");
+    assert!(
+        rewritten.contains("iii config set fake-ext"),
+        "external worker block should be stripped with a breadcrumb, got:\n{rewritten}"
+    );
+    assert!(
+        rewritten.contains(&format!("at {store_dir}/fake-ext.yaml")),
+        "comment should point at the store location, got:\n{rewritten}"
+    );
+    assert!(
+        !rewritten.contains("from_config_yaml"),
+        "stale external block should be gone, got:\n{rewritten}"
+    );
+    assert!(
+        rewritten.contains("- name: fake-ext"),
+        "the worker entry itself must be kept, got:\n{rewritten}"
+    );
+
+    handle.abort();
+    let _ = handle.await;
+
+    drop(tmp);
+}
