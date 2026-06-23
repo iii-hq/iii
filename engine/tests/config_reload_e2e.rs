@@ -58,6 +58,27 @@ fn write_config(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write config file");
 }
 
+/// Poll `config.yaml` at `path` until it contains `needle` (the seed-strip
+/// breadcrumb), then return the rewritten contents. Panics after a generous
+/// deadline. The poll replaces a fixed sleep so slow CI runners (notably
+/// coverage instrumentation) don't flake when the strip pass runs slower than
+/// any constant wait — the file is written atomically, so once the breadcrumb
+/// is present the whole rewrite is.
+async fn wait_for_config_rewrite(path: &Path, needle: &str) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let contents = std::fs::read_to_string(path).unwrap_or_default();
+        if contents.contains(needle) {
+            return contents;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for config rewrite to contain {needle:?}; last content:\n{contents}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 fn make_dummy_function(id: &str) -> Function {
     Function {
         handler: Arc::new(|_invocation_id, _input, _session| {
@@ -317,17 +338,13 @@ modules: []
     let handle = tokio::spawn(async move { builder.serve().await });
 
     // serve() runs the serial boot loop (pubsub seeds), then the strip pass
-    // rewrites config.yaml — all before the file watcher is created.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-    let rewritten = std::fs::read_to_string(&path).expect("read rewritten config");
+    // rewrites config.yaml — all before the file watcher is created. Poll for
+    // the breadcrumb instead of a fixed sleep; the poll IS the assertion that
+    // the seed block was stripped and the breadcrumb comment written.
+    let rewritten = wait_for_config_rewrite(&path, "iii config set iii-pubsub").await;
 
     // Seed block gone, replaced by the breadcrumb comment; entry kept; the
     // non-seeding configuration block left intact.
-    assert!(
-        rewritten.contains("iii config set iii-pubsub"),
-        "expected seed-strip comment, got:\n{rewritten}"
-    );
     assert!(
         rewritten.contains(&format!("at {store_dir}/iii-pubsub.yaml")),
         "comment should point at the store location, got:\n{rewritten}"
@@ -412,13 +429,7 @@ modules: []
         .expect("build engine");
     let handle = tokio::spawn(async move { builder.serve().await });
 
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-    let rewritten = std::fs::read_to_string(&path).expect("read rewritten config");
-    assert!(
-        rewritten.contains("iii config set iii-pubsub"),
-        "expected seed-strip comment on the already-persisted path, got:\n{rewritten}"
-    );
+    let rewritten = wait_for_config_rewrite(&path, "iii config set iii-pubsub").await;
     assert!(
         rewritten.contains(&format!("at {store_dir}/iii-pubsub.yaml")),
         "comment should point at the store location, got:\n{rewritten}"
@@ -495,13 +506,7 @@ modules: []
         .expect("build engine");
     let handle = tokio::spawn(async move { builder.serve().await });
 
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-    let rewritten = std::fs::read_to_string(&path).expect("read rewritten config");
-    assert!(
-        rewritten.contains("iii config set fake-ext"),
-        "external worker block should be stripped with a breadcrumb, got:\n{rewritten}"
-    );
+    let rewritten = wait_for_config_rewrite(&path, "iii config set fake-ext").await;
     assert!(
         rewritten.contains(&format!("at {store_dir}/fake-ext.yaml")),
         "comment should point at the store location, got:\n{rewritten}"
