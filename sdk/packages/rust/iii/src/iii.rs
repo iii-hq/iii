@@ -541,14 +541,14 @@ fn empty_message() -> RegisterFunctionMessage {
 /// and optional metadata.
 ///
 /// Constructors:
-/// - [`RegisterFunction::new`]: sync function. Accepts both typed handlers
+/// - [`RegisterFunction::new`][]: sync function. Accepts both typed handlers
 ///   (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, Error>`
 ///   closures (permissive `AnyValue` schema, since `Value: JsonSchema`).
-/// - [`RegisterFunction::new_async`]: async equivalent of `new`.
-/// - [`RegisterFunction::new_async_with_bad_request`]: typed async handler
+/// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
+/// - [`RegisterFunction::new_async_with_bad_request`][]: typed async handler
 ///   that routes payload-deserialization failures through a caller-supplied
 ///   mapper instead of the SDK's generic [`Error::Serde`].
-/// - [`RegisterFunction::http`]: function invoked over HTTP (Lambda,
+/// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
 ///
 /// Builder methods (all consume `self`):
@@ -1059,7 +1059,7 @@ impl IIIClient {
     /// The routing behavior depends on the `action` field of the request:
     /// - No action: synchronous -- waits for the function to return.
     /// - [`TriggerAction::Enqueue`] - async via named queue.
-    /// - [`TriggerAction::Void`]: fire-and-forget.
+    /// - [`TriggerAction::Void`][]: fire-and-forget.
     ///
     /// # Examples
     /// ```rust
