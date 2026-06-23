@@ -11,6 +11,14 @@ type: "reference"
   Editing and saving a file in a local-path worker on the overlay copy-in path could fail on the **first** save with `iii: ERROR /mnt/host-src … is not a virtiofs mountpoint`, then work on the next save. The host source watcher tried an in-VM **fast restart** first — but that re-runs the boot script, and in copy-in mode the script **detaches** `/mnt/host-src` once it has copied your project into the VM. The re-run hit the now-absent share and aborted; the watcher then fell back to a full VM restart, which is why the second save worked.
 
   The fast in-VM restart is now skipped for overlay copy-in workers, so they take a full VM restart — the only path that re-copies your edited source. (Even when it didn't error, a fast restart would have run **stale** source, since the project is copied at boot rather than live-mounted.) Legacy live-mount workers keep the fast restart; bundle workers don't auto-restart on source edits at all. Net: one save, one clean restart, running your latest changes.
+
+  ## `config.yaml` worker blocks are stripped once their value is persisted
+
+  Every worker's runtime settings already live in the configuration worker — the `config.yaml` block was **seed-only**, read once on first boot and ignored afterwards. But the block still sat in `config.yaml`, looking authoritative while being dead. Now, once a worker's value is persisted in the configuration store, its `config:` block is **removed from `config.yaml`** on the next boot: the `- name:` entry is kept and the block is replaced with a one-line breadcrumb pointing at where the value now lives (`./data/configuration/<id>.yaml` with the default `fs` adapter) and how to change it (`iii config set <id>` or `configuration::set`). This covers built-in workers (stripped on the first boot after they seed) and external workers like `shell` that register over the bus (stripped on the first boot after their value is in the store).
+
+  The rewrite is line-based and byte-preserving on purpose — it deletes only the contiguous block and inserts one comment, so comments, key order, and `${VAR:default}` placeholders in **other** blocks are left exactly as written (a `serde_yaml` round-trip would have mangled all three). The file is written atomically, and the strip is best-effort: a read/write failure is logged and never fails boot, and a second boot with the block already gone is a no-op. The strip runs before the file watcher starts, so it never trips a config reload.
+
+  Relatedly, the persisted store files are now **value-only**: the configuration worker writes just the setting value to `<id>.yaml` and no longer dumps the JSON schema alongside it, so the on-disk files are smaller and hand-editable.
 </Update>
 
 <Update label="0.19.6" description="June 2026">

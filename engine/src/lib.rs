@@ -22,6 +22,7 @@ pub mod worker_connections;
 pub mod workers {
     pub mod bridge_client;
     pub mod config;
+    pub mod config_rewrite;
     pub mod configuration;
     pub mod cron;
     pub mod engine_fn;
