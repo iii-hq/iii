@@ -514,17 +514,50 @@ where
     Ok(())
 }
 
-/// Production restart dispatcher.
+/// Whether the in-VM supervisor fast restart is valid for this change.
 ///
-/// For `ChangeKind::Source`, tries the supervisor fast path first. If
-/// the supervisor is unreachable (not installed, crashed, timeout), or
-/// if the change is a `DepManifest`, falls back to a full VM restart
-/// via `iii-worker start <name>`.
-///
-/// Invoked by `watch_and_restart` on every debounced file-change
-/// burst.
+/// Valid only for a regular source edit on a live-mount worker
+/// (legacy/bundle), where `/workspace` IS the host project and a process
+/// restart picks up the edit. INVALID for:
+///   - `DepManifest` changes — deps reinstall only at boot, so a full VM
+///     restart is required.
+///   - overlay copy-in workers — the host project is copied into a VM-local
+///     `/workspace` at boot and `/mnt/host-src` is then detached, so an in-VM
+///     restart re-runs `dev-run.sh`, fails its host-src mountpoint check, and
+///     even on success would serve stale source. Only a full VM restart
+///     re-copies.
+fn fast_restart_eligible(kind: ChangeKind, overlay_copyin: bool) -> bool {
+    matches!(kind, ChangeKind::Source) && !overlay_copyin
+}
+
+/// Returns `true` if `worker_name` runs in the overlay copy-in layout, read
+/// from its on-disk `.iii-layout` marker under `~/.iii/managed`. An unknown
+/// home dir or an unmarked (legacy) worker yields `false`.
+fn is_overlay_copyin(worker_name: &str) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    is_overlay_copyin_in(&home.join(".iii").join("managed"), worker_name)
+}
+
+/// Path-injectable core of [`is_overlay_copyin`], so the marker→bool mapping
+/// is testable without a real `$HOME`.
+fn is_overlay_copyin_in(managed_root: &Path, worker_name: &str) -> bool {
+    crate::cli::overlay::read_layout(&managed_root.join(worker_name)).as_deref()
+        == Some(crate::cli::overlay::LAYOUT_OVERLAY)
+}
+
 pub fn restart_via_cli(worker_name: &str, kind: ChangeKind) {
-    if matches!(kind, ChangeKind::Source) {
+    // Overlay copy-in workers detach /mnt/host-src after the boot-time copy
+    // (see local_worker's dev-run.sh), so an in-VM supervisor fast restart
+    // would re-run that whole script and fail its host-src mountpoint check
+    // (`iii: ERROR /mnt/host-src ... is not a virtiofs mountpoint`) — and even
+    // on success would serve stale source, since the project is copied into a
+    // VM-local /workspace at boot, not live-mounted. Only a full VM restart
+    // re-copies. So the fast path is valid only for a source edit on a
+    // live-mount (legacy/bundle) worker.
+    let overlay = is_overlay_copyin(worker_name);
+    if fast_restart_eligible(kind, overlay) {
         match try_fast_restart(worker_name) {
             Ok(()) => {
                 tracing::info!(
@@ -542,10 +575,19 @@ pub fn restart_via_cli(worker_name: &str, kind: ChangeKind) {
                 );
             }
         }
-    } else {
+    } else if matches!(kind, ChangeKind::DepManifest) {
+        // Dep-manifest changes always full-restart so the install reruns at
+        // boot, regardless of workspace model — report that as the reason.
         tracing::info!(
             worker = %worker_name,
             "source watcher: dep manifest changed, forcing full VM restart"
+        );
+    } else {
+        // Source edit on an overlay copy-in worker: the fast path is unsafe
+        // here (see above), so go straight to a full VM restart.
+        tracing::info!(
+            worker = %worker_name,
+            "source watcher: overlay copy-in worker, forcing full VM restart"
         );
     }
 
@@ -652,6 +694,44 @@ mod tests {
             args.iter().any(|a| *a == "--no-wait"),
             "watcher slow-path restart must pass --no-wait to avoid polluting watcher.log"
         );
+    }
+
+    /// Regression lock for the overlay dev-loop bug: a source edit on an
+    /// overlay copy-in worker MUST take the full VM restart, never the in-VM
+    /// fast path. `dev-run.sh` detaches `/mnt/host-src` after the boot-time
+    /// copy, so a fast restart re-runs that script and fails its mountpoint
+    /// check (`iii: ERROR /mnt/host-src ... is not a virtiofs mountpoint`),
+    /// surfacing as "save once errors, save again works".
+    #[test]
+    fn fast_path_eligible_only_for_live_mount_source_edits() {
+        // Live-mount (legacy/bundle) source edit: fast path is valid.
+        assert!(fast_restart_eligible(ChangeKind::Source, false));
+        // Overlay copy-in source edit: must full-restart (the bug this fixes).
+        assert!(!fast_restart_eligible(ChangeKind::Source, true));
+        // Dep-manifest changes always force a full restart (reinstall at boot).
+        assert!(!fast_restart_eligible(ChangeKind::DepManifest, false));
+        assert!(!fast_restart_eligible(ChangeKind::DepManifest, true));
+    }
+
+    #[test]
+    fn overlay_copyin_detected_from_layout_marker() {
+        let managed_root =
+            std::env::temp_dir().join(format!("iii-watcher-overlay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&managed_root);
+        std::fs::create_dir_all(&managed_root).unwrap();
+
+        // Unmarked dir (legacy) and a never-started worker → not overlay.
+        std::fs::create_dir_all(managed_root.join("legacy-worker")).unwrap();
+        assert!(!is_overlay_copyin_in(&managed_root, "legacy-worker"));
+        assert!(!is_overlay_copyin_in(&managed_root, "never-started"));
+
+        // `.iii-layout` == "overlay" → overlay copy-in.
+        let ov = managed_root.join("ov-worker");
+        std::fs::create_dir_all(&ov).unwrap();
+        std::fs::write(ov.join(".iii-layout"), crate::cli::overlay::LAYOUT_OVERLAY).unwrap();
+        assert!(is_overlay_copyin_in(&managed_root, "ov-worker"));
+
+        let _ = std::fs::remove_dir_all(&managed_root);
     }
 
     #[test]
