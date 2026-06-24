@@ -10,13 +10,14 @@ on:
         options:
           - iii
       bump:
-        description: 'Version bump type'
+        description: 'Version bump type (none = iterate current pre-release train; requires a pre-release label)'
         required: true
         type: choice
         options:
           - patch
           - minor
           - major
+          - none
         default: patch
       prerelease:
         description: 'Pre-release label (none = stable release)'
@@ -62,10 +63,20 @@ jobs:
       - name: Pre-flight checks
         env:
           TARGET: ${{ inputs.target }}
+          BUMP: ${{ inputs.bump }}
+          PRERELEASE: ${{ inputs.prerelease }}
         run: |
           BRANCH=$(git rev-parse --abbrev-ref HEAD)
           if [[ "$BRANCH" != "main" ]]; then
             echo "::error::Must be on main branch (currently on $BRANCH)"
+            exit 1
+          fi
+
+          # bump=none only iterates an existing pre-release train, so it
+          # requires a pre-release label. Use patch/minor/major to START a
+          # train (they pick the base); none cannot infer one.
+          if [[ "$BUMP" == "none" && "$PRERELEASE" == "none" ]]; then
+            echo "::error::bump 'none' requires a pre-release label (alpha/beta/rc/next). Use patch/minor/major for a stable release."
             exit 1
           fi
 

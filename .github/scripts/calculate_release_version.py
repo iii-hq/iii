@@ -105,6 +105,37 @@ def next_dry_run_counter(base: str, existing_tags: list[str], tag_prefix: str) -
     return max(nums) + 1 if nums else 1
 
 
+def highest_inflight_prerelease_base(
+    existing_tags: list[str],
+    tag_prefix: str,
+    latest_stable: str | None,
+) -> str | None:
+    """Highest prerelease base, under ``tag_prefix``, strictly above the latest stable.
+
+    Drives the ``bump="none"`` path: it lets a release iterate an in-flight
+    prerelease train (e.g. ``0.19.5-next.1`` -> ``0.19.5-next.2``) without
+    advancing the base. Any prerelease channel counts toward the base
+    detection, so ``next`` and ``rc`` of the same upcoming release share it.
+
+    Returns ``None`` when no prerelease tag sits above ``latest_stable`` — the
+    alpha-from-stable case, where every prerelease anchors on the current
+    stable — so callers fall back to anchoring on the stable release itself.
+    """
+    pattern = re.compile(rf"^{re.escape(tag_prefix)}/v(\d+\.\d+\.\d+)-[a-z]+\.\d+$")
+    floor = parse_version(latest_stable) if latest_stable else None
+    best: Version | None = None
+    for t in existing_tags:
+        if not (m := pattern.match(t)):
+            continue
+        base = parse_version(m.group(1))
+        key = (base.major, base.minor, base.patch)
+        if floor is not None and key <= (floor.major, floor.minor, floor.patch):
+            continue
+        if best is None or key > (best.major, best.minor, best.patch):
+            best = base
+    return best.base if best else None
+
+
 def calculate_version(
     current: str,
     bump_type: str,
@@ -116,6 +147,10 @@ def calculate_version(
     """Decide the next version, accounting for the current prerelease train.
 
     Rules:
+      - `none` never advances the base: it iterates the prerelease
+        counter on the in-flight train (the highest prerelease base above
+        the latest stable), or on the latest stable when no such train
+        exists (alpha-from-stable). Requires a prerelease label.
       - Promoting a prerelease to stable (prerelease == "none" and current
         has a prerelease label) keeps the base as-is.
       - `patch` always increments the patch component of the current
@@ -131,15 +166,21 @@ def calculate_version(
     cur = parse_version(current)
 
     if bump_type == "none":
-        # Alpha-from-stable mode: keep the base anchored on the latest
-        # stable release (fall back to the current base if none exists)
-        # and only iterate the prerelease counter. Never bumps the base,
-        # so the official version is never advanced.
+        # Iterate-only mode: never advances the base, only the prerelease
+        # counter. Two scenarios resolve to the same operation:
+        #   - Continue an in-flight train (create-tag): if a prerelease tag
+        #     sits above the latest stable, anchor on its base so repeated
+        #     `none` releases iterate 0.19.5-next.1 -> .2 -> .3 instead of
+        #     re-bumping the base. To START a train, use patch/minor/major.
+        #   - Alpha-from-stable: when no prerelease train exists above the
+        #     latest stable, anchor on the stable release (fall back to the
+        #     current base when there is no stable yet).
         if prerelease not in PRERELEASE_LABELS:
             raise ValueError(
                 f"bump_type 'none' requires a prerelease label, got {prerelease!r}"
             )
-        new_base = latest_stable if latest_stable else cur.base
+        inflight = highest_inflight_prerelease_base(existing_tags, tag_prefix, latest_stable)
+        new_base = inflight or latest_stable or cur.base
         counter = next_prerelease_counter(new_base, prerelease, existing_tags, tag_prefix)
         return f"{new_base}-{prerelease}.{counter}"
 
