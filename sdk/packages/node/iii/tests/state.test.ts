@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { StateEventType, type StateEventData, type StateSetResult } from '../src/state'
+import { StateEventType, type StateEventData, type StateListItem, type StateSetResult } from '../src/state'
 import type { UpdateAppend, UpdateOp } from '../src/stream'
 import type { FunctionRef, Trigger } from '../src/types'
 import { execute, iii, logger } from './utils'
@@ -122,15 +122,21 @@ describe('State Operations', () => {
         })
       }
 
-      const result: TestDataWithId[] = await iii.trigger({
+      const result: StateListItem<TestDataWithId>[] = await iii.trigger({
         function_id: 'state::list',
         payload: { scope },
       })
-      const sort = (a: TestDataWithId, b: TestDataWithId) => a.id.localeCompare(b.id)
+      const sort = (a: StateListItem<TestDataWithId>, b: StateListItem<TestDataWithId>) =>
+        a.key.localeCompare(b.key)
 
       expect(Array.isArray(result)).toBe(true)
       expect(result.length).toBeGreaterThanOrEqual(items.length)
-      expect(result.sort(sort)).toEqual(items.sort(sort))
+      expect(result.sort(sort)).toEqual(
+        items.sort((a, b) => a.id.localeCompare(b.id)).map(item => ({
+          key: item.id,
+          value: item,
+        })),
+      )
     })
   })
 

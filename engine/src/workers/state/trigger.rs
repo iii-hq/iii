@@ -107,7 +107,9 @@ mod tests {
 
     use super::*;
     use crate::workers::{
-        state::{StateWorker, adapters::StateAdapter, config::StateModuleConfig},
+        state::{
+            StateWorker, adapters::StateAdapter, config::StateModuleConfig, structs::StateListItem,
+        },
         traits::ConfigurableWorker,
     };
 
@@ -148,7 +150,7 @@ mod tests {
             })
         }
 
-        async fn list(&self, _scope: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        async fn list(&self, _scope: &str) -> anyhow::Result<Vec<StateListItem>> {
             Ok(Vec::new())
         }
 

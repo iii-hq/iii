@@ -233,12 +233,15 @@ async fn state_list_all_items_in_scope() {
     assert!(arr.len() >= items.len());
 
     let mut result_sorted = arr.clone();
-    result_sorted.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    result_sorted.sort_by(|a, b| a["key"].as_str().cmp(&b["key"].as_str()));
 
     let mut items_sorted = items.clone();
     items_sorted.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
 
-    assert_eq!(result_sorted, items_sorted);
+    for (entry, item) in result_sorted.iter().zip(items_sorted.iter()) {
+        assert_eq!(entry["key"], item["id"]);
+        assert_eq!(entry["value"], *item);
+    }
 }
 
 #[tokio::test]

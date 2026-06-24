@@ -40,6 +40,14 @@ export type StateListInput = {
   scope: string
 }
 
+/** One entry returned when listing a state scope. */
+export type StateListItem<TData> = {
+  /** Key within the scope. */
+  key: string
+  /** Stored value for the key. */
+  value: TData
+}
+
 /** Result of a state set operation. */
 export type StateSetResult<TData> = {
   /** Previous value (if it existed). */
@@ -112,8 +120,8 @@ export interface IState {
   set<TData>(input: StateSetInput): Promise<StateSetResult<TData> | null>
   /** Delete a state value. */
   delete(input: StateDeleteInput): Promise<DeleteResult>
-  /** List all values in a scope. */
-  list<TData>(input: StateListInput): Promise<TData[]>
+  /** List all key/value entries in a scope. */
+  list<TData>(input: StateListInput): Promise<StateListItem<TData>[]>
   /** Apply atomic update operations to a state value. */
   update<TData>(input: StateUpdateInput): Promise<StateUpdateResult<TData> | null>
 }

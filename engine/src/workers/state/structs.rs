@@ -52,6 +52,14 @@ pub struct StateGetGroupInput {
     pub scope: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct StateListItem {
+    /// Identifier for the value within the scope.
+    pub key: String,
+    /// Stored value for this key.
+    pub value: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateListGroupsInput {}
 
