@@ -361,6 +361,10 @@ pub struct StoredSpan {
     /// W3C trace flags (e.g., sampled=1)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flags: Option<u32>,
+    /// W3C `tracestate` header carried by this span's context. Present when the
+    /// caller propagated a non-empty `tracestate` alongside `traceparent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_state: Option<String>,
 }
 
 impl StoredSpan {
@@ -456,6 +460,10 @@ impl StoredSpan {
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
             flags: Some(span.span_context.trace_flags().to_u8() as u32),
+            trace_state: {
+                let ts = span.span_context.trace_state().header();
+                if ts.is_empty() { None } else { Some(ts) }
+            },
         }
     }
 }
@@ -2058,6 +2066,8 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
                         instrumentation_scope_name: scope_name.clone(),
                         instrumentation_scope_version: scope_version.clone(),
                         flags: span.flags,
+                        // OTLP-ingested spans don't currently carry tracestate.
+                        trace_state: None,
                     };
 
                     stored_spans.push(stored_span);
@@ -4515,6 +4525,7 @@ mod tests {
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
             flags: None,
+            trace_state: None,
         }
     }
 
@@ -5792,6 +5803,56 @@ mod tests {
         assert_eq!(spans[0].status, "ok");
         assert_eq!(spans[0].attributes.len(), 1);
         assert_eq!(spans[0].attributes[0].0, "key");
+    }
+
+    #[test]
+    fn stored_span_from_span_data_carries_tracestate() {
+        use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
+        use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+        use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+        use std::borrow::Cow;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let trace_state = "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
+            .parse::<TraceState>()
+            .unwrap();
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            trace_state.clone(),
+        );
+
+        let make = |sc: SpanContext| SpanData {
+            span_context: sc,
+            parent_span_id: SpanId::INVALID,
+            parent_span_is_remote: false,
+            span_kind: SpanKind::Server,
+            name: Cow::Borrowed("HTTP"),
+            start_time: UNIX_EPOCH + Duration::from_secs(1000),
+            end_time: UNIX_EPOCH + Duration::from_secs(1001),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: Status::Ok,
+            instrumentation_scope: InstrumentationScope::builder("test").build(),
+        };
+
+        let stored = StoredSpan::from_span_data(&make(span_context), "svc");
+        assert_eq!(stored.trace_state.as_deref(), Some(trace_state.header().as_str()));
+
+        // A span with no tracestate omits the field rather than emitting "".
+        let empty_sc = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::NONE,
+        );
+        let stored_empty = StoredSpan::from_span_data(&make(empty_sc), "svc");
+        assert_eq!(stored_empty.trace_state, None);
     }
 
     // =========================================================================

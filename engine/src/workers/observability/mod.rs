@@ -3583,6 +3583,7 @@ mod tests {
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
             flags: None,
+            trace_state: None,
         }
     }
 
