@@ -1194,9 +1194,27 @@ where
 /// Combine trace context and baggage extraction into a single context.
 /// This extracts both traceparent and baggage headers into a unified context.
 pub fn extract_context(traceparent: Option<&str>, baggage: Option<&str>) -> Context {
+    extract_context_with_state(traceparent, None, baggage)
+}
+
+/// Like [`extract_context`] but also honors the W3C `tracestate` header.
+///
+/// `tracestate` is the companion header to `traceparent` in the W3C Trace
+/// Context spec; it carries vendor-specific trace data that must travel
+/// alongside the trace id. The `TraceContextPropagator` only populates a
+/// `SpanContext`'s `TraceState` when both headers are present in the carrier,
+/// so a bare `traceparent` would silently drop any incoming `tracestate`.
+pub fn extract_context_with_state(
+    traceparent: Option<&str>,
+    tracestate: Option<&str>,
+    baggage: Option<&str>,
+) -> Context {
     let mut carrier: HashMap<String, String> = HashMap::new();
     if let Some(tp) = traceparent {
         carrier.insert("traceparent".to_string(), tp.to_string());
+    }
+    if let Some(ts) = tracestate {
+        carrier.insert("tracestate".to_string(), ts.to_string());
     }
     if let Some(bg) = baggage {
         carrier.insert("baggage".to_string(), bg.to_string());
@@ -6779,6 +6797,27 @@ mod tests {
         assert_eq!(format!("{:032x}", sc.trace_id()), SAMPLE_TRACE_ID_HEX);
         assert_eq!(format!("{:016x}", sc.span_id()), SAMPLE_SPAN_ID_HEX);
         assert!(sc.is_remote(), "extracted parent must be flagged remote");
+    }
+
+    #[test]
+    fn extract_context_with_state_carries_w3c_tracestate() {
+        let tracestate = "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7";
+        let cx = extract_context_with_state(Some(SAMPLE_TRACEPARENT), Some(tracestate), None);
+        let span_ref = cx.span();
+        let sc = span_ref.span_context();
+        assert!(sc.is_valid());
+        assert_eq!(format!("{:032x}", sc.trace_id()), SAMPLE_TRACE_ID_HEX);
+        // The W3C `TraceContextPropagator` only populates `TraceState` when both
+        // `traceparent` and `tracestate` are present, so this also guards the
+        // companion-header wiring.
+        assert_eq!(sc.trace_state().header(), tracestate);
+    }
+
+    #[test]
+    fn extract_context_without_tracestate_has_empty_trace_state() {
+        let cx = extract_context_with_state(Some(SAMPLE_TRACEPARENT), None, None);
+        let span_ref = cx.span();
+        assert!(span_ref.span_context().trace_state().header().is_empty());
     }
 
     #[test]

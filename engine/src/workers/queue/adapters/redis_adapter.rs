@@ -267,7 +267,7 @@ impl QueueAdapter for RedisAdapter {
                     queue = %topic_for_span,
                     otel.status_code = tracing::field::Empty,
                 )
-                .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+                .with_parent_headers(traceparent.as_deref(), None, baggage.as_deref());
 
                 tokio::spawn(
                     async move {

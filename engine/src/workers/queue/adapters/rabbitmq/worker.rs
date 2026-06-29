@@ -203,7 +203,7 @@ impl Worker {
             queue = %job.topic,
             otel.status_code = tracing::field::Empty,
         )
-        .with_parent_headers(job.traceparent.as_deref(), job.baggage.as_deref());
+        .with_parent_headers(job.traceparent.as_deref(), None, job.baggage.as_deref());
 
         async {
             let engine = Arc::clone(&self.engine);

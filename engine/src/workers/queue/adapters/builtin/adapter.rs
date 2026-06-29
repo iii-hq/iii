@@ -81,7 +81,7 @@ impl JobHandler for FunctionHandler {
             "baggage.queue" = %job.queue,
             otel.status_code = tracing::field::Empty,
         )
-        .with_parent_headers(job.traceparent.as_deref(), job.baggage.as_deref());
+        .with_parent_headers(job.traceparent.as_deref(), None, job.baggage.as_deref());
 
         let engine = Arc::clone(&self.engine);
         let function_id = self.function_id.clone();

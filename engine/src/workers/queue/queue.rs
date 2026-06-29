@@ -866,7 +866,7 @@ impl QueueWorker {
                         "messaging.operation.type" = "process",
                         otel.status_code = tracing::field::Empty,
                     )
-                    .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+                    .with_parent_headers(traceparent.as_deref(), None, baggage.as_deref());
 
                     let result =
                         AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
