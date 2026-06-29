@@ -65,20 +65,21 @@ variable "csp_report_only" {
 }
 
 variable "manage_apex_records" {
-  # Leave false until Phase 4 cutover. When false, the apex records are not managed
-  # by this module (they already exist — manually created in Route53, not
-  # External-DNS-owned). Flip to true after importing the existing records.
+  # Cutover is done: the iii.dev apex A/AAAA records have been imported and are now
+  # managed by this module (they exist in state at index [0]). Kept as a variable
+  # so it can be flipped off for a teardown, but it must stay true in prod —
+  # setting it false marks the live apex records for destruction.
   description = "Whether Terraform manages the iii.dev apex A/AAAA Route53 records."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "manage_www_records" {
-  # Leave false until www.iii.dev has been released by External-DNS (argocd PR
-  # removing the iii-dev-www Ingress has merged + synced). Flip to true after
-  # importing the existing records. Decoupled from apex so the two can be
-  # cut over independently to limit blast radius.
+  # Cutover is done: the www.iii.dev A/AAAA records have been imported and are now
+  # managed by this module (they exist in state at index [0]). Decoupled from apex
+  # so the two can be torn down independently, but it must stay true in prod —
+  # setting it false marks the live www records for destruction.
   description = "Whether Terraform manages the www.iii.dev A/AAAA Route53 records."
   type        = bool
-  default     = false
+  default     = true
 }
