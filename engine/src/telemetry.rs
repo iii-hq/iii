@@ -11,6 +11,8 @@
 
 pub use crate::workers::observability::otel::*;
 
+use opentelemetry::trace::TraceContextExt;
+use opentelemetry::KeyValue;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -38,7 +40,42 @@ impl SpanExt for Span {
     fn with_parent_headers(self, traceparent: Option<&str>, baggage: Option<&str>) -> Self {
         if traceparent.is_some() || baggage.is_some() {
             let parent_context = extract_context(traceparent, baggage);
-            let _ = self.set_parent(parent_context);
+            let tp_owned = traceparent.map(|s| s.to_string());
+            let parent_trace_id = parent_context.span().span_context().trace_id();
+            let parent_valid = parent_context.span().span_context().is_valid();
+            match self.set_parent(parent_context) {
+                Ok(()) => {
+                    tracing::debug!(
+                        traceparent = tp_owned.as_deref().unwrap_or("(none)"),
+                        parent_trace_id = %parent_trace_id,
+                        parent_context_valid = parent_valid,
+                        "with_parent_headers: successfully set parent context"
+                    );
+                    // Record an event on this span so it shows up in OTel export
+                    self.add_event(
+                        "traceparent.propagated",
+                        vec![
+                            KeyValue::new("parent.trace_id", format!("{parent_trace_id}")),
+                            KeyValue::new("traceparent", tp_owned.as_deref().unwrap_or("(none)").to_string()),
+                        ],
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        traceparent = tp_owned.as_deref().unwrap_or("(none)"),
+                        parent_trace_id = %parent_trace_id,
+                        error = %err,
+                        "with_parent_headers: failed to set parent context"
+                    );
+                    self.add_event(
+                        "traceparent.set_parent_failed",
+                        vec![
+                            KeyValue::new("error", err.to_string()),
+                            KeyValue::new("traceparent", tp_owned.as_deref().unwrap_or("(none)").to_string()),
+                        ],
+                    );
+                }
+            }
         }
         self
     }

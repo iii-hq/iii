@@ -26,8 +26,8 @@ use crate::{
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
-        ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
-        inject_traceparent_from_context,
+        ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics,
+        inject_baggage_from_context, inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
