@@ -199,7 +199,11 @@ impl QueueAdapter for BridgeAdapter {
                         "messaging.operation.type" = "process",
                         otel.status_code = tracing::field::Empty,
                     )
-                    .with_parent_headers(traceparent.as_deref(), None, baggage.as_deref());
+                    .with_parent_headers(
+                        traceparent.as_deref(),
+                        None,
+                        baggage.as_deref(),
+                    );
 
                     async move {
                         if let Some(condition_path) = condition_function_id {

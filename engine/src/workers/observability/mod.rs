@@ -6359,12 +6359,10 @@ mod tests {
         };
 
         let spans = match module.list_traces(input).await {
-            FunctionResult::Success(v) => {
-                serde_json::to_value(&v).unwrap()["spans"]
-                    .as_array()
-                    .expect("spans array")
-                    .clone()
-            }
+            FunctionResult::Success(v) => serde_json::to_value(&v).unwrap()["spans"]
+                .as_array()
+                .expect("spans array")
+                .clone(),
             _ => panic!("expected list_traces success"),
         };
 

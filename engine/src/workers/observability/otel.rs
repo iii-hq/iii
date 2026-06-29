@@ -5841,7 +5841,10 @@ mod tests {
         };
 
         let stored = StoredSpan::from_span_data(&make(span_context), "svc");
-        assert_eq!(stored.trace_state.as_deref(), Some(trace_state.header().as_str()));
+        assert_eq!(
+            stored.trace_state.as_deref(),
+            Some(trace_state.header().as_str())
+        );
 
         // A span with no tracestate omits the field rather than emitting "".
         let empty_sc = SpanContext::new(

@@ -11,8 +11,8 @@
 
 pub use crate::workers::observability::otel::*;
 
-use opentelemetry::trace::TraceContextExt;
 use opentelemetry::KeyValue;
+use opentelemetry::trace::TraceContextExt;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -68,7 +68,10 @@ impl SpanExt for Span {
                         "traceparent.propagated",
                         vec![
                             KeyValue::new("parent.trace_id", format!("{parent_trace_id}")),
-                            KeyValue::new("traceparent", tp_owned.as_deref().unwrap_or("(none)").to_string()),
+                            KeyValue::new(
+                                "traceparent",
+                                tp_owned.as_deref().unwrap_or("(none)").to_string(),
+                            ),
                         ],
                     );
                 }
@@ -83,7 +86,10 @@ impl SpanExt for Span {
                         "traceparent.set_parent_failed",
                         vec![
                             KeyValue::new("error", err.to_string()),
-                            KeyValue::new("traceparent", tp_owned.as_deref().unwrap_or("(none)").to_string()),
+                            KeyValue::new(
+                                "traceparent",
+                                tp_owned.as_deref().unwrap_or("(none)").to_string(),
+                            ),
                         ],
                     );
                 }
