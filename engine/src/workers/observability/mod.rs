@@ -891,18 +891,25 @@ fn corrected_detail_spans(
 }
 
 fn build_span_tree(spans: Vec<otel::StoredSpan>) -> Vec<SpanTreeNode> {
+    // Span ids present in this set. A span whose parent is NOT present is a
+    // local trace root — covers traces entering iii from an external caller via
+    // an incoming `traceparent`, whose server span points at the remote caller's
+    // span (never stored here). Without this the whole subtree is orphaned and
+    // the trace detail view renders nothing.
+    let present_ids: std::collections::HashSet<String> =
+        spans.iter().map(|s| s.span_id.clone()).collect();
     let mut children_map: HashMap<String, Vec<otel::StoredSpan>> = HashMap::new();
     let mut roots: Vec<otel::StoredSpan> = Vec::new();
 
     for span in spans {
         match &span.parent_span_id {
-            Some(parent_id) => {
+            Some(parent_id) if present_ids.contains(parent_id) => {
                 children_map
                     .entry(parent_id.clone())
                     .or_default()
                     .push(span);
             }
-            None => roots.push(span),
+            _ => roots.push(span),
         }
     }
 
@@ -5310,11 +5317,10 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_build_span_tree_orphan_child() {
-        // A child whose parent is not in the span list becomes an orphan
-        // The current implementation only puts spans with None parent in roots.
-        // Orphan children (with parent_span_id set but parent not in list) are
-        // not treated as roots; they go into children_map but never get collected.
+    fn test_build_span_tree_orphan_child_becomes_root() {
+        // A span whose parent_span_id is set but absent from the span list is a
+        // local trace root (e.g. the server span of a trace that entered iii via
+        // an incoming `traceparent`, whose parent lives in the remote caller).
         let orphan = make_span(
             "t1",
             "s2",
@@ -5329,8 +5335,8 @@ mod tests {
 
         let tree = build_span_tree(vec![orphan]);
 
-        // Since the span has a parent_span_id, it won't appear as a root
-        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 1, "orphan with missing parent must be a root");
+        assert_eq!(tree[0].span.name, "orphan");
     }
 
     // =========================================================================
