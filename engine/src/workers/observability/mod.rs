@@ -1976,10 +1976,25 @@ impl ObservabilityWorker {
                         None
                     };
 
+                // A span is a trace root when it has no parent OR its parent is
+                // absent from the store. The latter covers traces that entered
+                // iii from an external caller via an incoming `traceparent`: the
+                // server span's parent is the remote caller's span, which lives
+                // in another service and is never stored here. Without this,
+                // root-only listing hides every distributed trace. Mirrors
+                // `build_span_tree`'s dangling-parent handling.
+                let present_span_ids: std::collections::HashSet<String> =
+                    all_spans.iter().map(|s| s.span_id.clone()).collect();
+
                 let mut filtered: Vec<_> = all_spans
                     .into_iter()
                     // Root-only by default; `search_all_spans` widens to children too.
-                    .filter(|s| search_all || s.parent_span_id.is_none())
+                    .filter(|s| {
+                        search_all
+                            || s.parent_span_id
+                                .as_ref()
+                                .is_none_or(|p| !present_span_ids.contains(p))
+                    })
                     .filter(|s| {
                         // Exclude internal engine traces unless explicitly requested
                         if !include_internal {
@@ -6280,6 +6295,76 @@ mod tests {
             }
             _ => panic!("expected baggage_get_all to succeed"),
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_treats_dangling_remote_parent_as_root() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+
+        // A trace that entered iii from an external caller: the server span's
+        // parent is the remote caller's span id, which is never stored here.
+        // Its child (parent present in the store) is NOT a root.
+        span_storage.add_spans(vec![
+            make_span(
+                "t-remote",
+                "s-http",
+                Some("remoteparent0001"),
+                "POST /x",
+                "iii-engine",
+                1_000_000_000,
+                1_100_000_000,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "t-remote",
+                "s-child",
+                Some("s-http"),
+                "execute fn",
+                "worker",
+                1_010_000_000,
+                1_090_000_000,
+                "OK",
+                vec![],
+            ),
+        ]);
+
+        let input = TracesListInput {
+            trace_id: None,
+            offset: Some(0),
+            limit: Some(10),
+            service_name: None,
+            name: None,
+            status: None,
+            min_duration_ms: None,
+            max_duration_ms: None,
+            start_time: None,
+            end_time: None,
+            sort_by: None,
+            sort_order: None,
+            attributes: None,
+            include_internal: Some(false),
+            search_all_spans: None,
+        };
+
+        let spans = match module.list_traces(input).await {
+            FunctionResult::Success(v) => {
+                serde_json::to_value(&v).unwrap()["spans"]
+                    .as_array()
+                    .expect("spans array")
+                    .clone()
+            }
+            _ => panic!("expected list_traces success"),
+        };
+
+        // Only the dangling-parent server span surfaces as a root.
+        assert_eq!(spans.len(), 1, "dangling-parent span must be a root");
+        assert_eq!(spans[0]["name"].as_str().unwrap(), "POST /x");
     }
 
     #[tokio::test]
