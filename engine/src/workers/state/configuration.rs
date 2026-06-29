@@ -272,22 +272,22 @@ fn read_persisted_state_value_from(dir: &Path) -> Option<Value> {
     };
     let value = entry.get("value").cloned().filter(|v| !v.is_null())?;
 
-    // `expand_value` panics on a `${VAR}` placeholder with no default and no
-    // env value. At runtime that fails one bus call; here it would brick every
-    // engine start until the data file is hand-edited — so contain it and fall
-    // back to the yaml block.
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::workers::configuration::store::expand_value(&value)
-    })) {
-        Ok(expanded) => Some(expanded),
-        Err(_) => {
-            eprintln!(
-                "persisted configuration entry {} references an environment variable with no value and no default; using the config.yaml block",
-                path.display()
-            );
-            None
-        }
+    // Expand `${VAR:default}` (with the same scalar type-coercion
+    // `configuration::get` applies) so typed fields like `port: ${HTTP_PORT:3111}`
+    // deserialize correctly. A `${VAR}` with no env value and no default can't be
+    // resolved at boot: log an ERROR and fall back to the config.yaml block rather
+    // than load a value still carrying literal `${VAR}` text. `expand_value` never
+    // panics, so no `catch_unwind` guard is needed.
+    let (expanded, missing) = crate::workers::configuration::store::expand_value(&value);
+    if !missing.is_empty() {
+        eprintln!(
+            "persisted configuration entry {} references environment variable(s) with no value and no default ({}); it will not be loaded — using the config.yaml block",
+            path.display(),
+            missing.join(", ")
+        );
+        return None;
     }
+    Some(expanded)
 }
 
 #[cfg(test)]
@@ -506,6 +506,47 @@ mod tests {
             resolve_boot_config_from(dir.path(), yaml.clone()),
             yaml,
             "malformed persisted value must fall back to the yaml block"
+        );
+    }
+
+    #[test]
+    fn boot_read_coerces_typed_placeholder() {
+        // #1916: `max_value_bytes: ${VAR:256}` must coerce to the integer 256 so
+        // StateModuleConfig deserializes, instead of arriving as the string
+        // "256" and dropping the whole persisted value back to the yaml block.
+        unsafe {
+            std::env::remove_var("STATE_BOOT_MAXBYTES");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_entry(
+            dir.path(),
+            json!({ "max_value_bytes": "${STATE_BOOT_MAXBYTES:256}" }),
+        );
+
+        let resolved = resolve_boot_config_from(dir.path(), Some(json!({ "max_value_bytes": 1 })))
+            .expect("persisted entry present");
+        assert_eq!(resolved["max_value_bytes"], 256);
+    }
+
+    #[test]
+    fn boot_read_falls_back_when_required_var_missing_no_panic() {
+        // A `${VAR}` with no default and no env value can't be resolved at boot:
+        // the read must fall back to the yaml block — and must NOT panic (we
+        // removed the old catch_unwind guard).
+        unsafe {
+            std::env::remove_var("STATE_BOOT_MISSING");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_entry(
+            dir.path(),
+            json!({ "max_value_bytes": "${STATE_BOOT_MISSING}" }),
+        );
+
+        let yaml = Some(json!({ "max_value_bytes": 5 }));
+        assert_eq!(
+            resolve_boot_config_from(dir.path(), yaml.clone()),
+            yaml,
+            "an unresolved required var must fall back to the yaml block without panicking"
         );
     }
 

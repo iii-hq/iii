@@ -15,7 +15,7 @@
 //! and insert one comment, so everything else in the file is byte-preserved.
 
 /// Comment left in place of a stripped `config:` block. `location` names where
-/// the value now lives (e.g. `./data/configuration/<id>.yaml` for the fs
+/// the value now lives (e.g. `./iii-config/<id>.yaml` for the fs
 /// adapter).
 fn seed_comment(config_id: &str, location: &str) -> String {
     format!(

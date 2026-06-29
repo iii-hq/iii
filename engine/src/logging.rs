@@ -537,22 +537,21 @@ fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::
     };
     let value = entry.get("value").cloned().filter(|v| !v.is_null())?;
 
-    // `expand_value` panics on a `${VAR}` placeholder with no default and no
-    // env value. At runtime that fails one bus call; here it would brick
-    // every engine start until the data file is hand-edited — so contain it
-    // and fall back to the yaml block.
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::workers::configuration::store::expand_value(&value)
-    })) {
-        Ok(expanded) => Some(expanded),
-        Err(_) => {
-            eprintln!(
-                "persisted configuration entry {} references an environment variable with no value and no default; using the config.yaml block",
-                path.display()
-            );
-            None
-        }
+    // Expand `${VAR:default}` (with scalar type-coercion) the same way
+    // `configuration::get` does. A `${VAR}` with no env value and no default
+    // can't be resolved at boot: log an ERROR and fall back to the config.yaml
+    // block rather than load a value still carrying literal `${VAR}` text.
+    // `expand_value` never panics, so no `catch_unwind` guard is needed.
+    let (expanded, missing) = crate::workers::configuration::store::expand_value(&value);
+    if !missing.is_empty() {
+        eprintln!(
+            "persisted configuration entry {} references environment variable(s) with no value and no default ({}); it will not be loaded — using the config.yaml block",
+            path.display(),
+            missing.join(", ")
+        );
+        return None;
     }
+    Some(expanded)
 }
 
 pub fn init_log_from_engine_config(cfg: &EngineConfig) {
@@ -797,7 +796,7 @@ mod tests {
     fn boot_read_path_constants_align_with_fs_adapter() {
         use crate::workers::configuration::adapters::fs;
         assert_eq!(fs::ADAPTER_NAME, "fs");
-        assert_eq!(fs::DEFAULT_DIRECTORY, "./data/configuration");
+        assert_eq!(fs::DEFAULT_DIRECTORY, "./iii-config");
         assert_eq!(fs::FILE_EXTENSION, "yaml");
         assert_eq!(
             format!(
@@ -1362,6 +1361,43 @@ mod tests {
 
         let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
         assert_eq!(resolved.service_name.as_deref(), Some("fallback-name"));
+    }
+
+    #[test]
+    fn boot_merge_coerces_typed_placeholder() {
+        // #1916: a templated numeric field must coerce to an integer so the
+        // typed config deserializes, instead of arriving as a string and
+        // dropping the persisted value back to the yaml block.
+        unsafe {
+            std::env::remove_var("III_BOOT_LOGS_MAX");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(
+            dir.path(),
+            serde_json::json!({ "logs_max_count": "${III_BOOT_LOGS_MAX:4096}" }),
+        );
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({ "logs_max_count": 1 }));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(resolved.logs_max_count, Some(4096));
+    }
+
+    #[test]
+    fn boot_merge_falls_back_when_required_var_missing_no_panic() {
+        // `${VAR}` with no default and no env value can't be resolved at boot:
+        // fall back to the yaml block without panicking (catch_unwind removed).
+        unsafe {
+            std::env::remove_var("III_BOOT_LOGS_MAX_MISSING");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_persisted_entry(
+            dir.path(),
+            serde_json::json!({ "logs_max_count": "${III_BOOT_LOGS_MAX_MISSING}" }),
+        );
+        let cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({ "logs_max_count": 123 }));
+
+        let resolved = resolve_boot_observability_config(&cfg).expect("entry present");
+        assert_eq!(resolved.logs_max_count, Some(123));
     }
 
     #[test]

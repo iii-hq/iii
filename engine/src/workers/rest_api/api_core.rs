@@ -18,7 +18,11 @@ use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use tokio::{net::TcpListener, sync::RwLock, task::AbortHandle};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, oneshot},
+    task::AbortHandle,
+};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
     cors::{Any as HTTP_Any, CorsLayer},
@@ -96,6 +100,13 @@ pub struct HttpWorker {
     pub routers_registry: Arc<DashMap<String, PathRouter>>,
     shared_routers: Arc<RwLock<Router>>,
     server_abort: Arc<StdMutex<Option<AbortHandle>>>,
+    /// Per-server graceful-shutdown trigger for the CURRENT server. Firing it
+    /// gracefully shuts that one server down — closing its listener AND its open
+    /// connections (including idle keep-alive connections a client would
+    /// otherwise reuse to keep hitting the old address). A rebind fires the
+    /// previous server's trigger so the old port is fully freed, not just
+    /// stopped from accepting new connections.
+    server_shutdown: Arc<StdMutex<Option<oneshot::Sender<()>>>>,
     /// Kept so `apply_config` can respawn the server task on host/port change.
     shutdown_rx: Arc<StdMutex<Option<tokio::sync::watch::Receiver<bool>>>>,
     /// Serializes concurrent `apply_config` runs (rapid configuration edits).
@@ -234,11 +245,15 @@ impl Worker for HttpWorker {
         // Build initial router from registry
         self.update_routes().await?;
 
-        let handle = self.spawn_server(listener, addr, shutdown_rx.clone());
+        let (handle, graceful_tx) = self.spawn_server(listener, addr, shutdown_rx.clone());
         *self
             .server_abort
             .lock()
             .expect("server_abort mutex poisoned") = Some(handle);
+        *self
+            .server_shutdown
+            .lock()
+            .expect("server_shutdown mutex poisoned") = Some(graceful_tx);
 
         // Store the receiver only once the server is live: `apply_config`
         // refuses to rebind while this is `None`, so a stray
@@ -299,6 +314,17 @@ impl Worker for HttpWorker {
             .expect("shutdown_rx mutex poisoned")
             .take();
 
+        // Gracefully close the server first (drops the listener and its open
+        // connections, idle keep-alive included), then hard-abort the task as
+        // an immediate backstop — `destroy` is a stop-now path.
+        let graceful = self
+            .server_shutdown
+            .lock()
+            .expect("server_shutdown mutex poisoned")
+            .take();
+        if let Some(graceful) = graceful {
+            let _ = graceful.send(());
+        }
         let abort = self
             .server_abort
             .lock()
@@ -312,6 +338,12 @@ impl Worker for HttpWorker {
 }
 
 const ALLOW_ORIGIN_ANY: &str = "*";
+
+/// After a host/port change the old server is gracefully shut down (which closes
+/// its listener and open connections). This is how long we then wait before
+/// hard-aborting the old server task as a safety net, so a connection that
+/// refuses to drain cannot pin the old port indefinitely.
+const OLD_SERVER_HARD_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// True for hosts that restrict the listener to the local machine
 /// ("localhost", 127.0.0.0/8, ::1). Used by the boot bind fallback to refuse
@@ -340,6 +372,7 @@ impl HttpWorker {
             // Empty router initially; updated when routes are registered.
             shared_routers: Arc::new(RwLock::new(Router::new())),
             server_abort: Arc::new(StdMutex::new(None)),
+            server_shutdown: Arc::new(StdMutex::new(None)),
             shutdown_rx: Arc::new(StdMutex::new(None)),
             apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
@@ -402,27 +435,44 @@ impl HttpWorker {
         *self.config.write().expect("config lock poisoned") = Arc::new(config);
     }
 
-    /// Spawn the axum server task for an already-bound listener and return
-    /// its abort handle. Shared by the initial start and host/port rebinds.
+    /// Spawn the axum server task for an already-bound listener. Returns its
+    /// abort handle plus a per-server graceful-shutdown trigger. Shared by the
+    /// initial start and host/port rebinds.
+    ///
+    /// The server shuts down gracefully (closing its listener AND its open
+    /// connections) when EITHER the returned trigger fires (a targeted stop — a
+    /// rebind or `destroy`) OR the global `shutdown_rx` goes true (engine
+    /// shutdown). Graceful shutdown is what actually severs idle keep-alive
+    /// connections; a bare `abort()` would only drop the listener and leave
+    /// those connections serving the old address.
     fn spawn_server(
         &self,
         listener: TcpListener,
         addr_display: String,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    ) -> AbortHandle {
+    ) -> (AbortHandle, oneshot::Sender<()>) {
         let hot_router = HotRouter {
             inner: self.shared_routers.clone(),
             engine: self.engine.clone(),
         };
         let make_service = MakeHotRouterService { router: hot_router };
+        let (graceful_tx, graceful_rx) = oneshot::channel::<()>();
 
         let handle = tokio::spawn(async move {
             tracing::info!("API listening on address: {}", addr_display.purple());
             let serve = axum::serve(listener, make_service).with_graceful_shutdown(async move {
-                while shutdown_rx.changed().await.is_ok() {
-                    if *shutdown_rx.borrow() {
-                        break;
-                    }
+                tokio::select! {
+                    // Targeted stop for THIS server (rebind / destroy). A dropped
+                    // sender resolves the receiver too, which also means "stop".
+                    _ = graceful_rx => {}
+                    // Global engine shutdown.
+                    _ = async {
+                        while shutdown_rx.changed().await.is_ok() {
+                            if *shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                    } => {}
                 }
             });
             if let Err(e) = serve.await {
@@ -430,7 +480,7 @@ impl HttpWorker {
             }
         });
 
-        handle.abort_handle()
+        (handle.abort_handle(), graceful_tx)
     }
 
     /// Re-fetch the authoritative configuration and hot-apply it. The
@@ -442,10 +492,13 @@ impl HttpWorker {
     /// Same address → swap the snapshot and rebuild router layers (CORS,
     /// timeout, concurrency); global middleware is read per-request from the
     /// snapshot and needs no rebuild. Address change → bind the new listener
-    /// first (the addresses differ, so no self-conflict), then abort the old
-    /// server only once the new one is live. In-flight requests on the old
-    /// listener are aborted — same semantics as `destroy()`; a graceful drain
-    /// is a possible follow-up.
+    /// first (the addresses differ, so no self-conflict), then GRACEFULLY shut
+    /// the old server down once the new one is live. Graceful shutdown closes
+    /// the old listener AND its open connections — including idle keep-alive
+    /// connections a browser would otherwise reuse to keep hitting the old port
+    /// — so the old address is fully freed, not merely stopped from accepting
+    /// new connections. A hard abort follows after a short grace as a safety net
+    /// for a connection that refuses to drain.
     pub(super) async fn apply_config(&self) -> anyhow::Result<()> {
         let _guard = self.apply_lock.lock().await;
 
@@ -507,21 +560,38 @@ impl HttpWorker {
         self.set_config(new_config);
         self.update_routes().await?;
 
-        let new_handle = self.spawn_server(listener, new_addr.clone(), shutdown_rx);
+        let (new_handle, new_graceful) = self.spawn_server(listener, new_addr.clone(), shutdown_rx);
 
-        let previous = self
+        let prev_abort = self
             .server_abort
             .lock()
             .expect("server_abort mutex poisoned")
             .replace(new_handle);
-        if let Some(previous) = previous {
-            previous.abort();
+        let prev_graceful = self
+            .server_shutdown
+            .lock()
+            .expect("server_shutdown mutex poisoned")
+            .replace(new_graceful);
+
+        // Gracefully shut the OLD server down now that the new one is live: this
+        // closes the old listener and its open connections (idle keep-alive
+        // included), so the old port stops serving entirely.
+        if let Some(prev_graceful) = prev_graceful {
+            let _ = prev_graceful.send(());
+        }
+        // Safety net: if a connection refuses to drain, hard-abort the old
+        // server task after a grace period so it can't pin the old port forever.
+        if let Some(prev_abort) = prev_abort {
+            tokio::spawn(async move {
+                tokio::time::sleep(OLD_SERVER_HARD_STOP_GRACE).await;
+                prev_abort.abort();
+            });
         }
 
         tracing::info!(
             old = %old_addr,
             new = %new_addr,
-            "iii-http server rebound after configuration change"
+            "iii-http server rebound after configuration change; old address shutting down"
         );
         Ok(())
     }

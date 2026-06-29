@@ -37,7 +37,7 @@ npx skills add iii-hq/iii --full-depth --skill iii-pubsub
 
 Runtime settings live in the **`configuration` worker** under id **`iii-pubsub`**. The worker registers its JSON Schema at startup, reads the live value via `configuration::get` (so `${VAR:default}` placeholders in string fields expand against the process env), and hot-applies changes when the value updates.
 
-The config.yaml block above is **seed-only**: it is installed as the initial value on first boot, when no value is stored yet. After that, the configuration worker entry is the source of truth — change the adapter via `configuration::set` or by editing the persisted file (`./data/configuration/iii-pubsub.yaml` with the default `fs` adapter); both propagate without an engine restart. Edits to the config.yaml block are ignored once a value is stored.
+The config.yaml block above is **seed-only**: it is installed as the initial value on first boot, when no value is stored yet. After that, the configuration worker entry is the source of truth — change the adapter via `configuration::set` or by editing the persisted file (`./iii-config/iii-pubsub.yaml` with the default `fs` adapter); both propagate without an engine restart. Edits to the config.yaml block are ignored once a value is stored.
 
 ### Hot Reload
 
