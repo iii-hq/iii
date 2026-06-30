@@ -22,7 +22,7 @@ npx skills add iii-hq/iii --full-depth --skill iii-http
 
 Runtime settings live in the **`configuration` worker** under id **`iii-http`**. The worker registers its JSON Schema at startup, reads the live value via `configuration::get` (so `${VAR:default}` placeholders in string fields expand against the process env), and hot-applies changes when the value updates.
 
-The config.yaml block below is **seed-only**: it is installed as the initial value on first boot, when no value is stored yet. After that, the configuration worker entry is the source of truth — change settings via `configuration::set` or by editing the persisted file (`./iii-config/iii-http.yaml` with the default `fs` adapter); both propagate without an engine restart. Edits to the config.yaml block are ignored once a value is stored.
+The config.yaml block below is **seed-only**: it is installed as the initial value on first boot, when no value is stored yet. After that, the configuration worker entry is the source of truth — change settings via `configuration::set` or by editing the persisted file (`./config/iii-http.yaml` with the default `fs` adapter); both propagate without an engine restart. Edits to the config.yaml block are ignored once a value is stored.
 
 ### Sample Seed Configuration
 

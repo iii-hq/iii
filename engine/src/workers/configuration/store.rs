@@ -113,9 +113,12 @@ pub fn expand_value(v: &Value) -> (Value, Vec<String>) {
 fn expand_value_inner(v: &Value, missing: &mut Vec<String>) -> Value {
     match v {
         Value::String(s) => expand_string(s, missing),
-        Value::Array(items) => {
-            Value::Array(items.iter().map(|i| expand_value_inner(i, missing)).collect())
-        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|i| expand_value_inner(i, missing))
+                .collect(),
+        ),
         Value::Object(map) => {
             let mut out: Map<String, Value> = Map::with_capacity(map.len());
             for (k, val) in map {
@@ -233,7 +236,9 @@ impl ConfigurationStore {
         // re-validated later at read time, once the var is present.
         if validate {
             let (applied, missing) = expand_value(&value);
-            if missing.is_empty() && let Err(errs) = validate_against_schema(&applied, &schema) {
+            if missing.is_empty()
+                && let Err(errs) = validate_against_schema(&applied, &schema)
+            {
                 return Err(StoreError::SchemaInvalid(errs.join("; ")));
             }
         }
@@ -268,7 +273,9 @@ impl ConfigurationStore {
         // Validate the APPLIED value (see `register`); the raw template is what
         // gets stored, so it can be re-evaluated whenever the env changes.
         let (applied, missing) = expand_value(&value);
-        if missing.is_empty() && let Err(errs) = validate_against_schema(&applied, &entry.schema) {
+        if missing.is_empty()
+            && let Err(errs) = validate_against_schema(&applied, &entry.schema)
+        {
             return Err(StoreError::SchemaInvalid(errs.join("; ")));
         }
 

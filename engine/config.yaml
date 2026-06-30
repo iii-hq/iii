@@ -154,7 +154,7 @@ workers:
       adapter:
         name: fs
         config:
-          directory: ./iii-config
+          directory: ./config
       # 0 disables TTL cleanup. Set >0 (in seconds) to delete a configuration
       # entry whose last subscriber trigger has been unregistered for that long.
       ttl_seconds: 0

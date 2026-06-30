@@ -796,7 +796,7 @@ mod tests {
     fn boot_read_path_constants_align_with_fs_adapter() {
         use crate::workers::configuration::adapters::fs;
         assert_eq!(fs::ADAPTER_NAME, "fs");
-        assert_eq!(fs::DEFAULT_DIRECTORY, "./iii-config");
+        assert_eq!(fs::DEFAULT_DIRECTORY, "./config");
         assert_eq!(fs::FILE_EXTENSION, "yaml");
         assert_eq!(
             format!(

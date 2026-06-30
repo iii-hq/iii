@@ -44,7 +44,7 @@ pub(crate) const ADAPTER_NAME: &str = "fs";
 // `DEFAULT_DIRECTORY` / `FILE_EXTENSION` are `pub(crate)` so boot-time
 // persisted-config readers (e.g. the `iii-state` boot-read) resolve the same
 // on-disk location the configuration worker persists entries under.
-pub(crate) const DEFAULT_DIRECTORY: &str = "./iii-config";
+pub(crate) const DEFAULT_DIRECTORY: &str = "./config";
 pub(crate) const FILE_EXTENSION: &str = "yaml";
 /// The previous default store location. When the resolved directory is the
 /// current default and this legacy folder still holds entries, `new` migrates
@@ -126,8 +126,7 @@ impl FsAdapter {
         let mut moved = 0usize;
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
-            if !path.is_file()
-                || path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION)
+            if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION)
             {
                 continue;
             }
@@ -317,7 +316,7 @@ impl ConfigurationAdapter for FsAdapter {
         })
         .map_err(|e| anyhow::anyhow!("failed to create configuration watcher: {}", e))?;
         // Watch an absolute path: the macOS FSEvents backend can silently fail
-        // to deliver events for a relative path like `./iii-config`, which is
+        // to deliver events for a relative path like `./config`, which is
         // exactly the default. Canonicalize (the dir always exists by now —
         // `new` created it) and fall back to the raw path only if that fails.
         let watch_path = std::fs::canonicalize(&directory).unwrap_or_else(|_| directory.clone());

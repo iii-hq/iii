@@ -28,7 +28,7 @@ npx skills add iii-hq/iii --full-depth --skill configuration
     adapter:
       name: fs
       config:
-        directory: ./iii-config
+        directory: ./config
     ttl_seconds: 0
 ```
 
@@ -48,14 +48,14 @@ File-system adapter that stores one YAML file per configuration id and watches t
 ```yaml
 name: fs
 config:
-  directory: ./iii-config
+  directory: ./config
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `directory` | string | Directory holding `<id>.yaml` files. Created on boot. Defaults to `./iii-config`. |
+| `directory` | string | Directory holding `<id>.yaml` files. Created on boot. Defaults to `./config`. |
 
-The default location was previously `./data/configuration`. When running on the default `./iii-config`, the adapter performs a one-time soft migration on boot: every `<id>.yaml` still in `./data/configuration` is moved across (logged at INFO). If a file with the same name already exists in `./iii-config`, that file is **skipped with a WARNING** and the legacy copy is left untouched for you to reconcile. An explicit `directory:` override disables the migration.
+The default location was previously `./data/configuration`. When running on the default `./config`, the adapter performs a one-time soft migration on boot: every `<id>.yaml` still in `./data/configuration` is moved across (logged at INFO). If a file with the same name already exists in `./config`, that file is **skipped with a WARNING** and the legacy copy is left untouched for you to reconcile. An explicit `directory:` override disables the migration.
 
 External writes / edits / removals to the watched directory are debounced (500 ms) and replayed as `configuration:registered`, `configuration:updated`, or `configuration:deleted` events through the same trigger fan-out used by SDK calls. A hand-edit that fails schema validation (after `${VAR}` expansion) is **rejected with a WARNING** — the previous good value is kept rather than loaded.
 

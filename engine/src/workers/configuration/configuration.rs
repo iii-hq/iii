@@ -254,8 +254,9 @@ impl ConfigurationWorker {
     /// feed the watcher and create a save→reload→save loop.
     pub(crate) async fn handle_external_change(&self, change: ExternalChange) {
         let edited = match &change {
-            ExternalChange::Registered(entry)
-            | ExternalChange::Updated { entry, .. } => Some(entry),
+            ExternalChange::Registered(entry) | ExternalChange::Updated { entry, .. } => {
+                Some(entry)
+            }
             ExternalChange::Deleted { .. } => None,
         };
         if let Some(entry) = edited
@@ -980,7 +981,10 @@ mod tests {
             .await;
         // initialize() primes the cache, registers the trigger type, and starts
         // the directory watcher — exactly as a real boot does.
-        worker.initialize().await.expect("initialize starts the watcher");
+        worker
+            .initialize()
+            .await
+            .expect("initialize starts the watcher");
 
         // Edit the file the way an operator would, in the value-only on-disk
         // format `write_entry` produces (no schema key).
