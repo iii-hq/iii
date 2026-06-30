@@ -15,6 +15,10 @@ type: "reference"
   Relatedly, `baggage` is now redacted in header logs. It often carries user and session metadata, so `sanitize_headers_for_logging` now treats it as sensitive.
 
   Full multi-hop `tracestate` propagation (protocol, queue jobs, and SDKs) remains out of scope for this release.
+
+  ## Generated Docker projects load their `.env` into the engine
+
+  The Docker Compose file produced by `iii project init` and `iii project generate-docker` now sets `env_file: .env` on the `iii` service. The engine reads the generated `.env` when expanding `${VAR}` placeholders in `config.yaml`, so environment-based configuration works out of the box for generated projects without manually wiring the file in.
 </Update>
 
 <Update label="0.20.0" description="June 2026">
