@@ -49,7 +49,7 @@ CMD ["iii", "--config", "/app/config.yaml"]
 
 <Note>
   A ready-to-fork starter with this `Dockerfile`, a `config.yaml`, and a
-  `railway.json` (Dockerfile builder + restart policy) lives at
+  `railway.json` (Dockerfile builder + restart policy) is at
   [iii-experimental/railway-template](https://github.com/iii-experimental/railway-template).
 </Note>
 
@@ -290,7 +290,7 @@ This is the Railway-specific layer on top of the general
 
 **State and resiliency**
 
-- [ ] Volume mounted at `/data`; every worker `file_path` lives under it.
+- [ ] Volume mounted at `/data`; every worker `file_path` is stored under it.
 - [ ] `RAILWAY_RUN_UID=0` set so a non-root image can write the root-owned volume.
 - [ ] No `DO NOT USE IN_MEMORY` warnings in the boot logs.
 - [ ] Single engine service while on `file_based` storage; move to Redis/RabbitMQ before
