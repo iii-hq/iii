@@ -7,5 +7,5 @@ config:
   adapter:
     name: fs
     config:
-      directory: ./data/configuration
+      directory: ./config
   ttl_seconds: 0
