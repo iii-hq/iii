@@ -29,10 +29,17 @@ npx skills add iii-hq/iii/skills --skill iii-core-primitives
 | [iii-architecture-patterns](./iii-architecture-patterns) | Workflows, reactive backends, agentic pipelines, CQRS, effect pipelines, and automation chains |
 | [iii-error-handling](./iii-error-handling)             | Engine and SDK errors, retryability, RBAC denial, and timeout handling |
 
+## Tools
+
+| Skill | What it does |
+| ----- | ------------ |
+| [presentation](./presentation) | Turn a tech-spec directory into an interactive, marketing-grade web presentation. Ships a frozen Vite + React + TS scaffold and a library of interactive diagram archetypes. |
+
 ## Shape
 
-Each skill is one folder with one `SKILL.md`. Code examples live directly in the skill, including
-TypeScript, Python, and Rust examples where the concept is language-specific.
+Knowledge skills are one folder with one `SKILL.md`. Code examples live directly in the skill,
+including TypeScript, Python, and Rust examples where the concept is language-specific. Tool skills
+(like `presentation`) may also bundle a `reference/` folder and a `template/` scaffold.
 
 ```text
 skills/
@@ -40,6 +47,10 @@ skills/
 │   └── SKILL.md
 ├── iii-sdk-reference/
 │   └── SKILL.md
+├── presentation/
+│   ├── SKILL.md
+│   ├── reference/
+│   └── template/
 └── README.md
 ```
 

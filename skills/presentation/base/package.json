@@ -1,0 +1,11 @@
+{
+  "name": "__REPO__-tech-specs-presentations",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "pnpm --dir _gallery dev",
+    "preview": "node build.mjs && pnpm --dir _gallery exec vite preview --outDir ../dist --port 4173"
+  }
+}
