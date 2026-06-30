@@ -182,6 +182,12 @@ fn project_init_with_docker_flag_writes_docker_assets_with_device_id() {
         "placeholder must be substituted, got:\n{dockerfile}"
     );
 
+    let compose = std::fs::read_to_string(dir.path().join("docker-compose.yml")).unwrap();
+    assert!(
+        compose.contains("env_file: .env"),
+        "docker-compose.yml should forward .env to the iii container, got:\n{compose}"
+    );
+
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(
         !env.contains("III_HOST_USER_ID"),
@@ -216,6 +222,12 @@ fn project_generate_docker_uses_existing_project_ini_device_id() {
     assert!(
         dockerfile.contains("ENV III_HOST_USER_ID=preseeded-xyz"),
         "Dockerfile should bake the existing device_id, got:\n{dockerfile}"
+    );
+
+    let compose = std::fs::read_to_string(dir.path().join("docker-compose.yml")).unwrap();
+    assert!(
+        compose.contains("env_file: .env"),
+        "docker-compose.yml should forward .env to the iii container, got:\n{compose}"
     );
 
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
