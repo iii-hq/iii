@@ -565,6 +565,7 @@ class Sdk implements IIIClient {
     this.registerFunction(`stream::delete(${streamName})`, stream.delete.bind(stream))
     this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
     this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
+    this.registerFunction(`stream::update(${streamName})`, stream.update.bind(stream))
   }
 
   /**
