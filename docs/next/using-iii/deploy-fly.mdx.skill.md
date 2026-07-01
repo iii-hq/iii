@@ -12,12 +12,12 @@ Fly.io differs from a generic Docker host in four ways that shape the rest of th
 guide:
 
 - **Every app is a Firecracker micro-VM** ([Fly Machines](https://fly.io/docs/machines/)).
-  This is the natural home for the iii model: the engine runs on one Machine and each
-  worker runs on **its own Machine** (its own micro-VM), wired together over the private
-  network into one system (see
-  [The Fly architecture for iii](#the-fly-architecture-for-iii)). The same isolation is
-  also a limit: a Machine does **not** expose `/dev/kvm`, so the engine cannot boot its
-  *own* libkrun micro-VM workers inside it (covered in
+  You typically run the engine on one Machine and declare workers in `config.yaml` so
+  they run as child processes on that same Machine (see
+  [The Fly architecture for iii](#the-fly-architecture-for-iii)). Separate Fly apps per
+  worker are optional when you need a different runtime, independent scaling, or stronger
+  isolation. That isolation is also a limit: a Machine does **not** expose `/dev/kvm`, so
+  the engine cannot boot its *own* libkrun micro-VM workers inside it (covered in
   [What cannot run on Fly](#what-cannot-run-on-fly)).
 - **The private network is IPv6-only** ([6PN](https://fly.io/docs/networking/private-networking/)).
   Apps in one organization reach each other at `<app>.internal`, so the engine must
