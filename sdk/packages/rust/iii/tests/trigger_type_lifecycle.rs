@@ -112,7 +112,6 @@ async fn create_provider(state: &LifecycleState) -> iii_sdk::IIIClient {
                         .trigger(TriggerRequest {
                             function_id: binding.function_id,
                             payload: payload.clone(),
-                            metadata: None,
                             action: None,
                             timeout_ms: Some(5000),
                         })
@@ -173,7 +172,6 @@ async fn fire_invokes_bound_function() {
         .trigger(TriggerRequest {
             function_id: FIRE_FN.to_string(),
             payload: json!({ "n": 1 }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -223,7 +221,6 @@ async fn provider_reconnect_rebinds_trigger() {
         .trigger(TriggerRequest {
             function_id: FIRE_FN.to_string(),
             payload: json!({ "n": 2 }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })

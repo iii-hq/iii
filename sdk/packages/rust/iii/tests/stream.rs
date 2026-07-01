@@ -35,7 +35,6 @@ async fn stream_set_new_item() {
                 "item_id": item_id,
                 "data": test_data,
             }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -57,7 +56,6 @@ async fn stream_set_overwrite() {
     iii.trigger(TriggerRequest {
         function_id: "stream::set".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": initial_data}),
-metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -68,7 +66,6 @@ metadata: None,
         .trigger(TriggerRequest {
             function_id: "stream::set".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": updated_data}),
-metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -89,7 +86,6 @@ async fn stream_get_existing_item() {
     iii.trigger(TriggerRequest {
         function_id: "stream::set".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": test_data}),
-metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -100,7 +96,6 @@ metadata: None,
         .trigger(TriggerRequest {
             function_id: "stream::get".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -118,7 +113,6 @@ async fn stream_get_non_existent_item() {
         .trigger(TriggerRequest {
             function_id: "stream::get".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": "non-existent-item"}),
-metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -136,7 +130,6 @@ async fn stream_delete_existing_item() {
     iii.trigger(TriggerRequest {
         function_id: "stream::set".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": {"test": true}}),
-metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -146,7 +139,6 @@ metadata: None,
     iii.trigger(TriggerRequest {
         function_id: "stream::delete".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -157,7 +149,6 @@ metadata: None,
         .trigger(TriggerRequest {
             function_id: "stream::get".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -174,7 +165,6 @@ async fn stream_delete_non_existent_item() {
     iii.trigger(TriggerRequest {
         function_id: "stream::delete".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": "non-existent"}),
-metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -209,7 +199,6 @@ async fn stream_list_items_in_group() {
                 "item_id": item["id"],
                 "data": item,
             }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -221,7 +210,6 @@ async fn stream_list_items_in_group() {
         .trigger(TriggerRequest {
             function_id: "stream::list".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": group_id}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -260,7 +248,6 @@ async fn stream_list_groups_returns_available_groups() {
             "item_id": "anchor",
             "data": {"value": 0},
         }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -271,7 +258,6 @@ async fn stream_list_groups_returns_available_groups() {
         .trigger(TriggerRequest {
             function_id: "stream::list_groups".to_string(),
             payload: json!({"stream_name": STREAM_NAME}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -298,7 +284,6 @@ async fn stream_list_groups_returns_available_groups() {
             "group_id": group_id,
             "item_id": "anchor",
         }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -327,7 +312,6 @@ async fn stream_update_applies_partial_updates_via_ops() {
             "item_id": item_id,
             "data": {"count": 0, "name": "initial"},
         }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -342,7 +326,6 @@ async fn stream_update_applies_partial_updates_via_ops() {
             "item_id": item_id,
             "ops": [{"type": "set", "path": "count", "value": 5}],
         }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -357,7 +340,6 @@ async fn stream_update_applies_partial_updates_via_ops() {
                 "group_id": group_id,
                 "item_id": item_id,
             }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -374,7 +356,6 @@ async fn stream_update_applies_partial_updates_via_ops() {
             "group_id": group_id,
             "item_id": item_id,
         }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })

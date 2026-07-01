@@ -92,7 +92,6 @@ async fn stream_data_from_sender_to_processor() {
                             "label": "metrics-batch",
                             "reader": channel.reader_ref,
                         }),
-                        metadata: None,
                         action: None,
                         timeout_ms: None,
                     })
@@ -118,7 +117,6 @@ async fn stream_data_from_sender_to_processor() {
         .trigger(TriggerRequest {
             function_id: "test::data::sender::rs".to_string(),
             payload: json!({"records": records}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -295,7 +293,6 @@ async fn bidirectional_streaming() {
                                 "reader": reader_ref,
                                 "writer": writer_ref,
                             }),
-                            metadata: None,
                             action: None,
                             timeout_ms: None,
                         })
@@ -344,7 +341,6 @@ async fn bidirectional_streaming() {
                 "text": text,
                 "chunkSize": 10,
             }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })

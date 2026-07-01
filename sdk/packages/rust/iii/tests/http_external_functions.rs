@@ -163,7 +163,6 @@ async fn delivers_queue_events_to_external_http_function() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -208,7 +207,6 @@ async fn registers_and_unregisters_external_http_function() {
             .trigger(TriggerRequest {
                 function_id: "engine::functions::list".to_string(),
                 payload: json!({}),
-                metadata: None,
                 action: None,
                 timeout_ms: None,
             })
@@ -233,7 +231,6 @@ async fn registers_and_unregisters_external_http_function() {
             .trigger(TriggerRequest {
                 function_id: "engine::functions::list".to_string(),
                 payload: json!({}),
-                metadata: None,
                 action: None,
                 timeout_ms: None,
             })
@@ -289,7 +286,6 @@ async fn delivers_events_with_custom_headers() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -371,7 +367,6 @@ async fn delivers_events_to_multiple_external_functions() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic_a, "data": payload_a}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -380,7 +375,6 @@ async fn delivers_events_to_multiple_external_functions() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic_b, "data": payload_b}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -440,7 +434,6 @@ async fn stops_delivering_events_after_unregister() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload_before}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -463,7 +456,6 @@ async fn stops_delivering_events_after_unregister() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload_after}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -514,7 +506,6 @@ async fn delivers_events_using_put_method() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({"topic": topic, "data": payload}),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })

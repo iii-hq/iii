@@ -18,8 +18,8 @@ pub enum TriggerAction {
     Void,
 }
 
-/// Request object for `trigger()`. Matches the Node/Python SDK signature:
-/// `trigger({ function_id, payload, metadata?, action?, timeout_ms? })`
+/// Request object for `trigger()`. Matches the previous Rust SDK shape:
+/// `trigger({ function_id, payload, action?, timeout_ms? })`
 ///
 /// ```rust
 /// # use iii_sdk::protocol::{TriggerRequest, TriggerAction};
@@ -28,7 +28,6 @@ pub enum TriggerAction {
 /// TriggerRequest {
 ///     function_id: "my::function".to_string(),
 ///     payload: json!({ "key": "value" }),
-///     metadata: None,
 ///     action: None,
 ///     timeout_ms: None,
 /// };
@@ -37,18 +36,55 @@ pub enum TriggerAction {
 /// TriggerRequest {
 ///     function_id: "my::function".to_string(),
 ///     payload: json!({}),
-///     metadata: None,
 ///     action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
 ///     timeout_ms: None,
 /// };
+///
+/// // With metadata
+/// TriggerRequest {
+///     function_id: "my::function".to_string(),
+///     payload: json!({}),
+///     action: None,
+///     timeout_ms: None,
+/// }
+/// .metadata(json!({ "tenant": "acme" }));
 /// ```
 #[derive(Debug, Clone)]
 pub struct TriggerRequest {
     pub function_id: String,
     pub payload: Value,
-    pub metadata: Option<Value>,
     pub action: Option<TriggerAction>,
     pub timeout_ms: Option<u64>,
+}
+
+impl TriggerRequest {
+    /// Attach per-invocation metadata without adding a required field to
+    /// [`TriggerRequest`] struct literals.
+    pub fn metadata(self, metadata: Value) -> TriggerRequestWithMetadata {
+        TriggerRequestWithMetadata {
+            request: self,
+            metadata: Some(metadata),
+        }
+    }
+}
+
+/// Trigger request plus optional per-invocation metadata.
+#[derive(Debug, Clone)]
+pub struct TriggerRequestWithMetadata {
+    pub(crate) request: TriggerRequest,
+    pub(crate) metadata: Option<Value>,
+}
+
+impl<T> From<T> for TriggerRequestWithMetadata
+where
+    T: Into<TriggerRequest>,
+{
+    fn from(request: T) -> Self {
+        Self {
+            request: request.into(),
+            metadata: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -85,7 +85,7 @@ func TestRegisterFunctionTypedSendsSchema(t *testing.T) {
 
 	c := connectClient(t, m)
 	err := RegisterFunctionTyped[greetReq, greetResp](c, "typed::greet",
-		func(ctx context.Context, req greetReq, _ json.RawMessage) (greetResp, error) {
+		func(ctx context.Context, req greetReq) (greetResp, error) {
 			gotReq <- req
 			return greetResp{Message: "hi " + req.Name}, nil
 		}, RegisterFunctionOptions{Metadata: json.RawMessage(`{"owner":"typed"}`)})

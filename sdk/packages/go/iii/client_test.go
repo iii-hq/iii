@@ -71,7 +71,7 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	_ = c.RegisterFunction("hello::greet", func(ctx context.Context, _, _ json.RawMessage) (any, error) {
 		return map[string]string{"msg": "hi"}, nil
 	})
-	_ = c.RegisterTrigger("t1", "http", "hello::greet", json.RawMessage(`{"path":"/x"}`), nil)
+	_ = c.RegisterTrigger("t1", "http", "hello::greet", json.RawMessage(`{"path":"/x"}`))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -100,6 +100,46 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	if !(idxMeta > idxFn && idxMeta > idxTrig) {
 		t.Errorf("worker metadata (%d) should come after registrations (fn=%d trig=%d)", idxMeta, idxFn, idxTrig)
 	}
+}
+
+// TestRegisterFunctionAcceptsLegacyHandler verifies existing two-argument handlers
+// continue to compile and run after metadata support was added.
+func TestRegisterFunctionAcceptsLegacyHandler(t *testing.T) {
+	m := newMockEngine(t)
+
+	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
+		if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "legacy::fn" {
+			id := mustUUID(t, "12121212-1212-1212-1212-121212121212")
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = m.send(ctx, conn, &InvokeFunctionMessage{
+				InvocationID: &id,
+				FunctionID:   "legacy::fn",
+				Data:         json.RawMessage(`{"in":42}`),
+				Metadata:     json.RawMessage(`{"tenant":"acme"}`),
+			})
+		}
+	}
+
+	c := connectClient(t, m)
+	if err := c.RegisterFunction("legacy::fn", func(ctx context.Context, data json.RawMessage) (any, error) {
+		return json.RawMessage(data), nil
+	}); err != nil {
+		t.Fatalf("RegisterFunction: %v", err)
+	}
+
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
+		return firstWhere(msgs, func(msg map[string]json.RawMessage) bool {
+			return messageType(msg) == string(MsgInvocationResult) && stringField(msg, "function_id") == "legacy::fn"
+		}) != nil
+	}, 2*time.Second)
+	res := firstWhere(got, func(msg map[string]json.RawMessage) bool {
+		return messageType(msg) == string(MsgInvocationResult) && stringField(msg, "function_id") == "legacy::fn"
+	})
+	if res == nil {
+		t.Fatal("no invocation result for legacy handler")
+	}
+	jsonEqual(t, res["result"], `{"in":42}`)
 }
 
 // TestRegisterFunctionOptionsCarryMetadata verifies registration metadata is sent on the

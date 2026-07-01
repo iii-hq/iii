@@ -88,7 +88,7 @@ A complete, runnable version lives in the [`iii-example`](../iii-example) module
 | Connect | `client.Connect(ctx) error` | Start the lifecycle if needed and block until connected. |
 | Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...)` | Register a function with request/response schemas inferred from the types. |
 | Register function | `client.RegisterFunction(id, handler, opts...) error` | Register a function the engine can invoke by name. |
-| Register trigger | `client.RegisterTrigger(id, triggerType, functionID, config, metadata) error` | Bind a trigger (HTTP, cron, queue, …) to a function. |
+| Register trigger | `client.RegisterTrigger(id, triggerType, functionID, config, metadata...) error` | Bind a trigger (HTTP, cron, queue, …) to a function. |
 | Register trigger type | `client.RegisterTriggerType(id, description, handler) error` | Implement a custom trigger type. |
 | Invoke (await) | `client.Trigger(ctx, TriggerRequest{...})` | Invoke a function and wait for the result. |
 | Invoke (fire-and-forget) | `client.Trigger(ctx, TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting. |
@@ -105,7 +105,7 @@ A handler receives the raw JSON payload and returns any value (marshaled into th
 invocation result) or an error:
 
 ```go
-client.RegisterFunction("orders::create", func(ctx context.Context, data, metadata json.RawMessage) (any, error) {
+client.RegisterFunction("orders::create", func(ctx context.Context, data json.RawMessage) (any, error) {
 	var in struct {
 		Item string `json:"item"`
 	}
@@ -116,10 +116,18 @@ client.RegisterFunction("orders::create", func(ctx context.Context, data, metada
 })
 ```
 
+Metadata-aware handlers can opt into a third argument:
+
+```go
+client.RegisterFunction("orders::create", func(ctx context.Context, data, metadata json.RawMessage) (any, error) {
+	return map[string]any{"ok": true}, nil
+})
+```
+
 Attach metadata to the function registration with the optional options struct:
 
 ```go
-ordersHandler := func(ctx context.Context, data, metadata json.RawMessage) (any, error) {
+ordersHandler := func(ctx context.Context, data json.RawMessage) (any, error) {
 	return map[string]any{"ok": true}, nil
 }
 
@@ -152,7 +160,7 @@ type OrderResult struct {
 }
 
 iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::create",
-	func(ctx context.Context, req CreateOrderRequest, metadata json.RawMessage) (OrderResult, error) {
+	func(ctx context.Context, req CreateOrderRequest) (OrderResult, error) {
 		return OrderResult{ID: "ord_123"}, nil
 	})
 // Advertised request_format:
@@ -161,10 +169,11 @@ iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::crea
 ```
 
 The handler works with the concrete `CreateOrderRequest` (the SDK unmarshals the payload)
-and returns the typed `OrderResult`; its third argument is the optional per-invocation
-metadata sidecar. Use `RegisterFunction` for schemaless functions or when you want to
-send a hand-written schema. `iii.InferSchema[T]()` returns the schema for a type if you
-want to inspect or reuse it.
+and returns the typed `OrderResult`. Typed handlers can also opt into metadata with
+`func(ctx context.Context, req CreateOrderRequest, metadata json.RawMessage)`. Use
+`RegisterFunction` for schemaless functions or when you want to send a hand-written
+schema. `iii.InferSchema[T]()` returns the schema for a type if you want to inspect or
+reuse it.
 
 ### Invoking functions
 

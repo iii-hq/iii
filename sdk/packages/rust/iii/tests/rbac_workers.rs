@@ -63,7 +63,6 @@ async fn wait_until_function_registered(function_id: &str, timeout: Duration) {
             .trigger(TriggerRequest {
                 function_id: "engine::functions::list".to_string(),
                 payload: json!({}),
-                metadata: None,
                 action: None,
                 timeout_ms: Some(5_000),
             })
@@ -172,7 +171,6 @@ fn ensure_functions_registered() {
                     iii.trigger(TriggerRequest {
                         function_id: input.function_id,
                         payload: json!(enriched),
-                        metadata: None,
                         action: None,
                         timeout_ms: None,
                     })
@@ -321,7 +319,6 @@ async fn should_return_auth_result_for_valid_token() {
         .trigger(TriggerRequest {
             function_id: "test::ew::valid-token-echo".to_string(),
             payload: json!({ "msg": "hello" }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -365,7 +362,6 @@ async fn should_return_error_for_private_function() {
         .trigger(TriggerRequest {
             function_id: "test::ew::private".to_string(),
             payload: json!({ "msg": "hello" }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -400,7 +396,6 @@ async fn should_return_forbidden_functions_for_restricted_token() {
         .trigger(TriggerRequest {
             function_id: "test::ew::echo".to_string(),
             payload: json!({ "msg": "hello" }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -447,7 +442,6 @@ async fn should_deny_function_registration_via_hook() {
         .trigger(TriggerRequest {
             function_id: "denied::blocked-fn".to_string(),
             payload: json!({}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -601,7 +595,6 @@ async fn should_apply_function_registration_prefix_and_strip_on_invocation() {
         .trigger(TriggerRequest {
             function_id: "test-prefix::prefixed-echo".to_string(),
             payload: json!({ "msg": "prefix-test" }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -637,7 +630,6 @@ async fn should_only_list_allowed_functions_for_valid_token() {
         .trigger(TriggerRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -701,7 +693,6 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
         .trigger(TriggerRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -814,7 +805,6 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
                             "message": "carve-out regression guard: handler reached logger",
                             "data": { "input": input },
                         }),
-                        metadata: None,
                         action: None,
                         timeout_ms: None,
                     })
@@ -838,7 +828,6 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
         .trigger(TriggerRequest {
             function_id: "test::ew::carveout-logger-handler".to_string(),
             payload: json!({ "msg": "real-usage-case" }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -890,7 +879,6 @@ async fn infrastructure_logger_directly_callable_under_restricted_expose() {
         .trigger(TriggerRequest {
             function_id: "engine::log::info".to_string(),
             payload: json!({ "message": "carve-out direct invocation" }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })

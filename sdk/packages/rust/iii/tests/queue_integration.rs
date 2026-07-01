@@ -44,7 +44,6 @@ async fn enqueue_returns_acknowledgement() {
         .trigger(TriggerRequest {
             function_id: "test::queue::echo::rs".to_string(),
             payload: json!({"msg": "hello"}),
-            metadata: None,
             action: Some(TriggerAction::Enqueue {
                 queue: "default".to_string(),
             }),
@@ -73,7 +72,6 @@ async fn enqueue_to_unknown_queue_returns_error() {
         .trigger(TriggerRequest {
             function_id: "test::queue::unknown::rs".to_string(),
             payload: json!({"msg": "hello"}),
-            metadata: None,
             action: Some(TriggerAction::Enqueue {
                 queue: "nonexistent_queue".to_string(),
             }),
@@ -119,7 +117,6 @@ async fn enqueue_fifo_with_valid_group_field() {
                 "transaction_id": "txn-001",
                 "amount": 99.99
             }),
-            metadata: None,
             action: Some(TriggerAction::Enqueue {
                 queue: "payment".to_string(),
             }),
@@ -151,7 +148,6 @@ async fn enqueue_fifo_missing_group_field_returns_error() {
             payload: json!({
                 "amount": 50.00
             }),
-            metadata: None,
             action: Some(TriggerAction::Enqueue {
                 queue: "payment".to_string(),
             }),
@@ -197,7 +193,6 @@ async fn void_returns_null_immediately() {
         .trigger(TriggerRequest {
             function_id: "test::queue::void::rs".to_string(),
             payload: json!({"fire": "forget"}),
-            metadata: None,
             action: Some(TriggerAction::Void),
             timeout_ms: None,
         })
@@ -236,7 +231,6 @@ async fn enqueue_multiple_messages_all_processed() {
             .trigger(TriggerRequest {
                 function_id: "test::queue::multi::rs".to_string(),
                 payload: json!({ "index": i }),
-                metadata: None,
                 action: Some(TriggerAction::Enqueue {
                     queue: "default".to_string(),
                 }),
@@ -299,7 +293,6 @@ async fn chained_enqueue() {
                 iii.trigger(TriggerRequest {
                     function_id: "test::queue::chain::b::rs".to_string(),
                     payload: json!({ "from_a": true, "label": label }),
-                    metadata: None,
                     action: Some(TriggerAction::Enqueue {
                         queue: "default".to_string(),
                     }),
@@ -318,7 +311,6 @@ async fn chained_enqueue() {
         .trigger(TriggerRequest {
             function_id: "test::queue::chain::a::rs".to_string(),
             payload: json!({ "label": "chained-work" }),
-            metadata: None,
             action: Some(TriggerAction::Enqueue {
                 queue: "default".to_string(),
             }),
@@ -385,7 +377,6 @@ async fn durable_subscriber_receives_published_message() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": { "order": "abc" } }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -441,7 +432,6 @@ async fn durable_subscriber_receives_exact_nested_payload() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": payload }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -502,7 +492,6 @@ async fn durable_subscriber_with_queue_config_receives_messages() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": { "infra": true } }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -579,7 +568,6 @@ async fn durable_subscriber_fanout_to_multiple_subscribers() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": { "msg": 1 } }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -588,7 +576,6 @@ async fn durable_subscriber_fanout_to_multiple_subscribers() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": { "msg": 2 } }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -666,7 +653,6 @@ async fn durable_subscriber_condition_function_filters_messages() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": { "accept": false } }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })
@@ -675,7 +661,6 @@ async fn durable_subscriber_condition_function_filters_messages() {
     iii.trigger(TriggerRequest {
         function_id: "iii::durable::publish".to_string(),
         payload: json!({ "topic": topic, "data": { "accept": true } }),
-        metadata: None,
         action: None,
         timeout_ms: None,
     })

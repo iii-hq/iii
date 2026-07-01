@@ -22,7 +22,6 @@ async fn connect_successfully() {
         .trigger(TriggerRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -63,7 +62,6 @@ async fn register_and_invoke_function() {
         .trigger(TriggerRequest {
             function_id: "test::bridge::rs::echo".to_string(),
             payload: json!({"message": "hello"}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -106,7 +104,6 @@ async fn invoke_function_fire_and_forget() {
         .trigger(TriggerRequest {
             function_id: "test::bridge::rs::receiver".to_string(),
             payload: json!({"value": 42}),
-            metadata: None,
             action: Some(TriggerAction::Void),
             timeout_ms: None,
         })
@@ -144,7 +141,6 @@ async fn list_registered_functions() {
         .trigger(TriggerRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -174,7 +170,6 @@ async fn reject_non_existent_function() {
         .trigger(TriggerRequest {
             function_id: "nonexistent::function::rs".to_string(),
             payload: json!({}),
-            metadata: None,
             action: None,
             timeout_ms: Some(2000),
         })

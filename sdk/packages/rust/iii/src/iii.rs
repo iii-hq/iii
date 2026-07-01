@@ -38,8 +38,8 @@ use crate::{
     error::Error,
     protocol::{
         ErrorBody, Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
-        RegisterTriggerTypeMessage, TriggerAction, TriggerRequest, UnregisterTriggerMessage,
-        UnregisterTriggerTypeMessage,
+        RegisterTriggerTypeMessage, TriggerAction, TriggerRequest, TriggerRequestWithMetadata,
+        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
@@ -165,19 +165,17 @@ pub struct TriggerTypeRef<C = Value, R = Value> {
 }
 
 impl<C: Serialize, R> TriggerTypeRef<C, R> {
-    /// Register a trigger with compile-time validated trigger config and
-    /// optional metadata.
+    /// Register a trigger with compile-time validated trigger config.
     pub fn register_trigger(
         &self,
         function_id: impl Into<String>,
         config: C,
-        metadata: Option<Value>,
     ) -> Result<Trigger, Error> {
         self.iii.register_trigger(RegisterTriggerInput {
             trigger_type: self.trigger_type_id.clone(),
             function_id: function_id.into(),
             config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
-            metadata,
+            metadata: None,
         })
     }
 }
@@ -1054,7 +1052,7 @@ impl IIIClient {
     /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::Error> {
     ///     Ok(serde_json::json!({ "data": req.data }))
     /// });
-    /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() }, None);
+    /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
     /// ```
     pub fn register_trigger_type<H, C, R>(
         &self,
@@ -1166,7 +1164,6 @@ impl IIIClient {
     /// let result = iii.trigger(TriggerRequest {
     ///     function_id: "greet".to_string(),
     ///     payload: json!({"name": "World"}),
-    ///     metadata: None,
     ///     action: None,
     ///     timeout_ms: None,
     /// }).await?;
@@ -1175,7 +1172,6 @@ impl IIIClient {
     /// iii.trigger(TriggerRequest {
     ///     function_id: "notify".to_string(),
     ///     payload: json!({}),
-    ///     metadata: None,
     ///     action: Some(TriggerAction::Void),
     ///     timeout_ms: None,
     /// }).await?;
@@ -1184,19 +1180,31 @@ impl IIIClient {
     /// let receipt = iii.trigger(TriggerRequest {
     ///     function_id: "iii::durable::publish".to_string(),
     ///     payload: json!({"topic": "test"}),
-    ///     metadata: None,
     ///     action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),
     ///     timeout_ms: None,
     /// }).await?;
+    ///
+    /// // Metadata
+    /// iii.trigger(
+    ///     TriggerRequest {
+    ///         function_id: "audit::write".to_string(),
+    ///         payload: json!({"event": "checkout"}),
+    ///         action: Some(TriggerAction::Void),
+    ///         timeout_ms: None,
+    ///     }
+    ///     .metadata(json!({"tenant": "acme"})),
+    /// ).await?;
     ///
     /// # Ok(())
     /// # }
     /// ```
     pub async fn trigger(
         &self,
-        request: impl Into<crate::protocol::TriggerRequest>,
+        request: impl Into<TriggerRequestWithMetadata>,
     ) -> Result<Value, Error> {
-        let req = request.into();
+        let request = request.into();
+        let req = request.request;
+        let metadata = request.metadata;
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response
@@ -1208,7 +1216,7 @@ impl IIIClient {
                 traceparent: tp,
                 baggage: bg,
                 action: req.action,
-                metadata: req.metadata,
+                metadata,
             })?;
             return Ok(Value::Null);
         }
@@ -1230,7 +1238,7 @@ impl IIIClient {
             traceparent: tp,
             baggage: bg,
             action: req.action,
-            metadata: req.metadata,
+            metadata,
         })?;
 
         match tokio::time::timeout(timeout, rx).await {
@@ -1983,7 +1991,6 @@ pub(crate) async fn internal_create_channel(
         .trigger(TriggerRequest {
             function_id: "engine::channels::create".to_string(),
             payload: serde_json::json!({ "buffer_size": buffer_size }),
-            metadata: None,
             action: None,
             timeout_ms: None,
         })
@@ -2022,7 +2029,21 @@ mod tests {
     use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
 
     use super::*;
+    use crate::trigger::{TriggerConfig, TriggerHandler};
     use crate::{InitOptions, protocol::RegisterTriggerInput, register_worker};
+
+    struct NoopTriggerHandler;
+
+    #[async_trait::async_trait]
+    impl TriggerHandler for NoopTriggerHandler {
+        async fn register_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn register_trigger_unregister_removes_entry() {
@@ -2041,6 +2062,22 @@ mod tests {
         trigger.unregister();
 
         assert_eq!(iii.inner.triggers.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn typed_trigger_ref_register_trigger_keeps_legacy_two_arg_shape() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let trigger_type = iii.register_trigger_type(
+            RegisterTriggerType::new("typed-trigger", "typed trigger", NoopTriggerHandler)
+                .trigger_request_format::<Value>(),
+        );
+
+        let trigger = trigger_type
+            .register_trigger("functions.echo", json!({ "foo": "bar" }))
+            .expect("register trigger");
+
+        assert_eq!(iii.inner.triggers.lock().unwrap().len(), 1);
+        trigger.unregister();
     }
 
     #[tokio::test]
@@ -2287,13 +2324,15 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let _ = iii
-            .trigger(TriggerRequest {
-                function_id: "svc::work".to_string(),
-                payload: json!({ "x": 1 }),
-                metadata: Some(json!({ "tenant": "acme" })),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "svc::work".to_string(),
+                    payload: json!({ "x": 1 }),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                }
+                .metadata(json!({ "tenant": "acme" })),
+            )
             .await
             .expect("void trigger should enqueue");
 
@@ -2317,13 +2356,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn trigger_request_without_metadata_keeps_legacy_struct_literal_shape() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let _ = iii
+            .trigger(TriggerRequest {
+                function_id: "svc::work".to_string(),
+                payload: json!({ "x": 1 }),
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            })
+            .await
+            .expect("void trigger should enqueue");
+
+        let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
+        let sent = rx.try_recv().expect("sent invoke");
+        match sent {
+            Outbound::Message(Message::InvokeFunction {
+                function_id,
+                metadata,
+                ..
+            }) => {
+                assert_eq!(function_id, "svc::work");
+                assert!(metadata.is_none());
+            }
+            _ => panic!("expected invoke"),
+        }
+    }
+
+    #[tokio::test]
     async fn invoke_function_times_out_and_clears_pending() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let result = iii
             .trigger(TriggerRequest {
                 function_id: "functions.echo".to_string(),
                 payload: json!({ "a": 1 }),
-                metadata: None,
                 action: None,
                 timeout_ms: Some(10),
             })
