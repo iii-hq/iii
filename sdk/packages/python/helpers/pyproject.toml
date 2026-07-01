@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iii-helpers"
-version = "0.20.0"
+version = "0.20.0a1"
 description = "Shared helper primitives across iii SDKs."
 authors = [{ name = "III" }]
 license = { text = "Apache-2.0" }
