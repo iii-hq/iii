@@ -11,7 +11,13 @@ import type { TriggerHandler } from './triggers'
 
 /**
  * Async function handler for a registered function. Receives the invocation
- * payload and returns the result.
+ * payload and an optional per-invocation `metadata` value, and returns the
+ * result.
+ *
+ * `metadata` is arbitrary JSON travelling on a separate channel from the
+ * payload. It is `undefined` when the caller did not attach any. Existing
+ * single-argument handlers keep working -- the extra argument is simply
+ * ignored by them.
  *
  * @typeParam TInput - Type of the invocation payload.
  * @typeParam TOutput - Type of the return value.
@@ -19,11 +25,14 @@ import type { TriggerHandler } from './triggers'
  * @example
  * ```typescript
  * const handler: RemoteFunctionHandler<{ name: string }, { message: string }> =
- *   async (data) => ({ message: `Hello, ${data.name}!` })
+ *   async (data, metadata) => ({ message: `Hello, ${data.name}!` })
  * ```
  */
 // biome-ignore lint/suspicious/noExplicitAny: generic defaults require any for contravariant compatibility
-export type RemoteFunctionHandler<TInput = any, TOutput = any> = (data: TInput) => Promise<TOutput>
+export type RemoteFunctionHandler<TInput = any, TOutput = any> = (
+  data: TInput,
+  metadata?: unknown,
+) => Promise<TOutput>
 
 // biome-ignore lint/suspicious/noExplicitAny: generic default requires any for contravariant compatibility
 export type Invocation<TOutput = any> = {
@@ -38,10 +47,16 @@ export type Invocation<TOutput = any> = {
   function_id?: string
 }
 
-/** Internal handler type that includes traceparent and baggage for distributed tracing */
+/**
+ * Internal handler type. Wraps the user {@link RemoteFunctionHandler} and adds
+ * the trace context (traceparent/baggage) threaded internally by the SDK.
+ * `metadata` mirrors the user-facing argument; trace context stays internal
+ * and is not surfaced to the user handler.
+ */
 // biome-ignore lint/suspicious/noExplicitAny: generic defaults require any for contravariant compatibility
 export type InternalFunctionHandler<TInput = any, TOutput = any> = (
   data: TInput,
+  metadata?: unknown,
   traceparent?: string,
   baggage?: string,
 ) => Promise<TOutput>

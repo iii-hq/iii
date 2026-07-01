@@ -324,7 +324,7 @@ class Sdk implements IIIClient {
       const handler = handlerOrInvocation as RemoteFunctionHandler
       this.functions.set(functionId, {
         message: fullMessage,
-        handler: async (input, traceparent?: string, baggage?: string) => {
+        handler: async (input, metadata?: unknown, traceparent?: string, baggage?: string) => {
           const tracePayloads = !(
             process.env.III_DISABLE_TRACE_PAYLOADS === '1' ||
             process.env.III_DISABLE_TRACE_PAYLOADS?.toLowerCase() === 'true'
@@ -340,7 +340,7 @@ class Sdk implements IIIClient {
               })
             }
             try {
-              const result = await handler(input)
+              const result = await handler(input, metadata)
               if (tracePayloads) {
                 const { json, truncated } = redactAndTruncate(result, payloadMaxBytes)
                 recordSpanEvent('iii.invocation.output', {
@@ -437,6 +437,8 @@ class Sdk implements IIIClient {
    * @param request.payload - Payload to pass to the function.
    * @param request.action - Routing action. Omit for synchronous request/response.
    * @param request.timeoutMs - Override the default invocation timeout.
+   * @param request.metadata - Optional per-invocation metadata (arbitrary JSON)
+   *   surfaced to the target handler as its second argument.
    * @returns The result of the function invocation.
    *
    * @example
@@ -462,7 +464,7 @@ class Sdk implements IIIClient {
    * ```
    */
   trigger = async <TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs } = request
+    const { function_id, payload, action, timeoutMs, metadata } = request
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     // Void is fire-and-forget, no invocation_id, no response
@@ -475,6 +477,7 @@ class Sdk implements IIIClient {
         traceparent,
         baggage,
         action,
+        metadata,
       })
       return undefined as TOutput
     }
@@ -519,6 +522,7 @@ class Sdk implements IIIClient {
         traceparent,
         baggage,
         action,
+        metadata,
       })
     })
   }
@@ -872,6 +876,7 @@ class Sdk implements IIIClient {
     invocation_id: string | undefined,
     function_id: string,
     input: TInput,
+    metadata?: unknown,
     traceparent?: string,
     baggage?: string,
   ): Promise<unknown> {
@@ -884,7 +889,7 @@ class Sdk implements IIIClient {
     if (fn?.handler) {
       if (!invocation_id) {
         try {
-          await fn.handler(resolvedInput, traceparent, baggage)
+          await fn.handler(resolvedInput, metadata, traceparent, baggage)
         } catch (error) {
           this.logError(`Error invoking function ${function_id}`, error)
         }
@@ -892,7 +897,7 @@ class Sdk implements IIIClient {
       }
 
       try {
-        const result = await fn.handler(resolvedInput, traceparent, baggage)
+        const result = await fn.handler(resolvedInput, metadata, traceparent, baggage)
         this.sendMessage(MessageType.InvocationResult, {
           invocation_id,
           function_id,
@@ -1011,8 +1016,8 @@ class Sdk implements IIIClient {
       const { invocation_id, result, error } = message as InvocationResultMessage
       this.onInvocationResult(invocation_id, result, error)
     } else if (msgType === MessageType.InvokeFunction) {
-      const { invocation_id, function_id, data, traceparent, baggage } = message as InvokeFunctionMessage
-      this.onInvokeFunction(invocation_id, function_id, data, traceparent, baggage)
+      const { invocation_id, function_id, data, metadata, traceparent, baggage } = message as InvokeFunctionMessage
+      this.onInvokeFunction(invocation_id, function_id, data, metadata, traceparent, baggage)
     } else if (msgType === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> })
     } else if (msgType === MessageType.UnregisterTrigger) {

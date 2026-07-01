@@ -236,7 +236,7 @@ impl QueueAdapter for BridgeAdapter {
                         }
 
                         // Invoke the actual handler
-                        match engine.call(&function_id, data).await {
+                        match engine.call(&function_id, data, None).await {
                             Ok(result) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                                 Ok::<Value, Error>(result.unwrap_or(Value::Null))

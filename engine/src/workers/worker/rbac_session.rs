@@ -92,7 +92,7 @@ impl Session {
         });
 
         let result = engine
-            .call(&auth_fn_id, auth_input)
+            .call(&auth_fn_id, auth_input, None)
             .await
             .map_err(|e| ErrorBody::new("AUTH_ERROR", e.message))?;
 

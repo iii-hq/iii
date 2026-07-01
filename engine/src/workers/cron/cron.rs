@@ -229,6 +229,7 @@ impl CronWorker {
                     &spec.expression,
                     &spec.function_id,
                     spec.condition_function_id.clone(),
+                    spec.metadata.clone(),
                 )
                 .await
             {
@@ -427,6 +428,7 @@ impl TriggerRegistrator for CronWorker {
                     &cron_expression,
                     &trigger.function_id,
                     condition_function_id,
+                    trigger.metadata.clone(),
                 )
                 .await
         })

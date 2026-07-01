@@ -192,7 +192,7 @@ async fn execute_middleware(
 ) -> Result<MiddlewareResult, axum::response::Response> {
     match tokio::time::timeout(
         Duration::from_millis(timeout_ms),
-        engine.call(mw_fn_id, mw_input),
+        engine.call(mw_fn_id, mw_input, None),
     )
     .await
     {
@@ -349,6 +349,7 @@ pub async fn dynamic_handler(
                 function_id,
                 condition_function_id,
                 middleware_function_ids,
+                metadata,
             } = router_match;
 
             let function_kind = if function_id.starts_with("engine::") {
@@ -553,7 +554,7 @@ pub async fn dynamic_handler(
             let engine_clone = engine.clone();
             let call_span = tracing::Span::current();
             let mut call_handle = tokio::spawn(async move {
-                engine_clone.call(&function_id, api_request_value).await
+                engine_clone.call(&function_id, api_request_value, metadata).await
             }.instrument(call_span));
 
             crate::workers::telemetry::collector::track_api_request();

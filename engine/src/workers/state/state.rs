@@ -531,7 +531,11 @@ impl StateWorker {
                         );
 
                         let call_result = engine
-                            .call(&trigger.trigger.function_id, event_data.clone())
+                            .call(
+                                &trigger.trigger.function_id,
+                                event_data.clone(),
+                                trigger.trigger.metadata.clone(),
+                            )
                             .await;
 
                         match call_result {

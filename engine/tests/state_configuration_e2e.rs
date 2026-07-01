@@ -112,7 +112,7 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
 async fn drive_apply(harness: &Harness) {
     harness
         .engine
-        .call("iii-state::on-config-change", json!({}))
+        .call("iii-state::on-config-change", json!({}), None)
         .await
         .expect("config-change handler is invocable");
 }
@@ -120,7 +120,7 @@ async fn drive_apply(harness: &Harness) {
 async fn stored_value(harness: &Harness) -> Value {
     harness
         .engine
-        .call("configuration::get", json!({ "id": CONFIG_ID }))
+        .call("configuration::get", json!({ "id": CONFIG_ID }), None)
         .await
         .expect("configuration::get")
         .expect("get returns a body")
@@ -180,6 +180,7 @@ async fn max_value_bytes_hot_applies_and_rejects_oversized_writes() {
         .call(
             "state::set",
             json!({ "scope": "s", "key": "big", "value": "way more than eight bytes" }),
+            None,
         )
         .await;
     let err = oversized.expect_err("oversized write must be rejected");
@@ -191,6 +192,7 @@ async fn max_value_bytes_hot_applies_and_rejects_oversized_writes() {
         .call(
             "state::set",
             json!({ "scope": "s", "key": "ok", "value": 1 }),
+            None,
         )
         .await
         .expect("small write succeeds");
@@ -259,6 +261,7 @@ async fn save_interval_ms_retunes_a_file_backed_save_loop() {
         .call(
             "state::set",
             json!({ "scope": "s", "key": "k", "value": { "v": 1 } }),
+            None,
         )
         .await
         .expect("state::set");

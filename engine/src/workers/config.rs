@@ -809,7 +809,7 @@ impl EngineBuilder {
                 }
                 let id = running[idx].entry.name.clone();
                 let persisted = match engine
-                    .call("configuration::get", serde_json::json!({ "id": id }))
+                    .call("configuration::get", serde_json::json!({ "id": id }), None)
                     .await
                 {
                     Ok(Some(body)) => body.get("value").is_some_and(|v| !v.is_null()),

@@ -109,13 +109,13 @@ async fn invoke_redrive(
         .get("iii::queue::redrive")
         .expect("iii::queue::redrive should be registered");
     function
-        .call_handler(None, json!({ "queue": queue_name }), None)
+        .call_handler(None, json!({ "queue": queue_name }), None, None)
         .await
 }
 
 fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count: Arc<AtomicU64>) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input, _session| {
+        handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
             let count = call_count.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -139,7 +139,7 @@ fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count
 
 fn register_counting_function(engine: &Arc<Engine>, function_id: &str, counter: Arc<AtomicU64>) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input, _session| {
+        handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
             let count = counter.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -166,7 +166,7 @@ fn register_flaky_function(
     failures_before_success: u64,
 ) {
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input, _session| {
+        handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
             let fc = fail_count.clone();
             let sc = success_count.clone();
             let threshold = failures_before_success;

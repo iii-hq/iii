@@ -236,7 +236,7 @@ impl Worker {
                 }
             }
 
-            match engine.call(function_id, data).await {
+            match engine.call(function_id, data, None).await {
                 Ok(_) => {
                     tracing::debug!(job_id = %job.id, "Job processed successfully");
                     tracing::Span::current().record("otel.status_code", "OK");

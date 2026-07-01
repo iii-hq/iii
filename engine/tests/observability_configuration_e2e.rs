@@ -160,7 +160,11 @@ async fn first_boot_seeds_configuration_entry() {
 
     let stored = harness
         .engine
-        .call("configuration::get", json!({ "id": "iii-observability" }))
+        .call(
+            "configuration::get",
+            json!({ "id": "iii-observability" }),
+            None,
+        )
         .await
         .expect("configuration::get")
         .expect("get returns a body");
@@ -197,7 +201,11 @@ async fn runtime_edit_survives_worker_restart() {
     assert_eq!(restarted.current_config().logs_max_count, Some(4321));
     let stored = harness
         .engine
-        .call("configuration::get", json!({ "id": "iii-observability" }))
+        .call(
+            "configuration::get",
+            json!({ "id": "iii-observability" }),
+            None,
+        )
         .await
         .expect("configuration::get")
         .expect("get returns a body");
@@ -221,7 +229,11 @@ async fn disabled_boot_still_registers_the_configuration_entry() {
 
     let stored = harness
         .engine
-        .call("configuration::get", json!({ "id": "iii-observability" }))
+        .call(
+            "configuration::get",
+            json!({ "id": "iii-observability" }),
+            None,
+        )
         .await
         .expect("configuration::get must succeed even when observability booted disabled")
         .expect("get returns a body");
@@ -348,7 +360,11 @@ async fn env_placeholders_expand_on_read() {
 
     let expanded = harness
         .engine
-        .call("configuration::get", json!({ "id": "iii-observability" }))
+        .call(
+            "configuration::get",
+            json!({ "id": "iii-observability" }),
+            None,
+        )
         .await
         .expect("configuration::get")
         .expect("get returns a body");
@@ -360,6 +376,7 @@ async fn env_placeholders_expand_on_read() {
         .call(
             "configuration::get",
             json!({ "id": "iii-observability", "raw": true }),
+            None,
         )
         .await
         .expect("configuration::get raw")
@@ -391,7 +408,7 @@ async fn restart_tier_change_applies_live_fields_and_reports_rest() {
     // before the trigger fan-out ran.
     harness
         .engine
-        .call("iii-observability::on-config-change", json!({}))
+        .call("iii-observability::on-config-change", json!({}), None)
         .await
         .expect("config-change handler is invocable");
 
@@ -465,6 +482,7 @@ async fn ingest_log(harness: &Harness, level_fn: &str, message: &str) {
         .call(
             level_fn,
             json!({ "message": message, "service_name": "e2e" }),
+            None,
         )
         .await
         .expect("log ingest call");
@@ -475,7 +493,7 @@ async fn ingest_log(harness: &Harness, level_fn: &str, message: &str) {
 async fn drive_apply(harness: &Harness) {
     harness
         .engine
-        .call("iii-observability::on-config-change", json!({}))
+        .call("iii-observability::on-config-change", json!({}), None)
         .await
         .expect("config-change handler is invocable");
 }
@@ -671,7 +689,7 @@ async fn concurrent_applies_converge_under_apply_lock() {
         let engine = harness.engine.clone();
         handles.push(tokio::spawn(async move {
             engine
-                .call("iii-observability::on-config-change", json!({}))
+                .call("iii-observability::on-config-change", json!({}), None)
                 .await
                 .expect("concurrent on-config-change call must succeed");
         }));

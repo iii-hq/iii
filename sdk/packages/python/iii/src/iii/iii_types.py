@@ -223,6 +223,8 @@ class TriggerRequest(BaseModel):
         action: Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)``
             for queue, ``TriggerAction.Void()`` for fire-and-forget.
         timeout_ms: Override the default invocation timeout.
+        metadata: Arbitrary per-invocation metadata delivered to the handler
+            as a separate channel (not folded into ``payload``).
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
@@ -236,6 +238,10 @@ class TriggerRequest(BaseModel):
         ),
     )
     timeout_ms: int | None = Field(default=None, description="Override the default invocation timeout.")
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Arbitrary per-invocation metadata delivered to the handler.",
+    )
 
 
 class InvokeFunctionMessage(BaseModel):
@@ -243,6 +249,7 @@ class InvokeFunctionMessage(BaseModel):
 
     function_id: str = Field()
     data: Any
+    metadata: dict[str, Any] | None = Field(default=None)
     invocation_id: str | None = Field(default=None)
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)

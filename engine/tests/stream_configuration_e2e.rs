@@ -120,7 +120,7 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
 async fn drive_apply(harness: &Harness) {
     harness
         .engine
-        .call("iii-stream::on-config-change", json!({}))
+        .call("iii-stream::on-config-change", json!({}), None)
         .await
         .expect("config-change handler is invocable");
 }
@@ -128,7 +128,11 @@ async fn drive_apply(harness: &Harness) {
 async fn stored_value(harness: &Harness, raw: bool) -> Value {
     harness
         .engine
-        .call("configuration::get", json!({ "id": CONFIG_ID, "raw": raw }))
+        .call(
+            "configuration::get",
+            json!({ "id": CONFIG_ID, "raw": raw }),
+            None,
+        )
         .await
         .expect("configuration::get")
         .expect("get returns a body")

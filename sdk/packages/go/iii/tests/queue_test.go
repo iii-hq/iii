@@ -20,7 +20,7 @@ func TestEnqueueRoutesThroughQueue(t *testing.T) {
 	c := connect(t)
 
 	done := make(chan map[string]any, 1)
-	if err := c.RegisterFunction("test::queue::go::worker", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if err := c.RegisterFunction("test::queue::go::worker", func(ctx context.Context, data, _ json.RawMessage) (any, error) {
 		var in map[string]any
 		_ = json.Unmarshal(data, &in)
 		select {

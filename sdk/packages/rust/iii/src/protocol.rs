@@ -107,6 +107,11 @@ pub enum Message {
         baggage: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         action: Option<TriggerAction>,
+        /// Per-invocation metadata sidecar, surfaced to the handler as a
+        /// distinct argument (not folded into `data`). Optional and additive
+        /// for wire compatibility with engines that don't send it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     InvocationResult {
         invocation_id: Uuid,

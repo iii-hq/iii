@@ -18,7 +18,7 @@ import (
 
 func TestHandlerErrorSurfacesAsInvocationError(t *testing.T) {
 	c := connect(t)
-	if err := c.RegisterFunction("test::errors::go::boom", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	if err := c.RegisterFunction("test::errors::go::boom", func(ctx context.Context, _, _ json.RawMessage) (any, error) {
 		return nil, errors.New("kaboom")
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
@@ -44,7 +44,7 @@ func TestHandlerErrorSurfacesAsInvocationError(t *testing.T) {
 
 func TestTypedInvocationErrorPropagates(t *testing.T) {
 	c := connect(t)
-	if err := c.RegisterFunction("test::errors::go::forbidden", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	if err := c.RegisterFunction("test::errors::go::forbidden", func(ctx context.Context, _, _ json.RawMessage) (any, error) {
 		return nil, &iii.InvocationError{Code: "FORBIDDEN", Message: "nope"}
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)

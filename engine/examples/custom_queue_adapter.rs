@@ -83,7 +83,7 @@ impl CustomQueueAdapter for InMemoryQueueAdapter {
         if let Some(subs) = subscribers.get(topic) {
             let mut invokes = vec![];
             for (_id, function_id) in subs {
-                let invoke = self.engine.call(function_id, event_data.clone());
+                let invoke = self.engine.call(function_id, event_data.clone(), None);
                 invokes.push(invoke);
             }
             futures::future::join_all(invokes).await;
@@ -285,6 +285,7 @@ impl FunctionHandler for CustomQueueModule {
         _invocation_id: Option<Uuid>,
         _function_id: String,
         input: Value,
+        _metadata: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static>>
     {
         let adapter = self.adapter.clone();

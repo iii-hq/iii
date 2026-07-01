@@ -33,7 +33,7 @@ use crate::{
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
     workers::worker::rbac_session::Session,
     workers::{
-        engine_fn::{TRIGGER_WORKERS_AVAILABLE, trigger_proxy_fn_id},
+        engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsWorker,
         worker::{WorkerManagerConfig, channels::ChannelManager, rbac_session},
     },
@@ -202,6 +202,7 @@ pub trait EngineTrait: Send + Sync {
         &self,
         function_id: &str,
         input: impl Serialize + Send,
+        metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
@@ -410,6 +411,7 @@ impl Engine {
         body: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
+        metadata: Option<Value>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
@@ -441,6 +443,7 @@ impl Engine {
                     traceparent,
                     baggage,
                     session,
+                    metadata,
                 )
                 .await
         } else {
@@ -467,6 +470,7 @@ impl Engine {
         traceparent: &Option<String>,
         baggage: &Option<String>,
         invocation_id: Option<Uuid>,
+        metadata: Option<Value>,
     ) {
         // The canonical engine span for an invocation is the `call <fn>` span
         // opened in `InvocationHandler::handle_invocation`. We intentionally do
@@ -510,6 +514,7 @@ impl Engine {
                         data,
                         downstream_traceparent.clone(),
                         downstream_baggage.clone(),
+                        metadata,
                     )
                     .await;
 
@@ -697,7 +702,7 @@ impl Engine {
                             "description": description,
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input).await {
+                        match self.call(hook_fn_id, hook_input, None).await {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("trigger_type_id").and_then(|v| v.as_str()) {
                                     reg_id = s.to_string();
@@ -786,7 +791,7 @@ impl Engine {
                             "metadata": metadata,
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input).await {
+                        match self.call(hook_fn_id, hook_input, None).await {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("trigger_id").and_then(|v| v.as_str()) {
                                     reg_trigger_id = s.to_string();
@@ -877,9 +882,6 @@ impl Engine {
                     .unregister_trigger(id.clone(), trigger_type.clone())
                     .await;
 
-                // Drop the derived subscription proxy, if any (no-op otherwise).
-                self.functions.remove(&trigger_proxy_fn_id(id));
-
                 Ok(())
             }
 
@@ -890,6 +892,7 @@ impl Engine {
                 traceparent,
                 baggage,
                 action,
+                metadata,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -956,9 +959,12 @@ impl Engine {
                         let function_id = function_id.clone();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
+                        let middleware_metadata = metadata.clone();
 
                         tokio::spawn(async move {
-                            let response = match engine.call(&middleware_id, middleware_input).await
+                            let response = match engine
+                                .call(&middleware_id, middleware_input, middleware_metadata)
+                                .await
                             {
                                 Ok(result) => Message::InvocationResult {
                                     invocation_id: inv_id,
@@ -1095,6 +1101,7 @@ impl Engine {
                             traceparent,
                             baggage,
                             None, // force invocation_id to None — no result sent
+                            metadata.clone(),
                         );
                         Ok(())
                     }
@@ -1108,6 +1115,7 @@ impl Engine {
                             traceparent,
                             baggage,
                             *invocation_id,
+                            metadata.clone(),
                         );
                         Ok(())
                     }
@@ -1257,7 +1265,7 @@ impl Engine {
                             "metadata": metadata,
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input).await {
+                        match self.call(hook_fn_id, hook_input, None).await {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
                                     reg_id = s.to_string();
@@ -1414,12 +1422,13 @@ impl Engine {
         for trigger in triggers {
             let engine = self.clone();
             let function_id = trigger.function_id.clone();
+            let metadata = trigger.metadata.clone();
             let data = data.clone();
             let parent = current_span.clone();
             let span_function_id = function_id.clone();
             tokio::spawn(
                 async move {
-                    match engine.call(&function_id, data).await {
+                    match engine.call(&function_id, data, metadata).await {
                         Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
                         Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
                     }
@@ -1707,20 +1716,7 @@ impl Engine {
             self.invocations.halt_invocation(invocation_id);
         }
 
-        // Collect this worker's trigger ids before GC so we can drop their
-        // derived subscription proxies — those are engine-owned functions, so
-        // `unregister_worker` (which only removes triggers) won't touch them.
-        let worker_trigger_ids: Vec<String> = self
-            .trigger_registry
-            .triggers
-            .iter()
-            .filter(|e| e.value().worker_id == Some(worker.id))
-            .map(|e| e.key().clone())
-            .collect();
         self.trigger_registry.unregister_worker(&worker.id).await;
-        for trigger_id in worker_trigger_ids {
-            self.functions.remove(&trigger_proxy_fn_id(&trigger_id));
-        }
         self.channel_manager.remove_channels_by_worker(&worker.id);
         self.worker_registry.unregister_worker(&worker.id);
 
@@ -1811,6 +1807,7 @@ impl EngineTrait for Engine {
         &self,
         function_id: &str,
         input: impl Serialize + Send,
+        metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody> {
         let input = serde_json::to_value(input).map_err(|e| ErrorBody {
             code: "serialization_error".into(),
@@ -1837,6 +1834,7 @@ impl EngineTrait for Engine {
                     traceparent,
                     baggage,
                     None,
+                    metadata,
                 )
                 .await;
 
@@ -1891,10 +1889,14 @@ impl EngineTrait for Engine {
         let handler_function_id = function_id.clone();
 
         let function = Function {
-            handler: Arc::new(move |invocation_id, input, _session| {
+            handler: Arc::new(move |invocation_id, input, _session, metadata| {
                 let handler = handler_arc.clone();
                 let path = handler_function_id.clone();
-                Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
+                Box::pin(async move {
+                    handler
+                        .handle_function(invocation_id, path, input, metadata)
+                        .await
+                })
             }),
             _function_id: function_id.clone(),
             _description: description,
@@ -1915,7 +1917,7 @@ impl EngineTrait for Engine {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input, _session| {
+            handler: Arc::new(move |_id, input, _session, _metadata| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
             }),
@@ -1941,7 +1943,7 @@ impl EngineTrait for Engine {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input, session| {
+            handler: Arc::new(move |_id, input, session, _metadata| {
                 let handler = handler_arc.clone();
                 let session = session.clone();
                 Box::pin(async move { handler(input, session).await })
@@ -2536,6 +2538,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2584,6 +2587,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2649,6 +2653,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2697,6 +2702,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2811,25 +2817,25 @@ mod tests {
         );
 
         let ok = engine
-            .call("engine::call_ok", json!({ "hello": "world" }))
+            .call("engine::call_ok", json!({ "hello": "world" }), None)
             .await
             .expect("success call should succeed");
         assert_eq!(ok, Some(json!({ "payload": { "hello": "world" } })));
 
         let err = engine
-            .call("engine::call_fail", json!({ "hello": "world" }))
+            .call("engine::call_fail", json!({ "hello": "world" }), None)
             .await
             .expect_err("failure call should return ErrorBody");
         assert_eq!(err.code, "call_failed");
 
         let missing = engine
-            .call("engine::does_not_exist", json!({}))
+            .call("engine::does_not_exist", json!({}), None)
             .await
             .expect_err("missing function should return ErrorBody");
         assert_eq!(missing.code, "function_not_found");
 
         let serialization = engine
-            .call("engine::call_ok", FailingSerialize)
+            .call("engine::call_ok", FailingSerialize, None)
             .await
             .expect_err("serialize failure should return ErrorBody");
         assert_eq!(serialization.code, "serialization_error");
@@ -3004,6 +3010,7 @@ mod tests {
                 Some(uuid::Uuid::new_v4()),
                 "nonexistent_func",
                 serde_json::json!({}),
+                None,
                 None,
                 None,
             )

@@ -80,6 +80,7 @@ impl FunctionHandler for WorkerConnection {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
+        metadata: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         // Capture OTel context from current tracing span BEFORE async move
         // This ensures we get the trace context from the #[tracing::instrument] span.
@@ -125,6 +126,7 @@ impl FunctionHandler for WorkerConnection {
                     traceparent,
                     baggage,
                     action: None,
+                    metadata,
                 }))
                 .await;
 
@@ -210,7 +212,12 @@ mod tests {
         let (worker, mut rx) = make_worker();
         let inv_id = Uuid::new_v4();
         let result = worker
-            .handle_function(Some(inv_id), "fn1".into(), json!({"key": "val"}))
+            .handle_function(
+                Some(inv_id),
+                "fn1".into(),
+                json!({"key": "val"}),
+                Some(json!({"session_id": "s_1"})),
+            )
             .await;
         assert!(matches!(result, FunctionResult::Deferred));
 
@@ -220,11 +227,15 @@ mod tests {
                 invocation_id,
                 function_id,
                 data,
+                metadata,
                 ..
             }) => {
                 assert_eq!(invocation_id, Some(inv_id));
                 assert_eq!(function_id, "fn1");
                 assert_eq!(data, json!({"key": "val"}));
+                // Metadata rides as a distinct field on the wire message, not
+                // folded into `data`.
+                assert_eq!(metadata, Some(json!({"session_id": "s_1"})));
             }
             _ => panic!("Expected InvokeFunction message"),
         }

@@ -80,11 +80,12 @@ type Client struct {
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
-// sent; the returned value is marshaled into the InvocationResult.result. Returning an
-// error produces an InvocationResult.error; if the error is an *InvocationError its code
-// and stacktrace are preserved, otherwise it is reported with code "invocation_failed"
-// (matching the Rust and Node SDKs).
-type Handler func(ctx context.Context, data json.RawMessage) (any, error)
+// sent; metadata is the optional per-invocation metadata that rides alongside it (nil
+// when the call carries none). The returned value is marshaled into the
+// InvocationResult.result. Returning an error produces an InvocationResult.error; if the
+// error is an *InvocationError its code and stacktrace are preserved, otherwise it is
+// reported with code "invocation_failed" (matching the Rust and Node SDKs).
+type Handler func(ctx context.Context, data json.RawMessage, metadata json.RawMessage) (any, error)
 
 type registeredFunction struct {
 	message *RegisterFunctionMessage
@@ -246,6 +247,9 @@ type TriggerRequest struct {
 	FunctionID string
 	// Data is the JSON payload. nil is sent as {}.
 	Data json.RawMessage
+	// Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside Data
+	// on the wire's metadata channel, not folded into the payload. nil is omitted.
+	Metadata json.RawMessage
 	// Action selects void/enqueue semantics; nil means the default await path.
 	Action *TriggerAction
 	// Timeout overrides [DefaultInvocationTimeout] for an await/enqueue call.
@@ -271,6 +275,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 		frame, err := MarshalMessage(&InvokeFunctionMessage{
 			FunctionID:  req.FunctionID,
 			Data:        data,
+			Metadata:    req.Metadata,
 			Action:      req.Action,
 			Traceparent: tc.traceparent,
 			Baggage:     tc.baggage,
@@ -295,6 +300,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 		InvocationID: &id,
 		FunctionID:   req.FunctionID,
 		Data:         data,
+		Metadata:     req.Metadata,
 		Action:       req.Action,
 		Traceparent:  tc.traceparent,
 		Baggage:      tc.baggage,
@@ -715,7 +721,7 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 		return
 	}
 
-	result, herr := c.runHandler(injectTraceContext(ctx, tc), fn.handler, msg.Data)
+	result, herr := c.runHandler(injectTraceContext(ctx, tc), fn.handler, msg.Data, msg.Metadata)
 	if herr != nil {
 		c.replyInvocation(msg, nil, errorBodyFromHandlerError(herr), tc)
 		return
@@ -730,13 +736,13 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 
 // runHandler invokes h, recovering a panic into an error so a panicking handler yields
 // an InvocationResult.error instead of leaving the caller to time out.
-func (c *Client) runHandler(ctx context.Context, h Handler, data json.RawMessage) (result any, err error) {
+func (c *Client) runHandler(ctx context.Context, h Handler, data, metadata json.RawMessage) (result any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("iii: handler panic: %v", r)
 		}
 	}()
-	return h(ctx, data)
+	return h(ctx, data, metadata)
 }
 
 // errorBodyFromHandlerError maps a handler error to a wire ErrorBody. A typed

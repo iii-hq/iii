@@ -45,6 +45,9 @@ pub struct PathRouter {
     pub middleware_function_ids: Vec<String>,
     pub trigger_id: String,
     pub worker_id: Option<uuid::Uuid>,
+    /// Per-trigger metadata, delivered to the handler as a distinct argument
+    /// when the route fires (not folded into the request payload).
+    pub metadata: Option<Value>,
 }
 
 impl PathRouter {
@@ -63,6 +66,7 @@ impl PathRouter {
             middleware_function_ids,
             trigger_id: String::new(),
             worker_id: None,
+            metadata: None,
         }
     }
 
@@ -72,6 +76,13 @@ impl PathRouter {
         self.worker_id = worker_id;
         self
     }
+
+    /// Attach per-trigger metadata, delivered to the handler as a distinct
+    /// argument when the route fires.
+    pub fn with_metadata(mut self, metadata: Option<Value>) -> Self {
+        self.metadata = metadata;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +90,7 @@ pub struct RouterMatch {
     pub function_id: String,
     pub condition_function_id: Option<String>,
     pub middleware_function_ids: Vec<String>,
+    pub metadata: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -755,6 +767,7 @@ impl HttpWorker {
             function_id: r.function_id.clone(),
             condition_function_id: r.condition_function_id.clone(),
             middleware_function_ids: r.middleware_function_ids.clone(),
+            metadata: r.metadata.clone(),
         })
     }
 
@@ -883,7 +896,8 @@ impl TriggerRegistrator for HttpWorker {
                 condition_function_id,
                 middleware_function_ids,
             )
-            .with_owner(trigger.id.clone(), trigger.worker_id);
+            .with_owner(trigger.id.clone(), trigger.worker_id)
+            .with_metadata(trigger.metadata.clone());
 
             adapter.register_router(router).await?;
             Ok(())

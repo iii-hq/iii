@@ -420,7 +420,7 @@ where
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
-        Arc::new(move |input: Value| {
+        Arc::new(move |input: Value, _metadata: Option<Value>| {
             let output = serde_json::from_value::<T>(input)
                 .map_err(|e| Error::Serde(e.to_string()))
                 .and_then(&self)
@@ -473,7 +473,9 @@ where
     R: serde::Serialize + Send + 'static,
 {
     Arc::new(
-        move |input: Value| -> std::pin::Pin<
+        move |input: Value,
+              _metadata: Option<Value>|
+              -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
         > {
             match serde_json::from_value::<T>(input) {
@@ -618,6 +620,50 @@ impl RegisterFunction {
         Self {
             message,
             handler: Some(async_handler_with(f, on_bad_request)),
+        }
+    }
+
+    /// Like [`RegisterFunction::new_async`], but the handler also receives the
+    /// per-invocation `metadata` sidecar as a second argument. Use this when a
+    /// (possibly shared) target function needs per-trigger context attached at
+    /// registration time (`engine::register_trigger`'s `metadata`) or by an
+    /// invocation-time caller ([`IIIClient::trigger_with_metadata`]). `metadata`
+    /// is `None` when the invocation carried none.
+    pub fn new_async_with_metadata<F, T, Fut, R>(f: F) -> Self
+    where
+        F: Fn(T, Option<Value>) -> Fut + Send + Sync + 'static,
+        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
+        Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
+        R: serde::Serialize + schemars::JsonSchema + Send + 'static,
+    {
+        let mut message = empty_message();
+        message.request_format = json_schema_for::<T>();
+        message.response_format = json_schema_for::<R>();
+        let handler: RemoteFunctionHandler = Arc::new(
+            move |input: Value,
+                  metadata: Option<Value>|
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
+            > {
+                match serde_json::from_value::<T>(input) {
+                    Ok(arg) => {
+                        let fut = f(arg, metadata);
+                        Box::pin(async move {
+                            fut.await.and_then(|val| {
+                                serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
+                            })
+                        })
+                    }
+                    Err(e) => {
+                        let err = Error::Serde(e.to_string());
+                        Box::pin(async move { Err(err) })
+                    }
+                }
+            },
+        );
+        Self {
+            message,
+            handler: Some(handler),
         }
     }
 
@@ -1098,6 +1144,18 @@ impl IIIClient {
         &self,
         request: impl Into<crate::protocol::TriggerRequest>,
     ) -> Result<Value, Error> {
+        self.trigger_with_metadata(request, None).await
+    }
+
+    /// Like [`IIIClient::trigger`], but attaches a per-invocation `metadata`
+    /// sidecar that is delivered to the target handler as a distinct argument
+    /// (not folded into the payload). This is the invocation-time counterpart
+    /// to the metadata a trigger registration carries.
+    pub async fn trigger_with_metadata(
+        &self,
+        request: impl Into<crate::protocol::TriggerRequest>,
+        metadata: Option<Value>,
+    ) -> Result<Value, Error> {
         let req = request.into();
         let (tp, bg) = inject_trace_headers();
 
@@ -1110,6 +1168,7 @@ impl IIIClient {
                 traceparent: tp,
                 baggage: bg,
                 action: req.action,
+                metadata,
             })?;
             return Ok(Value::Null);
         }
@@ -1131,6 +1190,7 @@ impl IIIClient {
             traceparent: tp,
             baggage: bg,
             action: req.action,
+            metadata,
         })?;
 
         match tokio::time::timeout(timeout, rx).await {
@@ -1176,6 +1236,7 @@ impl IIIClient {
                     traceparent: None,
                     baggage: None,
                     action: Some(TriggerAction::Void),
+                    metadata: None,
                 });
             }
         }
@@ -1465,8 +1526,16 @@ impl IIIClient {
                 traceparent,
                 baggage,
                 action: _,
+                metadata,
             } => {
-                self.handle_invoke_function(invocation_id, function_id, data, traceparent, baggage);
+                self.handle_invoke_function(
+                    invocation_id,
+                    function_id,
+                    data,
+                    traceparent,
+                    baggage,
+                    metadata,
+                );
             }
             Message::RegisterTrigger {
                 id,
@@ -1534,6 +1603,7 @@ impl IIIClient {
         data: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
+        metadata: Option<Value>,
     ) {
         tracing::debug!(function_id = %function_id, traceparent = ?traceparent, baggage = ?baggage, "Invoking function");
 
@@ -1637,7 +1707,7 @@ impl IIIClient {
 
             let result = {
                 use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
-                handler(data).with_context(otel_cx.clone()).await
+                handler(data, metadata).with_context(otel_cx.clone()).await
             };
 
             if trace_payloads {
@@ -2071,7 +2141,7 @@ mod tests {
         let handler = reg.handler.as_ref().unwrap();
 
         // Malformed payload routes through the custom mapper, not Serde.
-        let err = handler(json!({"name": 42})).await.unwrap_err();
+        let err = handler(json!({"name": 42}), None).await.unwrap_err();
         match err {
             Error::Remote {
                 code, stacktrace, ..
@@ -2083,7 +2153,7 @@ mod tests {
         }
 
         // Valid payload still runs the handler.
-        let ok = handler(json!({"name": "iii"})).await.unwrap();
+        let ok = handler(json!({"name": "iii"}), None).await.unwrap();
         assert_eq!(ok["message"], "Hello, iii!");
     }
 
@@ -2114,8 +2184,44 @@ mod tests {
             let stored = funcs.get("test::untyped").expect("stored");
             stored.handler.as_ref().expect("has handler").clone()
         };
-        let out = handler(json!({"name": "world"})).await.unwrap();
+        let out = handler(json!({"name": "world"}), None).await.unwrap();
         assert_eq!(out, json!({"echo": {"name": "world"}}));
+    }
+
+    #[tokio::test]
+    async fn new_async_with_metadata_delivers_metadata_as_separate_arg() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        iii.register_function(
+            "test::with_meta",
+            RegisterFunction::new_async_with_metadata(
+                |input: Value, metadata: Option<Value>| async move {
+                    // Echo back both the payload and the metadata sidecar so the
+                    // test can prove they arrive as distinct arguments.
+                    Ok(json!({ "input": input, "metadata": metadata }))
+                },
+            ),
+        );
+        let handler = {
+            let funcs = iii.inner.functions.lock().unwrap();
+            funcs
+                .get("test::with_meta")
+                .expect("stored")
+                .handler
+                .as_ref()
+                .expect("has handler")
+                .clone()
+        };
+
+        // Metadata present: delivered as the second argument, payload untouched.
+        let out = handler(json!({ "x": 1 }), Some(json!({ "session_id": "s" })))
+            .await
+            .unwrap();
+        assert_eq!(out["input"], json!({ "x": 1 }));
+        assert_eq!(out["metadata"], json!({ "session_id": "s" }));
+
+        // Metadata absent: handler still runs, sees null.
+        let out_none = handler(json!({ "x": 2 }), None).await.unwrap();
+        assert_eq!(out_none["metadata"], Value::Null);
     }
 
     #[tokio::test]
@@ -2266,6 +2372,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         }
     }
 

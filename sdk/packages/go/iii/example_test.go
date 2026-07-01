@@ -16,7 +16,7 @@ import (
 func Example_helloWorker() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://localhost:49134
 
-	client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+	client.RegisterFunction("hello::greet", func(ctx context.Context, data, metadata json.RawMessage) (any, error) {
 		var req struct {
 			Body struct {
 				Name string `json:"name"`

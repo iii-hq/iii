@@ -125,7 +125,11 @@ impl SocketStreamConnection {
 
                 let call_result = self
                     .engine
-                    .call(&trigger.function_id, event_value.clone())
+                    .call(
+                        &trigger.function_id,
+                        event_value.clone(),
+                        trigger.metadata.clone(),
+                    )
                     .await;
 
                 tracing::debug!(call_result = ?call_result, "Call result");

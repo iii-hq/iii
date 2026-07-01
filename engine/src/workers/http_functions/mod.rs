@@ -379,7 +379,7 @@ mod tests {
         assert!(engine.functions.get("remote.echo").is_some());
 
         let result = engine
-            .call("remote.echo", json!({ "hello": "world" }))
+            .call("remote.echo", json!({ "hello": "world" }), None)
             .await
             .expect("invoke remote http function")
             .expect("http function should return a body");
@@ -420,7 +420,9 @@ mod tests {
             ))
             .await
             .expect("register invalid response function");
-        let invalid_result = engine.call("remote.invalid", json!({ "test": true })).await;
+        let invalid_result = engine
+            .call("remote.invalid", json!({ "test": true }), None)
+            .await;
         match invalid_result {
             Err(err) => assert_eq!(err.code, "invalid_response"),
             _ => panic!("expected invalid_response error"),
@@ -433,7 +435,9 @@ mod tests {
             ))
             .await
             .expect("register upstream error function");
-        let error_result = engine.call("remote.error", json!({ "test": true })).await;
+        let error_result = engine
+            .call("remote.error", json!({ "test": true }), None)
+            .await;
         match error_result {
             Err(err) => {
                 assert_eq!(err.code, "UPSTREAM_ERROR");
@@ -450,7 +454,7 @@ mod tests {
             .await
             .expect("register empty response function");
         let empty_result = engine
-            .call("remote.empty", json!({ "test": true }))
+            .call("remote.empty", json!({ "test": true }), None)
             .await
             .expect("invoke empty response function");
         assert!(empty_result.is_none());
@@ -497,7 +501,7 @@ mod tests {
             .expect("register auth protected function");
 
         let result = engine
-            .call("remote.auth", json!({ "secure": true }))
+            .call("remote.auth", json!({ "secure": true }), None)
             .await
             .expect("invoke auth protected function");
         assert!(result.is_some());

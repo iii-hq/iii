@@ -116,6 +116,7 @@ async fn worker_pid_is_stored_and_listed() {
                 "name": "pid-test-worker",
                 "pid": 42000u32,
             }),
+            None,
         )
         .await
         .expect("register call should succeed");
@@ -123,7 +124,7 @@ async fn worker_pid_is_stored_and_listed() {
     // List workers and verify our worker is present (pid is no longer in
     // list responses — it lives on the info envelope).
     let list_result = engine
-        .call("engine::workers::list", serde_json::json!({}))
+        .call("engine::workers::list", serde_json::json!({}), None)
         .await
         .expect("list call succeeds")
         .expect("result is Some");
@@ -143,6 +144,7 @@ async fn worker_pid_is_stored_and_listed() {
         .call(
             "engine::workers::info",
             serde_json::json!({ "name": "pid-test-worker" }),
+            None,
         )
         .await
         .expect("info call succeeds")

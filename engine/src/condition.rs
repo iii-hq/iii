@@ -19,7 +19,7 @@ pub async fn check_condition<E: EngineTrait>(
     condition_function_id: &str,
     data: Value,
 ) -> Result<bool, ErrorBody> {
-    match engine.call(condition_function_id, data).await {
+    match engine.call(condition_function_id, data, None).await {
         Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
         Ok(None) => {
             tracing::warn!(
@@ -60,6 +60,7 @@ mod tests {
             &self,
             _function_id: &str,
             _input: impl serde::Serialize + Send,
+            _metadata: Option<Value>,
         ) -> Result<Option<Value>, ErrorBody> {
             self.result.lock().unwrap().clone()
         }
