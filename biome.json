@@ -141,6 +141,28 @@
     },
     {
       "includes": [
+        "website/presentations/**",
+        "skills/presentation/template/**",
+        "skills/presentation/base/**"
+      ],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useAriaPropsSupportedByRole": "off"
+          },
+          "correctness": {
+            "useUniqueElementIds": "off"
+          },
+          "suspicious": {
+            "noCommentText": "off",
+            "noArrayIndexKey": "off",
+            "noThenProperty": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
         "packages/**/*.test.ts",
         "packages/**/*.test.tsx",
         "packages/**/__tests__/**/*.ts",
