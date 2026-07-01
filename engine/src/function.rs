@@ -45,6 +45,16 @@ impl Function {
         invocation_id: Option<Uuid>,
         data: Value,
         session: Option<Arc<Session>>,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        self.call_handler_with_metadata(invocation_id, data, session, None)
+            .await
+    }
+
+    pub async fn call_handler_with_metadata(
+        self,
+        invocation_id: Option<Uuid>,
+        data: Value,
+        session: Option<Arc<Session>>,
         metadata: Option<Value>,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         (self.handler)(invocation_id, data.clone(), session, metadata).await
@@ -350,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn call_handler_returns_success() {
         let func = make_function("test");
-        let result = func.call_handler(None, json!({}), None, None).await;
+        let result = func.call_handler(None, json!({}), None).await;
         match result {
             FunctionResult::Success(Some(val)) => {
                 assert_eq!(val, json!({"ok": true}));
@@ -379,7 +389,7 @@ mod tests {
             metadata: None,
         };
         let result = func
-            .call_handler(Some(invocation_id), json!({}), None, None)
+            .call_handler(Some(invocation_id), json!({}), None)
             .await;
         match result {
             FunctionResult::Success(Some(val)) => {
@@ -407,7 +417,7 @@ mod tests {
             response_format: None,
             metadata: None,
         };
-        let result = func.call_handler(None, json!({}), None, None).await;
+        let result = func.call_handler(None, json!({}), None).await;
         match result {
             FunctionResult::Failure(e) => {
                 assert_eq!(e.code, "test_error");

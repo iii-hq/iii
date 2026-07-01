@@ -19,7 +19,7 @@ pub async fn check_condition<E: EngineTrait>(
     condition_function_id: &str,
     data: Value,
 ) -> Result<bool, ErrorBody> {
-    match engine.call(condition_function_id, data, None).await {
+    match engine.call(condition_function_id, data).await {
         Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
         Ok(None) => {
             tracing::warn!(
@@ -56,7 +56,7 @@ mod tests {
     }
 
     impl crate::engine::EngineTrait for MockEngine {
-        async fn call(
+        async fn call_with_metadata(
             &self,
             _function_id: &str,
             _input: impl serde::Serialize + Send,

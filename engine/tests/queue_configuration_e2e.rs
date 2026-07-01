@@ -145,7 +145,7 @@ async fn first_boot_seeds_configuration_entry() {
 
     let stored = harness
         .engine
-        .call("configuration::get", json!({ "id": "iii-queue" }), None)
+        .call("configuration::get", json!({ "id": "iii-queue" }))
         .await
         .expect("configuration::get")
         .expect("get returns a body");
@@ -382,7 +382,7 @@ async fn unbuildable_adapter_keeps_previous_transport() {
     // trigger-fired apply can mutate state — they don't race.
     let _ = harness
         .engine
-        .call("iii-queue::on-config-change", json!({}), None)
+        .call("iii-queue::on-config-change", json!({}))
         .await
         .expect("on-config-change call");
 
@@ -490,7 +490,7 @@ async fn invalid_value_keeps_previous_config() {
     // this call nor the trigger-fired apply can mutate state — they don't race.
     let _ = harness
         .engine
-        .call("iii-queue::on-config-change", json!({}), None)
+        .call("iii-queue::on-config-change", json!({}))
         .await
         .expect("on-config-change call");
 
@@ -560,7 +560,7 @@ async fn apply_after_destroy_does_not_respawn() {
     .await;
     let _ = harness
         .engine
-        .call("iii-queue::on-config-change", json!({}), None)
+        .call("iii-queue::on-config-change", json!({}))
         .await
         .expect("on-config-change call");
 

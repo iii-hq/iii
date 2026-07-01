@@ -439,7 +439,9 @@ impl EngineFunctionsWorker {
             let metadata = trigger.metadata.clone();
             let data = data.clone();
             tokio::spawn(async move {
-                let _ = engine.call(&function_id, data, metadata).await;
+                let _ = engine
+                    .call_with_metadata(&function_id, data, metadata)
+                    .await;
             });
         }
     }
@@ -1052,7 +1054,8 @@ impl Worker for EngineFunctionsWorker {
                                 let metadata = trigger.metadata.clone();
                                 let data = functions_data.clone();
                                 tokio::spawn(async move {
-                                    let _ = engine.call(&function_id, data, metadata).await;
+                                    let _ =
+                                        engine.call_with_metadata(&function_id, data, metadata).await;
                                 });
                             }
                         }
@@ -3250,11 +3253,11 @@ mod tests {
         assert_eq!(trig.worker_id, Some(wid));
         assert_eq!(trig.metadata, Some(meta.clone()));
 
-        // Fire the way a registrator does: metadata travels as the distinct
-        // 3rd argument, NOT folded into the payload.
+        // Fire the way a registrator does: metadata travels explicitly, NOT
+        // folded into the payload.
         let event = serde_json::json!({ "event_type": "set", "key": "k", "value": 1 });
         engine
-            .call(&trig.function_id, event.clone(), trig.metadata.clone())
+            .call_with_metadata(&trig.function_id, event.clone(), trig.metadata.clone())
             .await
             .expect("fire ok");
 

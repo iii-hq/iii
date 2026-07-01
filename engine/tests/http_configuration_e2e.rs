@@ -156,7 +156,7 @@ async fn first_boot_seeds_configuration_entry() {
 
     let stored = harness
         .engine
-        .call("configuration::get", json!({ "id": "iii-http" }), None)
+        .call("configuration::get", json!({ "id": "iii-http" }))
         .await
         .expect("configuration::get")
         .expect("get returns a body");
@@ -524,7 +524,7 @@ async fn failed_rebind_keeps_previous_server() {
     // duplicate is idempotent — it re-fetches the same value and fails again).
     harness
         .engine
-        .call("iii-http::on-config-change", json!({}), None)
+        .call("iii-http::on-config-change", json!({}))
         .await
         .expect("config-change handler is invocable");
 
@@ -554,7 +554,7 @@ async fn restart_falls_back_to_seed_when_stored_address_unbindable() {
     set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
     harness
         .engine
-        .call("iii-http::on-config-change", json!({}), None)
+        .call("iii-http::on-config-change", json!({}))
         .await
         .expect("config-change handler is invocable");
 
@@ -600,7 +600,7 @@ async fn restart_refuses_seed_fallback_that_widens_loopback() {
     set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
     harness
         .engine
-        .call("iii-http::on-config-change", json!({}), None)
+        .call("iii-http::on-config-change", json!({}))
         .await
         .expect("config-change handler is invocable");
 

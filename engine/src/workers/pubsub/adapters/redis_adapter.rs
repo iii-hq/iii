@@ -180,7 +180,7 @@ impl PubSubAdapter for RedisAdapter {
 
                 // We may want to limit concurrency at some point
                 tokio::spawn(async move {
-                    let _ = engine.call(&function_id, event_data, None).await;
+                    let _ = engine.call(&function_id, event_data).await;
                 });
             }
 

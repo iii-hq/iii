@@ -276,7 +276,7 @@ async fn workers_info_attributes_trigger_types_to_in_process_worker() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let result = engine
-        .call("engine::workers::info", json!({ "name": "iii-http" }), None)
+        .call("engine::workers::info", json!({ "name": "iii-http" }))
         .await
         .expect("engine::workers::info should succeed")
         .expect("response should not be None");

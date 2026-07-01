@@ -164,7 +164,7 @@ impl InvocationHandler {
             let metrics = get_engine_metrics();
 
             let result = function_handler
-                .call_handler(Some(invocation_id), body, session, metadata)
+                .call_handler_with_metadata(Some(invocation_id), body, session, metadata)
                 .await;
 
             // Calculate duration

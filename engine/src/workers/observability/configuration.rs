@@ -64,7 +64,7 @@ pub async fn register_config(
     }
 
     engine
-        .call("configuration::register", payload, None)
+        .call("configuration::register", payload)
         .await
         .map_err(|err| {
             anyhow!(
@@ -103,7 +103,7 @@ pub async fn fetch_config(
 
 async fn try_get_value(engine: &Engine) -> anyhow::Result<Option<Value>> {
     match engine
-        .call("configuration::get", json!({ "id": CONFIG_ID }), None)
+        .call("configuration::get", json!({ "id": CONFIG_ID }))
         .await
     {
         Ok(response) => Ok(response

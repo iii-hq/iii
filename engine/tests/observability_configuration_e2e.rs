@@ -408,7 +408,7 @@ async fn restart_tier_change_applies_live_fields_and_reports_rest() {
     // before the trigger fan-out ran.
     harness
         .engine
-        .call("iii-observability::on-config-change", json!({}), None)
+        .call("iii-observability::on-config-change", json!({}))
         .await
         .expect("config-change handler is invocable");
 
@@ -493,7 +493,7 @@ async fn ingest_log(harness: &Harness, level_fn: &str, message: &str) {
 async fn drive_apply(harness: &Harness) {
     harness
         .engine
-        .call("iii-observability::on-config-change", json!({}), None)
+        .call("iii-observability::on-config-change", json!({}))
         .await
         .expect("config-change handler is invocable");
 }
@@ -689,7 +689,7 @@ async fn concurrent_applies_converge_under_apply_lock() {
         let engine = harness.engine.clone();
         handles.push(tokio::spawn(async move {
             engine
-                .call("iii-observability::on-config-change", json!({}), None)
+                .call("iii-observability::on-config-change", json!({}))
                 .await
                 .expect("concurrent on-config-change call must succeed");
         }));

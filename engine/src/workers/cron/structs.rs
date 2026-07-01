@@ -205,7 +205,7 @@ impl CronAdapter {
                         }
 
                         match engine
-                            .call(&function_id, event_data, metadata.clone())
+                            .call_with_metadata(&function_id, event_data, metadata.clone())
                             .await
                         {
                             Ok(_) => {
@@ -242,6 +242,33 @@ impl CronAdapter {
 
     /// Register a new cron trigger
     pub async fn register(
+        &self,
+        id: &str,
+        cron_expression: &str,
+        function_id: &str,
+    ) -> anyhow::Result<()> {
+        self.register_with_metadata(id, cron_expression, function_id, None, None)
+            .await
+    }
+
+    pub async fn register_with_condition(
+        &self,
+        id: &str,
+        cron_expression: &str,
+        function_id: &str,
+        condition_function_id: String,
+    ) -> anyhow::Result<()> {
+        self.register_with_metadata(
+            id,
+            cron_expression,
+            function_id,
+            Some(condition_function_id),
+            None,
+        )
+        .await
+    }
+
+    pub async fn register_with_metadata(
         &self,
         id: &str,
         cron_expression: &str,
@@ -412,7 +439,7 @@ mod tests {
 
         // Register a cron job with an hourly schedule (won't fire during the test)
         adapter
-            .register("test-job-1", "0 0 * * * *", "test-function", None, None)
+            .register("test-job-1", "0 0 * * * *", "test-function")
             .await
             .expect("Failed to register cron job");
 
@@ -443,7 +470,7 @@ mod tests {
         let adapter = CronAdapter::new(Arc::new(NoopSchedulerAdapter), engine);
 
         adapter
-            .register("job-1", "0 0 * * * *", "fn-1", None, None)
+            .register("job-1", "0 0 * * * *", "fn-1")
             .await
             .unwrap();
 
@@ -461,11 +488,11 @@ mod tests {
 
         // Register multiple cron jobs
         adapter
-            .register("job-1", "0 0 * * * *", "fn-1", None, None)
+            .register("job-1", "0 0 * * * *", "fn-1")
             .await
             .unwrap();
         adapter
-            .register("job-2", "0 30 * * * *", "fn-2", None, None)
+            .register("job-2", "0 30 * * * *", "fn-2")
             .await
             .unwrap();
 
@@ -514,12 +541,12 @@ mod tests {
         let adapter = CronAdapter::new(Arc::new(NoopSchedulerAdapter), engine);
 
         adapter
-            .register("dup-job", "0 0 * * * *", "fn-1", None, None)
+            .register("dup-job", "0 0 * * * *", "fn-1")
             .await
             .expect("first registration");
 
         let duplicate = adapter
-            .register("dup-job", "0 0 * * * *", "fn-1", None, None)
+            .register("dup-job", "0 0 * * * *", "fn-1")
             .await
             .expect_err("duplicate registration should fail");
         assert!(duplicate.to_string().contains("already registered"));
@@ -569,7 +596,7 @@ mod tests {
         );
 
         adapter
-            .register("tick-job", "* * * * * *", "cron.handler", None, None)
+            .register("tick-job", "* * * * * *", "cron.handler")
             .await
             .expect("register cron job");
 
@@ -628,12 +655,11 @@ mod tests {
         );
 
         adapter
-            .register(
+            .register_with_condition(
                 "cond-job",
                 "* * * * * *",
                 "cron.handler.false",
-                Some("cron.condition".to_string()),
-                None,
+                "cron.condition".to_string(),
             )
             .await
             .expect("register conditional cron job");
@@ -690,12 +716,11 @@ mod tests {
         );
 
         adapter
-            .register(
+            .register_with_condition(
                 "cond-none-job",
                 "* * * * * *",
                 "cron.handler.none",
-                Some("cron.condition.none".to_string()),
-                None,
+                "cron.condition.none".to_string(),
             )
             .await
             .expect("register conditional cron job");
@@ -758,12 +783,11 @@ mod tests {
         );
 
         adapter
-            .register(
+            .register_with_condition(
                 "cond-err-job",
                 "* * * * * *",
                 "cron.handler.err",
-                Some("cron.condition.err".to_string()),
-                None,
+                "cron.condition.err".to_string(),
             )
             .await
             .expect("register conditional cron job");
@@ -813,13 +837,7 @@ mod tests {
         );
 
         adapter
-            .register(
-                "handler-err-job",
-                "* * * * * *",
-                "cron.handler.failure",
-                None,
-                None,
-            )
+            .register("handler-err-job", "* * * * * *", "cron.handler.failure")
             .await
             .expect("register cron job");
 
@@ -864,13 +882,7 @@ mod tests {
         );
 
         adapter
-            .register(
-                "locked-job",
-                "* * * * * *",
-                "cron.handler.locked",
-                None,
-                None,
-            )
+            .register("locked-job", "* * * * * *", "cron.handler.locked")
             .await
             .expect("register cron job");
 

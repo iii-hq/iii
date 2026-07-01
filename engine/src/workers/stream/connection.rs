@@ -125,7 +125,7 @@ impl SocketStreamConnection {
 
                 let call_result = self
                     .engine
-                    .call(
+                    .call_with_metadata(
                         &trigger.function_id,
                         event_value.clone(),
                         trigger.metadata.clone(),

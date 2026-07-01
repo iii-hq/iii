@@ -202,6 +202,14 @@ pub trait EngineTrait: Send + Sync {
         &self,
         function_id: &str,
         input: impl Serialize + Send,
+    ) -> Result<Option<Value>, ErrorBody> {
+        self.call_with_metadata(function_id, input, None).await
+    }
+
+    async fn call_with_metadata(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
         metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
@@ -702,7 +710,7 @@ impl Engine {
                             "description": description,
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input, None).await {
+                        match self.call(hook_fn_id, hook_input).await {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("trigger_type_id").and_then(|v| v.as_str()) {
                                     reg_id = s.to_string();
@@ -791,7 +799,7 @@ impl Engine {
                             "metadata": metadata,
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input, None).await {
+                        match self.call(hook_fn_id, hook_input).await {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("trigger_id").and_then(|v| v.as_str()) {
                                     reg_trigger_id = s.to_string();
@@ -963,7 +971,11 @@ impl Engine {
 
                         tokio::spawn(async move {
                             let response = match engine
-                                .call(&middleware_id, middleware_input, middleware_metadata)
+                                .call_with_metadata(
+                                    &middleware_id,
+                                    middleware_input,
+                                    middleware_metadata,
+                                )
                                 .await
                             {
                                 Ok(result) => Message::InvocationResult {
@@ -1265,7 +1277,7 @@ impl Engine {
                             "metadata": metadata,
                             "context": session.context,
                         });
-                        match self.call(hook_fn_id, hook_input, None).await {
+                        match self.call(hook_fn_id, hook_input).await {
                             Ok(Some(v)) if v.is_object() => {
                                 if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
                                     reg_id = s.to_string();
@@ -1428,7 +1440,7 @@ impl Engine {
             let span_function_id = function_id.clone();
             tokio::spawn(
                 async move {
-                    match engine.call(&function_id, data, metadata).await {
+                    match engine.call_with_metadata(&function_id, data, metadata).await {
                         Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
                         Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
                     }
@@ -1803,7 +1815,7 @@ impl EngineTrait for Engine {
     /// orchestration; the boot-heartbeat wakeup should only fire for actual
     /// user-initiated invocations arriving via `remember_invocation` and not
     /// things the engine can fire itself without user involvement, such as cron.
-    async fn call(
+    async fn call_with_metadata(
         &self,
         function_id: &str,
         input: impl Serialize + Send,
@@ -2817,25 +2829,25 @@ mod tests {
         );
 
         let ok = engine
-            .call("engine::call_ok", json!({ "hello": "world" }), None)
+            .call("engine::call_ok", json!({ "hello": "world" }))
             .await
             .expect("success call should succeed");
         assert_eq!(ok, Some(json!({ "payload": { "hello": "world" } })));
 
         let err = engine
-            .call("engine::call_fail", json!({ "hello": "world" }), None)
+            .call("engine::call_fail", json!({ "hello": "world" }))
             .await
             .expect_err("failure call should return ErrorBody");
         assert_eq!(err.code, "call_failed");
 
         let missing = engine
-            .call("engine::does_not_exist", json!({}), None)
+            .call("engine::does_not_exist", json!({}))
             .await
             .expect_err("missing function should return ErrorBody");
         assert_eq!(missing.code, "function_not_found");
 
         let serialization = engine
-            .call("engine::call_ok", FailingSerialize, None)
+            .call("engine::call_ok", FailingSerialize)
             .await
             .expect_err("serialize failure should return ErrorBody");
         assert_eq!(serialization.code, "serialization_error");

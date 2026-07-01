@@ -227,7 +227,7 @@ impl ConfigurationWorker {
                     }
 
                     if let Err(err) = engine
-                        .call(
+                        .call_with_metadata(
                             &trigger.trigger.function_id,
                             event_value.clone(),
                             trigger.trigger.metadata.clone(),

@@ -109,7 +109,7 @@ async fn invoke_redrive(
         .get("iii::queue::redrive")
         .expect("iii::queue::redrive should be registered");
     function
-        .call_handler(None, json!({ "queue": queue_name }), None, None)
+        .call_handler(None, json!({ "queue": queue_name }), None)
         .await
 }
 

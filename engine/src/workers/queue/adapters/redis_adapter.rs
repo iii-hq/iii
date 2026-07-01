@@ -275,7 +275,7 @@ impl QueueAdapter for RedisAdapter {
 
                 tokio::spawn(
                     async move {
-                        match engine.call(&function_id, data, None).await {
+                        match engine.call(&function_id, data).await {
                             Ok(_) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                             }

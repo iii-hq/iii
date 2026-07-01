@@ -116,7 +116,7 @@ impl JobHandler for FunctionHandler {
                 }
             }
 
-            let result = engine.call(&function_id, data, None).await;
+            let result = engine.call(&function_id, data).await;
             match &result {
                 Ok(_) => {
                     tracing::Span::current().record("otel.status_code", "OK");

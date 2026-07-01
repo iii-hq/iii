@@ -253,7 +253,7 @@ impl Worker for BridgeClientWorker {
                     let engine = engine.clone();
                     let local_function = local_function.clone();
                     async move {
-                        match engine.call(&local_function, input, None).await {
+                        match engine.call(&local_function, input).await {
                             Ok(result) => Ok(result.unwrap_or(Value::Null)),
                             Err(err) => Err(Error::Remote {
                                 code: err.code,
@@ -439,7 +439,7 @@ mod tests {
             .expect("bridge.invoke handler");
         match invoke
             .clone()
-            .call_handler(None, json!({ "bad": true }), None, None)
+            .call_handler(None, json!({ "bad": true }), None)
             .await
         {
             FunctionResult::Failure(err) => assert_eq!(err.code, "deserialization_error"),
@@ -453,7 +453,6 @@ mod tests {
                     "data": { "hello": "world" },
                     "timeout_ms": 1
                 }),
-                None,
                 None,
             )
             .await
@@ -477,7 +476,6 @@ mod tests {
                     "data": { "hello": "world" }
                 }),
                 None,
-                None,
             )
             .await
         {
@@ -490,7 +488,7 @@ mod tests {
             .get("forward.echo")
             .expect("forward handler");
         match forward
-            .call_handler(None, json!({ "value": 1 }), None, None)
+            .call_handler(None, json!({ "value": 1 }), None)
             .await
         {
             FunctionResult::Failure(err) => {
@@ -539,7 +537,7 @@ mod tests {
             .get("bridge.invoke_async")
             .expect("bridge.invoke_async handler");
         match invoke_async
-            .call_handler(None, json!({ "bad": true }), None, None)
+            .call_handler(None, json!({ "bad": true }), None)
             .await
         {
             FunctionResult::Failure(err) => assert_eq!(err.code, "deserialization_error"),

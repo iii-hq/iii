@@ -531,7 +531,7 @@ impl StateWorker {
                         );
 
                         let call_result = engine
-                            .call(
+                            .call_with_metadata(
                                 &trigger.trigger.function_id,
                                 event_data.clone(),
                                 trigger.trigger.metadata.clone(),

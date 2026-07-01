@@ -120,7 +120,7 @@ async fn ws_handler(
         let input = serde_json::to_value(input);
 
         match input {
-            Ok(input) => match engine.call(&auth_function, input, None).await {
+            Ok(input) => match engine.call(&auth_function, input).await {
                 Ok(Some(result)) => {
                     let context = serde_json::from_value::<StreamAuthContext>(result);
 
@@ -920,7 +920,7 @@ impl StreamWorker {
                         );
 
                         let call_result = engine
-                            .call(
+                            .call_with_metadata(
                                 &trigger.function_id,
                                 event_data.clone(),
                                 trigger.metadata.clone(),
@@ -987,7 +987,7 @@ impl StreamWorker {
                         });
                     }
                 };
-                let result = self.engine.call(&function_id, input, None).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(Some(result)) => match serde_json::from_value::<StreamSetResult>(result) {
@@ -1076,7 +1076,7 @@ impl StreamWorker {
                     }
                 };
 
-                let result = self.engine.call(&function_id, input, None).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -1124,7 +1124,7 @@ impl StreamWorker {
                         });
                     }
                 };
-                let result = self.engine.call(&function_id, input, None).await;
+                let result = self.engine.call(&function_id, input).await;
                 match result {
                     Ok(Some(result)) => {
                         let result = match serde_json::from_value::<StreamDeleteResult>(result) {
@@ -1202,7 +1202,7 @@ impl StreamWorker {
                     }
                 };
 
-                let result = self.engine.call(&function_id, input, None).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -1252,7 +1252,7 @@ impl StreamWorker {
                         });
                     }
                 };
-                let result = self.engine.call(&function_id, input, None).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -1366,7 +1366,7 @@ impl StreamWorker {
                         });
                     }
                 };
-                let result = self.engine.call(&function_id, input, None).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(Some(result)) => {

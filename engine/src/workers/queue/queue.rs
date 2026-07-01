@@ -884,7 +884,7 @@ impl QueueWorker {
                     );
 
                     let result =
-                        AssertUnwindSafe(async { engine.call(&function_id, msg.data, None).await })
+                        AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
                             .catch_unwind()
                             .instrument(span)
                             .await;

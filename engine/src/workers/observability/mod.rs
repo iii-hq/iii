@@ -1776,7 +1776,7 @@ impl ObservabilityWorker {
                 let function_id = trigger.function_id.clone();
 
                 tokio::spawn(async move {
-                    let _ = engine.call(&function_id, log_data, None).await;
+                    let _ = engine.call(&function_id, log_data).await;
                 });
             }
         }
@@ -1825,7 +1825,7 @@ impl ObservabilityWorker {
             let function_id = trigger.function_id.clone();
 
             tokio::spawn(async move {
-                let _ = engine.call(&function_id, payload, None).await;
+                let _ = engine.call(&function_id, payload).await;
             });
         }
     }
@@ -1859,7 +1859,7 @@ impl ObservabilityWorker {
             });
             let engine = engine.clone();
             tokio::spawn(async move {
-                let _ = engine.call("stream::send", payload, None).await;
+                let _ = engine.call("stream::send", payload).await;
             });
         }
 

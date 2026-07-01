@@ -120,7 +120,7 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
 async fn drive_apply(harness: &Harness) {
     harness
         .engine
-        .call("iii-stream::on-config-change", json!({}), None)
+        .call("iii-stream::on-config-change", json!({}))
         .await
         .expect("config-change handler is invocable");
 }
