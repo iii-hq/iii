@@ -274,7 +274,7 @@ domain and `PORT` details.
 Supply every credential through Railway
 [service variables](https://docs.railway.com/variables), never the image or git.
 Reference them in `config.yaml` with `${VAR}` placeholders
-(`${VAR:-default}` for a fallback); the engine substitutes them at boot:
+(`${VAR:default}` for a fallback); the engine substitutes them at boot:
 
 ```yaml
   - name: database
