@@ -102,7 +102,7 @@ impl TriggerRegistrator for StateWorker {
 
 #[cfg(test)]
 mod tests {
-    use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
+    use iii_helpers::stream::{StreamSetResult, StreamUpdateResult, UpdateOp};
     use serde_json::json;
 
     use super::*;
@@ -120,8 +120,8 @@ mod tests {
             _scope: &str,
             _key: &str,
             _value: serde_json::Value,
-        ) -> anyhow::Result<SetResult> {
-            Ok(SetResult {
+        ) -> anyhow::Result<StreamSetResult> {
+            Ok(StreamSetResult {
                 old_value: None,
                 new_value: serde_json::Value::Null,
             })
@@ -140,8 +140,8 @@ mod tests {
             _scope: &str,
             _key: &str,
             _ops: Vec<UpdateOp>,
-        ) -> anyhow::Result<UpdateResult> {
-            Ok(UpdateResult {
+        ) -> anyhow::Result<StreamUpdateResult> {
+            Ok(StreamUpdateResult {
                 old_value: None,
                 new_value: serde_json::Value::Null,
                 errors: Vec::new(),

@@ -34,21 +34,20 @@ supported host without separate publications per platform.
 
 {/* TODO: cover how to publish a new version (semver bump + republish), how to deprecate a worker, and whether/how a published version can be retracted (yanked). */}
 
-## Bundle workers (tar.gz archives)
+## Bundling workers (tar.gz archives)
 
 Bundle workers are a third artifact kind alongside `binary` and `image`. The registry serves a
-single `tar.gz` archive that contains the worker's bundled source plus an `iii.worker.yaml`
-manifest at the archive root. `iii worker add <name>` downloads, verifies a SHA-256 checksum,
-extracts the archive into `~/.iii/workers-bundle/<name>/`, and runs it through the existing
-libkrun rails (the same sandbox path used by local-path workers, minus the host-side source
-watcher).
+single `tar.gz` archive that contains the worker's bundled source plus an `iii.worker.yaml` manifest
+at the archive root. `iii worker add <name>` downloads, verifies a SHA-256 checksum, extracts the
+archive into `~/.iii/workers-bundle/<name>/`, and runs it through the existing libkrun rails (the
+same sandbox path used by local-path workers, minus the host-side source watcher).
 
 Use a bundle when:
 
 - You ship a pre-built JavaScript bundle (`esbuild`, `tsdown`, `bun build`) or a packaged Python
   worker and don't want to publish a Docker image.
-- You want artifacts measured in KB, not MB. Only the bundled source travels in the archive;
-  the runtime ships with the engine-allowlisted base image (`docker.io/iiidev/node:latest` or
+- You want artifacts measured in KB, not MB. Only the bundled source travels in the archive; the
+  runtime ships with the engine-allowlisted base image (`docker.io/iiidev/node:latest` or
   `docker.io/iiidev/python:latest`).
 - You want install to look identical to other registry workers from the user's perspective
   (`iii worker add my-worker`, same as binary and OCI).
@@ -70,8 +69,8 @@ The engine GETs `archive_url`, streams the bytes through a SHA-256 hasher, and c
 
 ### Archive layout
 
-The archive root MUST contain `iii.worker.yaml`. Anything else sits at runtime-discoverable
-paths from the bundle's perspective.
+The archive root MUST contain `iii.worker.yaml`. Anything else sits at runtime-discoverable paths
+from the bundle's perspective.
 
 ```text
 my-worker-1.2.0.tar.gz
@@ -86,20 +85,20 @@ my-worker-1.2.0.tar.gz
 Bundle manifests use a strict subset of the local-worker manifest. Three fields are explicitly
 **rejected**:
 
-- `scripts.setup`: would execute publisher-supplied shell during install (a supply-chain
-  smuggling vector).
+- `scripts.setup`: would execute publisher-supplied shell during install (a supply-chain smuggling
+  vector).
 - `scripts.install`: same reason. Vendor dependencies into the bundle instead.
-- `runtime.base_image`: would let a bundle pull an arbitrary OCI image as its rootfs. Bundles
-  use the engine-allowlisted base image instead.
+- `runtime.base_image`: would let a bundle pull an arbitrary OCI image as its rootfs. Bundles use
+  the engine-allowlisted base image instead.
 
 Required fields:
 
 - `name`: must equal the install target (the value passed to `iii worker add`).
-- `scripts.start`: a non-empty shell string. The engine `exec`s this inside the sandbox VM.
-  Example: `node bundle.js`, `python -m worker`, `bun run bundle.js`.
+- `scripts.start`: a non-empty shell string. The engine `exec`s this inside the sandbox VM. Example:
+  `node bundle.js`, `python -m worker`, `bun run bundle.js`.
 
-Optional fields (clamped against engine caps, with a `W182 BundleResourceClamped` warning when
-the request exceeds the cap):
+Optional fields (clamped against engine caps, with a `W182 BundleResourceClamped` warning when the
+request exceeds the cap):
 
 - `resources.cpus`: defaults to `2`, clamped to `4`.
 - `resources.memory`: defaults to `2048` MiB, clamped to `4096` MiB.
@@ -118,26 +117,25 @@ resources:
 
 Bundle archives are extracted with tighter limits than OCI layers:
 
-| Limit                       | Value              |
-|-----------------------------|--------------------|
-| Total uncompressed size     | 64 MiB             |
-| Largest single file         | 32 MiB             |
-| Maximum entry count         | 1024               |
-| Maximum directory depth     | 16                 |
-| Allowed tar entry types     | Regular, Directory |
+| Limit                   | Value              |
+| ----------------------- | ------------------ |
+| Total uncompressed size | 64 MiB             |
+| Largest single file     | 32 MiB             |
+| Maximum entry count     | 1024               |
+| Maximum directory depth | 16                 |
+| Allowed tar entry types | Regular, Directory |
 
-Archives containing symlinks, hard links, character devices, FIFOs, or paths with `..`
-components are rejected with `W181 BundleArchiveUnsafe`.
+Archives containing symlinks, hard links, character devices, FIFOs, or paths with `..` components
+are rejected with `W181 BundleArchiveUnsafe`.
 
 ### Error codes
 
-| Code   | Failure                                                                                            |
-|--------|----------------------------------------------------------------------------------------------------|
-| `W142` | Archive download failed (HTTP error, unexpected content-type, size cap, sha256 mismatch).          |
-| `W180` | Manifest rejected (forbidden field like `scripts.setup` or `runtime.base_image`).                  |
-| `W181` | Archive contains unsafe entries (symlink, hardlink, traversal, oversized, too many entries).       |
-| `W182` | Resource request exceeded engine cap; install proceeded with clamped values (warn, not fail).      |
-| `W183` | Dependency graph too wide or too deep (max depth 5, max transitive count 32).                      |
+| Code   | Failure                                                                                       |
+| ------ | --------------------------------------------------------------------------------------------- |
+| `W142` | Archive download failed (HTTP error, unexpected content-type, size cap, sha256 mismatch).     |
+| `W180` | Manifest rejected (forbidden field like `scripts.setup` or `runtime.base_image`).             |
+| `W181` | Archive contains unsafe entries (symlink, hardlink, traversal, oversized, too many entries).  |
+| `W182` | Resource request exceeded engine cap; install proceeded with clamped values (warn, not fail). |
+| `W183` | Dependency graph too wide or too deep (max depth 5, max transitive count 32).                 |
 
-{/* TODO: document the publish flow (`iii worker publish bundle.tar.gz`?), the registry's
-storage layout, and the recommended bundler configurations for Node/Bun/Python. */}
+{/* TODO: document the publish flow (`iii worker publish bundle.tar.gz`?), the registry's storage layout, and the recommended bundler configurations for Node/Bun/Python. */}

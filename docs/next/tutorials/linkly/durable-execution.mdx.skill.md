@@ -18,10 +18,9 @@ iii worker add iii-pubsub
 
 ## Make redirects fast with a queue
 
-A queue holds work that is accepted now and run later: each message in the `clicks` queue is one
-"insert a row recording that someone followed code X at time T." Define the queue on the `iii-queue`
-worker (already in your project from `iii project init`), but requiring a few updates to
-`queue_configs`:
+A queue holds work that is accepted now and run later. Here we'll define a `clicks` queue that we're
+going to use for `link::record_click`. Define the queue on the `iii-queue` worker (already in your
+project from `iii project init`), but requiring a few updates to `queue_configs`:
 
 ```yaml {5-9} config.yaml
 workers:
@@ -37,14 +36,20 @@ workers:
         name: builtin
 ```
 
+<Note>
+  Queue names are references to the queue and do not place any restrictions on what can be put into
+  a given queue.
+</Note>
+
 You already wrote `link::record_click` in Chapter 3, where `http::redirect` triggers it directly.
-Nothing about the function changes. You only change how it's invoked.
+Nothing about that function needs to change to make it queuable. You only change how it's triggered
+with a `TriggerAction`.
 
 **First import `TriggerAction`** into `link/src/index.ts`:
 
 ```typescript {1} src/index.ts
 import { registerWorker, TriggerAction } from "iii-sdk";
-import { Logger } from "@iii-dev/observability";
+import { Logger } from "@iii-dev/helpers/observability";
 ```
 
 Then add an `action` to the existing `link::record_click` call in `http::redirect` so the
@@ -82,8 +87,9 @@ and `subscribe`.
 
 </Info>
 
-Here we'll implement topics that publish when a link is created, and when a link is updated. We
-don't have link updating functionality yet, so we'll add that and an HTTP endpoint for it too.
+Here we'll implement topics that publish when a link is created, and when a link is updated. Later
+we'll make an `analytics` worker that collects data from these events. We don't have link updating
+functionality yet, so we'll add that and an HTTP endpoint for it too.
 
 ### Publish on link.created
 
@@ -104,9 +110,11 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
 
 ### Publish on link.updated
 
-Add an update path so a link's target can change, and announce it. First, the domain function: it
-updates the database row and publishes a `link.updated` event through durable pub/sub
-(`iii::durable::publish`, served by `iii-queue`):
+Now add an update path to the `link` worker so a link's target can change, and announce it.
+
+First, the domain function: it updates the database row and publishes a `link.updated` event through
+durable pub/sub (`iii::durable::publish`, served by `iii-queue`). Place it at the end of
+`link/src/index.ts`:
 
 ```typescript src/index.ts
 worker.registerFunction("link::update", async (payload: { code: string; url: string }) => {
@@ -129,7 +137,7 @@ worker.registerFunction("link::update", async (payload: { code: string; url: str
 
 ### Expose link updating via HTTP
 
-Then the HTTP handler that validates input and calls the domain function:
+Then connect `link::update` with an HTTP handler that validates input and calls the domain function:
 
 ```typescript src/index.ts
 worker.registerFunction("http::update", async (req) => {
@@ -150,7 +158,7 @@ worker.registerFunction("http::update", async (req) => {
 });
 ```
 
-And the trigger that binds it to `PUT /links/:code`:
+And finally the trigger that binds `http::update` to `PUT /links/:code`:
 
 ```typescript src/index.ts
 worker.registerTrigger({
@@ -159,6 +167,9 @@ worker.registerTrigger({
   config: { api_path: "/links/:code", http_method: "PUT" },
 });
 ```
+
+This last bit of code isn't pubsub-specific but you'll need it for trying out your new feature at
+the end of the chapter.
 
 ## Add reactive state: Keep the cache correct without coupling
 
@@ -207,8 +218,8 @@ iii worker init analytics --language python
 
 ### Subscribe to link.created events
 
-Replace the example `src/main.py` with this one that subscribes to `link.created` events and keeps count
-of every time that a new short link is created:
+Replace the example `src/main.py` with this one that subscribes to `link.created` events and keeps
+count of every time that a new short link is created:
 
 <Accordion title="analytics/src/main.py">
 
@@ -217,7 +228,7 @@ import os
 from datetime import datetime, timezone
 
 from iii import register_worker, InitOptions
-from iii_observability import Logger
+from iii_helpers.observability import Logger
 
 worker = register_worker(
     os.environ.get("III_URL", "ws://localhost:49134"),
@@ -272,15 +283,18 @@ print("Analytics worker started")
 
 </Accordion>
 
-### Configure the worker's manifest
+### Configure the worker
 
-The generated manifest has no run scripts yet, so give it an install and start script by modifying
-`iii.worker.yaml`:
+The existing worker manifest at `analytics/iii.worker.yaml` will work for our purposes:
 
 ```yaml iii.worker.yaml
+name: analytics
+runtime:
+  # Base OCI image used as the worker rootfs.
+  base_image: docker.io/iiidev/python:latest
 scripts:
-  install: "pip install watchfiles && pip install -e ."
-  start: "watchfiles 'python src/main.py'"
+  install: pip install -e .
+  start: watchfiles 'python src/main.py'
 ```
 
 Analytics keeps its counts in its own database, so the `link` worker never has to know it exists.
@@ -313,7 +327,7 @@ Create five links, follow one a few times, and change its target:
 # Make some new links
 for n in $(seq 1 5); do
   curl -s -X POST http://127.0.0.1:3111/links \
-    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev/$n\",\"code\":\"link$n\"}"
+    -H 'Content-Type: application/json' -d "{\"url\":\"https://iii.dev/$n\",\"code\":\"analyticslink$n\"}"
 done
 ```
 

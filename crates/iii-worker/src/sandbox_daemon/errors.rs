@@ -423,7 +423,7 @@ impl SandboxError {
 /// in `SandboxErrorWire` and `map_err`-ing into it makes `Display` emit
 /// that JSON, so callers (CLI, agents, engine clients) see the exact
 /// same body they did when handlers wrote
-/// `IIIError::Handler(serde_json::to_string(&e.to_payload())…)` by hand.
+/// `Error::Handler(serde_json::to_string(&e.to_payload())…)` by hand.
 ///
 /// SDK contract dependency: this wrapper is load-bearing only as long as
 /// `iii_sdk::IntoAsyncHandler` collapses `E` via `e.to_string()` (i.e.
@@ -459,9 +459,9 @@ impl std::fmt::Debug for SandboxErrorWire {
     }
 }
 
-impl From<SandboxErrorWire> for iii_sdk::IIIError {
+impl From<SandboxErrorWire> for iii_sdk::Error {
     fn from(err: SandboxErrorWire) -> Self {
-        iii_sdk::IIIError::Handler(err.to_string())
+        iii_sdk::Error::Handler(err.to_string())
     }
 }
 
@@ -668,7 +668,7 @@ mod tests {
 
     /// Pins the wire format `RegisterFunction::new_async` callers see for
     /// `sandbox::*` errors. Before the migration, handlers wrote
-    /// `IIIError::Handler(serde_json::to_string(&e.to_payload())…)`
+    /// `Error::Handler(serde_json::to_string(&e.to_payload())…)`
     /// directly; after, they `map_err` into `SandboxErrorWire` and the
     /// SDK's async-handler glue calls `Display`. This test asserts both
     /// paths produce the same JSON bytes, so callers branching on

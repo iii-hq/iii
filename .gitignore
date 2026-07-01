@@ -72,7 +72,9 @@ iii_workers/
 # Generated API doc intermediates
 sdk/packages/node/iii/api-docs.json
 sdk/packages/node/iii-browser/api-docs.json
+sdk/packages/node/helpers/api-docs.json
 sdk/packages/python/iii/api-docs.json
+sdk/packages/python/helpers/api-docs.json
 graphify-out
 
 docs/plans/
@@ -82,3 +84,6 @@ TODOS.md
 # Per-contributor coding-agent state (not tracked)
 .serena/
 CLAUDE.md
+
+# Impeccable editor hook cache
+.impeccable/

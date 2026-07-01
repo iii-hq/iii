@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ChannelReader } from '../src'
+import type { ChannelReader } from '../src/channel'
 import { createChannel } from '../src/helpers'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'

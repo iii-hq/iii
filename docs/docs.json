@@ -61,7 +61,7 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.20.x",
+        "version": "0.21.x",
         "tag": "Next",
         "tabs": [
           {
@@ -72,7 +72,14 @@
                 "pages": [
                   "next/index",
                   "next/install",
-                  "next/quickstart"
+                  "next/quickstart",
+                  "next/troubleshooting"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "next/upgrading/from-0-19-x"
                 ]
               },
               {
@@ -108,6 +115,16 @@
                 "group": "Creating Workers",
                 "pages": [
                   "next/creating-workers/index",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "next/creating-workers/http",
+                      "next/creating-workers/queues",
+                      "next/creating-workers/observability",
+                      "next/creating-workers/sandboxes",
+                      "next/creating-workers/worker-manager"
+                    ]
+                  },
                   "next/creating-workers/workers",
                   "next/creating-workers/worker-manifest",
                   "next/creating-workers/triggers",
@@ -146,11 +163,21 @@
               },
               {
                 "group": "Language SDKs",
+                "expanded": true,
                 "pages": [
-                  "next/sdk-reference/node-sdk",
-                  "next/sdk-reference/python-sdk",
-                  "next/sdk-reference/rust-sdk",
-                  "next/sdk-reference/browser-sdk"
+                  "next/api-reference/sdk-node",
+                  "next/api-reference/sdk-python",
+                  "next/api-reference/sdk-rust",
+                  "next/api-reference/sdk-browser"
+                ]
+              },
+              {
+                "group": "Helpers",
+                "expanded": true,
+                "pages": [
+                  "next/api-reference/helpers-node",
+                  "next/api-reference/helpers-python",
+                  "next/api-reference/helpers-rust"
                 ]
               },
               {
@@ -170,7 +197,7 @@
         ]
       },
       {
-        "version": "0.19.x",
+        "version": "0.20.x",
         "tag": "Latest",
         "default": true,
         "tabs": [
@@ -182,7 +209,14 @@
                 "pages": [
                   "index",
                   "install",
-                  "quickstart"
+                  "quickstart",
+                  "troubleshooting"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "upgrading/from-0-19-x"
                 ]
               },
               {
@@ -218,6 +252,16 @@
                 "group": "Creating Workers",
                 "pages": [
                   "creating-workers/index",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "creating-workers/http",
+                      "creating-workers/queues",
+                      "creating-workers/observability",
+                      "creating-workers/sandboxes",
+                      "creating-workers/worker-manager"
+                    ]
+                  },
                   "creating-workers/workers",
                   "creating-workers/worker-manifest",
                   "creating-workers/triggers",
@@ -256,11 +300,123 @@
               },
               {
                 "group": "Language SDKs",
+                "expanded": true,
                 "pages": [
-                  "sdk-reference/node-sdk",
-                  "sdk-reference/python-sdk",
-                  "sdk-reference/rust-sdk",
-                  "sdk-reference/browser-sdk"
+                  "api-reference/sdk-node",
+                  "api-reference/sdk-python",
+                  "api-reference/sdk-rust",
+                  "api-reference/sdk-browser"
+                ]
+              },
+              {
+                "group": "Helpers",
+                "expanded": true,
+                "pages": [
+                  "api-reference/helpers-node",
+                  "api-reference/helpers-python",
+                  "api-reference/helpers-rust"
+                ]
+              },
+              {
+                "group": "CLI reference",
+                "pages": [
+                  "cli-reference/index"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "pages": [
+              "changelog/index"
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.19.x",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "0-19-0/index",
+                  "0-19-0/install",
+                  "0-19-0/quickstart",
+                  "0-19-0/troubleshooting"
+                ]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "0-19-0/using-iii/workers",
+                  "0-19-0/using-iii/workers-registry",
+                  "0-19-0/using-iii/triggers",
+                  "0-19-0/using-iii/functions",
+                  "0-19-0/using-iii/engine",
+                  "0-19-0/using-iii/console",
+                  "0-19-0/using-iii/cli",
+                  "0-19-0/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "0-19-0/understanding-iii/index",
+                  "0-19-0/understanding-iii/engine",
+                  "0-19-0/understanding-iii/channels"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "0-19-0/creating-workers/index",
+                  "0-19-0/creating-workers/workers",
+                  "0-19-0/creating-workers/worker-manifest",
+                  "0-19-0/creating-workers/triggers",
+                  "0-19-0/creating-workers/functions",
+                  "0-19-0/creating-workers/channels"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "0-19-0/tutorials/linkly/overview",
+                  "0-19-0/tutorials/linkly/foundations",
+                  "0-19-0/tutorials/linkly/observability",
+                  "0-19-0/tutorials/linkly/persistence",
+                  "0-19-0/tutorials/linkly/durable-execution",
+                  "0-19-0/tutorials/linkly/streaming",
+                  "0-19-0/tutorials/linkly/channels",
+                  "0-19-0/tutorials/linkly/frontend"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": [
+                  "0-19-0/sdk-reference/engine-sdk"
+                ]
+              },
+              {
+                "group": "Language SDKs",
+                "pages": [
+                  "0-19-0/sdk-reference/node-sdk",
+                  "0-19-0/sdk-reference/python-sdk",
+                  "0-19-0/sdk-reference/rust-sdk",
+                  "0-19-0/sdk-reference/browser-sdk"
                 ]
               }
             ]

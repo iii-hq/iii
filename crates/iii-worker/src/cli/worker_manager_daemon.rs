@@ -24,10 +24,10 @@ use crate::core::{
     list as core_list, logs as core_logs, remove as core_remove, start as core_start,
     stop as core_stop, update as core_update,
 };
-use iii_observability::OtelConfig;
+use iii_helpers::observability::OtelConfig;
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    III, IIIError, InitOptions, RegisterFunction, RegisterTriggerType, WorkerMetadata,
-    register_worker,
+    Error, IIIClient, InitOptions, RegisterFunction, RegisterTriggerType, register_worker,
 };
 use schemars::{JsonSchema, schema_for};
 use serde_json::{Value, json};
@@ -161,19 +161,19 @@ pub fn bad_request_payload(function_id: &str, e: &serde_json::Error) -> String {
     err_payload(&err)
 }
 
-/// Surface op failures as `IIIError::Remote` so the wire `ErrorBody.code`
+/// Surface op failures as `Error::Remote` so the wire `ErrorBody.code`
 /// is the stable W-code (instead of the generic `invocation_failed`) and no
 /// dispatch-loop backtrace gets attached to an expected error.
-fn op_error(e: &WorkerOpError) -> IIIError {
-    IIIError::Remote {
+fn op_error(e: &WorkerOpError) -> Error {
+    Error::Remote {
         code: e.kind().code().to_string(),
         message: err_payload(e),
         stacktrace: None,
     }
 }
 
-fn bad_request_error(function_id: &str, e: &serde_json::Error) -> IIIError {
-    IIIError::Remote {
+fn bad_request_error(function_id: &str, e: &serde_json::Error) -> Error {
+    Error::Remote {
         code: WorkerOpErrorKind::BadRequest.code().to_string(),
         message: bad_request_payload(function_id, e),
         stacktrace: None,
@@ -264,7 +264,7 @@ fn describe_op(rf: RegisterFunction, function_id: &str) -> RegisterFunction {
     }))
 }
 
-fn register_all(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+fn register_all(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     register_add(iii, project_root.clone(), sink.clone());
     register_remove(iii, project_root.clone(), sink.clone());
     register_update(iii, project_root.clone(), sink.clone());
@@ -414,7 +414,7 @@ fn schema_table() -> &'static [(&'static str, Option<Value>, Option<Value>)] {
     &TABLE
 }
 
-fn register_logs(iii: &III) {
+fn register_logs(iii: &IIIClient) {
     let _ =
         iii.register_function(
             "worker::logs",
@@ -430,7 +430,7 @@ fn register_logs(iii: &III) {
         );
 }
 
-fn register_schema(iii: &III) {
+fn register_schema(iii: &IIIClient) {
     let rf = RegisterFunction::new_async_with_bad_request(
         |req: SchemaRequest| async move {
             let filter = req.function_id.as_deref();
@@ -449,7 +449,7 @@ fn register_schema(iii: &III) {
                     }
                 })
                 .collect();
-            Ok::<_, IIIError>(SchemaResponse { schemas })
+            Ok::<_, Error>(SchemaResponse { schemas })
         },
         |e| bad_request_error("worker::schema", &e),
     );
@@ -532,7 +532,7 @@ async fn build_status(name: &str) -> Result<StatusOutcome, WorkerOpError> {
     })
 }
 
-fn register_status(iii: &III) {
+fn register_status(iii: &IIIClient) {
     let rf = RegisterFunction::new_async_with_bad_request(
         |opts: StatusOptions| async move { build_status(&opts.name).await.map_err(|e| op_error(&e)) },
         |e| bad_request_error("worker::status", &e),
@@ -545,7 +545,7 @@ fn register_status(iii: &III) {
 /// validate → fix → `worker::add`. Accepts exactly one of `manifest` (inline
 /// YAML text, preferred for authoring) or `path` (host file or worker dir,
 /// resolved like `worker::add { kind: "local" }`).
-fn register_validate(iii: &III) {
+fn register_validate(iii: &IIIClient) {
     let rf = RegisterFunction::new_async_with_bad_request(
         |opts: ValidateOptions| async move {
             let report: ManifestReport = match (opts.manifest, opts.path) {
@@ -597,7 +597,7 @@ fn register_validate(iii: &III) {
                     }
                 }
             };
-            Ok::<_, IIIError>(report)
+            Ok::<_, Error>(report)
         },
         |e| bad_request_error("worker::validate", &e),
     );
@@ -611,7 +611,7 @@ fn sink_ref<'a>(sink: &'a Arc<IIIEventSink>) -> &'a dyn EventSink {
     &**sink
 }
 
-fn register_add(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+fn register_add(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::add",
         describe_op(
@@ -633,7 +633,7 @@ fn register_add(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     );
 }
 
-fn register_remove(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+fn register_remove(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::remove",
         describe_op(
@@ -655,7 +655,7 @@ fn register_remove(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     );
 }
 
-fn register_update(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+fn register_update(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::update",
         describe_op(
@@ -677,7 +677,7 @@ fn register_update(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     );
 }
 
-fn register_start(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+fn register_start(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::start",
         describe_op(
@@ -699,7 +699,7 @@ fn register_start(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     );
 }
 
-fn register_stop(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+fn register_stop(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::stop",
         describe_op(
@@ -721,7 +721,7 @@ fn register_stop(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     );
 }
 
-fn register_list(iii: &III, project_root: PathBuf) {
+fn register_list(iii: &IIIClient, project_root: PathBuf) {
     // `Option<ListOptions>` keeps the lenient default: a `null` payload
     // deserializes to `None` (→ defaults) and `{}` to `Some(default)`, while
     // any other malformed shape still fails deserialization and returns the
@@ -748,7 +748,7 @@ fn register_list(iii: &III, project_root: PathBuf) {
     let _ = iii.register_function("worker::list", rf);
 }
 
-fn register_clear(iii: &III, project_root: PathBuf, sink: Arc<IIIEventSink>) {
+fn register_clear(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::clear",
         describe_op(
@@ -818,11 +818,11 @@ mod tests {
         assert_eq!(resp.as_ref().unwrap(), &hello_world_example_json());
     }
 
-    // `III` exposes no registry listing, so the duplicate-registration
+    // `IIIClient` exposes no registry listing, so the duplicate-registration
     // panic is the only externally observable proof that `register_all`
     // claimed a function id.
-    fn offline_iii_with_sink() -> (III, Arc<IIIEventSink>) {
-        let iii = III::new("ws://127.0.0.1:9");
+    fn offline_iii_with_sink() -> (IIIClient, Arc<IIIEventSink>) {
+        let iii = IIIClient::new("ws://127.0.0.1:9");
         let subs: Subscriptions = Arc::new(Mutex::new(HashMap::new()));
         let sink = Arc::new(IIIEventSink::new(iii.clone(), subs, CallerMode::Trigger));
         (iii, sink)
@@ -836,7 +836,7 @@ mod tests {
 
         iii.register_function(
             "worker::status",
-            RegisterFunction::new_async(|input: Value| async move { Ok::<_, IIIError>(input) }),
+            RegisterFunction::new_async(|input: Value| async move { Ok::<_, Error>(input) }),
         );
     }
 
@@ -848,7 +848,7 @@ mod tests {
 
         iii.register_function(
             "worker::validate",
-            RegisterFunction::new_async(|input: Value| async move { Ok::<_, IIIError>(input) }),
+            RegisterFunction::new_async(|input: Value| async move { Ok::<_, Error>(input) }),
         );
     }
 

@@ -28,7 +28,7 @@ npx skills add iii-hq/iii --full-depth --skill configuration
     adapter:
       name: fs
       config:
-        directory: ./data/configuration
+        directory: ./config
     ttl_seconds: 0
 ```
 
@@ -48,14 +48,16 @@ File-system adapter that stores one YAML file per configuration id and watches t
 ```yaml
 name: fs
 config:
-  directory: ./data/configuration
+  directory: ./config
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `directory` | string | Directory holding `<id>.yaml` files. Created on boot. Defaults to `./data/configuration`. |
+| `directory` | string | Directory holding `<id>.yaml` files. Created on boot. Defaults to `./config`. |
 
-External writes / edits / removals to the watched directory are debounced (500 ms) and replayed as `configuration:registered`, `configuration:updated`, or `configuration:deleted` events through the same trigger fan-out used by SDK calls.
+The default location was previously `./data/configuration`. When running on the default `./config`, the adapter performs a one-time soft migration on boot: every `<id>.yaml` still in `./data/configuration` is moved across (logged at INFO). If a file with the same name already exists in `./config`, that file is **skipped with a WARNING** and the legacy copy is left untouched for you to reconcile. An explicit `directory:` override disables the migration.
+
+External writes / edits / removals to the watched directory are debounced (500 ms) and replayed as `configuration:registered`, `configuration:updated`, or `configuration:deleted` events through the same trigger fan-out used by SDK calls. A hand-edit that fails schema validation (after `${VAR}` expansion) is **rejected with a WARNING** — the previous good value is kept rather than loaded.
 
 ### bridge
 
@@ -120,6 +122,7 @@ Returns: `id` (string), `name` (string), `description` (string), `schema` (objec
 | `NOT_REGISTERED` | `set` was called against an id that has not been passed to `register` yet. |
 | `INVALID_ID` | The id does not match `[a-z0-9_-]{1,64}` — the constraint applied so ids are safe filenames for the `fs` adapter. |
 | `SCHEMA_INVALID` | The supplied value does not satisfy the registered JSON Schema. The error message lists each violation. |
+| `SCHEMA_UNAVAILABLE` | `set` was called for an id whose schema is not yet known — the owning worker has not registered it this session. The `fs` adapter does not persist the schema, so it is absent until a worker re-registers after boot. |
 | `NOT_FOUND` | `get` or `schema` was called against an id that is not registered. |
 | `ADAPTER_ERROR` | The adapter failed to persist the change (disk error, bridge unreachable, etc.). |
 

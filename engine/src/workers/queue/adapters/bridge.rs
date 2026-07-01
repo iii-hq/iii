@@ -7,10 +7,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use iii_sdk::{
-    III, IIIError, InitOptions, RegisterTriggerInput, Trigger, TriggerAction, TriggerRequest,
-    register_worker,
-};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::trigger::Trigger;
+use iii_sdk::{Error, IIIClient, InitOptions, TriggerAction, register_worker};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -56,7 +55,7 @@ struct SubscriptionInfo {
 /// - Functions registered via bridge persist for bridge lifetime
 pub struct BridgeAdapter {
     engine: Arc<Engine>,
-    bridge: Arc<III>,
+    bridge: Arc<IIIClient>,
     subscriptions: Arc<RwLock<HashMap<String, SubscriptionInfo>>>,
 }
 
@@ -200,7 +199,11 @@ impl QueueAdapter for BridgeAdapter {
                         "messaging.operation.type" = "process",
                         otel.status_code = tracing::field::Empty,
                     )
-                    .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+                    .with_parent_headers(
+                        traceparent.as_deref(),
+                        None,
+                        baggage.as_deref(),
+                    );
 
                     async move {
                         if let Some(condition_path) = condition_function_id {
@@ -227,7 +230,7 @@ impl QueueAdapter for BridgeAdapter {
                                         "Error invoking condition function"
                                     );
                                     tracing::Span::current().record("otel.status_code", "ERROR");
-                                    return Err(IIIError::Remote {
+                                    return Err(Error::Remote {
                                         code: err.code,
                                         message: err.message,
                                         stacktrace: err.stacktrace,
@@ -240,11 +243,11 @@ impl QueueAdapter for BridgeAdapter {
                         match engine.call(&function_id, data).await {
                             Ok(result) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
-                                Ok::<Value, IIIError>(result.unwrap_or(Value::Null))
+                                Ok::<Value, Error>(result.unwrap_or(Value::Null))
                             }
                             Err(err) => {
                                 tracing::Span::current().record("otel.status_code", "ERROR");
-                                Err(IIIError::Remote {
+                                Err(Error::Remote {
                                     code: err.code,
                                     message: err.message,
                                     stacktrace: err.stacktrace,
@@ -320,6 +323,7 @@ impl QueueAdapter for BridgeAdapter {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn publish_to_function_queue(
         &self,
         queue_name: &str,
@@ -330,6 +334,9 @@ impl QueueAdapter for BridgeAdapter {
         _backoff_ms: u64,
         _traceparent: Option<String>,
         _baggage: Option<String>,
+        // Priority is resolved by the remote engine via its own adapter; the
+        // bridge forwards the enqueue unchanged.
+        _priority: Option<u8>,
     ) {
         if let Err(e) = self
             .bridge

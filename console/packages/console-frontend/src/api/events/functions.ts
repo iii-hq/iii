@@ -14,6 +14,19 @@ export interface FunctionInfo {
   internal?: boolean
 }
 
+// `engine::functions::info` (via `_console/functions/:function_id`) is the only
+// surface that carries the request/response schemas — the list route returns
+// slim summaries without them.
+export interface FunctionDetail {
+  function_id: string
+  worker_name: string
+  description: string | null
+  request_schema: unknown | null
+  response_schema: unknown | null
+  metadata: Record<string, unknown> | null
+  registered_triggers: unknown[]
+}
+
 export interface TriggerInfo {
   id: string
   trigger_type: string
@@ -53,6 +66,15 @@ export async function fetchFunctions(options?: {
     functions: data.functions || [],
     count: (data.functions || []).length,
   }
+}
+
+export async function fetchFunctionDetail(functionId: string): Promise<FunctionDetail> {
+  // Function ids are path-segment-safe (`::`-delimited, no slashes) and the
+  // engine's http trigger router does not percent-decode path params, so the
+  // id is interpolated raw rather than URL-encoded.
+  const res = await fetch(`${getDevtoolsApi()}/functions/${functionId}`)
+  if (!res.ok) throw new Error('Failed to fetch function detail')
+  return unwrapResponse<FunctionDetail>(res)
 }
 
 export async function fetchTriggers(options?: {

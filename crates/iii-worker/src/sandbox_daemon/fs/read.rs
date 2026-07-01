@@ -86,7 +86,7 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
     req: ReadRequest,
     registry: &SandboxRegistry,
     runner: &R,
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
 ) -> Result<ReadResponse, SandboxError> {
     let id = Uuid::parse_str(&req.sandbox_id).map_err(|_| {
         SandboxError::InvalidRequest(format!(
@@ -178,7 +178,7 @@ pub async fn handle_read<R: FsRunner + ?Sized>(
 /// the buffered bytes so the channel still serves the same payload to
 /// legacy subscribers).
 async fn stream_via_channel(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     mut reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
     meta: iii_shell_proto::FsReadMeta,
     body: Option<String>,
@@ -245,7 +245,7 @@ async fn stream_via_channel(
 // ---------------------------------------------------------------------------
 
 pub(super) fn register(
-    iii: &iii_sdk::III,
+    iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) {
@@ -282,15 +282,15 @@ pub(super) fn register(
 // Tests
 // ---------------------------------------------------------------------------
 //
-// Unit tests for `handle_read` require a real `iii_sdk::III` that connects
+// Unit tests for `handle_read` require a real `iii_sdk::IIIClient` that connects
 // to a live engine (for `create_channel`). Without an engine, the call
 // fails at channel allocation. End-to-end coverage is deferred to Phase 6
 // (external_known_sandbox_fs.rs). The S001/S002 guard tests below pass a
-// dummy `&iii_sdk::III` value from `register_worker` so they don't need
+// dummy `&iii_sdk::IIIClient` value from `register_worker` so they don't need
 // a live engine — they assert early-exit before the channel call.
 //
 // NOTE: S001/S002 tests are omitted here because constructing even a
-// disconnected `III` handle requires starting the background runtime thread
+// disconnected `IIIClient` handle requires starting the background runtime thread
 // and a valid engine URL. The guard logic (UUID parse and registry lookup)
 // is identical to every other fs trigger and is covered by those test suites.
 // The background-task lifecycle (pump loop) is covered by Phase 6 e2e tests.

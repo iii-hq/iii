@@ -25,7 +25,7 @@ use crate::{
         configuration::{
             adapters::{ConfigurationAdapter, ExternalChange, RegisterKind},
             config::ConfigurationModuleConfig,
-            store::{ConfigurationStore, StoreError, expand_value},
+            store::{ConfigurationStore, StoreError, expand_value, validate_against_schema},
             structs::{
                 ConfigurationEntry, ConfigurationEventData, ConfigurationEventType,
                 ConfigurationGetInput, ConfigurationGetResult, ConfigurationListInput,
@@ -122,7 +122,7 @@ impl ConfigurableWorker for ConfigurationWorker {
     type Config = ConfigurationModuleConfig;
     type Adapter = dyn ConfigurationAdapter;
     type AdapterRegistration = super::registry::ConfigurationAdapterRegistration;
-    const DEFAULT_ADAPTER_NAME: &'static str = "fs";
+    const DEFAULT_ADAPTER_NAME: &'static str = super::adapters::fs::ADAPTER_NAME;
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<
@@ -244,7 +244,43 @@ impl ConfigurationWorker {
     }
 
     /// Apply a watcher-surfaced change into the cache and broadcast.
+    ///
+    /// A hand-edit of a `<id>.yaml` file must not be able to clobber the running
+    /// config with an invalid value. For create/update edits we validate the
+    /// APPLIED (env-expanded + coerced) value against the cached schema (the
+    /// adapter's watcher carries the real schema forward — disk never holds it);
+    /// on failure we log a WARNING and drop the edit, leaving the previous good
+    /// value in the store. We never write the file back here, so this path can't
+    /// feed the watcher and create a save→reload→save loop.
     pub(crate) async fn handle_external_change(&self, change: ExternalChange) {
+        let edited = match &change {
+            ExternalChange::Registered(entry) | ExternalChange::Updated { entry, .. } => {
+                Some(entry)
+            }
+            ExternalChange::Deleted { .. } => None,
+        };
+        if let Some(entry) = edited
+            && !entry.schema.is_null()
+        {
+            let (applied, missing) = expand_value(&entry.value);
+            if !missing.is_empty() {
+                tracing::warn!(
+                    id = %entry.id,
+                    vars = %missing.join(", "),
+                    "Configuration file edit references unset environment variable(s) with no default; keeping the previous value"
+                );
+                return;
+            }
+            if let Err(errs) = validate_against_schema(&applied, &entry.schema) {
+                tracing::warn!(
+                    id = %entry.id,
+                    errors = %errs.join("; "),
+                    "Configuration file edit is invalid against its schema; keeping the previous value"
+                );
+                return;
+            }
+        }
+
         self.store.apply_external(&change).await;
         let event = match change {
             ExternalChange::Registered(entry) => entry_to_event(
@@ -266,6 +302,25 @@ impl ConfigurationWorker {
                 None,
             ),
         };
+        // Make hot-reload observable: an operator who edits a file on disk
+        // should see that the engine picked it up.
+        match event.event_type {
+            ConfigurationEventType::Registered => tracing::info!(
+                id = %event.id,
+                "Loaded new configuration '{}' from a file added on disk",
+                event.id
+            ),
+            ConfigurationEventType::Updated => tracing::info!(
+                id = %event.id,
+                "Reloaded configuration '{}' from an external file edit",
+                event.id
+            ),
+            ConfigurationEventType::Deleted => tracing::info!(
+                id = %event.id,
+                "Dropped configuration '{}' whose file was removed from disk",
+                event.id
+            ),
+        }
         self.fan_out(event).await;
     }
 
@@ -305,8 +360,11 @@ fn entry_to_event(
         name: entry.name.clone(),
         description: entry.description.clone(),
         schema: entry.schema.clone(),
-        old_value: old_value.map(|v| expand_value(&v)),
-        new_value: new_value_raw.map(|v| expand_value(&v)),
+        // Best-effort fan-out: subscribers see resolved `${VAR:default}` values.
+        // Unresolved vars are surfaced on the `get` path, not here, so the
+        // `missing` list is intentionally dropped.
+        old_value: old_value.map(|v| expand_value(&v).0),
+        new_value: new_value_raw.map(|v| expand_value(&v).0),
         metadata: entry.metadata.clone(),
     }
 }
@@ -316,6 +374,7 @@ fn store_error_to_failure(err: StoreError) -> ErrorBody {
         StoreError::NotRegistered(_) => "NOT_REGISTERED",
         StoreError::InvalidId(_) => "INVALID_ID",
         StoreError::SchemaInvalid(_) => "SCHEMA_INVALID",
+        StoreError::SchemaUnavailable(_) => "SCHEMA_UNAVAILABLE",
         StoreError::Adapter(_) => "ADAPTER_ERROR",
     };
     ErrorBody {
@@ -403,14 +462,54 @@ impl ConfigurationWorker {
     ) -> FunctionResult<ConfigurationGetResult, ErrorBody> {
         match self.store.get(&input.id).await {
             Some(entry) => {
-                let value = if input.raw {
-                    entry.value
-                } else {
-                    expand_value(&entry.value)
-                };
+                if input.raw {
+                    return FunctionResult::Success(ConfigurationGetResult {
+                        id: entry.id,
+                        value: entry.value,
+                    });
+                }
+
+                // Validate the APPLIED (env-expanded + type-coerced) value, not
+                // the raw template. On failure we do NOT hand back a broken
+                // value (it would deserialize-fail in the consumer and silently
+                // fall back to defaults); instead we log an ERROR naming the id
+                // and return a Failure so the consumer keeps its previous /
+                // default config. Consumers only special-case NOT_FOUND, so any
+                // other code resolves to "not loaded".
+                let (applied, missing) = expand_value(&entry.value);
+                if !missing.is_empty() {
+                    tracing::error!(
+                        id = %entry.id,
+                        vars = %missing.join(", "),
+                        "Configuration references environment variable(s) with no value and no default; it will not be loaded"
+                    );
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!(
+                            "configuration '{}' references unset environment variable(s) with no default: {}",
+                            entry.id,
+                            missing.join(", ")
+                        ),
+                        code: "EXPAND_FAILED".to_string(),
+                        stacktrace: None,
+                    });
+                }
+                if !entry.schema.is_null()
+                    && let Err(errs) = validate_against_schema(&applied, &entry.schema)
+                {
+                    tracing::error!(
+                        id = %entry.id,
+                        errors = %errs.join("; "),
+                        "Configuration is invalid after environment expansion; it will not be loaded"
+                    );
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("schema validation failed: {}", errs.join("; ")),
+                        code: "SCHEMA_INVALID".to_string(),
+                        stacktrace: None,
+                    });
+                }
                 FunctionResult::Success(ConfigurationGetResult {
                     id: entry.id,
-                    value,
+                    value: applied,
                 })
             }
             None => FunctionResult::Failure(ErrorBody {
@@ -586,6 +685,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_without_available_schema_returns_schema_unavailable() {
+        let (_engine, worker, _dir) = setup().await;
+        // Register with a null schema (the shape a disk-loaded entry has before
+        // its worker re-registers); no initial_value is validated.
+        worker
+            .register_fn(ConfigurationRegisterInput {
+                id: "iii-stream".into(),
+                name: "iii-stream display".into(),
+                description: "test".into(),
+                schema: Value::Null,
+                initial_value: None,
+                metadata: None,
+            })
+            .await;
+        let result = worker
+            .set_fn(ConfigurationSetInput {
+                id: "iii-stream".into(),
+                value: json!({ "port": 4242 }),
+            })
+            .await;
+        match result {
+            FunctionResult::Failure(err) => assert_eq!(err.code, "SCHEMA_UNAVAILABLE"),
+            _ => panic!("expected SCHEMA_UNAVAILABLE"),
+        }
+    }
+
+    #[tokio::test]
     async fn get_expands_env_var_placeholders_by_default() {
         let (_engine, worker, _dir) = setup().await;
         unsafe {
@@ -624,6 +750,267 @@ mod tests {
             }
             _ => panic!("expected raw get success"),
         }
+    }
+
+    // #1916: a templated integer field must register (validation runs on the
+    // APPLIED value) and `get` must coerce it to a real integer.
+    #[tokio::test]
+    async fn register_and_get_coerces_templated_integer_port() {
+        let (_engine, worker, _dir) = setup().await;
+        unsafe {
+            std::env::remove_var("CFG_GET_TPORT");
+        }
+        let result = worker
+            .register_fn(register_input(
+                "iii-stream",
+                Some(json!({ "port": "${CFG_GET_TPORT:3111}" })),
+            ))
+            .await;
+        assert!(
+            matches!(result, FunctionResult::Success(_)),
+            "a templated integer port must pass register (validated against the coerced value)"
+        );
+
+        let got = worker
+            .get_fn(ConfigurationGetInput {
+                id: "iii-stream".into(),
+                raw: false,
+            })
+            .await;
+        match got {
+            FunctionResult::Success(out) => {
+                assert_eq!(out.value["port"], json!(3111));
+                assert!(out.value["port"].is_i64(), "must be coerced to an integer");
+            }
+            _ => panic!("expected get success with a coerced integer"),
+        }
+
+        // The raw template is preserved on disk / for re-evaluation.
+        let raw = worker
+            .get_fn(ConfigurationGetInput {
+                id: "iii-stream".into(),
+                raw: true,
+            })
+            .await;
+        match raw {
+            FunctionResult::Success(out) => {
+                assert_eq!(out.value["port"], json!("${CFG_GET_TPORT:3111}"))
+            }
+            _ => panic!("expected raw get success"),
+        }
+    }
+
+    // #1916: when the applied value violates the schema, `get` must log + fail
+    // with SCHEMA_INVALID ("won't be loaded"), not hand back a broken value.
+    // Disk-loaded entries skip register validation, then the worker re-registers
+    // the schema — replicated here by injecting the entry directly.
+    #[tokio::test]
+    async fn get_fails_schema_invalid_when_applied_value_violates_schema() {
+        let (_engine, worker, _dir) = setup().await;
+        unsafe {
+            std::env::remove_var("CFG_GET_BADPORT");
+        }
+        worker
+            .store
+            .apply_external(&ExternalChange::Registered(ConfigurationEntry {
+                id: "iii-stream".into(),
+                name: "iii-stream".into(),
+                description: String::new(),
+                schema: schema_object_required_port(),
+                value: json!({ "port": "${CFG_GET_BADPORT:notaport}" }),
+                metadata: None,
+            }))
+            .await;
+
+        let got = worker
+            .get_fn(ConfigurationGetInput {
+                id: "iii-stream".into(),
+                raw: false,
+            })
+            .await;
+        match got {
+            FunctionResult::Failure(err) => assert_eq!(err.code, "SCHEMA_INVALID"),
+            _ => panic!("expected SCHEMA_INVALID failure"),
+        }
+    }
+
+    // #1916: a `${VAR}` with no env value and no default can't be evaluated at
+    // read time — `get` must fail with EXPAND_FAILED (and not panic).
+    #[tokio::test]
+    async fn get_fails_expand_failed_when_required_var_missing() {
+        let (_engine, worker, _dir) = setup().await;
+        unsafe {
+            std::env::remove_var("CFG_GET_REQUIRED");
+        }
+        worker
+            .store
+            .apply_external(&ExternalChange::Registered(ConfigurationEntry {
+                id: "iii-stream".into(),
+                name: "iii-stream".into(),
+                description: String::new(),
+                schema: schema_object_required_port(),
+                value: json!({ "port": "${CFG_GET_REQUIRED}" }),
+                metadata: None,
+            }))
+            .await;
+
+        let got = worker
+            .get_fn(ConfigurationGetInput {
+                id: "iii-stream".into(),
+                raw: false,
+            })
+            .await;
+        match got {
+            FunctionResult::Failure(err) => assert_eq!(err.code, "EXPAND_FAILED"),
+            _ => panic!("expected EXPAND_FAILED failure"),
+        }
+    }
+
+    // --- hot-reload: external file-edit validation ---
+
+    fn updated_change(value: Value, old: Value) -> ExternalChange {
+        ExternalChange::Updated {
+            entry: ConfigurationEntry {
+                id: "iii-stream".into(),
+                name: "iii-stream".into(),
+                description: String::new(),
+                schema: schema_object_required_port(),
+                value,
+                metadata: None,
+            },
+            old_value: Some(old),
+        }
+    }
+
+    #[tokio::test]
+    async fn external_change_applies_valid_edit() {
+        let (_engine, worker, _dir) = setup().await;
+        worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 1 }))))
+            .await;
+
+        worker
+            .handle_external_change(updated_change(json!({ "port": 2 }), json!({ "port": 1 })))
+            .await;
+
+        let entry = worker.store.get("iii-stream").await.expect("entry");
+        assert_eq!(
+            entry.value,
+            json!({ "port": 2 }),
+            "a valid file edit must hot-reload into the store"
+        );
+    }
+
+    #[tokio::test]
+    async fn external_change_rejects_invalid_edit_and_keeps_previous() {
+        let (_engine, worker, _dir) = setup().await;
+        worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 1 }))))
+            .await;
+
+        worker
+            .handle_external_change(updated_change(
+                json!({ "port": "not-an-integer" }),
+                json!({ "port": 1 }),
+            ))
+            .await;
+
+        let entry = worker.store.get("iii-stream").await.expect("entry");
+        assert_eq!(
+            entry.value,
+            json!({ "port": 1 }),
+            "an invalid file edit must be dropped (warned), keeping the previous value"
+        );
+    }
+
+    #[tokio::test]
+    async fn external_change_rejects_unresolved_env_var() {
+        let (_engine, worker, _dir) = setup().await;
+        unsafe {
+            std::env::remove_var("CFG_EXT_MISSING");
+        }
+        worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 1 }))))
+            .await;
+
+        worker
+            .handle_external_change(updated_change(
+                json!({ "port": "${CFG_EXT_MISSING}" }),
+                json!({ "port": 1 }),
+            ))
+            .await;
+
+        let entry = worker.store.get("iii-stream").await.expect("entry");
+        assert_eq!(
+            entry.value,
+            json!({ "port": 1 }),
+            "an edit referencing an unresolved env var must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn external_change_applies_when_schema_unknown() {
+        let (_engine, worker, _dir) = setup().await;
+        // A brand-new file the owning worker hasn't claimed yet: schema is null,
+        // so it can't be validated here — apply it and let `get` validate later
+        // once the owner registers a real schema.
+        worker
+            .handle_external_change(ExternalChange::Registered(ConfigurationEntry {
+                id: "fresh".into(),
+                name: "fresh".into(),
+                description: String::new(),
+                schema: Value::Null,
+                value: json!({ "port": "anything" }),
+                metadata: None,
+            }))
+            .await;
+
+        let entry = worker.store.get("fresh").await.expect("entry applied");
+        assert_eq!(entry.value, json!({ "port": "anything" }));
+    }
+
+    // End-to-end hot-reload: register → initialize (starts the watcher) → edit
+    // the file on disk → the store reflects the new value. Covers the full
+    // `initialize → watcher → handle_external_change` wiring the per-handler
+    // tests above don't exercise (the gap behind the "edit did nothing" report).
+    #[tokio::test]
+    async fn external_file_edit_hot_reloads_through_the_watcher() {
+        let (_engine, worker, dir) = setup().await;
+        worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 1 }))))
+            .await;
+        // initialize() primes the cache, registers the trigger type, and starts
+        // the directory watcher — exactly as a real boot does.
+        worker
+            .initialize()
+            .await
+            .expect("initialize starts the watcher");
+
+        // Edit the file the way an operator would, in the value-only on-disk
+        // format `write_entry` produces (no schema key).
+        let path = dir.path().join("iii-stream.yaml");
+        tokio::fs::write(
+            &path,
+            "id: iii-stream\nname: iii-stream display\ndescription: test\nvalue:\n  port: 3114\n",
+        )
+        .await
+        .expect("write the external edit");
+
+        // The watcher debounces ~500ms; poll the store until it reflects the edit.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(entry) = worker.store.get("iii-stream").await
+                && entry.value == json!({ "port": 3114 })
+            {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("hot-reload did not apply the external file edit within 5s");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        worker.destroy().await.expect("destroy stops the watcher");
     }
 
     #[tokio::test]

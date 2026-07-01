@@ -61,6 +61,34 @@ pub(crate) fn manager_port_from(content: &str) -> u16 {
         .unwrap_or(super::app::DEFAULT_PORT)
 }
 
+/// Operator-selected rootfs mode from config.yaml's top-level `rootfs.mode`
+/// (`overlay` | `legacy` / `off`), or `None` when unset/unreadable.
+///
+/// The engine spawns `iii-worker` without forwarding arbitrary env, so
+/// config.yaml — read from disk in the start process — is the reliable way for
+/// an operator setting to reach the boot path. The `III_ROOTFS_MODE` env var
+/// still takes precedence; see [`crate::cli::overlay::overlay_enabled`].
+///
+/// Note: only the MODE is configurable. The overlay upper is sized by the
+/// embedded golden image (ext4 can't grow without `resize2fs`), so there is no
+/// `upper_size_gib` knob — changing the size means regenerating the golden via
+/// `vendor/regen-golden.sh`.
+pub fn rootfs_mode() -> Option<String> {
+    let content = std::fs::read_to_string(Path::new(CONFIG_FILE)).ok()?;
+    rootfs_mode_from(&content)
+}
+
+/// Pure extraction used by [`rootfs_mode`], exposed for unit tests so the YAML
+/// parsing doesn't need filesystem I/O.
+pub(crate) fn rootfs_mode_from(content: &str) -> Option<String> {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(content).ok()?;
+    yaml.get("rootfs")
+        .and_then(|r| r.get("mode"))
+        .and_then(|m| m.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Canonical worker type resolved from config.yaml + filesystem.
 #[derive(Debug)]
 pub enum ResolvedWorkerType {
@@ -1529,6 +1557,23 @@ workers:
             manager_port_from("not: valid: yaml: :"),
             super::super::app::DEFAULT_PORT
         );
+    }
+
+    #[test]
+    fn rootfs_mode_from_reads_top_level_mode() {
+        let yaml = "rootfs:\n  mode: legacy\n";
+        assert_eq!(rootfs_mode_from(yaml).as_deref(), Some("legacy"));
+        let yaml2 = "rootfs:\n  mode: overlay\n";
+        assert_eq!(rootfs_mode_from(yaml2).as_deref(), Some("overlay"));
+    }
+
+    #[test]
+    fn rootfs_mode_from_none_when_absent_or_malformed() {
+        assert_eq!(rootfs_mode_from("workers: []\n"), None);
+        assert_eq!(rootfs_mode_from("rootfs:\n  other: x\n"), None);
+        assert_eq!(rootfs_mode_from("not: valid: yaml: :"), None);
+        // Empty/whitespace value is treated as unset.
+        assert_eq!(rootfs_mode_from("rootfs:\n  mode: '   '\n"), None);
     }
 
     // ──────────────────────────────────────────────────────────────────

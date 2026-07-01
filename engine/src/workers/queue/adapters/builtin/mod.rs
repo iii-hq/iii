@@ -5,3 +5,8 @@
 // See LICENSE and PATENTS files for details.
 
 mod adapter;
+
+// Exposed so the `test-adapters`-gated `memory` transport can register a second
+// dependency-free backend that delegates to the builtin in-process adapter.
+#[cfg(feature = "test-adapters")]
+pub(crate) use adapter::make_adapter;

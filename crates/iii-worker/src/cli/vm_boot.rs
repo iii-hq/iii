@@ -14,9 +14,27 @@
 /// Arguments for the `__vm-boot` hidden subcommand.
 #[derive(clap::Args, Debug)]
 pub struct VmBootArgs {
-    /// Path to the guest rootfs directory
+    /// Path to the guest rootfs directory (the boot trampoline; in overlay
+    /// mode this is a minimal dir serving only the injected /init.krun).
     #[arg(long)]
     pub rootfs: String,
+
+    /// Overlay mode: host path to the prebuilt read-only base erofs
+    /// (attached as the overlay lower, /dev/vda). Built host-side by the
+    /// start path; absent => legacy per-worker-rootfs boot.
+    #[arg(long)]
+    pub rootfs_lower: Option<String>,
+
+    /// Rootfs mode signalled by the start path: "overlay" or "" (legacy).
+    #[arg(long, default_value = "")]
+    pub rootfs_mode: String,
+
+    /// Overlay mode: host path to this worker's writable upper image
+    /// (a pre-formatted ext4 materialized from the embedded golden image,
+    /// attached as /dev/vdb). Absent => iii-init uses a non-persistent
+    /// tmpfs upper (dev builds without the embedded golden).
+    #[arg(long)]
+    pub rootfs_upper: Option<String>,
 
     /// Executable path inside the guest
     #[arg(long)]
@@ -212,14 +230,17 @@ fn check_kvm_available() -> Result<(), String> {
 fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
     if !kvm.exists() {
         return Err("KVM not available -- /dev/kvm does not exist. \
-             Ensure KVM is enabled in your kernel and loaded (modprobe kvm_intel or kvm_amd)."
+             Ensure KVM is enabled in your kernel and loaded (modprobe kvm_intel or kvm_amd). \
+             This can also occur on Windows with WSL. \
+             See https://iii.dev/docs/troubleshooting#kvm-not-accessible"
             .to_string());
     }
     match std::fs::File::options().read(true).write(true).open(kvm) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(
             "KVM not accessible -- /dev/kvm exists but current user lacks permission. \
-             Add your user to the 'kvm' group: sudo usermod -aG kvm $USER"
+             Add your user to the 'kvm' group: sudo usermod -aG kvm $USER. \
+             See https://iii.dev/docs/troubleshooting#kvm-not-accessible"
                 .to_string(),
         ),
         Err(e) => Err(format!("KVM check failed: {}", e)),
@@ -711,6 +732,86 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         });
     }
 
+    // Overlay mode is decided by the START path (which evaluated the feature
+    // flag + the embedded-init capability handshake — same binary, so the
+    // decision is authoritative) and passed down as --rootfs-mode + the
+    // prebuilt --rootfs-lower erofs. We attach it here; the erofs is
+    // built host-side in the start path, not in this detached child.
+    let overlay_mode = args.rootfs_mode == "overlay" && args.rootfs_lower.is_some();
+    if overlay_mode {
+        let lower_img = args
+            .rootfs_lower
+            .clone()
+            .expect("overlay_mode implies --rootfs-lower");
+        // Migrate this worker's on-disk layout to overlay: GC orphaned legacy
+        // clone artifacts (dep cache + prepared marker) and stamp the marker.
+        crate::cli::overlay::migrate_to_overlay(std::path::Path::new(&args.rootfs));
+        eprintln!("iii: overlay base erofs -> /dev/vda: {lower_img}");
+        // Disk attach ORDER is the guest device order: the lower MUST be the
+        // first disk (/dev/vda) and the upper the second (/dev/vdb). iii-init
+        // reads III_BLOCK_ROOT_LOWER=/dev/vda and III_BLOCK_ROOT_UPPER=/dev/vdb.
+        builder = builder.disk(move |d| {
+            d.path(&lower_img)
+                .format(msb_krun::DiskImageFormat::Raw)
+                .read_only(true)
+        });
+        if let Some(upper) = args.rootfs_upper.clone() {
+            // Advisory flock guards the rw ext4 upper against a SECOND VM
+            // attaching it concurrently (ext4 has no multi-mount protection →
+            // silent corruption). kill_stale_worker covers the sequential
+            // restart; this catches a concurrent same-worker start. The lock
+            // fd is leaked so the lock is held for the VM's whole lifetime and
+            // released automatically when this __vm-boot process exits.
+            // ponytail: flock is per-host; a cross-host lock manager only if
+            // workers ever share storage across machines.
+            use std::os::unix::io::AsRawFd;
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&upper)
+            {
+                Ok(lock) => {
+                    // Bounded retry: on a restart, kill_stale_worker SIGKILLs the
+                    // old __vm-boot but returns before the kernel has reaped it
+                    // and dropped its leaked lock fd, so the first LOCK_NB here
+                    // can lose the race against the dying VM. Retry for ~2s
+                    // before giving up, so a normal restart doesn't surface as a
+                    // spurious "already attached" that leaves the worker down. A
+                    // genuine concurrent second start still fails after the
+                    // window (the old VM never exits).
+                    let mut waited_ms = 0u32;
+                    let acquired = loop {
+                        let rc =
+                            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                        if rc == 0 {
+                            break true;
+                        }
+                        if waited_ms >= 2000 {
+                            break false;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        waited_ms += 100;
+                    };
+                    if !acquired {
+                        return Err(format!(
+                            "overlay upper {upper} is still attached to a running VM after 2s; \
+                             refusing to double-mount (concurrent start, or a prior VM that \
+                             won't exit?)"
+                        ));
+                    }
+                    std::mem::forget(lock);
+                }
+                Err(e) => return Err(format!("cannot lock overlay upper {upper}: {e}")),
+            }
+            eprintln!("iii: overlay writable upper -> /dev/vdb: {upper}");
+            builder = builder.disk(move |d| {
+                d.path(&upper)
+                    .format(msb_krun::DiskImageFormat::Raw)
+                    .read_only(false)
+            });
+        }
+    }
+
     // 2 workers when the shell relay is active (benefits from
     // parallel read/write task scheduling); 1 otherwise (network +
     // control proxy run fine on a single worker).
@@ -825,6 +926,23 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
             e = e.env("III_INIT_CIDR", "30");
         }
         e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
+        // Overlay rootfs: tell iii-init to build `/` from the read-only base
+        // disk (/dev/vda) + a writable upper instead of the virtiofs root.
+        // The upper is a pre-formatted ext4 image on /dev/vdb (materialized
+        // host-side from the embedded golden image) when one was attached;
+        // iii-init mounts it as-is (no in-guest format). When absent (dev
+        // builds without the embedded golden), fall back to a non-persistent
+        // tmpfs upper so the overlay still boots — deps just don't persist.
+        if overlay_mode {
+            e = e.env("III_BLOCK_ROOT_LOWER", "/dev/vda");
+            e = e.env("III_BLOCK_ROOT_LOWER_FSTYPE", "erofs");
+            if args.rootfs_upper.is_some() {
+                e = e.env("III_BLOCK_ROOT_UPPER", "/dev/vdb");
+                e = e.env("III_BLOCK_ROOT_UPPER_FSTYPE", "ext4");
+            } else {
+                e = e.env("III_BLOCK_ROOT_UPPER", "tmpfs");
+            }
+        }
         if control_port_env {
             e = e.env(
                 "III_CONTROL_PORT",

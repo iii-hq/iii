@@ -15,9 +15,11 @@ For how to connect a worker into a project once its manifest exists, see
 [Creating Workers / Workers](./workers).
 
 <Note>
-  `iii.worker.yaml` is not needed to run a worker process directly (for example `node
-  ./myworker/src/index.js`). A worker that connects to the engine with the SDK behaves identically
-  whether iii started it or not.
+  `iii.worker.yaml` only matters when iii provisions and runs the worker in its built-in
+  virtualization. If you run the worker process yourself, for example `node ./myworker/src/index.js`
+  on your own machine, container, or server, you do not need the manifest at all. Any process that
+  uses a iii SDK, calls `registerWorker()`, and connects to a iii instance is a worker, and behaves
+  identically whether iii started it or not.
 </Note>
 
 ## `name`
@@ -152,8 +154,8 @@ against the registry.
 
 ```yaml
 dependencies:
-  iii-http: "^0.19"
-  iii-state: "^0.19"
+  iii-http: "^0.20"
+  iii-state: "^0.20"
 ```
 
 Rules:

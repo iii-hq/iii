@@ -24,9 +24,8 @@ use std::time::Duration;
 
 use iii::EngineBuilder;
 use iii::workers::config::EngineConfig;
-use iii_sdk::{
-    III, InitOptions, RegisterFunction, RegisterTriggerInput, TriggerRequest, register_worker,
-};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
 use iii_worker::cli::app::WorkerManagerDaemonArgs;
 use iii_worker::cli::worker_manager_daemon;
 use serde_json::{Value, json};
@@ -133,7 +132,7 @@ async fn wait_for_ws(port: u16) {
 /// 10s deadline. Without this gate the test could race the daemon's WS
 /// connection and `iii.trigger("worker::add", ...)` would return
 /// `function_not_found`.
-async fn wait_for_worker_add_function(probe: &III) {
+async fn wait_for_worker_add_function(probe: &IIIClient) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let resp = probe
@@ -181,7 +180,7 @@ struct Subscriber {
 /// Register a named handler that pushes every invocation into an mpsc, then
 /// bind a `worker` trigger with `filter` against the same id. Returns the
 /// receiver so the test can drain it post-fire.
-fn register_subscriber(iii: &III, function_id: &str, filter: Value) -> Subscriber {
+fn register_subscriber(iii: &IIIClient, function_id: &str, filter: Value) -> Subscriber {
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     let tx_for_handler = tx.clone();
     iii.register_function(
@@ -190,7 +189,7 @@ fn register_subscriber(iii: &III, function_id: &str, filter: Value) -> Subscribe
             let tx = tx_for_handler.clone();
             async move {
                 let _ = tx.send(req);
-                Ok::<_, iii_sdk::IIIError>(json!({}))
+                Ok::<_, iii_sdk::Error>(json!({}))
             }
         })
         .description("e2e test subscriber"),

@@ -1,0 +1,59 @@
+---
+title: 'Remaining SDK types grouped into submodules'
+description: 'The engine, protocol, internal, and (Python) utils groups join the existing submodules, and several types move out of the root SDK into their submodule with the root export removed.'
+---
+
+## What changed
+
+The root SDK surface continues to be grouped into named submodules. This slice adds the `engine`, `protocol`, and `internal` groups (plus a Python `utils` group), and moves the remaining types into their submodule. For these moves the root export is removed: the type is importable only from its submodule.
+
+| Group | Node | Python | Rust |
+| --- | --- | --- | --- |
+| engine | `iii-sdk/engine` | `iii.engine` | `iii_sdk::engine` |
+| protocol | `iii-sdk/protocol` | `iii.protocol` | `iii_sdk::protocol` |
+| internal | `iii-sdk/internal` | `iii.internal` | n/a |
+| utils | n/a | `iii.utils` | n/a |
+
+## Moved symbols
+
+| Group | Symbols |
+| --- | --- |
+| engine | `EngineFunctions`, `EngineTriggers`, `RemoteFunctionHandler` |
+| protocol | `MessageType`, the `Register*Message` and `Register*Input` types, `TriggerRequest`, and the Rust-only `FunctionMessage` and `ErrorBody` |
+| internal | `InternalHttpRequest` |
+| utils (Python) | `extract_request_format`, `extract_response_format`, `python_type_to_format` |
+| runtime | `IIIConnectionState` now joins the runtime group |
+
+Per-language differences are respected: a symbol that does not exist in a language is not added there.
+
+`TriggerActionVoid` (Python) is also grouped under `iii.trigger`, but it stays exported from the package root as the companion to `TriggerActionEnqueue`, so it is reachable from both `iii` and `iii.trigger`.
+
+## Migration
+
+Import these types from their submodule. The root path no longer exports them.
+
+```ts
+// Node
+import { RegisterTriggerInput } from 'iii-sdk/protocol'
+import { EngineFunctions } from 'iii-sdk/engine'
+```
+
+```python
+# Python
+from iii.protocol import TriggerRequest
+from iii.utils import extract_request_format
+```
+
+```rust
+// Rust
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::engine::EngineFunctions;
+```
+
+## Note on the earlier submodule slice
+
+The first submodule slice (`errors`, `channel`, `trigger`, `runtime`) and the groups in this slice, along with the types extracted into `@iii-dev/helpers`, all remove the root export in 0.20.0. Use the submodule and helpers paths for everything; the old root paths no longer work in this release.
+
+## Why
+
+Grouping the protocol, engine, and internal types out of the root keeps the worker and runtime API at the top level and moves the low-level surface behind clear, navigable paths.

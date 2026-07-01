@@ -5,6 +5,155 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.20.0" description="June 2026">
+  ## SDK: a major, breaking reorganization of the public surface
+
+  The Node, Python, and Rust SDKs are reorganized for a consistent, well-factored public surface. Names are aligned across the three languages, the shared types move into a new package, and the rest of the root surface is grouped into named submodules. This release is breaking: many symbols move out of the SDK root.
+
+  <Callout type="tip">
+    Upgrading an existing app? Follow the step-by-step
+    [Upgrading from 0.19.x to 0.20.x](/next/upgrading/from-0-19-x) guide.
+  </Callout>
+
+  ### Shared types extracted into `@iii-dev/helpers`
+
+  The HTTP, queue, stream, and worker-connection-manager types move out of the root SDK into a new separately published package, **`@iii-dev/helpers`** (npm), **`iii-helpers`** (crate and PyPI, import `iii_helpers`), organized into four submodules. The root exports are removed; import these types from the helpers package.
+
+  | Submodule | Node | Python | Rust |
+  | --- | --- | --- | --- |
+  | http | `@iii-dev/helpers/http` | `iii_helpers.http` | `iii_helpers::http` |
+  | queue | `@iii-dev/helpers/queue` | `iii_helpers.queue` | `iii_helpers::queue` |
+  | stream | `@iii-dev/helpers/stream` | `iii_helpers.stream` | `iii_helpers::stream` |
+  | worker-connection-manager | `@iii-dev/helpers/worker-connection-manager` | `iii_helpers.worker_connection_manager` | `iii_helpers::worker_connection_manager` |
+
+  `IStream`, the streaming `StreamRequest` and `StreamResponse`, `MiddlewareFunctionInput`, and `TriggerActionEnqueue` stay in the root SDK. See [the helpers entry](./0-20-0/extract-helpers-lib) for the full symbol list and migration.
+
+  ### Cross-language parity: renames and removals
+
+  - Main client handle aligned to `IIIClient` (Node was `ISdk`, Rust was `III`).
+  - Telemetry config aligned to `TelemetryOptions` (Rust was `WorkerTelemetryMeta`).
+  - Buffered HTTP request and response renamed `ApiRequest` and `ApiResponse` to `HttpRequest` and `HttpResponse`; streaming keeps `StreamRequest` and `StreamResponse`. Rust `StreamCallRequest` and `StreamJoinLeaveCallRequest` become `StreamChangeEvent` and `StreamJoinLeaveEvent`.
+  - Stream helper type names aligned across the three SDKs: the change-event detail is `StreamChangeEventDetail` everywhere (Rust was `StreamEventDetail`, Node was an inline object), the result types are `StreamSetResult` / `StreamUpdateResult` / `StreamDeleteResult` (Rust had bare `SetResult` / `UpdateResult`, Node and Rust had a bare `DeleteResult`), and `MergePath` is now a named export in all three.
+  - Removed: `UpdateBuilder`, the Rust `Value` re-export, `IIIForbiddenError` and `IIITimeoutError` (Python), the `TriggerActionType` alias, the Rust `FieldPath` path helper, and the root `Logger` and OpenTelemetry re-exports (use `@iii-dev/observability`).
+
+  See [the parity entry](./0-20-0/cross-language-parity) for the full table.
+
+  ### Submodule grouping
+
+  The remaining root surface is grouped into submodules (`iii-sdk/<name>` / `iii.<name>` / `iii_sdk::<name>`):
+
+  - **errors** (`InvocationError`, `Error`), **channel**, **trigger**, **runtime**: the first slice. The `III` prefix is dropped from the invocation error types. These keep their old root paths working as deprecated aliases. See [the first slice](./0-20-0/organize-sdk-imports).
+  - **engine** (`EngineFunctions`, `EngineTriggers`, `RemoteFunctionHandler`), **protocol** (the message and register-input types), **internal** (`InternalHttpRequest`), and Python **utils** (the format helpers): these move out of the root with the root export removed. `IIIConnectionState` (runtime) and `TriggerActionVoid` (Python trigger) likewise leave the root. See [the submodule entry](./0-20-0/submodule-clean-break).
+
+  ### Compatibility
+
+  This release is not backward compatible. The first errors/channel/trigger/runtime slice keeps deprecated root aliases, but everything extracted into `@iii-dev/helpers`, the renamed types, and the `engine`/`protocol`/`internal`/`utils` groups are removed from the root SDK. Update imports to the submodule and helpers paths.
+
+  ### Observability moved into `@iii-dev/helpers`
+
+  The `Logger`, `initOtel`, `withSpan`, `executeTracedRequest`, and the rest of the public observability API move from the standalone `iii-observability` packages into a new `observability` submodule of the helpers package. The OpenTelemetry dependencies are now bundled in helpers (net-neutral for SDK users). The standalone `@iii-dev/observability` / `iii-observability` packages become deprecated shims that re-export from helpers; they continue to work but emit a deprecation signal. See [the observability entry](./0-20-0/observability-into-helpers) for the full path table and migration.
+
+  | Submodule | Node | Python | Rust |
+  | --- | --- | --- | --- |
+  | observability | `@iii-dev/helpers/observability` | `iii_helpers.observability` | `iii_helpers::observability` |
+</Update>
+
+<Update label="0.19.7" description="June 2026">
+  ## Saving a file in a local overlay worker restarts cleanly the first time
+
+  Editing and saving a file in a local-path worker on the overlay copy-in path could fail on the **first** save with `iii: ERROR /mnt/host-src … is not a virtiofs mountpoint`, then work on the next save. The host source watcher tried an in-VM **fast restart** first — but that re-runs the boot script, and in copy-in mode the script **detaches** `/mnt/host-src` once it has copied your project into the VM. The re-run hit the now-absent share and aborted; the watcher then fell back to a full VM restart, which is why the second save worked.
+
+  The fast in-VM restart is now skipped for overlay copy-in workers, so they take a full VM restart — the only path that re-copies your edited source. (Even when it didn't error, a fast restart would have run **stale** source, since the project is copied at boot rather than live-mounted.) Legacy live-mount workers keep the fast restart; bundle workers don't auto-restart on source edits at all. Net: one save, one clean restart, running your latest changes.
+
+  ## `config.yaml` worker blocks are stripped once their value is persisted
+
+  Every worker's runtime settings already live in the configuration worker — the `config.yaml` block was **seed-only**, read once on first boot and ignored afterwards. But the block still sat in `config.yaml`, looking authoritative while being dead. Now, once a worker's value is persisted in the configuration store, its `config:` block is **removed from `config.yaml`** on the next boot: the `- name:` entry is kept and the block is replaced with a one-line breadcrumb pointing at where the value now lives (`./data/configuration/<id>.yaml` with the default `fs` adapter) and how to change it (`iii config set <id>` or `configuration::set`). This covers built-in workers (stripped on the first boot after they seed) and external workers like `shell` that register over the bus (stripped on the first boot after their value is in the store).
+
+  The rewrite is line-based and byte-preserving on purpose — it deletes only the contiguous block and inserts one comment, so comments, key order, and `${VAR:default}` placeholders in **other** blocks are left exactly as written (a `serde_yaml` round-trip would have mangled all three). The file is written atomically, and the strip is best-effort: a read/write failure is logged and never fails boot, and a second boot with the block already gone is a no-op. The strip runs before the file watcher starts, so it never trips a config reload.
+
+  Relatedly, the persisted store files are now **value-only**: the configuration worker writes just the setting value to `<id>.yaml` and no longer dumps the JSON schema alongside it, so the on-disk files are smaller and hand-editable.
+</Update>
+
+<Update label="0.19.6" description="June 2026">
+  ## Overlay workers boot on every architecture
+
+  The shared read-only overlay base introduced in 0.19.5 was built as **squashfs**, but the libkrunfw guest kernel on **x86_64** ships without `CONFIG_SQUASHFS`. Mounting the lower returned `ENODEV`, the overlay never assembled, the VM never reached ready, and the worker timed out. It only surfaced on x86_64 — aarch64 (Apple Silicon) dev kernels carry squashfs, so local boots passed while Linux/x86_64 hosts and CI runners failed.
+
+  The overlay lower is now built as **erofs** — the one read-only filesystem the libkrunfw kernel mounts on **every** architecture (erofs + lz4 are present on both x86_64 and aarch64). The image is **uncompressed**, so the guest mounts it with no decompressor and pays no read-time decompression cost. The committed libkrunfw firmware is refreshed (kernel 6.12.68, ABI soname unchanged) to a build that carries erofs on every arch. Building the base is a pure-Rust, std-only erofs writer with no external dependency, and it streams through an on-disk spool to stay within bounded memory.
+
+  Trade-off: an uncompressed erofs base cache is **larger than the old squashfs+gzip** (~3.3×, observed 763 MB vs 230 MB for the node base). A worker's stale `<name>.sqfs` base from a 0.19.5 prerelease is garbage-collected the next time the base is extracted.
+
+  The overlay opt-out is unchanged — `III_ROOTFS_MODE=legacy` (env) or `rootfs.mode: legacy` in `config.yaml` falls back to the per-worker-clone boot.
+</Update>
+
+<Update label="0.19.5" description="June 2026">
+  ## Workers share one read-only rootfs instead of cloning it per worker
+
+  A managed worker used to get a **full private copy** of its base-image rootfs under `~/.iii/managed/<worker>/`. With several workers on a box that duplication dominated disk use. Workers now boot from a **shared read-only base** — built once per base image, host-side — layered with a **per-worker writable ext4 upper** via overlayfs; `iii-init` assembles the overlay and `pivot_root`s into it. The per-worker managed directory drops from a full clone to a small trampoline plus a sparse upper file — in a node-worker test, **731 MiB → ~9 MiB on disk** — and the base image is stored once and reused across every worker built on it. The model is image-independent: the upper ships as a prebuilt golden ext4, so even a minimal or distroless base with no filesystem tools boots, and nothing inside the image is used to assemble the overlay.
+
+  Overlay is **on by default**, but activates only when `iii-worker` is built with an embedded, version-matched `iii-init` — so default development builds keep the exact legacy clone behavior. Opt out explicitly with `III_ROOTFS_MODE=legacy` (env) or a top-level `rootfs.mode: legacy` in `config.yaml`; both fall back to the per-worker-clone boot with no overlay disks attached. The env var wins over `config.yaml` when both are set. On a worker's first overlay boot, the orphaned dep cache from the old layout is reclaimed.
+
+  ## Local workers no longer leave empty dependency folders in your project
+
+  A local-path worker mounted your project directory writable into the VM, so the dep and build directories created during install (`node_modules`, `.venv`, `dist`, …) leaked back onto the host as empty folders. Under overlay, a local worker now mounts the host project **read-only** and copies the source into a VM-local workspace on the upper (dep and build dirs excluded at any depth), so the host project is only ever read — those phantom folders no longer appear. Bundle and legacy workers keep the live mount.
+
+  ## Overlay local workers boot reliably and pack large base images
+
+  Two reliability fixes for the new overlay boot path:
+
+  - **The host source share mounts reliably.** In copy-in mode the host project is shared into the VM as a virtio-fs device that `iii-init` mounts right after the root pivot. virtio-fs device registration is asynchronous, so a mount issued too early could transiently fail — and because that share is boot-critical (the worker aborts when it isn't mounted), it surfaced as an **intermittent** boot failure (`/mnt/host-src … is not a virtiofs mountpoint`). `iii-init` now retries each share mount for ~2s to ride out the device-probe race; a genuinely failed mount logs the cause instead of being silently swallowed.
+
+  - **Large base images pack within bounded memory and file descriptors.** Building the shared read-only base streams each file's bytes through a single on-disk spool instead of holding the whole image in memory or keeping one open descriptor per file, so even a large base (the node image carries ~15k files) packs cleanly.
+
+  ## `iii-pubsub` runtime settings live in the configuration worker
+
+  The pub/sub worker now registers its config schema under the `iii-pubsub` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart.
+
+  The pub/sub `adapter` is a **full hot-swap tier** (unlike `iii-state`'s restart-tier storage adapter): a runtime edit rebuilds the backend — `local` (in-process broadcast) or `redis` (cross-instance delivery) — re-subscribes the live subscriptions onto the new backend before swapping it in so there is no delivery gap, then tears down the previous backend, aborting its per-topic tasks rather than leaking them. A value that fails to build the backend is gated and keeps the previous one running.
+
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `local` and `redis` adapters. Each branch is closed: `redis` carries a typed `redis_url`, and `local` (which takes no config) is a closed empty object, so `configuration::set` rejects an unknown adapter name *and* a junk config key on either branch, while a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
+  As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-pubsub.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read.
+
+  ## `iii-stream` runtime settings live in the configuration worker
+
+  The WebSocket stream worker now registers its config schema under the `iii-stream` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart. The schema carries per-field descriptions, rejects unknown keys at set time, and expands `${VAR:default}` placeholders on read. As with the other workers, the config.yaml block is **seed-only** once a value is persisted — change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-stream.yaml` with the default `fs` adapter), and a runtime edit survives engine restarts.
+
+  Each field applies on its own tier. `auth_function` applies to new connections immediately — no rebind. A `host`/`port` change **rebinds the listener**: the new address is bound and the server respawned before the old listener is torn down, a failed bind keeps the previous server, and live connections on the old address are dropped (clients reconnect). An `adapter` change **hot-swaps the pub/sub backend**: the new backend is built, swapped in, and its event pump restarted; the swap is gated (a value that fails to build keeps the previous backend), and existing connections stay bound to the previous backend until they close, so prefer a quiet moment to repoint the adapter in a multi-instance deployment.
+
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `kv`, `redis`, and `bridge` adapters, each with its own typed `config` (`kv`: `store_method` / `file_path` / `save_interval_ms` / `channel_size`; `redis`: `redis_url`; `bridge`: `bridge_url`). `configuration::set` validates adapter settings against it and rejects an unknown adapter name or stray config key, and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
+  ## `iii-cron` runtime settings live in the configuration worker
+
+  The cron worker now registers its config schema under the `iii-cron` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart. The config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-cron.yaml` with the default `fs` adapter), and a runtime edit survives engine restarts. `${VAR:default}` placeholders expand on read, and values are validated against the schema (which carries a per-field description and rejects unknown keys) at set time.
+
+  Cron's only setting is the distributed-lock `adapter`, and a change is a **full hot-swap**: the new lock backend is built first (gated — a value that fails to build keeps the previous backend, config, and jobs), the old backend is shut down, then every live cron job is re-registered onto the new one (best-effort per job), and the `(config, scheduler)` pair is swapped in atomically. The brief swap window is a scheduling gap on this instance — a job whose fire time lands in it is skipped, not double-run — while across a multi-instance fleet the old and new lock backends cannot coordinate mid-migration, so prefer a quiet moment to repoint the adapter.
+
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `kv` and `redis` lock backends, each with its own typed `config` (`kv`: `store_method` / `file_path` / `save_interval_ms` / `lock_ttl_ms` / `lock_index`; `redis`: `redis_url` only, since the lock TTL and key prefix are fixed by the adapter). `configuration::set` validates adapter settings against it and rejects an unknown adapter name or a stray config key (e.g. a `redis` `lock_ttl_ms`), and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
+  ## `iii-observability` is fully configurable through the configuration worker
+
+  The engine's observability worker registers its complete configuration surface — trace/metric/log exporters, sampling (ratio, per-operation rules, rate limits), in-memory store limits and retention, alert rules, span-collapse rules, and the engine log level/format — under the `iii-observability` configuration entry. The config.yaml block seeds the entry on first boot and is ignored afterwards; runtime edits survive restarts.
+
+  Changes hot-apply per field tier: ingest gates, `logs_console_output`, and `logs_sampling_ratio` are read live; store limits retune on the next insert/sweep; the sampler, alert rules (with cooldown/firing continuity for surviving rules), span-collapse cache, and engine log level rebuild and swap in place; the OTLP logs exporter and log-retention tasks restart with new settings. Restart-tier fields (trace exporter wiring, resource identity, log format) are warned about and apply at the next engine start — the persisted entry is read at boot, before logging init, so they genuinely take effect.
+
+  The schema rejects invalid values at `configuration::set` time (unknown fields, sampling ratios outside `0..=1`, zero counts, log batch/flush sizes outside the exporter's accepted range), and out-of-range values that predate a schema tightening are clamped on read.
+
+  `engine::alerts::list` now also returns the configured `rules` alongside the live alert states, so a caller sees the active thresholds and their firing status in one call.
+
+  This work also fixed three latent dead-config bugs: `metrics_max_count`/`metrics_retention_seconds` and `logs_max_count` were silently shadowed by defaults claimed before the worker booted, and advanced `sampling` rules never reached the engine tracer because the sampler was built before the global config existed. All three now apply — and the first two are live-tunable.
+
+  ## `iii-queue` runtime settings live in the configuration worker
+
+  The queue worker now registers its config schema under the `iii-queue` configuration entry, seeds it from the config.yaml block on first boot, and hot-applies changes via `configuration::set` — no restart. Per-queue settings live in `queue_configs`, keyed by queue name (with the always-present built-in `default` queue): `max_retries`, `concurrency`, `type` (`standard` or `fifo`), `message_group_field`, `backoff_ms`, and `poll_interval_ms`. A runtime edit diffs `queue_configs` and restarts only the consumers that changed — added queues start a consumer, removed queues stop theirs, untouched queues keep running. The schema carries per-field descriptions and rejects invalid values at set time, including `concurrency: 0` (which would otherwise panic the consumer's bounded channel) and a `fifo` queue with no `message_group_field`; the same guards re-run on the config.yaml seed, which bypasses the schema.
+
+  The `adapter` is a **full hot-swap tier** (like `iii-pubsub`, unlike `iii-state`'s restart-tier storage adapter): a runtime edit re-instantiates the transport and restarts every consumer on it, with no engine restart. The new transport is built first and the swap is gated — a value that fails to build keeps the previous transport, config, and consumers running. Because the new transport starts empty, messages still queued on the old one do not migrate, and in-flight deliveries finish acking against the old transport before it is dropped — so prefer a quiet moment to repoint the adapter.
+
+  The `adapter` field advertises a **concrete per-adapter schema** — a discriminated union keyed on `name` over the built-in `builtin` (in-process, the default), `redis`, and `bridge` adapters, each with its own typed `config` (`builtin`: `store_method` (`in_memory` / `file_based`) / `file_path` / `save_interval_ms`; `redis`: `redis_url`; `bridge`: `bridge_url`). The `rabbitmq` adapter and its config (`amqp_url` / `max_attempts` / `prefetch_count` / `queue_mode`) join the union only when the `rabbitmq` feature is compiled in, so `configuration::set` never accepts an adapter name the engine cannot build. The set is closed: `configuration::set` rejects an unknown adapter name or a stray config key, and a schema-driven UI renders per-adapter fields instead of a free-form object. Deserialization stays lenient, so a hand-edited persisted file is still tolerated at boot.
+
+  As with the other workers, the config.yaml block is **seed-only** once a value is persisted; change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-queue.yaml` with the default `fs` adapter). `${VAR:default}` placeholders expand on read.
+</Update>
+
 <Update label="0.19.4" description="June 2026">
   ## `iii.worker.yaml` is validated before anything is installed
 
@@ -81,6 +230,7 @@ type: "reference"
   The config.yaml block is **seed-only**: once a value is persisted, later edits to that block are ignored — change settings via `configuration::set` or by editing the persisted file (`./data/configuration/iii-http.yaml` with the default `fs` adapter).
 
   **Breaking — HTTP error envelope:** errors generated by the `iii-http` server itself (handler invocation failure, middleware failure/timeout, unmet route condition, route-miss 404s, and response-stream build failures) now return `{"error": {"code", "message", "error_id"?}}` instead of flat strings or plain-text bodies. `code` is machine-readable (e.g. `MIDDLEWARE_TIMEOUT`, `CONDITION_NOT_MET`, `INTERNAL_ERROR`, `NOT_FOUND`); `error_id` correlates 5xx responses with server logs. Bodies returned by your own handlers and middleware pass through unchanged. Clients parsing the old flat string must read `error.message` instead.
+
 </Update>
 
 <Update label="0.19.3" description="June 2026">

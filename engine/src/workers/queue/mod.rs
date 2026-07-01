@@ -6,6 +6,7 @@
 
 pub mod adapters;
 mod config;
+mod configuration;
 mod message;
 #[allow(clippy::module_inception)]
 mod queue;
@@ -75,6 +76,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
     }
 
     // Function queue transport methods
+    #[allow(clippy::too_many_arguments)]
     async fn publish_to_function_queue(
         &self,
         _queue_name: &str,
@@ -85,6 +87,9 @@ pub trait QueueAdapter: Send + Sync + 'static {
         _backoff_ms: u64,
         _traceparent: Option<String>,
         _baggage: Option<String>,
+        // AMQP message priority (`None` = default). Honored by adapters whose
+        // queues are declared as priority queues; others ignore it.
+        _priority: Option<u8>,
     ) {
         unimplemented!("publish_to_function_queue not implemented for this adapter")
     }

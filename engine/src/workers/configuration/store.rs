@@ -12,29 +12,117 @@
 //! back to the adapter; writes update both atomically.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::env;
+use std::sync::{Arc, LazyLock};
 
 use jsonschema::Validator;
+use regex::Regex;
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
 
-use crate::workers::config::EngineConfig;
 use crate::workers::configuration::adapters::{
     ConfigurationAdapter, ExternalChange, RegisterOutcome, SetOutcome,
 };
 use crate::workers::configuration::structs::{ConfigurationEntry, ConfigurationSchemaView};
 
-/// Walk a JSON value and replace every string leaf with the env-var-expanded
-/// form (`${VAR:default}` → process env or default). Maps and arrays are
-/// walked recursively; non-string scalars pass through unchanged.
-pub fn expand_value(v: &Value) -> Value {
+/// Regex matching a single `${VAR}` / `${VAR:default}` reference. The class
+/// `[^}:]+` / `[^}]*` mirrors `EngineConfig::expand_env_vars`
+/// (`engine/src/workers/config.rs`) and the console's `env-template.ts`
+/// parser, so all three readers agree on the grammar.
+static ENV_VAR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap());
+
+/// Matches a string that is a single whole `${...}` placeholder (optionally
+/// padded by whitespace) and nothing else. Only such "lone" placeholders get
+/// scalar type-coercion after substitution — mirroring how an unquoted YAML
+/// scalar (`port: ${HTTP_PORT:3111}`) used to infer its type back when
+/// `config.yaml` expanded env vars on raw text *before* parsing. Mixed /
+/// embedded templates (surrounding text or multiple placeholders) stay strings.
+static LONE_PLACEHOLDER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*\$\{[^}]*\}\s*$").unwrap());
+
+/// Non-panicking env-var substitution for one string. Mirrors the CLI's
+/// `expand_env_vars` (`crates/iii-worker/src/cli/config_file.rs`): on a missing
+/// var with no default, the var name is recorded in `missing` and the literal
+/// `${VAR}` is left in place so partial output stays usable. The engine-only
+/// `__III_ENGINE_VERSION__` sentinel default is honored (config.rs parity).
+///
+/// Unlike `EngineConfig::expand_env_vars` this NEVER panics — the configuration
+/// worker's read/boot paths must surface a missing var as a loggable error, not
+/// brick the engine.
+fn expand_leaf(s: &str, missing: &mut Vec<String>) -> String {
+    ENV_VAR_RE
+        .replace_all(s, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            let default_value = caps.get(2).map(|m| m.as_str());
+            match env::var(var_name) {
+                Ok(value) => value,
+                Err(_) => match default_value {
+                    Some("__III_ENGINE_VERSION__") => env!("CARGO_PKG_VERSION").to_string(),
+                    Some(default) => default.to_string(),
+                    None => {
+                        missing.push(var_name.to_string());
+                        caps[0].to_string()
+                    }
+                },
+            }
+        })
+        .to_string()
+}
+
+/// Expand one string leaf, coercing scalar types when the original is a lone
+/// `${...}` placeholder. The substituted text of a lone placeholder is
+/// re-parsed as a YAML 1.2 scalar (`serde_yaml`) so `"8080"`→`8080`,
+/// `"true"`→`true`, while bare words / `007` / `on`/`off` stay strings — the
+/// same type inference unquoted YAML applied to the legacy `config.yaml` reader.
+///
+/// IMPORTANT: keep this coercion in lock-step with the console's
+/// `coerceScalar` in
+/// `workers/console/web/.../schema-form/validate.ts`, or UI and engine will
+/// disagree about which env-driven values are valid.
+fn expand_string(s: &str, missing: &mut Vec<String>) -> Value {
+    let substituted = expand_leaf(s, missing);
+    if LONE_PLACEHOLDER.is_match(s) {
+        let trimmed = substituted.trim();
+        // `${X:}` (empty default) keeps an empty string; YAML would read "" as null.
+        if trimmed.is_empty() {
+            return Value::String(substituted);
+        }
+        if let Ok(parsed) = serde_yaml::from_str::<Value>(trimmed) {
+            return parsed;
+        }
+    }
+    Value::String(substituted)
+}
+
+/// Walk a JSON value, replacing every string leaf with its env-expanded +
+/// type-coerced form (`${VAR:default}` → process env or default). Maps and
+/// arrays are walked recursively; non-string scalars pass through unchanged.
+///
+/// Returns the expanded value plus the list of `${VAR}` references that had no
+/// env value and no default (deduplicated by occurrence order). A non-empty
+/// list means the value cannot be fully evaluated: read/boot callers must log
+/// an ERROR and skip loading rather than handing back a value still carrying
+/// literal `${VAR}` text.
+pub fn expand_value(v: &Value) -> (Value, Vec<String>) {
+    let mut missing: Vec<String> = Vec::new();
+    let expanded = expand_value_inner(v, &mut missing);
+    (expanded, missing)
+}
+
+fn expand_value_inner(v: &Value, missing: &mut Vec<String>) -> Value {
     match v {
-        Value::String(s) => Value::String(EngineConfig::expand_env_vars(s)),
-        Value::Array(items) => Value::Array(items.iter().map(expand_value).collect()),
+        Value::String(s) => expand_string(s, missing),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|i| expand_value_inner(i, missing))
+                .collect(),
+        ),
         Value::Object(map) => {
             let mut out: Map<String, Value> = Map::with_capacity(map.len());
             for (k, val) in map {
-                out.insert(k.clone(), expand_value(val));
+                out.insert(k.clone(), expand_value_inner(val, missing));
             }
             Value::Object(out)
         }
@@ -70,6 +158,10 @@ pub enum StoreError {
     InvalidId(String),
     #[error("schema validation failed: {0}")]
     SchemaInvalid(String),
+    #[error(
+        "configuration '{0}' has no schema available yet; the owning worker must register before values can be set"
+    )]
+    SchemaUnavailable(String),
     #[error(transparent)]
     Adapter(#[from] anyhow::Error),
 }
@@ -116,23 +208,39 @@ impl ConfigurationStore {
     ) -> Result<RegisterOutcome, StoreError> {
         Self::validate_id(&id)?;
 
-        // Determine the value being installed. Existing entries keep their
-        // value unless `initial_value` is supplied. New entries default to
-        // `Value::Null`.
+        // Determine the value being installed and whether to validate it.
+        // Existing entries keep their value unless `initial_value` is supplied.
+        // New entries default to `Value::Null`.
         let prior = self.entries.read().await.get(&id).cloned();
-        let value = match (initial_value, prior.as_ref()) {
-            (Some(v), _) => v,
-            (None, Some(existing)) => existing.value.clone(),
-            (None, None) => Value::Null,
+        let (value, validate) = match (initial_value, prior.as_ref()) {
+            // A caller-supplied value is always validated against the schema.
+            (Some(v), _) => (v, true),
+            // Re-registration without a new value reuses the stored value as-is
+            // and does NOT re-validate it against the (possibly newly-tightened)
+            // schema. A schema refresh must always go through so the console and
+            // `set` see the current schema; `set` enforces it on the next write.
+            // Re-validating here would let a now-invalid stored value — e.g. an
+            // older seed persisted before the schema tightened — silently block
+            // every future schema update (the worker swallows the register error
+            // at boot, so the console would keep rendering the stale schema).
+            (None, Some(existing)) => (existing.value.clone(), false),
+            // Brand-new entry with no seed: the implicit `Null` placeholder is
+            // never validated (the schema may legitimately disallow null).
+            (None, None) => (Value::Null, false),
         };
 
-        // Skip schema validation when the seeded value is the implicit
-        // `Null` placeholder for a brand-new entry — the schema may legitimately
-        // disallow null, and the entry has no caller-supplied value yet.
-        if !(prior.is_none() && value.is_null())
-            && let Err(errs) = validate_against_schema(&value, &schema)
-        {
-            return Err(StoreError::SchemaInvalid(errs.join("; ")));
+        // Validate the APPLIED (env-expanded + type-coerced) value, never the
+        // raw template: `${HTTP_PORT:3111}` must validate as the integer 3111,
+        // not be rejected as a string. A value that can't be fully evaluated
+        // yet (a var with no env value and no default) is stored raw and
+        // re-validated later at read time, once the var is present.
+        if validate {
+            let (applied, missing) = expand_value(&value);
+            if missing.is_empty()
+                && let Err(errs) = validate_against_schema(&applied, &schema)
+            {
+                return Err(StoreError::SchemaInvalid(errs.join("; ")));
+            }
         }
 
         let entry = ConfigurationEntry {
@@ -157,7 +265,17 @@ impl ConfigurationStore {
             None => return Err(StoreError::NotRegistered(id.to_string())),
         };
 
-        if let Err(errs) = validate_against_schema(&value, &entry.schema) {
+        // No schema cached yet (the owning worker hasn't re-registered this
+        // session) — reject rather than validate against a null schema.
+        if entry.schema.is_null() {
+            return Err(StoreError::SchemaUnavailable(id.to_string()));
+        }
+        // Validate the APPLIED value (see `register`); the raw template is what
+        // gets stored, so it can be re-evaluated whenever the env changes.
+        let (applied, missing) = expand_value(&value);
+        if missing.is_empty()
+            && let Err(errs) = validate_against_schema(&applied, &entry.schema)
+        {
             return Err(StoreError::SchemaInvalid(errs.join("; ")));
         }
 
@@ -236,7 +354,8 @@ mod tests {
             std::env::set_var("CFG_TEST_HOST", "db.local");
         }
         let input = json!({ "host": "${CFG_TEST_HOST:fallback}", "port": 5432 });
-        let expanded = expand_value(&input);
+        let (expanded, missing) = expand_value(&input);
+        assert!(missing.is_empty());
         assert_eq!(expanded["host"], "db.local");
         assert_eq!(expanded["port"], 5432);
     }
@@ -247,7 +366,7 @@ mod tests {
             std::env::remove_var("CFG_TEST_MISSING");
         }
         let input = json!({ "url": "${CFG_TEST_MISSING:http://default}" });
-        assert_eq!(expand_value(&input)["url"], "http://default");
+        assert_eq!(expand_value(&input).0["url"], "http://default");
     }
 
     #[test]
@@ -261,7 +380,7 @@ mod tests {
                 { "name": "static" }
             ]
         });
-        let out = expand_value(&input);
+        let (out, _missing) = expand_value(&input);
         assert_eq!(out["users"][0]["name"], "alice");
         assert_eq!(out["users"][1]["name"], "static");
     }
@@ -269,8 +388,109 @@ mod tests {
     #[test]
     fn expand_value_passes_non_string_scalars_through() {
         let input = json!({ "n": 42, "b": true, "nil": null });
-        let out = expand_value(&input);
+        let (out, _missing) = expand_value(&input);
         assert_eq!(out, input);
+    }
+
+    // --- #1916: scalar type-coercion for lone `${...}` placeholders ---
+    //
+    // These pin the coercion contract the console mirrors in
+    // `workers/console/web/.../schema-form/validate.ts::coerceScalar`.
+
+    #[test]
+    fn expand_value_coerces_lone_placeholder_default_to_integer() {
+        // The headline bug: `port: ${HTTP_PORT:3111}` must become the integer
+        // 3111, not the string "3111".
+        unsafe {
+            std::env::remove_var("CFG_COERCE_PORT");
+        }
+        let input = json!({ "port": "${CFG_COERCE_PORT:3111}" });
+        let (out, missing) = expand_value(&input);
+        assert!(missing.is_empty());
+        assert_eq!(out["port"], json!(3111));
+        assert!(out["port"].is_i64(), "must coerce to a JSON integer");
+    }
+
+    #[test]
+    fn expand_value_coerces_lone_placeholder_env_to_integer() {
+        unsafe {
+            std::env::set_var("CFG_COERCE_ENVPORT", "8080");
+        }
+        let input = json!({ "port": "${CFG_COERCE_ENVPORT:3111}" });
+        let (out, _missing) = expand_value(&input);
+        assert_eq!(out["port"], json!(8080));
+        assert!(out["port"].is_i64());
+    }
+
+    #[test]
+    fn expand_value_coerces_bool_and_float() {
+        unsafe {
+            std::env::remove_var("CFG_COERCE_FLAG");
+            std::env::remove_var("CFG_COERCE_RATIO");
+        }
+        let input = json!({
+            "flag": "${CFG_COERCE_FLAG:true}",
+            "ratio": "${CFG_COERCE_RATIO:3.5}",
+        });
+        let (out, _missing) = expand_value(&input);
+        assert_eq!(out["flag"], json!(true));
+        assert_eq!(out["ratio"], json!(3.5));
+    }
+
+    #[test]
+    fn expand_value_keeps_bare_string_default() {
+        unsafe {
+            std::env::remove_var("CFG_COERCE_HOST");
+        }
+        let input = json!({ "host": "${CFG_COERCE_HOST:localhost}" });
+        let (out, _missing) = expand_value(&input);
+        assert_eq!(out["host"], json!("localhost"));
+    }
+
+    #[test]
+    fn expand_value_keeps_yaml_keyword_strings() {
+        // serde_yaml (YAML 1.2 core) does NOT treat on/off/yes/no as booleans;
+        // they must round-trip as strings, not get mangled into bools.
+        unsafe {
+            std::env::remove_var("CFG_COERCE_MODE");
+        }
+        let input = json!({ "mode": "${CFG_COERCE_MODE:on}" });
+        let (out, _missing) = expand_value(&input);
+        assert_eq!(out["mode"], json!("on"));
+    }
+
+    #[test]
+    fn expand_value_does_not_coerce_embedded_template() {
+        // Surrounding text means the leaf stays a string even if the result
+        // looks numeric.
+        unsafe {
+            std::env::remove_var("CFG_COERCE_EMB");
+        }
+        let input = json!({ "url": "redis://${CFG_COERCE_EMB:6379}" });
+        let (out, _missing) = expand_value(&input);
+        assert_eq!(out["url"], json!("redis://6379"));
+    }
+
+    #[test]
+    fn expand_value_empty_default_stays_empty_string() {
+        unsafe {
+            std::env::remove_var("CFG_COERCE_EMPTY");
+        }
+        let input = json!({ "name": "${CFG_COERCE_EMPTY:}" });
+        let (out, _missing) = expand_value(&input);
+        assert_eq!(out["name"], json!(""));
+    }
+
+    #[test]
+    fn expand_value_reports_missing_var_without_panic() {
+        unsafe {
+            std::env::remove_var("CFG_COERCE_REQUIRED");
+        }
+        let input = json!({ "port": "${CFG_COERCE_REQUIRED}" });
+        let (out, missing) = expand_value(&input);
+        assert_eq!(missing, vec!["CFG_COERCE_REQUIRED".to_string()]);
+        // Literal left in place so partial output is still inspectable.
+        assert_eq!(out["port"], json!("${CFG_COERCE_REQUIRED}"));
     }
 
     #[test]
@@ -285,6 +505,120 @@ mod tests {
         let err = validate_against_schema(&json!({ "port": "nope" }), &schema)
             .expect_err("string is not integer");
         assert!(!err.is_empty());
+    }
+
+    // Schema evolution: re-registering with a tightened schema must refresh the
+    // stored schema even when the existing value no longer satisfies it. Workers
+    // re-send their schema on every boot; if a value persisted under an older,
+    // looser schema (e.g. a seed with `config: null`) blocked re-registration,
+    // the console would keep rendering the stale schema forever.
+    #[tokio::test]
+    async fn register_refreshes_schema_over_now_invalid_existing_value() {
+        use crate::workers::configuration::adapters::ConfigurationAdapter;
+        use crate::workers::configuration::adapters::fs::FsAdapter;
+
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = Arc::new(
+            FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+                .await
+                .unwrap(),
+        ) as Arc<dyn ConfigurationAdapter>;
+        let store = ConfigurationStore::new(adapter);
+
+        // An older, looser schema accepts `config: null` (the shape an old seed
+        // serialized to).
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                json!({ "type": "object" }),
+                Some(json!({ "adapter": { "name": "kv", "config": null } })),
+                None,
+            )
+            .await
+            .expect("seed registers under the lenient schema");
+
+        // The tightened schema rejects `config: null`. Re-registering with NO new
+        // value (what a worker does on every boot) must still refresh the schema.
+        let strict = json!({
+            "type": "object",
+            "properties": {
+                "adapter": {
+                    "type": "object",
+                    "required": ["config"],
+                    "properties": { "config": { "type": "object" } }
+                }
+            }
+        });
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                strict.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("a now-invalid existing value must not block the schema refresh");
+
+        let view = store.schema_view("demo").await.expect("entry exists");
+        assert_eq!(
+            view.schema, strict,
+            "the stored schema must be refreshed to the tightened version"
+        );
+    }
+
+    // `set` against an entry whose schema is null (the shape a disk-loaded entry
+    // has before its worker re-registers) must be rejected, then succeed once a
+    // real schema is registered.
+    #[tokio::test]
+    async fn set_without_schema_is_rejected_then_succeeds_after_register() {
+        use crate::workers::configuration::adapters::ConfigurationAdapter;
+        use crate::workers::configuration::adapters::fs::FsAdapter;
+
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = Arc::new(
+            FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+                .await
+                .unwrap(),
+        ) as Arc<dyn ConfigurationAdapter>;
+        let store = ConfigurationStore::new(adapter);
+
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                Value::Null,
+                None,
+                None,
+            )
+            .await
+            .expect("register with a null schema (no value validated)");
+
+        let err = store
+            .set("demo", json!({ "port": 1 }))
+            .await
+            .expect_err("set must be rejected while no schema is available");
+        assert!(matches!(err, StoreError::SchemaUnavailable(_)));
+
+        store
+            .register(
+                "demo".into(),
+                "Demo".into(),
+                String::new(),
+                json!({ "type": "object" }),
+                None,
+                None,
+            )
+            .await
+            .expect("schema refresh");
+        store
+            .set("demo", json!({ "port": 1 }))
+            .await
+            .expect("set succeeds once a real schema is present");
     }
 
     #[test]

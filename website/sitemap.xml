@@ -13,6 +13,12 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://iii.dev/privacy-policy</loc>
+    <lastmod>2026-06-16</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://iii.dev/llms.txt</loc>
     <lastmod>2026-05-06</lastmod>
     <changefreq>weekly</changefreq>

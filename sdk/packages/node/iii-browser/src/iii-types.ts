@@ -123,18 +123,18 @@ export type AuthInput = {
  * middleware.
  */
 export type AuthResult = {
-  /** Additional function IDs to allow beyond the `expose_functions` config. */
-  allowed_functions: string[]
-  /** Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. */
-  forbidden_functions: string[]
+  /** Additional function IDs to allow beyond the `expose_functions` config. Defaults to `[]` if omitted. */
+  allowed_functions?: string[]
+  /** Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. */
+  forbidden_functions?: string[]
   /** Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. */
   allowed_trigger_types?: string[]
-  /** Whether the worker may register new trigger types. */
-  allow_trigger_type_registration: boolean
+  /** Whether the worker may register new trigger types. Defaults to `false` if omitted. */
+  allow_trigger_type_registration?: boolean
   /** Whether the worker may register new functions. Defaults to `true` if omitted. */
   allow_function_registration?: boolean
-  /** Arbitrary context forwarded to the middleware function on every invocation. */
-  context: Record<string, unknown>
+  /** Arbitrary context forwarded to the middleware function on every invocation. Defaults to `{}` if omitted. */
+  context?: Record<string, unknown>
   /** Optional prefix applied to all function IDs registered by this worker. */
   function_registration_prefix?: string
 }

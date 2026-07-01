@@ -33,6 +33,23 @@ being callable until it reconnects.
   Workers](../creating-workers/workers#connecting-to-the-engine).
 </Note>
 
+## Untrusted workers and access control
+
+The default engine listener trusts anything that connects to it, which is fine for workers you run.
+A worker you do not control, a browser client or a third party's worker, must not get that same
+unrestricted access. For those, connect them through the `iii-worker-manager` worker, which exposes
+a separate role-based access control (RBAC) listener:
+
+```bash
+iii worker add iii-worker-manager
+```
+
+The RBAC listener runs an auth function you write on every connection to admit or reject it and to
+decide which functions and trigger types that connection may use, so an untrusted worker only ever
+sees the surface you grant it. Configuration, the auth and middleware function shapes, and the full
+connection flow are documented on the
+[iii-worker-manager worker page](https://workers.iii.dev/workers/iii-worker-manager).
+
 ## Managing workers
 
 The `iii worker` CLI commands cover the full lifecycle of every worker in your project: finding new
@@ -81,8 +98,7 @@ worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 #### Pinning worker versions
 
 Registry workers are published with semver versions. For how versions are picked, pinned with
-`@<version>`, updated, and recorded in `iii.lock`, see
-[Versioning](./workers#versioning) and
+`@<version>`, updated, and recorded in `iii.lock`, see [Versioning](./workers#versioning) and
 [Updating a worker](./workers#updating-a-worker) on the Workers page.
 
 ### Listing workers
@@ -106,6 +122,13 @@ iii worker start <name>        # start one worker
 iii worker stop -y <name>      # stop one worker (-y skips the confirmation prompt)
 iii worker restart <name>      # stop then start
 ```
+
+<Note>
+  These commands manage workers that iii runs for you in its built-in virtualization. However iii
+  does not have to run a worker. Any process that uses a iii SDK, calls `registerWorker()`, and
+  connects to a iii instance is a worker. This will become more relevant when [creating
+  workers](../creating-workers/workers) or [deploying a iii system](./deployment).
+</Note>
 
 <Note>
   To call functions inside running workers (directly with `worker.trigger` / `iii trigger`, or by

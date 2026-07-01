@@ -1,0 +1,79 @@
+---
+title: 'Grouping SDK exports into submodules'
+description: 'The invocation error types are renamed (InvocationError, Error) and the channel, trigger, and runtime types move to named submodules across the Node, Python, and Rust SDKs. The old root paths are removed in 0.20.0; code must move to the new submodule and name paths.'
+---
+
+## What changed
+
+The flat root export surface of the three SDKs is reorganized into named submodules. This slice covers four groups. The old root import paths are removed in 0.20.0, so upgrading requires moving these imports to their new paths.
+
+| Group | Node subpath | Python submodule | Rust module |
+| --- | --- | --- | --- |
+| errors | `iii-sdk/errors` | `iii.errors` | `iii_sdk::errors` |
+| channel | `iii-sdk/channel` | `iii.channel` | `iii_sdk::channel` |
+| trigger | `iii-sdk/trigger` | `iii.trigger` | `iii_sdk::trigger` |
+| runtime | `iii-sdk/runtime` | `iii.runtime` | `iii_sdk::runtime` |
+
+## Errors renamed
+
+The `III` prefix is dropped from the invocation error types.
+
+| SDK | Before | After | Canonical path |
+| --- | --- | --- | --- |
+| Node | `IIIInvocationError` | `InvocationError` | `iii-sdk/errors` |
+| Node | `IIIInvocationErrorInit` | `InvocationErrorInit` | `iii-sdk/errors` |
+| Python | `IIIInvocationError` | `InvocationError` | `iii.errors` |
+| Rust | `IIIError` | `Error` | `iii_sdk::errors::Error` |
+
+Behavior is unchanged. In Node, the thrown error's `name` is now `InvocationError`. The old names are removed from the package root in 0.20.0; import the new names from their canonical paths.
+
+## Submodule contents
+
+| Group | Symbols |
+| --- | --- |
+| channel | `ChannelReader`, `ChannelWriter`, `StreamChannelRef`, `Channel` |
+| trigger | `Trigger`, `TriggerConfig`, `TriggerHandler` (Rust also: `IIITrigger`) |
+| runtime | `FunctionRef`, `TriggerTypeRef` (Rust also: `IIIConnectionState`, `WorkerMetadata`, `FunctionInfo`, `TriggerInfo`, `WorkerInfo`) |
+
+The set per language matches each SDK's existing surface. Symbols absent from a language are not added in this slice; cross language parity is tracked separately.
+
+## Migration
+
+Update imports to the new paths. The old root paths are removed in 0.20.0, so this move is required.
+
+Node:
+
+```ts
+// Before
+import { IIIInvocationError, ChannelReader, FunctionRef } from 'iii-sdk'
+// After
+import { InvocationError } from 'iii-sdk/errors'
+import { ChannelReader } from 'iii-sdk/channel'
+import type { FunctionRef } from 'iii-sdk/runtime'
+```
+
+Python:
+
+```python
+# Before
+from iii import IIIInvocationError, ChannelReader, FunctionRef
+# After
+from iii.errors import InvocationError
+from iii.channel import ChannelReader
+from iii.runtime import FunctionRef
+```
+
+Rust:
+
+```rust
+// Before
+use iii_sdk::{ChannelReader, FunctionRef, IIIError};
+// After
+use iii_sdk::channel::ChannelReader;
+use iii_sdk::errors::Error;
+use iii_sdk::runtime::FunctionRef;
+```
+
+## Why
+
+The SDK root re-exported dozens of symbols flatly. Grouping them into `errors`, `channel`, `trigger`, and `runtime` submodules makes the surface navigable and prepares for extracting standalone libraries later. 0.20.0 is a clean break: the old root paths are removed rather than kept as aliases.

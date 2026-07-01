@@ -7,6 +7,11 @@ docs:
   exclude:
     - "docs/0-10-0/**"
     - "docs/0-11-0/**"
+    - "docs/0-12-0/**"
+    - "docs/0-13-0/**"
+    - "docs/0-16-0/**"
+    - "docs/0-17-0/**"
+    - "docs/0-18-0/**"
     - "docs/changelog/**"
     - "docs/**/changelog/**"
     - "docs/next/tutorials/linkly/_workspace/**"

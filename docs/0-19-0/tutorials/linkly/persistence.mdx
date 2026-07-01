@@ -1,0 +1,246 @@
+---
+title: "Ch. 3: Persist everything"
+description:
+  "Add a SQLite database for durable storage of links and a timestamped row for every click."
+owner: "devrel"
+type: "tutorial"
+---
+
+Linkly's links live in `iii-state`, which you set to in-memory back in Chapter 1. Restart the engine
+and everything is gone. In this chapter you add a `database` worker (SQLite) that holds the durable
+record of links and a timestamped row for every click on a short code. `iii-state` stays in the
+picture as a fast read cache in front of the database.
+
+<Info>
+  `iii-state` can also persist on its own (`store_method: file_based` with a `file_path`). This
+  chapter uses a dedicated `database` worker instead, which gives you durable storage plus SQL to
+  query it.
+</Info>
+
+## Add the database worker
+
+State is a fast cache, but you also want a durable record you can run SQL over: every link, and a
+timestamped row each time someone follows one. Add the `database` worker:
+
+```bash
+iii worker add database
+mkdir -p data
+```
+
+Adjust your database worker in `config.yaml` so that it looks like the below.
+
+<Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
+
+<Info>
+  The database worker supports more than SQLite, refer to the [`database` worker
+  docs](https://workers.iii.dev/workers/database) for all supported databases.
+</Info>
+
+```yaml {3-11} config.yaml
+workers:
+  # ...
+  - name: database
+    config:
+      databases:
+        primary:
+          pool:
+            acquire_timeout_ms: 5000
+            idle_timeout_ms: 30000
+            max: 10
+          url: sqlite:./data/iii.db
+```
+
+The worker will be in charge of defining its own schema. We'll build up the necessary changes to
+`link/src/index.ts` in pieces.
+
+### Define the database
+
+First add the `DB` constant **near the top of `link/src/index.ts`**:
+
+```typescript {4} src/index.ts
+import { registerWorker } from "iii-sdk";
+import { Logger } from "@iii-dev/observability";
+
+const DB = "primary"; // Matches db name in config.yaml
+```
+
+### Make link storage persistent
+
+Now we're going to adapt the existing `link::create` and `link::resolve` functions so that they
+write and read from our new database while using our state worker as a hot cache.
+
+#### Create a schema
+
+Add an `ensureSchema()` function at the end of `link/src/index.ts` that creates both tables on
+startup. The database worker accepts SQL through its `database::execute` function:
+
+```typescript src/index.ts
+async function ensureSchema(): Promise<void> {
+  await worker.trigger({
+    function_id: "database::execute",
+    payload: {
+      db: DB,
+      sql: "CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT NOT NULL)",
+    },
+  });
+  await worker.trigger({
+    function_id: "database::execute",
+    payload: {
+      db: DB,
+      sql: "CREATE TABLE IF NOT EXISTS clicks (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, clicked_at TEXT NOT NULL)",
+    },
+  });
+}
+
+ensureSchema()
+  .then(() => logger.info("database: ready"))
+  .catch((err) => logger.error("database: schema init failed", { error: String(err) }));
+```
+
+#### Setup database writing
+
+**Modify `link::create`** to write to both the database (durable record) and `iii-state` (hot
+cache):
+
+```typescript src/index.ts {4-11}
+worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
+  const code = payload.code ?? makeCode();
+  const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
+  await worker.trigger({
+    function_id: "database::execute",
+    payload: {
+      db: DB,
+      sql: "INSERT INTO links (code, url, created_at) VALUES (?, ?, ?)",
+      params: [code, url, new Date().toISOString()],
+    },
+  });
+  await worker.trigger({
+    function_id: "state::set",
+    payload: { scope: "links", key: code, value: { url } },
+  });
+  logger.info("link created", { code, url });
+  return { code, url };
+});
+```
+
+#### Setup database retrieval
+
+**Modify `link::resolve` to check the cache first**; on a miss, fall back to the database and warm
+the cache for the next read. It's easiest to replace the existing `link::resolve` function with our
+new version:
+
+```typescript src/index.ts
+worker.registerFunction("link::resolve", async (payload: { code: string }) => {
+  const cached = await worker.trigger<{ scope: string; key: string }, { url: string } | null>({
+    function_id: "state::get",
+    payload: { scope: "links", key: payload.code },
+  });
+  if (cached) {
+    logger.info("link resolved", { code: payload.code, found: true });
+    return { url: cached.url };
+  }
+  const { rows } = await worker.trigger<
+    { db: string; sql: string; params: string[] },
+    { rows: Array<{ url: string }> }
+  >({
+    function_id: "database::query",
+    payload: { db: DB, sql: "SELECT url FROM links WHERE code = ?", params: [payload.code] },
+  });
+  const url = rows[0]?.url ?? null;
+  if (url) {
+    await worker.trigger({
+      function_id: "state::set",
+      payload: { scope: "links", key: payload.code, value: { url } },
+    });
+  }
+  logger.info("link resolved", { code: payload.code, found: !!url });
+  return { url };
+});
+```
+
+## Add click tracking
+
+Since we have a database now, you can start click tracking. Make a new function
+(`link::record_click`) to do just that and save it to the database. The next chapter will move this
+work onto a queue so that it can run without touching the redirect's logic. Add it below
+`link::resolve`:
+
+```typescript src/index.ts
+worker.registerFunction(
+  "link::record_click",
+  async (payload: { code: string; clicked_at: string }) => {
+    await worker.trigger({
+      function_id: "database::execute",
+      payload: {
+        db: DB,
+        sql: "INSERT INTO clicks (code, clicked_at) VALUES (?, ?)",
+        params: [payload.code, payload.clicked_at],
+      },
+    });
+    return { recorded: true };
+  },
+);
+```
+
+### Update `http::redirect` to call `link::record_click`
+
+**Now update `http::redirect` to trigger it directly**, right before returning the redirect:
+
+```typescript src/index.ts {14-17}
+worker.registerFunction("http::redirect", async (req) => {
+  const code = req.path_params.code;
+  const { url } = await worker.trigger<{ code: string }, { url: string | null }>({
+    function_id: "link::resolve",
+    payload: { code },
+  });
+  if (!url) {
+    return {
+      status_code: 404,
+      body: { error: "link not found" },
+      headers: { "Content-Type": "application/json" },
+    };
+  }
+  // This await is slow and unnecessary, we'll move it to a queue soon
+  await worker.trigger({
+    function_id: "link::record_click",
+    payload: { code, clicked_at: new Date().toISOString() },
+  });
+  return { status_code: 302, headers: { Location: url } };
+});
+```
+
+<Note>
+  The database write for clicks adds latency to every redirect. The next chapter moves it onto a
+  durable queue that removes the latency while also adding recovery from database failures.
+</Note>
+
+Save the file, create a link, and follow it a few times:
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/links \
+  -H 'Content-Type: application/json' -d '{"url":"https://iii.dev","code":"iii"}'
+for n in $(seq 1 3); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
+```
+
+The durable history is now queryable with SQL:
+
+```bash
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'iii'"
+```
+
+```json
+{ "rows": [{ "clicks": 3 }], "row_count": 1 }
+```
+
+## Conclusion
+
+<Info>
+  Did you know that `--help` works with function id's as well? Try running: `iii trigger
+  database::query --help` to see what arguments `database::query` accepts.
+</Info>
+
+Linkly's links are now durable: the database is the source of truth, `iii-state` keeps lookups fast,
+and every redirect appends a timestamped row to the `clicks` table. But that row is written on the
+redirect's hot path, so a slow database write slows the redirect. Next, in
+[Ch. 4: Make it durable](/tutorials/linkly/durable-execution), you move that write onto a queue so
+redirects stay fast.

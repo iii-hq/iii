@@ -1,5 +1,17 @@
 {
-  "entryPoints": ["src/index.ts", "src/stream.ts", "src/state.ts", "src/telemetry.ts"],
+  "entryPoints": [
+    "src/index.ts",
+    "src/stream.ts",
+    "src/state.ts",
+    "src/channel.ts",
+    "src/trigger.ts",
+    "src/runtime.ts",
+    "src/errors.ts",
+    "src/engine.ts",
+    "src/protocol.ts",
+    "src/internal.ts",
+    "src/helpers.ts"
+  ],
   "json": "api-docs.json",
   "tsconfig": "tsconfig.json",
   "excludePrivate": true,

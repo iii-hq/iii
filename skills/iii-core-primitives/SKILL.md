@@ -174,10 +174,8 @@ iii.register_trigger({
 ### Rust
 
 ```rust
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction, RegisterTriggerInput, TriggerAction,
-    TriggerRequest,
-};
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, TriggerAction};
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());

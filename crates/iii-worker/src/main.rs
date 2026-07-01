@@ -563,9 +563,7 @@ async fn async_main() -> anyhow::Result<()> {
             //
             // TODO(msb_krun upstream): remove this std::thread dispatch
             // once virtio-blk Drop uses `Handle::try_current()` instead
-            // of unconditional `block_on`. Draft issue at
-            // ~/.claude/plans/msb_krun-upstream-issue-draft.md — file via
-            // `gh issue create` against microsandbox/microsandbox.
+            // of unconditional `block_on`.
             let handle = std::thread::Builder::new()
                 .name("iii-worker-vm-boot".to_string())
                 .spawn(move || iii_worker::cli::vm_boot::run(&args))
@@ -584,10 +582,16 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::WatchSource(args) => {
             let project = std::path::PathBuf::from(&args.project);
             let worker = args.worker.clone();
+            // Authoritative workspace model from `iii worker start` (see
+            // WatchSourceArgs::overlay). Passed into the dispatcher so it never
+            // re-derives overlay-ness from the on-disk marker.
+            let overlay = args.overlay;
             let watch = iii_worker::cli::source_watcher::watch_and_restart(
                 worker,
                 project,
-                iii_worker::cli::source_watcher::restart_via_cli,
+                move |name: &str, kind| {
+                    iii_worker::cli::source_watcher::restart_via_cli(name, kind, overlay)
+                },
             );
             // Engine anchor: the watcher sidecar must not outlive the engine
             // that (transitively) spawned it — `killall -9 iii` previously

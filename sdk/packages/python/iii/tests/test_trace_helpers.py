@@ -1,7 +1,7 @@
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from iii_observability import current_span_id, current_trace_id
+from iii_helpers.observability import current_span_id, current_trace_id
 
 
 def test_trace_helpers_follow_the_active_span() -> None:

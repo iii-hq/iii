@@ -4,7 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use iii_sdk::{IIIError, InitOptions, TriggerRequest, register_worker};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{Error, InitOptions, register_worker};
 use serde_json::Value;
 
 use super::TriggerCliError;
@@ -40,7 +41,7 @@ pub async fn invoke(
             }
             Ok(())
         }
-        Err(IIIError::Remote {
+        Err(Error::Remote {
             code,
             message,
             stacktrace,
@@ -63,12 +64,12 @@ pub async fn invoke(
     }
 }
 
-fn map_trigger_error(e: IIIError) -> anyhow::Error {
+fn map_trigger_error(e: Error) -> anyhow::Error {
     match e {
-        IIIError::Timeout => anyhow::anyhow!(
+        Error::Timeout => anyhow::anyhow!(
             "Timed out waiting for the engine (no response within the timeout). Is the engine running at the given address and port?"
         ),
-        IIIError::WebSocket(msg) => anyhow::anyhow!("WebSocket error: {}", msg),
+        Error::WebSocket(msg) => anyhow::anyhow!("WebSocket error: {}", msg),
         other => anyhow::Error::new(other),
     }
 }

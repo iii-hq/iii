@@ -1,6 +1,6 @@
 [package]
 name = "iii-sdk"
-version = "0.19.4"
+version = "0.20.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -28,9 +28,9 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
-iii-observability = { workspace = true }
+iii-helpers = { workspace = true }
 
-# HTTP client (non-traced; traced variant lives in iii-observability)
+# HTTP client (non-traced; traced variant lives in iii-helpers::observability)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]

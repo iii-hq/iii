@@ -10,6 +10,7 @@ from calculate_release_version import (
     bump_base,
     calculate_version,
     detect_current_level,
+    highest_inflight_prerelease_base,
     latest_stable_from_tags,
     next_dry_run_counter,
     next_prerelease_counter,
@@ -126,6 +127,38 @@ class TestDryRunCounter:
     def test_existing(self):
         tags = ["iii/v0.12.0-dry-run.1", "iii/v0.12.0-dry-run.4"]
         assert next_dry_run_counter("0.12.0", tags, "iii") == 5
+
+
+# ---------- highest_inflight_prerelease_base ----------
+
+
+class TestHighestInflightPrereleaseBase:
+    def test_none_when_empty(self):
+        assert highest_inflight_prerelease_base([], "iii", "0.19.4") is None
+
+    def test_picks_base_above_stable(self):
+        tags = ["iii/v0.19.4", "iii/v0.19.5-next.1"]
+        assert highest_inflight_prerelease_base(tags, "iii", "0.19.4") == "0.19.5"
+
+    def test_ignores_base_at_or_below_stable(self):
+        tags = ["iii/v0.19.4-alpha.1", "iii/v0.19.3-next.9"]
+        assert highest_inflight_prerelease_base(tags, "iii", "0.19.4") is None
+
+    def test_picks_highest_across_trains(self):
+        tags = ["iii/v0.19.5-next.1", "iii/v0.20.0-rc.1"]
+        assert highest_inflight_prerelease_base(tags, "iii", "0.19.4") == "0.20.0"
+
+    def test_prefix_scoped(self):
+        tags = ["other/v0.30.0-next.1", "iii/v0.19.5-next.1"]
+        assert highest_inflight_prerelease_base(tags, "iii", "0.19.4") == "0.19.5"
+
+    def test_no_stable_floor_accepts_any_prerelease(self):
+        tags = ["iii/v0.5.0-next.1"]
+        assert highest_inflight_prerelease_base(tags, "iii", None) == "0.5.0"
+
+    def test_numeric_not_lexical_base_compare(self):
+        tags = ["iii/v0.19.5-next.1", "iii/v0.19.10-next.1"]
+        assert highest_inflight_prerelease_base(tags, "iii", "0.19.4") == "0.19.10"
 
 
 # ---------- latest_stable_from_tags ----------
@@ -922,3 +955,89 @@ class TestCalculateVersionBumpNone:
                 existing_tags=[],
                 tag_prefix="iii-alpha",
             )
+
+    # -- create-tag: none continues an in-flight train (the fix) --
+
+    def test_none_iterates_inflight_next_train(self):
+        # 0.19.5-next.1 already exists above stable 0.19.4 → none iterates it
+        # instead of re-bumping to 0.19.6 (the original release bug).
+        v = calculate_version(
+            current="0.19.5-next.1",
+            bump_type="none",
+            prerelease="next",
+            latest_stable="0.19.4",
+            existing_tags=["iii/v0.19.4", "iii/v0.19.5-next.1"],
+            tag_prefix="iii",
+        )
+        assert v == "0.19.5-next.2"
+
+    def test_none_picks_highest_inflight_base(self):
+        v = calculate_version(
+            current="0.20.0-next.1",
+            bump_type="none",
+            prerelease="next",
+            latest_stable="0.19.4",
+            existing_tags=[
+                "iii/v0.19.4",
+                "iii/v0.19.5-next.1",
+                "iii/v0.20.0-next.1",
+            ],
+            tag_prefix="iii",
+        )
+        assert v == "0.20.0-next.2"
+
+    def test_none_shares_base_across_channels(self):
+        # A next train set the base; switching to rc via none keeps the base.
+        v = calculate_version(
+            current="0.19.5-next.2",
+            bump_type="none",
+            prerelease="rc",
+            latest_stable="0.19.4",
+            existing_tags=["iii/v0.19.4", "iii/v0.19.5-next.1", "iii/v0.19.5-next.2"],
+            tag_prefix="iii",
+        )
+        assert v == "0.19.5-rc.1"
+
+    def test_none_ignores_train_at_or_below_stable(self):
+        # alpha case: every prerelease sits at the current stable, so none
+        # anchors on the stable rather than treating it as in-flight.
+        v = calculate_version(
+            current="0.19.4-alpha.2",
+            bump_type="none",
+            prerelease="alpha",
+            latest_stable="0.19.4",
+            existing_tags=[
+                "iii-alpha/v0.19.4-alpha.1",
+                "iii-alpha/v0.19.4-alpha.2",
+            ],
+            tag_prefix="iii-alpha",
+        )
+        assert v == "0.19.4-alpha.3"
+
+    def test_none_inflight_scan_is_prefix_scoped(self):
+        # An in-flight iii/ next train must not leak into an iii-alpha run.
+        v = calculate_version(
+            current="0.19.5-next.1",
+            bump_type="none",
+            prerelease="alpha",
+            latest_stable="0.19.4",
+            existing_tags=["iii/v0.19.4", "iii/v0.19.5-next.1"],
+            tag_prefix="iii-alpha",
+        )
+        assert v == "0.19.4-alpha.1"
+
+    def test_full_release_sequence_with_none_iteration(self):
+        """The exact flow the user wants: patch starts the train, none iterates,
+        promotion lands the intended patch (0.19.5, not 0.19.6)."""
+        tags = ["iii/v0.19.4"]
+        stable = "0.19.4"
+
+        def step(current, bump, pre):
+            result = calculate_version(current, bump, pre, stable, tags, "iii")
+            tags.append(f"iii/v{result}")
+            return result
+
+        assert step("0.19.4", "patch", "next") == "0.19.5-next.1"  # start train
+        assert step("0.19.5-next.1", "none", "next") == "0.19.5-next.2"  # iterate
+        assert step("0.19.5-next.2", "none", "next") == "0.19.5-next.3"  # iterate
+        assert step("0.19.5-next.3", "patch", "none") == "0.19.5"  # promote

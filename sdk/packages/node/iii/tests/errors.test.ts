@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { IIIInvocationError } from '../src/index'
+import { InvocationError } from '../src/index'
 import { isErrorBody } from '../src/errors'
 
-describe('IIIInvocationError', () => {
+describe('InvocationError', () => {
   it('exposes code, function_id, stacktrace and a readable message', () => {
-    const err = new IIIInvocationError({
+    const err = new InvocationError({
       code: 'FORBIDDEN',
       message: "function 'engine::functions::list' not allowed",
       function_id: 'engine::functions::list',
@@ -13,8 +13,8 @@ describe('IIIInvocationError', () => {
     })
 
     expect(err).toBeInstanceOf(Error)
-    expect(err).toBeInstanceOf(IIIInvocationError)
-    expect(err.name).toBe('IIIInvocationError')
+    expect(err).toBeInstanceOf(InvocationError)
+    expect(err.name).toBe('InvocationError')
     expect(err.code).toBe('FORBIDDEN')
     expect(err.function_id).toBe('engine::functions::list')
     expect(err.stacktrace).toBe('trace here')
@@ -22,7 +22,7 @@ describe('IIIInvocationError', () => {
   })
 
   it('does NOT serialize to "[object Object]" (the original bug)', () => {
-    const err = new IIIInvocationError({
+    const err = new InvocationError({
       code: 'FORBIDDEN',
       message: "function 'engine::functions::list' not allowed",
       function_id: 'engine::functions::list',
@@ -31,18 +31,18 @@ describe('IIIInvocationError', () => {
     // The bug reporter saw `[object Object]` when printing a plain ErrorBody.
     // Real Error subclasses stringify as `Name: message`, not `[object Object]`.
     expect(String(err)).not.toBe('[object Object]')
-    expect(String(err)).toContain('IIIInvocationError')
+    expect(String(err)).toContain('InvocationError')
     expect(String(err)).toContain("engine::functions::list")
   })
 
   it('propagates stack traces as a real Error subclass', () => {
-    const err = new IIIInvocationError({ code: 'UNKNOWN', message: 'oops' })
+    const err = new InvocationError({ code: 'UNKNOWN', message: 'oops' })
     expect(err.stack).toBeTruthy()
     expect(typeof err.stack).toBe('string')
   })
 
   it('supports errors without function_id or stacktrace', () => {
-    const err = new IIIInvocationError({ code: 'TIMEOUT', message: 'gone' })
+    const err = new InvocationError({ code: 'TIMEOUT', message: 'gone' })
     expect(err.function_id).toBeUndefined()
     expect(err.stacktrace).toBeUndefined()
     expect(err.message).toBe('TIMEOUT: gone')
@@ -64,5 +64,15 @@ describe('isErrorBody', () => {
     expect(isErrorBody({ message: 'Y' })).toBe(false)
     expect(isErrorBody({ code: 1, message: 'Y' })).toBe(false)
     expect(isErrorBody(new Error('plain'))).toBe(false)
+  })
+})
+
+describe('errors subpath', () => {
+  it('exports InvocationError from the iii-sdk/errors subpath', async () => {
+    const errs = await import('../src/errors')
+    expect(errs.InvocationError).toBeDefined()
+    expect(typeof errs.InvocationError).toBe('function')
+    const root = await import('../src/index')
+    expect(root.InvocationError).toBe(errs.InvocationError)
   })
 })

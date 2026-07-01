@@ -1,6 +1,6 @@
 [package]
 name = "iii-console"
-version = "0.19.4"
+version = "0.20.0"
 edition = "2021"
 description = "Developer console for the iii engine"
 license = "Apache-2.0"
@@ -18,7 +18,7 @@ tokio-tungstenite = "0.28"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 tower-http = { version = "0.6.8", features = ["cors"] }
 iii-sdk = { workspace = true }
-iii-observability = { workspace = true }
+iii-helpers = { workspace = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

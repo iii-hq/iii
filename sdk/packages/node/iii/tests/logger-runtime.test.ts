@@ -12,8 +12,8 @@ vi.mock('ws', () => {
   return { WebSocket: MockWebSocket, default: { WebSocket: MockWebSocket } }
 })
 
-vi.mock('@iii-dev/observability', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@iii-dev/observability')>()
+vi.mock('@iii-dev/helpers/observability', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@iii-dev/helpers/observability')>()
 
   // Patch Logger.prototype so every Logger instance routes its otelLogger calls
   // through our spy. See logger.test.ts for the full explanation of why this is
@@ -31,8 +31,8 @@ vi.mock('@iii-dev/observability', async (importOriginal) => {
 // Return null tracer so iii.ts falls back to the synthetic-span path when
 // OTel is disabled, which is the behaviour this test exercises. iii.ts reads
 // getTracer from the internal entry point, so the override lives here.
-vi.mock('@iii-dev/observability/internal', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@iii-dev/observability/internal')>()
+vi.mock('@iii-dev/helpers/observability/internal', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@iii-dev/helpers/observability/internal')>()
   return {
     ...mod,
     getTracer: () => null,
@@ -44,7 +44,7 @@ beforeEach(() => emit.mockReset())
 it('keeps an active span context for handlers when tracer setup is disabled', async () => {
   vi.resetModules()
   const { registerWorker } = await import('../src/index')
-  const { initOtel, shutdownOtel, Logger } = await import('@iii-dev/observability')
+  const { initOtel, shutdownOtel, Logger } = await import('@iii-dev/helpers/observability')
 
   // Register the AsyncLocalStorage context manager so that context.with
   // (used by the synthetic-span code path in iii.ts) correctly propagates

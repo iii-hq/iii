@@ -6,6 +6,7 @@
 
 mod adapters;
 mod config;
+mod configuration;
 #[allow(clippy::module_inception)]
 mod pubsub;
 pub mod registry;

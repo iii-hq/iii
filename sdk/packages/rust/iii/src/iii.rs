@@ -31,20 +31,22 @@ use uuid::Uuid;
 
 const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+use iii_helpers::http::HttpInvocationConfig;
+
 use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
-    error::IIIError,
+    error::Error,
     protocol::{
-        ErrorBody, HttpInvocationConfig, Message, RegisterFunctionMessage, RegisterTriggerInput,
-        RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
-        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
+        ErrorBody, Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
+        RegisterTriggerTypeMessage, TriggerAction, TriggerRequest, UnregisterTriggerMessage,
+        UnregisterTriggerTypeMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
 };
 
-use iii_observability as telemetry;
-use iii_observability::OtelConfig;
+use iii_helpers::observability as telemetry;
+use iii_helpers::observability::OtelConfig;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
@@ -93,7 +95,7 @@ pub struct TriggerInfo {
 /// - `R` tracks the call request type (set via `.call_request_format::<T>()`)
 ///
 /// Both default to `Value` (untyped) and change when the respective builder
-/// method is called. This allows [`III::register_trigger_type`] to return a
+/// method is called. This allows [`IIIClient::register_trigger_type`] to return a
 /// [`TriggerTypeRef<C, R>`] with compile-time safety for both config and
 /// function input types.
 pub struct RegisterTriggerType<H, C = Value, R = Value> {
@@ -150,14 +152,14 @@ impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
     }
 }
 
-/// Typed handle returned by [`III::register_trigger_type`].
+/// Typed handle returned by [`IIIClient::register_trigger_type`].
 ///
 /// Type parameters:
-/// - `C` — trigger registration type for [`register_trigger`](Self::register_trigger)
-/// - `R` — call request type for [`register_function`](Self::register_function)
+/// - `C`: trigger registration type for [`register_trigger`](Self::register_trigger)
+/// - `R`: call request type for [`register_function`](Self::register_function)
 #[derive(Clone)]
 pub struct TriggerTypeRef<C = Value, R = Value> {
-    iii: III,
+    iii: IIIClient,
     trigger_type_id: String,
     _phantom: std::marker::PhantomData<(C, R)>,
 }
@@ -168,7 +170,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         &self,
         function_id: impl Into<String>,
         config: C,
-    ) -> Result<Trigger, IIIError> {
+    ) -> Result<Trigger, Error> {
         self.register_trigger_with_metadata(function_id, config, None)
     }
 
@@ -178,11 +180,11 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         function_id: impl Into<String>,
         config: C,
         metadata: Option<Value>,
-    ) -> Result<Trigger, IIIError> {
+    ) -> Result<Trigger, Error> {
         self.iii.register_trigger(RegisterTriggerInput {
             trigger_type: self.trigger_type_id.clone(),
             function_id: function_id.into(),
-            config: serde_json::to_value(config).map_err(|e| IIIError::Handler(e.to_string()))?,
+            config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
             metadata,
         })
     }
@@ -197,7 +199,7 @@ where
     pub fn register_function<O, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
-        F: Fn(R) -> Result<O, IIIError> + Send + Sync + 'static,
+        F: Fn(R) -> Result<O, Error> + Send + Sync + 'static,
     {
         self.iii.register_function(id, RegisterFunction::new(f))
     }
@@ -208,16 +210,16 @@ where
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
         F: Fn(R) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<O, IIIError>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<O, Error>> + Send + 'static,
     {
         self.iii
             .register_function(id, RegisterFunction::new_async(f))
     }
 }
 
-/// Telemetry metadata provided by the SDK to the engine.
+/// Worker metadata provided by the SDK to the engine.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorkerTelemetryMeta {
+pub struct TelemetryOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,7 +244,7 @@ pub struct WorkerMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<WorkerTelemetryMeta>,
+    pub telemetry: Option<TelemetryOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
 }
@@ -275,7 +277,7 @@ impl Default for WorkerMetadata {
             os: os_info,
             description: None,
             pid: Some(pid),
-            telemetry: Some(WorkerTelemetryMeta {
+            telemetry: Some(TelemetryOptions {
                 language,
                 project_name,
                 ..Default::default()
@@ -292,7 +294,7 @@ impl Default for WorkerMetadata {
 /// `cwd`; otherwise falls back to the basename of `cwd`. Returns `None`
 /// only when both signals are unavailable.
 ///
-/// No directory walking — only inspects `cwd` itself, so the SDK never
+/// No directory walking, only inspects `cwd` itself, so the SDK never
 /// reads files outside the user's explicit working directory.
 pub(crate) fn detect_project_name(cwd: Option<std::path::PathBuf>) -> Option<String> {
     let cwd = cwd.or_else(|| std::env::current_dir().ok())?;
@@ -346,7 +348,7 @@ enum Outbound {
     Shutdown,
 }
 
-type PendingInvocation = oneshot::Sender<Result<Value, IIIError>>;
+type PendingInvocation = oneshot::Sender<Result<Value, Error>>;
 
 // WebSocket transmitter type alias
 type WsTx = futures_util::stream::SplitSink<
@@ -356,7 +358,7 @@ type WsTx = futures_util::stream::SplitSink<
 
 /// Inject trace context headers for outbound messages.
 fn inject_trace_headers() -> (Option<String>, Option<String>) {
-    use iii_observability as context;
+    use iii_helpers::observability as context;
     (context::inject_traceparent(), context::inject_baggage())
 }
 
@@ -404,26 +406,26 @@ pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
     }
 }
 
-// 1-arg sync — deserializes the entire JSON input as T.
+// 1-arg sync, deserializes the entire JSON input as T.
 //
-// Error type is fixed to [`IIIError`] (instead of generic `E: Display`) so
+// Error type is fixed to [`Error`] (instead of generic `E: Display`) so
 // closures using bare `Ok(...)` infer cleanly without explicit error
-// annotations — required for ergonomic registration of `Fn(Value) -> ...`
-// handlers. Other error types convert via `From<E> for IIIError` (impls
+// annotations, required for ergonomic registration of `Fn(Value) -> ...`
+// handlers. Other error types convert via `From<E> for Error` (impls
 // for `String` / `&str` / `serde_json::Error` ship with the SDK).
 impl<F, T, R> IntoSyncHandler<(T, R)> for F
 where
-    F: Fn(T) -> Result<R, IIIError> + Send + Sync + 'static,
+    F: Fn(T) -> Result<R, Error> + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
         Arc::new(move |input: Value| {
             let output = serde_json::from_value::<T>(input)
-                .map_err(|e| IIIError::Serde(e.to_string()))
+                .map_err(|e| Error::Serde(e.to_string()))
                 .and_then(&self)
                 .and_then(|val| {
-                    serde_json::to_value(&val).map_err(|e| IIIError::Serde(e.to_string()))
+                    serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
                 });
             Box::pin(async move { output })
         })
@@ -439,7 +441,7 @@ where
 }
 
 // =============================================================================
-// IntoAsyncHandler — async function schema-extraction trait
+// IntoAsyncHandler, async function schema-extraction trait
 // =============================================================================
 
 /// Helper trait used internally to convert an async function into a
@@ -457,29 +459,29 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
 
 /// Build the dispatchable handler for a typed async function: deserialize
 /// the JSON input as `T`, run `f`, serialize the result. Deserialization
-/// failures map through `on_bad_request` — [`IntoAsyncHandler`] passes the
-/// default [`IIIError::Serde`] mapper,
+/// failures map through `on_bad_request`, [`IntoAsyncHandler`] passes the
+/// default [`Error::Serde`] mapper,
 /// [`RegisterFunction::new_async_with_bad_request`] a caller-supplied one.
 fn async_handler_with<F, T, Fut, R>(
     f: F,
-    on_bad_request: impl Fn(serde_json::Error) -> IIIError + Send + Sync + 'static,
+    on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
 ) -> RemoteFunctionHandler
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + 'static,
-    Fut: std::future::Future<Output = Result<R, IIIError>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
     R: serde::Serialize + Send + 'static,
 {
     Arc::new(
         move |input: Value| -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+            Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
         > {
             match serde_json::from_value::<T>(input) {
                 Ok(arg) => {
                     let fut = f(arg);
                     Box::pin(async move {
                         fut.await.and_then(|val| {
-                            serde_json::to_value(&val).map_err(|e| IIIError::Serde(e.to_string()))
+                            serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
                         })
                     })
                 }
@@ -492,20 +494,20 @@ where
     )
 }
 
-// 1-arg async — deserializes the entire JSON input as T.
+// 1-arg async, deserializes the entire JSON input as T.
 //
-// Error type is fixed to [`IIIError`] (see [`IntoSyncHandler`] for the
-// rationale). Use `From<E> for IIIError` to lift custom error types,
+// Error type is fixed to [`Error`] (see [`IntoSyncHandler`] for the
+// rationale). Use `From<E> for Error` to lift custom error types,
 // or `?` propagation in the closure body.
 impl<F, T, Fut, R> IntoAsyncHandler<(T, Fut, R)> for F
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
-    Fut: std::future::Future<Output = Result<R, IIIError>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
-        async_handler_with(self, |e| IIIError::Serde(e.to_string()))
+        async_handler_with(self, |e| Error::Serde(e.to_string()))
     }
 
     fn request_format() -> Option<Value> {
@@ -518,7 +520,7 @@ where
 }
 
 // =============================================================================
-// RegisterFunction — single registration builder
+// RegisterFunction, single registration builder
 // =============================================================================
 
 fn empty_message() -> RegisterFunctionMessage {
@@ -535,25 +537,25 @@ fn empty_message() -> RegisterFunctionMessage {
 /// Function registration builder.
 ///
 /// The function ID is supplied separately at registration time via
-/// [`III::register_function`] — `RegisterFunction` only carries the handler
+/// [`IIIClient::register_function`], `RegisterFunction` only carries the handler
 /// and optional metadata.
 ///
 /// Constructors:
-/// - [`RegisterFunction::new`] — sync function. Accepts both typed handlers
-///   (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, IIIError>`
+/// - [`RegisterFunction::new`][]: sync function. Accepts both typed handlers
+///   (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, Error>`
 ///   closures (permissive `AnyValue` schema, since `Value: JsonSchema`).
-/// - [`RegisterFunction::new_async`] — async equivalent of `new`.
-/// - [`RegisterFunction::new_async_with_bad_request`] — typed async handler
+/// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
+/// - [`RegisterFunction::new_async_with_bad_request`][]: typed async handler
 ///   that routes payload-deserialization failures through a caller-supplied
-///   mapper instead of the SDK's generic [`IIIError::Serde`].
-/// - [`RegisterFunction::http`] — function invoked over HTTP (Lambda,
+///   mapper instead of the SDK's generic [`Error::Serde`].
+/// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
 ///
 /// Builder methods (all consume `self`):
 /// - [`description`](Self::description)
 /// - [`metadata`](Self::metadata)
-/// - [`request_format`](Self::request_format) — overrides any auto-extracted schema.
-/// - [`response_format`](Self::response_format) — overrides any auto-extracted schema.
+/// - [`request_format`](Self::request_format): overrides any auto-extracted schema.
+/// - [`response_format`](Self::response_format): overrides any auto-extracted schema.
 pub struct RegisterFunction {
     message: RegisterFunctionMessage,
     handler: Option<RemoteFunctionHandler>,
@@ -596,18 +598,18 @@ impl RegisterFunction {
 
     /// Like [`RegisterFunction::new_async`], but payload-deserialization
     /// failures are routed through `on_bad_request` instead of becoming the
-    /// SDK's generic [`IIIError::Serde`] (which the dispatch loop surfaces as
+    /// SDK's generic [`Error::Serde`] (which the dispatch loop surfaces as
     /// `invocation_failed`). Lets a registration keep typed-handler schema
     /// extraction while owning its wire error contract for malformed
-    /// payloads — e.g. a stable error code plus a recovery hint.
+    /// payloads, e.g. a stable error code plus a recovery hint.
     pub fn new_async_with_bad_request<F, T, Fut, R>(
         f: F,
-        on_bad_request: impl Fn(serde_json::Error) -> IIIError + Send + Sync + 'static,
+        on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
     ) -> Self
     where
         F: Fn(T) -> Fut + Send + Sync + 'static,
         T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
-        Fut: std::future::Future<Output = Result<R, IIIError>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
         R: serde::Serialize + schemars::JsonSchema + Send + 'static,
     {
         let mut message = empty_message();
@@ -680,11 +682,11 @@ struct IIIInner {
 ///
 /// Create with [`register_worker`](crate::register_worker).
 #[derive(Clone)]
-pub struct III {
+pub struct IIIClient {
     inner: Arc<IIIInner>,
 }
 
-impl III {
+impl IIIClient {
     /// Create a new III with default worker metadata (auto-detected runtime, os, hostname)
     pub fn new(address: &str) -> Self {
         Self::with_metadata(address, WorkerMetadata::default())
@@ -790,7 +792,7 @@ impl III {
     /// Shutdown the III client and wait for the connection thread to finish.
     ///
     /// This stops the connection loop, sends a shutdown signal, and joins
-    /// the background connection thread. Telemetry is flushed inside the
+    /// the background connection thread. OpenTelemetry is flushed inside the
     /// connection thread before it exits.
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
@@ -810,7 +812,7 @@ impl III {
     /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
     /// to wait for `run_connection()` to finish, making it safe to call from
     /// an async context without stalling the executor.
-    /// `telemetry::shutdown_otel()` still runs inside the connection thread
+    /// The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
     /// after `run_connection()` returns, so it may not complete unless
     /// [`shutdown`](Self::shutdown) is used to join the thread.
     pub async fn shutdown_async(&self) {
@@ -862,8 +864,8 @@ impl III {
     /// `(id, registration)`.
     ///
     /// # Arguments
-    /// * `id` — Function identifier.
-    /// * `registration` — Built via [`RegisterFunction::new`],
+    /// * `id`: Function identifier.
+    /// * `registration`: Built via [`RegisterFunction::new`],
     ///   [`RegisterFunction::new_async`], or [`RegisterFunction::http`].
     ///   Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`,
     ///   `.response_format(...)` as needed.
@@ -873,7 +875,7 @@ impl III {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// use iii_sdk::{register_worker, InitOptions, IIIError, RegisterFunction};
+    /// use iii_sdk::{register_worker, InitOptions, Error, RegisterFunction};
     /// use serde::{Deserialize, Serialize};
     /// use schemars::JsonSchema;
     ///
@@ -882,12 +884,12 @@ impl III {
     /// #[derive(Serialize, JsonSchema)]
     /// struct Output { message: String }
     ///
-    /// async fn greet(input: Input) -> Result<Output, IIIError> {
+    /// async fn greet(input: Input) -> Result<Output, Error> {
     ///     Ok(Output { message: format!("Hello, {}!", input.name) })
     /// }
     ///
-    /// let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function(
+    /// let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.register_function(
     ///     "greetings::greet",
     ///     RegisterFunction::new_async(greet).description("Greets a user"),
     /// );
@@ -897,8 +899,8 @@ impl III {
     /// ```rust,no_run
     /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction};
     /// # use serde_json::{json, Value};
-    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function(
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.register_function(
     ///     "debug::echo",
     ///     RegisterFunction::new_async(|input: Value| async move { Ok(json!({"echo": input})) }),
     /// );
@@ -906,9 +908,10 @@ impl III {
     ///
     /// HTTP-invoked function:
     /// ```rust,no_run
-    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction, HttpInvocationConfig, HttpMethod};
+    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    /// # use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
     /// # use std::collections::HashMap;
-    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
     /// let config = HttpInvocationConfig {
     ///     url: "https://example.com/invoke".into(),
     ///     method: HttpMethod::Post,
@@ -916,7 +919,7 @@ impl III {
     ///     headers: HashMap::new(),
     ///     auth: None,
     /// };
-    /// iii.register_function("ext::lambda", RegisterFunction::http(config));
+    /// worker.register_function("ext::lambda", RegisterFunction::http(config));
     /// ```
     pub fn register_function(
         &self,
@@ -935,16 +938,17 @@ impl III {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # use iii_sdk::{III, RegisterTriggerType};
+    /// # use iii_sdk::{IIIClient, RegisterTriggerType};
+    /// # use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
     /// # struct MyHandler;
     /// # #[async_trait::async_trait]
-    /// # impl iii_sdk::TriggerHandler for MyHandler {
-    /// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
-    /// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+    /// # impl TriggerHandler for MyHandler {
+    /// #     async fn register_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
+    /// #     async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
     /// # }
     /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
     /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
-    /// # let iii = III::new("ws://localhost:49134");
+    /// # let iii = IIIClient::new("ws://localhost:49134");
     /// let my_trigger = iii.register_trigger_type(
     ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
     ///         .trigger_request_format::<MyConfig>()
@@ -952,7 +956,7 @@ impl III {
     /// );
     ///
     /// // Compile-time safe: config must be MyConfig, function input must be MyRequest
-    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::IIIError> {
+    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::Error> {
     ///     Ok(serde_json::json!({ "data": req.data }))
     /// });
     /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
@@ -1005,9 +1009,10 @@ impl III {
     ///
     /// # Examples
     /// ```rust
-    /// # use iii_sdk::{III, RegisterTriggerInput};
+    /// # use iii_sdk::IIIClient;
+    /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
-    /// # let iii = III::new("ws://localhost:49134");
+    /// # let iii = IIIClient::new("ws://localhost:49134");
     /// let trigger = iii.register_trigger(RegisterTriggerInput {
     ///     trigger_type: "http".to_string(),
     ///     function_id: "greet".to_string(),
@@ -1016,9 +1021,9 @@ impl III {
     /// })?;
     /// // Later...
     /// trigger.unregister();
-    /// # Ok::<(), iii_sdk::IIIError>(())
+    /// # Ok::<(), iii_sdk::Error>(())
     /// ```
-    pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, IIIError> {
+    pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, Error> {
         let id = Uuid::new_v4().to_string();
         let message = RegisterTriggerMessage {
             id: id.clone(),
@@ -1054,13 +1059,14 @@ impl III {
     /// The routing behavior depends on the `action` field of the request:
     /// - No action: synchronous -- waits for the function to return.
     /// - [`TriggerAction::Enqueue`] - async via named queue.
-    /// - [`TriggerAction::Void`] — fire-and-forget.
+    /// - [`TriggerAction::Void`][]: fire-and-forget.
     ///
     /// # Examples
     /// ```rust
-    /// # use iii_sdk::{III, TriggerRequest, TriggerAction};
+    /// # use iii_sdk::{IIIClient, TriggerAction};
+    /// # use iii_sdk::protocol::TriggerRequest;
     /// # use serde_json::json;
-    /// # async fn example(iii: &III) -> Result<(), iii_sdk::IIIError> {
+    /// # async fn example(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
     /// // Synchronous
     /// let result = iii.trigger(TriggerRequest {
     ///     function_id: "greet".to_string(),
@@ -1091,11 +1097,11 @@ impl III {
     pub async fn trigger(
         &self,
         request: impl Into<crate::protocol::TriggerRequest>,
-    ) -> Result<Value, IIIError> {
+    ) -> Result<Value, Error> {
         let req = request.into();
         let (tp, bg) = inject_trace_headers();
 
-        // Void is fire-and-forget — no invocation_id, no response
+        // Void is fire-and-forget, no invocation_id, no response
         if matches!(req.action, Some(TriggerAction::Void)) {
             self.send_message(Message::InvokeFunction {
                 invocation_id: None,
@@ -1129,10 +1135,10 @@ impl III {
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(IIIError::NotConnected),
+            Ok(Err(_)) => Err(Error::NotConnected),
             Err(_) => {
                 self.inner.pending.lock_or_recover().remove(&invocation_id);
-                Err(IIIError::Timeout)
+                Err(Error::Timeout)
             }
         }
     }
@@ -1175,7 +1181,7 @@ impl III {
         }
     }
 
-    fn send_message(&self, message: Message) -> Result<(), IIIError> {
+    fn send_message(&self, message: Message) -> Result<(), Error> {
         if !self.inner.running.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -1183,7 +1189,7 @@ impl III {
         self.inner
             .outbound
             .send(Outbound::Message(message))
-            .map_err(|_| IIIError::NotConnected)
+            .map_err(|_| Error::NotConnected)
     }
 
     async fn run_connection(&self, mut rx: mpsc::UnboundedReceiver<Outbound>) {
@@ -1363,7 +1369,7 @@ impl III {
     /// and pushing every other message onto `queue` for re-flushing.
     ///
     /// Returns `true` if a `Shutdown` signal was observed during the
-    /// drain — the caller should then stop the connection loop.
+    /// drain, the caller should then stop the connection loop.
     fn drain_pre_connect_duplicates(
         rx: &mut mpsc::UnboundedReceiver<Outbound>,
         queue: &mut Vec<Message>,
@@ -1407,11 +1413,7 @@ impl III {
         *queue = deduped_rev;
     }
 
-    async fn flush_queue(
-        &self,
-        ws_tx: &mut WsTx,
-        queue: &mut Vec<Message>,
-    ) -> Result<(), IIIError> {
+    async fn flush_queue(&self, ws_tx: &mut WsTx, queue: &mut Vec<Message>) -> Result<(), Error> {
         let mut drained = Vec::new();
         std::mem::swap(queue, &mut drained);
 
@@ -1427,13 +1429,13 @@ impl III {
         Ok(())
     }
 
-    async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), IIIError> {
+    async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), Error> {
         let payload = serde_json::to_string(message)?;
         ws_tx.send(WsMessage::Text(payload.into())).await?;
         Ok(())
     }
 
-    fn handle_frame(&self, frame: WsMessage) -> Result<(), IIIError> {
+    fn handle_frame(&self, frame: WsMessage) -> Result<(), Error> {
         match frame {
             WsMessage::Text(text) => self.handle_message(&text),
             WsMessage::Binary(bytes) => {
@@ -1444,7 +1446,7 @@ impl III {
         }
     }
 
-    fn handle_message(&self, payload: &str) -> Result<(), IIIError> {
+    fn handle_message(&self, payload: &str) -> Result<(), Error> {
         let message: Message = serde_json::from_str(payload)?;
 
         match message {
@@ -1514,7 +1516,7 @@ impl III {
         let sender = self.inner.pending.lock_or_recover().remove(&invocation_id);
         if let Some(sender) = sender {
             let result = match error {
-                Some(error) => Err(IIIError::Remote {
+                Some(error) => Err(Error::Remote {
                     code: error.code,
                     message: error.message,
                     stacktrace: error.stacktrace,
@@ -1589,11 +1591,14 @@ impl III {
             // We use FutureExt::with_context() instead of cx.attach() because
             // ContextGuard is !Send and can't be held across .await in tokio::spawn.
             let otel_cx = {
-                use iii_observability::extract_context;
-                use iii_observability::opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
+                use iii_helpers::observability::extract_context;
+                use iii_helpers::observability::opentelemetry::trace::{
+                    SpanKind, TraceContextExt, Tracer,
+                };
 
                 let parent_cx = extract_context(traceparent.as_deref(), baggage.as_deref());
-                let tracer = iii_observability::opentelemetry::global::tracer("iii-rust-sdk");
+                let tracer =
+                    iii_helpers::observability::opentelemetry::global::tracer("iii-rust-sdk");
                 // INTERNAL and named `execute` (not `call`/`trigger`): the engine
                 // already emits the SERVER `call <fn>` span for this hop AND a
                 // `trigger <fn>` span from fire_triggers. Reusing either name would
@@ -1611,12 +1616,12 @@ impl III {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
 
-            let payload_max_bytes = iii_observability::resolve_max_bytes_from_env();
+            let payload_max_bytes = iii_helpers::observability::resolve_max_bytes_from_env();
 
             if trace_payloads {
-                use iii_observability::opentelemetry::KeyValue;
-                use iii_observability::opentelemetry::trace::TraceContextExt;
-                use iii_observability::redact_and_truncate;
+                use iii_helpers::observability::opentelemetry::KeyValue;
+                use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
+                use iii_helpers::observability::redact_and_truncate;
                 let span = otel_cx.span();
                 if span.span_context().is_valid() {
                     let (input_json, truncated) = redact_and_truncate(&data, payload_max_bytes);
@@ -1631,14 +1636,14 @@ impl III {
             }
 
             let result = {
-                use iii_observability::opentelemetry::trace::FutureExt as OtelFutureExt;
+                use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
                 handler(data).with_context(otel_cx.clone()).await
             };
 
             if trace_payloads {
-                use iii_observability::opentelemetry::KeyValue;
-                use iii_observability::opentelemetry::trace::TraceContextExt;
-                use iii_observability::redact_and_truncate;
+                use iii_helpers::observability::opentelemetry::KeyValue;
+                use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
+                use iii_helpers::observability::redact_and_truncate;
                 let span = otel_cx.span();
                 if span.span_context().is_valid() {
                     let (output_json, truncated, ok) = match &result {
@@ -1666,14 +1671,14 @@ impl III {
             // Record span status based on result
             let mut error_stacktrace: Option<String> = None;
             {
-                use iii_observability::opentelemetry::KeyValue;
-                use iii_observability::opentelemetry::trace::{Status, TraceContextExt};
+                use iii_helpers::observability::opentelemetry::KeyValue;
+                use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt};
                 let span = otel_cx.span();
                 match &result {
                     Ok(_) => span.set_status(Status::Ok),
                     Err(err) => {
                         let (exc_type, exc_message, stacktrace) = match err {
-                            IIIError::Remote {
+                            Error::Remote {
                                 code,
                                 message,
                                 stacktrace,
@@ -1727,7 +1732,7 @@ impl III {
                     },
                     Err(err) => {
                         let error_body = match err {
-                            IIIError::Remote {
+                            Error::Remote {
                                 code,
                                 message,
                                 stacktrace,
@@ -1735,7 +1740,7 @@ impl III {
                                 code,
                                 message,
                                 // `Remote` is a structured, expected error owned by
-                                // the handler — respect `stacktrace: None` instead of
+                                // the handler, respect `stacktrace: None` instead of
                                 // backfilling the dispatch-loop backtrace, which
                                 // points at the SDK event loop, not the error site.
                                 stacktrace,
@@ -1861,9 +1866,9 @@ impl III {
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn internal_create_channel(
-    iii: &III,
+    iii: &IIIClient,
     buffer_size: Option<usize>,
-) -> Result<Channel, IIIError> {
+) -> Result<Channel, Error> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::channels::create".to_string(),
@@ -1877,17 +1882,17 @@ pub(crate) async fn internal_create_channel(
         result
             .get("writer")
             .cloned()
-            .ok_or_else(|| IIIError::Serde("missing 'writer' in channel response".into()))?,
+            .ok_or_else(|| Error::Serde("missing 'writer' in channel response".into()))?,
     )
-    .map_err(|e| IIIError::Serde(e.to_string()))?;
+    .map_err(|e| Error::Serde(e.to_string()))?;
 
     let reader_ref: StreamChannelRef = serde_json::from_value(
         result
             .get("reader")
             .cloned()
-            .ok_or_else(|| IIIError::Serde("missing 'reader' in channel response".into()))?,
+            .ok_or_else(|| Error::Serde("missing 'reader' in channel response".into()))?,
     )
-    .map_err(|e| IIIError::Serde(e.to_string()))?;
+    .map_err(|e| Error::Serde(e.to_string()))?;
 
     Ok(Channel {
         writer: ChannelWriter::new(&iii.inner.address, &writer_ref),
@@ -1903,12 +1908,10 @@ mod tests {
 
     use serde_json::json;
 
+    use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
+
     use super::*;
-    use crate::{
-        InitOptions,
-        protocol::{HttpInvocationConfig, HttpMethod, RegisterTriggerInput},
-        register_worker,
-    };
+    use crate::{InitOptions, protocol::RegisterTriggerInput, register_worker};
 
     #[tokio::test]
     async fn register_trigger_unregister_removes_entry() {
@@ -2018,7 +2021,7 @@ mod tests {
         struct Out {
             message: String,
         }
-        async fn greet(input: In) -> Result<Out, IIIError> {
+        async fn greet(input: In) -> Result<Out, Error> {
             Ok(Out {
                 message: format!("Hello, {}!", input.name),
             })
@@ -2051,7 +2054,7 @@ mod tests {
                     message: format!("Hello, {}!", input.name),
                 })
             },
-            |e| IIIError::Remote {
+            |e| Error::Remote {
                 code: "W105".to_string(),
                 message: e.to_string(),
                 stacktrace: None,
@@ -2070,7 +2073,7 @@ mod tests {
         // Malformed payload routes through the custom mapper, not Serde.
         let err = handler(json!({"name": 42})).await.unwrap_err();
         match err {
-            IIIError::Remote {
+            Error::Remote {
                 code, stacktrace, ..
             } => {
                 assert_eq!(code, "W105");
@@ -2090,7 +2093,7 @@ mod tests {
         struct In {
             name: String,
         }
-        async fn handler(input: In) -> Result<String, IIIError> {
+        async fn handler(input: In) -> Result<String, Error> {
             Ok(input.name)
         }
 
@@ -2127,7 +2130,7 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(IIIError::Timeout)));
+        assert!(matches!(result, Err(Error::Timeout)));
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
 
@@ -2269,26 +2272,26 @@ mod tests {
     #[test]
     fn registration_key_returns_typed_keys_for_register_messages() {
         assert_eq!(
-            III::registration_key(&make_register_function("greet")),
+            IIIClient::registration_key(&make_register_function("greet")),
             Some("function:greet".to_string())
         );
         assert_eq!(
-            III::registration_key(&make_register_trigger("t1")),
+            IIIClient::registration_key(&make_register_trigger("t1")),
             Some("trigger:t1".to_string())
         );
         assert_eq!(
-            III::registration_key(&make_register_trigger_type("tt1")),
+            IIIClient::registration_key(&make_register_trigger_type("tt1")),
             Some("trigger_type:tt1".to_string())
         );
     }
 
     #[test]
     fn registration_key_returns_none_for_non_register_messages() {
-        assert_eq!(III::registration_key(&make_invoke("f")), None);
-        assert_eq!(III::registration_key(&Message::Ping), None);
-        assert_eq!(III::registration_key(&Message::Pong), None);
+        assert_eq!(IIIClient::registration_key(&make_invoke("f")), None);
+        assert_eq!(IIIClient::registration_key(&Message::Ping), None);
+        assert_eq!(IIIClient::registration_key(&Message::Pong), None);
         assert_eq!(
-            III::registration_key(&Message::WorkerRegistered {
+            IIIClient::registration_key(&Message::WorkerRegistered {
                 worker_id: "w".to_string()
             }),
             None
@@ -2318,10 +2321,11 @@ mod tests {
         .collect();
 
         let mut queue: Vec<Message> = Vec::new();
-        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+        let shutdown = IIIClient::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
 
         assert!(!shutdown);
-        let kept_keys: Vec<Option<String>> = queue.iter().map(III::registration_key).collect();
+        let kept_keys: Vec<Option<String>> =
+            queue.iter().map(IIIClient::registration_key).collect();
         assert_eq!(
             kept_keys,
             vec![
@@ -2346,7 +2350,7 @@ mod tests {
 
         let snapshot_ids: HashSet<String> = ["function:a".to_string()].into_iter().collect();
         let mut queue: Vec<Message> = Vec::new();
-        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+        let shutdown = IIIClient::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
 
         assert!(shutdown, "expected shutdown signal to be reported");
         assert!(
@@ -2361,7 +2365,7 @@ mod tests {
         let snapshot_ids: HashSet<String> = HashSet::new();
         let mut queue: Vec<Message> = Vec::new();
 
-        let shutdown = III::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
+        let shutdown = IIIClient::drain_pre_connect_duplicates(&mut rx, &mut queue, &snapshot_ids);
 
         assert!(!shutdown);
         assert!(queue.is_empty());

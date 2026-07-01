@@ -148,7 +148,7 @@ export type UpdateDecrement = {
  * Engine semantics: missing/null intermediates along a nested path are
  * auto-created; missing leaves on a nested path always become arrays
  * (no string-concat tier); existing object/scalar leaves return
- * `append.type_mismatch`. Each path segment is a literal key —
+ * `append.type_mismatch`. Each path segment is a literal key,
  * `["a.b"]` targets a single key named `"a.b"`, not `a → b`.
  */
 export type UpdateAppend = {

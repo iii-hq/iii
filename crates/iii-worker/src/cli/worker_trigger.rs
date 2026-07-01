@@ -21,7 +21,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::{III, IIIError, TriggerAction, TriggerConfig, TriggerHandler, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+use iii_sdk::{Error, IIIClient, TriggerAction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -205,7 +207,7 @@ pub type Subscriptions = Arc<Mutex<HashMap<String, Subscription>>>;
 
 /// `TriggerHandler` for the `worker` trigger type. Inserts on register,
 /// removes on unregister. Rejects malformed `WorkerTriggerConfig`
-/// payloads with [`IIIError::Handler`] so the engine reports them back
+/// payloads with [`Error::Handler`] so the engine reports them back
 /// to the caller with `trigger_registration_failed`.
 pub struct WorkerTriggerHandler {
     subs: Subscriptions,
@@ -219,12 +221,12 @@ impl WorkerTriggerHandler {
 
 #[async_trait]
 impl TriggerHandler for WorkerTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let parsed: WorkerTriggerConfig = if config.config.is_null() {
             WorkerTriggerConfig::default()
         } else {
             serde_json::from_value(config.config.clone())
-                .map_err(|e| IIIError::Handler(format!("invalid WorkerTriggerConfig: {e}")))?
+                .map_err(|e| Error::Handler(format!("invalid WorkerTriggerConfig: {e}")))?
         };
         let mut subs = self.subs.lock().unwrap_or_else(|e| e.into_inner());
         subs.insert(
@@ -237,7 +239,7 @@ impl TriggerHandler for WorkerTriggerHandler {
         Ok(())
     }
 
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         let mut subs = self.subs.lock().unwrap_or_else(|e| e.into_inner());
         subs.remove(&config.id);
         Ok(())
@@ -262,7 +264,7 @@ pub struct IIIEventSink {
 }
 
 impl IIIEventSink {
-    pub fn new(iii: III, subs: Subscriptions, caller_mode: CallerMode) -> Self {
+    pub fn new(iii: IIIClient, subs: Subscriptions, caller_mode: CallerMode) -> Self {
         let (dispatch_tx, mut dispatch_rx) =
             tokio::sync::mpsc::unbounded_channel::<(String, serde_json::Value)>();
         // Spawn the dispatcher only when a tokio runtime is available.
@@ -589,7 +591,7 @@ mod tests {
             metadata: None,
         };
         let err = handler.register_trigger(cfg).await.unwrap_err();
-        assert!(matches!(err, IIIError::Handler(_)));
+        assert!(matches!(err, Error::Handler(_)));
     }
 
     #[test]

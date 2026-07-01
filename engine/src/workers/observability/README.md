@@ -42,6 +42,50 @@ npx skills add iii-hq/iii --full-depth --skill iii-observability
           type: log
 ```
 
+## Configure
+
+The full configuration surface is registered with the builtin `configuration`
+worker under the id **`iii-observability`**. **The stored entry is the runtime
+source of truth; the `config.yaml` block is seed-only** — it populates the
+entry on the very first boot and is ignored afterwards. To change a setting
+after first boot, edit the entry (console, or `configuration::set
+{ "id": "iii-observability", "value": { ... } }`); editing `config.yaml`
+alone has no effect anymore.
+
+With the default file-backed adapter the entry persists at
+`./config/iii-observability.yaml` and is read again at every
+engine start — *before* logging/tracing init — so even restart-tier fields
+edited at runtime apply on the next start. `${VAR:default}` placeholders work
+in string fields and are expanded on read.
+
+Values are validated against the JSON schema at `configuration::set` time
+(unknown fields rejected, ratios bounded to `0..=1`, counts ≥ 1). Two
+caveats:
+
+- Alert `operator` symbols (`>`, `<`, ...) are accepted in `config.yaml`
+  only; remote edits must use the canonical names the schema advertises
+  (`greaterthan`, `lessthan`, ...).
+- After a schema tightening, a previously-stored out-of-range value makes
+  the boot-time schema refresh fail with `SCHEMA_INVALID` (warn-and-continue);
+  reads still work and out-of-range values are clamped on read.
+
+### Hot Reload
+
+`configuration:updated` events are applied per field tier:
+
+| Tier | Fields | Effect |
+|---|---|---|
+| Live | `logs_console_output`, `logs_sampling_ratio`, `logs_enabled` (ingest gate), `enabled` (ingest gate) | Immediate — read per use |
+| Limits | `memory_max_spans`, `logs_max_count`, `metrics_max_count`, `metrics_retention_seconds` | Immediate — enforced on the next insert / 60s sweep |
+| Swap | `sampling_ratio`, `sampling.*`, `alerts`, `collapse_spans`, `level` | Immediate — compiled artifact rebuilt and swapped (alert states of surviving rules keep cooldown/firing continuity) |
+| Task rebuild | `logs_exporter`, `logs_batch_size`, `logs_flush_interval_ms`, `logs_retention_seconds`, and `logs_enabled` on a false→true transition | The background task restarts with the new settings. A `logs_enabled` false→true toggle revives the log store and respawns the log-trigger subscriber, OTLP logs exporter, and retention task — so the `log` trigger fan-out and OTLP log export reactivate without an engine restart |
+| Restart-only | `exporter`, `endpoint` (trace **and** logs exporters), `service_name`/`service_version`/`service_namespace` (trace resource **and** logs exporter identity), `format`, `metrics_enabled`, `metrics_exporter`, `enabled` (pipeline construction) | Logged as a warning; applied at the next engine start via the persisted entry. `endpoint`/`service_name`/`service_version` are restart-tier for **all** signals so logs and traces always move to the new collector/identity together, never split mid-edit |
+
+Known limitation: an engine config-file reload that destroys and recreates
+this worker shuts down the OTLP trace/metric providers without rebuilding
+them (they are process-global set-once state) — OTLP export then requires an
+engine restart. Memory-backed stores are unaffected.
+
 ## Configuration
 
 | Field                       | Type        | Description                                                                                                                                                                  |

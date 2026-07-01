@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.19.4"
+version = "0.20.0"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -87,11 +87,16 @@ harness = false
 [features]
 default = ["rabbitmq"]
 rabbitmq = ["lapin"]
+# Registers an in-process `memory` pub/sub adapter (a `local` clone under a
+# second name) so `tests/pubsub_configuration_e2e.rs` can hot-swap between two
+# dependency-free backends. Enabled only for this crate's own test targets via
+# the self dev-dependency below; never in a normal `cargo build`.
+test-adapters = []
 
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true }
-iii-observability = { workspace = true }
+iii-helpers = { workspace = true }
 scaffolder-core = { workspace = true }
 console = { workspace = true }
 ctrlc = { workspace = true }
@@ -160,6 +165,10 @@ tokio-tungstenite = "0.28"
 which = "7"
 
 [dev-dependencies]
+# Self-dependency trick: turns on `test-adapters` for this crate's own test
+# targets (the `memory` pub/sub adapter the pubsub config e2e suite swaps to)
+# without enabling it for a normal build.
+iii = { path = ".", features = ["test-adapters"] }
 tokio = { version = "1", features = ["test-util"] }
 mockall = "0.13"
 serial_test = "3"

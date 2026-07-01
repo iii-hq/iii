@@ -1,13 +1,19 @@
-use iii_sdk::{IIIError, RegisterTriggerInput, III};
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::{Error, IIIClient};
 use serde_json::json;
 use tracing::info;
 
 /// Most triggers use HTTP GET method. The invoke endpoint uses POST.
-pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
+pub fn register_triggers(bridge: &IIIClient) -> Result<(), Error> {
     let triggers = vec![
         ("engine::console::status", "_console/status", "GET"),
         ("engine::console::health", "_console/health", "GET"),
         ("engine::console::functions", "_console/functions", "GET"),
+        (
+            "engine::console::function_detail",
+            "_console/functions/:function_id",
+            "GET",
+        ),
         ("engine::console::triggers", "_console/triggers", "GET"),
         (
             "engine::console::trigger_types",

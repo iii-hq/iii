@@ -13,7 +13,6 @@ from iii import InitOptions
 from iii.iii import III
 from iii.iii_types import RegisterFunctionFormat
 
-
 # ---------------------------------------------------------------------------
 # FakeWs helpers
 # ---------------------------------------------------------------------------
@@ -44,8 +43,8 @@ def _patch_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWebSocket:
         return ws
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
-    monkeypatch.setattr("iii_observability.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii_observability.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.attach_event_loop", lambda loop: None)
     monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
     return ws
 
@@ -165,7 +164,7 @@ def test_register_function_str_with_http_invocation_and_format(monkeypatch: pyte
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
-    from iii import HttpInvocationConfig
+    from iii_helpers.http import HttpInvocationConfig
 
     req_fmt = RegisterFunctionFormat(
         name="input",
@@ -191,9 +190,9 @@ def test_register_function_str_with_http_invocation_and_format(monkeypatch: pyte
     client.shutdown()
 
 
-def test_register_function_format_importable_from_top_level() -> None:
-    """RegisterFunctionFormat should remain importable from iii."""
-    from iii import RegisterFunctionFormat
+def test_register_function_format_importable_from_protocol() -> None:
+    """RegisterFunctionFormat should be importable from iii.protocol."""
+    from iii.protocol import RegisterFunctionFormat
 
     fmt = RegisterFunctionFormat(name="test", type="string")
     assert fmt.name == "test"
@@ -346,7 +345,7 @@ def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.Monke
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
-    from iii import HttpInvocationConfig
+    from iii_helpers.http import HttpInvocationConfig
 
     client.register_function(
         "demo.http",

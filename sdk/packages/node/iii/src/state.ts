@@ -1,4 +1,4 @@
-import type { UpdateOp, UpdateOpError } from './stream'
+import type { UpdateOp, UpdateOpError } from '@iii-dev/helpers/stream'
 
 /** Input for retrieving a state value. */
 export type StateGetInput = {
@@ -63,13 +63,6 @@ export type StateUpdateResult<TData> = {
   errors?: UpdateOpError[]
 }
 
-/** Result of a state delete operation. */
-export type DeleteResult = {
-  /** Previous value (if it existed). */
-  // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-  old_value?: any
-}
-
 /** Input for atomically updating a state value. */
 export type StateUpdateInput = {
   /** State scope (namespace). */
@@ -113,7 +106,7 @@ export interface IState {
   /** Set (create or overwrite) a state value. */
   set<TData>(input: StateSetInput): Promise<StateSetResult<TData> | null>
   /** Delete a state value. */
-  delete(input: StateDeleteInput): Promise<DeleteResult>
+  delete(input: StateDeleteInput): Promise<StateDeleteResult>
   /** List all values in a scope. */
   list<TData>(input: StateListInput): Promise<TData[]>
   /** Apply atomic update operations to a state value. */

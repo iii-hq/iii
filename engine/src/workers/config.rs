@@ -764,6 +764,75 @@ impl EngineBuilder {
             }
         }
 
+        // Any worker entry whose value is already persisted in the
+        // configuration store has a redundant `config:` block in config.yaml.
+        // This covers built-in workers (which seed during the boot loop above,
+        // so their value is in the store by now) AND external workers like
+        // `shell` that register over the bus — an external worker's block is
+        // stripped on the first boot AFTER it persisted its value. Strip the
+        // block (keeping the `- name:` entry) and null the matching in-memory
+        // entry so a later reload's diff sees no change and doesn't needlessly
+        // restart the worker. Done before the watcher below exists, so these
+        // self-writes never trigger a reload.
+        if let Some(ref path) = config_path {
+            use crate::engine::EngineTrait;
+            use crate::workers::configuration::adapters::fs::{
+                ADAPTER_NAME, DEFAULT_DIRECTORY, FILE_EXTENSION,
+            };
+
+            // Where the fs adapter writes its `<id>.yaml` files, for the
+            // breadcrumb comment. `None` for a non-fs (e.g. bridge) adapter,
+            // where there is no local file to point at.
+            let store_dir: Option<String> = {
+                let adapter = running
+                    .iter()
+                    .find(|rw| rw.entry.name == "configuration")
+                    .and_then(|rw| rw.entry.config.as_ref())
+                    .and_then(|c| c.get("adapter"));
+                let name = adapter
+                    .and_then(|a| a.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(ADAPTER_NAME);
+                (name == ADAPTER_NAME).then(|| {
+                    adapter
+                        .and_then(|a| a.get("config"))
+                        .and_then(|c| c.get("directory"))
+                        .and_then(|d| d.as_str())
+                        .unwrap_or(DEFAULT_DIRECTORY)
+                        .to_string()
+                })
+            };
+
+            for idx in 0..running.len() {
+                if running[idx].entry.config.is_none() {
+                    continue; // no `config:` block to strip
+                }
+                let id = running[idx].entry.name.clone();
+                let persisted = match engine
+                    .call("configuration::get", serde_json::json!({ "id": id }))
+                    .await
+                {
+                    Ok(Some(body)) => body.get("value").is_some_and(|v| !v.is_null()),
+                    // NOT_FOUND (Err) or no body → value not persisted yet; leave
+                    // the block so first-boot seeding still has it to read.
+                    _ => false,
+                };
+                if !persisted {
+                    continue;
+                }
+                let location = match store_dir {
+                    Some(ref dir) => format!("{dir}/{id}.{FILE_EXTENSION}"),
+                    None => "the configuration worker store".to_string(),
+                };
+                // Only null the in-memory entry when the block was actually
+                // removed, so a no-op/failed strip leaves memory and file
+                // agreeing (a later reload diff sees no phantom change).
+                if super::config_rewrite::apply_strip(path, &id, &location) {
+                    running[idx].entry.config = None;
+                }
+            }
+        }
+
         // Relay global shutdown into each per-worker shutdown channel so a
         // global Ctrl+C terminates every worker (including those added via
         // reload -- those get subscribed to the relay the next time around).

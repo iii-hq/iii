@@ -14,7 +14,7 @@ use crate::{
     engine::Engine,
     workers::stream::{
         StreamIncomingMessage, StreamWorker,
-        adapters::{StreamAdapter, StreamConnection},
+        adapters::StreamConnection,
         connection::SocketStreamConnection,
         structs::{StreamAuthContext, StreamOutbound},
         trigger::StreamTriggers,
@@ -23,8 +23,6 @@ use crate::{
 
 pub struct StreamSocketManager {
     pub engine: Arc<Engine>,
-    pub auth_function: Option<String>,
-    adapter: Arc<dyn StreamAdapter>,
     stream_module: Arc<StreamWorker>,
     triggers: Arc<StreamTriggers>,
 }
@@ -32,18 +30,20 @@ pub struct StreamSocketManager {
 impl StreamSocketManager {
     pub fn new(
         engine: Arc<Engine>,
-        adapter: Arc<dyn StreamAdapter>,
         stream_module: Arc<StreamWorker>,
-        auth_function: Option<String>,
         triggers: Arc<StreamTriggers>,
     ) -> Self {
         Self {
             engine,
-            adapter,
             stream_module,
-            auth_function,
             triggers,
         }
+    }
+
+    /// The live connection-auth function id, read from the worker's hot config
+    /// snapshot so a runtime `auth_function` edit applies to new connections.
+    pub fn auth_function(&self) -> Option<String> {
+        self.stream_module.config_snapshot().auth_function.clone()
     }
 
     pub async fn socket_handler(
@@ -84,8 +84,12 @@ impl StreamSocketManager {
         let connection_id = connection.id.to_string();
         let connection = Arc::new(connection);
 
-        if let Err(e) = self
-            .adapter
+        // Capture the live adapter once for this connection's lifetime: a
+        // later hot-swap repoints new connections to the new backend, while
+        // this connection stays bound to the backend it subscribed to (so its
+        // unsubscribe below targets the right registry).
+        let adapter = self.stream_module.adapter_snapshot();
+        if let Err(e) = adapter
             .subscribe(connection_id.clone(), connection.clone())
             .await
         {
@@ -130,7 +134,7 @@ impl StreamSocketManager {
         }
 
         writer.abort();
-        if let Err(e) = self.adapter.unsubscribe(connection_id).await {
+        if let Err(e) = adapter.unsubscribe(connection_id).await {
             tracing::error!(error = %e, "Failed to unsubscribe connection");
         }
         connection.cleanup().await;
@@ -158,10 +162,7 @@ mod tests {
         routing::get,
     };
     use futures_util::{SinkExt, StreamExt};
-    use iii_sdk::{
-        UpdateResult,
-        types::{DeleteResult, SetResult},
-    };
+    use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult};
     use serde_json::{Value, json};
     use tokio::{
         net::TcpListener,
@@ -178,8 +179,8 @@ mod tests {
         workers::{
             observability::metrics::ensure_default_meter,
             stream::{
-                StreamOutboundMessage, StreamWrapperMessage, config::StreamModuleConfig,
-                structs::StreamIncomingMessageData,
+                StreamOutboundMessage, StreamWrapperMessage, adapters::StreamAdapter,
+                config::StreamModuleConfig, structs::StreamIncomingMessageData,
             },
             traits::ConfigurableWorker,
         },
@@ -229,8 +230,8 @@ mod tests {
             _group_id: &str,
             _item_id: &str,
             data: Value,
-        ) -> anyhow::Result<SetResult> {
-            Ok(SetResult {
+        ) -> anyhow::Result<StreamSetResult> {
+            Ok(StreamSetResult {
                 old_value: None,
                 new_value: data,
             })
@@ -250,8 +251,8 @@ mod tests {
             _stream_name: &str,
             _group_id: &str,
             _item_id: &str,
-        ) -> anyhow::Result<DeleteResult> {
-            Ok(DeleteResult { old_value: None })
+        ) -> anyhow::Result<StreamDeleteResult> {
+            Ok(StreamDeleteResult { old_value: None })
         }
 
         async fn get_group(
@@ -321,9 +322,9 @@ mod tests {
             _stream_name: &str,
             _group_id: &str,
             _item_id: &str,
-            _ops: Vec<iii_sdk::UpdateOp>,
-        ) -> anyhow::Result<UpdateResult> {
-            Ok(UpdateResult {
+            _ops: Vec<iii_helpers::stream::UpdateOp>,
+        ) -> anyhow::Result<StreamUpdateResult> {
+            Ok(StreamUpdateResult {
                 old_value: None,
                 new_value: json!({}),
                 errors: Vec::new(),
@@ -352,9 +353,7 @@ mod tests {
         ));
         let manager = Arc::new(StreamSocketManager::new(
             engine.clone(),
-            adapter,
             module.clone(),
-            None,
             module.triggers.clone(),
         ));
 

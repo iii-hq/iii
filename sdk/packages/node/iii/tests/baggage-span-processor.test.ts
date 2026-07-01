@@ -9,7 +9,7 @@ import {
 } from '@opentelemetry/sdk-trace-base'
 import { describe, expect, it } from 'vitest'
 
-import { BaggageSpanProcessor, DEFAULT_ALLOWLIST } from '@iii-dev/observability'
+import { BaggageSpanProcessor, DEFAULT_ALLOWLIST } from '@iii-dev/helpers/observability'
 
 function buildTestProvider(processor: BaggageSpanProcessor) {
   const exporter = new InMemorySpanExporter()

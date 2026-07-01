@@ -1,6 +1,6 @@
 import os
 
-from iii_observability import (
+from iii_helpers.observability import (
     REDACTED_PLACEHOLDER,
     redact,
     redact_and_truncate,

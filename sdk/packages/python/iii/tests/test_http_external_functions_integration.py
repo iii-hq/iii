@@ -11,10 +11,10 @@ import time
 from typing import Any
 
 import pytest
+from iii_helpers.http import HttpAuthBearer, HttpInvocationConfig
 
-from iii import HttpInvocationConfig, InitOptions
+from iii import InitOptions
 from iii.iii import III
-from iii.iii_types import HttpAuthBearer
 
 
 def _unique_function_id(prefix: str) -> str:
@@ -157,8 +157,8 @@ def _make_fake_ws_env(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         return FakeWs()
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
-    monkeypatch.setattr("iii_observability.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii_observability.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.attach_event_loop", lambda loop: None)
     monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
     return sent
 

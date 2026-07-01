@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { StateEventType, type StateEventData, type StateSetResult } from '../src/state'
-import type { UpdateAppend, UpdateOp } from '../src/stream'
+import type { UpdateAppend, UpdateOp } from '@iii-dev/helpers/stream'
 import type { FunctionRef, Trigger } from '../src/types'
 import { execute, iii, logger } from './utils'
 

@@ -16,10 +16,15 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { useEffect, useReducer } from 'react'
+import { useEffect, useReducer, useRef } from 'react'
 import { z } from 'zod'
 import type { FunctionInfo } from '@/api'
-import { functionsQuery, invokeFunction as invokeFunctionApi, workersQuery } from '@/api'
+import {
+  fetchFunctionDetail,
+  functionsQuery,
+  invokeFunction as invokeFunctionApi,
+  workersQuery,
+} from '@/api'
 import { Badge, Button } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
@@ -145,6 +150,10 @@ function FunctionsPage() {
   const [invocationState, dispatchInvocation] = useReducer(invocationReducer, invocationInitial)
   const { invoking, invocationResult, requestBody } = invocationState
 
+  // Tracks the currently-selected function id so an in-flight detail fetch can
+  // be discarded if the user selects a different function before it resolves.
+  const selectedFunctionRef = useRef<string | null>(null)
+
   const {
     data: functionsData,
     isLoading: loadingFunctions,
@@ -260,12 +269,27 @@ function FunctionsPage() {
 
   const handleSelectFunction = (fn: FunctionInfo) => {
     if (selectedFunction?.function_id === fn.function_id) {
+      selectedFunctionRef.current = null
       dispatchUi({ type: 'SET_SELECTED_FUNCTION', payload: null })
     } else {
+      selectedFunctionRef.current = fn.function_id
       dispatchUi({ type: 'SET_SELECTED_FUNCTION', payload: fn })
       dispatchInvocation({ type: 'CLEAR_RESULT' })
-      const template = fn.request_format ? generateTemplate(fn.request_format) : '{\n  \n}'
-      dispatchInvocation({ type: 'SET_REQUEST_BODY', body: template })
+      // The list route returns slim summaries without schemas. Fetch the
+      // detail to pre-fill the request body from `request_schema`; fall back to
+      // an empty object if the schema is absent or the fetch fails.
+      dispatchInvocation({ type: 'SET_REQUEST_BODY', body: '{\n  \n}' })
+      fetchFunctionDetail(fn.function_id)
+        .then((detail) => {
+          if (selectedFunctionRef.current !== fn.function_id) return
+          const template = detail.request_schema
+            ? generateTemplate(detail.request_schema)
+            : '{\n  \n}'
+          dispatchInvocation({ type: 'SET_REQUEST_BODY', body: template })
+        })
+        .catch(() => {
+          // Keep the empty-object fallback already set above.
+        })
     }
   }
 

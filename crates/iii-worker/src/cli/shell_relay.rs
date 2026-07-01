@@ -15,8 +15,8 @@
 //! concurrent exec sessions on the same port by routing frames on
 //! their `corr_id` (see `iii_supervisor::shell_protocol`).
 //!
-//! Design mirrors microsandbox's `runtime::relay`: the relay does
-//! **not** parse JSON payloads, only the fixed-size frame header.
+//! Design: the relay does **not** parse JSON payloads, only the
+//! fixed-size frame header.
 //! This keeps routing cheap and isolates the relay from protocol
 //! additions — new `ShellMessage` variants don't touch this file.
 //!

@@ -75,6 +75,20 @@ data "aws_iam_policy_document" "github_deploy_website" {
     ]
     resources = [aws_cloudfront_distribution.site.arn]
   }
+
+  # KVS data plane: deploy-website.yml reads the current route map and applies a
+  # batch put/delete to keep it in sync with website/*.html. Scoped to the one
+  # store; least-privilege (no key reads beyond the list needed to diff).
+  statement {
+    sid    = "CloudFrontKeyValueStoreSync"
+    effect = "Allow"
+    actions = [
+      "cloudfront-keyvaluestore:DescribeKeyValueStore",
+      "cloudfront-keyvaluestore:ListKeys",
+      "cloudfront-keyvaluestore:UpdateKeys",
+    ]
+    resources = [aws_cloudfront_key_value_store.routes.arn]
+  }
 }
 
 resource "aws_iam_policy" "github_deploy_website" {

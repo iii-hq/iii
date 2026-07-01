@@ -442,6 +442,23 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
+  helpers-npm:
+    name: Helpers Node Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/helpers
+      npm_tag: ${{ needs.setup.outputs.npm_tag }}
+      build_filter: "@iii-dev/helpers"
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Helpers Node (npm)
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
   sdk-py:
     name: SDK Python Publish
     needs: [setup, create-iii-release, observability-py]
@@ -459,7 +476,9 @@ jobs:
 
   observability-py:
     name: Observability Python Publish
-    needs: [setup, create-iii-release]
+    # The shim pins iii-helpers at the release version; publish helpers first so
+    # PyPI can resolve the dependency.
+    needs: [setup, create-iii-release, helpers-py]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_py.yml
     with:
@@ -467,6 +486,21 @@ jobs:
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Observability Python (pypi)
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  helpers-py:
+    name: Helpers Python Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/helpers
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Helpers Python (pypi)
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -508,7 +542,9 @@ jobs:
 
   observability-rust:
     name: Observability Rust Publish
-    needs: [setup, create-iii-release]
+    # The shim depends on iii-helpers; cargo publish resolves it from crates.io,
+    # so helpers must be published first.
+    needs: [setup, create-iii-release, helpers-rust]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-cargo.yml
     with:
@@ -516,6 +552,21 @@ jobs:
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Observability Rust (cargo)
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  helpers-rust:
+    name: Helpers Rust Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/helpers
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Helpers Rust (cargo)
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -718,6 +769,9 @@ jobs:
       - observability-npm
       - observability-py
       - observability-rust
+      - helpers-npm
+      - helpers-py
+      - helpers-rust
       - docker-engine
       - homebrew-engine
       - homebrew-console
@@ -745,6 +799,9 @@ jobs:
           OBS_NPM_RESULT: ${{ needs.observability-npm.result }}
           OBS_PY_RESULT: ${{ needs.observability-py.result }}
           OBS_RUST_RESULT: ${{ needs.observability-rust.result }}
+          HELPERS_NPM_RESULT: ${{ needs.helpers-npm.result }}
+          HELPERS_PY_RESULT: ${{ needs.helpers-py.result }}
+          HELPERS_RUST_RESULT: ${{ needs.helpers-rust.result }}
           DOCKER_RESULT: ${{ needs.docker-engine.result }}
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
@@ -775,6 +832,9 @@ jobs:
           LINES="$LINES$(icon "$OBS_NPM_RESULT") Observability Node\n"
           LINES="$LINES$(icon "$OBS_PY_RESULT") Observability Python\n"
           LINES="$LINES$(icon "$OBS_RUST_RESULT") Observability Rust\n"
+          LINES="$LINES$(icon "$HELPERS_NPM_RESULT") Helpers Node\n"
+          LINES="$LINES$(icon "$HELPERS_PY_RESULT") Helpers Python\n"
+          LINES="$LINES$(icon "$HELPERS_RUST_RESULT") Helpers Rust\n"
           LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
           LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
 
@@ -784,7 +844,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
+          for r in "$INIT_RESULT" "$FIRMWARE_RESULT" "$ENGINE_RESULT" "$WORKER_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

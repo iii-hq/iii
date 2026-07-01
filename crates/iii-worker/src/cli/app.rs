@@ -253,8 +253,7 @@ pub enum Commands {
     },
 }
 
-/// Arguments for `iii worker exec`. Mirrors `msb exec`'s shape so
-/// users moving between microsandbox and iii have muscle memory.
+/// Arguments for `iii worker exec`.
 #[derive(Args, Debug)]
 pub struct ExecArgs {
     /// Worker name whose VM to run the command in.
@@ -310,6 +309,16 @@ pub struct WatchSourceArgs {
     /// Absolute project directory to watch recursively
     #[arg(long, value_name = "PATH")]
     pub project: String,
+
+    /// Worker runs in the overlay copy-in workspace model (host project is
+    /// copied into a VM-local /workspace at boot, then /mnt/host-src is
+    /// detached). Set by `iii worker start` from the authoritative
+    /// `overlay::overlay_active()` decision. When set, the watcher always does
+    /// a full VM restart on source edits — the in-VM fast restart would re-run
+    /// the boot script against the now-detached share and fail. Absent ⇒
+    /// live-mount (legacy/bundle), where the fast restart is valid.
+    #[arg(long)]
+    pub overlay: bool,
 }
 
 /// Arguments for the `worker-manager-daemon` subcommand. Started by

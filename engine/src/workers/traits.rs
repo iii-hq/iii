@@ -26,8 +26,12 @@ pub struct AdapterEntry {
     /// Adapter class name (e.g. `kv`, `redis`, `bridge`).
     pub name: String,
     /// Adapter-specific configuration. Free-form so adapters stay pluggable —
-    /// the schema does not constrain its shape.
-    #[serde(default)]
+    /// the schema does not constrain its shape. `skip_serializing_if` omits the
+    /// key when absent rather than emitting `config: null`: a worker that
+    /// advertises a closed per-adapter schema (a `oneOf` whose branches `$ref`
+    /// an object `config`) would otherwise reject its own `{name}`-only seed,
+    /// because `null` matches no branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<Value>,
 }
 

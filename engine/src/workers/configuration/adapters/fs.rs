@@ -6,8 +6,11 @@
 
 //! File-system adapter — one YAML file per configuration id.
 //!
-//! Layout: `<directory>/<id>.yaml` where each file is a serialised
-//! [`ConfigurationEntry`]. The adapter watches the directory with `notify`
+//! Layout: `<directory>/<id>.yaml` holding the entry's id/name/description,
+//! `value`, and optional `metadata`. The JSON Schema is deliberately NOT
+//! persisted — it is large and workers re-register it on every boot, so the
+//! disk file stays focused on the value a human edits. The adapter watches the
+//! directory with `notify`
 //! and surfaces external edits through the `ExternalChange` channel so the
 //! worker can fire `configuration` triggers without depending on the source
 //! of the change.
@@ -32,11 +35,22 @@ use crate::workers::configuration::registry::{
 };
 use crate::workers::configuration::structs::ConfigurationEntry;
 
+/// Registered name of the file-backed configuration adapter, and the default
+/// adapter the configuration worker selects when none is configured. Exposed so
+/// the boot-time persisted-config read (`crate::logging`) resolves the same
+/// adapter/dir/extension this adapter actually uses, instead of duplicating the
+/// literals and risking silent drift.
+pub(crate) const ADAPTER_NAME: &str = "fs";
 // `DEFAULT_DIRECTORY` / `FILE_EXTENSION` are `pub(crate)` so boot-time
 // persisted-config readers (e.g. the `iii-state` boot-read) resolve the same
 // on-disk location the configuration worker persists entries under.
-pub(crate) const DEFAULT_DIRECTORY: &str = "./data/configuration";
+pub(crate) const DEFAULT_DIRECTORY: &str = "./config";
 pub(crate) const FILE_EXTENSION: &str = "yaml";
+/// The previous default store location. When the resolved directory is the
+/// current default and this legacy folder still holds entries, `new` migrates
+/// them across once (a soft transition) so upgrading doesn't silently start the
+/// store from empty. An explicit `directory:` override is never touched.
+const LEGACY_DEFAULT_DIRECTORY: &str = "./data/configuration";
 
 pub struct FsAdapter {
     directory: PathBuf,
@@ -64,6 +78,13 @@ impl FsAdapter {
             )
         })?;
 
+        // Soft transition: when running on the current default location, move any
+        // entries left in the legacy default folder across once. Guarded on the
+        // default dir, so an explicit `directory:` override is never disturbed.
+        if directory.as_path() == Path::new(DEFAULT_DIRECTORY) {
+            Self::migrate_legacy_default(&directory).await;
+        }
+
         let cache = Self::load_directory(&directory).await?;
         tracing::info!(
             directory = %directory.display(),
@@ -80,6 +101,69 @@ impl FsAdapter {
 
     fn entry_path(&self, id: &str) -> PathBuf {
         self.directory.join(format!("{}.{}", id, FILE_EXTENSION))
+    }
+
+    /// One-time soft migration of `*.yaml` entries from the legacy default
+    /// store location ([`LEGACY_DEFAULT_DIRECTORY`]) into `target`.
+    async fn migrate_legacy_default(target: &Path) {
+        Self::migrate_dir(Path::new(LEGACY_DEFAULT_DIRECTORY), target).await;
+    }
+
+    /// Move every `*.yaml` entry from `legacy` into `target`. Best-effort: a
+    /// file already present in `target` is left in place (WARNING, the legacy
+    /// copy is kept so the operator can reconcile); any I/O error is logged and
+    /// the file is skipped. Never fails the adapter.
+    async fn migrate_dir(legacy: &Path, target: &Path) {
+        if legacy == target {
+            return;
+        }
+        let mut read_dir = match tokio::fs::read_dir(legacy).await {
+            Ok(rd) => rd,
+            // Legacy folder absent (a fresh install) — nothing to migrate.
+            Err(_) => return,
+        };
+
+        let mut moved = 0usize;
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION)
+            {
+                continue;
+            }
+            let Some(name) = path.file_name() else {
+                continue;
+            };
+            let dest = target.join(name);
+            if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+                tracing::warn!(
+                    file = %name.to_string_lossy(),
+                    location = %target.display(),
+                    "Skipped migrating configuration file from the legacy '{}' folder: a file with that name already exists in the new location; the legacy copy was left untouched",
+                    LEGACY_DEFAULT_DIRECTORY,
+                );
+                continue;
+            }
+            match tokio::fs::rename(&path, &dest).await {
+                Ok(()) => moved += 1,
+                Err(err) => tracing::warn!(
+                    file = %name.to_string_lossy(),
+                    error = %err,
+                    "Failed to migrate configuration file from the legacy '{}' folder; leaving it in place",
+                    LEGACY_DEFAULT_DIRECTORY,
+                ),
+            }
+        }
+
+        if moved > 0 {
+            tracing::info!(
+                from = %legacy.display(),
+                to = %target.display(),
+                count = moved,
+                "The configuration store now defaults to '{}'; migrated existing entries out of the legacy '{}' folder",
+                DEFAULT_DIRECTORY,
+                LEGACY_DEFAULT_DIRECTORY,
+            );
+        }
     }
 
     async fn load_directory(dir: &Path) -> anyhow::Result<HashMap<String, ConfigurationEntry>> {
@@ -117,8 +201,14 @@ impl FsAdapter {
     }
 
     async fn write_entry(&self, entry: &ConfigurationEntry) -> anyhow::Result<()> {
+        // schema omitted — see module doc; rebuilt from re-registration.
         let path = self.entry_path(&entry.id);
-        let yaml = serde_yaml::to_string(entry)
+        let mut doc = serde_yaml::to_value(entry)
+            .map_err(|e| anyhow::anyhow!("failed to serialise entry: {}", e))?;
+        if let Some(map) = doc.as_mapping_mut() {
+            map.remove("schema");
+        }
+        let yaml = serde_yaml::to_string(&doc)
             .map_err(|e| anyhow::anyhow!("failed to serialise entry: {}", e))?;
         let tmp = path.with_extension(format!("{}.tmp", FILE_EXTENSION));
         tokio::fs::write(&tmp, yaml.as_bytes()).await?;
@@ -225,16 +315,25 @@ impl ConfigurationAdapter for FsAdapter {
             }
         })
         .map_err(|e| anyhow::anyhow!("failed to create configuration watcher: {}", e))?;
+        // Watch an absolute path: the macOS FSEvents backend can silently fail
+        // to deliver events for a relative path like `./config`, which is
+        // exactly the default. Canonicalize (the dir always exists by now —
+        // `new` created it) and fall back to the raw path only if that fails.
+        let watch_path = std::fs::canonicalize(&directory).unwrap_or_else(|_| directory.clone());
         watcher
-            .watch(&directory, RecursiveMode::NonRecursive)
+            .watch(&watch_path, RecursiveMode::NonRecursive)
             .map_err(|e| {
                 anyhow::anyhow!(
                     "failed to watch configuration directory '{}': {}",
-                    directory.display(),
+                    watch_path.display(),
                     e
                 )
             })?;
         *self.watcher.lock().await = Some(watcher);
+        tracing::info!(
+            directory = %watch_path.display(),
+            "Watching configuration directory for external edits (hot-reload enabled)"
+        );
 
         // Debounce loop: drains every queued raw event in a 500ms window
         // and then diffs the directory snapshot against the cache, emitting
@@ -264,19 +363,26 @@ impl ConfigurationAdapter for FsAdapter {
                 for (id, fresh) in snapshot.iter() {
                     match cache_guard.get(id) {
                         None => {
+                            // New file with no cached entry; its schema stays
+                            // null until the owning worker registers it.
                             events.push(ExternalChange::Registered(fresh.clone()));
                         }
+                        // `schema` is intentionally absent from this diff: it no
+                        // longer lives on disk, so an external edit can't change
+                        // it. Comparing it would flag every write as changed
+                        // (cached real schema vs disk's null).
                         Some(existing)
                             if existing.value != fresh.value
-                                || existing.schema != fresh.schema
                                 || existing.name != fresh.name
                                 || existing.description != fresh.description =>
                         {
+                            // Carry the cached schema forward so the event (and
+                            // the cache update below) keep the real schema rather
+                            // than blanking it to the disk's null.
+                            let mut entry = fresh.clone();
+                            entry.schema = existing.schema.clone();
                             let old_value = Some(existing.value.clone());
-                            events.push(ExternalChange::Updated {
-                                entry: fresh.clone(),
-                                old_value,
-                            });
+                            events.push(ExternalChange::Updated { entry, old_value });
                         }
                         _ => {}
                     }
@@ -326,7 +432,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> ConfigurationAda
     )
 }
 
-crate::register_adapter!(<ConfigurationAdapterRegistration> name: "fs", make_adapter);
+crate::register_adapter!(<ConfigurationAdapterRegistration> name: ADAPTER_NAME, make_adapter);
 
 #[cfg(test)]
 mod tests {
@@ -363,6 +469,13 @@ mod tests {
 
         let path = dir.path().join("iii-stream.yaml");
         assert!(path.exists(), "yaml file should be created on disk");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            !contents.contains("schema"),
+            "schema must not be persisted to disk; got:\n{contents}"
+        );
+        assert!(contents.contains("port"), "value must be persisted");
     }
 
     #[tokio::test]
@@ -455,6 +568,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loading_schemaless_file_defaults_schema_to_null() {
+        let dir = temp_dir();
+        // A value-only file (no `schema:` key) is exactly what `write_entry`
+        // now produces; loading it must default schema to null, not error.
+        let yaml = "id: noschema\nname: No Schema\ndescription: test\nvalue:\n  port: 3112\n";
+        tokio::fs::write(dir.path().join("noschema.yaml"), yaml)
+            .await
+            .unwrap();
+
+        let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+            .await
+            .unwrap();
+        let read = adapter.get("noschema").await.unwrap().unwrap();
+        assert!(
+            read.schema.is_null(),
+            "missing schema should default to null"
+        );
+        assert_eq!(read.value, json!({ "port": 3112 }));
+    }
+
+    #[tokio::test]
     async fn watcher_emits_registered_event_on_external_create() {
         let dir = temp_dir();
         let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
@@ -477,6 +611,166 @@ mod tests {
             ExternalChange::Registered(e) => assert_eq!(e.id, "external"),
             other => panic!("unexpected change: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn watcher_carries_cached_schema_forward_on_external_update() {
+        let dir = temp_dir();
+        let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+            .await
+            .unwrap();
+        // Register so the adapter cache holds the real schema; the file on disk
+        // is value-only (write_entry drops schema).
+        adapter.register(sample_entry("watched")).await.unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        adapter.watch(tx).await.unwrap();
+
+        // External edit changing only the value, in the value-only on-disk format.
+        let edited =
+            "id: watched\nname: watched display\ndescription: test\nvalue:\n  port: 9999\n";
+        tokio::fs::write(dir.path().join("watched.yaml"), edited)
+            .await
+            .unwrap();
+
+        let evt = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("watcher should report an event")
+            .expect("channel closed");
+        match evt {
+            ExternalChange::Updated { entry, old_value } => {
+                assert_eq!(entry.value, json!({ "port": 9999 }));
+                assert_eq!(old_value, Some(json!({ "port": 3112 })));
+                // Schema is absent on disk but must be carried forward from cache,
+                // not blanked to null — and the value edit must fire exactly one
+                // Updated event (schema is no longer part of the diff).
+                assert_eq!(
+                    entry.schema,
+                    json!({ "type": "object" }),
+                    "cached schema must survive an external value edit"
+                );
+            }
+            other => panic!("expected Updated, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_set_does_not_echo_through_watcher() {
+        // An internal `set` writes the file AND updates the adapter cache, so
+        // the watcher's diff sees disk == cache and emits nothing. This is what
+        // stops a save → reload → save loop. (An *external* edit, where the
+        // cache is stale relative to disk, still fires — see the tests above.)
+        let dir = temp_dir();
+        let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+            .await
+            .unwrap();
+        adapter.register(sample_entry("looptest")).await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        adapter.watch(tx).await.unwrap();
+
+        adapter
+            .set("looptest", json!({ "port": 4242 }))
+            .await
+            .unwrap();
+
+        // Well past the 500ms debounce: the self-write must not surface as an
+        // external change.
+        let echoed = tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await;
+        assert!(
+            echoed.is_err(),
+            "an internal set must not echo back through the watcher (would loop)"
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_dir_moves_yaml_entries_and_ignores_others() {
+        let legacy = temp_dir();
+        let target = temp_dir();
+        let stream = "id: iii-stream\nvalue:\n  port: 1\n";
+        tokio::fs::write(legacy.path().join("iii-stream.yaml"), stream)
+            .await
+            .unwrap();
+        tokio::fs::write(legacy.path().join("iii-http.yaml"), "id: iii-http\n")
+            .await
+            .unwrap();
+        // A non-yaml file must be left behind.
+        tokio::fs::write(legacy.path().join("notes.txt"), "ignore me")
+            .await
+            .unwrap();
+
+        FsAdapter::migrate_dir(legacy.path(), target.path()).await;
+
+        assert!(target.path().join("iii-stream.yaml").exists());
+        assert!(target.path().join("iii-http.yaml").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(target.path().join("iii-stream.yaml"))
+                .await
+                .unwrap(),
+            stream,
+            "content must be preserved across the move"
+        );
+        // Moved, not copied.
+        assert!(!legacy.path().join("iii-stream.yaml").exists());
+        assert!(!legacy.path().join("iii-http.yaml").exists());
+        // Non-yaml left untouched in the legacy folder.
+        assert!(!target.path().join("notes.txt").exists());
+        assert!(legacy.path().join("notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn migrate_dir_skips_conflicts_and_keeps_legacy_copy() {
+        let legacy = temp_dir();
+        let target = temp_dir();
+        tokio::fs::write(
+            legacy.path().join("iii-stream.yaml"),
+            "id: iii-stream\nvalue:\n  port: 1\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(legacy.path().join("iii-http.yaml"), "id: iii-http\n")
+            .await
+            .unwrap();
+        // The new location already has a file with the same name (different
+        // content): the migration of THAT file must be skipped (WARNING).
+        let existing = "id: iii-stream\nvalue:\n  port: 999\n";
+        tokio::fs::write(target.path().join("iii-stream.yaml"), existing)
+            .await
+            .unwrap();
+
+        FsAdapter::migrate_dir(legacy.path(), target.path()).await;
+
+        // Conflict: target keeps its own content; legacy copy is left in place.
+        assert_eq!(
+            tokio::fs::read_to_string(target.path().join("iii-stream.yaml"))
+                .await
+                .unwrap(),
+            existing,
+            "a conflicting file must not be overwritten"
+        );
+        assert!(
+            legacy.path().join("iii-stream.yaml").exists(),
+            "the conflicting legacy copy is kept for the operator to reconcile"
+        );
+        // The non-conflicting file still migrates.
+        assert!(target.path().join("iii-http.yaml").exists());
+        assert!(!legacy.path().join("iii-http.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn migrate_dir_is_a_noop_when_legacy_absent() {
+        let target = temp_dir();
+        let legacy = target.path().join("nonexistent-legacy");
+        // Must not panic or create anything.
+        FsAdapter::migrate_dir(&legacy, target.path()).await;
+        assert!(
+            tokio::fs::read_dir(target.path())
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

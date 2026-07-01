@@ -514,17 +514,37 @@ where
     Ok(())
 }
 
-/// Production restart dispatcher.
+/// Whether the in-VM supervisor fast restart is valid for this change.
 ///
-/// For `ChangeKind::Source`, tries the supervisor fast path first. If
-/// the supervisor is unreachable (not installed, crashed, timeout), or
-/// if the change is a `DepManifest`, falls back to a full VM restart
-/// via `iii-worker start <name>`.
-///
-/// Invoked by `watch_and_restart` on every debounced file-change
-/// burst.
-pub fn restart_via_cli(worker_name: &str, kind: ChangeKind) {
-    if matches!(kind, ChangeKind::Source) {
+/// Valid only for a regular source edit on a live-mount worker
+/// (legacy/bundle), where `/workspace` IS the host project and a process
+/// restart picks up the edit. INVALID for:
+///   - `DepManifest` changes — deps reinstall only at boot, so a full VM
+///     restart is required.
+///   - overlay copy-in workers — the host project is copied into a VM-local
+///     `/workspace` at boot and `/mnt/host-src` is then detached, so an in-VM
+///     restart re-runs `dev-run.sh`, fails its host-src mountpoint check, and
+///     even on success would serve stale source. Only a full VM restart
+///     re-copies.
+fn fast_restart_eligible(kind: ChangeKind, overlay_copyin: bool) -> bool {
+    matches!(kind, ChangeKind::Source) && !overlay_copyin
+}
+
+pub fn restart_via_cli(worker_name: &str, kind: ChangeKind, overlay_copyin: bool) {
+    // `overlay_copyin` is handed down from `iii worker start`, which decided
+    // the workspace model authoritatively (`overlay::overlay_active()`) at the
+    // moment it spawned this watcher. We deliberately do NOT re-derive it from
+    // the on-disk `.iii-layout` marker: that marker is written best-effort (a
+    // swallowed write failure leaves it absent), and an absent marker is
+    // ambiguous between a legacy worker and an overlay worker whose write
+    // failed — so inferring from it can fail OPEN to the unsafe fast path. The
+    // fast path is valid only for a source edit on a live-mount (legacy/bundle)
+    // worker, because overlay copy-in detaches /mnt/host-src after the
+    // boot-time copy: an in-VM fast restart re-runs dev-run.sh, fails its
+    // host-src mountpoint check (`iii: ERROR /mnt/host-src ... is not a
+    // virtiofs mountpoint`), and even on success would serve stale source.
+    // Only a full VM restart re-copies.
+    if fast_restart_eligible(kind, overlay_copyin) {
         match try_fast_restart(worker_name) {
             Ok(()) => {
                 tracing::info!(
@@ -542,10 +562,19 @@ pub fn restart_via_cli(worker_name: &str, kind: ChangeKind) {
                 );
             }
         }
-    } else {
+    } else if matches!(kind, ChangeKind::DepManifest) {
+        // Dep-manifest changes always full-restart so the install reruns at
+        // boot, regardless of workspace model — report that as the reason.
         tracing::info!(
             worker = %worker_name,
             "source watcher: dep manifest changed, forcing full VM restart"
+        );
+    } else {
+        // Source edit on an overlay copy-in worker: the fast path is unsafe
+        // here (see above), so go straight to a full VM restart.
+        tracing::info!(
+            worker = %worker_name,
+            "source watcher: overlay copy-in worker, forcing full VM restart"
         );
     }
 
@@ -652,6 +681,23 @@ mod tests {
             args.iter().any(|a| *a == "--no-wait"),
             "watcher slow-path restart must pass --no-wait to avoid polluting watcher.log"
         );
+    }
+
+    /// Regression lock for the overlay dev-loop bug: a source edit on an
+    /// overlay copy-in worker MUST take the full VM restart, never the in-VM
+    /// fast path. `dev-run.sh` detaches `/mnt/host-src` after the boot-time
+    /// copy, so a fast restart re-runs that script and fails its mountpoint
+    /// check (`iii: ERROR /mnt/host-src ... is not a virtiofs mountpoint`),
+    /// surfacing as "save once errors, save again works".
+    #[test]
+    fn fast_path_eligible_only_for_live_mount_source_edits() {
+        // Live-mount (legacy/bundle) source edit: fast path is valid.
+        assert!(fast_restart_eligible(ChangeKind::Source, false));
+        // Overlay copy-in source edit: must full-restart (the bug this fixes).
+        assert!(!fast_restart_eligible(ChangeKind::Source, true));
+        // Dep-manifest changes always force a full restart (reinstall at boot).
+        assert!(!fast_restart_eligible(ChangeKind::DepManifest, false));
+        assert!(!fast_restart_eligible(ChangeKind::DepManifest, true));
     }
 
     #[test]

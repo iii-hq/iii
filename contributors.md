@@ -4,3 +4,7 @@ The following users make all of their contributions to iii under the Apache 2 li
 [CONTRIBUTING.md](CONTRIBUTING.md) in full.
 - @CryptoQuaternions
 - @MarcusElwin
+- @McHersheys
+- @mikkel-arturo
+- @snvtac
+- @salarkhannn

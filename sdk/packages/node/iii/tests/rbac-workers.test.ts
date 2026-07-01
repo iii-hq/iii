@@ -1,16 +1,16 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type {
   AuthInput,
   AuthResult,
-  MiddlewareFunctionInput,
   OnFunctionRegistrationInput,
   OnFunctionRegistrationResult,
   OnTriggerRegistrationInput,
   OnTriggerRegistrationResult,
   OnTriggerTypeRegistrationInput,
   OnTriggerTypeRegistrationResult,
-} from '../src/index'
-import { IIIInvocationError, registerWorker } from '../src/index'
+} from '@iii-dev/helpers/worker-connection-manager'
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import type { MiddlewareFunctionInput } from '../src/index'
+import { InvocationError, registerWorker } from '../src/index'
 import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep } from './utils'
 
@@ -362,7 +362,7 @@ describe('RBAC Workers', () => {
     }
   })
 
-  it('wraps FORBIDDEN rejection in IIIInvocationError with function_id', async () => {
+  it('wraps FORBIDDEN rejection in InvocationError with function_id', async () => {
     const iiiClient = registerWorker(EW_URL, {
       headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
@@ -381,8 +381,8 @@ describe('RBAC Workers', () => {
       }
 
       expect(caught).toBeInstanceOf(Error)
-      expect(caught).toBeInstanceOf(IIIInvocationError)
-      const err = caught as IIIInvocationError
+      expect(caught).toBeInstanceOf(InvocationError)
+      const err = caught as InvocationError
       expect(err.code).toBe('FORBIDDEN')
       expect(err.function_id).toBe('test::ew::private')
       expect(err.message).toContain('FORBIDDEN')

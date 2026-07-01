@@ -21,7 +21,9 @@ pub struct ConfigurationEntry {
     pub name: String,
     /// One-line description of what this configuration controls.
     pub description: String,
-    /// JSON Schema describing the shape of `value`.
+    /// JSON Schema describing the shape of `value`. Not persisted to disk by
+    /// the fs adapter; rebuilt in-memory when the owning worker re-registers.
+    #[serde(default)]
     pub schema: Value,
     /// Stored configuration body. May contain `${VAR:default}` placeholders.
     #[serde(default)]

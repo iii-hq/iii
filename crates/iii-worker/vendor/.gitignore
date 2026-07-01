@@ -1,0 +1,3 @@
+# One-time build input for regen-golden.sh; never commit (16 GiB logical).
+raw-golden.ext4
+*.ext4

@@ -8,10 +8,10 @@ from urllib.parse import urlencode
 
 import aiohttp
 import pytest
+from iii_helpers.http import http
 
-from iii import http
 from iii.iii import III
-from iii.types import HttpRequest, HttpResponse
+from iii.types import StreamRequest, StreamResponse
 
 TEST_ASSETS_DIR = Path(__file__).parent.parent.parent.parent.parent / "test-assets"
 TEST_FILE = TEST_ASSETS_DIR / "handbook.pdf"
@@ -93,7 +93,7 @@ async def test_raw_json_request_body(engine_http_url, iii_client: III):
     function_id = "test::api::json::raw::py"
 
     @http
-    async def handler(req: HttpRequest, response: HttpResponse):
+    async def handler(req: StreamRequest, response: StreamResponse):
         raw = await req.request_body.read_all()
 
         await response.status(200)
@@ -303,7 +303,7 @@ async def test_custom_status_code(engine_http_url, iii_client: III):
 
 @pytest.mark.asyncio
 async def test_content_type_on_api_response_return(engine_http_url, iii_client: III):
-    """Returning an ApiResponse dict with headers should set the response Content-Type."""
+    """Returning an HttpResponse dict with headers should set the response Content-Type."""
     xml_body = '<?xml version="1.0" encoding="UTF-8"?><note><to>user</to><body>hello</body></note>'
 
     def handler(_input_data):
@@ -346,7 +346,7 @@ async def test_download_pdf_streaming(engine_http_url, iii_client: III):
     original_pdf = TEST_FILE.read_bytes()
 
     @http
-    async def handler(req: HttpRequest, response: HttpResponse):
+    async def handler(req: StreamRequest, response: StreamResponse):
         await response.status(200)
         await response.headers({"content-type": "application/pdf"})
         await response.writer.write(original_pdf)
@@ -389,7 +389,7 @@ async def test_upload_pdf_streaming(engine_http_url, iii_client: III):
     received_data = bytearray()
 
     @http
-    async def handler(req: HttpRequest, response: HttpResponse):
+    async def handler(req: StreamRequest, response: StreamResponse):
         nonlocal received_data
         await response.status(200)
         await response.headers({"content-type": "application/json"})
@@ -443,7 +443,7 @@ async def test_sse_streaming(engine_http_url, iii_client: III):
     ]
 
     @http
-    async def handler(req: HttpRequest, response: HttpResponse):
+    async def handler(req: StreamRequest, response: StreamResponse):
         await response.status(200)
         await response.headers(
             {
@@ -521,7 +521,7 @@ async def test_urlencoded_form_data(engine_http_url, iii_client: III):
     """Handle application/x-www-form-urlencoded request."""
 
     @http
-    async def handler(req: HttpRequest, response: HttpResponse):
+    async def handler(req: StreamRequest, response: StreamResponse):
         raw = await req.request_body.read_all()
         body = raw.decode("utf-8")
 
@@ -582,7 +582,7 @@ async def test_multipart_form_data(engine_http_url, iii_client: III):
     original_pdf = TEST_FILE.read_bytes()
 
     @http
-    async def handler(req: HttpRequest, response: HttpResponse):
+    async def handler(req: StreamRequest, response: StreamResponse):
         raw = await req.request_body.read_all()
         content_type = req.headers.get("content-type", "")
 

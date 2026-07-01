@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.19.4"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2704,8 +2704,9 @@ dependencies = [
  "hex",
  "http-body-util",
  "iana-time-zone",
+ "iii",
  "iii-clap-docs",
- "iii-observability",
+ "iii-helpers",
  "iii-sdk",
  "iii-worker",
  "indexmap 2.14.0",
@@ -2767,14 +2768,14 @@ dependencies = [
 
 [[package]]
 name = "iii-console"
-version = "0.19.4"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
  "futures-util",
  "iii-clap-docs",
- "iii-observability",
+ "iii-helpers",
  "iii-sdk",
  "mime_guess",
  "reqwest 0.12.28",
@@ -2792,7 +2793,7 @@ name = "iii-example"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "iii-observability",
+ "iii-helpers",
  "iii-sdk",
  "reqwest 0.12.28",
  "schemars 0.8.22",
@@ -2809,6 +2810,26 @@ dependencies = [
  "libc",
  "msb_krun",
  "tempfile",
+]
+
+[[package]]
+name = "iii-helpers"
+version = "0.20.0"
+dependencies = [
+ "futures-util",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry_sdk",
+ "reqwest 0.12.28",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sysinfo 0.38.4",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2845,31 +2866,20 @@ dependencies = [
 
 [[package]]
 name = "iii-observability"
-version = "0.19.4"
+version = "0.20.0"
 dependencies = [
- "futures-util",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry_sdk",
- "reqwest 0.12.28",
- "serde_json",
- "serial_test",
- "sysinfo 0.38.4",
- "tokio",
- "tokio-tungstenite 0.28.0",
- "tracing",
- "uuid",
+ "iii-helpers",
 ]
 
 [[package]]
 name = "iii-sdk"
-version = "0.19.4"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "ctor",
  "futures-util",
  "hostname",
- "iii-observability",
+ "iii-helpers",
  "opentelemetry",
  "opentelemetry_sdk",
  "reqwest 0.12.28",
@@ -2925,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "iii-worker"
-version = "0.19.4"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2945,8 +2955,8 @@ dependencies = [
  "humantime",
  "iii-clap-docs",
  "iii-filesystem",
+ "iii-helpers",
  "iii-network",
- "iii-observability",
  "iii-sdk",
  "iii-shell-client",
  "iii-shell-proto",
@@ -3656,7 +3666,7 @@ dependencies = [
 
 [[package]]
 name = "motia-tools"
-version = "0.19.4"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3668,9 +3678,9 @@ dependencies = [
 
 [[package]]
 name = "msb_krun"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c29ba9c9c8a38cd001c0c9af16bd3c75be328ab8c95a3aa933b125c1d93f41c"
+checksum = "5df0f4dbc4771ed8df8a7ed584221e48bc3fe1726242378332a02ce27518ca53"
 dependencies = [
  "crossbeam-channel",
  "kvm-bindings",
@@ -3688,9 +3698,9 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_arch"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5eb4327e3efe423f3bcdca0390589193834b9f73eb54bb13b90f48f1755b499e"
+checksum = "923b2f7ed0d299b37ea9bbc47e9d8fe1a46c44e1ecf1d9ecf306377b20f90762"
 dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
@@ -3704,15 +3714,15 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_arch_gen"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bc7dbc08509138172ccd3b40df5c1501ad498ba12f2643eb013320205f9c987"
+checksum = "aff114cab67c406f051985749d7cd4aedab3fd445936f6759fd95de9c0352bb7"
 
 [[package]]
 name = "msb_krun_cpuid"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03d88b81a52ae5b3fe1afb1692b0785a4fe946c77bbc9e43a030e84e90627819"
+checksum = "9f4a5cf30e814f211c32c43ee88e9a711ed0b17b88396a80baf5360f49ade848"
 dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
@@ -3721,9 +3731,9 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_devices"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0f6d808b3c4d5a7c24fba02a64f2f704da973cf6820deedd2811c2ec795b9fc"
+checksum = "80f22c8cd187fc729c7f3b0922ae9e2e078809172f305dd343a6c4c71a219d68"
 dependencies = [
  "bitflags 1.3.2",
  "capng",
@@ -3749,9 +3759,9 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_hvf"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bce2de785e2cceda28ce03f20a9eeb895ac947ab66b09db31077a070bd6dda86"
+checksum = "8c816c66f7eb6ccf751cb250a1c7ab0bc261cac6cef36ee68a8b673864ce5800"
 dependencies = [
  "crossbeam-channel",
  "libloading",
@@ -3761,9 +3771,9 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_kernel"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2047a3f886330138dd6a681ef96b0b2257b494f295535bdd641841068f5847bc"
+checksum = "294eaf9998761721183f080866ddca635f3186da8541d2a273f60cf719ee92c3"
 dependencies = [
  "msb_krun_utils",
  "vm-memory 0.16.2",
@@ -3771,9 +3781,9 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_polly"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db57f147c6e1aca9a14d137ada76b6df78b538a0673d86b33652be78e9784499"
+checksum = "778c4a9713517f131ae5b0c3e6c299a7e70ced97edeedd6e469639b9d7390fe2"
 dependencies = [
  "libc",
  "msb_krun_utils",
@@ -3781,18 +3791,18 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_smbios"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c0c3a0923f194852028fd0e809a8d26c5465bc550f59c08b25bae5dd9885457"
+checksum = "775c50a8ab2688083eaf8636af96bed12974d5be9e5811e4c5665cea4fd06ff8"
 dependencies = [
  "vm-memory 0.16.2",
 ]
 
 [[package]]
 name = "msb_krun_utils"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fbae5590c539ee8b9ed0e2d4c50c6ee5b546f03f9eb2408b885628514ddb9a6"
+checksum = "0f620c8707cd19f6c67c004c2e80744a0bdab7349e18564ec982f8542712a375"
 dependencies = [
  "bitflags 1.3.2",
  "crossbeam-channel",
@@ -3805,9 +3815,9 @@ dependencies = [
 
 [[package]]
 name = "msb_krun_vmm"
-version = "0.1.12"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bd62153e5ffe89a76b775c89b9c01b65d38c67a32ca8d516a910d4cb497d367"
+checksum = "bb70c044c60e011e6f43c2e336687850b0910853a0efe37010e9649eff1395fe"
 dependencies = [
  "bzip2",
  "crossbeam-channel",
@@ -5358,7 +5368,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.19.4"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "cliclack",

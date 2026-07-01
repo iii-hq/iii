@@ -259,9 +259,9 @@ async fn run(mut args: ExecArgs) -> anyhow::Result<i32> {
     let id_offset = u32::from_be_bytes(handshake);
     let corr_id = id_offset + 1;
 
-    // Build and send the Request. Split cmd + args the same way
-    // microsandbox does: first element of `command` is the program,
-    // the rest are its argv. In TTY mode, query the initial window
+    // Build and send the Request. Split cmd + args: the first element
+    // of `command` is the program, the rest are its argv. In TTY mode,
+    // query the initial window
     // size from our stdin before any raw-mode switching so sttysize
     // defaults stay correct.
     let (rows, cols) = if args.tty { tty_size() } else { (24, 80) };

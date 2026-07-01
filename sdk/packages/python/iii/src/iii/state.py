@@ -9,9 +9,8 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Generic, TypeVar
 
+from iii_helpers.stream import UpdateOp
 from pydantic import BaseModel
-
-from .stream import UpdateOp
 
 TData = TypeVar("TData")
 
@@ -72,12 +71,6 @@ class StateDeleteResult(BaseModel):
     old_value: Any | None = None
 
 
-class DeleteResult(BaseModel):
-    """Result of a state delete operation (alias)."""
-
-    old_value: Any | None = None
-
-
 class StateEventType(str, Enum):
     """Types of state change events."""
 
@@ -111,7 +104,7 @@ class IState(ABC, Generic[TData]):
         ...
 
     @abstractmethod
-    async def delete(self, input: StateDeleteInput) -> DeleteResult:
+    async def delete(self, input: StateDeleteInput) -> StateDeleteResult:
         """Delete a state value."""
         ...
 
