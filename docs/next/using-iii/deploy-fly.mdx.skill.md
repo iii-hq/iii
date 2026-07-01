@@ -374,10 +374,19 @@ only the **hostnames and credentials** are Fly-specific:
           url: ${DATABASE_URL}
 ```
 
-Set secrets **before** the first deploy that references them:
+<Warning>
+  Set secrets with `fly secrets set` **before** the first `fly deploy` that uses these
+  adapters. If the engine boots with `redis` or `database` workers but
+  `${REDIS_URL}` or `${DATABASE_URL}` are unset, startup fails on unresolved
+  placeholders. A default such as `${REDIS_URL:redis://localhost:6379}` only applies
+  when the variable is missing; production URLs still belong in secrets before deploy.
+  The same ordering applies in the initial deploy steps above
+  ([Launch the engine app](#launch-the-engine-app)).
+</Warning>
 
 ```bash
 fly secrets set REDIS_URL=redis://... DATABASE_URL=postgres://...
+fly deploy
 ```
 
 For object storage, use the `storage` worker's **remote** providers (`s3`, `gcs`, `r2`,
