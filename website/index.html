@@ -5883,6 +5883,114 @@ iii.register_function(
   </section>
 
 
+  <!-- TECH SPECS — fully self-contained (markup + styles + script in this one
+       block, data fetched from /tech-specs/index.json which the presentations
+       build emits). New specs appear here with zero edits to this file; if the
+       fetch fails the section simply stays hidden. -->
+  <section class="specs" id="tech-specs" aria-label="Tech specs" hidden>
+    <style>
+      .specs{ position:relative; padding:0 0 96px; }
+      .specs-head{ padding:80px 36px 20px; display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+      .specs-title{
+        font-family:'Chivo Mono', ui-monospace, monospace;
+        font-weight:500; font-size:clamp(20px, 4.2vw, 28px);
+        letter-spacing:-0.01em; line-height:1.25;
+        margin:0; text-transform:none; max-width:80%;
+      }
+      .specs-title .accent{ color:var(--accent); }
+      .specs-title .mute{ color:var(--ink-faint); }
+      .specs-all{
+        font-family:'Chivo Mono', ui-monospace, monospace; font-size:13px;
+        color:var(--ink-faint); text-decoration:none; white-space:nowrap;
+      }
+      .specs-all:hover{ color:var(--accent); }
+      .specs-list{ list-style:none; margin:0 36px; padding:0; border-top:1px solid var(--rule); max-width:1128px; }
+      .specs-month{
+        font-family:'Chivo Mono', ui-monospace, monospace; font-size:11px;
+        letter-spacing:.14em; text-transform:uppercase; color:var(--mute);
+        padding:18px 0 6px;
+      }
+      .specs-row{ border-bottom:1px solid var(--rule); }
+      .specs-row a{ display:flex; align-items:baseline; gap:12px; padding:14px 8px; text-decoration:none; flex-wrap:wrap; }
+      .specs-row a:hover{ background:var(--paper-2); }
+      .specs-row-title{ font-family:'Chivo Mono', ui-monospace, monospace; font-size:15px; font-weight:500; color:var(--ink); }
+      .specs-row a:hover .specs-row-title{ color:var(--accent); }
+      .specs-row-kind{
+        font-family:'Chivo Mono', ui-monospace, monospace; font-size:10px;
+        letter-spacing:.08em; text-transform:uppercase; color:var(--mute);
+        border:1px solid var(--rule); padding:2px 6px; white-space:nowrap;
+      }
+      .specs-row-tagline{
+        font-family:'Chivo Mono', ui-monospace, monospace; font-size:12px;
+        line-height:1.6; color:var(--ink-faint); flex:1 1 100%;
+      }
+      @media (max-width:720px){
+        .specs-head{ padding:64px 20px 16px; }
+        .specs-list{ margin:0 20px; }
+      }
+    </style>
+    <header class="specs-head">
+      <h2 class="specs-title"><span class="accent">tech specs.</span> <span class="mute">designs published before they're built — read the spec, step through the architecture.</span></h2>
+      <a class="specs-all" href="/tech-specs/">view all specs →</a>
+    </header>
+    <ol class="specs-list" id="specs-list"></ol>
+    <script>
+      (function () {
+        var section = document.getElementById('tech-specs');
+        var list = document.getElementById('specs-list');
+        if (!section || !list || typeof fetch !== 'function') return;
+        fetch('/tech-specs/index.json')
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error(String(r.status))); })
+          .then(function (data) {
+            var specs = ((data && data.specs) || [])
+              .filter(function (s) { return s && s.status !== 'draft' && s.url && s.title; })
+              .slice(0, 4);
+            if (!specs.length) return;
+            var month = null;
+            specs.forEach(function (s) {
+              if (s.month && s.month !== month) {
+                month = s.month;
+                var mo = document.createElement('li');
+                mo.className = 'specs-month';
+                mo.textContent = month;
+                list.appendChild(mo);
+              }
+              var li = document.createElement('li');
+              li.className = 'specs-row';
+              var a = document.createElement('a');
+              a.href = s.url;
+              var title = document.createElement('span');
+              title.className = 'specs-row-title';
+              title.textContent = s.title;
+              var kind = document.createElement('span');
+              kind.className = 'specs-row-kind';
+              kind.textContent = s.hasDeck ? 'interactive' : 'spec';
+              a.appendChild(title);
+              a.appendChild(kind);
+              if (s.tagline) {
+                var tag = document.createElement('span');
+                tag.className = 'specs-row-tagline';
+                tag.textContent = s.tagline;
+                a.appendChild(tag);
+              }
+              a.addEventListener('click', function () {
+                try { iiiTrack('tech_spec_open', { slug: s.slug, cta_location: 'landing_tech_specs' }); } catch (_) {}
+              });
+              li.appendChild(a);
+              list.appendChild(li);
+            });
+            section.hidden = false;
+          })
+          .catch(function () { /* no index.json (e.g. local dev) — section stays hidden */ });
+        var all = section.querySelector('.specs-all');
+        if (all) all.addEventListener('click', function () {
+          try { iiiTrack('tech_specs_view_all', { cta_location: 'landing_tech_specs' }); } catch (_) {}
+        });
+      })();
+    </script>
+  </section>
+
+
   <!-- FOOTER -->
   <section class="foot" id="footer" aria-label="Get started">
     <div class="foot-cta">
