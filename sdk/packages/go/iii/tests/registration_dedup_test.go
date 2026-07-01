@@ -19,7 +19,7 @@ func TestRegistrationDoesNotDuplicate(t *testing.T) {
 	c := connect(t)
 	const fnID = "test::dedup::go::fn"
 
-	handler := func(_ context.Context, _, _ json.RawMessage) (any, error) { return nil, nil }
+	handler := func(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil }
 	// Register the same id twice; the second replaces the first, not duplicates it.
 	if err := c.RegisterFunction(fnID, handler); err != nil {
 		t.Fatalf("RegisterFunction #1: %v", err)

@@ -42,7 +42,7 @@ func TestRegisterAndInvokeFunction(t *testing.T) {
 		mu       sync.Mutex
 		received []map[string]any
 	)
-	if err := c.RegisterFunction("test::bridge::go::echo", func(ctx context.Context, data, _ json.RawMessage) (any, error) {
+	if err := c.RegisterFunction("test::bridge::go::echo", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var in map[string]any
 		_ = json.Unmarshal(data, &in)
 		mu.Lock()
@@ -85,7 +85,7 @@ func TestInvokeFireAndForget(t *testing.T) {
 	c := connect(t)
 
 	done := make(chan map[string]any, 1)
-	if err := c.RegisterFunction("test::bridge::go::sink", func(ctx context.Context, data, _ json.RawMessage) (any, error) {
+	if err := c.RegisterFunction("test::bridge::go::sink", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var in map[string]any
 		_ = json.Unmarshal(data, &in)
 		select {

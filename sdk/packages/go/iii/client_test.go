@@ -68,7 +68,7 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	m := newMockEngine(t)
 	c := New(m.url)
 	// Register before connecting so all replay on connect.
-	_ = c.RegisterFunction("hello::greet", func(ctx context.Context, _, _ json.RawMessage) (any, error) {
+	_ = c.RegisterFunction("hello::greet", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return map[string]string{"msg": "hi"}, nil
 	})
 	_ = c.RegisterTrigger("t1", "http", "hello::greet", json.RawMessage(`{"path":"/x"}`), nil)
@@ -126,7 +126,7 @@ func TestInboundInvokeRoundtrip(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	_ = c.RegisterFunction("echo::fn", func(ctx context.Context, data, _ json.RawMessage) (any, error) {
+	_ = c.RegisterFunction("echo::fn", func(ctx context.Context, data json.RawMessage) (any, error) {
 		return json.RawMessage(data), nil // echo the input back
 	})
 
@@ -149,11 +149,19 @@ func TestInboundInvokeRoundtrip(t *testing.T) {
 	}
 }
 
-// TestInboundInvokeDeliversMetadata verifies the handler receives per-invocation metadata
-// as its 3rd argument: the raw JSON when the engine sends a metadata sidecar, and nil when
-// the invocation carries none (the backward-compatible default).
+// TestInboundInvokeDeliversMetadata verifies per-invocation metadata reaches the handler
+// on its context (not the signature): MetadataFromContext returns (raw JSON, true) when
+// the engine sends a metadata sidecar, and (nil, false) when the invocation carries none
+// (the backward-compatible default).
 func TestInboundInvokeDeliversMetadata(t *testing.T) {
-	t.Run("metadata present is passed through", func(t *testing.T) {
+	// metaResult captures what a handler read from its context, ferried back over a channel
+	// since handlers run on their own goroutine.
+	type metaResult struct {
+		meta json.RawMessage
+		ok   bool
+	}
+
+	t.Run("metadata present is readable from ctx", func(t *testing.T) {
 		m := newMockEngine(t)
 		m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
 			if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "meta::fn" {
@@ -169,24 +177,28 @@ func TestInboundInvokeDeliversMetadata(t *testing.T) {
 			}
 		}
 
-		metaCh := make(chan json.RawMessage, 1)
+		metaCh := make(chan metaResult, 1)
 		c := connectClient(t, m)
-		_ = c.RegisterFunction("meta::fn", func(ctx context.Context, _, metadata json.RawMessage) (any, error) {
-			metaCh <- metadata
+		_ = c.RegisterFunction("meta::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+			md, ok := MetadataFromContext(ctx)
+			metaCh <- metaResult{meta: md, ok: ok}
 			return map[string]bool{"ok": true}, nil
 		})
 
 		select {
 		case got := <-metaCh:
-			if string(got) != `{"tenant":"acme"}` {
-				t.Errorf("handler metadata = %s, want {\"tenant\":\"acme\"}", got)
+			if !got.ok {
+				t.Fatal("MetadataFromContext returned ok=false, want the metadata to be present")
+			}
+			if string(got.meta) != `{"tenant":"acme"}` {
+				t.Errorf("ctx metadata = %s, want {\"tenant\":\"acme\"}", got.meta)
 			}
 		case <-time.After(3 * time.Second):
 			t.Fatal("handler was not invoked")
 		}
 	})
 
-	t.Run("metadata absent yields nil", func(t *testing.T) {
+	t.Run("metadata absent yields (nil,false)", func(t *testing.T) {
 		m := newMockEngine(t)
 		m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
 			if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "nometa::fn" {
@@ -201,17 +213,21 @@ func TestInboundInvokeDeliversMetadata(t *testing.T) {
 			}
 		}
 
-		metaCh := make(chan json.RawMessage, 1)
+		metaCh := make(chan metaResult, 1)
 		c := connectClient(t, m)
-		_ = c.RegisterFunction("nometa::fn", func(ctx context.Context, _, metadata json.RawMessage) (any, error) {
-			metaCh <- metadata
+		_ = c.RegisterFunction("nometa::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+			md, ok := MetadataFromContext(ctx)
+			metaCh <- metaResult{meta: md, ok: ok}
 			return nil, nil
 		})
 
 		select {
 		case got := <-metaCh:
-			if got != nil {
-				t.Errorf("handler metadata = %s, want nil when the invocation carries none", got)
+			if got.ok {
+				t.Errorf("MetadataFromContext ok=true, want false when the invocation carries none")
+			}
+			if got.meta != nil {
+				t.Errorf("ctx metadata = %s, want nil when absent", got.meta)
 			}
 		case <-time.After(3 * time.Second):
 			t.Fatal("handler was not invoked")
@@ -233,7 +249,7 @@ func TestInboundInvokeHandlerError(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	_ = c.RegisterFunction("boom::fn", func(ctx context.Context, _, _ json.RawMessage) (any, error) {
+	_ = c.RegisterFunction("boom::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, errors.New("kaboom")
 	})
 
@@ -512,7 +528,7 @@ func TestReconnectResendsRegistrations(t *testing.T) {
 		JitterFactor:      0,
 		MaxRetries:        -1,
 	}))
-	_ = c.RegisterFunction("persist::fn", func(ctx context.Context, _, _ json.RawMessage) (any, error) {
+	_ = c.RegisterFunction("persist::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -739,7 +755,7 @@ func TestHandlerInvocationErrorPassthrough(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	_ = c.RegisterFunction("rbac::fn", func(ctx context.Context, _, _ json.RawMessage) (any, error) {
+	_ = c.RegisterFunction("rbac::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, &InvocationError{Code: "FORBIDDEN", Message: "denied"}
 	})
 

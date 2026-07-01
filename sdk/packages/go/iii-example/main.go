@@ -57,12 +57,11 @@ func main() {
 	// sent once Connect reports the first connection.
 	client := iii.RegisterWorker(url)
 
-	// Register the function. The handler receives the raw JSON payload (and optional
-	// per-invocation metadata, unused here) and returns any value, which the SDK marshals
-	// into the invocation result. Because this function is exposed over HTTP, it speaks the
-	// engine's HTTP envelope: read the request from req.Body and return an ApiResponse
-	// { status_code, body }.
-	if err := client.RegisterFunction("hello::greet", func(ctx context.Context, data, metadata json.RawMessage) (any, error) {
+	// Register the function. The handler receives the raw JSON payload and returns any
+	// value, which the SDK marshals into the invocation result. Because this function is
+	// exposed over HTTP, it speaks the engine's HTTP envelope: read the request from
+	// req.Body and return an ApiResponse { status_code, body }.
+	if err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req httpRequest
 		if err := json.Unmarshal(data, &req); err != nil {
 			return nil, err

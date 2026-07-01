@@ -60,9 +60,9 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
 	}
 
 	// Adapt the typed handler to the raw Handler the dispatcher calls. The typed API
-	// works in terms of the decoded request only, so the raw per-invocation metadata is
-	// accepted (to satisfy the Handler signature) but not surfaced here.
-	raw := func(ctx context.Context, data json.RawMessage, _ json.RawMessage) (any, error) {
+	// works in terms of the decoded request only; per-invocation metadata, if any,
+	// remains available on ctx via MetadataFromContext.
+	raw := func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req Req
 		if len(data) > 0 {
 			if err := json.Unmarshal(data, &req); err != nil {

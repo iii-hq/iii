@@ -20,7 +20,7 @@ func TestRegisterTriggerUnknownType(t *testing.T) {
 	c := connect(t)
 	// Register a function the trigger would target, but never register a handler for the
 	// (made-up) trigger type, so the engine has nowhere to route the registration.
-	if err := c.RegisterFunction("test::trigerr::go::fn", func(_ context.Context, _, _ json.RawMessage) (any, error) {
+	if err := c.RegisterFunction("test::trigerr::go::fn", func(_ context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)

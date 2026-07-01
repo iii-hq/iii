@@ -80,12 +80,14 @@ type Client struct {
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
-// sent; metadata is the optional per-invocation metadata that rides alongside it (nil
-// when the call carries none). The returned value is marshaled into the
-// InvocationResult.result. Returning an error produces an InvocationResult.error; if the
-// error is an *InvocationError its code and stacktrace are preserved, otherwise it is
-// reported with code "invocation_failed" (matching the Rust and Node SDKs).
-type Handler func(ctx context.Context, data json.RawMessage, metadata json.RawMessage) (any, error)
+// sent; the returned value is marshaled into the InvocationResult.result. Returning an
+// error produces an InvocationResult.error; if the error is an *InvocationError its code
+// and stacktrace are preserved, otherwise it is reported with code "invocation_failed"
+// (matching the Rust and Node SDKs).
+//
+// Per-invocation metadata, when the call carries any, rides on ctx rather than the
+// signature (so adding it is non-breaking): read it with [MetadataFromContext].
+type Handler func(ctx context.Context, data json.RawMessage) (any, error)
 
 type registeredFunction struct {
 	message *RegisterFunctionMessage
@@ -721,7 +723,11 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 		return
 	}
 
-	result, herr := c.runHandler(injectTraceContext(ctx, tc), fn.handler, msg.Data, msg.Metadata)
+	// Attach trace context and per-invocation metadata to ctx before invoking the
+	// handler; metadata is delivered out-of-band on ctx (see MetadataFromContext) so the
+	// Handler signature stays stable.
+	hctx := withMetadata(injectTraceContext(ctx, tc), msg.Metadata)
+	result, herr := c.runHandler(hctx, fn.handler, msg.Data)
 	if herr != nil {
 		c.replyInvocation(msg, nil, errorBodyFromHandlerError(herr), tc)
 		return
@@ -736,13 +742,13 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 
 // runHandler invokes h, recovering a panic into an error so a panicking handler yields
 // an InvocationResult.error instead of leaving the caller to time out.
-func (c *Client) runHandler(ctx context.Context, h Handler, data, metadata json.RawMessage) (result any, err error) {
+func (c *Client) runHandler(ctx context.Context, h Handler, data json.RawMessage) (result any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("iii: handler panic: %v", r)
 		}
 	}()
-	return h(ctx, data, metadata)
+	return h(ctx, data)
 }
 
 // errorBodyFromHandlerError maps a handler error to a wire ErrorBody. A typed
