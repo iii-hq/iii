@@ -6,6 +6,7 @@ on:
     paths:
       - 'website/**'
       - 'blog/**'
+      - 'tech-specs/**'
       - 'infra/terraform/website/**'
       - '.github/workflows/deploy-website.yml'
   workflow_dispatch:
@@ -54,16 +55,22 @@ jobs:
       - name: Build blog (Astro → blog/dist/)
         run: pnpm --filter iii-blog build
 
+      - name: Build tech-spec presentations (Vite → website/presentations/dist/)
+        run: pnpm --filter iii-presentations build
+
       - name: Configure AWS credentials (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Blog and website share the bucket; the blog lives under the /blog/
-      # prefix and is wiped + repopulated by its own sync below. The website
-      # sync therefore must exclude blog/* so its --delete doesn't wipe blog
-      # output between the two steps.
+      # Blog, tech-specs, and the website share the bucket; blog/ and
+      # tech-specs/ prefixes are wiped + repopulated by their own syncs below.
+      # The website sync therefore must exclude blog/* and tech-specs/* so its
+      # --delete doesn't wipe their output between steps, and must exclude
+      # presentations/* so the tech-specs project SOURCE (src/, deck dirs,
+      # node_modules) never uploads — only its built dist/ ships, under the
+      # /tech-specs/ prefix.
       - name: Sync website static assets (long cache, immutable)
         run: |
           aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
@@ -79,7 +86,9 @@ jobs:
             --exclude ".gitignore" \
             --exclude "README.md" \
             --exclude "vercel.json" \
-            --exclude "blog/*"
+            --exclude "blog/*" \
+            --exclude "tech-specs/*" \
+            --exclude "presentations/*"
 
       - name: Sync website HTML and AI snapshot (no cache, must revalidate)
         run: |
@@ -90,7 +99,9 @@ jobs:
             --include "*.html" \
             --include "llms.txt" \
             --include "AGENTS.md" \
-            --exclude "blog/*"
+            --exclude "blog/*" \
+            --exclude "tech-specs/*" \
+            --exclude "presentations/*"
 
       # Keep the CloudFront KeyValueStore route map (pretty URL → .html) in sync
       # with the website/*.html files we just uploaded. This is what lets a new
@@ -140,6 +151,28 @@ jobs:
             --exclude "*" \
             --include "*.html" \
             --include "*.xml"
+
+      # Tech-specs assets are content-hashed by Vite → immutable. HTML,
+      # index.json (the landing-page feed), raw spec *.md, and the viewers'
+      # spec.json are unhashed and content-mutable → must revalidate.
+      - name: Sync tech-specs static assets (long cache, immutable)
+        run: |
+          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/tech-specs/" \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "*.html" \
+            --exclude "*.json" \
+            --exclude "*.md"
+
+      - name: Sync tech-specs HTML, markdown and index (no cache, must revalidate)
+        run: |
+          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/tech-specs/" \
+            --delete \
+            --cache-control "public,max-age=0,must-revalidate" \
+            --exclude "*" \
+            --include "*.html" \
+            --include "*.json" \
+            --include "*.md"
 
       - name: Create CloudFront invalidation
         id: invalidation
