@@ -5,6 +5,22 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.21.0" description="June 2026">
+  ## Inbound HTTP requests honor W3C `tracestate` and distributed traces are visible in the console
+
+  iii now completes W3C trace-context propagation at the inbound HTTP boundary. A request arriving with `traceparent` already continued its trace; its companion `tracestate` header was silently dropped, because `extract_context` only seeded `traceparent` into the propagation carrier. The HTTP boundary (`rest_api/views.rs`) now reads `tracestate` and forwards it through `SpanExt::with_parent_headers`, so vendor trace state is preserved on the server span. Non-HTTP callers pass `None`: the engine protocol does not carry `tracestate` across hops, so this is a boundary-only behavior by design.
+
+  Distributed traces that enter iii from an upstream service are now visible. A trace started elsewhere arrives with a server span whose parent is the remote caller's span — a span that is never stored locally. Both `engine::traces::list` and `engine::traces::tree` previously treated a span as a trace root only when its `parent_span_id` was `None`, so these traces were hidden from the list and the detail view rendered "No span data available". Both now treat a span as a root when its parent is absent from the store. `StoredSpan` also carried the span's own `tracestate` only on links, not on the span itself, so the honored value was invisible to the traces API and console; the span's `tracestate` is now exposed.
+
+  Relatedly, `baggage` is now redacted in header logs. It often carries user and session metadata, so `sanitize_headers_for_logging` now treats it as sensitive.
+
+  Full multi-hop `tracestate` propagation (protocol, queue jobs, and SDKs) remains out of scope for this release.
+
+  ## Generated Docker projects load their `.env` into the engine
+
+  The Docker Compose file produced by `iii project init` and `iii project generate-docker` now sets `env_file: .env` on the `iii` service. The engine reads the generated `.env` when expanding `${VAR}` placeholders in `config.yaml`, so environment-based configuration works out of the box for generated projects without manually wiring the file in.
+</Update>
+
 <Update label="0.20.0" description="June 2026">
   ## SDK: a major, breaking reorganization of the public surface
 
