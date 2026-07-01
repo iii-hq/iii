@@ -370,7 +370,7 @@ only the **hostnames and credentials** are Fly-specific:
       adapter:
         name: redis
         config:
-          redis_url: ${REDIS_URL:-redis://localhost:6379}
+          redis_url: ${REDIS_URL:redis://localhost:6379}
   - name: database
     config:
       databases:
@@ -459,7 +459,7 @@ manifest before you ship (full field reference:
   list, and run `fly ips release` on worker apps so they have no public IP. See Fly's
   [going-to-production checklist](https://fly.io/docs/apps/going-to-production/).
 - **Secrets in the environment.** Set every credential with `fly secrets set`; Fly
-  injects them as environment variables, so `${VAR}` / `${VAR:-default}` placeholders in
+  injects them as environment variables, so `${VAR}` / `${VAR:default}` placeholders in
   `config.yaml` resolve at boot. Never bake secrets into the image or git. Setting a
   secret triggers a redeploy so the engine picks it up.
 - **Restrict CORS.** The development default allows every origin. Narrow
