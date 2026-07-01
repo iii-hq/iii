@@ -5,14 +5,20 @@ requirements. Anything red gets fixed, not noted.
 
 ## Build integrity
 
-- [ ] `pnpm typecheck` passes (strict, zero errors).
-- [ ] `pnpm build` succeeds; `dist/` uses relative paths (`base: './'`) and
-      opens from `file://` and any subpath.
+- [ ] `pnpm type-check` passes at the base (strict, zero errors — shared lib +
+      every deck in one program).
+- [ ] `node build.mjs --only=<slug>` succeeds with **zero frontmatter or
+      registry warnings**; `dist/<slug>/` uses relative paths (`base: './'`).
 - [ ] Dev server boots; **zero console errors/warnings** in `/browse`.
-- [ ] Nothing under `template/` was modified except the content layer
-      (`content/`, `sections/`, `pages/`, `App.tsx` registry, `index.html`
-      title/description, any new bespoke `diagrams/`). The design system,
-      hooks, primitives, and shared archetypes are untouched.
+- [ ] The write surface held: nothing outside `<base>/<slug>/**` and the
+      spec README's frontmatter block was modified — except a registered
+      component promotion (new file under `<base>/src/components/` + its
+      `COMPONENTS.md` entry in the same change).
+- [ ] If anything under `<base>/src/` changed, the **full** `node build.mjs`
+      passes (a shared change must not break sibling decks).
+- [ ] The frontmatter block validates (title/tagline/date/status; no `slug`
+      key) and the gallery card renders from it.
+- [ ] `#/spec` renders every spec md file with the frontmatter stripped.
 - [ ] `src/content/example.ts` and the starter example sections/pages were
       deleted or replaced — no placeholder content ships.
 
@@ -54,8 +60,8 @@ requirements. Anything red gets fixed, not noted.
 
 - [ ] Responsive: no horizontal body scroll at 375px; wide diagrams scroll
       inside their own `overflow-x-auto` container.
-- [ ] `README.md` explains dev / build / preview and that `dist/` is a portable
-      static site (any CDN / Pages / S3 / `file://`).
+- [ ] `dist/<slug>/` is individually portable (relative asset paths — any CDN,
+      any prefix); the raw spec `.md` files sit beside its `index.html`.
 - [ ] Title + meta description set (`index.html` tokens substituted); the tab
       wordmark is coherent.
 - [ ] No secrets, no internal-only URLs, no broken links. Safe to share.

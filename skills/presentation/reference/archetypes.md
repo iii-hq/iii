@@ -7,11 +7,17 @@ archetype matches and the concept is load-bearing — and then follow
 `SequencePlayer.tsx`'s conventions.
 
 Two kinds:
-- **Diagram archetypes** — bundled, props-driven components in
-  `template/src/components/diagrams/`. You import them and pass data.
+- **Diagram archetypes** — shared, props-driven components in
+  `@lib/components/diagrams/` (the base project's library). You import them
+  and pass data from the deck's `content/`.
 - **Compositional archetypes** — patterns you build inline in a section from
   primitives (`Cell`, `SpecSheet`, `CodeBlock`, `ModeToggle`, `Button`, …).
   The starter `Hero.tsx` and `PayoffSection.tsx` are worked examples.
+
+**The repo registry wins.** This catalog documents the bundled baseline; the
+live inventory is `<base>/COMPONENTS.md`, which grows as decks promote new
+archetypes (per `reference/component-standards.md`). Read it in Phase 1b —
+when it and this file disagree, the registry is the truth.
 
 ## Selection heuristics
 
@@ -181,21 +187,58 @@ A full `#/<slug>` page via `<PageShell>` (cross-links siblings with `related`).
 Register it in `App.tsx`'s `PAGES` map. Give one to each distinct
 consumer/scenario worth the full walkthrough.
 
-### A15 — Spec Viewer  (`pages/SpecPage.tsx`, built-in)
+### A15 — Spec Viewer  (`@lib/pages/SpecPage.tsx`, built-in)
 
 The source-of-truth reading mode: a separate `#/spec/<file>` page that renders
-every markdown file of the spec directory with a file **sidebar**. It is part of
-the frozen template and wired automatically (`spec: SpecPage` in `PAGES`, a
-`spec` link in `TopNav`, an `import.meta.glob('../../../*.md')` that bundles
-`<spec-dir>/*.md` at build). You do not generate or edit it.
+every markdown file of the paired `tech-specs/<slug>/` directory with a file
+**sidebar**. The shared `SpecPage` takes `{ docs }`; the deck's tiny
+`src/spec-docs.ts` supplies them (an `import.meta.glob` whose literal the
+skill substitutes at scaffold — see `reference/hosting.md`). The template
+wires it (`spec: Spec` in `PAGES`; the shared `TopNav` renders the `spec`
+link). You do not generate or edit it beyond that wiring.
 
-- Markdown → React via `content/markdown.tsx`, styled in the drafting-sheet
-  system; fenced code reuses the deck's `Highlight` where the language is
-  supported (`ts/js/rust/python/yaml`), monochrome otherwise.
+- Markdown → React via `@lib/content/markdown.tsx`, styled in the
+  drafting-sheet system; the leading frontmatter block is stripped; fenced
+  code reuses `Highlight` where the language is supported
+  (`ts/js/rust/python/yaml`), monochrome otherwise.
 - ` ```mermaid ` fences render as **live, theme-aware diagrams** via
-  `content/mermaid.tsx` (mono font, ink borders, panel fills, light/dark).
+  `@lib/content/mermaid.tsx` (lazy-loaded; mono font, ink borders, light/dark).
 - Sidebar labels come from each file's first H1; README sorts first. Sibling
   `*.md` links rewrite into the viewer; in-page `#anchors` scroll.
 
 It complements the narrative deck: the deck argues the *why* and makes the
-architecture interactive; the spec viewer is the *complete text* one click away.
+architecture interactive; the spec viewer is the *complete text* one click
+away. (Specs with no deck get the same reading mode from the base's
+`_viewer/` app — every spec URL works either way.)
+
+### A16 — Durability Timeline  (`diagrams/DurabilityTimeline.tsx`)
+
+A lifecycle told as a steppable timeline of stages, each pairing a narration
+with an **evolving state record** beside it (status / step / calls / note).
+Built for "a durable thing survives crashes and waits" stories.
+`{ stages, heading, headingNote?, recordHeading }` — a stage can mark
+`gapAfter` to render a dashed pause connector.
+**vs A6 Step Reveal:** reach for A16 when the record-beside-narration density
+is the point; A6 when state simply accumulates.
+
+### A17 — Event Fan-Out  (`diagrams/EventFanOut.tsx`)
+
+One **concrete, named write** → trigger type → N named subscribers, with
+ambient always-on motion (ripples + traveling dots). Denser and more literal
+than A7. `{ heading, source, sourceSub?, trigger, handlers, edges, footnote?,
+ariaLabel }`.
+**vs A7 Fan-Out:** A17 narrates one specific write with real handler names;
+A7 is the abstract reactive-surface shape.
+
+### A18 — Spawn Tree  (`diagrams/SpawnTree.tsx`)
+
+A parent spawns N parallel children and joins their results: fan out, run
+concurrently, join back, one answer — with steppable narrative states driving
+which children exist/run/deliver, and a parked-parent visual state.
+`{ heading, chips?, parentTitle, parentLabels, parentCallLine, nodes, states,
+ariaLabel }`. Use for sub-agent / fan-out-join concurrency claims.
+
+### Primitive: WorkerCard  (`schematic/WorkerCard.tsx`)
+
+One worker as a product card — name, version, description, install command,
+kind badge. Use when cataloguing installable workers/components in a grid.

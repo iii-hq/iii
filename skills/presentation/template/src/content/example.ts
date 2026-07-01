@@ -6,16 +6,12 @@
  * builds out of the box, and so there is a concrete, copyable example of the
  * shape each archetype expects. Delete it once you have real content.
  */
-import type { CliTrack } from '@/components/diagrams/CliPlayground'
-import type { FanHandler } from '@/components/diagrams/FanOut'
-import type { FunnelPath } from '@/components/diagrams/Funnel'
-import type { SeqLane, SeqStep } from '@/components/diagrams/SequencePlayer'
-import type { RevealStage } from '@/components/diagrams/StepReveal'
-import type {
-  MapEdge,
-  MapNode,
-  MapNodeInfo,
-} from '@/components/diagrams/SystemMap'
+import type { CliTrack } from '@lib/components/diagrams/CliPlayground'
+import type { FanHandler } from '@lib/components/diagrams/FanOut'
+import type { FunnelPath } from '@lib/components/diagrams/Funnel'
+import type { SeqLane, SeqStep } from '@lib/components/diagrams/SequencePlayer'
+import type { RevealStage } from '@lib/components/diagrams/StepReveal'
+import type { MapEdge, MapNode, MapNodeInfo } from '@lib/components/diagrams/SystemMap'
 
 /* ---- hero ---- */
 
@@ -56,11 +52,60 @@ export const MAP_NODES: MapNode[] = [
 ]
 
 export const MAP_EDGES: MapEdge[] = [
-  { id: 'request', from: 'client', to: 'gateway', d: 'M 210 280 L 320 281', label: 'request', lx: 265, ly: 272, dur: 2 },
-  { id: 'dispatch', from: 'gateway', to: 'worker', d: 'M 520 268 C 590 250, 600 158, 650 152', label: 'dispatch', lx: 600, ly: 196, anchor: 'start', dur: 1.8 },
-  { id: 'persist', from: 'gateway', to: 'store', d: 'M 520 296 C 590 320, 600 404, 650 410', label: 'persist', lx: 600, ly: 372, anchor: 'start', dur: 1.8 },
-  { id: 'write', from: 'worker', to: 'store', d: 'M 750 186 L 750 376', label: 'write result', lx: 758, ly: 290, anchor: 'start', dur: 1.6 },
-  { id: 'emit', from: 'store', to: 'watcher', d: 'M 850 404 C 920 388, 960 332, 960 314', label: 'emit event', lx: 968, ly: 360, anchor: 'start', dur: 2.2 },
+  {
+    id: 'request',
+    from: 'client',
+    to: 'gateway',
+    d: 'M 210 280 L 320 281',
+    label: 'request',
+    lx: 265,
+    ly: 272,
+    dur: 2,
+  },
+  {
+    id: 'dispatch',
+    from: 'gateway',
+    to: 'worker',
+    d: 'M 520 268 C 590 250, 600 158, 650 152',
+    label: 'dispatch',
+    lx: 600,
+    ly: 196,
+    anchor: 'start',
+    dur: 1.8,
+  },
+  {
+    id: 'persist',
+    from: 'gateway',
+    to: 'store',
+    d: 'M 520 296 C 590 320, 600 404, 650 410',
+    label: 'persist',
+    lx: 600,
+    ly: 372,
+    anchor: 'start',
+    dur: 1.8,
+  },
+  {
+    id: 'write',
+    from: 'worker',
+    to: 'store',
+    d: 'M 750 186 L 750 376',
+    label: 'write result',
+    lx: 758,
+    ly: 290,
+    anchor: 'start',
+    dur: 1.6,
+  },
+  {
+    id: 'emit',
+    from: 'store',
+    to: 'watcher',
+    d: 'M 850 404 C 920 388, 960 332, 960 314',
+    label: 'emit event',
+    lx: 968,
+    ly: 360,
+    anchor: 'start',
+    dur: 2.2,
+  },
 ]
 
 export const MAP_INFO: Record<string, MapNodeInfo> = {
@@ -71,9 +116,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
     sections: [
       {
         heading: 'calls',
-        items: [
-          { name: 'gateway::request', desc: 'submit work and get an id back immediately.' },
-        ],
+        items: [{ name: 'gateway::request', desc: 'submit work and get an id back immediately.' }],
       },
     ],
     note: 'replace this node with the real entry points of your system.',
@@ -149,12 +192,50 @@ export const SEQ_LANES: SeqLane[] = [
 ]
 
 export const SEQ_STEPS: SeqStep[] = [
-  { from: 'client', to: 'gateway', label: 'gateway::request', title: 'submit work', desc: 'the client drops a request and gets a request id back immediately — no blocking.' },
-  { from: 'gateway', to: 'store', label: 'store::write', title: 'record it', desc: 'the gateway persists the new request; the write fires an event.', event: 'store::written' },
-  { from: 'gateway', to: 'worker', label: 'worker::run', title: 'dispatch', desc: 'the gateway hands the queued work to a worker to execute.' },
-  { from: 'worker', to: 'worker', label: 'do the work', title: 'run the loop', desc: 'the worker runs durable steps; a crash resumes from the last committed step.' },
-  { from: 'worker', to: 'store', label: 'store::write', title: 'write result', desc: 'the worker commits the typed result; the store fires another event.', event: 'store::written' },
-  { from: 'store', to: 'client', label: 'live update', title: 'render live', desc: 'the client was subscribed all along — the result appears with no polling.' },
+  {
+    from: 'client',
+    to: 'gateway',
+    label: 'gateway::request',
+    title: 'submit work',
+    desc: 'the client drops a request and gets a request id back immediately — no blocking.',
+  },
+  {
+    from: 'gateway',
+    to: 'store',
+    label: 'store::write',
+    title: 'record it',
+    desc: 'the gateway persists the new request; the write fires an event.',
+    event: 'store::written',
+  },
+  {
+    from: 'gateway',
+    to: 'worker',
+    label: 'worker::run',
+    title: 'dispatch',
+    desc: 'the gateway hands the queued work to a worker to execute.',
+  },
+  {
+    from: 'worker',
+    to: 'worker',
+    label: 'do the work',
+    title: 'run the loop',
+    desc: 'the worker runs durable steps; a crash resumes from the last committed step.',
+  },
+  {
+    from: 'worker',
+    to: 'store',
+    label: 'store::write',
+    title: 'write result',
+    desc: 'the worker commits the typed result; the store fires another event.',
+    event: 'store::written',
+  },
+  {
+    from: 'store',
+    to: 'client',
+    label: 'live update',
+    title: 'render live',
+    desc: 'the client was subscribed all along — the result appears with no polling.',
+  },
 ]
 
 /* ---- payoff (A11) ---- */
@@ -167,19 +248,73 @@ export const PAYOFF_METRICS = [
 ] as const
 
 export const PAYOFF_SOLVES = [
-  { problem: 'config scattered across files', answer: 'one declarative file', detail: 'a single source of truth the whole stack reads from.' },
-  { problem: 'manual, order-sensitive boot', answer: 'one command, topo-sorted', detail: 'dependencies bring up in the right order automatically.' },
-  { problem: 'state changes you have to poll for', answer: 'events on every write', detail: 'bind once and render live — never chase status again.' },
+  {
+    problem: 'config scattered across files',
+    answer: 'one declarative file',
+    detail: 'a single source of truth the whole stack reads from.',
+  },
+  {
+    problem: 'manual, order-sensitive boot',
+    answer: 'one command, topo-sorted',
+    detail: 'dependencies bring up in the right order automatically.',
+  },
+  {
+    problem: 'state changes you have to poll for',
+    answer: 'events on every write',
+    detail: 'bind once and render live — never chase status again.',
+  },
 ] as const
 
 /* ---- lifecycle / durability (A6) ---- */
 
 export const REVEAL_STAGES: RevealStage[] = [
-  { label: 'queued', tone: 'ink', caption: 'the request lands and is written as a durable entry before anything runs.', rows: [{ k: 'status', v: 'queued' }, { k: 'step', v: '0 / 3' }] },
-  { label: 'running', tone: 'ink', caption: 'a worker picks it up and commits each step as it goes.', rows: [{ k: 'status', v: 'running' }, { k: 'step', v: '2 / 3' }] },
-  { label: 'crash', tone: 'alert', caption: 'the worker dies mid-step. the in-flight step is lost — but the committed log is not.', rows: [{ k: 'status', v: 'interrupted' }, { k: 'step', v: '2 / 3' }], note: 'a crash is a state transition, not lost work' },
-  { label: 'resume', tone: 'warn', caption: 'a fresh worker reads the log and continues from the last committed step. nothing replays twice.', rows: [{ k: 'status', v: 'resuming' }, { k: 'step', v: '2 / 3' }] },
-  { label: 'done', tone: 'accent', caption: 'the final step commits and the typed result is written.', rows: [{ k: 'status', v: 'done' }, { k: 'step', v: '3 / 3' }], note: 'work lost: none. steps replayed: zero.' },
+  {
+    label: 'queued',
+    tone: 'ink',
+    caption: 'the request lands and is written as a durable entry before anything runs.',
+    rows: [
+      { k: 'status', v: 'queued' },
+      { k: 'step', v: '0 / 3' },
+    ],
+  },
+  {
+    label: 'running',
+    tone: 'ink',
+    caption: 'a worker picks it up and commits each step as it goes.',
+    rows: [
+      { k: 'status', v: 'running' },
+      { k: 'step', v: '2 / 3' },
+    ],
+  },
+  {
+    label: 'crash',
+    tone: 'alert',
+    caption: 'the worker dies mid-step. the in-flight step is lost — but the committed log is not.',
+    rows: [
+      { k: 'status', v: 'interrupted' },
+      { k: 'step', v: '2 / 3' },
+    ],
+    note: 'a crash is a state transition, not lost work',
+  },
+  {
+    label: 'resume',
+    tone: 'warn',
+    caption: 'a fresh worker reads the log and continues from the last committed step. nothing replays twice.',
+    rows: [
+      { k: 'status', v: 'resuming' },
+      { k: 'step', v: '2 / 3' },
+    ],
+  },
+  {
+    label: 'done',
+    tone: 'accent',
+    caption: 'the final step commits and the typed result is written.',
+    rows: [
+      { k: 'status', v: 'done' },
+      { k: 'step', v: '3 / 3' },
+    ],
+    note: 'work lost: none. steps replayed: zero.',
+  },
 ]
 
 /* ---- reactive fan-out (A7) ---- */
@@ -210,7 +345,12 @@ export const CLI_TRACKS: CliTrack[] = [
     label: 'first run',
     lines: [
       { cmd: 'your-cli up', out: ['→ reading your-spec.yml', '✓ stack up — gateway, worker, store'] },
-      { cmd: 'your-cli request { input }', fn: 'gateway::request', out: ['→ { id: "r_8c2", accepted: true }'], exit: 0 },
+      {
+        cmd: 'your-cli request { input }',
+        fn: 'gateway::request',
+        out: ['→ { id: "r_8c2", accepted: true }'],
+        exit: 0,
+      },
       { cmd: 'your-cli status r_8c2', fn: 'gateway::status', out: ['✓ done — result ready'] },
     ],
   },
@@ -219,7 +359,12 @@ export const CLI_TRACKS: CliTrack[] = [
     label: 'day-2 ops',
     lines: [
       { cmd: 'your-cli ps', out: ['ID        STATUS   UPTIME', 'worker-1  running  4h12m'] },
-      { cmd: 'your-cli logs worker-1 --tail 2', fn: 'ops::logs', out: ['"handled r_8c1 in 12ms"', '"handled r_8c2 in 9ms"'], exit: 0 },
+      {
+        cmd: 'your-cli logs worker-1 --tail 2',
+        fn: 'ops::logs',
+        out: ['"handled r_8c1 in 12ms"', '"handled r_8c2 in 9ms"'],
+        exit: 0,
+      },
     ],
   },
 ]

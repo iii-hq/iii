@@ -10,9 +10,9 @@ description: >-
 # Presentation
 
 Turn a technical specification into an interactive, persuasive web deck —
-the kind in `tech-specs/2026-06-devexp/presentation/` and
-`tech-specs/2026-06-agentic/presentation/`. The output is a standalone
-Vite + React + TypeScript site that:
+the kind at iii.dev/tech-specs/. The output is a **content layer** inside the
+repo's presentations site (one Vite project that builds every deck, the
+gallery, and a markdown spec viewer into one static site):
 
 1. helps engineers **understand** the spec — the architecture is a navigable
    map, not prose;
@@ -20,7 +20,8 @@ Vite + React + TypeScript site that:
    toggles; interactivity is what makes it stick;
 3. reads like **marketing** — it argues the *why*. if no one is convinced the
    work should happen, the spec has not done its job;
-4. is **build-in-public ready** — a portable static site, safe to share.
+4. is **build-in-public ready** — each deck builds to a portable static
+   `dist/<slug>/`, safe to share.
 
 ## Comparable to
 
@@ -46,25 +47,33 @@ Read these before building (they are the law — do not re-derive them):
 
 - `reference/design-system.md` — the locked tokens, type, motion, layout
 - `reference/archetypes.md` — the interactive slide library + how to pick one
+- `reference/component-standards.md` — deck-local vs promoted components, the
+  promotion checklist, the registry format
 - `reference/narrative-framework.md` — the persuasive arc + outline rules
 - `reference/quality-bar.md` — the checklist to self-verify before finishing
-- `reference/hosting.md` — the per-repo base project that hosts every deck
+- `reference/hosting.md` — the two-tree layout, the pairing contract,
+  frontmatter registration, and deploy
+- **per repo:** `<base>/COMPONENTS.md` — the live registry of that repo's
+  shared components. It may exceed the bundled catalog; when it and
+  `reference/archetypes.md` disagree, **the repo registry wins**.
 
-The skill bundles two **frozen scaffolds**:
+The skill bundles two scaffolds:
 
-- `template/` — one presentation. Copy it verbatim per spec; the design system,
-  hooks, routing, primitives, and diagram archetypes are already built and
-  build-clean. You generate only the *content layer*.
-- `base/` — the per-repo site that hosts all of a repo's decks under one Vercel
-  project (a gallery index + the build glue). Copy it into `<repo>/tech-specs/`
-  the first time a repo needs it; after that you only ever fill in its manifest.
-  See `reference/hosting.md`.
+- `template/` — one deck's **content layer** (App, sections, pages, content
+  data, the spec-docs glob). Copy it per spec; everything visual comes from the
+  base's shared `src/` via the `@lib` alias. You generate only content.
+- `base/` — the whole per-repo presentations site: the shared component
+  library + design tokens, the gallery, the md-only spec viewer, and the build
+  glue (`build.mjs`, `vite.config.ts`, one `package.json`). Copy once per repo
+  (in iii it already lives at `website/presentations/`); per-deck runs never
+  modify it except **additive component promotion** per
+  `reference/component-standards.md`.
 
 ## Progress Updates
 
-Emit one short line before each phase: `ingesting spec` → `proposing outline`
-→ `scaffolding` → `generating slides (k/N)` → `registering in base site` →
-`verifying`.
+Emit one short line before each phase: `ingesting spec` → `reading the
+component registry` → `proposing outline` → `scaffolding` → `generating slides
+(k/N)` → `registering spec frontmatter` → `verifying`.
 
 ## Workflow
 
@@ -72,22 +81,34 @@ Phases are gated. Do not skip Phase 2's approval or Phase 5's verification.
 
 ### 0. Resolve inputs
 
-- The argument is a tech-spec directory. If none was given, ask for the path.
-- List it. Identify `README.md` (the index/overview) and the domain `.md`
-  files. Ignore non-narrative files (e.g. `*-review-*.md`, scratch notes).
-- Confirm the output location. **Default: `<spec-dir>/presentation/`.** If it
-  exists and is non-empty, ask: overwrite, update in place, or new dir.
-- Resolve the **base project**: the `tech-specs/` dir that contains this spec
-  (e.g. `<repo>/tech-specs/`). The deck's **slug is the spec directory's
-  basename** (e.g. `2026-06-devexp`) — it is the URL and the build folder, so
-  fix it now and use it everywhere (see `reference/hosting.md`). Note whether
-  the base project already exists there (`tech-specs/build.mjs` present) or must
-  be created in Phase 3.
+- The argument is a tech-spec directory: `<repo>/tech-specs/<slug>/` —
+  **markdown only** (README.md + domain docs; frontmatter in README.md). If
+  given a path elsewhere, resolve into the spec tree or ask.
+- The **slug is the spec directory's basename** (e.g. `2026-06-devexp`). It is
+  the deck directory name AND the URL segment — the pairing contract in
+  `reference/hosting.md`. Fix it now and use it everywhere; never prettify it.
+- Resolve the **base project**: read `<repo>/tech-specs/README.md` — the
+  pointer names the base dir (in iii: `website/presentations/`). Fallback:
+  search for a dir containing both `build.mjs` and `COMPONENTS.md`. Detect its
+  state:
+  - **current layout** (`package.json` + `src/` present) → use it;
+  - **absent** → first run in this repo: pick the location with the user
+    (default `website/presentations/` when `website/` exists, else
+    `presentations/` at the repo root) and scaffold it in Phase 3;
+  - **legacy layout** (`tech-specs/build.mjs` + `_gallery/` — per-deck
+    standalone projects) → stop and offer the port procedure in
+    `reference/hosting.md` before generating anything new.
+- Output location is `<base>/<slug>/`. If it exists and is non-empty, ask:
+  overwrite, update in place, or abort. **Never write a non-markdown file
+  under `tech-specs/`.**
+- Detect the install mode: workspace (repo `pnpm-workspace.yaml` lists the
+  base) vs standalone (`pnpm install --ignore-workspace` inside the base).
 
 ### 1. Deep ingest (read, do not skim)
 
-- Read `README.md` in full first: thesis, architecture, principles,
-  cross-cutting contracts, migration overview.
+- Read the spec `README.md` in full first: thesis, architecture, principles,
+  cross-cutting contracts, migration overview. Note whether it already has a
+  frontmatter block (title/tagline/date/tags/status).
 - Read every domain doc. For each, capture: the one load-bearing phrase, the
   pain it removes, the mechanism, any schema/fields, any sequence/lifecycle,
   any numbers, any honest trade-off.
@@ -95,12 +116,22 @@ Phases are gated. Do not skip Phase 2's approval or Phase 5's verification.
   lifecycle, state model, config schema, security, migration, …). This is the
   raw material for archetype matching.
 
+**1b. Component awareness (before planning).** Read `<base>/COMPONENTS.md` end
+to end and list `<base>/src/components/{schematic,diagrams}/` + `src/hooks/`.
+The registry is the live catalog for this repo and supersedes the bundled
+`reference/archetypes.md` where they disagree. **Reuse-first mandate:** a
+slide may get a bespoke visual only after the catalog demonstrably has no fit
+for its content shape. Name any planned new component in the Phase 2 outline,
+marked `local` or `promote` (see `reference/component-standards.md`), so the
+user approves it at the same gate.
+
 ### 2. Narrative plan — THE GATE
 
 - Apply the arc in `reference/narrative-framework.md`. Produce a deck outline:
-  an ordered slide list, each with `{ title, archetype, the single claim,
-  source section(s), the concrete data it pulls, interactivity }`. Include
-  candidate deep-dive pages.
+  an ordered slide list, each with `{ title, archetype (or reused registry
+  component), the single claim, source section(s), the concrete data it pulls,
+  interactivity, new component: <Name> (local|promote) — only when nothing
+  fits }`. Include candidate deep-dive pages.
 - Derive the hero line + three-value subhead + stat strip. Choose the wordmark
   label.
 - **Present the outline to the user for approval/edits before scaffolding.**
@@ -111,95 +142,119 @@ Phases are gated. Do not skip Phase 2's approval or Phase 5's verification.
 
 **The deck:**
 
-- `mkdir -p` the output dir and **copy `template/` into it verbatim.**
-- Substitute `__TITLE__` and `__DESCRIPTION__` in `index.html`.
-- `pnpm install --ignore-workspace` (standalone — never pull the parent
-  workspace graph).
+- `mkdir -p <base>/<slug>/` and copy `template/` into it.
+- Substitute `__TITLE__` / `__DESCRIPTION__` in `index.html`, and the
+  `__SPEC_MD_GLOB__` literal in `src/spec-docs.ts` with the computed relative
+  path from `<base>/<slug>/src/` to `<specs-dir>/<slug>/*.md` (in iii:
+  `../../../../tech-specs/<slug>/*.md`).
+- **No per-deck install, no per-deck config, no lockfile.** Ensure deps once:
+  workspace mode → `pnpm install` at the repo root (only if the base's deps
+  are missing); standalone mode → `pnpm install --ignore-workspace` in
+  `<base>` (commit the generated lockfile).
 
-**The base project** (only if it does not already exist at `<repo>/tech-specs/`
-— check for `tech-specs/build.mjs`):
+**Registration:** write or update the YAML frontmatter block at the top of
+`tech-specs/<slug>/README.md` (schema in `reference/hosting.md`): title +
+tagline from the approved hero, `date: YYYY-MM`, 0–4 tags, `status: draft`.
+There is no central manifest — the build aggregates every spec's frontmatter,
+so this run touches nothing shared. If frontmatter already exists, update only
+the fields this run owns (tagline polish, status).
 
-- Copy `base/` into `<repo>/tech-specs/` verbatim (it sits beside the spec
-  dirs). Do **not** copy its `node_modules`/`dist`.
-- Fill the identity placeholders once: `__REPO__` in `package.json` `name`;
-  `__GALLERY_TITLE__` / `__GALLERY_DESCRIPTION__` in `_gallery/index.html`; and
-  the `__GALLERY_*__` fields in `_gallery/src/content/presentations.ts`
-  (`GALLERY_META`). Delete the placeholder `__EXAMPLE_SLUG__` entry from
-  `PRESENTATIONS`.
-- Never touch `build.mjs`, `vercel.json`, or anything under `_gallery/` other
-  than the manifest. That layer is frozen, like `template/`.
+**The base project** (first run in a repo only): copy `base/` into the chosen
+dir (never its `node_modules`/`dist`). Fill the identity once: `__REPO__` in
+`package.json`; the `__GALLERY_*__` / `__WORDMARK_LABEL__` / `__HERO_*__` /
+`__ATTRIBUTION__` / `__SITE_HOST__` tokens in `index.html`,
+`src/gallery/site.ts`, and `README.md`; write the `tech-specs/README.md`
+pointer. In a workspace repo, add the base to `pnpm-workspace.yaml` **with
+user confirmation** (a repo-level file). Never touch `build.mjs`,
+`vite.config.ts`, tsconfigs, or `src/` beyond this copy.
 
 ### 4. Generate the content layer
 
-Edit only these; never touch anything else in `template/`:
+Edit only these — the write surface is `<base>/<slug>/**` plus the spec's
+frontmatter block (and an approved promotion):
 
 - `src/content/deck.ts` — `DECK_META.wordmarkLabel`, `NAV`, `FOOTER`.
 - `src/content/<topic>.ts` — the typed data arrays each archetype consumes
   (map nodes/edges/info, sequence lanes/steps, reveal stages, cli tracks,
   metrics, rows). Keep data here, out of components.
 - `src/sections/<Name>.tsx` — one thin section per slide: import the matching
-  archetype, feed it data, wrap it in `<Section>`. Replace the example
-  sections; delete `src/content/example.ts`.
-- `src/pages/<Name>.tsx` — deep dives via `<PageShell>`.
+  archetype from `@lib`, feed it data, wrap it in `<Section>`. Replace the
+  example sections; delete `src/content/example.ts` and `pages/ExamplePage.tsx`.
+- `src/pages/<Name>.tsx` — deep dives via `@lib` `<PageShell>`.
 - `src/App.tsx` — wire the ordered `SECTIONS` array and the `PAGES` map.
-- Only when **no** archetype fits and the concept is load-bearing: hand-build a
-  bespoke SVG diagram in `src/components/diagrams/`, following
-  `SequencePlayer.tsx` conventions (props-driven, reduced-motion guard,
-  `aria-label`, `overflow-x-auto`, `min-w` for mobile scroll).
 
-**Built-in spec viewer — do not delete.** Every deck ships a `#/spec` page
-(`pages/SpecPage.tsx`) that renders every markdown file of the spec directory
-(`<spec-dir>/*.md`, bundled at build via an `import.meta.glob('../../../*.md')`)
-with a file sidebar. Markdown is rendered by `content/markdown.tsx` (prose in the
-drafting-sheet system; fenced code reuses the deck's syntax highlighter where the
-language is supported, monochrome otherwise); ` ```mermaid ` fences render as
-live, theme-aware diagrams via `content/mermaid.tsx`. It is wired automatically —
-`spec: SpecPage` in `App.tsx`'s `PAGES`, a `spec` link in `TopNav`, and the glob
-in `SpecPage` — and needs **no per-deck content**: it just works once the deck
-sits at `<spec-dir>/presentation/`. Leave all of it in place (it depends on
-`marked` + `mermaid`, already in the template's `package.json`).
+**The component protocol** (when a load-bearing concept has no fit in
+`COMPONENTS.md`):
 
-**Register in the base site.** Append (or update) this deck's entry in
-`<repo>/tech-specs/_gallery/src/content/presentations.ts` `PRESENTATIONS`:
-`{ slug, title, tagline, spec, date, tags?, status?, featured? }`. The `slug`
-**must equal the spec directory basename** (the contract in
-`reference/hosting.md`). Pull `title`/`tagline` from the hero you wrote; set
-`status: 'draft'` until the deck is finished. This is the only base-project file
-you edit per run.
+1. **Default: build it deck-local** in `<base>/<slug>/src/diagrams/<Name>.tsx`,
+   following `@lib/components/diagrams/SequencePlayer.tsx` conventions.
+2. **Promote into `<base>/src/components/` only when all three hold:** (a) it
+   is generic over its data — nothing spec-specific inside, everything arrives
+   via typed props; (b) it maps to a recurring spec shape (a lifecycle, a
+   tree, a timeline, a fan-out…) future decks will plausibly need; (c) it
+   passes the checklist in `reference/component-standards.md` without
+   deck-specific hacks.
+3. A promotion = the component file **plus its `COMPONENTS.md` entry in the
+   same change**. An unregistered shared component is a defect (`build.mjs`
+   warns; `--strict-registry` fails).
+4. Never fork a shared component into the deck to tweak it — extend it via
+   additive, non-breaking props, or build a genuinely different deck-local
+   one. **Modifying an existing shared component requires explicit user
+   approval** (it re-renders every other deck).
+
+**Built-in spec viewer — do not delete.** Every deck ships the `#/spec` page:
+the template wires `spec-docs.ts` (the compile-time glob over the paired
+spec's markdown) into `@lib/pages/SpecPage` via `PAGES.spec`, and the shared
+`TopNav` renders the `spec` link. The shared markdown renderer strips the
+frontmatter block. It needs no per-deck content — leave the wiring in place.
 
 ### 5. Verify — THE SECOND GATE
 
-- `pnpm typecheck` — must pass (strict; fix every error).
-- `pnpm build` — must succeed (the portable artifact; `base: './'`).
+All commands run from `<base>` (in iii: `pnpm --filter iii-presentations …`
+from the repo root works too):
+
+- `pnpm type-check` — the whole project (shared src + gallery + every deck)
+  must pass strict; fix every error.
+- `node build.mjs --only=<slug>` — must succeed and emit `dist/<slug>/`, with
+  zero frontmatter-validation or registry-parity warnings.
 - `pnpm dev` in the background, then dogfood with the **`/browse` skill**
-  (never `mcp__claude-in-chrome__*`): load `http://localhost:5173`, click the
-  map, run a stepper, toggle the theme, open a deep-dive. Confirm no console
-  errors, no horizontal body scroll, reveals fire.
+  (never `mcp__claude-in-chrome__*`): load `http://localhost:5173/<slug>/`,
+  click the map, run a stepper, toggle the theme, open a deep-dive, open
+  `#/spec` and confirm every markdown file renders (mermaid fences live, no
+  raw frontmatter). Zero console errors; no horizontal body scroll at 375px.
+- `pnpm build && pnpm preview`, then `/browse http://localhost:4173/`: the
+  gallery card shows the frontmatter title/tagline/date/tags, and clicking it
+  lands on `/<slug>/`. If the spec previously served the md-only viewer,
+  confirm the deck replaced it at the same URL.
+- **If anything under `<base>/src/` was touched (a promotion): run the full
+  `node build.mjs`** — a shared change must not break sibling decks.
 - Run `reference/quality-bar.md` end to end; fix anything red.
-- **Base site:** from `<repo>/tech-specs/`, run `node build.mjs --only=<slug>`
-  (gallery + just this deck) — it must succeed and emit `dist/<slug>/`. Then
-  `/browse` the gallery (`pnpm preview`, `http://localhost:4173`): the new card
-  shows the right title/tagline/date, and clicking it lands on the deck at
-  `/<slug>/` with no console errors.
 
 ### 6. Hand off
 
-Report: output path, the `pnpm dev` URL, that `pnpm build` → `dist/` is a
-portable static site (any CDN / Pages / S3 / `file://`), the slide list, and
-which interactions are live. Note that the deck is now registered in the repo's
-base project at `<repo>/tech-specs/`, which deploys all decks as one Vercel site
-(`tech-specs/README.md` has the deploy steps). Do **not** commit, push, or run
-`vercel` unless asked.
+Report: the deck path (`<base>/<slug>/`), the dev URL, the slide list, which
+interactions are live, the frontmatter written, and any promoted components
+(with their registry entries). Offer to flip `status: draft` → `live`.
+Deploy is not a step: **in iii, merging to main ships everything via
+`.github/workflows/deploy-website.yml` to `iii.dev/tech-specs/<slug>/`**; in
+other repos `dist/` is a portable static site for whatever CI they use. Do
+**not** commit, push, or configure hosting unless asked. Never run `vercel`.
 
 ## Rules
 
-- Never modify anything under `template/` or `base/` except the per-run
-  content: the deck's content-layer files (Phase 4) and the base manifest entry.
-  Both design systems are law.
-- Slug = the spec directory basename, used identically in the folder, the URL,
-  and the manifest. Never prettify it (`reference/hosting.md`).
-- Pick an existing archetype before hand-building SVG. Bespoke only when
-  essential.
+- **The shared layer is law**: never edit `<base>/src/**`, `build.mjs`,
+  `vite.config.ts`, tsconfigs, `package.json`, or the gallery in a deck run.
+  Sole exception: additive component promotion under
+  `reference/component-standards.md`, always paired with a `COMPONENTS.md`
+  entry.
+- A deck run's write surface is `<base>/<slug>/**` plus the frontmatter block
+  of `tech-specs/<slug>/README.md`. Nothing else.
+- `tech-specs/` holds markdown only. Never write a non-md file there; never
+  create a `presentation/` directory inside it.
+- Reuse first: consult `COMPONENTS.md` before building any visual; the repo
+  registry outranks the bundled catalog.
+- Slug = the spec directory basename, used identically as the deck dir and the
+  URL. Never prettify it. `slug` is never a frontmatter field.
 - One claim per slide. Put depth behind a `<SpecSheet>` (`<details>`), closed
   by default — execs skim, engineers drill.
 - Ration the accent (success / active / CTA only). Lowercase copy; identifiers
@@ -213,19 +268,21 @@ base project at `<repo>/tech-specs/`, which deploys all decks as one Vercel site
 
 Ask the user: the narrative outline (Phase 2, always); output location when
 occupied; audience tilt (execs vs engineers; default balanced); fonts offline
-vs CDN (default CDN; self-host only on a strict-CSP/offline request); scope cap
-when a spec has many domain docs. Only when first creating a repo's base
-project: the gallery identity copy (`GALLERY_META`) if the repo name and spec
-don't make it obvious.
+vs CDN (default CDN); scope cap when a spec has many domain docs; first-run
+base location + gallery identity + the `pnpm-workspace.yaml` edit; any
+**modification** to an existing shared component; flipping `status` to `live`.
 
 Decide yourself: which archetype each slide uses; slide order within the arc;
 hero line and stats; SVG coordinates and step counts; what goes behind a
-`<details>`; copy voice; the deck's manifest entry (slug, tagline, tags, date).
-Everything inside `template/` and `base/` is settled — never re-litigate it.
+`<details>`; copy voice; the frontmatter field values; deck-local vs promote
+per the component protocol (announce promotions in the outline and hand-off —
+don't ask). Everything under `<base>/src/` and the build glue is settled —
+never re-litigate it in a deck run.
 
 ## Verify
 
-`pnpm typecheck` and `pnpm build` are green; `/browse` shows zero console
-errors and working interactions; `reference/quality-bar.md` passes. The base
-project builds (`node build.mjs --only=<slug>`) and the gallery card links to
-the deck (`reference/hosting.md`).
+`pnpm type-check` and `node build.mjs --only=<slug>` are green with zero
+registry/frontmatter warnings; `/browse` shows zero console errors, working
+interactions, and a frontmatter-free `#/spec`; the gallery card renders from
+the frontmatter; `reference/quality-bar.md` passes; a promotion ran the full
+build (`reference/hosting.md` has the layout this all serves).

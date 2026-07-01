@@ -1,9 +1,9 @@
+import { MapDatasheet, SystemMap } from '@lib/components/diagrams/SystemMap'
+import { Section } from '@lib/components/Section'
+import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
+import { StatusDot } from '@lib/components/schematic/StatusDot'
 import { useEffect, useRef, useState } from 'react'
-import { MapDatasheet, SystemMap } from '@/components/diagrams/SystemMap'
-import { Section } from '@/components/Section'
-import { SpecSheet, SpecRow } from '@/components/SpecSheet'
-import { StatusDot } from '@/components/schematic/StatusDot'
-import { MAP_EDGES, MAP_INFO, MAP_NODES } from '@/content/example'
+import { MAP_EDGES, MAP_INFO, MAP_NODES } from '../content/example'
 
 /** matches tailwind @5xl container width (64rem) */
 const PAIRED_LAYOUT_MIN_WIDTH = 1024
@@ -55,28 +55,15 @@ export function SystemMapSection() {
         {LEGEND.map((item) => (
           <span key={item.label} className="flex items-center gap-x-2">
             {item.swatch}
-            <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-              {item.label}
-            </span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">{item.label}</span>
           </span>
         ))}
       </div>
 
-      <div
-        ref={layoutRef}
-        className="grid grid-cols-1 @5xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-stretch"
-      >
-        <div
-          ref={mapRef}
-          className="border border-rule bg-bg p-3 overflow-x-auto min-h-0 self-start"
-        >
+      <div ref={layoutRef} className="grid grid-cols-1 @5xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-stretch">
+        <div ref={mapRef} className="border border-rule bg-bg p-3 overflow-x-auto min-h-0 self-start">
           <div className="min-w-[760px]">
-            <SystemMap
-              nodes={MAP_NODES}
-              edges={MAP_EDGES}
-              selected={selected}
-              onSelect={setSelected}
-            />
+            <SystemMap nodes={MAP_NODES} edges={MAP_EDGES} selected={selected} onSelect={setSelected} />
           </div>
         </div>
         <div
@@ -112,12 +99,12 @@ export function SystemMapSection() {
         <SpecSheet title="design principles" meta="from the spec">
           <div className="flex flex-col">
             <SpecRow name="standalone first">
-              every part is independently installable and useful by itself.
-              cross-part calls are explicit, never imports.
+              every part is independently installable and useful by itself. cross-part calls are explicit, never
+              imports.
             </SpecRow>
             <SpecRow name="one job each">
-              the gateway routes, the worker runs, the store remembers. anything
-              that grows real logic becomes its own part.
+              the gateway routes, the worker runs, the store remembers. anything that grows real logic becomes its own
+              part.
             </SpecRow>
             <SpecRow name="reactive by default">
               state changes emit events; consumers bind once and render live.

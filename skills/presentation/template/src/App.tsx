@@ -1,43 +1,30 @@
+import { Footer } from '@lib/components/Footer'
+import { Sheet } from '@lib/components/schematic/Sheet'
+import { TopNav } from '@lib/components/TopNav'
+import { useHashRoute } from '@lib/hooks/useHashRoute'
+import { SpecPage } from '@lib/pages/SpecPage'
 import type { ComponentType } from 'react'
-import { Footer } from '@/components/Footer'
-import { TopNav } from '@/components/TopNav'
-import { Sheet } from '@/components/schematic/Sheet'
-import { useHashRoute } from '@/hooks/useHashRoute'
-import { ExamplePage } from '@/pages/ExamplePage'
-import { SpecPage } from '@/pages/SpecPage'
-import { GuaranteesSection } from '@/sections/GuaranteesSection'
-import { Hero } from '@/sections/Hero'
-import { InstallSection } from '@/sections/InstallSection'
-import { LifecycleSection } from '@/sections/LifecycleSection'
-import { PayoffSection } from '@/sections/PayoffSection'
-import { ReactiveSection } from '@/sections/ReactiveSection'
-import { SequenceSection } from '@/sections/SequenceSection'
-import { SystemMapSection } from '@/sections/SystemMapSection'
+import { DECK_META, FOOTER, NAV } from './content/deck'
+import { ExamplePage } from './pages/ExamplePage'
+import { Hero } from './sections/Hero'
+import { PayoffSection } from './sections/PayoffSection'
+import { SystemMapSection } from './sections/SystemMapSection'
+import { SPEC_DOCS } from './spec-docs'
 
 /**
- * The ordered home-page sections. The first is the hero; the rest each carry a
- * DOM id that should match a NAV entry in content/deck.ts for scroll-spy.
- * The /presentation skill edits this list and the PAGES map below.
+ * Ordered home-page sections. The first is the hero; the rest each carry a DOM
+ * id matching a NAV entry in content/deck.ts for scroll-spy.
  */
-const SECTIONS: ComponentType[] = [
-  Hero,
-  SystemMapSection,
-  SequenceSection,
-  LifecycleSection,
-  ReactiveSection,
-  GuaranteesSection,
-  InstallSection,
-  PayoffSection,
-]
+const SECTIONS: ComponentType[] = [Hero, SystemMapSection, PayoffSection]
 
-/**
- * deep-dive pages, keyed by the `#/<slug>` route slug. `spec` is the built-in
- * spec viewer (renders the spec dir's markdown); replace `example` with your
- * own deep-dive pages.
- */
+// The built-in spec viewer — never remove. It renders every markdown file of
+// the paired tech-specs/<slug>/ directory with a file sidebar.
+const Spec = () => <SpecPage docs={SPEC_DOCS} />
+
+/** deep-dive pages, keyed by the `#/<slug>` route slug. */
 const PAGES: Record<string, ComponentType> = {
   example: ExamplePage,
-  spec: SpecPage,
+  spec: Spec,
 }
 
 function Home() {
@@ -70,9 +57,9 @@ export default function App() {
   return (
     <div className="@container min-h-screen">
       <Sheet>
-        <TopNav route={route} />
+        <TopNav route={route} meta={DECK_META} nav={NAV} />
         {route.kind === 'home' ? <Home /> : Page ? <Page /> : <NotFound />}
-        <Footer />
+        <Footer footer={FOOTER} />
       </Sheet>
     </div>
   )

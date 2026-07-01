@@ -1,101 +1,215 @@
 #!/usr/bin/env node
 /**
- * build.mjs — the orchestrator that turns this folder into ONE static site.
+ * build.mjs — assembles the whole tech-specs site into dist/.
  *
- * Output layout (dist/):
- *   /                 the gallery (index of every deck)        <- _gallery/dist
- *   /<slug>/          one built presentation per spec           <- <slug>/presentation/dist
+ * Output layout (deployed to iii.dev under /tech-specs/ by
+ * .github/workflows/deploy-website.yml):
  *
- * It builds the gallery, then discovers every `<dir>/presentation/` sibling,
- * builds each, and copies its output to `dist/<dir>/`. The directory name IS
- * the slug — it must match the `slug` field in _gallery/src/content/
- * presentations.ts (that is the contract a gallery card links through).
+ *   dist/index.html            the gallery (index of every spec)
+ *   dist/index.json            machine-readable spec list (landing-page timeline)
+ *   dist/<slug>/index.html     one page per spec: the interactive deck when
+ *                              website/presentations/<slug>/ exists, otherwise
+ *                              the generic markdown spec viewer
+ *   dist/<slug>/<file>.md      raw spec markdown, directly linkable
  *
- * Every sub-build is a standalone pnpm project (`--ignore-workspace`), exactly
- * like running `/presentation` produces — nothing here pulls a parent workspace
- * graph. Presentations use `base: './'`, so their relative asset paths resolve
- * correctly when served from a `/<slug>/` subpath.
+ * Contracts enforced here (fail fast, named paths):
+ *   - every deck dir pairs with a tech-specs/<slug>/ spec dir (no orphans)
+ *   - deck index.html entries are relative (./src/main.tsx) so the single dev
+ *     server and the /tech-specs/ prefix both work
+ *   - every shared src component has a COMPONENTS.md entry (warn; hard fail
+ *     with --strict-registry)
  *
  * Usage:
- *   node build.mjs                 install + build everything (what Vercel runs)
- *   node build.mjs --skip-install  reuse existing node_modules (fast local rebuild)
- *   node build.mjs --only=<slug>   build only the gallery + one presentation
+ *   node build.mjs                     build everything
+ *   node build.mjs --only=<slug>       gallery + one spec (fast rebuild)
+ *   node build.mjs --strict-registry   registry parity warnings become errors
  */
 
-import { execFileSync } from 'node:child_process'
 import {
   cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
+  statSync,
+  writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
+import { build } from 'vite'
+import { listSpecDocs, readSpecs, ROOT, SPECS_DIR } from './scripts/manifest.mjs'
 
-const ROOT = dirname(fileURLToPath(import.meta.url))
 const DIST = join(ROOT, 'dist')
-const GALLERY = join(ROOT, '_gallery')
+const VIEWER_TMP = join(DIST, '_viewer-tmp')
+// top-level dirs of this project that are never a deck
+const NOT_A_DECK = new Set(['src', 'scripts', 'dist', 'node_modules', '_viewer'])
 
 const args = process.argv.slice(2)
-const SKIP_INSTALL = args.includes('--skip-install')
-const ONLY = args.find((a) => a.startsWith('--only='))?.slice('--only='.length)
+const onlyEq = args.find((a) => a.startsWith('--only='))?.slice('--only='.length)
+const onlyPos = args.includes('--only') ? args[args.indexOf('--only') + 1] : undefined
+const ONLY = onlyEq ?? (onlyPos && !onlyPos.startsWith('--') ? onlyPos : undefined)
+const STRICT_REGISTRY = args.includes('--strict-registry')
 
-// directories that are never a presentation
-const IGNORE = new Set(['_gallery', 'dist', 'node_modules', '.git', '.vercel'])
-
-function run(cmd, cmdArgs, cwd) {
-  execFileSync(cmd, cmdArgs, { cwd, stdio: 'inherit' })
-}
-
-function buildProject(dir, label) {
+/** @param {string} root @param {string} outDir @param {string} label */
+async function buildApp(root, outDir, label) {
   console.log(`\n▸ ${label}`)
-  // --no-frozen-lockfile so a slightly-stale committed lockfile self-heals
-  // instead of hard-failing the deploy. CI (Vercel sets CI=true) otherwise
-  // defaults to frozen, which aborts on any lockfile/package.json drift — a
-  // confusing "builds locally, fails on Vercel" trap for future decks.
-  if (!SKIP_INSTALL)
-    run('pnpm', ['install', '--ignore-workspace', '--no-frozen-lockfile'], dir)
-  run('pnpm', ['build'], dir)
+  await build({
+    configFile: join(ROOT, 'vite.config.ts'),
+    root,
+    logLevel: 'warn',
+    build: { outDir, emptyOutDir: false },
+  })
 }
 
-/** every sibling dir that holds a buildable presentation, sorted, slug = name */
-function discoverPresentations() {
+/** deck dirs present in this project (top-level, contain an index.html) */
+function discoverDeckDirs() {
   return readdirSync(ROOT, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && !IGNORE.has(e.name))
+    .filter((e) => e.isDirectory() && !NOT_A_DECK.has(e.name) && !e.name.startsWith('.'))
     .map((e) => e.name)
-    .filter((name) => existsSync(join(ROOT, name, 'presentation', 'package.json')))
-    .filter((name) => !ONLY || name === ONLY)
+    .filter((name) => existsSync(join(ROOT, name, 'index.html')))
     .sort()
 }
 
-function main() {
-  const started = Date.now()
-  rmSync(DIST, { recursive: true, force: true })
-  mkdirSync(DIST, { recursive: true })
-
-  // 1. the gallery becomes the site root
-  buildProject(GALLERY, 'gallery (site root)')
-  cpSync(join(GALLERY, 'dist'), DIST, { recursive: true })
-
-  // 2. each presentation lands at /<slug>/
-  const slugs = discoverPresentations()
-  for (const slug of slugs) {
-    const proj = join(ROOT, slug, 'presentation')
-    buildProject(proj, `presentation: ${slug}  ->  /${slug}/`)
-    cpSync(join(proj, 'dist'), join(DIST, slug), { recursive: true })
+/** every shared src file must have a `### <basename>` entry in COMPONENTS.md */
+function checkRegistry() {
+  const registryPath = join(ROOT, 'COMPONENTS.md')
+  const registry = existsSync(registryPath) ? readFileSync(registryPath, 'utf8') : ''
+  const entries = new Set([...registry.matchAll(/^### (\S+)$/gm)].map((m) => m[1]))
+  const skip = new Set(['main.tsx', 'App.tsx', 'vite-env.d.ts', 'index.css'])
+  /** @type {string[]} */
+  const problems = []
+  const files = []
+  const walk = (/** @type {string} */ dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name)
+      if (entry.isDirectory()) walk(p)
+      else if (/\.(tsx?|mts)$/.test(entry.name) && !skip.has(entry.name)) files.push(p)
+    }
   }
-
-  const secs = ((Date.now() - started) / 1000).toFixed(1)
-  console.log(
-    `\n✓ built dist/ in ${secs}s — gallery + ${slugs.length} ` +
-      `presentation${slugs.length === 1 ? '' : 's'}: ${slugs.join(', ') || '(none)'}`,
-  )
-  if (slugs.length === 0) {
-    console.log(
-      '  (no <dir>/presentation/ found yet — run /presentation <spec-dir> to add one)',
-    )
+  for (const sub of ['components', 'hooks', 'content', 'pages', 'lib', 'gallery']) {
+    const dir = join(ROOT, 'src', sub)
+    if (existsSync(dir)) walk(dir)
   }
+  const names = files.map((f) => f.split('/').pop()?.replace(/\.(tsx?|mts)$/, '') ?? '')
+  for (let i = 0; i < names.length; i++) {
+    if (!entries.has(names[i])) {
+      problems.push(`unregistered component: ${files[i]} — add a COMPONENTS.md entry`)
+    }
+  }
+  for (const entry of entries) {
+    if (!names.includes(entry)) problems.push(`stale registry entry: ${entry} — no matching file`)
+  }
+  return problems
 }
 
-main()
+async function main() {
+  const started = Date.now()
+
+  // 1. discover + validate specs (throws on hard frontmatter violations)
+  const { specs, warnings } = readSpecs()
+  for (const w of warnings) console.warn(`⚠ ${w}`)
+  if (ONLY && !specs.some((s) => s.slug === ONLY)) {
+    throw new Error(`--only=${ONLY}: no such spec in ${SPECS_DIR}`)
+  }
+
+  // 2. pairing + entry contracts
+  const deckDirs = discoverDeckDirs()
+  for (const deck of deckDirs) {
+    if (!existsSync(join(SPECS_DIR, deck))) {
+      throw new Error(
+        `orphan deck: ${join(ROOT, deck)} has no spec at ${join(SPECS_DIR, deck)} — ` +
+          'the deck dir must be named after its spec dir',
+      )
+    }
+    const html = readFileSync(join(ROOT, deck, 'index.html'), 'utf8')
+    if (!html.includes('./src/main.tsx')) {
+      throw new Error(
+        `${deck}/index.html must reference its entry as "./src/main.tsx" (relative) — ` +
+          'a root-relative "/src/..." breaks the shared dev server and subpath hosting',
+      )
+    }
+  }
+
+  // 3. registry parity
+  const registryProblems = checkRegistry()
+  for (const p of registryProblems) console.warn(`⚠ ${p}`)
+  if (STRICT_REGISTRY && registryProblems.length > 0) {
+    throw new Error(`--strict-registry: ${registryProblems.length} registry problem(s)`)
+  }
+
+  // 4. build the gallery (project-root index.html → dist/)
+  if (!ONLY) rmSync(DIST, { recursive: true, force: true })
+  mkdirSync(DIST, { recursive: true })
+  await buildApp(ROOT, DIST, 'gallery (site root)')
+
+  // 5. build the generic viewer once, if any target spec needs it
+  const targets = specs.filter((s) => !ONLY || s.slug === ONLY)
+  const needsViewer = targets.some((s) => !s.hasDeck)
+  if (needsViewer) {
+    await buildApp(join(ROOT, '_viewer'), VIEWER_TMP, 'spec viewer (md-only specs)')
+  }
+
+  // 6. one page per spec + raw markdown
+  for (const spec of targets) {
+    const out = join(DIST, spec.slug)
+    if (ONLY) rmSync(out, { recursive: true, force: true })
+    if (spec.hasDeck) {
+      await buildApp(join(ROOT, spec.slug), out, `deck: ${spec.slug}  →  /${spec.slug}/`)
+    } else {
+      console.log(`\n▸ viewer: ${spec.slug}  →  /${spec.slug}/`)
+      cpSync(VIEWER_TMP, out, { recursive: true })
+      writeFileSync(
+        join(out, 'spec.json'),
+        `${JSON.stringify(
+          { slug: spec.slug, title: spec.title, tagline: spec.tagline, docs: listSpecDocs(spec.slug) },
+          null,
+          2,
+        )}\n`,
+      )
+    }
+    for (const f of readdirSync(join(SPECS_DIR, spec.slug))) {
+      if (f.endsWith('.md')) cpSync(join(SPECS_DIR, spec.slug, f), join(out, f))
+    }
+  }
+  rmSync(VIEWER_TMP, { recursive: true, force: true })
+
+  // 7. dist/index.json — the landing-page feed. Drafts are deliberately
+  // excluded here (and from the sitemap); they still build and show muted in
+  // the gallery.
+  const feed = {
+    generatedAt: new Date().toISOString(),
+    specs: specs
+      .filter((s) => s.status !== 'draft')
+      .map(({ slug, title, tagline, date, month, tags, status, hasDeck }) => ({
+        slug,
+        title,
+        tagline,
+        date,
+        month,
+        tags,
+        status,
+        hasDeck,
+        url: `/tech-specs/${slug}/`,
+      })),
+  }
+  writeFileSync(join(DIST, 'index.json'), `${JSON.stringify(feed, null, 2)}\n`)
+
+  // 8. post-build contract checks
+  if (!statSync(join(DIST, 'index.html')).size) throw new Error('gallery emitted empty index.html')
+  for (const spec of specs) {
+    const page = join(DIST, spec.slug, 'index.html')
+    if (!ONLY || spec.slug === ONLY) {
+      if (!existsSync(page)) throw new Error(`missing ${page} after build`)
+    }
+  }
+  JSON.parse(readFileSync(join(DIST, 'index.json'), 'utf8'))
+
+  const secs = ((Date.now() - started) / 1000).toFixed(1)
+  const built = targets.map((s) => `${s.slug}${s.hasDeck ? '' : ' (viewer)'}`).join(', ')
+  console.log(`\n✓ dist/ in ${secs}s — gallery + ${targets.length} spec(s): ${built || '(none)'}`)
+}
+
+main().catch((err) => {
+  console.error(`\n✗ build failed: ${err instanceof Error ? err.message : err}`)
+  process.exit(1)
+})

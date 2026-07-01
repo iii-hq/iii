@@ -2,35 +2,12 @@
  * deck.ts — the one file that describes THIS presentation.
  *
  * The /presentation skill rewrites this per tech-spec. Everything here is pure
- * data (no JSX), so it stays the single readable source of "what is this deck".
- * The ordered list of section COMPONENTS and the deep-dive PAGES map live in
- * App.tsx (the component registry); the nav, wordmark label, and footer copy
- * live here.
+ * data (no JSX); the shared chrome (TopNav, Footer) receives it as props from
+ * App.tsx — shared components never reach into deck content. The ordered list
+ * of section COMPONENTS and the deep-dive PAGES map live in App.tsx.
  */
 
-export interface NavItem {
-  /** must match a section's DOM id so scroll-spy + anchor links work */
-  id: string
-  label: string
-}
-
-export interface FooterSpec {
-  /** small caps eyebrow above the closing line, e.g. "get started" */
-  eyebrow: string
-  /** the big closing line — the one-command payoff */
-  headline: string
-  /** the command shown in the bordered chip */
-  command: string
-  /** left attribution line in the bottom bar */
-  attribution: string
-  /** right "source of truth" line in the bottom bar */
-  source: string
-}
-
-export interface DeckMeta {
-  /** wordmark text next to the logo in the top nav */
-  wordmarkLabel: string
-}
+import type { DeckMeta, FooterSpec, NavItem } from '@lib/lib/deck-types'
 
 export const DECK_META: DeckMeta = {
   wordmarkLabel: 'spec presentation',
@@ -42,11 +19,6 @@ export const DECK_META: DeckMeta = {
  */
 export const NAV: NavItem[] = [
   { id: 'map', label: 'map' },
-  { id: 'turn', label: 'sequence' },
-  { id: 'lifecycle', label: 'durability' },
-  { id: 'reactive', label: 'reactive' },
-  { id: 'guarantees', label: 'guarantees' },
-  { id: 'install', label: 'install' },
   { id: 'payoff', label: 'payoff' },
 ]
 

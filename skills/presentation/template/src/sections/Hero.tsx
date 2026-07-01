@@ -1,9 +1,9 @@
-import { Caret } from '@/components/schematic/Caret'
-import { Cell } from '@/components/schematic/Cell'
-import { Prompt } from '@/components/schematic/Prompt'
-import { StatusDot } from '@/components/schematic/StatusDot'
-import { Terminal, TerminalRow } from '@/components/schematic/Terminal'
-import { HERO_CLAIMS, HERO_STATS } from '@/content/example'
+import { Caret } from '@lib/components/schematic/Caret'
+import { Cell } from '@lib/components/schematic/Cell'
+import { Prompt } from '@lib/components/schematic/Prompt'
+import { StatusDot } from '@lib/components/schematic/StatusDot'
+import { Terminal, TerminalRow } from '@lib/components/schematic/Terminal'
+import { HERO_CLAIMS, HERO_STATS } from '../content/example'
 
 /**
  * A1 — the hero. States the WIN in one line plus a three-value subhead; never
@@ -24,10 +24,9 @@ export function Hero() {
             one command.
           </h1>
           <p className="mt-6 font-mono text-[14px] leading-[1.7] text-ink-faint lowercase max-w-[56ch]">
-            the whole system, declared once and brought up in a single step —{' '}
-            <span className="text-ink">simple</span> to run,{' '}
-            <span className="text-ink">structured</span> by design,{' '}
-            <span className="text-ink">correct</span> by construction.
+            the whole system, declared once and brought up in a single step — <span className="text-ink">simple</span>{' '}
+            to run, <span className="text-ink">structured</span> by design, <span className="text-ink">correct</span> by
+            construction.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <a
@@ -60,15 +59,10 @@ export function Hero() {
               <TerminalRow
                 command={
                   <>
-                    your-cli request{' '}
-                    <span className="text-ink-faint">{'{ input }'}</span>
+                    your-cli request <span className="text-ink-faint">{'{ input }'}</span>
                   </>
                 }
-                output={
-                  <span className="tabular-nums">
-                    {'→ { id: "r_8c2", accepted: true }'}
-                  </span>
-                }
+                output={<span className="tabular-nums">{'→ { id: "r_8c2", accepted: true }'}</span>}
               />
               <div className="flex items-center gap-x-2">
                 <Prompt symbol="$" />
@@ -99,9 +93,7 @@ export function Hero() {
               key={claim.title}
               title={
                 <span className="flex items-center gap-x-2.5">
-                  <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
-                    0{i + 1}
-                  </span>
+                  <span className="font-mono text-[11px] text-ink-ghost tabular-nums">0{i + 1}</span>
                   {claim.title}
                 </span>
               }
