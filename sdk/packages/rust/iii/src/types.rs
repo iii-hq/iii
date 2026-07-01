@@ -23,7 +23,7 @@ pub type RemoteFunctionHandler =
 /// than folded into the payload; `None` when the caller attached none).
 ///
 /// This is the SDK's internal dispatch shape: handlers built from
-/// metadata-unaware functions simply ignore the second argument.
+/// metadata-unaware functions ignore the second argument.
 pub type RemoteFunctionHandlerWithMetadata =
     Arc<dyn Fn(Value, Option<Value>) -> BoxFuture<'static, Result<Value, Error>> + Send + Sync>;
 

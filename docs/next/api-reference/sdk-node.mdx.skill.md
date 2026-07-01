@@ -380,10 +380,15 @@ in invocation payloads to pass channel endpoints between workers.
 #### RemoteFunctionHandler
 
 Async function handler for a registered function. Receives the invocation
-payload and returns the result.
+payload and an optional per-invocation `metadata` value, and returns the
+result.
+
+`metadata` is arbitrary JSON travelling on a separate channel from the
+payload. It is `undefined` when the caller did not attach any. Existing
+single-argument handlers keep working -- they ignore the extra argument.
 
 ```typescript
-type RemoteFunctionHandler = (data: TInput) => Promise<TOutput>
+type RemoteFunctionHandler = (data: TInput, metadata: unknown) => Promise<TOutput>
 ```
 
 ### iii-sdk/errors
@@ -561,6 +566,7 @@ Request object passed to IIIClient.trigger.
 | --- | --- | --- | --- |
 | `action` | `TriggerAction` | No | Routing action. Omit for synchronous request/response. |
 | `function_id` | `string` | Yes | ID of the function to invoke. |
+| `metadata` | `unknown` | No | Optional per-invocation metadata (arbitrary JSON). Travels as a separate<br />channel from the payload and is surfaced to the target handler as a<br />dedicated argument. Omitted from the wire message when undefined. |
 | `payload` | `TInput` | Yes | Payload to pass to the function. |
 | `timeoutMs` | `number` | No | Override the default invocation timeout in milliseconds. |
 

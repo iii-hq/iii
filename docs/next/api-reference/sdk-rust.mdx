@@ -872,7 +872,7 @@ per-invocation `metadata` sidecar (delivered as a distinct argument rather
 than folded into the payload; `None` when the caller attached none).
 
 This is the SDK's internal dispatch shape: handlers built from
-metadata-unaware functions simply ignore the second argument.
+metadata-unaware functions ignore the second argument.
 
 ```rust
 type RemoteFunctionHandlerWithMetadata = std::sync::Arc<dyn Fn + Send + Sync>

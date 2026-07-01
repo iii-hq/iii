@@ -387,8 +387,7 @@ result.
 
 `metadata` is arbitrary JSON travelling on a separate channel from the
 payload. It is `undefined` when the caller did not attach any. Existing
-single-argument handlers keep working -- the extra argument is simply
-ignored by them.
+single-argument handlers keep working -- they ignore the extra argument.
 
 ```typescript
 type RemoteFunctionHandler = (data: TInput, metadata: unknown) => Promise<TOutput>

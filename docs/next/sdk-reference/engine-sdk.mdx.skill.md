@@ -122,6 +122,7 @@ trigger fires.
   "invocation_id": "9f3c…",
   "function_id": "math::add",
   "data": { "a": 2, "b": 3 },
+  "metadata": { "tenant": "acme" },
   "traceparent": "00-…",
   "baggage": "k=v,…",
   "action": { "type": "void" }
@@ -129,8 +130,13 @@ trigger fires.
 ```
 
 `invocation_id` is omitted on `Void` invocations (the worker has no result channel to reply on).
-`traceparent` and `baggage` carry W3C trace context. `action` is the routing flag (see
-[Trigger actions](#trigger-actions) below); absent / `null` means synchronous.
+`metadata` is optional per-invocation metadata (arbitrary JSON) that travels as a distinct
+channel alongside `data`, never folded into the payload, and is surfaced to the target
+handler as a separate argument. It is set at fire time from a trigger's registered `metadata`
+or attached by an invocation-time caller, and omitted entirely when absent, so peers that
+neither send nor expect it are unaffected. `traceparent` and `baggage` carry W3C trace
+context. `action` is the routing flag (see [Trigger actions](#trigger-actions) below);
+absent / `null` means synchronous.
 
 ## `InvocationResult`
 
@@ -201,6 +207,8 @@ and worker lifecycle. Defined in
 | `engine::triggers::list`      | List every registered trigger (filterable by `include_internal`).             |
 | `engine::trigger-types::list` | List every registered trigger type with its config and call request schemas.  |
 | `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `description`). |
+| `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. Returns the trigger id. |
+| `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. |
 
 ## Engine discovery triggers
 
