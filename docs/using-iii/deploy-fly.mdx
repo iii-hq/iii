@@ -217,7 +217,7 @@ fly deploy
 ## The Fly architecture for iii
 
 You can run **every** declarable worker on the **same** engine Machine by listing them
-in `config.yaml` — `database`, `iii-http`, and the rest share one `/data` volume. Separate
+in `config.yaml`: `database`, `iii-http`, and the rest share one `/data` volume. Separate
 Fly apps are optional: use them when you want a different language runtime, independent
 scaling, or stronger isolation. Both patterns are valid and can be mixed.
 
@@ -439,7 +439,7 @@ manifest before you ship (full field reference:
 - `scripts.install`: install from a lockfile without dev deps (`npm ci --omit=dev`).
 - `env`: inject production config for **engine-managed** workers; keep secrets out of
   the file. For workers you run as separate Fly apps, set `III_URL` with
-  `fly secrets set` and pass `process.env.III_URL` to `registerWorker()` — the SDK
+  `fly secrets set` and pass `process.env.III_URL` to `registerWorker()`. The SDK
   reads that env var. The manifest keys `III_URL` / `III_ENGINE_URL` are ignored only
   for engine-managed workers (the engine sets their connection URL).
 - `runtime.base_image`: pin a specific base image for reproducible builds.
