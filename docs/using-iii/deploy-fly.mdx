@@ -83,7 +83,9 @@ workers:
   # First manager entry is the worker WS port. Bind [::] so worker apps reach it
   # over Fly's IPv6 private network (and so Fly Proxy can reach the public surface).
   - name: iii-worker-manager
-    config: { host: "[::]", port: 49134 }
+    config:
+      host: "[::]"
+      port: 49134
 
   - name: iii-http
     config:
@@ -91,20 +93,39 @@ workers:
       port: 3111
       cors:
         allowed_origins: ["*"]   # tighten to your domains in production
+
   - name: iii-stream
     config:
       host: "[::]"
       port: 3112
-      adapter: { name: kv, config: { store_method: file_based, file_path: /data/stream_store } }
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: /data/stream_store
+
   - name: iii-state
     config:
-      adapter: { name: kv, config: { store_method: file_based, file_path: /data/state_store.db } }
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: /data/state_store.db
+
   - name: iii-queue
     config:
-      adapter: { name: builtin, config: { store_method: file_based, file_path: /data/queue_store } }
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: /data/queue_store
+
   - name: configuration
     config:
-      adapter: { name: fs, config: { directory: /data/configuration } }
+      adapter:
+        name: fs
+        config:
+          directory: /data/configuration
 ```
 
 <Note>
@@ -138,16 +159,15 @@ primary_region = "iad"
 
 [env]
   III_EXECUTION_CONTEXT = "fly"
-  RUST_LOG = "info"
 
 # Durable state. The volume is mounted at /data; config.yaml file_paths live under it.
 [mounts]
   source = "iii_data"
   destination = "/data"
 
-# Keep the single stateful engine alive. The default policy is "on-failure", which
-# does NOT restart on a clean exit (code 0) -- and the engine exits cleanly when it
-# reloads config.yaml at runtime, which would otherwise leave the Machine stopped.
+# Keep the stateful engine running through platform restarts. A successful config
+# reload is hot in-process; the engine does not exit. Failed reloads exit non-zero
+# (on-failure would restart those too).
 [[restart]]
   policy = "always"
 
@@ -176,10 +196,13 @@ primary_region = "iad"
     grace_period = "10s"
 ```
 
-Create the volume in the same region, then deploy:
+Create the volume in the same region. If `config.yaml` references `${REDIS_URL}`,
+`${DATABASE_URL}`, or other secrets, set them with `fly secrets set` **before** the
+first `fly deploy`, or the engine fails to resolve placeholders on boot. Then deploy:
 
 ```bash
 fly volumes create iii_data --region iad --size 1
+fly secrets set REDIS_URL=redis://... DATABASE_URL=postgres://...   # when using external adapters
 fly deploy
 ```
 
@@ -193,8 +216,15 @@ fly deploy
 
 ## The Fly architecture for iii
 
+You can run **every** declarable worker on the **same** engine Machine by listing them
+in `config.yaml` — `database`, `iii-http`, and the rest share one `/data` volume. Separate
+Fly apps are optional: use them when you want a different language runtime, independent
+scaling, or stronger isolation. Both patterns are valid and can be mixed.
+
+![Fly.io app overview with engine and worker Machines](/next/using-iii/assets/fly-app-overview.png)
+
 An iii deployment is the engine plus the workers that connect to it. There are two ways to
-place a worker on Fly, and a deployment can mix them:
+place a worker on Fly:
 
 - **In the engine Machine** -- declare the worker in `config.yaml` and the engine runs it
   as a child process. It shares the engine's CPU, memory, and `/data` volume. This covers
@@ -263,11 +293,14 @@ SQLite-backed database with nothing extra in the image:
           url: sqlite:/data/iii.db        # on the Fly volume
 ```
 
-The engine logs `Worker 'database' not found locally, checking registry...`, then
-registers `database::query`, `database::execute`, and the rest as a plain child
-process. This is why the base is built from the install script (it ships `iii-worker`
-and `libcap-ng0`): registry workers that deploy as **binaries** run as ordinary child
-processes and work on Fly. Supply their secrets from `fly secrets` (below).
+The `iii-worker` daemon logs `Worker 'database' not found locally, checking registry...`
+to `iii worker logs database`. The engine log shows `Starting external worker via
+iii-worker` and the registered `database::*` functions. This is why the base is built
+from the install script (it ships `iii-worker` and `libcap-ng0`): registry workers with
+`deploy: binary` in their `iii.worker.yaml` run as ordinary child processes and work on
+Fly. Check the top-level `deploy:` field on [workers.iii.dev](https://workers.iii.dev):
+`binary` runs on Fly; `bundle` and `image` boot libkrun guests and need `/dev/kvm`.
+Supply secrets from `fly secrets` (below).
 
 <Note>
   Auto-provisioning downloads the worker on first boot, which adds cold-start time and
@@ -284,14 +317,14 @@ adapters is the main production step. The full table is in
 [Configure workers and adapters](./deployment#configure-workers-and-adapters); the
 short version for Fly:
 
-| Worker | Default | On Fly, use |
+| Worker | Default exporters | On Fly, use |
 | --- | --- | --- |
 | `iii-state` | `kv` in-memory | `file_based` on `/data`, or `redis` |
 | `iii-stream` | `kv` in-memory | `file_based` on `/data`, or `redis` |
 | `iii-queue` | `builtin` in-memory | `file_based` on `/data`, or `rabbitmq` |
 | `iii-cron` | `kv` in-memory | `file_based` on `/data` |
 | `configuration` | `fs` at `./data/configuration` | `fs` at `/data/configuration` |
-| `iii-observability` | `memory` | `otlp` to a collector app on the 6PN |
+| `iii-observability` | traces default `otlp`; metrics/logs default `memory` | set `exporter`, `metrics_exporter`, and `logs_exporter` to `otlp` for production |
 
 ## From in-memory to file-based
 
@@ -334,12 +367,18 @@ only the **hostnames and credentials** are Fly-specific:
 ```yaml
   - name: iii-state
     config:
-      adapter: { name: redis, config: { url: "${REDIS_URL}" } }
+      adapter:
+        name: redis
+        config:
+          redis_url: ${REDIS_URL:-redis://localhost:6379}
   - name: database
     config:
       databases:
-        primary: { url: "${DATABASE_URL}" }
+        primary:
+          url: ${DATABASE_URL}
 ```
+
+Set secrets **before** the first deploy that references them:
 
 ```bash
 fly secrets set REDIS_URL=redis://... DATABASE_URL=postgres://...
@@ -398,9 +437,11 @@ manifest before you ship (full field reference:
 - `scripts.start`: drop watch mode (`node dist/index.js`, not `npx tsx watch ...`) so a
   crash is a real signal.
 - `scripts.install`: install from a lockfile without dev deps (`npm ci --omit=dev`).
-- `env`: inject production config; keep secrets out of the file and supply them from the
-  environment (`fly secrets`). `III_URL` / `III_ENGINE_URL` are ignored; the engine sets
-  the connection URL.
+- `env`: inject production config for **engine-managed** workers; keep secrets out of
+  the file. For workers you run as separate Fly apps, set `III_URL` with
+  `fly secrets set` and pass `process.env.III_URL` to `registerWorker()` — the SDK
+  reads that env var. The manifest keys `III_URL` / `III_ENGINE_URL` are ignored only
+  for engine-managed workers (the engine sets their connection URL).
 - `runtime.base_image`: pin a specific base image for reproducible builds.
 
 <Note>
@@ -440,16 +481,19 @@ ways to let a worker connect from **outside** the Fly organization:
 
 ```yaml
   - name: iii-worker-manager
-    config: { host: "[::]", port: 49134 }      # trusted, private on the 6PN
+    config:
+      host: "[::]"
+      port: 49134      # trusted, private on the 6PN
 
   - name: iii-worker-manager
     config:
       host: "[::]"
-      port: 49135                                # public RBAC listener
+      port: 49135      # public RBAC listener
       rbac:
         auth_function_id: my-project::auth-function
         expose_functions:
           - match("api::*")
+      middleware_function_id: my-project::audit   # sibling of rbac, not nested inside it
 ```
 
 Expose the RBAC port with another service block, terminated by Fly Proxy with a TLS
@@ -468,10 +512,10 @@ handler (WebSocket upgrades pass through the proxy):
     grace_period = "10s"
 ```
 
-How the listener gates access (allowlist via `expose_functions`, per-connection
-`auth_function_id`, optional `middleware_function_id`) is detailed in
-[RBAC](./deployment#rbac). Keep `49134` and `3112` private; channels are served through
-the RBAC listener at `/ws/channels/{id}` on the same port.
+How the listener gates access (`expose_functions`, `auth_function_id`, and the sibling
+`middleware_function_id` field) is detailed in [RBAC](./deployment#rbac). Keep `49134`
+and `3112` private; expose `49135` only when you need a public RBAC listener. Channels
+are served through the RBAC listener at `/ws/channels/{id}` on that port.
 
 ## Reverse proxy and TLS
 
@@ -484,11 +528,12 @@ the bare-host [Reverse proxies](./deployment#reverse-proxies) section):
   handlers on `443`. Fly issues and renews the certificate for `iii-engine.fly.dev`; a
   [custom domain](https://fly.io/docs/networking/custom-domain/) works the same way with
   a `fly certs` entry.
-- **WebSocket surfaces** (stream `3112`, RBAC `49135`): Fly Proxy passes WebSocket
-  upgrades through natively. Expose each on its own service port; each WS surface is
-  served at the **root** of its port, so no path rewriting is needed.
-- **Keep the rest private.** Do not add public ports for `49134` or `3112` unless an
-  external client truly needs them; in-org workers use the 6PN.
+- **Public RBAC WebSocket (`49135`)**: add a separate `[[services]]` block when you need
+  an external RBAC listener. Fly Proxy passes WebSocket upgrades through natively; each
+  WS surface is served at the **root** of its port, so no path rewriting is needed.
+- **Keep private on the 6PN**: `49134` (worker WS) and `3112` (stream). In-org workers
+  and stream clients dial them over `<app>.internal`; do not publish them through Fly
+  Proxy unless an external client truly needs them.
 
 ## Health checks
 
@@ -503,12 +548,17 @@ The engine has no HTTP health endpoint and the image has no shell, so in-contain
 
 ## Observability
 
-Set `iii-observability` to the `otlp` exporter and point it at an OpenTelemetry collector
-running as its own Fly app on the 6PN (`http://otel-collector.internal:4318`). The
-protocol/port pairing (traces and metrics over gRPC `4317`, logs over HTTP `4318`) is
-the common pitfall and is covered in [Observability](./deployment#observability). There
-is no Prometheus scrape endpoint on `9464`; Fly's
-[managed metrics](https://fly.io/docs/monitoring/metrics/) cover Machine-level signals.
+`iii-observability` has three exporter fields: `exporter` (traces), `metrics_exporter`,
+and `logs_exporter`. Traces default to `otlp`; metrics and logs default to `memory`. For
+production on Fly, set all three to `otlp` and point them at a collector on the 6PN.
+
+Traces and metrics export over OTLP/gRPC (collector port `4317`) by default; logs export
+over OTLP/HTTP (`4318`). To send all three signals through one HTTP endpoint, set
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` on the engine Machine and use
+`http://otel-collector.internal:4318`. The full protocol pairing is in
+[Observability](./deployment#observability). There is no Prometheus scrape endpoint on
+`9464`; Fly's [managed metrics](https://fly.io/docs/monitoring/metrics/) cover
+Machine-level signals.
 
 ## What cannot run on Fly
 
@@ -533,17 +583,16 @@ Everything else runs, verified on Fly:
 
 - In-process workers (`iii-http`, `iii-state`, `iii-queue`, `iii-cron`, `iii-stream`,
   `configuration`, `iii-observability`).
-- Registry workers that deploy as **binaries**: `iii worker add database` resolves to a
-  binary (`x86_64-unknown-linux-gnu`) and runs as a plain host child process
-  (`sandbox: n/a`), no `/dev/kvm` needed. Check a worker's deploy type before adding it;
-  binary workers run, libkrun workers do not.
+- Registry workers with `deploy: binary` in their `iii.worker.yaml`: `iii worker add
+  database` installs a native binary and runs it as a plain host child process, no
+  `/dev/kvm` needed.
 - Your own workers as separate Fly Machines over the 6PN.
 
 ## Verify the deployment
 
-Once the engine app is live, the log shows each declared worker registering, including
-any it auto-provisioned. Deploy a worker app that registers an HTTP route, then call
-it through the public domain:
+Once the engine app is live, `fly logs -a iii-engine` shows each declared worker
+registering (`[REGISTERED] Endpoint POST /hello -> hello::greet` when a worker registers
+HTTP triggers). Deploy a worker app that registers `POST /hello`, then call it:
 
 ```bash
 fly logs -a iii-engine
@@ -578,8 +627,9 @@ This is the Fly-specific layer on top of the general
 **Networking**
 
 - [ ] Engine binds `[::]`; workers dial `ws://iii-engine.internal:49134`.
-- [ ] Only `3111` (and any required WS surface) is a public service; `49134` and `3112`
-      stay private. Worker apps have no public IP (`fly ips release`).
+- [ ] Only `3111` is a public REST service; add `49135` only for a public RBAC listener.
+      Keep `49134` and `3112` private on the 6PN. Worker apps have no public IP
+      (`fly ips release`).
 - [ ] External worker access goes through WireGuard or a public RBAC listener, not the
       raw `49134` port.
 
@@ -590,9 +640,8 @@ This is the Fly-specific layer on top of the general
 - [ ] `fly volumes create` done in the engine's `primary_region`; volume snapshots/backups
       configured.
 - [ ] `auto_stop_machines = "off"` and `min_machines_running = 1` on the stateful engine.
-- [ ] `[[restart]] policy = "always"` on the engine, so a clean exit from a runtime
-      config reload does not leave the Machine stopped (the default `on-failure` ignores
-      code 0).
+- [ ] `[[restart]] policy = "always"` on the engine for platform resilience (successful
+      config reload is hot in-process and does not exit).
 - [ ] Single engine Machine while on `file_based`; external adapters in place before
       scaling to multiple Machines or regions.
 
@@ -600,5 +649,6 @@ This is the Fly-specific layer on top of the general
 
 - [ ] TCP health check on `3111` (no in-container shell probes).
 - [ ] Secrets set with `fly secrets`; CORS narrowed to real origins.
-- [ ] Observability exporter set to `otlp` with a collector on the 6PN, or `memory`
-      accepted for scope.
+- [ ] Observability: `exporter`, `metrics_exporter`, and `logs_exporter` set to `otlp`
+      with a collector on the 6PN, or `memory` accepted for scope.
+
