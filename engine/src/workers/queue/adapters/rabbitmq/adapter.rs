@@ -247,7 +247,14 @@ impl QueueAdapter for RabbitMQAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
     ) {
-        let job = Job::new(topic, data, self.config.max_attempts, traceparent, baggage);
+        // Topic fanout publishes one message to every bound subscriber queue, so
+        // the priority is resolved once here from the adapter-level
+        // `priority_field`. Each subscriber queue honors it only if declared with
+        // `maxPriority`, and clamps it to its own `x-max-priority`.
+        let priority =
+            super::types::priority_from_data(&data, self.config.priority_field.as_deref());
+        let job = Job::new(topic, data, self.config.max_attempts, traceparent, baggage)
+            .with_priority(priority);
 
         if let Err(e) = self.topology.setup_topic(topic).await {
             tracing::error!(
@@ -307,9 +314,10 @@ impl QueueAdapter for RabbitMQAdapter {
             return;
         }
 
+        let subscriber_max_priority = queue_config.as_ref().and_then(|c| c.max_priority);
         if let Err(e) = self
             .topology
-            .setup_subscriber_queue(&topic, &function_id)
+            .setup_subscriber_queue(&topic, &function_id, subscriber_max_priority)
             .await
         {
             tracing::error!(
@@ -831,6 +839,7 @@ impl QueueAdapter for RabbitMQAdapter {
         Ok(results)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn publish_to_function_queue(
         &self,
         queue_name: &str,
@@ -841,6 +850,7 @@ impl QueueAdapter for RabbitMQAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        priority: Option<u8>,
     ) {
         use super::naming::FnQueueNames;
 
@@ -872,11 +882,14 @@ impl QueueAdapter for RabbitMQAdapter {
             );
         }
 
-        let properties = lapin::BasicProperties::default()
+        let mut properties = lapin::BasicProperties::default()
             .with_content_type("application/json".into())
             .with_delivery_mode(2)
             .with_message_id(message_id.into())
             .with_headers(headers);
+        if let Some(p) = priority {
+            properties = properties.with_priority(p);
+        }
 
         match self
             .channel
@@ -906,7 +919,7 @@ impl QueueAdapter for RabbitMQAdapter {
         config: &FunctionQueueConfig,
     ) -> anyhow::Result<()> {
         self.topology
-            .setup_function_queue(queue_name, config.backoff_ms)
+            .setup_function_queue(queue_name, config.backoff_ms, config.max_priority)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to setup function queue topology: {}", e))
     }

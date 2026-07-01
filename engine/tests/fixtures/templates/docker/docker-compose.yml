@@ -11,6 +11,7 @@ services:
       - "9464:9464"    # Prometheus metrics
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+    env_file: .env
     environment:
       - RUST_LOG=info
       - III_EXECUTION_CONTEXT=docker

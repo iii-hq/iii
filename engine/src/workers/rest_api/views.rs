@@ -19,6 +19,7 @@ use tracing::Instrument;
 
 use crate::{
     condition::check_condition,
+    telemetry::SpanExt,
     workers::rest_api::types::{HttpRequest, HttpResponse},
     workers::worker::channels::ChannelItem,
 };
@@ -125,6 +126,8 @@ fn extract_path_params(registered_path: &str, actual_path: &str) -> HashMap<Stri
 
 const SENSITIVE_HEADERS: &[&str] = &[
     "authorization",
+    // W3C baggage often carries user/session metadata; redact it from logs.
+    "baggage",
     "cookie",
     "set-cookie",
     "x-api-key",
@@ -310,6 +313,34 @@ pub async fn dynamic_handler(
         format!("{}://{}{}?{}", url_scheme, host, actual_path, query_string)
     };
 
+    // Extract the W3C trace-context (`traceparent` + `tracestate`) and baggage
+    // headers from the incoming HTTP request and use `set_parent` (via
+    // `with_parent_headers`) AFTER `info_span!()` to link this span as a child
+    // of the caller's trace. `tracestate` is the companion header to
+    // `traceparent` (https://www.w3.org/TR/trace-context/) and carries
+    // vendor-specific state that must travel with the trace id.
+    //
+    // We explicitly do NOT use `OtelContext::attach()` before `info_span!()`
+    // because `tracing-opentelemetry`'s `parent_context()` only reads
+    // `Context::current()` for *contextual* spans (`is_contextual() == true`).
+    // A top-level HTTP handler has no active tracing span, so the span is
+    // non-contextual and the attached context is silently ignored, creating
+    // a new root trace. `set_parent` replaces the `parent_cx` in the
+    // `OtelData::Builder` state directly and works regardless of
+    // `is_contextual()`.
+    let tp = headers
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let ts = headers
+        .get("tracestate")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let bg = headers
+        .get("baggage")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     let span = tracing::info_span!(
         "HTTP",
         otel.name = %format!("{} {}", method, registered_path),
@@ -327,7 +358,8 @@ pub async fn dynamic_handler(
         "http.request.body.size" = %request_body_size,
         "http.response.status_code" = tracing::field::Empty,
         "iii.function.kind" = tracing::field::Empty,
-    );
+    )
+    .with_parent_headers(tp.as_deref(), ts.as_deref(), bg.as_deref());
 
     async move {
         tracing::debug!("Registered route path: {}", registered_path);
@@ -989,6 +1021,18 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_headers_redacts_baggage() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("baggage"),
+            HeaderValue::from_static("user_id=123,session_id=abc"),
+        );
+
+        let sanitized = sanitize_headers_for_logging(&headers);
+        assert_eq!(sanitized.get("baggage").unwrap(), "[REDACTED]");
+    }
+
+    #[test]
     fn test_sanitize_headers_preserves_safe() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1457,8 +1501,9 @@ mod tests {
 
     #[test]
     fn test_sensitive_headers_list_is_complete() {
-        assert_eq!(SENSITIVE_HEADERS.len(), 10);
+        assert_eq!(SENSITIVE_HEADERS.len(), 11);
         assert!(SENSITIVE_HEADERS.contains(&"authorization"));
+        assert!(SENSITIVE_HEADERS.contains(&"baggage"));
         assert!(SENSITIVE_HEADERS.contains(&"cookie"));
         assert!(SENSITIVE_HEADERS.contains(&"set-cookie"));
         assert!(SENSITIVE_HEADERS.contains(&"x-api-key"));

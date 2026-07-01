@@ -368,7 +368,7 @@ impl ObservabilityWorkerConfig {
     ///
     /// The JSON Schema rejects out-of-range values at `configuration::set`
     /// time, but stored entries can predate a schema tightening or be
-    /// hand-edited on disk (`./data/configuration/iii-observability.yaml`),
+    /// hand-edited on disk (`./config/iii-observability.yaml`),
     /// so the top-level ratio and count fields are re-normalized on every
     /// read: ratios are clamped into `0..=1` and zero counts fall back to the
     /// built-in defaults (`None`) rather than creating zero-capacity stores.

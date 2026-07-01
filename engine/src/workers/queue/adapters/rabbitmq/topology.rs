@@ -67,7 +67,12 @@ impl TopologyManager {
         Ok(())
     }
 
-    pub async fn setup_subscriber_queue(&self, topic: &str, function_id: &str) -> Result<()> {
+    pub async fn setup_subscriber_queue(
+        &self,
+        topic: &str,
+        function_id: &str,
+        max_priority: Option<u8>,
+    ) -> Result<()> {
         let names = RabbitNames::new(topic);
 
         let queue_name = names.function_queue(function_id);
@@ -84,6 +89,9 @@ impl TopologyManager {
             )
             .await?;
 
+        let mut queue_args = FieldTable::default();
+        with_max_priority(&mut queue_args, max_priority);
+
         self.channel
             .queue_declare(
                 &queue_name,
@@ -91,7 +99,7 @@ impl TopologyManager {
                     durable: true,
                     ..Default::default()
                 },
-                FieldTable::default(),
+                queue_args,
             )
             .await?;
 
@@ -114,7 +122,12 @@ impl TopologyManager {
         Ok(())
     }
 
-    pub async fn setup_function_queue(&self, queue_name: &str, backoff_ms: u64) -> Result<()> {
+    pub async fn setup_function_queue(
+        &self,
+        queue_name: &str,
+        backoff_ms: u64,
+        max_priority: Option<u8>,
+    ) -> Result<()> {
         let names = FnQueueNames::new(queue_name);
 
         // Main exchange + queue with DLX to retry
@@ -138,6 +151,10 @@ impl TopologyManager {
             "x-dead-letter-exchange".into(),
             AMQPValue::LongString(names.dlq_exchange().into()),
         );
+        // A priority queue must be declared with `x-max-priority`; declare the
+        // retry queue with it too so retried messages keep their ordering (the
+        // `priority` property survives dead-lettering). The DLQ stays plain.
+        with_max_priority(&mut main_queue_args, max_priority);
 
         self.channel
             .queue_declare(
@@ -186,6 +203,7 @@ impl TopologyManager {
             "x-dead-letter-routing-key".into(),
             AMQPValue::LongString(queue_name.into()),
         );
+        with_max_priority(&mut retry_queue_args, max_priority);
 
         self.channel
             .queue_declare(
@@ -244,5 +262,15 @@ impl TopologyManager {
 
         tracing::debug!(queue = %queue_name, "Function queue RabbitMQ topology setup complete");
         Ok(())
+    }
+}
+
+/// Insert the `x-max-priority` declaration argument when a priority level is
+/// configured, turning the queue into a RabbitMQ priority queue. Declared as a
+/// signed integer (`AMQPValue::LongInt`) to match the canonical client encoding;
+/// the value is fixed at queue-creation time and cannot be changed later.
+fn with_max_priority(args: &mut FieldTable, max_priority: Option<u8>) {
+    if let Some(max) = max_priority {
+        args.insert("x-max-priority".into(), AMQPValue::LongInt(max as i32));
     }
 }

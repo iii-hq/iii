@@ -76,6 +76,23 @@ pub struct FunctionQueueConfig {
     #[serde(default)]
     pub message_group_field: Option<String>,
 
+    /// Declares the queue as a RabbitMQ priority queue with this many priority
+    /// levels (`x-max-priority`, 1–255; RabbitMQ recommends ≤ 10). When unset
+    /// the queue is not a priority queue. RabbitMQ-only — other adapters ignore
+    /// it. `x-max-priority` is fixed at queue-creation time: changing it for an
+    /// already-declared queue has no effect (the queue must be recreated).
+    /// Priority ordering is only observable at low `concurrency`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 255))]
+    pub max_priority: Option<u8>,
+
+    /// The message field whose integer value sets each message's priority
+    /// (0..=`max_priority`; the broker clamps out-of-range values). Analogous to
+    /// `message_group_field`. Only meaningful when `max_priority` is set;
+    /// RabbitMQ-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_field: Option<String>,
+
     /// Base delay in milliseconds for the exponential retry backoff. Defaults
     /// to 1000 (1s).
     #[serde(default = "default_backoff_ms")]
@@ -94,6 +111,8 @@ impl Default for FunctionQueueConfig {
             concurrency: default_concurrency(),
             r#type: default_queue_type(),
             message_group_field: None,
+            max_priority: None,
+            priority_field: None,
             backoff_ms: default_backoff_ms(),
             poll_interval_ms: default_poll_interval_ms(),
         }
@@ -161,6 +180,16 @@ impl QueueModuleConfig {
             if queue_config.concurrency == 0 {
                 anyhow::bail!(
                     "Queue '{}' has 'concurrency' 0; it must be at least 1",
+                    name
+                );
+            }
+            // `x-max-priority` must be a positive integer; 0 is rejected by the
+            // broker. The JSON schema (`range(min = 1)`) catches this at
+            // `configuration::set`, but the `config.yaml` seed bypasses the
+            // schema, so guard here too.
+            if queue_config.max_priority == Some(0) {
+                anyhow::bail!(
+                    "Queue '{}' has 'max_priority' 0; it must be between 1 and 255",
                     name
                 );
             }
@@ -248,6 +277,14 @@ pub struct RabbitmqAdapterConfig {
     /// Per-queue `type` overrides this. Defaults to "standard".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_mode: Option<String>,
+
+    /// Message field whose integer value sets the priority of messages published
+    /// to **topics** (pub/sub fanout). A fanout publish is copied to every bound
+    /// subscriber queue, so the priority value is resolved once here at publish
+    /// time; each subscriber queue honors it only if declared with a
+    /// `maxPriority`. Function queues use their own per-queue `priority_field`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_field: Option<String>,
 }
 
 /// Build the `oneOf` schema for [`QueueModuleConfig::adapter`]: one branch per
@@ -565,6 +602,69 @@ adapter:
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("invalid_type"));
+    }
+
+    #[test]
+    fn validate_zero_max_priority_fails() {
+        let mut queue_configs = HashMap::new();
+        queue_configs.insert(
+            "jobs".to_string(),
+            FunctionQueueConfig {
+                max_priority: Some(0),
+                ..Default::default()
+            },
+        );
+        let config = QueueModuleConfig {
+            adapter: None,
+            queue_configs,
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("jobs"));
+        assert!(err.contains("max_priority"));
+    }
+
+    #[test]
+    fn validate_priority_queue_ok() {
+        let mut queue_configs = HashMap::new();
+        queue_configs.insert(
+            "jobs".to_string(),
+            FunctionQueueConfig {
+                max_priority: Some(10),
+                priority_field: Some("priority".to_string()),
+                concurrency: 1,
+                ..Default::default()
+            },
+        );
+        let config = QueueModuleConfig {
+            adapter: None,
+            queue_configs,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn deserialize_priority_queue_config() {
+        let yaml = r#"
+queue_configs:
+  jobs:
+    type: standard
+    concurrency: 1
+    max_priority: 10
+    priority_field: priority
+adapter:
+  name: rabbitmq
+"#;
+        let config: QueueModuleConfig = serde_yaml::from_str(yaml).unwrap();
+        let jobs = config.queue_configs.get("jobs").unwrap();
+        assert_eq!(jobs.max_priority, Some(10));
+        assert_eq!(jobs.priority_field.as_deref(), Some("priority"));
+        // Defaults stay backward compatible: omitting both fields means no
+        // priority queue.
+        let plain: FunctionQueueConfig = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(plain.max_priority, None);
+        assert_eq!(plain.priority_field, None);
     }
 
     #[test]

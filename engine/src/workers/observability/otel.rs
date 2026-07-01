@@ -361,6 +361,10 @@ pub struct StoredSpan {
     /// W3C trace flags (e.g., sampled=1)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flags: Option<u32>,
+    /// W3C `tracestate` header carried by this span's context. Present when the
+    /// caller propagated a non-empty `tracestate` alongside `traceparent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_state: Option<String>,
 }
 
 impl StoredSpan {
@@ -456,6 +460,10 @@ impl StoredSpan {
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
             flags: Some(span.span_context.trace_flags().to_u8() as u32),
+            trace_state: {
+                let ts = span.span_context.trace_state().header();
+                if ts.is_empty() { None } else { Some(ts) }
+            },
         }
     }
 }
@@ -1194,9 +1202,27 @@ where
 /// Combine trace context and baggage extraction into a single context.
 /// This extracts both traceparent and baggage headers into a unified context.
 pub fn extract_context(traceparent: Option<&str>, baggage: Option<&str>) -> Context {
+    extract_context_with_state(traceparent, None, baggage)
+}
+
+/// Like [`extract_context`] but also honors the W3C `tracestate` header.
+///
+/// `tracestate` is the companion header to `traceparent` in the W3C Trace
+/// Context spec; it carries vendor-specific trace data that must travel
+/// alongside the trace id. The `TraceContextPropagator` only populates a
+/// `SpanContext`'s `TraceState` when both headers are present in the carrier,
+/// so a bare `traceparent` would silently drop any incoming `tracestate`.
+pub fn extract_context_with_state(
+    traceparent: Option<&str>,
+    tracestate: Option<&str>,
+    baggage: Option<&str>,
+) -> Context {
     let mut carrier: HashMap<String, String> = HashMap::new();
     if let Some(tp) = traceparent {
         carrier.insert("traceparent".to_string(), tp.to_string());
+    }
+    if let Some(ts) = tracestate {
+        carrier.insert("tracestate".to_string(), ts.to_string());
     }
     if let Some(bg) = baggage {
         carrier.insert("baggage".to_string(), bg.to_string());
@@ -2040,6 +2066,8 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
                         instrumentation_scope_name: scope_name.clone(),
                         instrumentation_scope_version: scope_version.clone(),
                         flags: span.flags,
+                        // OTLP-ingested spans don't currently carry tracestate.
+                        trace_state: None,
                     };
 
                     stored_spans.push(stored_span);
@@ -4497,6 +4525,7 @@ mod tests {
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
             flags: None,
+            trace_state: None,
         }
     }
 
@@ -5776,6 +5805,59 @@ mod tests {
         assert_eq!(spans[0].attributes[0].0, "key");
     }
 
+    #[test]
+    fn stored_span_from_span_data_carries_tracestate() {
+        use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
+        use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+        use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+        use std::borrow::Cow;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let trace_state = "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
+            .parse::<TraceState>()
+            .unwrap();
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            trace_state.clone(),
+        );
+
+        let make = |sc: SpanContext| SpanData {
+            span_context: sc,
+            parent_span_id: SpanId::INVALID,
+            parent_span_is_remote: false,
+            span_kind: SpanKind::Server,
+            name: Cow::Borrowed("HTTP"),
+            start_time: UNIX_EPOCH + Duration::from_secs(1000),
+            end_time: UNIX_EPOCH + Duration::from_secs(1001),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: Status::Ok,
+            instrumentation_scope: InstrumentationScope::builder("test").build(),
+        };
+
+        let stored = StoredSpan::from_span_data(&make(span_context), "svc");
+        assert_eq!(
+            stored.trace_state.as_deref(),
+            Some(trace_state.header().as_str())
+        );
+
+        // A span with no tracestate omits the field rather than emitting "".
+        let empty_sc = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::NONE,
+        );
+        let stored_empty = StoredSpan::from_span_data(&make(empty_sc), "svc");
+        assert_eq!(stored_empty.trace_state, None);
+    }
+
     // =========================================================================
     // current_trace_id / current_span_id (no active span)
     // =========================================================================
@@ -6779,6 +6861,27 @@ mod tests {
         assert_eq!(format!("{:032x}", sc.trace_id()), SAMPLE_TRACE_ID_HEX);
         assert_eq!(format!("{:016x}", sc.span_id()), SAMPLE_SPAN_ID_HEX);
         assert!(sc.is_remote(), "extracted parent must be flagged remote");
+    }
+
+    #[test]
+    fn extract_context_with_state_carries_w3c_tracestate() {
+        let tracestate = "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7";
+        let cx = extract_context_with_state(Some(SAMPLE_TRACEPARENT), Some(tracestate), None);
+        let span_ref = cx.span();
+        let sc = span_ref.span_context();
+        assert!(sc.is_valid());
+        assert_eq!(format!("{:032x}", sc.trace_id()), SAMPLE_TRACE_ID_HEX);
+        // The W3C `TraceContextPropagator` only populates `TraceState` when both
+        // `traceparent` and `tracestate` are present, so this also guards the
+        // companion-header wiring.
+        assert_eq!(sc.trace_state().header(), tracestate);
+    }
+
+    #[test]
+    fn extract_context_without_tracestate_has_empty_trace_state() {
+        let cx = extract_context_with_state(Some(SAMPLE_TRACEPARENT), None, None);
+        let span_ref = cx.span();
+        assert!(span_ref.span_context().trace_state().header().is_empty());
     }
 
     #[test]

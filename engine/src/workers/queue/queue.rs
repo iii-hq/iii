@@ -203,6 +203,16 @@ impl QueueWorker {
             }
         }
 
+        // Resolve the per-message priority from the configured `priority_field`
+        // (mirrors the FIFO `message_group_field` extraction above). Clamp to the
+        // queue's `max_priority`; the value is honored only by priority queues
+        // (RabbitMQ declared with `x-max-priority`) and ignored by other adapters.
+        let priority = queue_config.priority_field.as_ref().and_then(|field| {
+            let raw = data.get(field)?.as_u64()?;
+            let max = queue_config.max_priority.unwrap_or(u8::MAX) as u64;
+            Some(raw.min(max) as u8)
+        });
+
         // Name the function this message will run in the propagated baggage, so
         // the `fn_queue` consumer span (and the worker context it delivers) carry
         // `iii.function.id = <target>` rather than the enqueuer's id that
@@ -219,6 +229,7 @@ impl QueueWorker {
                 queue_config.backoff_ms,
                 traceparent,
                 baggage,
+                priority,
             )
             .await;
         crate::workers::telemetry::collector::track_queue_emit();
@@ -866,7 +877,11 @@ impl QueueWorker {
                         "messaging.operation.type" = "process",
                         otel.status_code = tracing::field::Empty,
                     )
-                    .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+                    .with_parent_headers(
+                        traceparent.as_deref(),
+                        None,
+                        baggage.as_deref(),
+                    );
 
                     let result =
                         AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
@@ -1513,6 +1528,7 @@ mod tests {
             *self.last_baggage.lock().await = baggage;
         }
 
+        #[allow(clippy::too_many_arguments)]
         async fn publish_to_function_queue(
             &self,
             _queue_name: &str,
@@ -1523,6 +1539,7 @@ mod tests {
             _backoff_ms: u64,
             _traceparent: Option<String>,
             _baggage: Option<String>,
+            _priority: Option<u8>,
         ) {
             self.enqueue_to_queue_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -2425,6 +2442,7 @@ mod tests {
                 1000,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -2486,6 +2504,7 @@ mod tests {
                 "test-msg-id",
                 3,
                 100,
+                None,
                 None,
                 None,
             )
@@ -2552,6 +2571,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                 )
@@ -2628,6 +2648,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                 )

@@ -346,8 +346,8 @@ async fn run_generate_docker(args: GenerateDockerArgs) -> i32 {
 /// The Dockerfile template carries a literal `__III_DEVICE_ID__` placeholder
 /// that we substitute with the actual device_id before writing, so the image
 /// no longer needs an `III_HOST_USER_ID` env var at runtime. The generated
-/// `.env` only carries the RabbitMQ password (used by the commented-out
-/// rabbitmq service in docker-compose.yml).
+/// `.env` carries RabbitMQ credentials that the engine reads while expanding
+/// `${VAR}` placeholders and that the commented-out RabbitMQ service can use.
 const DEVICE_ID_PLACEHOLDER: &str = "__III_DEVICE_ID__";
 
 async fn apply_docker(

@@ -121,7 +121,7 @@ impl InvocationHandler {
                 // Tag internal vs user functions for filtering
                 "iii.function.kind" = if is_builtin { "internal" } else { "user" },
             )
-            .with_parent_headers(traceparent.as_deref(), baggage.as_deref())
+            .with_parent_headers(traceparent.as_deref(), None, baggage.as_deref())
         };
 
         // Run the dispatch under the caller's OTel context whenever one was
