@@ -16,6 +16,7 @@ import {
   type IIIMessage,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
+  type JsonValue,
   MessageType,
   type RegisterFunctionMessage,
   type RegisterTriggerMessage,
@@ -324,7 +325,7 @@ class Sdk implements IIIClient {
       const handler = handlerOrInvocation as RemoteFunctionHandler
       this.functions.set(functionId, {
         message: fullMessage,
-        handler: async (input, metadata?: unknown, traceparent?: string, baggage?: string) => {
+        handler: async (input, metadata?: JsonValue, traceparent?: string, baggage?: string) => {
           const tracePayloads = !(
             process.env.III_DISABLE_TRACE_PAYLOADS === '1' ||
             process.env.III_DISABLE_TRACE_PAYLOADS?.toLowerCase() === 'true'
@@ -876,7 +877,7 @@ class Sdk implements IIIClient {
     invocation_id: string | undefined,
     function_id: string,
     input: TInput,
-    metadata?: unknown,
+    metadata?: JsonValue,
     traceparent?: string,
     baggage?: string,
   ): Promise<unknown> {

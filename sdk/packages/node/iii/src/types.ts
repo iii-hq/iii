@@ -1,6 +1,7 @@
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import type { ChannelReader, ChannelWriter } from './channels'
 import type {
+  JsonValue,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
@@ -30,7 +31,7 @@ import type { TriggerHandler } from './triggers'
 // biome-ignore lint/suspicious/noExplicitAny: generic defaults require any for contravariant compatibility
 export type RemoteFunctionHandler<TInput = any, TOutput = any> = (
   data: TInput,
-  metadata?: unknown,
+  metadata?: JsonValue,
 ) => Promise<TOutput>
 
 // biome-ignore lint/suspicious/noExplicitAny: generic default requires any for contravariant compatibility
@@ -55,7 +56,7 @@ export type Invocation<TOutput = any> = {
 // biome-ignore lint/suspicious/noExplicitAny: generic defaults require any for contravariant compatibility
 export type InternalFunctionHandler<TInput = any, TOutput = any> = (
   data: TInput,
-  metadata?: unknown,
+  metadata?: JsonValue,
   traceparent?: string,
   baggage?: string,
 ) => Promise<TOutput>

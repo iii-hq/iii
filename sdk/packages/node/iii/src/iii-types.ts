@@ -1,5 +1,18 @@
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 
+/**
+ * Any JSON value: the TypeScript equivalent of the engine's arbitrary-JSON
+ * wire values (Rust `serde_json::Value`). Used where the wire contract is
+ * "any JSON", e.g. per-invocation `metadata`.
+ */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue }
+
 export enum MessageType {
   RegisterFunction = 'registerfunction',
   UnregisterFunction = 'unregisterfunction',
@@ -184,7 +197,7 @@ export type InvokeFunctionMessage = {
    * channel from `data`. Omitted from the JSON when undefined; absence on
    * inbound means "no metadata" (backward compatible with older engines).
    */
-  metadata?: unknown
+  metadata?: JsonValue
 }
 
 export type InvocationResultMessage = {
