@@ -224,11 +224,12 @@ impl CronWorker {
         // while the rest apply.
         for spec in &specs {
             if let Err(err) = new_adapter
-                .register(
+                .register_with_metadata(
                     &spec.id,
                     &spec.expression,
                     &spec.function_id,
                     spec.condition_function_id.clone(),
+                    spec.metadata.clone(),
                 )
                 .await
             {
@@ -422,11 +423,12 @@ impl TriggerRegistrator for CronWorker {
             let _guard = worker.apply_lock.lock().await;
             let adapter = worker.adapter_snapshot();
             adapter
-                .register(
+                .register_with_metadata(
                     &trigger.id,
                     &cron_expression,
                     &trigger.function_id,
                     condition_function_id,
+                    trigger.metadata.clone(),
                 )
                 .await
         })

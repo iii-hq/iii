@@ -56,10 +56,11 @@ mod tests {
     }
 
     impl crate::engine::EngineTrait for MockEngine {
-        async fn call(
+        async fn call_with_metadata(
             &self,
             _function_id: &str,
             _input: impl serde::Serialize + Send,
+            _metadata: Option<Value>,
         ) -> Result<Option<Value>, ErrorBody> {
             self.result.lock().unwrap().clone()
         }

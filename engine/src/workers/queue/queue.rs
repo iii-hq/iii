@@ -2414,7 +2414,7 @@ mod tests {
         let counter = call_count.clone();
 
         let function = crate::function::Function {
-            handler: Arc::new(move |_invocation_id, _input, _session| {
+            handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
                 let counter = counter.clone();
                 Box::pin(async move {
                     counter.fetch_add(1, Ordering::SeqCst);
@@ -2475,7 +2475,7 @@ mod tests {
         let counter = call_count.clone();
 
         let function = crate::function::Function {
-            handler: Arc::new(move |_invocation_id, _input, _session| {
+            handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
                 let counter = counter.clone();
                 Box::pin(async move {
                     counter.fetch_add(1, Ordering::SeqCst);
@@ -2539,7 +2539,7 @@ mod tests {
         let order_ref = invocation_order.clone();
 
         let function = crate::function::Function {
-            handler: Arc::new(move |_invocation_id, input, _session| {
+            handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
                 let order_ref = order_ref.clone();
                 Box::pin(async move {
                     let txn_id = input
@@ -2613,7 +2613,7 @@ mod tests {
         let ts_ref = timestamps.clone();
 
         let function = crate::function::Function {
-            handler: Arc::new(move |_invocation_id, input, _session| {
+            handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
                 let ts_ref = ts_ref.clone();
                 Box::pin(async move {
                     let task_id = input

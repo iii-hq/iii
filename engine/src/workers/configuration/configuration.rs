@@ -227,7 +227,11 @@ impl ConfigurationWorker {
                     }
 
                     if let Err(err) = engine
-                        .call(&trigger.trigger.function_id, event_value.clone())
+                        .call_with_metadata(
+                            &trigger.trigger.function_id,
+                            event_value.clone(),
+                            trigger.trigger.metadata.clone(),
+                        )
                         .await
                     {
                         tracing::error!(

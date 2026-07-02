@@ -30,7 +30,7 @@ async def test_invoke_with_otel_context_records_exception_with_stacktrace():
         client._queue = []
         client._running = False
 
-        async def failing_handler(data):
+        async def failing_handler(data, metadata=None):
             raise ValueError("test invocation error")
 
         with pytest.raises(_TraceContextError) as exc_info:
@@ -78,7 +78,7 @@ async def test_invoke_with_otel_context_success_no_exception():
         client._queue = []
         client._running = False
 
-        async def success_handler(data):
+        async def success_handler(data, metadata=None):
             return {"result": "ok"}
 
         result, traceparent = await client._invoke_with_otel_context("test.fn", success_handler, {"key": "value"}, None, None)

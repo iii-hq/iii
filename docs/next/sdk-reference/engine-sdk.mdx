@@ -121,9 +121,9 @@ trigger fires.
 ```json
 {
   "message_type": "invoke_function",
-  "invocation_id": "9f3c…",
   "function_id": "math::add",
   "data": { "a": 2, "b": 3 },
+  "metadata": { "tenant": "acme" },
   "traceparent": "00-…",
   "baggage": "k=v,…",
   "action": { "type": "void" }
@@ -131,8 +131,17 @@ trigger fires.
 ```
 
 `invocation_id` is omitted on `Void` invocations (the worker has no result channel to reply on).
-`traceparent` and `baggage` carry W3C trace context. `action` is the routing flag (see
-[Trigger actions](#trigger-actions) below); absent / `null` means synchronous.
+The optional `metadata` field on a trigger registration (`null` / `None` in the examples above)
+is arbitrary JSON stored with the trigger and delivered to the receiving function as a
+distinct argument alongside the payload. It is useful for providing contextual information about
+the trigger or execution context to the receiving function. A target function shared by many
+triggers can use it to recover which registration fired and with what context.
+
+`metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations.
+
+`traceparent` and `baggage` contain W3C trace
+context. `action` is the routing flag (see [Trigger actions](#trigger-actions) below);
+absent / `null` means synchronous.
 
 ## `InvocationResult`
 
@@ -203,6 +212,8 @@ and worker lifecycle. Defined in
 | `engine::triggers::list`      | List every registered trigger (filterable by `include_internal`).             |
 | `engine::trigger-types::list` | List every registered trigger type with its config and call request schemas.  |
 | `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `description`). |
+| `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. Returns the trigger id. |
+| `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. |
 
 ## Engine discovery triggers
 

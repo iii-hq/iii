@@ -202,6 +202,15 @@ pub trait EngineTrait: Send + Sync {
         &self,
         function_id: &str,
         input: impl Serialize + Send,
+    ) -> Result<Option<Value>, ErrorBody> {
+        self.call_with_metadata(function_id, input, None).await
+    }
+
+    async fn call_with_metadata(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+        metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
@@ -410,6 +419,7 @@ impl Engine {
         body: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
+        metadata: Option<Value>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
@@ -441,6 +451,7 @@ impl Engine {
                     traceparent,
                     baggage,
                     session,
+                    metadata,
                 )
                 .await
         } else {
@@ -467,6 +478,7 @@ impl Engine {
         traceparent: &Option<String>,
         baggage: &Option<String>,
         invocation_id: Option<Uuid>,
+        metadata: Option<Value>,
     ) {
         // The canonical engine span for an invocation is the `call <fn>` span
         // opened in `InvocationHandler::handle_invocation`. We intentionally do
@@ -510,6 +522,7 @@ impl Engine {
                         data,
                         downstream_traceparent.clone(),
                         downstream_baggage.clone(),
+                        metadata,
                     )
                     .await;
 
@@ -887,6 +900,7 @@ impl Engine {
                 traceparent,
                 baggage,
                 action,
+                metadata,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -953,9 +967,16 @@ impl Engine {
                         let function_id = function_id.clone();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
+                        let middleware_metadata = metadata.clone();
 
                         tokio::spawn(async move {
-                            let response = match engine.call(&middleware_id, middleware_input).await
+                            let response = match engine
+                                .call_with_metadata(
+                                    &middleware_id,
+                                    middleware_input,
+                                    middleware_metadata,
+                                )
+                                .await
                             {
                                 Ok(result) => Message::InvocationResult {
                                     invocation_id: inv_id,
@@ -1092,6 +1113,7 @@ impl Engine {
                             traceparent,
                             baggage,
                             None, // force invocation_id to None — no result sent
+                            metadata.clone(),
                         );
                         Ok(())
                     }
@@ -1105,6 +1127,7 @@ impl Engine {
                             traceparent,
                             baggage,
                             *invocation_id,
+                            metadata.clone(),
                         );
                         Ok(())
                     }
@@ -1411,12 +1434,13 @@ impl Engine {
         for trigger in triggers {
             let engine = self.clone();
             let function_id = trigger.function_id.clone();
+            let metadata = trigger.metadata.clone();
             let data = data.clone();
             let parent = current_span.clone();
             let span_function_id = function_id.clone();
             tokio::spawn(
                 async move {
-                    match engine.call(&function_id, data).await {
+                    match engine.call_with_metadata(&function_id, data, metadata).await {
                         Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
                         Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
                     }
@@ -1791,10 +1815,11 @@ impl EngineTrait for Engine {
     /// orchestration; the boot-heartbeat wakeup should only fire for actual
     /// user-initiated invocations arriving via `remember_invocation` and not
     /// things the engine can fire itself without user involvement, such as cron.
-    async fn call(
+    async fn call_with_metadata(
         &self,
         function_id: &str,
         input: impl Serialize + Send,
+        metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody> {
         let input = serde_json::to_value(input).map_err(|e| ErrorBody {
             code: "serialization_error".into(),
@@ -1821,6 +1846,7 @@ impl EngineTrait for Engine {
                     traceparent,
                     baggage,
                     None,
+                    metadata,
                 )
                 .await;
 
@@ -1875,10 +1901,14 @@ impl EngineTrait for Engine {
         let handler_function_id = function_id.clone();
 
         let function = Function {
-            handler: Arc::new(move |invocation_id, input, _session| {
+            handler: Arc::new(move |invocation_id, input, _session, metadata| {
                 let handler = handler_arc.clone();
                 let path = handler_function_id.clone();
-                Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
+                Box::pin(async move {
+                    handler
+                        .handle_function(invocation_id, path, input, metadata)
+                        .await
+                })
             }),
             _function_id: function_id.clone(),
             _description: description,
@@ -1899,7 +1929,7 @@ impl EngineTrait for Engine {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input, _session| {
+            handler: Arc::new(move |_id, input, _session, _metadata| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
             }),
@@ -1925,7 +1955,7 @@ impl EngineTrait for Engine {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input, session| {
+            handler: Arc::new(move |_id, input, session, _metadata| {
                 let handler = handler_arc.clone();
                 let session = session.clone();
                 Box::pin(async move { handler(input, session).await })
@@ -2520,6 +2550,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2568,6 +2599,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2633,6 +2665,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2681,6 +2714,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2988,6 +3022,7 @@ mod tests {
                 Some(uuid::Uuid::new_v4()),
                 "nonexistent_func",
                 serde_json::json!({}),
+                None,
                 None,
                 None,
             )

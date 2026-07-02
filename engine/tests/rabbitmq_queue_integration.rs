@@ -1191,7 +1191,7 @@ fn register_rmq_capturing_function(
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let cap = captured.clone();
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input, _session| {
+        handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
             let rec = cap.clone();
             Box::pin(async move {
                 rec.lock().await.push(input);
@@ -1214,7 +1214,7 @@ fn register_rmq_counting_fn(engine: &Arc<Engine>, function_id: &str) -> Arc<Atom
     let counter = Arc::new(AtomicU64::new(0));
     let cnt = counter.clone();
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input, _session| {
+        handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
             let c = cnt.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -1442,7 +1442,7 @@ fn register_priority_gate_function(
 ) {
     let is_first = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input, _session| {
+        handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
             let order = order.clone();
             let started = started.clone();
             let release = release.clone();

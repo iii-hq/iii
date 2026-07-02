@@ -83,6 +83,22 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 Per-type configuration is documented in each worker's Worker Docs (e.g.
 [iii-http](https://workers.iii.dev/workers/iii-http) for the `http` type).
 
+### Trigger metadata
+
+The optional `metadata` field on a trigger registration (`null` / `None` in the examples above)
+is arbitrary JSON stored with the trigger and delivered to the receiving function as a
+distinct argument alongside the payload. It is useful for providing contextual information about
+the trigger or execution context to the receiving function.
+
+A target function shared by many triggers can use it to recover which registration fired and
+with what context. See
+[Receive per-invocation metadata](../creating-workers/functions#receive-per-invocation-metadata)
+for handler-side access in each SDK.
+
+<Note>
+  `metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations
+</Note>
+
 ## Handling missing triggers
 
 When the engine cannot register a trigger, most commonly because the trigger type's worker is not

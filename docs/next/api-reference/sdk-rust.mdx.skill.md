@@ -134,14 +134,14 @@ The routing behavior depends on the `action` field of the request:
 **Signature**
 
 ```rust
-async trigger(request: impl Into<TriggerRequest>) -> Result<Value, Error>
+async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, Error>
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `request` | impl Into&lt;[`TriggerRequest`](#triggerrequest)&gt; | Yes | - |
+| `request` | impl Into&lt;[`TriggerRequestWithMetadata`](#triggerrequestwithmetadata)&gt; | Yes | - |
 
 #### Example
 
@@ -169,6 +169,17 @@ let receipt = worker.trigger(TriggerRequest {
     action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),
     timeout_ms: None,
 }).await?;
+
+// Metadata
+worker.trigger(
+    TriggerRequest {
+        function_id: "audit::write".to_string(),
+        payload: json!({"event": "checkout"}),
+        action: Some(TriggerAction::Void),
+        timeout_ms: None,
+    }
+    .metadata(json!({"tenant": "acme"})),
+).await?;
 ```
 
 ### register_trigger_type
@@ -300,8 +311,9 @@ and optional metadata.
 
 Constructors:
 - `RegisterFunction::new`: sync function. Accepts both typed handlers
-  (schemas auto-extracted via `schemars`) and `Fn(Value) -> Result<Value, Error>`
-  closures (permissive `AnyValue` schema, since `Value: JsonSchema`).
+  (schemas auto-extracted via `schemars`) and `Fn(Value, Option<Value>) -> Result<Value, Error>`
+  closures. The second argument is the per-invocation metadata sidecar and
+  is `None` when absent.
 - `RegisterFunction::new_async`: async equivalent of `new`.
 - `RegisterFunction::new_async_with_bad_request`: typed async handler
   that routes payload-deserialization failures through a caller-supplied
@@ -561,7 +573,7 @@ does not carry it.
 
 ### iii_sdk::protocol
 
-[`ErrorBody`](#errorbody) · [`FunctionMessage`](#functionmessage) · [`Message`](#message) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`TriggerAction`](#triggeraction) · [`TriggerRequest`](#triggerrequest) · [`UnregisterTriggerMessage`](#unregistertriggermessage) · [`UnregisterTriggerTypeMessage`](#unregistertriggertypemessage)
+[`ErrorBody`](#errorbody) · [`FunctionMessage`](#functionmessage) · [`Message`](#message) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`TriggerAction`](#triggeraction) · [`TriggerRequest`](#triggerrequest) · [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) · [`UnregisterTriggerMessage`](#unregistertriggermessage) · [`UnregisterTriggerTypeMessage`](#unregistertriggertypemessage)
 
 #### ErrorBody
 
@@ -592,7 +604,7 @@ does not carry it.
 | `UnregisterTriggerType` | `{ id: String }` | Yes | - |
 | `RegisterFunction` | `{ id: String, description: Option<String>, request_format: Option<Value>, response_format: Option<Value>, metadata: Option<Value>, invocation: Option<iii_helpers::http::HttpInvocationConfig> }` | Yes | - |
 | `UnregisterFunction` | `{ id: String }` | Yes | - |
-| `InvokeFunction` | \{ invocation_id: Option&lt;uuid::Uuid&gt;, function_id: String, data: Value, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt;, action: Option&lt;[`TriggerAction`](#triggeraction)&gt; \} | Yes | - |
+| `InvokeFunction` | \{ invocation_id: Option&lt;uuid::Uuid&gt;, function_id: String, data: Value, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt;, action: Option&lt;[`TriggerAction`](#triggeraction)&gt;, metadata: Option&lt;Value&gt; \} | Yes | - |
 | `InvocationResult` | \{ invocation_id: uuid::Uuid, function_id: String, result: Option&lt;Value&gt;, error: Option&lt;[`ErrorBody`](#errorbody)&gt;, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt; \} | Yes | - |
 | `Ping` | `unit` | Yes | - |
 | `Pong` | `unit` | Yes | - |
@@ -655,8 +667,7 @@ the invocation.
 
 #### TriggerRequest
 
-Request object for `trigger()`. Matches the Node/Python SDK signature:
-`trigger({ function_id, payload, action?, timeout_ms? })`
+Request object for `trigger()`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -664,6 +675,10 @@ Request object for `trigger()`. Matches the Node/Python SDK signature:
 | `payload` | `Value` | Yes | - |
 | `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | - |
 | `timeout_ms` | `Option<u64>` | No | - |
+
+#### TriggerRequestWithMetadata
+
+Trigger request plus optional per-invocation metadata.
 
 #### UnregisterTriggerMessage
 
@@ -826,19 +841,38 @@ registered or unregistered.
 
 ### iii_sdk::types
 
-[`RemoteFunctionData`](#remotefunctiondata) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`RemoteTriggerTypeData`](#remotetriggertypedata) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
+[`RemoteFunctionData`](#remotefunctiondata) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`RemoteFunctionHandlerWithMetadata`](#remotefunctionhandlerwithmetadata) · [`RemoteTriggerTypeData`](#remotetriggertypedata) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
 
 #### RemoteFunctionData
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `message` | [`RegisterFunctionMessage`](#registerfunctionmessage) | Yes | - |
-| `handler` | Option&lt;[`RemoteFunctionHandler`](#remotefunctionhandler)&gt; | No | - |
+| `handler` | Option&lt;[`RemoteFunctionHandlerWithMetadata`](#remotefunctionhandlerwithmetadata)&gt; | No | - |
 
 #### RemoteFunctionHandler
 
+A dispatchable function handler. Receives the invocation payload.
+
+Handlers that also want the optional per-invocation `metadata` sidecar use
+`RemoteFunctionHandlerWithMetadata`; this single-argument shape is kept
+for backward compatibility.
+
 ```rust
-type RemoteFunctionHandler = std::sync::Arc<dyn Fn + Send + Sync>
+type RemoteFunctionHandler = std::sync::Arc<dyn Fn(Value) -> futures_util::future::BoxFuture<'static, Result<Value, Error>> + Send + Sync>
+```
+
+#### RemoteFunctionHandlerWithMetadata
+
+A dispatchable function handler that also receives the optional
+per-invocation `metadata` sidecar (delivered as a distinct argument rather
+than folded into the payload; `None` when the caller attached none).
+
+This is the SDK's internal dispatch shape: handlers built from
+metadata-unaware functions ignore the second argument.
+
+```rust
+type RemoteFunctionHandlerWithMetadata = std::sync::Arc<dyn Fn(Value, Option<Value>) -> futures_util::future::BoxFuture<'static, Result<Value, Error>> + Send + Sync>
 ```
 
 #### RemoteTriggerTypeData
