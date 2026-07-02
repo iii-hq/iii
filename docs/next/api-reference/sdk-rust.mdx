@@ -861,7 +861,7 @@ Handlers that also want the optional per-invocation `metadata` sidecar use
 for backward compatibility.
 
 ```rust
-type RemoteFunctionHandler = std::sync::Arc<dyn Fn + Send + Sync>
+type RemoteFunctionHandler = std::sync::Arc<dyn Fn(Value) -> futures_util::future::BoxFuture<'static, Result<Value, Error>> + Send + Sync>
 ```
 
 #### RemoteFunctionHandlerWithMetadata
@@ -874,7 +874,7 @@ This is the SDK's internal dispatch shape: handlers built from
 metadata-unaware functions ignore the second argument.
 
 ```rust
-type RemoteFunctionHandlerWithMetadata = std::sync::Arc<dyn Fn + Send + Sync>
+type RemoteFunctionHandlerWithMetadata = std::sync::Arc<dyn Fn(Value, Option<Value>) -> futures_util::future::BoxFuture<'static, Result<Value, Error>> + Send + Sync>
 ```
 
 #### RemoteTriggerTypeData

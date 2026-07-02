@@ -97,7 +97,20 @@ export function rustTypeToString(type: any): string {
       ?.map((b: any) => {
         const t = b.trait
         let name = t?.path ?? t?.name ?? '?'
-        return name.replace(/^crate::[\w:]+::/, '')
+        name = name.replace(/^crate::[\w:]+::/, '')
+        if (t?.args?.parenthesized) {
+          const { inputs, output } = t.args.parenthesized
+          const params = (inputs ?? []).map(rustTypeToString).join(', ')
+          const ret = output ? ` -> ${rustTypeToString(output)}` : ''
+          return `${name}(${params})${ret}`
+        }
+        if (t?.args?.angle_bracketed?.args?.length) {
+          const args = t.args.angle_bracketed.args
+            .map((a: any) => (a.type ? rustTypeToString(a.type) : a.lifetime ?? '?'))
+            .join(', ')
+          return `${name}<${args}>`
+        }
+        return name
       })
       .join(' + ')
     return `dyn ${traits ?? '?'}`
