@@ -1,0 +1,31 @@
+{
+  "name": "__REPO__-presentations",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node build.mjs",
+    "build:only": "node build.mjs --only",
+    "preview": "vite preview --outDir dist",
+    "type-check": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "marked": "^18.0.5",
+    "mermaid": "^11.16.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^25.8.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.13"
+  }
+}

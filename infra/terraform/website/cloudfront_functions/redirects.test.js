@@ -264,61 +264,113 @@ test('/.well-known/foo (no extension) → pass through, NOT SPA rewritten', asyn
 })
 
 // ---------------------------------------------------------------------------
-// /blog/* — Astro blog at iii.dev/blog. Astro emits with trailingSlash: 'always'
-// and build.format: 'directory', so each post is a key like
-// blog/<slug>/index.html in S3. CloudFront's default_root_object only applies
-// to the apex, so /blog/<slug>/ must be rewritten to .../index.html and
-// extensionless paths must 301 to the canonical trailing-slash form.
+// Directory-style sites — /blog/* (Astro, build.format 'directory' with
+// trailingSlash 'always') and /tech-specs/* (the presentations build: gallery
+// + one directory per spec). Each page is a key like <prefix>/<slug>/index.html
+// in S3. CloudFront's default_root_object only applies to the apex, so
+// /<prefix>/<slug>/ must be rewritten to .../index.html and extensionless
+// paths must 301 to the canonical trailing-slash form. Same behavior for both
+// prefixes, so the cases are parameterized.
 // ---------------------------------------------------------------------------
 
-test('/blog → 301 https://iii.dev/blog/ (canonical trailing slash)', async () => {
-  const result = await handler(buildEvent('/blog', 'iii.dev'))
+for (const prefix of ['/blog', '/tech-specs']) {
+  test(`${prefix} → 301 https://iii.dev${prefix}/ (canonical trailing slash)`, async () => {
+    const result = await handler(buildEvent(prefix, 'iii.dev'))
+    assert.ok(isRedirect(result))
+    assert.equal(locationOf(result), `https://iii.dev${prefix}/`)
+  })
+
+  test(`${prefix}/ → rewrite to ${prefix}/index.html`, async () => {
+    const result = await handler(buildEvent(`${prefix}/`, 'iii.dev'))
+    assert.ok(!isRedirect(result))
+    assert.equal(result.uri, `${prefix}/index.html`)
+  })
+
+  test(`${prefix}/hello-world/ → rewrite to ${prefix}/hello-world/index.html`, async () => {
+    const result = await handler(buildEvent(`${prefix}/hello-world/`, 'iii.dev'))
+    assert.ok(!isRedirect(result))
+    assert.equal(result.uri, `${prefix}/hello-world/index.html`)
+  })
+
+  test(`${prefix}/hello-world (no trailing slash) → 301 to ${prefix}/hello-world/`, async () => {
+    const result = await handler(buildEvent(`${prefix}/hello-world`, 'iii.dev'))
+    assert.ok(isRedirect(result))
+    assert.equal(locationOf(result), `https://iii.dev${prefix}/hello-world/`)
+  })
+
+  test(`${prefix}/foo/bar/ → rewrite to ${prefix}/foo/bar/index.html (nested)`, async () => {
+    const result = await handler(buildEvent(`${prefix}/foo/bar/`, 'iii.dev'))
+    assert.ok(!isRedirect(result))
+    assert.equal(result.uri, `${prefix}/foo/bar/index.html`)
+  })
+
+  test(`${prefix}/rss.xml → pass through unchanged (file with extension)`, async () => {
+    const result = await handler(buildEvent(`${prefix}/rss.xml`, 'iii.dev'))
+    assert.ok(!isRedirect(result))
+    assert.equal(result.uri, `${prefix}/rss.xml`)
+  })
+
+  test(`${prefix}/_astro/style.abc123.css → pass through unchanged (hashed asset)`, async () => {
+    const result = await handler(buildEvent(`${prefix}/_astro/style.abc123.css`, 'iii.dev'))
+    assert.ok(!isRedirect(result))
+    assert.equal(result.uri, `${prefix}/_astro/style.abc123.css`)
+  })
+
+  test(`${prefix}foo → NOT matched as ${prefix}/, falls through to 404`, async () => {
+    // Boundary check: the prefix must require the trailing slash so unrelated
+    // top-level paths like /blogfoo or /tech-specsfoo are not hijacked.
+    const result = await handler(buildEvent(`${prefix}foo`, 'iii.dev'))
+    assert.ok(!isRedirect(result))
+    assert.ok(isNotFound(result))
+  })
+}
+
+test('/tech-specs/index.json → pass through unchanged (the landing-page feed)', async () => {
+  const result = await handler(buildEvent('/tech-specs/index.json', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/tech-specs/index.json')
+})
+
+test('/tech-specs/2026-06-29-codegen/harness.md → pass through unchanged (raw spec md)', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-29-codegen/harness.md', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/tech-specs/2026-06-29-codegen/harness.md')
+})
+
+// ---------------------------------------------------------------------------
+// Renamed tech-spec slugs — the 2026-07 rename to day-precision dirs left the
+// month-only URLs live in the wild (sitemap, social links). They must 301 to
+// the new slug with path suffix and query preserved.
+// ---------------------------------------------------------------------------
+
+test('/tech-specs/2026-06-codegen/ → 301 to /tech-specs/2026-06-29-codegen/', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/', 'iii.dev'))
   assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/blog/')
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-29-codegen/')
 })
 
-test('/blog/ → rewrite to /blog/index.html', async () => {
-  const result = await handler(buildEvent('/blog/', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/blog/index.html')
-})
-
-test('/blog/hello-world/ → rewrite to /blog/hello-world/index.html', async () => {
-  const result = await handler(buildEvent('/blog/hello-world/', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/blog/hello-world/index.html')
-})
-
-test('/blog/hello-world (no trailing slash) → 301 to /blog/hello-world/', async () => {
-  const result = await handler(buildEvent('/blog/hello-world', 'iii.dev'))
+test('/tech-specs/2026-06-agentic (no slash) → 301 straight to the new slash form', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-agentic', 'iii.dev'))
   assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/blog/hello-world/')
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-08-agentic/')
 })
 
-test('/blog/foo/bar/ → rewrite to /blog/foo/bar/index.html (nested)', async () => {
-  const result = await handler(buildEvent('/blog/foo/bar/', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/blog/foo/bar/index.html')
+test('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md → 301 preserves the file suffix', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-22-rbac-proxy-worker/rbac-proxy.md')
 })
 
-test('/blog/rss.xml → pass through unchanged (file with extension)', async () => {
-  const result = await handler(buildEvent('/blog/rss.xml', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/blog/rss.xml')
+test('renamed slug preserves querystring on the 301', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/', 'iii.dev', { utm_source: { value: 'x' } }))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-29-codegen/?utm_source=x')
 })
 
-test('/blog/_astro/style.abc123.css → pass through unchanged (hashed asset)', async () => {
-  const result = await handler(buildEvent('/blog/_astro/style.abc123.css', 'iii.dev'))
+test('a new-slug URL is NOT rename-redirected (map matches whole segment only)', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-29-codegen/', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/blog/_astro/style.abc123.css')
-})
-
-test('/blogfoo → NOT matched as /blog/, falls through to 404', async () => {
-  // Boundary check: the /blog/ prefix must require the trailing slash so
-  // unrelated top-level paths like /blogfoo or /blogfest are not hijacked.
-  const result = await handler(buildEvent('/blogfoo', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.ok(isNotFound(result))
+  assert.equal(result.uri, '/tech-specs/2026-06-29-codegen/index.html')
 })
 
 test('/blog/hello-world/ preserves querystring on rewrite', async () => {

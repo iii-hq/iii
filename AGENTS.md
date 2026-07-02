@@ -52,6 +52,8 @@ console/                         Developer console (React + Rust)
 skills/                          26 agent skills (auto-discovered by SkillKit)
 docs/                            Documentation site (Mintlify/MDX)
 website/                         iii.dev website
+website/presentations/           Tech-spec presentations site (iii.dev/tech-specs/) — SOP in its README
+tech-specs/                      Markdown-only specs; frontmatter in each README.md lists it on the site
 scripts/                         Build and CI scripts
 ```
 

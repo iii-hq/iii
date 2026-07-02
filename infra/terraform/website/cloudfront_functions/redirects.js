@@ -64,6 +64,15 @@ function serializeQuerystring(qs) {
 // one store, so cf.kvs() needs no store id.
 var routes = cf.kvs()
 
+// Tech-spec dirs renamed to day-precision slugs (2026-07): the old month-only
+// URLs were already published (sitemap, social links), so 301 them — path
+// suffix and query preserved. Extend this map on any future spec rename.
+var TECH_SPEC_RENAMES = {
+  '2026-06-agentic': '2026-06-08-agentic',
+  '2026-06-rbac-proxy-worker': '2026-06-22-rbac-proxy-worker',
+  '2026-06-codegen': '2026-06-29-codegen',
+}
+
 // biome-ignore lint/correctness/noUnusedVariables: CloudFront Function entry point
 // biome-ignore lint/complexity/useOptionalChain: cloudfront-js-2.0 does NOT support optional chaining
 async function handler(event) {
@@ -77,27 +86,54 @@ async function handler(event) {
 
   if (uri.indexOf('/.well-known/') === 0) return request
 
-  // /blog/* — Astro emits build.format: 'directory' with trailingSlash:
-  // 'always', so canonical URLs are /blog/<slug>/. CloudFront's
-  // default_root_object only applies to the apex, so we rewrite directory
-  // URLs to .../index.html and 301 extensionless paths to the canonical
-  // trailing-slash form. Must run before the SPA fallback so /blog/<slug>
-  // doesn't get hijacked into /index.html.
+  // Directory-style sites: /blog/* (Astro, build.format 'directory') and
+  // /tech-specs/* (the presentations build — a gallery at the prefix root plus
+  // one directory per spec). Canonical URLs carry a trailing slash.
+  // CloudFront's default_root_object only applies to the apex, so we rewrite
+  // directory URLs to .../index.html and 301 extensionless paths to the
+  // canonical trailing-slash form (relative-base decks resolve ./assets/*
+  // correctly only under the slash form). Must run before the KVS fallback so
+  // /<prefix>/<slug> doesn't 404.
   var redirectHost = host || 'iii.dev'
-  if (uri === '/blog') {
-    return redirect('https://' + redirectHost + '/blog/' + serializeQuerystring(request.querystring))
+
+  // Renamed tech-spec slugs 301 to their new home before the generic
+  // directory handling (which would otherwise rewrite them to a now-missing
+  // <old-slug>/index.html).
+  if (uri.indexOf('/tech-specs/') === 0) {
+    var specRest = uri.substring('/tech-specs/'.length)
+    var specSlash = specRest.indexOf('/')
+    var specSlug = specSlash === -1 ? specRest : specRest.substring(0, specSlash)
+    if (Object.prototype.hasOwnProperty.call(TECH_SPEC_RENAMES, specSlug)) {
+      var specSuffix = specSlash === -1 ? '/' : specRest.substring(specSlash)
+      return redirect(
+        'https://' +
+          redirectHost +
+          '/tech-specs/' +
+          TECH_SPEC_RENAMES[specSlug] +
+          specSuffix +
+          serializeQuerystring(request.querystring),
+      )
+    }
   }
-  if (uri.indexOf('/blog/') === 0) {
-    if (uri.charAt(uri.length - 1) === '/') {
-      request.uri = uri + 'index.html'
+
+  var DIR_SITES = ['/blog', '/tech-specs']
+  for (var d = 0; d < DIR_SITES.length; d++) {
+    var prefix = DIR_SITES[d]
+    if (uri === prefix) {
+      return redirect('https://' + redirectHost + prefix + '/' + serializeQuerystring(request.querystring))
+    }
+    if (uri.indexOf(prefix + '/') === 0) {
+      if (uri.charAt(uri.length - 1) === '/') {
+        request.uri = uri + 'index.html'
+        return request
+      }
+      var lastSlashD = uri.lastIndexOf('/')
+      var lastSegmentD = uri.substring(lastSlashD + 1)
+      if (lastSegmentD.indexOf('.') === -1) {
+        return redirect('https://' + redirectHost + uri + '/' + serializeQuerystring(request.querystring))
+      }
       return request
     }
-    var lastSlashB = uri.lastIndexOf('/')
-    var lastSegmentB = uri.substring(lastSlashB + 1)
-    if (lastSegmentB.indexOf('.') === -1) {
-      return redirect('https://' + redirectHost + uri + '/' + serializeQuerystring(request.querystring))
-    }
-    return request
   }
 
   // Extensionless top-level paths resolve to a pretty page via the KVS route

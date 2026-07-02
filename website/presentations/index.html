@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>iii — what we're working on</title>
+    <meta
+      name="description"
+      content="the iii roadmap, in public: every priority lands here as a tech spec before it lands as code — newest first, readable as markdown, steppable as an interactive deck."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&display=swap"
+    />
+    <script>
+      try {
+        const t = localStorage.getItem('iii-theme');
+        document.documentElement.dataset.theme =
+          t === 'dark' || t === 'light' ? t : 'light';
+      } catch (_) {
+        document.documentElement.dataset.theme = 'light';
+      }
+    </script>
+  </head>
+  <body class="bg-bg text-ink font-sans">
+    <div id="root"></div>
+    <script type="module" src="./src/gallery/main.tsx"></script>
+  </body>
+</html>

@@ -17,3 +17,7 @@ npx skills add iii-hq/iii/skills
 - [iii-engine-config](iii-engine-config/SKILL.md) — Configure ports, workers, adapters, queues, RBAC, and observability
 - [iii-architecture-patterns](iii-architecture-patterns/SKILL.md) — Workflows, reactive backends, agentic pipelines, CQRS, effect pipelines, and automation chains
 - [iii-error-handling](iii-error-handling/SKILL.md) — Engine and SDK errors, retryability, RBAC denial, and timeout handling
+
+## Tools
+
+- [presentation](presentation/SKILL.md) — Turn a tech-spec directory into an interactive, marketing-grade web presentation (ships a frozen Vite + React + TS scaffold and an interactive diagram archetype library)

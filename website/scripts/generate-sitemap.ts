@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { readBlogPosts } from './blog-posts'
 import { INDEXABLE_ROUTES, SITE_ORIGIN } from './routes'
+import { readTechSpecs } from './tech-specs'
 
 const OUT_PATH = path.resolve(process.cwd(), 'sitemap.xml')
 
@@ -58,7 +59,30 @@ async function buildSitemap(): Promise<string> {
     }
   }
 
-  const urls = [...routeUrls, ...extraUrls, ...blogUrls].join('\n')
+  // tech specs: the roadmap at /tech-specs/ plus one URL per published spec
+  // (drafts stay out of the sitemap, matching dist/index.json). lastmod uses
+  // the spec's YYYY-MM-DD date; a legacy month-only date pins to the 1st.
+  const specLastmod = (date: string) => (date.length === 7 ? `${date}-01` : date)
+  const techSpecs = (await readTechSpecs()).filter((s) => s.status !== 'draft')
+  const techSpecUrls: string[] = []
+  if (techSpecs.length > 0) {
+    techSpecUrls.push(`  <url>
+    <loc>${SITE_ORIGIN}/tech-specs/</loc>
+    <lastmod>${specLastmod(techSpecs[0].date)}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>`)
+    for (const spec of techSpecs) {
+      techSpecUrls.push(`  <url>
+    <loc>${SITE_ORIGIN}/tech-specs/${spec.slug}/</loc>
+    <lastmod>${specLastmod(spec.date)}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>`)
+    }
+  }
+
+  const urls = [...routeUrls, ...extraUrls, ...blogUrls, ...techSpecUrls].join('\n')
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

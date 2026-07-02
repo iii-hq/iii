@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>iii codegen · typed worker integrations</title>
+    <meta name="description" content="one command generates all the types you need to call an iii worker — typed wrappers in typescript, rust, python and javascript, projected from the engine's live function catalog." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&display=swap"
+    />
+    <script>
+      try {
+        const t = localStorage.getItem('iii-theme');
+        document.documentElement.dataset.theme =
+          t === 'dark' || t === 'light' ? t : 'light';
+      } catch (_) {
+        document.documentElement.dataset.theme = 'light';
+      }
+    </script>
+  </head>
+  <body class="bg-bg text-ink font-sans">
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>
