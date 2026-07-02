@@ -62,6 +62,7 @@ npx skills add iii-hq/iii --full-depth --skill iii-queue
 | `message_group_field` | string | Required for `fifo`. JSON field whose value determines the ordering group. |
 | `backoff_ms` | u64 | Base retry backoff in milliseconds. Exponential: `backoff_ms × 2^(attempt−1)`. Defaults to `1000`. |
 | `poll_interval_ms` | u64 | Worker poll interval in milliseconds. Defaults to `100`. |
+| `dispatch_timeout_ms` | u64 | Optional per-invocation dispatch deadline in milliseconds. If a dispatched job does not complete within it (e.g. a lost engine→worker dispatch or a worker that never returns a result), the message is nacked back through the normal retry→DLQ path instead of staying in-flight until the broker's own timeout. Unset by default (no deadline). Set it comfortably above the slowest legitimate handler runtime, and make handlers idempotent: the timeout does not cancel work already running on a worker, so a retry can overlap the original attempt. |
 
 ## Queue Modes
 
