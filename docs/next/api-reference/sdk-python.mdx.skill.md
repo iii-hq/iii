@@ -379,7 +379,7 @@ Input for registering a function, matches Node.js RegisterFunctionInput.
 | `description` | `str \| None` | No | Human-readable description. |
 | `id` | `str` | No | Unique function identifier. |
 | `invocation` | `HttpInvocationConfig \| None` | No | HTTP invocation config for externally hosted functions. |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
+| `metadata` | `Any \| None` | No | Arbitrary metadata attached to the function. |
 | `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. |
 | `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. |
 
@@ -391,7 +391,7 @@ Input for registering a function, matches Node.js RegisterFunctionInput.
 | `id` | `str` | No | - |
 | `invocation` | `HttpInvocationConfig \| None` | No | - |
 | `message_type` | [`MessageType`](#messagetype) | No | - |
-| `metadata` | `dict[str, Any] \| None` | No | - |
+| `metadata` | `Any \| None` | No | - |
 | `model_config` | `Any` | No | - |
 | `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | - |
 | `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | - |
@@ -404,7 +404,7 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 | --- | --- | --- | --- |
 | `config` | `Any` | No | Trigger-type-specific configuration. |
 | `function_id` | `str` | No | ID of the function this trigger invokes. |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
+| `metadata` | `Any \| None` | No | Arbitrary metadata attached to the trigger. |
 | `type` | `str` | No | Trigger type identifier (e.g. ``http``, ``queue``, ``cron``). |
 
 #### RegisterTriggerMessage
@@ -415,7 +415,7 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 | `function_id` | `str` | No | - |
 | `id` | `str` | Yes | - |
 | `message_type` | [`MessageType`](#messagetype) | No | - |
-| `metadata` | `dict[str, Any] \| None` | No | - |
+| `metadata` | `Any \| None` | No | - |
 | `model_config` | `Any` | No | - |
 | `trigger_type` | `str` | No | - |
 
@@ -449,7 +449,7 @@ Request object for ``trigger()``.
 | --- | --- | --- | --- |
 | `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget. |
 | `function_id` | `str` | No | ID of the function to invoke. |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary per-invocation metadata delivered to the handler as a separate channel (not folded into ``payload``). |
+| `metadata` | `Any \| None` | No | Arbitrary per-invocation metadata delivered to the handler as a separate channel (not folded into ``payload``). |
 | `payload` | `Any` | No | Data to pass to the function. |
 | `timeout_ms` | `int \| None` | No | Override the default invocation timeout. |
 
