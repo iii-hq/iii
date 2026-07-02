@@ -295,7 +295,7 @@ The canonical harness use case, verified through the code path:
 iii.trigger("engine::register_trigger", {
   trigger_type: "http",
   function_id: "harness::notify-session",
-  config: { method: "GET", path: "/hello" },
+  config: { http_method: "GET", api_path: "/hello" },
   metadata: { session_id: "s_42", subscription_id: "sub_abc" }
 })
 ```
