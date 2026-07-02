@@ -44,5 +44,5 @@ export const FOOTER: FooterSpec = {
   headline: 'one boundary. its own port. the engine, untouched.',
   command: 'iii worker add rbac-proxy',
   attribution: 'rbac-proxy · rbac at the edge',
-  source: 'source: workers/tech-specs/2026-06-rbac-proxy-worker',
+  source: 'source: workers/tech-specs/2026-06-22-rbac-proxy-worker',
 }

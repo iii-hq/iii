@@ -180,12 +180,13 @@ async function main() {
     generatedAt: new Date().toISOString(),
     specs: specs
       .filter((s) => s.status !== 'draft')
-      .map(({ slug, title, tagline, date, month, tags, status, hasDeck }) => ({
+      .map(({ slug, title, tagline, date, month, dayLabel, tags, status, hasDeck }) => ({
         slug,
         title,
         tagline,
         date,
         month,
+        dayLabel,
         tags,
         status,
         hasDeck,

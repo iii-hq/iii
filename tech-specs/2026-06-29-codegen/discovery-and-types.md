@@ -20,7 +20,7 @@ on the engine itself, invoked like any other function via `iii.trigger`
 
 (The full surface — also `engine::workers::list/info` and
 `engine::registered-triggers::list/info` — is the same one
-[`rbac-proxy`](../2026-06-rbac-proxy-worker/engine-overrides.md) filters, and the
+[`rbac-proxy`](../2026-06-22-rbac-proxy-worker/engine-overrides.md) filters, and the
 `EngineFunctions` enum at `iii/sdk/packages/rust/iii/src/engine.rs:15-25`.
 Codegen needs only the four above for generation.)
 

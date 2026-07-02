@@ -1,10 +1,9 @@
 ---
 title: agentic workers, an architecture overview
 tagline: five standalone iii workers that compose into a reactive, durable agent backend.
-date: 2026-06
+date: 2026-06-08
 tags: [agents, workers, architecture]
 status: live
-featured: true
 ---
 
 # Agentic Workers

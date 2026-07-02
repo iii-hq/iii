@@ -1,7 +1,7 @@
 ---
 title: rbac at the edge, not inside the engine
 tagline: role-based access control in front of the engine, on its own port, filtering all eight discovery functions to the caller.
-date: 2026-06
+date: 2026-06-22
 tags: [security, rbac, workers]
 status: live
 ---

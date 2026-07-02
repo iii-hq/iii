@@ -1,9 +1,10 @@
 # tech-spec presentations — one site
 
 One Vite project that builds every tech spec into **iii.dev/tech-specs/** — a
-gallery at `/`, one page per spec at `/<slug>/` (an interactive deck when one
-exists, a rendered markdown viewer when only the spec does), the raw `.md`
-linkable beside it, and `index.json` feeding the iii.dev landing timeline.
+roadmap at `/` (a one-column timeline, newest spec first, grouped by month),
+one page per spec at `/<slug>/` (an interactive deck when one exists, a
+rendered markdown viewer when only the spec does), the raw `.md` linkable
+beside it, and `index.json` feeding the iii.dev landing timeline.
 
 ## the two trees
 
@@ -35,7 +36,8 @@ exception (procedure c).
 
 Via `/tech-spec`, or by hand:
 
-1. `mkdir tech-specs/YYYY-MM-<slug>/` — the dirname IS the url slug.
+1. `mkdir tech-specs/YYYY-MM-DD-<slug>/` — the dirname IS the url slug; the
+   day prefix is what orders and labels the roadmap timeline.
 2. Write `README.md` (the index/overview) + one `.md` per domain topic. Markdown only.
 3. Top of `README.md`, the frontmatter block:
 
@@ -43,11 +45,15 @@ Via `/tech-spec`, or by hand:
 ---
 title: the developer experience overhaul        # fallback: first H1
 tagline: one file, one command, zero zombies.   # fallback: first paragraph
-date: 2026-06                                   # fallback: dirname prefix
+date: 2026-06-21                                # YYYY-MM-DD; fallback: dirname
+                                                # prefix. day precision drives
+                                                # the roadmap order + labels
 tags: [dx, cli]                                 # ≤ 4
 status: live                                    # or draft (muted card, kept
                                                 # out of index.json + sitemap)
-featured: false                                 # pin to the top of the grid
+featured: false                                 # pin in the landing feed
+                                                # (index.json); the roadmap
+                                                # itself stays chronological
 ---
 ```
 

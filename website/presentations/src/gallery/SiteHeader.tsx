@@ -17,7 +17,7 @@ export function SiteHeader() {
         </a>
 
         <span className="hidden @3xl:inline font-mono text-[12px] lowercase text-ink-ghost">
-          specs + interactive presentations
+          the roadmap, spec by spec
         </span>
 
         <div className="ml-auto shrink-0">

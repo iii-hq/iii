@@ -4,7 +4,7 @@
  * depth is fixed by the two-tree layout:
  * website/presentations/<slug>/src/ → ../../../../tech-specs/<slug>/
  */
-export const SPEC_DOCS = import.meta.glob('../../../../tech-specs/2026-06-rbac-proxy-worker/*.md', {
+export const SPEC_DOCS = import.meta.glob('../../../../tech-specs/2026-06-22-rbac-proxy-worker/*.md', {
   query: '?raw',
   import: 'default',
   eager: true,

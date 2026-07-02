@@ -19,9 +19,7 @@ test('reads frontmatter title, date, and status', async () => {
     '2026-06-devexp': '---\ntitle: the devexp overhaul\ndate: 2026-06\nstatus: live\n---\n\n# ignored h1\n',
   })
   const specs = await readTechSpecs(dir)
-  assert.deepEqual(specs, [
-    { slug: '2026-06-devexp', title: 'the devexp overhaul', date: '2026-06', status: 'live' },
-  ])
+  assert.deepEqual(specs, [{ slug: '2026-06-devexp', title: 'the devexp overhaul', date: '2026-06', status: 'live' }])
 })
 
 test('falls back to H1 title and dirname date when frontmatter is absent', async () => {
@@ -29,8 +27,18 @@ test('falls back to H1 title and dirname date when frontmatter is absent', async
     '2026-07-storage': '# Storage Worker\n\nprose.\n',
   })
   const specs = await readTechSpecs(dir)
+  assert.deepEqual(specs, [{ slug: '2026-07-storage', title: 'Storage Worker', date: '2026-07', status: 'live' }])
+})
+
+test('day-precision dates: frontmatter YYYY-MM-DD and the YYYY-MM-DD dirname prefix', async () => {
+  const dir = await makeSpecTree({
+    '2026-06-29-codegen': '---\ntitle: codegen\ndate: 2026-06-29\n---\n# codegen\n',
+    '2026-06-08-agentic': '# agentic\n\nprose.\n',
+  })
+  const specs = await readTechSpecs(dir)
   assert.deepEqual(specs, [
-    { slug: '2026-07-storage', title: 'Storage Worker', date: '2026-07', status: 'live' },
+    { slug: '2026-06-29-codegen', title: 'codegen', date: '2026-06-29', status: 'live' },
+    { slug: '2026-06-08-agentic', title: 'agentic', date: '2026-06-08', status: 'live' },
   ])
 })
 

@@ -18,7 +18,7 @@ export interface WorkerInfo {
 }
 
 /**
- * worker datasheets, condensed from tech-specs/2026-06-agentic/*.md —
+ * worker datasheets, condensed from tech-specs/2026-06-08-agentic/*.md —
  * the source of truth for the system map side panel.
  */
 export const WORKERS: Record<string, WorkerInfo> = {

@@ -230,7 +230,7 @@ pub struct StatusOutput {
 ## Agent exposure
 
 Deny-by-default for in-run agents (see
-[2026-06-agentic README § Security model](../2026-06-agentic/README.md#security-model)).
+[2026-06-08-agentic README § Security model](../2026-06-08-agentic/README.md#security-model)).
 
 - **Deny:** `rbac-proxy::on-config-change` (internal reload; permissions deny
   above).

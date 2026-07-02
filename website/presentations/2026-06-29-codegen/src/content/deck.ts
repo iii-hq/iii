@@ -41,5 +41,5 @@ export const FOOTER: FooterSpec = {
   headline: 'one command. every type you need.',
   command: 'codegen generate --config codegen.yml',
   attribution: 'iii codegen · typed worker integrations',
-  source: 'source of truth: workers/tech-specs/2026-06-codegen',
+  source: 'source of truth: workers/tech-specs/2026-06-29-codegen',
 }

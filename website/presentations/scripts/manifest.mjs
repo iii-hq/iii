@@ -8,10 +8,15 @@
  *
  * Specs live at <repo>/tech-specs/<slug>/ and are MARKDOWN ONLY. Metadata is
  * YAML frontmatter at the top of each spec's README.md (title, tagline, date,
- * tags, status, featured) with derived fallbacks: date ← the dirname's YYYY-MM
- * prefix, title ← the README's first H1. `slug` is NEVER a frontmatter field —
- * the directory name is the identity (folder = URL = deck dir), which kills
- * the old manifest-vs-dirname drift bug class by construction.
+ * tags, status, featured) with derived fallbacks: date ← the dirname's
+ * YYYY-MM-DD (or legacy YYYY-MM) prefix, title ← the README's first H1.
+ * `slug` is NEVER a frontmatter field — the directory name is the identity
+ * (folder = URL = deck dir), which kills the old manifest-vs-dirname drift
+ * bug class by construction.
+ *
+ * Dates carry day precision so the gallery can render the roadmap timeline:
+ * `month` groups entries ("2026 · june"), `dayLabel` marks each one ("jun 29",
+ * null when a spec only has a month).
  *
  * Dependency-free by design (same approach as website/scripts/blog-posts.ts):
  * a minimal parser sized to our six fields instead of a YAML library.
@@ -111,12 +116,20 @@ function firstParagraph(md) {
   return null
 }
 
-/** "2026-06" → "2026 · june" */
+/** "2026-06-29" or "2026-06" → "2026 · june" (the timeline's month group) */
 export function monthLabel(date) {
-  const m = date?.match(/^(\d{4})-(\d{2})$/)
+  const m = date?.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/)
   if (!m) return date ?? ''
   const name = MONTH_NAMES[Number(m[2]) - 1]
   return name ? `${m[1]} · ${name}` : date
+}
+
+/** "2026-06-29" → "jun 29"; null when the date has no day component */
+export function dayLabel(date) {
+  const m = date?.match(/^\d{4}-(\d{2})-(\d{2})$/)
+  if (!m) return null
+  const name = MONTH_NAMES[Number(m[1]) - 1]
+  return name ? `${name.slice(0, 3)} ${Number(m[2])}` : null
 }
 
 /**
@@ -166,8 +179,8 @@ export function readSpecs() {
     }
     const { fields, unknown } = parsed
     for (const key of unknown) warnings.push(`${slug}: unknown frontmatter key \`${key}\``)
-    if (!/^\d{4}-\d{2}-[a-z0-9][a-z0-9-]*$/.test(slug)) {
-      warnings.push(`${slug}: dirname does not match YYYY-MM-<slug> convention`)
+    if (!/^\d{4}-\d{2}-\d{2}-[a-z][a-z0-9-]*$/.test(slug)) {
+      warnings.push(`${slug}: dirname does not match YYYY-MM-DD-<slug> convention`)
     }
 
     const title = typeof fields.title === 'string' ? fields.title : firstHeading(raw)
@@ -178,9 +191,9 @@ export function readSpecs() {
       warnings.push(`${slug}: no tagline frontmatter — using the README's first paragraph`)
     }
 
-    const dirDate = slug.match(/^(\d{4}-\d{2})/)?.[1] ?? null
+    const dirDate = slug.match(/^(\d{4}-\d{2}(?:-\d{2})?)/)?.[1] ?? null
     let date = typeof fields.date === 'string' ? fields.date : null
-    if (date && !/^\d{4}-(0[1-9]|1[0-2])$/.test(date)) {
+    if (date && !/^\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12][0-9]|3[01]))?$/.test(date)) {
       warnings.push(`${slug}: invalid date \`${date}\` — falling back to dirname prefix`)
       date = null
     }
@@ -211,6 +224,7 @@ export function readSpecs() {
       tagline: tagline ?? '',
       date,
       month: monthLabel(date),
+      dayLabel: dayLabel(date),
       tags,
       status,
       featured: fields.featured === true,

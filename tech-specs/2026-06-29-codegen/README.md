@@ -1,7 +1,7 @@
 ---
 title: iii codegen — typed worker integrations
 tagline: one command generates the types and wrappers you need to call any worker, projected from the engine's live json-schema catalog.
-date: 2026-06
+date: 2026-06-29
 tags: [codegen, dx, workers]
 status: live
 ---
@@ -199,7 +199,7 @@ config.
 - `engine::*` discovery — the introspection surface codegen consumes, defined in
   `iii/engine/src/workers/engine_fn/mod.rs` and enumerated as `EngineFunctions`
   in `iii/sdk/packages/rust/iii/src/engine.rs:15-25`; the same surface
-  [`rbac-proxy`](../2026-06-rbac-proxy-worker/engine-overrides.md) rewrites.
+  [`rbac-proxy`](../2026-06-22-rbac-proxy-worker/engine-overrides.md) rewrites.
 - [`todo-worker`](../../todo-worker) / [`todo-worker-python`](../../todo-worker-python)
   — the canonical Node and Python SDK consumers; their hand-written `iii.ts` /
   `main.py` are what generated wrappers are designed to slot beside.

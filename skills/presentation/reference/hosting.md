@@ -31,11 +31,15 @@ The top of `tech-specs/<slug>/README.md`:
 ---
 title: the developer experience overhaul        # fallback: the first H1
 tagline: one file, one command, zero zombies.   # fallback: first paragraph
-date: 2026-06                                   # fallback: dirname prefix
+date: 2026-06-21                                # YYYY-MM-DD; fallback: dirname
+                                                # prefix. day precision drives
+                                                # the roadmap order + labels
 tags: [dx, cli]                                 # ≤ 4
 status: live                                    # or draft — muted card, kept
                                                 # out of index.json + sitemap
-featured: false                                 # pin to the top of the grid
+featured: false                                 # pin in the landing feed
+                                                # (index.json); the roadmap
+                                                # itself stays chronological
 ---
 ```
 
@@ -50,7 +54,9 @@ featured: false                                 # pin to the top of the grid
 `node build.mjs` (at `<base>`; `--only=<slug>` for a fast partial):
 
 ```
-dist/index.html            the gallery (built from virtual:spec-manifest)
+dist/index.html            the roadmap (a one-column timeline, newest spec
+                           first, month-grouped; built from
+                           virtual:spec-manifest)
 dist/index.json            machine-readable spec list (feeds the iii.dev
                            landing timeline; drafts excluded)
 dist/<slug>/index.html     the deck — or the generic md viewer (_viewer/,

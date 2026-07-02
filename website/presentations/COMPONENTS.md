@@ -25,7 +25,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: deep-dive page wrapper — eyebrow, title, description, prose column
 - props: `{ eyebrow: string; title: string; description: ReactNode; children }`
 - use when: any `#/<slug>` deep-dive page
-- used by: 2026-06-codegen, 2026-06-rbac-proxy-worker
+- used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
 ### PlayerControls
 - kind: layout
@@ -173,7 +173,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A3 — terminal playback with switchable tracks, staggered fade-rise lines
 - props: `{ tracks: CliTrack[]; title?: string; intervalMs?: number; className? }`
 - use when: the spec's win is a command-line flow with variants (langs, modes)
-- used by: 2026-06-codegen, 2026-06-rbac-proxy-worker
+- used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
 ### DurabilityTimeline
 - kind: archetype
@@ -182,7 +182,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - props: `{ stages: TimelineStage[]; heading: string; headingNote?: string; recordHeading: string; intervalMs?; className? }`
 - use when: a durable thing survives crashes/waits and you can show its record at each stage
 - not when: state just accumulates with no record panel (use StepReveal)
-- used by: 2026-06-agentic
+- used by: 2026-06-08-agentic
 
 ### EventFanOut
 - kind: archetype
@@ -191,7 +191,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - props: `{ heading; source; sourceSub?; trigger; handlers: FanOutHandler[]; edges: FanOutEdge[]; footnote?; ariaLabel; … }`
 - use when: narrating a specific reactive write with named handlers, always-on
 - not when: you need an abstract many-to-one/one-to-many with steppable ripples (use FanOut)
-- used by: 2026-06-agentic
+- used by: 2026-06-08-agentic
 
 ### FanOut
 - kind: archetype
@@ -199,7 +199,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A7 — one write fans to many handlers, ripple + marching edges
 - props: `{ source: {label, sub?}; trigger: string; handlers: FanHandler[]; … }`
 - use when: the reactive surface is the claim (subscribe once, everything updates)
-- used by: 2026-06-codegen, 2026-06-rbac-proxy-worker
+- used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
 ### Funnel
 - kind: archetype
@@ -207,7 +207,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A8 — many paths converge on one target (optional rejected path)
 - props: `{ title?: string; paths: FunnelPath[]; target: {label, sub?} }`
 - use when: consolidation claims — N ways in, one enforced way through
-- used by: 2026-06-codegen, 2026-06-rbac-proxy-worker
+- used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
 ### SequencePlayer
 - kind: archetype
@@ -215,7 +215,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A5 — step-through sequence diagram: lifelines per lane, one arrow per step, narration
 - props: `{ title: string; lanes: SeqLane[]; steps: SeqStep[]; width?; intervalMs?; className? }`
 - use when: a temporal protocol, turn loop, handshake, numbered steps
-- used by: 2026-06-agentic, 2026-06-codegen, 2026-06-rbac-proxy-worker
+- used by: 2026-06-08-agentic, 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
 ### SpawnTree
 - kind: archetype
@@ -223,7 +223,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A18 — parent spawns N parallel children, joins their results; steppable narrative states
 - props: `{ heading; chips?; parentTitle; parentLabels; parentCallLine; nodes: SpawnTreeChild[]; states: SpawnTreeState[]; ariaLabel; … }`
 - use when: fan-out/join concurrency with a parked parent is the claim
-- used by: 2026-06-agentic
+- used by: 2026-06-08-agentic
 
 ### StepReveal
 - kind: archetype
@@ -232,7 +232,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - props: `{ title: string; stages: RevealStage[]; intervalMs?; className? }`
 - use when: a linear lifecycle where each stage adds/changes state
 - not when: you need the record-beside-narration density of DurabilityTimeline
-- used by: 2026-06-codegen, 2026-06-rbac-proxy-worker
+- used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
 ### SystemMap
 - kind: archetype
@@ -240,7 +240,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: A4 — interactive node/edge architecture map; click a node → datasheet
 - props: `{ nodes: MapNode[]; edges: MapEdge[]; selected: string; onSelect: (id) => void; width?; }`; `MapDatasheet { info: MapNodeInfo }`
 - use when: the architecture overview slide (nearly every deck's opener)
-- used by: 2026-06-codegen, 2026-06-rbac-proxy-worker (agentic ships a deck-local fork)
+- used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker (agentic ships a deck-local fork)
 
 ## hook
 
@@ -284,7 +284,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - purpose: syntax highlighter (ts/js/rust/python/yaml; monochrome fallback)
 - props: `Highlight { code: string; lang: HlLang }`; mount `HighlightStyles` once per page
 - use when: highlighted code from string data (CodeBlock covers JSX-authored code)
-- used by: all decks (markdown), 2026-06-codegen
+- used by: all decks (markdown), 2026-06-29-codegen
 
 ### markdown
 - kind: util
@@ -323,7 +323,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 ### Gallery
 - kind: gallery
 - import: `import { Gallery } from '@lib/gallery/Gallery'` (gallery app only)
-- purpose: the spec card grid, rendered from `virtual:spec-manifest`
+- purpose: the roadmap timeline — one column, newest first, month markers on a vertical rule, rendered from `virtual:spec-manifest`
 - props: none (reads SPECS)
 - use when: gallery app only
 - used by: gallery
@@ -331,7 +331,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 ### PresentationCard
 - kind: gallery
 - import: `import { PresentationCard } from '@lib/gallery/PresentationCard'`
-- purpose: one spec card — number, deck/spec badge, title, tagline, tags, open →
+- purpose: one spec card — number, deck/spec badge, title, tagline, tags, open → (the date lives in the timeline gutter)
 - props: `{ spec: SpecEntry; index: number }`
 - use when: gallery app only
 - used by: gallery

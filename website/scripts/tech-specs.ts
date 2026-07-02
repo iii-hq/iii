@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url'
 export interface TechSpec {
   slug: string
   title: string
-  /** "YYYY-MM" — frontmatter `date`, falling back to the dirname prefix */
+  /**
+   * "YYYY-MM-DD" (legacy specs may carry month-only "YYYY-MM") — frontmatter
+   * `date`, falling back to the dirname prefix
+   */
   date: string
   status: 'live' | 'draft'
 }
@@ -60,8 +63,8 @@ export async function readTechSpecs(dir = SPECS_DIR): Promise<TechSpec[]> {
       continue // no README — the spec is not listed anywhere
     }
     const fm = parseFrontmatter(raw)
-    const dirDate = slug.match(/^(\d{4}-\d{2})/)?.[1]
-    const date = /^\d{4}-(0[1-9]|1[0-2])$/.test(fm.date ?? '') ? fm.date : dirDate
+    const dirDate = slug.match(/^(\d{4}-\d{2}(?:-\d{2})?)/)?.[1]
+    const date = /^\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12][0-9]|3[01]))?$/.test(fm.date ?? '') ? fm.date : dirDate
     if (!date) continue
     specs.push({
       slug,

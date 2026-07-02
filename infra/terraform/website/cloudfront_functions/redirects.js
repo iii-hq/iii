@@ -64,6 +64,15 @@ function serializeQuerystring(qs) {
 // one store, so cf.kvs() needs no store id.
 var routes = cf.kvs()
 
+// Tech-spec dirs renamed to day-precision slugs (2026-07): the old month-only
+// URLs were already published (sitemap, social links), so 301 them — path
+// suffix and query preserved. Extend this map on any future spec rename.
+var TECH_SPEC_RENAMES = {
+  '2026-06-agentic': '2026-06-08-agentic',
+  '2026-06-rbac-proxy-worker': '2026-06-22-rbac-proxy-worker',
+  '2026-06-codegen': '2026-06-29-codegen',
+}
+
 // biome-ignore lint/correctness/noUnusedVariables: CloudFront Function entry point
 // biome-ignore lint/complexity/useOptionalChain: cloudfront-js-2.0 does NOT support optional chaining
 async function handler(event) {
@@ -86,6 +95,27 @@ async function handler(event) {
   // correctly only under the slash form). Must run before the KVS fallback so
   // /<prefix>/<slug> doesn't 404.
   var redirectHost = host || 'iii.dev'
+
+  // Renamed tech-spec slugs 301 to their new home before the generic
+  // directory handling (which would otherwise rewrite them to a now-missing
+  // <old-slug>/index.html).
+  if (uri.indexOf('/tech-specs/') === 0) {
+    var specRest = uri.substring('/tech-specs/'.length)
+    var specSlash = specRest.indexOf('/')
+    var specSlug = specSlash === -1 ? specRest : specRest.substring(0, specSlash)
+    if (Object.prototype.hasOwnProperty.call(TECH_SPEC_RENAMES, specSlug)) {
+      var specSuffix = specSlash === -1 ? '/' : specRest.substring(specSlash)
+      return redirect(
+        'https://' +
+          redirectHost +
+          '/tech-specs/' +
+          TECH_SPEC_RENAMES[specSlug] +
+          specSuffix +
+          serializeQuerystring(request.querystring),
+      )
+    }
+  }
+
   var DIR_SITES = ['/blog', '/tech-specs']
   for (var d = 0; d < DIR_SITES.length; d++) {
     var prefix = DIR_SITES[d]

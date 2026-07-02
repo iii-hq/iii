@@ -68,7 +68,7 @@ Entry template:
 - props: `{ title: string; lanes: SeqLane[]; steps: SeqStep[] }`
 - use when: the spec has a temporal protocol, a turn loop, a handshake, numbered steps
 - not when: state evolves in place with no message passing (use StepReveal)
-- used by: 2026-06-agentic, 2026-06-codegen
+- used by: 2026-06-08-agentic, 2026-06-29-codegen
 ```
 
 `props` is a compact sketch (the file is the type truth); `use when` speaks
@@ -85,5 +85,5 @@ informative, maintained by the skill when it wires a deck.
   `content/{durability,fanout,spawn}.ts` and threading them as props.
 - **agentic's SystemMap fork** — NOT promoted: 483 lines diverged from the
   shared SystemMap with deck content baked in. It stays at
-  `2026-06-agentic/src/diagrams/SystemMap.tsx`, the canonical props-driven
+  `2026-06-08-agentic/src/diagrams/SystemMap.tsx`, the canonical props-driven
   `@lib` SystemMap serves everyone else.

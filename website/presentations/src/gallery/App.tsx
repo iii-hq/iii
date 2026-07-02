@@ -7,14 +7,17 @@ import { SiteHeader } from './SiteHeader'
 import { SITE } from './site'
 
 function Hero() {
-  const live = SPECS.filter((s) => s.status !== 'draft').length
+  const live = SPECS.filter((s) => s.status !== 'draft')
   const decks = SPECS.filter((s) => s.hasDeck).length
-  const draft = SPECS.length - live
+  const draft = SPECS.length - live.length
+  // the newest shipped spec — the "where the roadmap is right now" stat
+  const latest = [...live].sort((a, b) => b.date.localeCompare(a.date))[0]
 
   const stats = [
     { value: String(SPECS.length), label: SPECS.length === 1 ? 'spec' : 'specs' },
     { value: String(decks), label: 'interactive' },
-    ...(draft > 0 ? [{ value: String(draft), label: 'draft' }] : []),
+    ...(latest ? [{ value: latest.dayLabel ?? latest.month, label: 'latest' }] : []),
+    ...(draft > 0 ? [{ value: String(draft), label: 'in draft' }] : []),
   ]
 
   return (
@@ -48,8 +51,8 @@ export default function App() {
         <SiteHeader />
         <main>
           <Hero />
-          <section id="specs" className="px-4 py-12 @3xl:px-9 @3xl:py-16">
-            <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-ghost mb-6">the specs</div>
+          <section id="roadmap" className="px-4 py-12 @3xl:px-9 @3xl:py-16">
+            <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-ghost mb-8">the roadmap</div>
             <Gallery />
           </section>
         </main>

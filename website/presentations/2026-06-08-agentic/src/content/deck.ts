@@ -25,5 +25,5 @@ export const FOOTER: FooterSpec = {
   headline: 'the loop is one command away.',
   command: 'iii worker add harness',
   attribution: 'agentic workers — architecture overview',
-  source: 'source of truth: tech-specs/2026-06-agentic',
+  source: 'source of truth: tech-specs/2026-06-08-agentic',
 }

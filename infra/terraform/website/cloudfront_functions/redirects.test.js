@@ -331,10 +331,46 @@ test('/tech-specs/index.json → pass through unchanged (the landing-page feed)'
   assert.equal(result.uri, '/tech-specs/index.json')
 })
 
-test('/tech-specs/2026-06-codegen/harness.md → pass through unchanged (raw spec md)', async () => {
-  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/harness.md', 'iii.dev'))
+test('/tech-specs/2026-06-29-codegen/harness.md → pass through unchanged (raw spec md)', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-29-codegen/harness.md', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/tech-specs/2026-06-codegen/harness.md')
+  assert.equal(result.uri, '/tech-specs/2026-06-29-codegen/harness.md')
+})
+
+// ---------------------------------------------------------------------------
+// Renamed tech-spec slugs — the 2026-07 rename to day-precision dirs left the
+// month-only URLs live in the wild (sitemap, social links). They must 301 to
+// the new slug with path suffix and query preserved.
+// ---------------------------------------------------------------------------
+
+test('/tech-specs/2026-06-codegen/ → 301 to /tech-specs/2026-06-29-codegen/', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-29-codegen/')
+})
+
+test('/tech-specs/2026-06-agentic (no slash) → 301 straight to the new slash form', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-agentic', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-08-agentic/')
+})
+
+test('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md → 301 preserves the file suffix', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-22-rbac-proxy-worker/rbac-proxy.md')
+})
+
+test('renamed slug preserves querystring on the 301', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/', 'iii.dev', { utm_source: { value: 'x' } }))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-29-codegen/?utm_source=x')
+})
+
+test('a new-slug URL is NOT rename-redirected (map matches whole segment only)', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-29-codegen/', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/tech-specs/2026-06-29-codegen/index.html')
 })
 
 test('/blog/hello-world/ preserves querystring on rewrite', async () => {

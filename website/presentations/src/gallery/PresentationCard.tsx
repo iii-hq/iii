@@ -2,12 +2,13 @@ import type { SpecEntry } from 'virtual:spec-manifest'
 import { StatusDot } from '@lib/components/schematic/StatusDot'
 
 /**
- * one spec in the index. a plain anchor to `<slug>/` (a real navigation into
- * the built deck — or the markdown viewer when no deck exists). the single
- * accent appears only on hover — border, title, and the "open" arrow.
+ * one spec on the roadmap. a plain anchor to `<slug>/` (a real navigation
+ * into the built deck — or the markdown viewer when no deck exists). the
+ * timeline gutter owns the date, so the card carries only sequence number and
+ * status; the single accent appears only on hover — border, title, arrow.
  */
 export function PresentationCard({ spec, index }: { spec: SpecEntry; index: number }) {
-  const { slug, title, tagline, date, tags, status, hasDeck } = spec
+  const { slug, title, tagline, tags, status, hasDeck } = spec
   const isDraft = status === 'draft'
   const num = String(index + 1).padStart(2, '0')
 
@@ -28,7 +29,6 @@ export function PresentationCard({ spec, index }: { spec: SpecEntry; index: numb
             </span>
           ) : null}
           <span>{hasDeck ? 'interactive deck' : 'spec'}</span>
-          <span>{date}</span>
         </span>
       </div>
 

@@ -84,7 +84,8 @@ Phases are gated. Do not skip Phase 2's approval or Phase 5's verification.
 - The argument is a tech-spec directory: `<repo>/tech-specs/<slug>/` —
   **markdown only** (README.md + domain docs; frontmatter in README.md). If
   given a path elsewhere, resolve into the spec tree or ask.
-- The **slug is the spec directory's basename** (e.g. `2026-06-devexp`). It is
+- The **slug is the spec directory's basename** (e.g. `2026-06-21-devexp` —
+  `YYYY-MM-DD-<name>`; the day prefix orders the roadmap timeline). It is
   the deck directory name AND the URL segment — the pairing contract in
   `reference/hosting.md`. Fix it now and use it everywhere; never prettify it.
 - Resolve the **base project**: read `<repo>/tech-specs/README.md` — the
@@ -154,7 +155,8 @@ user approves it at the same gate.
 
 **Registration:** write or update the YAML frontmatter block at the top of
 `tech-specs/<slug>/README.md` (schema in `reference/hosting.md`): title +
-tagline from the approved hero, `date: YYYY-MM`, 0–4 tags, `status: draft`.
+tagline from the approved hero, `date: YYYY-MM-DD` (day precision — the
+roadmap timeline orders and labels by it), 0–4 tags, `status: draft`.
 There is no central manifest — the build aggregates every spec's frontmatter,
 so this run touches nothing shared. If frontmatter already exists, update only
 the fields this run owns (tagline polish, status).
@@ -164,7 +166,10 @@ dir (never its `node_modules`/`dist`). Fill the identity once: `__REPO__` in
 `package.json`; the `__GALLERY_*__` / `__WORDMARK_LABEL__` / `__HERO_*__` /
 `__ATTRIBUTION__` / `__SITE_HOST__` tokens in `index.html`,
 `src/gallery/site.ts`, and `README.md`; write the `tech-specs/README.md`
-pointer. In a workspace repo, add the base to `pnpm-workspace.yaml` **with
+pointer. The gallery page is a **roadmap**: hero copy in roadmap voice
+(`__HERO_TITLE__` ≈ "what we're working on"; `__HERO_LEAD__` hints at the
+current priority and what already landed, without naming specs), and the spec
+list renders as a one-column timeline, newest first, grouped by month. In a workspace repo, add the base to `pnpm-workspace.yaml` **with
 user confirmation** (a repo-level file). Never touch `build.mjs`,
 `vite.config.ts`, tsconfigs, or `src/` beyond this copy.
 
@@ -223,9 +228,11 @@ from the repo root works too):
   `#/spec` and confirm every markdown file renders (mermaid fences live, no
   raw frontmatter). Zero console errors; no horizontal body scroll at 375px.
 - `pnpm build && pnpm preview`, then `/browse http://localhost:4173/`: the
-  gallery card shows the frontmatter title/tagline/date/tags, and clicking it
-  lands on `/<slug>/`. If the spec previously served the md-only viewer,
-  confirm the deck replaced it at the same URL.
+  spec appears on the roadmap timeline in date order under its month, its
+  card shows the frontmatter title/tagline/tags with the day marker in the
+  timeline gutter, and clicking it lands on `/<slug>/`. If the spec
+  previously served the md-only viewer, confirm the deck replaced it at the
+  same URL.
 - **If anything under `<base>/src/` was touched (a promotion): run the full
   `node build.mjs`** — a shared change must not break sibling decks.
 - Run `reference/quality-bar.md` end to end; fix anything red.
@@ -283,6 +290,6 @@ never re-litigate it in a deck run.
 
 `pnpm type-check` and `node build.mjs --only=<slug>` are green with zero
 registry/frontmatter warnings; `/browse` shows zero console errors, working
-interactions, and a frontmatter-free `#/spec`; the gallery card renders from
-the frontmatter; `reference/quality-bar.md` passes; a promotion ran the full
+interactions, and a frontmatter-free `#/spec`; the roadmap timeline lists the
+spec in date order, its card rendered from the frontmatter; `reference/quality-bar.md` passes; a promotion ran the full
 build (`reference/hosting.md` has the layout this all serves).

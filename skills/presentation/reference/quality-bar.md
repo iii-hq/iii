@@ -17,7 +17,8 @@ requirements. Anything red gets fixed, not noted.
 - [ ] If anything under `<base>/src/` changed, the **full** `node build.mjs`
       passes (a shared change must not break sibling decks).
 - [ ] The frontmatter block validates (title/tagline/date/status; no `slug`
-      key) and the gallery card renders from it.
+      key; date is `YYYY-MM-DD`) and the spec lands on the roadmap timeline
+      in date order, its card rendered from the frontmatter.
 - [ ] `#/spec` renders every spec md file with the frontmatter stripped.
 - [ ] `src/content/example.ts` and the starter example sections/pages were
       deleted or replaced — no placeholder content ships.

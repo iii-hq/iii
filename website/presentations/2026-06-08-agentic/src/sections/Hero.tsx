@@ -30,7 +30,7 @@ export function Hero() {
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-x-16 gap-y-12 px-4 pt-16 pb-14 @3xl:px-9 @3xl:pt-24 @3xl:pb-20">
         <div className="min-w-0">
           <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-6">
-            <Prompt symbol="$">tech-specs / 2026-06-agentic</Prompt>
+            <Prompt symbol="$">tech-specs / 2026-06-08-agentic</Prompt>
           </div>
           <h1 className="font-mono font-semibold lowercase text-ink text-[44px] leading-[1.05] tracking-[-0.02em] @3xl:text-[64px] @3xl:leading-[1.02]">
             five small workers.
