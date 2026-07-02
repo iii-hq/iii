@@ -230,11 +230,10 @@ you gate access on the fields you define.
 
 ## Receive per-invocation metadata
 
-Distinct from the registration metadata above, each invocation can carry its own optional
-`metadata` sidecar: arbitrary JSON that travels as a separate channel from the payload, never
-folded into it. The engine sets it at fire time from a trigger's registered `metadata` (see
-[trigger metadata](../using-iii/triggers#trigger-metadata)), or a caller attaches it directly on
-`trigger({ …, metadata })`. Handlers opt in; existing handlers keep working unchanged.
+Distinct from the registration metadata above, each function can also receive an optional
+`metadata` object that is sent as arbitrary JSON. When a trigger invokes a function it can
+use this `metadata` object to provide trigger or execution context to the receiving function (see
+[trigger metadata](../using-iii/triggers#trigger-metadata)) for more information.
 
 <Tabs>
   <Tab title="Node / TypeScript">

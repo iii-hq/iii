@@ -132,11 +132,15 @@ trigger fires.
 ```
 
 `invocation_id` is omitted on `Void` invocations (the worker has no result channel to reply on).
-`metadata` is optional per-invocation metadata (arbitrary JSON) that travels as a distinct
-channel alongside `data`, never folded into the payload, and is surfaced to the target
-handler as a separate argument. It is set at fire time from a trigger's registered `metadata`
-or attached by an invocation-time caller, and omitted entirely when absent, so peers that
-neither send nor expect it are unaffected. `traceparent` and `baggage` carry W3C trace
+The optional `metadata` field on a trigger registration (`null` / `None` in the examples above)
+is arbitrary JSON stored with the trigger and delivered to the receiving function as a
+distinct argument alongside the payload. It is useful for providing contextual information about
+the trigger or execution context to the receiving function. A target function shared by many
+triggers can use it to recover which registration fired and with what context.
+
+`metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations.
+
+`traceparent` and `baggage` contain W3C trace
 context. `action` is the routing flag (see [Trigger actions](#trigger-actions) below);
 absent / `null` means synchronous.
 

@@ -18,8 +18,7 @@ pub enum TriggerAction {
     Void,
 }
 
-/// Request object for `trigger()`. Matches the previous Rust SDK shape:
-/// `trigger({ function_id, payload, action?, timeout_ms? })`
+/// Request object for `trigger()`.
 ///
 /// ```rust
 /// # use iii_sdk::protocol::{TriggerRequest, TriggerAction};

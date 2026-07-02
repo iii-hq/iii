@@ -71,7 +71,7 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
 #### Example
 
 ```rust
-let trigger = iii.register_trigger(RegisterTriggerInput {
+let trigger = worker.register_trigger(RegisterTriggerInput {
     trigger_type: "http".to_string(),
     function_id: "greet".to_string(),
     config: json!({ "api_path": "/greet", "http_method": "GET" }),
@@ -149,7 +149,7 @@ async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, E
 
 ```rust
 // Synchronous
-let result = iii.trigger(TriggerRequest {
+let result = worker.trigger(TriggerRequest {
     function_id: "greet".to_string(),
     payload: json!({"name": "World"}),
     action: None,
@@ -157,7 +157,7 @@ let result = iii.trigger(TriggerRequest {
 }).await?;
 
 // Fire-and-forget
-iii.trigger(TriggerRequest {
+worker.trigger(TriggerRequest {
     function_id: "notify".to_string(),
     payload: json!({}),
     action: Some(TriggerAction::Void),
@@ -165,7 +165,7 @@ iii.trigger(TriggerRequest {
 }).await?;
 
 // Enqueue
-let receipt = iii.trigger(TriggerRequest {
+let receipt = worker.trigger(TriggerRequest {
     function_id: "iii::durable::publish".to_string(),
     payload: json!({"topic": "test"}),
     action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),
@@ -173,7 +173,7 @@ let receipt = iii.trigger(TriggerRequest {
 }).await?;
 
 // Metadata
-iii.trigger(
+worker.trigger(
     TriggerRequest {
         function_id: "audit::write".to_string(),
         payload: json!({"event": "checkout"}),
@@ -206,7 +206,7 @@ register_trigger_type(trigger_type: RegisterTriggerType<H, C, R>) -> TriggerType
 #### Example
 
 ```rust
-let my_trigger = iii.register_trigger_type(
+let my_trigger = worker.register_trigger_type(
     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
         .trigger_request_format::<MyConfig>()
         .call_request_format::<MyRequest>(),
@@ -669,8 +669,7 @@ the invocation.
 
 #### TriggerRequest
 
-Request object for `trigger()`. Matches the previous Rust SDK shape:
-`trigger({ function_id, payload, action?, timeout_ms? })`
+Request object for `trigger()`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |

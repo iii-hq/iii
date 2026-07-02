@@ -1058,8 +1058,8 @@ impl IIIClient {
     /// # }
     /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
     /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
-    /// # let iii = IIIClient::new("ws://localhost:49134");
-    /// let my_trigger = iii.register_trigger_type(
+    /// # let worker = IIIClient::new("ws://localhost:49134");
+    /// let my_trigger = worker.register_trigger_type(
     ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
     ///         .trigger_request_format::<MyConfig>()
     ///         .call_request_format::<MyRequest>(),
@@ -1122,8 +1122,8 @@ impl IIIClient {
     /// # use iii_sdk::IIIClient;
     /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
-    /// # let iii = IIIClient::new("ws://localhost:49134");
-    /// let trigger = iii.register_trigger(RegisterTriggerInput {
+    /// # let worker = IIIClient::new("ws://localhost:49134");
+    /// let trigger = worker.register_trigger(RegisterTriggerInput {
     ///     trigger_type: "http".to_string(),
     ///     function_id: "greet".to_string(),
     ///     config: json!({ "api_path": "/greet", "http_method": "GET" }),
@@ -1176,9 +1176,9 @@ impl IIIClient {
     /// # use iii_sdk::{IIIClient, TriggerAction};
     /// # use iii_sdk::protocol::TriggerRequest;
     /// # use serde_json::json;
-    /// # async fn example(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
+    /// # async fn example(worker: &IIIClient) -> Result<(), iii_sdk::Error> {
     /// // Synchronous
-    /// let result = iii.trigger(TriggerRequest {
+    /// let result = worker.trigger(TriggerRequest {
     ///     function_id: "greet".to_string(),
     ///     payload: json!({"name": "World"}),
     ///     action: None,
@@ -1186,7 +1186,7 @@ impl IIIClient {
     /// }).await?;
     ///
     /// // Fire-and-forget
-    /// iii.trigger(TriggerRequest {
+    /// worker.trigger(TriggerRequest {
     ///     function_id: "notify".to_string(),
     ///     payload: json!({}),
     ///     action: Some(TriggerAction::Void),
@@ -1194,7 +1194,7 @@ impl IIIClient {
     /// }).await?;
     ///
     /// // Enqueue
-    /// let receipt = iii.trigger(TriggerRequest {
+    /// let receipt = worker.trigger(TriggerRequest {
     ///     function_id: "iii::durable::publish".to_string(),
     ///     payload: json!({"topic": "test"}),
     ///     action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),
@@ -1202,7 +1202,7 @@ impl IIIClient {
     /// }).await?;
     ///
     /// // Metadata
-    /// iii.trigger(
+    /// worker.trigger(
     ///     TriggerRequest {
     ///         function_id: "audit::write".to_string(),
     ///         payload: json!({"event": "checkout"}),
