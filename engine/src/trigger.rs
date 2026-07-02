@@ -334,6 +334,10 @@ impl TriggerRegistry {
     /// double-unregister as a no-op. On a registrator error the registry entry
     /// is left in place (registry and registrator stay consistent) and the
     /// error is propagated. Returns `Ok(true)` when a trigger was removed.
+    ///
+    /// Only the exact snapshot that was unregistered is removed: if another
+    /// task re-registers the same id while the registrator call is awaited,
+    /// the newer trigger is preserved and `Ok(false)` is returned.
     pub async fn unregister_trigger(
         &self,
         id: String,
@@ -355,9 +359,17 @@ impl TriggerRegistry {
             tt.registrator.unregister_trigger(trigger.clone()).await?;
         }
 
-        self.triggers.remove(&id);
+        // Compare snapshot fields rather than `Trigger` equality, which is
+        // pinned to id only and would match any same-id replacement.
+        let removed = self.triggers.remove_if(&id, |_, current| {
+            current.trigger_type == trigger.trigger_type
+                && current.function_id == trigger.function_id
+                && current.config == trigger.config
+                && current.worker_id == trigger.worker_id
+                && current.metadata == trigger.metadata
+        });
 
-        Ok(true)
+        Ok(removed.is_some())
     }
 }
 
@@ -446,6 +458,33 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
             self.unregister_count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A registrator whose `unregister_trigger` parks until released, letting
+    /// tests interleave other registry operations mid-unregister.
+    struct BlockingRegistrator {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    impl TriggerRegistrator for Arc<BlockingRegistrator> {
+        fn register_trigger(
+            &self,
+            _trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn unregister_trigger(
+            &self,
+            _trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(())
+            })
         }
     }
 
@@ -585,6 +624,56 @@ mod tests {
             .await;
         // Idempotent: unregistering an unknown id is a no-op, not an error.
         assert!(matches!(result, Ok(false)));
+    }
+
+    /// A trigger re-registered under the same id while `unregister_trigger`
+    /// awaits the registrator must survive: the unregister may only remove
+    /// the exact snapshot it unregistered, not whatever holds the id by the
+    /// time the await completes.
+    #[tokio::test]
+    async fn test_unregister_trigger_keeps_newer_registration_with_same_id() {
+        let registry = Arc::new(TriggerRegistry::new());
+        let registrator = Arc::new(BlockingRegistrator {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        registry
+            .register_trigger_type(TriggerType::new(
+                "cron",
+                "Cron",
+                Box::new(Arc::clone(&registrator)),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let mut old = make_trigger("t1", "cron");
+        old.config = serde_json::json!({ "gen": 1 });
+        registry.register_trigger(old).await.unwrap();
+
+        let reg = Arc::clone(&registry);
+        let unregister = tokio::spawn(async move {
+            reg.unregister_trigger("t1".to_string(), Some("cron".to_string()))
+                .await
+        });
+
+        // Wait until the unregister has snapshotted gen-1 and parked in the
+        // registrator, then re-register the same id with a newer config.
+        registrator.entered.notified().await;
+        let mut newer = make_trigger("t1", "cron");
+        newer.config = serde_json::json!({ "gen": 2 });
+        registry.register_trigger(newer).await.unwrap();
+
+        registrator.release.notify_one();
+        let result = unregister.await.unwrap();
+
+        // Nothing was removed from the registry: the id belongs to gen-2 now.
+        assert!(matches!(result, Ok(false)));
+        let current = registry
+            .triggers
+            .get("t1")
+            .expect("newer trigger must survive the stale unregister");
+        assert_eq!(current.config, serde_json::json!({ "gen": 2 }));
     }
 
     #[tokio::test]

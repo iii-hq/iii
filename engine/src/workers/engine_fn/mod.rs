@@ -1433,6 +1433,18 @@ impl EngineFunctionsWorker {
             .as_deref()
             .and_then(|w| uuid::Uuid::parse_str(w).ok());
 
+        // Prefix parity with the `Message::RegisterTrigger` path: a prefixed
+        // session's functions are stored under `prefix::id`, so the trigger
+        // must bind to the prefixed target or firing would miss the real
+        // function.
+        let mut function_id = input.function_id;
+        if let Some(prefix) = session
+            .as_ref()
+            .and_then(|s| s.function_registration_prefix.as_ref())
+        {
+            function_id = format!("{prefix}::{function_id}");
+        }
+
         // Bind the trigger straight to the target function. `metadata` rides on
         // the `Trigger` and is delivered to the handler as a distinct argument
         // at fire time (see the trigger-fire paths) — no proxy function, so
@@ -1440,7 +1452,7 @@ impl EngineFunctionsWorker {
         let trigger = Trigger {
             id: id.clone(),
             trigger_type: input.trigger_type,
-            function_id: input.function_id,
+            function_id,
             config: input.config,
             worker_id,
             metadata: input.metadata,
@@ -3318,6 +3330,67 @@ mod tests {
             FunctionResult::Success(r) => assert!(!r.removed),
             _ => panic!("expected idempotent unregister success"),
         }
+    }
+
+    /// Builds a session whose `function_registration_prefix` is set, mirroring
+    /// the message-path prefix tests in `engine::mod`.
+    fn session_with_prefix(
+        engine: Arc<Engine>,
+        prefix: &str,
+    ) -> Arc<crate::workers::worker::rbac_session::Session> {
+        use crate::workers::worker::{WorkerManagerConfig, rbac_session::Session};
+        Arc::new(Session {
+            engine,
+            config: Arc::new(WorkerManagerConfig::default()),
+            ip_address: "127.0.0.1".to_string(),
+            session_id: uuid::Uuid::new_v4(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![],
+            allowed_trigger_types: None,
+            allow_function_registration: true,
+            allow_trigger_type_registration: true,
+            context: serde_json::json!({}),
+            function_registration_prefix: Some(prefix.to_string()),
+        })
+    }
+
+    /// A prefixed session registers its functions under `prefix::id`, so a
+    /// trigger bound via `engine::register_trigger` must target the prefixed
+    /// function — parity with the `Message::RegisterTrigger` path. Before the
+    /// fix the raw id was stored and firing missed the real function.
+    #[tokio::test]
+    async fn register_trigger_fn_applies_session_function_prefix() {
+        let (engine, module) = setup_engine_and_module();
+        register_test_trigger_type(&engine, &module).await;
+        register_simple_function(&engine, "pfx::test::target", None);
+
+        let session = session_with_prefix(engine.clone(), "pfx");
+        let id = match module
+            .register_trigger_fn(
+                RegisterTriggerInput {
+                    trigger_type: "test-type".to_string(),
+                    function_id: "test::target".to_string(),
+                    config: serde_json::json!({}),
+                    metadata: None,
+                    caller_worker_id: None,
+                },
+                Some(session),
+            )
+            .await
+        {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected register success"),
+        };
+
+        let trig = engine
+            .trigger_registry
+            .triggers
+            .get(&id)
+            .expect("trigger registered");
+        assert_eq!(
+            trig.function_id, "pfx::test::target",
+            "trigger must bind to the session-prefixed function id"
+        );
     }
 
     #[tokio::test]
