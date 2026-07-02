@@ -186,6 +186,29 @@ impl WorkerConnectionRegistry {
                 .record(count, &[KeyValue::new("status", st.as_str())]);
         }
     }
+
+    /// Removes an orphaned invocation id from whichever worker's in-flight set
+    /// holds it. Used by the dispatch-timeout path, which abandons an
+    /// invocation without knowing its worker binding (the `Invocation` is
+    /// created with `worker_id: None`; routing happens deeper, in
+    /// `WorkerConnection::handle_function`). Without this, a timed-out
+    /// dispatch to a worker that never replies leaves its id in
+    /// `WorkerConnection::invocations` until disconnect, inflating
+    /// `invocation_count()`. Cold path — a linear scan over workers is fine.
+    pub async fn remove_invocation_from_workers(&self, invocation_id: &Uuid) {
+        // Snapshot the per-worker set handles first so no DashMap shard guard
+        // is held across an await.
+        let sets: Vec<_> = self
+            .workers
+            .iter()
+            .map(|w| w.value().invocations.clone())
+            .collect();
+        for set in sets {
+            if set.write().await.remove(invocation_id) {
+                return;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]

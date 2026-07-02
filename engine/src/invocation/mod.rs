@@ -148,7 +148,7 @@ impl InvocationHandler {
 
         let invocation_fut = async {
             let (sender, receiver) = tokio::sync::oneshot::channel();
-            let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
+            let invocation_id = invocation_id.unwrap_or_else(Uuid::new_v4);
             let invocation = Invocation {
                 id: invocation_id,
                 function_id: function_id.clone(),

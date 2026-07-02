@@ -61,6 +61,6 @@ iii.registerTrigger({
 })
 ```
 
-Per-queue tuning (in `queue_configs` or `queue_config`): `max_retries` (default `3`), `concurrency` (default `10`; FIFO forces `1`), `type` (`standard` | `fifo`), `message_group_field` (required for `fifo`), `backoff_ms` (default `1000`, exponential), `poll_interval_ms` (default `100`).
+Per-queue tuning (in `queue_configs` or `queue_config`): `max_retries` (default `3`), `concurrency` (default `10`; FIFO forces `1`), `type` (`standard` | `fifo`), `message_group_field` (required for `fifo`), `backoff_ms` (default `1000`, exponential), `poll_interval_ms` (default `100`), `dispatch_timeout_ms` (optional; nacks a dispatched-but-uncompleted job back through retry→DLQ instead of leaving it in-flight until the broker timeout — does not cancel worker-side work, so bounded handlers must be idempotent).
 
 For the message payload shape, call `iii get function info` on the trigger type or handler function id.
