@@ -247,7 +247,7 @@ The `iii-sdk` package provides additional entry points:
 | `iii-sdk/engine` | `EngineFunctions`, `EngineTriggers`, `RemoteFunctionHandler` |
 | `iii-sdk/errors` | `InvocationError`, `InvocationErrorInit`, `isErrorBody` |
 | `iii-sdk/helpers` | `ChannelDirection`, `ChannelItem`, `createChannel`, `createStream`, `extractChannelRefs`, `isChannelRef` |
-| `iii-sdk` | `EnqueueResult`, `IIIClient`, `InitOptions`, `MiddlewareFunctionInput`, `StreamRequest`, `StreamResponse`, `TelemetryOptions`, `TriggerAction`, `registerWorker` |
+| `iii-sdk` | `EnqueueResult`, `IIIClient`, `InitOptions`, `JsonValue`, `MiddlewareFunctionInput`, `StreamRequest`, `StreamResponse`, `TelemetryOptions`, `TriggerAction`, `registerWorker` |
 | `iii-sdk/internal` | `InternalHttpRequest` |
 | `iii-sdk/protocol` | `ErrorBody`, `MessageType`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerMessage`, `RegisterTriggerTypeInput`, `RegisterTriggerTypeMessage`, etc. |
 | `iii-sdk/runtime` | `FunctionRef`, `IIIConnectionState`, `TriggerTypeRef` |
@@ -259,7 +259,7 @@ The `iii-sdk` package provides additional entry points:
 
 ### iii-sdk
 
-[`EnqueueResult`](#enqueueresult) · [`InitOptions`](#initoptions) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse) · [`TelemetryOptions`](#telemetryoptions)
+[`EnqueueResult`](#enqueueresult) · [`InitOptions`](#initoptions) · [`JsonValue`](#jsonvalue) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse) · [`TelemetryOptions`](#telemetryoptions)
 
 #### EnqueueResult
 
@@ -282,6 +282,16 @@ Configuration options passed to registerWorker.
 | `reconnectionConfig` | `Partial<IIIReconnectionConfig>` | No | WebSocket reconnection behavior. |
 | `workerDescription` | `string` | No | One-line, human/LLM-readable summary of what this worker does.<br />Surfaces in `engine::workers::list` / `engine::workers::info`. |
 | `workerName` | `string` | No | Display name for this worker. Defaults to `hostname:pid`. |
+
+#### JsonValue
+
+Any JSON value: the TypeScript equivalent of the engine's arbitrary-JSON
+wire values (Rust `serde_json::Value`). Used where the wire contract is
+"any JSON", e.g. per-invocation `metadata`.
+
+```typescript
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+```
 
 #### MiddlewareFunctionInput
 
@@ -388,7 +398,7 @@ payload. It is `undefined` when the caller did not attach any. Existing
 single-argument handlers keep working -- they ignore the extra argument.
 
 ```typescript
-type RemoteFunctionHandler = (data: TInput, metadata: unknown) => Promise<TOutput>
+type RemoteFunctionHandler = (data: TInput, metadata?: JsonValue) => Promise<TOutput>
 ```
 
 ### iii-sdk/errors
