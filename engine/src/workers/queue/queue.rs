@@ -838,6 +838,12 @@ impl QueueWorker {
             config.concurrency
         };
         let max_retries = config.max_retries;
+        // Per-invocation dispatch deadline. When set, a dispatched invocation
+        // that does not complete in time is nacked back through retry→DLQ
+        // instead of wedging the broker message until its own consumer timeout.
+        let dispatch_timeout = config
+            .dispatch_timeout_ms
+            .map(std::time::Duration::from_millis);
         let mut receiver = adapter.consume_function_queue(name, prefetch).await?;
 
         let engine = self.engine.clone();
@@ -883,11 +889,14 @@ impl QueueWorker {
                         baggage.as_deref(),
                     );
 
-                    let result =
-                        AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
-                            .catch_unwind()
-                            .instrument(span)
-                            .await;
+                    let result = AssertUnwindSafe(async {
+                        engine
+                            .call_with_timeout(&function_id, msg.data, dispatch_timeout, None)
+                            .await
+                    })
+                    .catch_unwind()
+                    .instrument(span)
+                    .await;
 
                     match result {
                         Ok(Ok(_)) => {

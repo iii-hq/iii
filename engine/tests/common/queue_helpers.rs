@@ -347,6 +347,35 @@ pub fn register_panicking_function(
         .register_function(function_id.to_string(), function);
 }
 
+/// Registers a test function whose invocation never completes: it records the
+/// invocation in `call_count`, then awaits `std::future::pending()` forever.
+/// Simulates a lost/wedged dispatch that only a per-invocation dispatch
+/// timeout can recover.
+pub fn register_wedging_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    call_count: Arc<AtomicU64>,
+) {
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
+            let count = call_count.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<FunctionResult<Option<Value>, iii::protocol::ErrorBody>>()
+                    .await
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("never-completing test handler".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+}
+
 /// Calls `engine.call("iii::durable::publish", ...)` with a topic and data payload,
 /// mapping the result to `anyhow::Result<()>`.
 pub async fn enqueue_to_topic(engine: &Engine, topic: &str, data: Value) -> anyhow::Result<()> {

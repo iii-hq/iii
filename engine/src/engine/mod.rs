@@ -1818,6 +1818,115 @@ impl Engine {
             .remove_if(function_id, |_, owner| owner == worker_id)
             .is_some()
     }
+
+    /// Like [`EngineTrait::call`], but bounds how long the caller waits for the
+    /// invocation to complete.
+    ///
+    /// When `timeout` is `Some`, a dispatch that does not complete within the
+    /// deadline is abandoned: the pending (worker-routed) invocation is evicted
+    /// from the invocations map AND from the owning worker's in-flight set —
+    /// so a lost or never-returning worker cannot leak either entry — and a
+    /// `dispatch_timeout` error is returned. `None` preserves the unbounded
+    /// behaviour of [`EngineTrait::call`], which simply delegates here.
+    ///
+    /// The timeout does NOT cancel work already running on a worker (the WS
+    /// protocol has no cancel message): the worker keeps executing and its
+    /// eventual result is discarded, while the caller may retry the message.
+    /// In-process handlers, by contrast, ARE drop-cancelled at their next
+    /// await point. Either way, handlers invoked under a timeout must be
+    /// idempotent.
+    ///
+    /// The fn-queue consumer passes the queue's `dispatch_timeout_ms` so a lost
+    /// engine→worker dispatch is nacked back through the normal retry→DLQ path
+    /// instead of wedging the underlying broker message (RabbitMQ leaves it
+    /// `unacked` until its server-side `consumer_timeout`, ~30 min by default).
+    pub async fn call_with_timeout(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+        timeout: Option<std::time::Duration>,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, ErrorBody> {
+        let input = serde_json::to_value(input).map_err(|e| ErrorBody {
+            code: "serialization_error".into(),
+            message: e.to_string(),
+            stacktrace: None,
+        })?;
+
+        let Some(function) = self.functions.get(function_id) else {
+            return Err(ErrorBody {
+                code: "function_not_found".into(),
+                message: format!("Function {} not found", function_id),
+                stacktrace: None,
+            });
+        };
+
+        // Inject current trace context and baggage to link spans as parent-child
+        // Use the tracing span's context directly to ensure proper propagation in async code
+        let ctx = tracing::Span::current().context();
+        let traceparent = inject_traceparent_from_context(&ctx);
+        let baggage = inject_baggage_from_context(&ctx);
+
+        // Generate the invocation id up front so a timeout can evict the
+        // deferred (worker-routed) invocation from the map by id.
+        let invocation_id = Uuid::new_v4();
+        let invocation_fut = self.invocations.handle_invocation(
+            Some(invocation_id),
+            None,
+            function_id.to_string(),
+            input,
+            function,
+            traceparent,
+            baggage,
+            None,
+            metadata,
+        );
+
+        let result = match timeout {
+            Some(duration) => match tokio::time::timeout(duration, invocation_fut).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    // Deadline hit before the handler returned. Evict any
+                    // deferred invocation so a late (or never-arriving) worker
+                    // result cannot leak the map entry, then surface a failure
+                    // so callers route the message back through retry/DLQ.
+                    // A worker-routed dispatch is tracked in TWO places: the
+                    // engine-global map (evicted here) and the owning
+                    // worker's in-flight set (cleaned below) — the normal
+                    // completion path reconciles both, so must this one.
+                    self.invocations.remove(&invocation_id);
+                    self.worker_registry
+                        .remove_invocation_from_workers(&invocation_id)
+                        .await;
+                    tracing::warn!(
+                        function_id = %function_id,
+                        invocation_id = %invocation_id,
+                        timeout_ms = %duration.as_millis(),
+                        "Invocation exceeded dispatch timeout; abandoning dispatch"
+                    );
+                    return Err(ErrorBody {
+                        code: "dispatch_timeout".into(),
+                        message: format!(
+                            "invocation for '{}' exceeded dispatch timeout of {}ms",
+                            function_id,
+                            duration.as_millis()
+                        ),
+                        stacktrace: None,
+                    });
+                }
+            },
+            None => invocation_fut.await,
+        };
+
+        match result {
+            Ok(result) => result,
+            Err(err) => Err(ErrorBody {
+                code: "invocation_error".into(),
+                message: err.to_string(),
+                stacktrace: None,
+            }),
+        }
+    }
 }
 
 impl EngineTrait for Engine {
@@ -1833,50 +1942,10 @@ impl EngineTrait for Engine {
         input: impl Serialize + Send,
         metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody> {
-        let input = serde_json::to_value(input).map_err(|e| ErrorBody {
-            code: "serialization_error".into(),
-            message: e.to_string(),
-            stacktrace: None,
-        })?;
-        let function_opt = self.functions.get(function_id);
-
-        if let Some(function) = function_opt {
-            // Inject current trace context and baggage to link spans as parent-child
-            // Use the tracing span's context directly to ensure proper propagation in async code
-            let ctx = tracing::Span::current().context();
-            let traceparent = inject_traceparent_from_context(&ctx);
-            let baggage = inject_baggage_from_context(&ctx);
-
-            let result = self
-                .invocations
-                .handle_invocation(
-                    None,
-                    None,
-                    function_id.to_string(),
-                    input,
-                    function,
-                    traceparent,
-                    baggage,
-                    None,
-                    metadata,
-                )
-                .await;
-
-            match result {
-                Ok(result) => result,
-                Err(err) => Err(ErrorBody {
-                    code: "invocation_error".into(),
-                    message: err.to_string(),
-                    stacktrace: None,
-                }),
-            }
-        } else {
-            Err(ErrorBody {
-                code: "function_not_found".into(),
-                message: format!("Function {} not found", function_id),
-                stacktrace: None,
-            })
-        }
+        // Unbounded call: no dispatch deadline. See `Engine::call_with_timeout`
+        // for the bounded variant used by the fn-queue consumer.
+        self.call_with_timeout(function_id, input, None, metadata)
+            .await
     }
 
     async fn register_trigger_type(&self, trigger_type: TriggerType) {
@@ -2827,6 +2896,140 @@ mod tests {
 
         let sent = engine.send_msg(&worker, Message::Ping).await;
         assert!(!sent, "send_msg should return false on closed channels");
+    }
+
+    #[tokio::test]
+    async fn call_with_timeout_evicts_deferred_invocation_on_elapse() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // A handler that behaves like a worker-routed dispatch: it returns
+        // `Deferred` (so the invocation is parked in the map awaiting a result
+        // that never comes) and records the invocation id it was handed.
+        let seen_id: Arc<std::sync::Mutex<Option<uuid::Uuid>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let seen = seen_id.clone();
+        let function = crate::function::Function {
+            handler: Arc::new(
+                move |invocation_id: Option<uuid::Uuid>, _input, _session, _metadata| {
+                    let seen = seen.clone();
+                    Box::pin(async move {
+                        if let Some(id) = invocation_id {
+                            *seen.lock().unwrap() = Some(id);
+                        }
+                        FunctionResult::Deferred
+                    })
+                },
+            ),
+            _function_id: "test::deferred".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function("test::deferred".to_string(), function);
+
+        let result = engine
+            .call_with_timeout(
+                "test::deferred",
+                json!({}),
+                Some(Duration::from_millis(50)),
+                None,
+            )
+            .await;
+
+        let err = result.expect_err("a deferred invocation with no result must time out");
+        assert_eq!(err.code, "dispatch_timeout");
+
+        let id = seen_id
+            .lock()
+            .unwrap()
+            .expect("handler should have run and recorded its invocation id");
+        // The timeout path must have evicted the parked invocation from the map;
+        // a second remove therefore finds nothing.
+        assert!(
+            engine.invocations.remove(&id).is_none(),
+            "timed-out deferred invocation must be evicted from the invocations map"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_with_timeout_cleans_worker_in_flight_set_on_elapse() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        // Keep the receiver alive so the InvokeFunction send succeeds and the
+        // handler returns Deferred (a closed channel fails the dispatch).
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        // Register the function via the worker so invocations route to it
+        // over the channel and land in the worker's in-flight set.
+        let register_msg = Message::RegisterFunction {
+            id: "wedged::worker_fn".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine
+            .router_msg(&worker, &register_msg)
+            .await
+            .expect("register function should succeed");
+
+        let result = engine
+            .call_with_timeout(
+                "wedged::worker_fn",
+                json!({}),
+                Some(Duration::from_millis(50)),
+                None,
+            )
+            .await;
+        assert_eq!(
+            result.expect_err("dispatch must time out").code,
+            "dispatch_timeout"
+        );
+
+        // Both tracking structures must be reconciled on timeout: the engine
+        // map (covered above) AND the owning worker's in-flight set — a lost
+        // dispatch must not inflate `active_invocations` until disconnect.
+        assert!(
+            worker.invocations.read().await.is_empty(),
+            "timed-out invocation must be removed from the worker's in-flight set"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_with_timeout_none_does_not_bound_a_completing_handler() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let function = crate::function::Function {
+            handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: "test::slow".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function("test::slow".to_string(), function);
+
+        let result = engine
+            .call_with_timeout("test::slow", json!({}), None, None)
+            .await;
+        assert!(
+            result.is_ok(),
+            "an unset timeout must not bound a completing handler: {result:?}"
+        );
     }
 
     #[tokio::test]
