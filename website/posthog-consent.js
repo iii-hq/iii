@@ -69,6 +69,36 @@
     });
   };
 
+  // Records a successful email-form submission in PostHog. We identify() the
+  // person by their email (the cross-system key Common Room also de-anonymizes
+  // on), which creates the PostHog person profile under
+  // person_profiles: 'identified_only'. Where Common Room's signals-sdk-user-id
+  // cookie is already present we attach its visitor id too, so the two systems
+  // can be joined per visitor; if it isn't set yet we just record without it.
+  function iiiReadCommonRoomId() {
+    var match = document.cookie.match(/(?:^|;\s*)signals-sdk-user-id=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  window.iiiNotifyPostHogEmailSubmit = function (email, formLocation) {
+    try {
+      if (localStorage.getItem(STORAGE_KEY) !== 'accepted') return;
+      if (!window.posthog || typeof window.posthog.capture !== 'function') return;
+      var crId = iiiReadCommonRoomId();
+      var distinctId = email || crId;
+      if (distinctId) {
+        var personProps = {};
+        if (email) personProps.email = email;
+        if (crId) personProps.common_room_user_id = crId;
+        window.posthog.identify(distinctId, personProps);
+      }
+      var props = { form_location: formLocation || 'unknown' };
+      if (email) props.email = email;
+      if (crId) props.common_room_user_id = crId;
+      window.posthog.capture('website_email_submit', props);
+    } catch (_) {}
+  };
+
   try {
     if (localStorage.getItem(STORAGE_KEY) === 'accepted') window.iiiLoadPostHog();
   } catch (_) {}
