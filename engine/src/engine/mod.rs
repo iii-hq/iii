@@ -609,6 +609,18 @@ impl Engine {
             } => {
                 tracing::debug!(id = %id, trigger_type = %trigger_type, function_id = %function_id, error = ?error, "TriggerRegistrationResult");
 
+                // Synchronous-ack path: a function-path registration is
+                // awaiting this result inside the registrator proxy (see
+                // `TriggerRegistrator for WorkerConnection`), and the trigger
+                // is NOT in the registry yet — insertion happens only after
+                // the ack. The pending map lives on the acking worker's own
+                // connection, so another worker cannot spoof a result (its
+                // map has no entry for this id).
+                if let Some((_, tx)) = worker.pending_trigger_acks.remove(id) {
+                    let _ = tx.send(error.clone());
+                    return Ok(());
+                }
+
                 let Some(trigger_entry) = self.trigger_registry.triggers.get(id) else {
                     tracing::debug!(
                         trigger_id = %id,
@@ -1868,14 +1880,25 @@ impl EngineTrait for Engine {
     }
 
     async fn register_trigger_type(&self, trigger_type: TriggerType) {
-        let trigger_type_id = &trigger_type.id;
+        // Re-registration is a REPLACE, never a skip: a reloaded in-process
+        // worker re-runs `initialize()` (reload.rs) and a reconnected SDK
+        // worker replays its trigger types, and each must swap in its LIVE
+        // registrator — the registry then re-delivers the type's existing
+        // registrations to it. Keeping the old registrator strands new (and
+        // replayed) bindings on a destroyed instance or dead connection:
+        // `engine::register_trigger` succeeds but the binding lands where the
+        // live fire path never reads, so it "lands but never fires". This
+        // matches the WS `Message::RegisterTriggerType` path, which has always
+        // replaced.
         if self
             .trigger_registry
             .trigger_types
-            .contains_key(trigger_type_id)
+            .contains_key(&trigger_type.id)
         {
-            tracing::warn!(trigger_type_id = %trigger_type_id, "Trigger type already registered");
-            return;
+            tracing::info!(
+                trigger_type_id = %trigger_type.id,
+                "Trigger type re-registered; replacing registrator and re-delivering its registrations"
+            );
         }
 
         let _ = self
@@ -2854,7 +2877,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_trigger_type_duplicate_is_noop() {
+    async fn test_register_trigger_type_duplicate_replaces() {
+        // Re-registration must REPLACE the type (registrator included): a
+        // reloaded in-process worker or a reconnected SDK worker re-registers
+        // its types, and keeping the old registrator would strand new bindings
+        // on a destroyed instance / dead connection ("lands but never fires").
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
@@ -2883,7 +2910,7 @@ mod tests {
             .trigger_types
             .get("duplicate")
             .expect("trigger type should remain registered");
-        assert_eq!(trigger_type._description, "first");
+        assert_eq!(trigger_type._description, "second");
     }
 
     #[tokio::test]
