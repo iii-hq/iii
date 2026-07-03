@@ -462,6 +462,23 @@ impl EngineFunctionsWorker {
             .any(|h| h.to_lowercase().contains(&lowered))
     }
 
+    /// Rank a search hit by match quality: 0 = the needle anchors the id (a
+    /// `::` segment equals it, or the id starts with it), 1 = the needle is a
+    /// substring of the id, 2 = it only matched the description. Sorting by
+    /// this keeps `state::*` above functions that merely mention "state" in
+    /// their description — models read search results top-down, and pure
+    /// alphabetical order buried the relevant hits under incidental ones.
+    fn search_rank(function_id: &str, needle_lowered: &str) -> u8 {
+        let id = function_id.to_lowercase();
+        if id.starts_with(needle_lowered) || id.split("::").any(|seg| seg == needle_lowered) {
+            0
+        } else if id.contains(needle_lowered) {
+            1
+        } else {
+            2
+        }
+    }
+
     fn config_summary(config: &Value) -> String {
         let raw = serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string());
         if raw.chars().count() <= CONFIG_SUMMARY_MAX_LEN {
@@ -1169,7 +1186,21 @@ impl EngineFunctionsWorker {
             });
         }
 
-        functions.sort_by(|a, b| a.function_id.cmp(&b.function_id));
+        match input.search.as_deref().filter(|s| !s.is_empty()) {
+            // Rank by match quality so id-anchored hits (`state::get`) sort
+            // above functions that merely mention the needle in their
+            // description; alphabetical within a tier.
+            Some(search) => {
+                let needle = search.to_lowercase();
+                functions.sort_by_cached_key(|f| {
+                    (
+                        Self::search_rank(&f.function_id, &needle),
+                        f.function_id.clone(),
+                    )
+                });
+            }
+            None => functions.sort_by(|a, b| a.function_id.cmp(&b.function_id)),
+        }
 
         FunctionResult::Success(FunctionsListResult { functions })
     }
@@ -1428,11 +1459,6 @@ impl EngineFunctionsWorker {
 
         let id = uuid::Uuid::new_v4().to_string();
 
-        let worker_id = input
-            .caller_worker_id
-            .as_deref()
-            .and_then(|w| uuid::Uuid::parse_str(w).ok());
-
         // Prefix parity with the `Message::RegisterTrigger` path: a prefixed
         // session's functions are stored under `prefix::id`, so the trigger
         // must bind to the prefixed target or firing would miss the real
@@ -1449,12 +1475,20 @@ impl EngineFunctionsWorker {
         // the `Trigger` and is delivered to the handler as a distinct argument
         // at fire time (see the trigger-fire paths) — no proxy function, so
         // nothing to leak or GC, and the payload is left untouched.
+        //
+        // Ownership: deliberately NOT stamped with the caller's worker id.
+        // Function-path registrations are durable engine-side state ("when X
+        // happens, do Y"), removed only by explicit `engine::unregister_trigger`
+        // — a CLI's millisecond-lived connection or an agent proxy's restart
+        // must not reap them. A worker's own lifecycle bindings go through the
+        // `Message::RegisterTrigger` path, which keeps connection ownership and
+        // the disconnect GC.
         let trigger = Trigger {
             id: id.clone(),
             trigger_type: input.trigger_type,
             function_id,
             config: input.config,
-            worker_id,
+            worker_id: None,
             metadata: input.metadata,
         };
 
@@ -2165,6 +2199,39 @@ mod tests {
     }
 
     // ── functions_list service tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn functions_list_search_ranks_id_hits_above_description_hits() {
+        let (engine, module) = setup_engine_and_module();
+
+        // Alphabetically, coder::move sorts first — but it only matches
+        // "state" via its description and must rank LAST.
+        register_simple_function(&engine, "coder::move", Some("Move files; preserves state."));
+        register_simple_function(&engine, "restate::apply", None); // id substring
+        register_simple_function(&engine, "state::get", None); // id segment
+        register_simple_function(&engine, "unrelated::fn", None); // no match
+
+        let result = module
+            .functions_list(
+                FunctionsListInput {
+                    search: Some("state".to_string()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match result {
+            FunctionResult::Success(result) => {
+                let ids: Vec<&str> = result
+                    .functions
+                    .iter()
+                    .map(|f| f.function_id.as_str())
+                    .collect();
+                assert_eq!(ids, vec!["state::get", "restate::apply", "coder::move"]);
+            }
+            _ => panic!("expected functions_list success"),
+        }
+    }
 
     #[tokio::test]
     async fn functions_list_filters_internal_by_default() {
@@ -3255,14 +3322,16 @@ mod tests {
         };
 
         // The trigger binds DIRECTLY to the target — no proxy function exists —
-        // and carries the metadata + worker scope.
+        // and carries the metadata. Function-path registrations are durable:
+        // the caller's connection is deliberately NOT recorded as owner, so
+        // the caller's disconnect can never reap the binding.
         let trig = engine
             .trigger_registry
             .triggers
             .get(&id)
             .expect("trigger registered");
         assert_eq!(trig.function_id, "test::target");
-        assert_eq!(trig.worker_id, Some(wid));
+        assert_eq!(trig.worker_id, None);
         assert_eq!(trig.metadata, Some(meta.clone()));
 
         // Fire the way a registrator does: metadata travels explicitly, NOT
