@@ -3,10 +3,10 @@ import { test } from 'node:test'
 import { desiredRoutes, diff } from './routes-kvs'
 
 test('desiredRoutes maps page files to pretty keys and excludes index.html', () => {
-  const result = desiredRoutes(['index.html', 'manifesto.html', 'privacy.html'])
+  const result = desiredRoutes(['index.html', 'manifesto.html', 'privacy-policy.html'])
   assert.deepEqual(result, [
     { Key: '/manifesto', Value: '/manifesto.html' },
-    { Key: '/privacy', Value: '/privacy.html' },
+    { Key: '/privacy-policy', Value: '/privacy-policy.html' },
   ])
 })
 
@@ -43,10 +43,10 @@ test('diff: a removed page becomes a Delete', () => {
 })
 
 test('diff: a changed value becomes a Put', () => {
-  const desired = [{ Key: '/legal', Value: '/privacy.html' }]
+  const desired = [{ Key: '/legal', Value: '/privacy-policy.html' }]
   const current = [{ Key: '/legal', Value: '/legal.html' }]
   assert.deepEqual(diff(desired, current), {
-    Puts: [{ Key: '/legal', Value: '/privacy.html' }],
+    Puts: [{ Key: '/legal', Value: '/privacy-policy.html' }],
     Deletes: [],
   })
 })
@@ -54,7 +54,7 @@ test('diff: a changed value becomes a Put', () => {
 test('diff: identical desired and current is a no-op', () => {
   const entries = [
     { Key: '/manifesto', Value: '/manifesto.html' },
-    { Key: '/privacy', Value: '/privacy.html' },
+    { Key: '/privacy-policy', Value: '/privacy-policy.html' },
   ]
   assert.deepEqual(diff(entries, [...entries]), { Puts: [], Deletes: [] })
 })

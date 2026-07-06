@@ -34,7 +34,7 @@ function makeHandler(routeMap) {
 // Default map mirrors the two pretty pages that ship in website/ today.
 const handler = makeHandler({
   '/manifesto': '/manifesto.html',
-  '/privacy': '/privacy.html',
+  '/privacy-policy': '/privacy-policy.html',
 })
 
 function buildEvent(uri, host, querystring) {
@@ -197,34 +197,22 @@ test('www.iii.dev/manifesto → 301 https://iii.dev/manifesto (host-redirect run
   assert.equal(locationOf(result), 'https://iii.dev/manifesto')
 })
 
-test('/privacy → rewrite uri to /privacy.html (flat HTML, Option A)', async () => {
-  const result = await handler(buildEvent('/privacy', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/privacy.html')
-})
-
-test('/privacy.html → pass through unchanged', async () => {
-  const result = await handler(buildEvent('/privacy.html', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/privacy.html')
-})
-
-test('/privacy-policy → 301 https://iii.dev/privacy (legacy URL)', async () => {
+test('/privacy-policy → rewrite uri to /privacy-policy.html (flat HTML, Option A)', async () => {
   const result = await handler(buildEvent('/privacy-policy', 'iii.dev'))
-  assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/privacy')
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/privacy-policy.html')
 })
 
-test('/privacy-policy.html → 301 https://iii.dev/privacy (legacy URL)', async () => {
+test('/privacy-policy.html → pass through unchanged', async () => {
   const result = await handler(buildEvent('/privacy-policy.html', 'iii.dev'))
-  assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/privacy')
+  assert.ok(!isRedirect(result))
+  assert.equal(result.uri, '/privacy-policy.html')
 })
 
-test('www.iii.dev/privacy → 301 https://iii.dev/privacy (host-redirect runs before pretty-URL rewrite)', async () => {
-  const result = await handler(buildEvent('/privacy', 'www.iii.dev'))
+test('www.iii.dev/privacy-policy → 301 https://iii.dev/privacy-policy (host-redirect runs before pretty-URL rewrite)', async () => {
+  const result = await handler(buildEvent('/privacy-policy', 'www.iii.dev'))
   assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/privacy')
+  assert.equal(locationOf(result), 'https://iii.dev/privacy-policy')
 })
 
 test('/AGENTS.md → pass through unchanged', async () => {
@@ -319,12 +307,6 @@ test('/blog/rss.xml → pass through unchanged (file with extension)', async () 
   assert.equal(result.uri, '/blog/rss.xml')
 })
 
-test('/blog/add-a-worker.md → pass through unchanged (agent-readable markdown)', async () => {
-  const result = await handler(buildEvent('/blog/add-a-worker.md', 'iii.dev'))
-  assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/blog/add-a-worker.md')
-})
-
 test('/blog/_astro/style.abc123.css → pass through unchanged (hashed asset)', async () => {
   const result = await handler(buildEvent('/blog/_astro/style.abc123.css', 'iii.dev'))
   assert.ok(!isRedirect(result))
@@ -391,16 +373,16 @@ test('KVS hit: a page present only in the store resolves with no code change', a
 
 test('KVS miss: extensionless path absent from the store → real 404', async () => {
   const h = makeHandler({ '/manifesto': '/manifesto.html' })
-  const result = await h(buildEvent('/unknown-page', 'iii.dev'))
+  const result = await h(buildEvent('/privacy-policy', 'iii.dev'))
   assert.ok(!isRedirect(result))
   assert.ok(isNotFound(result))
 })
 
 test('KVS value is honored verbatim (key and value need not share a stem)', async () => {
-  const h = makeHandler({ '/legal': '/privacy.html' })
+  const h = makeHandler({ '/legal': '/privacy-policy.html' })
   const result = await h(buildEvent('/legal', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/privacy.html')
+  assert.equal(result.uri, '/privacy-policy.html')
 })
 
 test('empty store: every extensionless path 404s, static files still pass through', async () => {

@@ -77,19 +77,13 @@ async function handler(event) {
 
   if (uri.indexOf('/.well-known/') === 0) return request
 
-  var redirectHost = host || 'iii.dev'
-
-  // Legacy privacy URL — canonical path is /privacy (privacy.html).
-  if (uri === '/privacy-policy' || uri === '/privacy-policy.html') {
-    return redirect('https://' + redirectHost + '/privacy' + serializeQuerystring(request.querystring))
-  }
-
   // /blog/* — Astro emits build.format: 'directory' with trailingSlash:
   // 'always', so canonical URLs are /blog/<slug>/. CloudFront's
   // default_root_object only applies to the apex, so we rewrite directory
   // URLs to .../index.html and 301 extensionless paths to the canonical
   // trailing-slash form. Must run before the SPA fallback so /blog/<slug>
   // doesn't get hijacked into /index.html.
+  var redirectHost = host || 'iii.dev'
   if (uri === '/blog') {
     return redirect('https://' + redirectHost + '/blog/' + serializeQuerystring(request.querystring))
   }
@@ -107,7 +101,7 @@ async function handler(event) {
   }
 
   // Extensionless top-level paths resolve to a pretty page via the KVS route
-  // map (e.g. /privacy → /privacy.html), or return a real 404.
+  // map (e.g. /privacy-policy → /privacy-policy.html), or return a real 404.
   // Previously the map was hardcoded here, so a new page needed a `terraform
   // apply` to republish the function; it now lives in a CloudFront
   // KeyValueStore that deploy-website.yml syncs from website/*.html, making a

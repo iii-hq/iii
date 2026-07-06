@@ -24,7 +24,7 @@ export const ROUTES: RouteMeta[] = [
     ogTitle: "iii Manifesto — Everything is a worker",
   },
   {
-    path: "/privacy",
+    path: "/privacy-policy",
     title: "Privacy Policy | iii",
     description:
       "How iii collects, uses, and protects your information. Minimal data collection, completely anonymized usage analytics, no selling of personal data, and clear rights over your data.",
