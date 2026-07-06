@@ -746,6 +746,14 @@ impl SpanExporter for TeeSpanExporter {
         self.otlp_exporter.export(batch)
     }
 
+    // Without this forward, the trait's default no-op swallows the provider's
+    // resource and the inner OTLP exporter ships spans with an EMPTY resource
+    // (no service.name) — collectors then show engine traces as unattributed
+    // ("<root span not yet received>" root in Tempo).
+    fn set_resource(&mut self, resource: &Resource) {
+        self.otlp_exporter.set_resource(resource);
+    }
+
     fn shutdown_with_timeout(&mut self, timeout: std::time::Duration) -> OTelSdkResult {
         self.otlp_exporter.shutdown_with_timeout(timeout)
     }
