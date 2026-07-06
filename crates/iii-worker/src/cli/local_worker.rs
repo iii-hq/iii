@@ -352,7 +352,19 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
     // restart/shutdown RPC handling. When no control port is set,
     // iii-init takes its legacy path and just supervises the one
     // process until it exits.
-    parts.push(format!("{} && exec {}", env_exports, project.run_cmd));
+    // `exec` binds tighter than `&&`/`;`: a compound run_cmd like
+    // "pip install -e . && python -m src.main" would parse as
+    // `exec pip install -e .` — the shell is replaced by the FIRST
+    // command, the rest never runs, and the VM silently tears down when
+    // it exits. Re-quote the whole command into a single `sh -c` word so
+    // exec applies to the entire scripts.start string; sh tail-execs
+    // simple commands anyway, so single-command starts keep their PID
+    // semantics.
+    let quoted_run_cmd = format!("'{}'", project.run_cmd.replace('\'', "'\\''"));
+    parts.push(format!(
+        "{} && exec /bin/sh -c {}",
+        env_exports, quoted_run_cmd
+    ));
     parts.join("\n")
 }
 
