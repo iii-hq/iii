@@ -13,7 +13,7 @@
 //!   rejection, char-device rejection, deep-directory rejection.
 //! - Manifest contract: missing manifest, manifest in subdirectory,
 //!   invalid YAML, name mismatch, missing scripts.start, scripts.setup
-//!   smuggling, scripts.install smuggling, runtime.base_image override.
+//!   smuggling, implausible runtime.base_image.
 //! - Resource clamping: requests exceeding caps, u64-overflow saturation.
 //! - Dependency graph bounds: depth and transitive count.
 //! - Atomic install + staging: collision with existing install,
@@ -392,18 +392,14 @@ fn manifest_missing_file_returns_typed_error() {
 }
 
 #[test]
-fn manifest_rejects_setup_install_base_image() {
+fn manifest_rejects_setup_and_implausible_base_image() {
     let cases = [
         (
             "name: foo\nscripts:\n  setup: \"x\"\n  start: \"node x.js\"\n",
             "scripts.setup",
         ),
         (
-            "name: foo\nscripts:\n  install: \"x\"\n  start: \"node x.js\"\n",
-            "scripts.install",
-        ),
-        (
-            "name: foo\nruntime:\n  base_image: \"x\"\nscripts:\n  start: \"node x.js\"\n",
+            "name: foo\nruntime:\n  base_image: \"bad image!\"\nscripts:\n  start: \"node x.js\"\n",
             "runtime.base_image",
         ),
     ];
@@ -416,6 +412,17 @@ fn manifest_rejects_setup_install_base_image() {
         };
         assert_eq!(field, expected_field);
     }
+}
+
+#[test]
+fn manifest_accepts_install_and_custom_base_image() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_manifest(
+        tmp.path(),
+        "name: foo\nruntime:\n  base_image: oven/bun:1\nscripts:\n  install: \"x\"\n  start: \"node x.js\"\n",
+    );
+    let cmd = validate_bundle_manifest(tmp.path(), "foo").expect("install + custom ref accepted");
+    assert_eq!(cmd, "node x.js");
 }
 
 #[test]
