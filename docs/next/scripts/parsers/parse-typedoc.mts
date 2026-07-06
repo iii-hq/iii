@@ -61,16 +61,25 @@ function typeToString(type: any): string {
     const decl = type.declaration
     if (decl?.signatures) {
       const sig = decl.signatures[0]
-      const params = sig.parameters?.map((p: any) => `${p.name}: ${typeToString(p.type)}`).join(', ') ?? ''
+      const params =
+        sig.parameters
+          ?.map((p: any) => `${p.name}${p.flags?.isOptional ? '?' : ''}: ${typeToString(p.type)}`)
+          .join(', ') ?? ''
       return `(${params}) => ${typeToString(sig.type)}`
     }
-    if (decl?.children?.length) {
-      const fields = decl.children
+    if (decl?.children?.length || decl?.indexSignatures?.length) {
+      const fields = (decl.children ?? [])
         .map((c: any) => {
           const opt = c.flags?.isOptional ? '?' : ''
           const t = c.type ? typeToString(c.type) : c.signatures ? typeToString({ type: 'reflection', declaration: c }) : 'unknown'
           return `${c.name}${opt}: ${t}`
         })
+        .concat(
+          (decl.indexSignatures ?? []).map((s: any) => {
+            const p = s.parameters?.[0]
+            return `[${p?.name ?? 'key'}: ${typeToString(p?.type)}]: ${typeToString(s.type)}`
+          }),
+        )
         .join('; ')
       return `{ ${fields} }`
     }

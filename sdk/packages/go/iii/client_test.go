@@ -71,7 +71,7 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	_ = c.RegisterFunction("hello::greet", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return map[string]string{"msg": "hi"}, nil
 	})
-	_ = c.RegisterTrigger("t1", "http", "hello::greet", json.RawMessage(`{"path":"/x"}`), nil)
+	_ = c.RegisterTrigger("t1", "http", "hello::greet", json.RawMessage(`{"path":"/x"}`))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -99,6 +99,90 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	}
 	if !(idxMeta > idxFn && idxMeta > idxTrig) {
 		t.Errorf("worker metadata (%d) should come after registrations (fn=%d trig=%d)", idxMeta, idxFn, idxTrig)
+	}
+}
+
+// TestRegisterFunctionAcceptsLegacyHandler verifies existing two-argument handlers
+// continue to compile and run after metadata support was added.
+func TestRegisterFunctionAcceptsLegacyHandler(t *testing.T) {
+	m := newMockEngine(t)
+
+	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
+		if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "legacy::fn" {
+			id := mustUUID(t, "12121212-1212-1212-1212-121212121212")
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = m.send(ctx, conn, &InvokeFunctionMessage{
+				InvocationID: &id,
+				FunctionID:   "legacy::fn",
+				Data:         json.RawMessage(`{"in":42}`),
+				Metadata:     json.RawMessage(`{"tenant":"acme"}`),
+			})
+		}
+	}
+
+	c := connectClient(t, m)
+	if err := c.RegisterFunction("legacy::fn", func(ctx context.Context, data json.RawMessage) (any, error) {
+		return json.RawMessage(data), nil
+	}); err != nil {
+		t.Fatalf("RegisterFunction: %v", err)
+	}
+
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
+		return firstWhere(msgs, func(msg map[string]json.RawMessage) bool {
+			return messageType(msg) == string(MsgInvocationResult) && stringField(msg, "function_id") == "legacy::fn"
+		}) != nil
+	}, 2*time.Second)
+	res := firstWhere(got, func(msg map[string]json.RawMessage) bool {
+		return messageType(msg) == string(MsgInvocationResult) && stringField(msg, "function_id") == "legacy::fn"
+	})
+	if res == nil {
+		t.Fatal("no invocation result for legacy handler")
+	}
+	jsonEqual(t, res["result"], `{"in":42}`)
+}
+
+// TestRegisterFunctionOptionsCarryMetadata verifies registration metadata is sent on the
+// existing RegisterFunction API without a metadata-specific registration method.
+func TestRegisterFunctionOptionsCarryMetadata(t *testing.T) {
+	m := newMockEngine(t)
+	c := New(m.url)
+	metadata := json.RawMessage(`{"owner":"billing","priority":"high"}`)
+	if err := c.RegisterFunction("meta::registered", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		return nil, nil
+	}, RegisterFunctionOptions{Metadata: metadata}); err != nil {
+		t.Fatalf("RegisterFunction: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
+		return firstWhere(msgs, func(msg map[string]json.RawMessage) bool {
+			return messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "meta::registered"
+		}) != nil
+	}, 2*time.Second)
+
+	reg := firstWhere(got, func(msg map[string]json.RawMessage) bool {
+		return messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "meta::registered"
+	})
+	if reg == nil {
+		t.Fatal("no registerfunction frame sent")
+	}
+	jsonEqual(t, reg["metadata"], `{"owner":"billing","priority":"high"}`)
+}
+
+func TestRegisterFunctionRejectsMultipleOptions(t *testing.T) {
+	c := New(DefaultEngineURL)
+	err := c.RegisterFunction("meta::too-many-options", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		return nil, nil
+	}, RegisterFunctionOptions{}, RegisterFunctionOptions{})
+	if err == nil {
+		t.Fatal("RegisterFunction accepted multiple options values")
 	}
 }
 
@@ -147,6 +231,81 @@ func TestInboundInvokeRoundtrip(t *testing.T) {
 	if stringField(res, "traceparent") != tp {
 		t.Errorf("traceparent not echoed: got %q, want %q", stringField(res, "traceparent"), tp)
 	}
+}
+
+// TestInboundInvokeDeliversMetadata verifies the handler receives per-invocation metadata
+// as its 3rd argument: the raw JSON when the engine sends a metadata sidecar, and nil when
+// the invocation carries none (the backward-compatible default).
+func TestInboundInvokeDeliversMetadata(t *testing.T) {
+	t.Run("metadata present is passed through", func(t *testing.T) {
+		m := newMockEngine(t)
+		m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
+			if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "meta::fn" {
+				id := mustUUID(t, "66666666-6666-6666-6666-666666666666")
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = m.send(ctx, conn, &InvokeFunctionMessage{
+					InvocationID: &id,
+					FunctionID:   "meta::fn",
+					Data:         json.RawMessage(`{"in":1}`),
+					Metadata:     json.RawMessage(`{"tenant":"acme"}`),
+				})
+			}
+		}
+
+		metaCh := make(chan json.RawMessage, 1)
+		c := connectClient(t, m)
+		_ = c.RegisterFunction("meta::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+			metadata, _ := MetadataFromContext(ctx)
+			metaCh <- metadata
+			return map[string]bool{"ok": true}, nil
+		})
+
+		select {
+		case got := <-metaCh:
+			if string(got) != `{"tenant":"acme"}` {
+				t.Errorf("handler metadata = %s, want {\"tenant\":\"acme\"}", got)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("handler was not invoked")
+		}
+	})
+
+	t.Run("metadata absent yields nil", func(t *testing.T) {
+		m := newMockEngine(t)
+		m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
+			if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "nometa::fn" {
+				id := mustUUID(t, "77777777-7777-7777-7777-777777777777")
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = m.send(ctx, conn, &InvokeFunctionMessage{
+					InvocationID: &id,
+					FunctionID:   "nometa::fn",
+					Data:         json.RawMessage(`{}`),
+				})
+			}
+		}
+
+		metaCh := make(chan json.RawMessage, 1)
+		c := connectClient(t, m)
+		_ = c.RegisterFunction("nometa::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+			metadata, ok := MetadataFromContext(ctx)
+			if ok {
+				t.Error("MetadataFromContext reported ok for an invocation without metadata")
+			}
+			metaCh <- metadata
+			return nil, nil
+		})
+
+		select {
+		case got := <-metaCh:
+			if got != nil {
+				t.Errorf("handler metadata = %s, want nil when the invocation carries none", got)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("handler was not invoked")
+		}
+	})
 }
 
 // TestInboundInvokeHandlerError maps a handler error to an InvocationResult.error with
@@ -337,6 +496,40 @@ func TestTriggerVoidFireAndForget(t *testing.T) {
 	}
 	if string(frame["action"]) != `{"type":"void"}` {
 		t.Errorf("action = %s, want void", frame["action"])
+	}
+}
+
+// TestTriggerCarriesMetadata verifies TriggerRequest.Metadata is serialized into the
+// outbound InvokeFunction's metadata field. Uses the void path so the assertion is
+// deterministic (no reply needed): the recorded frame must carry the metadata sidecar.
+func TestTriggerCarriesMetadata(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Trigger(ctx, TriggerRequest{
+		FunctionID: "svc::work",
+		Data:       json.RawMessage(`{"x":1}`),
+		Metadata:   json.RawMessage(`{"tenant":"acme"}`),
+		Action:     VoidAction(),
+	}); err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
+		return firstWhere(msgs, func(mm map[string]json.RawMessage) bool {
+			return stringField(mm, "function_id") == "svc::work"
+		}) != nil
+	}, 2*time.Second)
+	frame := firstWhere(got, func(mm map[string]json.RawMessage) bool {
+		return stringField(mm, "function_id") == "svc::work"
+	})
+	if frame == nil {
+		t.Fatal("trigger frame not sent")
+	}
+	if string(frame["metadata"]) != `{"tenant":"acme"}` {
+		t.Errorf("metadata = %s, want {\"tenant\":\"acme\"}", frame["metadata"])
 	}
 }
 

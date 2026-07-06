@@ -329,11 +329,16 @@ impl TriggerRegistry {
         Ok(())
     }
 
+    /// Unregister a trigger by id. Idempotent: returns `Ok(false)` when no
+    /// trigger with this id exists (rather than erroring), so callers can treat
+    /// double-unregister as a no-op. On a registrator error the registry entry
+    /// is left in place (registry and registrator stay consistent) and the
+    /// error is propagated. Returns `Ok(true)` when a trigger was removed.
     pub async fn unregister_trigger(
         &self,
         id: String,
         trigger_type: Option<String>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<bool, anyhow::Error> {
         tracing::info!(
             "Unregistering trigger: {} of type: {}",
             id.purple(),
@@ -341,21 +346,18 @@ impl TriggerRegistry {
         );
 
         let Some(trigger_entry) = self.triggers.get(&id) else {
-            return Err(anyhow::anyhow!("Trigger not found"));
+            return Ok(false);
         };
         let trigger = trigger_entry.value().clone();
         drop(trigger_entry);
 
         if let Some(tt) = self.trigger_types.get(&trigger.trigger_type) {
-            let result: Result<(), anyhow::Error> =
-                tt.registrator.unregister_trigger(trigger.clone()).await;
-
-            result?
+            tt.registrator.unregister_trigger(trigger.clone()).await?;
         }
 
         self.triggers.remove(&id);
 
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -509,6 +511,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn re_registering_a_type_replaces_registrator_and_replays_bindings() {
+        let registry = TriggerRegistry::new();
+
+        let a = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new("cron", "gen A", Box::new(a.clone()), None))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(make_trigger("t1", "cron"))
+            .await
+            .unwrap();
+        assert_eq!(a.register_count.load(Ordering::SeqCst), 1);
+
+        // Provider reload / reconnect: the type re-registers with a NEW
+        // registrator. The existing binding must be re-delivered to it, and
+        // later registrations must route to it — never to the stale one.
+        let b = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new("cron", "gen B", Box::new(b.clone()), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            b.register_count.load(Ordering::SeqCst),
+            1,
+            "existing binding replayed to the new registrator"
+        );
+
+        registry
+            .register_trigger(make_trigger("t2", "cron"))
+            .await
+            .unwrap();
+        assert_eq!(b.register_count.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            a.register_count.load(Ordering::SeqCst),
+            1,
+            "stale registrator receives nothing after replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_worker_reaps_only_connection_owned_triggers() {
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type("evt"))
+            .await
+            .unwrap();
+        let worker = Uuid::new_v4();
+
+        // A worker's own lifecycle binding (Message::RegisterTrigger path).
+        let mut owned = make_trigger("t_owned", "evt");
+        owned.worker_id = Some(worker);
+        registry.register_trigger(owned).await.unwrap();
+
+        // A function-path registration (engine::register_trigger): durable,
+        // no connection owner.
+        registry
+            .register_trigger(make_trigger("t_durable", "evt"))
+            .await
+            .unwrap();
+
+        registry.unregister_worker(&worker).await;
+
+        assert!(
+            !registry.triggers.contains_key("t_owned"),
+            "connection-owned binding dies with its worker"
+        );
+        assert!(
+            registry.triggers.contains_key("t_durable"),
+            "durable binding survives the owner's disconnect GC"
+        );
+
+        // Explicit unregister is the durable binding's only teardown.
+        let removed = registry
+            .unregister_trigger("t_durable".to_string(), None)
+            .await
+            .unwrap();
+        assert!(removed);
+        assert!(!registry.triggers.contains_key("t_durable"));
+    }
+
+    #[tokio::test]
     async fn test_trigger_registry_register_trigger() {
         let registry = TriggerRegistry::new();
         registry
@@ -571,7 +655,7 @@ mod tests {
         let result = registry
             .unregister_trigger("t1".to_string(), Some("cron".to_string()))
             .await;
-        assert!(result.is_ok());
+        assert!(matches!(result, Ok(true)));
         assert!(registry.triggers.is_empty());
     }
 
@@ -581,8 +665,8 @@ mod tests {
         let result = registry
             .unregister_trigger("nonexistent".to_string(), None)
             .await;
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Trigger not found");
+        // Idempotent: unregistering an unknown id is a no-op, not an error.
+        assert!(matches!(result, Ok(false)));
     }
 
     #[tokio::test]

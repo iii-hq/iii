@@ -10,13 +10,27 @@ use crate::{
     triggers::TriggerHandler,
 };
 
+/// A dispatchable function handler. Receives the invocation payload.
+///
+/// Handlers that also want the optional per-invocation `metadata` sidecar use
+/// [`RemoteFunctionHandlerWithMetadata`]; this single-argument shape is kept
+/// for backward compatibility.
 pub type RemoteFunctionHandler =
     Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, Error>> + Send + Sync>;
+
+/// A dispatchable function handler that also receives the optional
+/// per-invocation `metadata` sidecar (delivered as a distinct argument rather
+/// than folded into the payload; `None` when the caller attached none).
+///
+/// This is the SDK's internal dispatch shape: handlers built from
+/// metadata-unaware functions ignore the second argument.
+pub type RemoteFunctionHandlerWithMetadata =
+    Arc<dyn Fn(Value, Option<Value>) -> BoxFuture<'static, Result<Value, Error>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct RemoteFunctionData {
     pub message: RegisterFunctionMessage,
-    pub handler: Option<RemoteFunctionHandler>,
+    pub handler: Option<RemoteFunctionHandlerWithMetadata>,
 }
 
 #[derive(Clone)]

@@ -182,10 +182,18 @@ type UnregisterFunctionMessage struct {
 // InvocationID is a POINTER and omitempty: when absent, the call is fire-and-forget
 // and no InvocationResult is expected (engine/src/protocol.rs:86). Traceparent/Baggage
 // carry W3C trace context across the hop. Action selects void/enqueue semantics.
+//
+// Metadata is OPTIONAL per-invocation metadata (arbitrary JSON) that travels as its own
+// channel alongside Data, NOT folded into the payload. Like the engine's
+// skip_serializing_if optional fields it is omitted when nil; an inbound frame without a
+// metadata key decodes to nil ("no metadata"), so older engines that never send it stay
+// backward compatible. Distinct from RegisterFunction/RegisterTrigger's registration-level
+// Metadata: this one is scoped to a single call.
 type InvokeFunctionMessage struct {
 	InvocationID *uuid.UUID      `json:"invocation_id,omitempty"`
 	FunctionID   string          `json:"function_id"`
 	Data         json.RawMessage `json:"data"`
+	Metadata     json.RawMessage `json:"metadata,omitempty"`
 	Traceparent  *string         `json:"traceparent,omitempty"`
 	Baggage      *string         `json:"baggage,omitempty"`
 	Action       *TriggerAction  `json:"action,omitempty"`

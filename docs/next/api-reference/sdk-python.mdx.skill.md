@@ -449,6 +449,7 @@ Request object for ``trigger()``.
 | --- | --- | --- | --- |
 | `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget. |
 | `function_id` | `str` | No | ID of the function to invoke. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary per-invocation metadata delivered to the handler as a separate channel (not folded into ``payload``). |
 | `payload` | `Any` | No | Data to pass to the function. |
 | `timeout_ms` | `int \| None` | No | Override the default invocation timeout. |
 

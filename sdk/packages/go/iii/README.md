@@ -86,9 +86,10 @@ A complete, runnable version lives in the [`iii-example`](../iii-example) module
 | Register worker | `iii.RegisterWorker(url, opts...) *Client` | Create a client and start connecting in the background (the `registerWorker` entry point). |
 | Create | `iii.New(url, opts...) *Client` | Build a client without connecting (call `Connect` yourself). |
 | Connect | `client.Connect(ctx) error` | Start the lifecycle if needed and block until connected. |
-| Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler)` | Register a function with request/response schemas inferred from the types. |
-| Register function | `client.RegisterFunction(id, handler) error` | Register a function the engine can invoke by name. |
-| Register trigger | `client.RegisterTrigger(id, triggerType, functionID, config, metadata) error` | Bind a trigger (HTTP, cron, queue, …) to a function. |
+| Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...)` | Register a function with request/response schemas inferred from the types. |
+| Register function | `client.RegisterFunction(id, handler, opts...) error` | Register a function the engine can invoke by name. |
+| Read invocation metadata | `iii.MetadataFromContext(ctx) (json.RawMessage, bool)` | Read the optional per-invocation metadata sidecar inside a handler. |
+| Register trigger | `client.RegisterTrigger(id, triggerType, functionID, config, metadata...) error` | Bind a trigger (HTTP, cron, queue, …) to a function. |
 | Register trigger type | `client.RegisterTriggerType(id, description, handler) error` | Implement a custom trigger type. |
 | Invoke (await) | `client.Trigger(ctx, TriggerRequest{...})` | Invoke a function and wait for the result. |
 | Invoke (fire-and-forget) | `client.Trigger(ctx, TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting. |
@@ -113,6 +114,31 @@ client.RegisterFunction("orders::create", func(ctx context.Context, data json.Ra
 		return nil, err
 	}
 	return map[string]any{"id": "123", "item": in.Item}, nil
+})
+```
+
+Per-invocation metadata rides on the handler's `ctx` (so the `Handler` signature never
+changes); read it with `MetadataFromContext` — `ok` is `false` when the caller attached
+none:
+
+```go
+client.RegisterFunction("orders::create", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if metadata, ok := iii.MetadataFromContext(ctx); ok {
+		_ = metadata // raw JSON sidecar, e.g. {"tenant":"acme"}
+	}
+	return map[string]any{"ok": true}, nil
+})
+```
+
+Attach metadata to the function registration with the optional options struct:
+
+```go
+ordersHandler := func(ctx context.Context, data json.RawMessage) (any, error) {
+	return map[string]any{"ok": true}, nil
+}
+
+client.RegisterFunction("orders::create", ordersHandler, iii.RegisterFunctionOptions{
+	Metadata: json.RawMessage(`{"owner":"billing-team","priority":"high"}`),
 })
 ```
 
@@ -149,9 +175,11 @@ iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::crea
 ```
 
 The handler works with the concrete `CreateOrderRequest` (the SDK unmarshals the payload)
-and returns the typed `OrderResult`. Use `RegisterFunction` for schemaless functions or
-when you want to send a hand-written schema. `iii.InferSchema[T]()` returns the schema for
-a type if you want to inspect or reuse it.
+and returns the typed `OrderResult`. Typed handlers read the per-invocation metadata
+sidecar from `ctx` with `iii.MetadataFromContext`, same as raw handlers. Use
+`RegisterFunction` for schemaless functions or when you want to send a hand-written
+schema. `iii.InferSchema[T]()` returns the schema for a type if you want to inspect or
+reuse it.
 
 ### Invoking functions
 

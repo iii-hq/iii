@@ -34,7 +34,7 @@ impl TriggerRegistrator for NoopRegistrator {
 
 fn make_function(id: &str) -> Function {
     Function {
-        handler: std::sync::Arc::new(move |_invocation_id, input, _session| {
+        handler: std::sync::Arc::new(move |_invocation_id, input, _session, _metadata| {
             Box::pin(async move { FunctionResult::Success(Some(input)) })
         }),
         _function_id: id.to_string(),

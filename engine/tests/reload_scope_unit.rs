@@ -24,7 +24,7 @@ fn disable_builtin_daemons() {
 
 fn make_dummy_function(id: &str) -> Function {
     Function {
-        handler: Arc::new(|_invocation_id, _input, _session| {
+        handler: Arc::new(|_invocation_id, _input, _session, _metadata| {
             Box::pin(async { FunctionResult::Success(None) })
         }),
         _function_id: id.to_string(),
