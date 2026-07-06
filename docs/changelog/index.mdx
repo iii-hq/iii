@@ -5,6 +5,22 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.21.0" description="July 2026">
+  ## One `iii.worker.yaml` for the registry and the engine
+
+  Manifests published from the workers repo carry `iii`, `deploy`, and `manifest` top-level keys — required by the registry's release CI. The engine's validator treated them as unknown keys and hard-failed `iii worker add`, so a single manifest could not satisfy both. The validator now accepts the three publish metadata keys and ignores them at add/start time; a non-string value still gets the friendly dotted-path error.
+
+  ## Bundle workers: pick any rootfs, install dependencies at first boot
+
+  Bundle manifests may now set `runtime.base_image` to **any OCI image reference** (e.g. `oven/bun:1`), not just the engine-preset images — the rootfs is publisher-chosen, in the same trust context as the `scripts.start` command the engine already executes. A ref with characters that don't belong in an OCI reference is rejected at **install time** instead of silently falling back to the default image at start.
+
+  Bundles may also declare `scripts.install` — it runs once inside the sandbox VM (guarded like the rest of the boot script), which python bundles need for pip/browser bootstrap that can't be vendored per-arch into the archive. `scripts.setup` stays rejected: OS provisioning belongs in the base image.
+
+  ## Compound `scripts.start` commands run correctly
+
+  A `scripts.start` with shell metacharacters (`&&`, pipes, env prefixes) is now exec'd via a quoted `sh -c`, so compound start commands behave the same as they do in a terminal instead of being split naively on whitespace.
+</Update>
+
 <Update label="0.20.0" description="June 2026">
   ## SDK: a major, breaking reorganization of the public surface
 
