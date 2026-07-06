@@ -891,18 +891,25 @@ fn corrected_detail_spans(
 }
 
 fn build_span_tree(spans: Vec<otel::StoredSpan>) -> Vec<SpanTreeNode> {
+    // Span ids present in this set. A span whose parent is NOT present is a
+    // local trace root — covers traces entering iii from an external caller via
+    // an incoming `traceparent`, whose server span points at the remote caller's
+    // span (never stored here). Without this the whole subtree is orphaned and
+    // the trace detail view renders nothing.
+    let present_ids: std::collections::HashSet<String> =
+        spans.iter().map(|s| s.span_id.clone()).collect();
     let mut children_map: HashMap<String, Vec<otel::StoredSpan>> = HashMap::new();
     let mut roots: Vec<otel::StoredSpan> = Vec::new();
 
     for span in spans {
         match &span.parent_span_id {
-            Some(parent_id) => {
+            Some(parent_id) if present_ids.contains(parent_id) => {
                 children_map
                     .entry(parent_id.clone())
                     .or_default()
                     .push(span);
             }
-            None => roots.push(span),
+            _ => roots.push(span),
         }
     }
 
@@ -1976,10 +1983,25 @@ impl ObservabilityWorker {
                         None
                     };
 
+                // A span is a trace root when it has no parent OR its parent is
+                // absent from the store. The latter covers traces that entered
+                // iii from an external caller via an incoming `traceparent`: the
+                // server span's parent is the remote caller's span, which lives
+                // in another service and is never stored here. Without this,
+                // root-only listing hides every distributed trace. Mirrors
+                // `build_span_tree`'s dangling-parent handling.
+                let present_span_ids: std::collections::HashSet<String> =
+                    all_spans.iter().map(|s| s.span_id.clone()).collect();
+
                 let mut filtered: Vec<_> = all_spans
                     .into_iter()
                     // Root-only by default; `search_all_spans` widens to children too.
-                    .filter(|s| search_all || s.parent_span_id.is_none())
+                    .filter(|s| {
+                        search_all
+                            || s.parent_span_id
+                                .as_ref()
+                                .is_none_or(|p| !present_span_ids.contains(p))
+                    })
                     .filter(|s| {
                         // Exclude internal engine traces unless explicitly requested
                         if !include_internal {
@@ -3583,6 +3605,7 @@ mod tests {
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
             flags: None,
+            trace_state: None,
         }
     }
 
@@ -5294,11 +5317,10 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn test_build_span_tree_orphan_child() {
-        // A child whose parent is not in the span list becomes an orphan
-        // The current implementation only puts spans with None parent in roots.
-        // Orphan children (with parent_span_id set but parent not in list) are
-        // not treated as roots; they go into children_map but never get collected.
+    fn test_build_span_tree_orphan_child_becomes_root() {
+        // A span whose parent_span_id is set but absent from the span list is a
+        // local trace root (e.g. the server span of a trace that entered iii via
+        // an incoming `traceparent`, whose parent lives in the remote caller).
         let orphan = make_span(
             "t1",
             "s2",
@@ -5313,8 +5335,8 @@ mod tests {
 
         let tree = build_span_tree(vec![orphan]);
 
-        // Since the span has a parent_span_id, it won't appear as a root
-        assert!(tree.is_empty());
+        assert_eq!(tree.len(), 1, "orphan with missing parent must be a root");
+        assert_eq!(tree[0].span.name, "orphan");
     }
 
     // =========================================================================
@@ -6279,6 +6301,74 @@ mod tests {
             }
             _ => panic!("expected baggage_get_all to succeed"),
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_treats_dangling_remote_parent_as_root() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+
+        // A trace that entered iii from an external caller: the server span's
+        // parent is the remote caller's span id, which is never stored here.
+        // Its child (parent present in the store) is NOT a root.
+        span_storage.add_spans(vec![
+            make_span(
+                "t-remote",
+                "s-http",
+                Some("remoteparent0001"),
+                "POST /x",
+                "iii-engine",
+                1_000_000_000,
+                1_100_000_000,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "t-remote",
+                "s-child",
+                Some("s-http"),
+                "execute fn",
+                "worker",
+                1_010_000_000,
+                1_090_000_000,
+                "OK",
+                vec![],
+            ),
+        ]);
+
+        let input = TracesListInput {
+            trace_id: None,
+            offset: Some(0),
+            limit: Some(10),
+            service_name: None,
+            name: None,
+            status: None,
+            min_duration_ms: None,
+            max_duration_ms: None,
+            start_time: None,
+            end_time: None,
+            sort_by: None,
+            sort_order: None,
+            attributes: None,
+            include_internal: Some(false),
+            search_all_spans: None,
+        };
+
+        let spans = match module.list_traces(input).await {
+            FunctionResult::Success(v) => serde_json::to_value(&v).unwrap()["spans"]
+                .as_array()
+                .expect("spans array")
+                .clone(),
+            _ => panic!("expected list_traces success"),
+        };
+
+        // Only the dangling-parent server span surfaces as a root.
+        assert_eq!(spans.len(), 1, "dangling-parent span must be a root");
+        assert_eq!(spans[0]["name"].as_str().unwrap(), "POST /x");
     }
 
     #[tokio::test]

@@ -30,7 +30,8 @@ use common::queue_helpers::{
     register_payload_capturing_function, register_slow_function,
 };
 use common::rabbitmq_helpers::{
-    get_rabbitmq, rabbitmq_queue_config, rabbitmq_queue_config_custom, test_prefix,
+    get_rabbitmq, rabbitmq_priority_queue_config, rabbitmq_priority_topic_config,
+    rabbitmq_queue_config, rabbitmq_queue_config_custom, test_prefix,
 };
 
 // ---------------------------------------------------------------------------
@@ -1190,7 +1191,7 @@ fn register_rmq_capturing_function(
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let cap = captured.clone();
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input, _session| {
+        handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
             let rec = cap.clone();
             Box::pin(async move {
                 rec.lock().await.push(input);
@@ -1213,7 +1214,7 @@ fn register_rmq_counting_fn(engine: &Arc<Engine>, function_id: &str) -> Arc<Atom
     let counter = Arc::new(AtomicU64::new(0));
     let cnt = counter.clone();
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input, _session| {
+        handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
             let c = cnt.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -1419,5 +1420,293 @@ async fn rmq_fanout_dlq_per_function() {
     assert!(
         fail_count.load(Ordering::SeqCst) >= 1,
         "failing function should have been invoked at least once"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Priority queue tests
+// ---------------------------------------------------------------------------
+
+/// Registers a "gate" handler for the priority ordering tests. It records each
+/// message's `priority` field into `order`. The FIRST message it receives (the
+/// primer) fires `started` and then blocks on `release`, so the test can build a
+/// full backlog at the broker while the consumer holds one unacked message
+/// (prefetch must be 1). The backlog then drains highest-priority-first, which is
+/// what makes the ordering assertion deterministic.
+fn register_priority_gate_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    order: Arc<Mutex<Vec<u64>>>,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+) {
+    let is_first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
+            let order = order.clone();
+            let started = started.clone();
+            let release = release.clone();
+            let is_first = is_first.clone();
+            Box::pin(async move {
+                let p = input.get("priority").and_then(|v| v.as_u64()).unwrap_or(0);
+                if is_first.swap(false, Ordering::SeqCst) {
+                    started.notify_one();
+                    release.notified().await;
+                }
+                order.lock().await.push(p);
+                FunctionResult::Success(Some(json!({ "ok": true })))
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("priority gate test handler".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+}
+
+/// A priority function queue (`concurrency: 1`) drains the highest-priority
+/// message first. The primer is held unacked while the rest of the backlog is
+/// enqueued, so the broker reorders by priority on delivery.
+#[tokio::test]
+async fn rmq_priority_queue_orders_by_priority() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let queue = format!("{prefix}-priority");
+
+    let engine = {
+        iii::workers::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let order: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    register_priority_gate_function(
+        &engine,
+        "test::rmq_priority",
+        order.clone(),
+        started.clone(),
+        release.clone(),
+    );
+
+    let module = QueueWorker::create(
+        engine.clone(),
+        Some(rabbitmq_priority_queue_config(
+            &ctx.amqp_url,
+            &prefix,
+            10,
+            "priority",
+        )),
+    )
+    .await
+    .expect("QueueWorker::create should succeed");
+    module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
+
+    // Primer (lowest priority): grabbed first and held unacked while we build the
+    // backlog. prefetch=1 (concurrency=1) keeps the broker from delivering more.
+    enqueue(
+        &engine,
+        &queue,
+        "test::rmq_priority",
+        json!({ "priority": 0 }),
+    )
+    .await
+    .expect("enqueue primer should succeed");
+
+    tokio::time::timeout(Duration::from_secs(10), started.notified())
+        .await
+        .expect("primer should be picked up by the consumer");
+
+    // Enqueue the rest, scrambled, while the consumer is blocked on the primer.
+    for p in [3u64, 1, 5, 2, 4] {
+        enqueue(
+            &engine,
+            &queue,
+            "test::rmq_priority",
+            json!({ "priority": p }),
+        )
+        .await
+        .expect("enqueue should succeed");
+    }
+    // Let the broker enqueue the whole backlog before releasing the primer.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    release.notify_one();
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let recorded = order.lock().await;
+    assert_eq!(
+        *recorded,
+        vec![0, 5, 4, 3, 2, 1],
+        "primer runs first, then the backlog drains highest-priority-first"
+    );
+}
+
+/// A priority queue is declared with `x-max-priority` on its main and retry
+/// queues (so priority survives retries); the DLQ stays a plain queue.
+#[tokio::test]
+async fn rmq_priority_queue_topology_declares_x_max_priority() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let queue = format!("{prefix}-priority");
+
+    let engine = {
+        iii::workers::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let module = QueueWorker::create(
+        engine.clone(),
+        Some(rabbitmq_priority_queue_config(
+            &ctx.amqp_url,
+            &prefix,
+            7,
+            "priority",
+        )),
+    )
+    .await
+    .expect("QueueWorker::create should succeed");
+    module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
+
+    let client = reqwest::Client::new();
+    let fetch_args = |q: String| {
+        let client = client.clone();
+        let mgmt = ctx.mgmt_url.clone();
+        async move {
+            let resp: Value = client
+                .get(format!("{mgmt}/api/queues/%2f/{q}"))
+                .basic_auth("guest", Some("guest"))
+                .send()
+                .await
+                .expect("management API request should succeed")
+                .json()
+                .await
+                .expect("management API response should be valid JSON");
+            resp
+        }
+    };
+
+    let main = fetch_args(format!("iii.__fn_queue::{queue}.queue")).await;
+    assert_eq!(
+        main["arguments"]["x-max-priority"].as_u64(),
+        Some(7),
+        "main queue should declare x-max-priority=7"
+    );
+
+    let retry = fetch_args(format!("iii.__fn_queue::{queue}::retry.queue")).await;
+    assert_eq!(
+        retry["arguments"]["x-max-priority"].as_u64(),
+        Some(7),
+        "retry queue should declare x-max-priority=7 so priority survives retries"
+    );
+
+    let dlq = fetch_args(format!("iii.__fn_queue::{queue}::dlq.queue")).await;
+    assert!(
+        dlq["arguments"].get("x-max-priority").is_none()
+            || dlq["arguments"]["x-max-priority"].is_null(),
+        "DLQ should not be a priority queue, got args: {}",
+        dlq["arguments"]
+    );
+}
+
+/// A subscriber (topic fanout) queue declared with `maxPriority` drains
+/// highest-priority-first. The priority value is resolved at publish time from
+/// the adapter-level `priority_field`.
+#[tokio::test]
+async fn rmq_subscriber_priority_orders_by_priority() {
+    use common::queue_helpers::enqueue_to_topic;
+    use iii::trigger::Trigger;
+
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let topic = format!("{prefix}-prio-topic");
+
+    let engine = {
+        iii::workers::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let order: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    register_priority_gate_function(
+        &engine,
+        "test::rmq_sub_priority",
+        order.clone(),
+        started.clone(),
+        release.clone(),
+    );
+
+    let module = QueueWorker::create(
+        engine.clone(),
+        Some(rabbitmq_priority_topic_config(&ctx.amqp_url, "priority")),
+    )
+    .await
+    .expect("QueueWorker::create should succeed");
+    module.register_functions(engine.clone());
+    module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
+
+    // Subscribe with a priority queue (maxPriority) and prefetch 1 (concurrency).
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("trig-{}", Uuid::new_v4()),
+            trigger_type: "durable:subscriber".to_string(),
+            function_id: "test::rmq_sub_priority".to_string(),
+            config: json!({
+                "topic": &topic,
+                "queue_config": { "maxPriority": 10, "concurrency": 1 }
+            }),
+            worker_id: None,
+            metadata: None,
+        })
+        .await
+        .expect("register trigger should succeed");
+
+    // Let the subscriber queue get declared and its consumer attach.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    enqueue_to_topic(&engine, &topic, json!({ "priority": 0 }))
+        .await
+        .expect("enqueue primer should succeed");
+
+    tokio::time::timeout(Duration::from_secs(10), started.notified())
+        .await
+        .expect("primer should be picked up by the subscriber");
+
+    for p in [3u64, 1, 5, 2, 4] {
+        enqueue_to_topic(&engine, &topic, json!({ "priority": p }))
+            .await
+            .expect("enqueue should succeed");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    release.notify_one();
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let recorded = order.lock().await;
+    assert_eq!(
+        *recorded,
+        vec![0, 5, 4, 3, 2, 1],
+        "subscriber priority queue should drain highest-priority-first"
     );
 }

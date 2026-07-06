@@ -262,6 +262,201 @@ async fn port_change_rebinds_the_listener() {
     }
 }
 
+// #1916: a templated *integer* port (`port: ${VAR:NNNN}`) must coerce on read
+// and drive a real rebind, exactly like a literal integer. Pre-fix the value
+// arrived as the string "NNNN", `serde_json::from_value::<RestApiConfig>` failed,
+// and the worker silently kept its previous config — so no rebind ever happened.
+#[tokio::test]
+async fn templated_port_change_rebinds_the_listener() {
+    let _serial = PORT_SERIAL.lock().await;
+    // SAFETY: runs before the harness spawns any task; the var is scrubbed so
+    // the `${VAR:default}` default branch is what we exercise.
+    unsafe { std::env::remove_var("HTTP_CFG_E2E_PORT") };
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let port_a = free_port();
+    let port_b = free_port();
+    assert_ne!(port_a, port_b);
+
+    let _worker = start_http_worker(&harness, json!({ "host": "127.0.0.1", "port": port_a })).await;
+    tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+        .await
+        .expect("initial port accepts connections");
+
+    // `set_value` panics if the set is rejected, so this also asserts that the
+    // templated port passes validation (run against the coerced integer, not
+    // the raw string).
+    set_value(
+        &harness,
+        json!({ "host": "127.0.0.1", "port": format!("${{HTTP_CFG_E2E_PORT:{port_b}}}") }),
+    )
+    .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port_b))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("timed out waiting for rebind to templated port {port_b}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // The stored value keeps the placeholder verbatim for later re-evaluation.
+    let raw = harness
+        .engine
+        .call(
+            "configuration::get",
+            json!({ "id": "iii-http", "raw": true }),
+        )
+        .await
+        .expect("configuration::get raw")
+        .expect("get returns a body");
+    assert_eq!(
+        raw["value"]["port"],
+        format!("${{HTTP_CFG_E2E_PORT:{port_b}}}")
+    );
+}
+
+// Same as `port_change_rebinds_the_listener`, but the change arrives as an
+// external FILE EDIT (hot-reload via the directory watcher) rather than a
+// `configuration::set` call. Guards that the file-edit path also tears the old
+// listener down — the path behind the "old port stays bound" report.
+#[tokio::test]
+async fn port_change_via_file_edit_rebinds_and_unbinds_old_port() {
+    let _serial = PORT_SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let port_a = free_port();
+    let port_b = free_port();
+    assert_ne!(port_a, port_b);
+
+    let _worker = start_http_worker(&harness, json!({ "host": "127.0.0.1", "port": port_a })).await;
+    tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+        .await
+        .expect("initial port accepts connections");
+
+    // Edit the persisted entry on disk directly. The configuration worker's
+    // watcher (started by `build_harness`) picks it up and fans out a
+    // `configuration:updated` event, which drives the same rebind path as a
+    // `set`. JSON is valid YAML, so `serde_yaml` parses this entry; `host`+`port`
+    // is a valid value (it's exactly what the worker was seeded with).
+    let path = dir.path().join("iii-http.yaml");
+    let entry = json!({
+        "id": "iii-http",
+        "name": "iii-http",
+        "description": "",
+        "value": { "host": "127.0.0.1", "port": port_b }
+    });
+    tokio::fs::write(&path, serde_json::to_string(&entry).unwrap())
+        .await
+        .expect("write the external edit");
+
+    // The new port comes up (watcher debounce ~500ms + rebind).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port_b))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("timed out waiting for hot-reload rebind to port {port_b}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // The old listener must be torn down.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+            .await
+            .is_err()
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("old port {port_a} still accepting after a file-edit rebind");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+// A port change must CLOSE connections already open on the old port, not just
+// stop accepting new ones. A browser holds an HTTP keep-alive connection open
+// and reuses it on refresh; before per-server graceful shutdown, that reused
+// connection kept serving the old port. The old server is now gracefully shut
+// down on rebind, which closes its idle keep-alive connections.
+#[tokio::test]
+async fn port_change_closes_open_keepalive_connection_on_old_port() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let _serial = PORT_SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let port_a = free_port();
+    let port_b = free_port();
+    assert_ne!(port_a, port_b);
+
+    let _worker = start_http_worker(&harness, json!({ "host": "127.0.0.1", "port": port_a })).await;
+
+    // Open a keep-alive connection to the old port and complete one request, so
+    // the connection is live and idle — exactly what a browser holds open.
+    let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port_a))
+        .await
+        .expect("connect to old port");
+    conn.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
+        .await
+        .expect("write request to old port");
+    let mut buf = [0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(5), conn.read(&mut buf))
+        .await
+        .expect("first response arrives in time")
+        .expect("read first response");
+    assert!(n > 0, "the old server answered the first request");
+
+    // Change the port (drives the same rebind path as a file edit).
+    set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
+
+    // New port comes up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port_b))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("new port {port_b} never came up");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // The previously-open keep-alive connection to the OLD port must now be
+    // closed by the old server's graceful shutdown — a read returns EOF (0).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout(Duration::from_millis(250), conn.read(&mut buf)).await {
+            Ok(Ok(0)) => break,  // EOF: server closed the keep-alive connection
+            Ok(Err(_)) => break, // connection reset/closed
+            Ok(Ok(_)) => {}      // leftover response bytes; keep reading
+            Err(_) => {}         // read timed out; not closed yet — keep waiting
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("the old keep-alive connection was not closed after the port change");
+        }
+    }
+}
+
 #[tokio::test]
 async fn env_placeholders_expand_on_read() {
     // Held for the whole test: serializes port use and also guards the

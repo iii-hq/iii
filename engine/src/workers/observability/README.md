@@ -53,7 +53,7 @@ after first boot, edit the entry (console, or `configuration::set
 alone has no effect anymore.
 
 With the default file-backed adapter the entry persists at
-`./data/configuration/iii-observability.yaml` and is read again at every
+`./config/iii-observability.yaml` and is read again at every
 engine start — *before* logging/tracing init — so even restart-tier fields
 edited at runtime apply on the next start. `${VAR:default}` placeholders work
 in string fields and are expanded on read.

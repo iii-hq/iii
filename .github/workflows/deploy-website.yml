@@ -92,6 +92,35 @@ jobs:
             --include "AGENTS.md" \
             --exclude "blog/*"
 
+      # Keep the CloudFront KeyValueStore route map (pretty URL → .html) in sync
+      # with the website/*.html files we just uploaded. This is what lets a new
+      # page work without a `terraform apply` (MOT-3669): the redirects function
+      # reads this store at the edge. Runs AFTER the HTML sync so a key is never
+      # published before its object exists. `concurrency: deploy-website`
+      # serializes deploys, so the describe-time ETag stays valid for update-keys.
+      - name: Sync pretty-URL route map to CloudFront KeyValueStore
+        if: ${{ vars.CF_KVS_ARN != '' }}
+        env:
+          KVS_ARN: ${{ vars.CF_KVS_ARN }}
+        run: |
+          set -euo pipefail
+          etag=$(aws cloudfront-keyvaluestore describe-key-value-store \
+            --kvs-arn "$KVS_ARN" --query ETag --output text)
+          aws cloudfront-keyvaluestore list-keys \
+            --kvs-arn "$KVS_ARN" --query 'Items' --output json > /tmp/kvs-current.json
+          ops=$(pnpm --filter iii-website exec tsx scripts/routes-kvs.ts --current /tmp/kvs-current.json)
+          puts=$(jq -c '.Puts' <<<"$ops")
+          deletes=$(jq -c '.Deletes' <<<"$ops")
+          if [ "$puts" = '[]' ] && [ "$deletes" = '[]' ]; then
+            echo "KVS route map already in sync; nothing to update."
+            exit 0
+          fi
+          args=(--kvs-arn "$KVS_ARN" --if-match "$etag")
+          [ "$puts" != '[]' ] && args+=(--puts "$puts")
+          [ "$deletes" != '[]' ] && args+=(--deletes "$deletes")
+          aws cloudfront-keyvaluestore update-keys "${args[@]}"
+          echo "KVS route map updated. puts=$puts deletes=$deletes"
+
       # Blog assets under _astro/ are content-hashed by Astro, so they're
       # safe to mark immutable. HTML and rss.xml must revalidate so new posts
       # surface immediately after the CloudFront invalidation.

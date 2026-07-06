@@ -97,7 +97,20 @@ export function rustTypeToString(type: any): string {
       ?.map((b: any) => {
         const t = b.trait
         let name = t?.path ?? t?.name ?? '?'
-        return name.replace(/^crate::[\w:]+::/, '')
+        name = name.replace(/^crate::[\w:]+::/, '')
+        if (t?.args?.parenthesized) {
+          const { inputs, output } = t.args.parenthesized
+          const params = (inputs ?? []).map(rustTypeToString).join(', ')
+          const ret = output ? ` -> ${rustTypeToString(output)}` : ''
+          return `${name}(${params})${ret}`
+        }
+        if (t?.args?.angle_bracketed?.args?.length) {
+          const args = t.args.angle_bracketed.args
+            .map((a: any) => (a.type ? rustTypeToString(a.type) : a.lifetime ?? '?'))
+            .join(', ')
+          return `${name}<${args}>`
+        }
+        return name
       })
       .join(' + ')
     return `dyn ${traits ?? '?'}`
@@ -121,8 +134,9 @@ function extractDocs(item: RustDocItem): string {
   if (codeBlockIdx >= 0) endIdx = Math.min(endIdx, codeBlockIdx)
   return text
     .slice(0, endIdx)
-    // Strip rustdoc intra-doc link markup: [`Foo`](path) / [`Foo`] -> `Foo`
+    // Strip rustdoc intra-doc link markup: [`Foo`](path) / [`Foo`][] / [`Foo`] -> `Foo`
     .replace(/\[(`[^`]+`)\]\([^)]*\)/g, '$1')
+    .replace(/\[(`[^`]+`)\]\[[^\]]*\]/g, '$1')
     .replace(/\[(`[^`]+`)\]/g, '$1')
     .trim()
 }

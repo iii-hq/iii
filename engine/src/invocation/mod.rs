@@ -83,6 +83,7 @@ impl InvocationHandler {
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
+        metadata: Option<Value>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
@@ -121,7 +122,7 @@ impl InvocationHandler {
                 // Tag internal vs user functions for filtering
                 "iii.function.kind" = if is_builtin { "internal" } else { "user" },
             )
-            .with_parent_headers(traceparent.as_deref(), baggage.as_deref())
+            .with_parent_headers(traceparent.as_deref(), None, baggage.as_deref())
         };
 
         // Run the dispatch under the caller's OTel context whenever one was
@@ -163,7 +164,7 @@ impl InvocationHandler {
             let metrics = get_engine_metrics();
 
             let result = function_handler
-                .call_handler(Some(invocation_id), body, session)
+                .call_handler_with_metadata(Some(invocation_id), body, session, metadata)
                 .await;
 
             // Calculate duration

@@ -24,6 +24,11 @@ pub struct Job {
     pub traceparent: Option<String>,
     #[serde(default)]
     pub baggage: Option<String>,
+    /// AMQP message priority (0..=queue `x-max-priority`). Carried on the job so
+    /// it survives requeue and DLQ-redrive republishes; stamped onto
+    /// `BasicProperties` at publish time. `None` means default priority.
+    #[serde(default)]
+    pub priority: Option<u8>,
 }
 
 impl Job {
@@ -46,7 +51,15 @@ impl Job {
                 .as_millis() as u64,
             traceparent,
             baggage,
+            priority: None,
         }
+    }
+
+    /// Attach a priority to the job (builder style). `None` leaves it at the
+    /// default priority.
+    pub fn with_priority(mut self, priority: Option<u8>) -> Self {
+        self.priority = priority;
+        self
     }
 
     pub fn increment_attempts(&mut self) {
@@ -56,6 +69,17 @@ impl Job {
     pub fn is_exhausted(&self) -> bool {
         self.attempts_made >= self.max_attempts
     }
+}
+
+/// Resolve an AMQP message priority from `data` given the configured field
+/// name. Returns `None` when no field is configured, the field is absent, or
+/// its value is not a non-negative integer. Values above 255 saturate to 255;
+/// the broker further clamps to each queue's `x-max-priority`.
+pub fn priority_from_data(data: &Value, priority_field: Option<&str>) -> Option<u8> {
+    let field = priority_field?;
+    let value = data.get(field)?;
+    let n = value.as_u64()?;
+    Some(n.min(u8::MAX as u64) as u8)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -83,6 +107,10 @@ pub struct RabbitMQConfig {
     pub max_attempts: u32,
     pub prefetch_count: u16,
     pub queue_mode: QueueMode,
+    /// Field in the message data whose integer value sets the priority of
+    /// messages published to topics (pub/sub fanout). `None` disables priority
+    /// stamping on the topic path.
+    pub priority_field: Option<String>,
 }
 
 impl Default for RabbitMQConfig {
@@ -92,6 +120,7 @@ impl Default for RabbitMQConfig {
             max_attempts: 3,
             prefetch_count: 10,
             queue_mode: QueueMode::default(),
+            priority_field: None,
         }
     }
 }
@@ -112,6 +141,9 @@ impl RabbitMQConfig {
             }
             if let Some(mode) = config.get("queue_mode").and_then(|v| v.as_str()) {
                 cfg.queue_mode = QueueMode::from_str(mode).unwrap_or_default();
+            }
+            if let Some(field) = config.get("priority_field").and_then(|v| v.as_str()) {
+                cfg.priority_field = Some(field.to_string());
             }
         }
 
@@ -136,5 +168,29 @@ mod tests {
         assert_eq!(job.attempts_made, 0);
         assert_eq!(job.max_attempts, 3);
         assert!(!job.is_exhausted());
+        assert_eq!(job.priority, None);
+    }
+
+    #[test]
+    fn test_job_with_priority() {
+        let job = Job::new("t", serde_json::json!({}), 1, None, None).with_priority(Some(7));
+        assert_eq!(job.priority, Some(7));
+    }
+
+    #[test]
+    fn test_priority_from_data() {
+        let data = serde_json::json!({ "priority": 9, "other": "x" });
+        // No field configured → None.
+        assert_eq!(priority_from_data(&data, None), None);
+        // Field present and integer.
+        assert_eq!(priority_from_data(&data, Some("priority")), Some(9));
+        // Field absent.
+        assert_eq!(priority_from_data(&data, Some("missing")), None);
+        // Non-integer value → None.
+        let str_data = serde_json::json!({ "priority": "high" });
+        assert_eq!(priority_from_data(&str_data, Some("priority")), None);
+        // Values above u8::MAX saturate.
+        let big = serde_json::json!({ "priority": 300 });
+        assert_eq!(priority_from_data(&big, Some("priority")), Some(255));
     }
 }

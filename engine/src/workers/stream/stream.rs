@@ -919,8 +919,13 @@ impl StreamWorker {
                             "Invoking trigger"
                         );
 
-                        let call_result =
-                            engine.call(&trigger.function_id, event_data.clone()).await;
+                        let call_result = engine
+                            .call_with_metadata(
+                                &trigger.function_id,
+                                event_data.clone(),
+                                trigger.metadata.clone(),
+                            )
+                            .await;
 
                         match call_result {
                             Ok(_) => {

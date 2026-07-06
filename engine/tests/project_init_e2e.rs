@@ -34,6 +34,14 @@ fn assert_compose_mounts_engine_data_volume(project: &Path) {
     );
 }
 
+fn assert_compose_reads_env_file(project_dir: &Path) {
+    let compose = std::fs::read_to_string(project_dir.join("docker-compose.yml")).unwrap();
+    assert!(
+        compose.contains("env_file: .env"),
+        "docker-compose.yml should pass the generated .env into the engine container, got:\n{compose}"
+    );
+}
+
 #[test]
 fn project_init_creates_minimum_scaffold() {
     let dir = tempdir().unwrap();
@@ -177,6 +185,7 @@ fn project_init_with_docker_flag_writes_docker_assets_with_device_id() {
     assert!(dir.path().join("docker-compose.yml").exists());
     assert!(dir.path().join(".env").exists());
     assert_compose_mounts_engine_data_volume(dir.path());
+    assert_compose_reads_env_file(dir.path());
 
     let ini = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
     let device_id_in_ini = ini
@@ -231,6 +240,7 @@ fn project_generate_docker_uses_existing_project_ini_device_id() {
         "Dockerfile should bake the existing device_id, got:\n{dockerfile}"
     );
     assert_compose_mounts_engine_data_volume(dir.path());
+    assert_compose_reads_env_file(dir.path());
 
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();
     assert!(

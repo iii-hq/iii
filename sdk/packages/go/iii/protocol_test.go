@@ -81,6 +81,27 @@ func TestGoldenFrames(t *testing.T) {
 			want: `{"type":"invokefunction","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"sync.call","data":{}}`,
 		},
 		{
+			// Per-invocation metadata rides its own "metadata" field alongside data, not
+			// folded into the payload (engine/src/protocol.rs:97-102). Present => emitted.
+			name: "invoke carries metadata when set",
+			msg: &InvokeFunctionMessage{
+				FunctionID: "audit.log",
+				Data:       json.RawMessage(`{"event":"login"}`),
+				Metadata:   json.RawMessage(`{"tenant":"acme"}`),
+			},
+			want: `{"type":"invokefunction","function_id":"audit.log","data":{"event":"login"},"metadata":{"tenant":"acme"}}`,
+		},
+		{
+			// metadata uses skip_serializing_if = Option::is_none on the engine
+			// (engine/src/protocol.rs:101), so a nil Metadata must be OMITTED, never null.
+			name: "invoke omits metadata when nil",
+			msg: &InvokeFunctionMessage{
+				FunctionID: "test.fn",
+				Data:       json.RawMessage(`{}`),
+			},
+			want: `{"type":"invokefunction","function_id":"test.fn","data":{}}`,
+		},
+		{
 			// RegisterTrigger uses the wire field "trigger_type", NOT "type"
 			// (engine/src/protocol.rs:53). This is the rename we must replicate.
 			name: "register trigger uses trigger_type field",
@@ -160,6 +181,35 @@ func TestUnmarshalRoundtrip(t *testing.T) {
 		if dec.InvokeFunction.InvocationID != nil {
 			t.Errorf("invocation_id null must decode to nil pointer (fire-and-forget), got %v", dec.InvokeFunction.InvocationID)
 		}
+	})
+
+	t.Run("invoke without metadata decodes to nil (backward compatible)", func(t *testing.T) {
+		// An older engine never sends the metadata key; serde's #[serde(default)]
+		// (engine/src/protocol.rs:101) makes that "no metadata", which on our side must be
+		// a nil RawMessage so handlers can test metadata == nil.
+		frame := `{"type":"invokefunction","invocation_id":null,"function_id":"sync.call","data":{}}`
+		dec, err := UnmarshalMessage([]byte(frame))
+		if err != nil {
+			t.Fatalf("UnmarshalMessage: %v", err)
+		}
+		if dec.InvokeFunction == nil {
+			t.Fatalf("expected invokefunction variant, got %q", dec.Type)
+		}
+		if dec.InvokeFunction.Metadata != nil {
+			t.Errorf("absent metadata must decode to nil, got %s", dec.InvokeFunction.Metadata)
+		}
+	})
+
+	t.Run("invoke with metadata decodes to its raw JSON", func(t *testing.T) {
+		frame := `{"type":"invokefunction","function_id":"audit.log","data":{"event":"login"},"metadata":{"tenant":"acme"}}`
+		dec, err := UnmarshalMessage([]byte(frame))
+		if err != nil {
+			t.Fatalf("UnmarshalMessage: %v", err)
+		}
+		if dec.InvokeFunction == nil {
+			t.Fatalf("expected invokefunction variant, got %q", dec.Type)
+		}
+		jsonEqual(t, dec.InvokeFunction.Metadata, `{"tenant":"acme"}`)
 	})
 
 	t.Run("unregister trigger without trigger_type", func(t *testing.T) {

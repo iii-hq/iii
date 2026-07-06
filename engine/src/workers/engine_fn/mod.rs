@@ -365,6 +365,50 @@ pub struct RegisterWorkerInput {
     pub isolation: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct RegisterTriggerInput {
+    /// Trigger type to bind (e.g. `cron`, `state`, `stream`, or a custom worker
+    /// trigger type).
+    pub trigger_type: String,
+    /// The function the fire is delivered to. The trigger binds directly to it;
+    /// `metadata` is delivered alongside the payload as a distinct argument.
+    pub function_id: String,
+    /// Trigger-type-specific configuration, passed through verbatim.
+    #[serde(default)]
+    pub config: Value,
+    /// Arbitrary metadata delivered to the target handler as a distinct argument
+    /// (not folded into the payload) so a (possibly shared) target function can
+    /// recover per-trigger context the engine routing otherwise drops.
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    /// Injected by the engine from the calling worker; scopes the trigger so it
+    /// is GC'd when that worker disconnects. Absent for in-process callers.
+    #[serde(rename = "_caller_worker_id", default)]
+    pub caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RegisterTriggerResult {
+    /// The id of the registered trigger; pass to `engine::unregister_trigger`.
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct UnregisterTriggerInput {
+    /// The trigger id returned by `engine::register_trigger`.
+    pub id: String,
+    /// Optional trigger-type hint; accepted for symmetry with the protocol
+    /// message but not required for the registry lookup.
+    #[serde(default)]
+    pub trigger_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct UnregisterTriggerResult {
+    /// Whether a trigger with this id existed and was removed.
+    pub removed: bool,
+}
+
 // ── Worker ──────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -392,9 +436,12 @@ impl EngineFunctionsWorker {
         for trigger in triggers_to_fire {
             let engine = self.engine.clone();
             let function_id = trigger.function_id.clone();
+            let metadata = trigger.metadata.clone();
             let data = data.clone();
             tokio::spawn(async move {
-                let _ = engine.call(&function_id, data).await;
+                let _ = engine
+                    .call_with_metadata(&function_id, data, metadata)
+                    .await;
             });
         }
     }
@@ -413,6 +460,23 @@ impl EngineFunctionsWorker {
         haystacks
             .iter()
             .any(|h| h.to_lowercase().contains(&lowered))
+    }
+
+    /// Rank a search hit by match quality: 0 = the needle anchors the id (a
+    /// `::` segment equals it, or the id starts with it), 1 = the needle is a
+    /// substring of the id, 2 = it only matched the description. Sorting by
+    /// this keeps `state::*` above functions that merely mention "state" in
+    /// their description — models read search results top-down, and pure
+    /// alphabetical order buried the relevant hits under incidental ones.
+    fn search_rank(function_id: &str, needle_lowered: &str) -> u8 {
+        let id = function_id.to_lowercase();
+        if id.starts_with(needle_lowered) || id.split("::").any(|seg| seg == needle_lowered) {
+            0
+        } else if id.contains(needle_lowered) {
+            1
+        } else {
+            2
+        }
     }
 
     fn config_summary(config: &Value) -> String {
@@ -1004,9 +1068,11 @@ impl Worker for EngineFunctionsWorker {
                             for trigger in triggers_to_fire {
                                 let engine = engine.clone();
                                 let function_id = trigger.function_id.clone();
+                                let metadata = trigger.metadata.clone();
                                 let data = functions_data.clone();
                                 tokio::spawn(async move {
-                                    let _ = engine.call(&function_id, data).await;
+                                    let _ =
+                                        engine.call_with_metadata(&function_id, data, metadata).await;
                                 });
                             }
                         }
@@ -1120,7 +1186,21 @@ impl EngineFunctionsWorker {
             });
         }
 
-        functions.sort_by(|a, b| a.function_id.cmp(&b.function_id));
+        match input.search.as_deref().filter(|s| !s.is_empty()) {
+            // Rank by match quality so id-anchored hits (`state::get`) sort
+            // above functions that merely mention the needle in their
+            // description; alphabetical within a tier.
+            Some(search) => {
+                let needle = search.to_lowercase();
+                functions.sort_by_cached_key(|f| {
+                    (
+                        Self::search_rank(&f.function_id, &needle),
+                        f.function_id.clone(),
+                    )
+                });
+            }
+            None => functions.sort_by(|a, b| a.function_id.cmp(&b.function_id)),
+        }
 
         FunctionResult::Success(FunctionsListResult { functions })
     }
@@ -1349,6 +1429,106 @@ impl EngineFunctionsWorker {
 
         FunctionResult::Success(RegisterWorkerResult { success: true })
     }
+
+    #[function(
+        id = "engine::register_trigger",
+        description = "Register a trigger that fires `function_id` directly, with `metadata` delivered to the handler as a distinct argument (not folded into the payload). Returns the trigger id (pass it to engine::unregister_trigger)."
+    )]
+    pub async fn register_trigger_fn(
+        &self,
+        input: RegisterTriggerInput,
+        session: Option<Arc<Session>>,
+    ) -> FunctionResult<RegisterTriggerResult, ErrorBody> {
+        // RBAC parity with the `Message::RegisterTrigger` path: honor the
+        // session's allowed_trigger_types when a session is present. (The
+        // on_trigger_registration hook is Message-path only and intentionally
+        // not replicated here — session-less local deployments bypass RBAC.)
+        if let Some(session) = &session
+            && let Some(allowed) = &session.allowed_trigger_types
+            && !allowed.iter().any(|t| t == &input.trigger_type)
+        {
+            return FunctionResult::Failure(ErrorBody {
+                code: "FORBIDDEN".into(),
+                message: format!(
+                    "Trigger type '{}' is not allowed for this session.",
+                    input.trigger_type
+                ),
+                stacktrace: None,
+            });
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+
+        // Prefix parity with the `Message::RegisterTrigger` path: a prefixed
+        // session's functions are stored under `prefix::id`, so the trigger
+        // must bind to the prefixed target or firing would miss the real
+        // function.
+        let mut function_id = input.function_id;
+        if let Some(prefix) = session
+            .as_ref()
+            .and_then(|s| s.function_registration_prefix.as_ref())
+        {
+            function_id = format!("{prefix}::{function_id}");
+        }
+
+        // Bind the trigger straight to the target function. `metadata` rides on
+        // the `Trigger` and is delivered to the handler as a distinct argument
+        // at fire time (see the trigger-fire paths) — no proxy function, so
+        // nothing to leak or GC, and the payload is left untouched.
+        //
+        // Ownership: deliberately NOT stamped with the caller's worker id.
+        // Function-path registrations are durable engine-side state ("when X
+        // happens, do Y"), removed only by explicit `engine::unregister_trigger`
+        // — a CLI's millisecond-lived connection or an agent proxy's restart
+        // must not reap them. A worker's own lifecycle bindings go through the
+        // `Message::RegisterTrigger` path, which keeps connection ownership and
+        // the disconnect GC.
+        let trigger = Trigger {
+            id: id.clone(),
+            trigger_type: input.trigger_type,
+            function_id,
+            config: input.config,
+            worker_id: None,
+            metadata: input.metadata,
+        };
+
+        if let Err(err) = self.engine.trigger_registry.register_trigger(trigger).await {
+            return FunctionResult::Failure(ErrorBody {
+                code: "trigger_registration_failed".into(),
+                message: err.to_string(),
+                stacktrace: None,
+            });
+        }
+
+        FunctionResult::Success(RegisterTriggerResult { id })
+    }
+
+    #[function(
+        id = "engine::unregister_trigger",
+        description = "Unregister a trigger by id. Idempotent; reports whether it existed."
+    )]
+    pub async fn unregister_trigger_fn(
+        &self,
+        input: UnregisterTriggerInput,
+    ) -> FunctionResult<UnregisterTriggerResult, ErrorBody> {
+        let removed = match self
+            .engine
+            .trigger_registry
+            .unregister_trigger(input.id.clone(), input.trigger_type)
+            .await
+        {
+            Ok(removed) => removed,
+            Err(err) => {
+                return FunctionResult::Failure(ErrorBody {
+                    code: "unregister_failed".into(),
+                    message: err.to_string(),
+                    stacktrace: None,
+                });
+            }
+        };
+
+        FunctionResult::Success(UnregisterTriggerResult { removed })
+    }
 }
 
 crate::register_worker!(
@@ -1361,6 +1541,7 @@ crate::register_worker!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::function::{Function, HandlerFn};
     use crate::workers::observability::metrics::ensure_default_meter;
     use crate::workers::observability::metrics::{
         StoredDataPoint, StoredMetric, StoredMetricType, StoredNumberDataPoint, get_metric_storage,
@@ -2018,6 +2199,39 @@ mod tests {
     }
 
     // ── functions_list service tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn functions_list_search_ranks_id_hits_above_description_hits() {
+        let (engine, module) = setup_engine_and_module();
+
+        // Alphabetically, coder::move sorts first — but it only matches
+        // "state" via its description and must rank LAST.
+        register_simple_function(&engine, "coder::move", Some("Move files; preserves state."));
+        register_simple_function(&engine, "restate::apply", None); // id substring
+        register_simple_function(&engine, "state::get", None); // id segment
+        register_simple_function(&engine, "unrelated::fn", None); // no match
+
+        let result = module
+            .functions_list(
+                FunctionsListInput {
+                    search: Some("state".to_string()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match result {
+            FunctionResult::Success(result) => {
+                let ids: Vec<&str> = result
+                    .functions
+                    .iter()
+                    .map(|f| f.function_id.as_str())
+                    .collect();
+                assert_eq!(ids, vec!["state::get", "restate::apply", "coder::move"]);
+            }
+            _ => panic!("expected functions_list success"),
+        }
+    }
 
     #[tokio::test]
     async fn functions_list_filters_internal_by_default() {
@@ -3035,5 +3249,239 @@ mod tests {
     async fn destroy_returns_ok() {
         let (_engine, module) = setup_engine_and_module();
         module.destroy().await.unwrap();
+    }
+
+    // ── engine::register_trigger / engine::unregister_trigger ────────────
+
+    /// Registers `test-type` (with the module itself as registrator) so
+    /// `register_trigger_fn` can bind against it.
+    async fn register_test_trigger_type(engine: &Engine, module: &EngineFunctionsWorker) {
+        engine
+            .trigger_registry
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "test-type",
+                "Test trigger type",
+                Box::new(module.clone()),
+                None,
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn register_trigger_fn_binds_directly_and_delivers_metadata_as_arg() {
+        let (engine, module) = setup_engine_and_module();
+        register_test_trigger_type(&engine, &module).await;
+
+        // Target function records the payload AND the metadata sidecar it
+        // receives as a distinct argument.
+        let recorded_input: Arc<std::sync::Mutex<Option<Value>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let recorded_meta: Arc<std::sync::Mutex<Option<Value>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let ri = recorded_input.clone();
+        let rm = recorded_meta.clone();
+        let handler: Arc<HandlerFn> = Arc::new(move |_inv, input, _session, metadata| {
+            let ri = ri.clone();
+            let rm = rm.clone();
+            Box::pin(async move {
+                *ri.lock().unwrap() = Some(input);
+                *rm.lock().unwrap() = metadata;
+                FunctionResult::Success(None)
+            })
+        });
+        engine.functions.register_function(
+            "test::target".to_string(),
+            Function {
+                handler,
+                _function_id: "test::target".to_string(),
+                _description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+        );
+
+        let wid = uuid::Uuid::new_v4();
+        let meta = serde_json::json!({ "session_id": "s_1", "subscription_id": "sub_1" });
+        let id = match module
+            .register_trigger_fn(
+                RegisterTriggerInput {
+                    trigger_type: "test-type".to_string(),
+                    function_id: "test::target".to_string(),
+                    config: serde_json::json!({}),
+                    metadata: Some(meta.clone()),
+                    caller_worker_id: Some(wid.to_string()),
+                },
+                None,
+            )
+            .await
+        {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected register success"),
+        };
+
+        // The trigger binds DIRECTLY to the target — no proxy function exists —
+        // and carries the metadata. Function-path registrations are durable:
+        // the caller's connection is deliberately NOT recorded as owner, so
+        // the caller's disconnect can never reap the binding.
+        let trig = engine
+            .trigger_registry
+            .triggers
+            .get(&id)
+            .expect("trigger registered");
+        assert_eq!(trig.function_id, "test::target");
+        assert_eq!(trig.worker_id, None);
+        assert_eq!(trig.metadata, Some(meta.clone()));
+
+        // Fire the way a registrator does: metadata travels explicitly, NOT
+        // folded into the payload.
+        let event = serde_json::json!({ "event_type": "set", "key": "k", "value": 1 });
+        engine
+            .call_with_metadata(&trig.function_id, event.clone(), trig.metadata.clone())
+            .await
+            .expect("fire ok");
+
+        let got_input = recorded_input.lock().unwrap().clone().expect("invoked");
+        let got_meta = recorded_meta.lock().unwrap().clone();
+        // Payload is untouched — no `__metadata` smuggled in.
+        assert_eq!(got_input, event);
+        assert!(got_input.get("__metadata").is_none());
+        // Metadata arrived as the separate argument.
+        assert_eq!(got_meta, Some(meta));
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_fn_removes_trigger_and_is_idempotent() {
+        let (engine, module) = setup_engine_and_module();
+        register_test_trigger_type(&engine, &module).await;
+        register_simple_function(&engine, "test::target", None);
+
+        let id = match module
+            .register_trigger_fn(
+                RegisterTriggerInput {
+                    trigger_type: "test-type".to_string(),
+                    function_id: "test::target".to_string(),
+                    config: serde_json::json!({}),
+                    metadata: Some(serde_json::json!({ "session_id": "s" })),
+                    caller_worker_id: None,
+                },
+                None,
+            )
+            .await
+        {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected register success"),
+        };
+        assert!(engine.trigger_registry.triggers.contains_key(&id));
+
+        // First unregister removes the trigger.
+        match module
+            .unregister_trigger_fn(UnregisterTriggerInput {
+                id: id.clone(),
+                trigger_type: None,
+            })
+            .await
+        {
+            FunctionResult::Success(r) => assert!(r.removed),
+            _ => panic!("expected unregister success"),
+        }
+        assert!(!engine.trigger_registry.triggers.contains_key(&id));
+
+        // Second unregister is a no-op reporting removed: false.
+        match module
+            .unregister_trigger_fn(UnregisterTriggerInput {
+                id,
+                trigger_type: None,
+            })
+            .await
+        {
+            FunctionResult::Success(r) => assert!(!r.removed),
+            _ => panic!("expected idempotent unregister success"),
+        }
+    }
+
+    /// Builds a session whose `function_registration_prefix` is set, mirroring
+    /// the message-path prefix tests in `engine::mod`.
+    fn session_with_prefix(
+        engine: Arc<Engine>,
+        prefix: &str,
+    ) -> Arc<crate::workers::worker::rbac_session::Session> {
+        use crate::workers::worker::{WorkerManagerConfig, rbac_session::Session};
+        Arc::new(Session {
+            engine,
+            config: Arc::new(WorkerManagerConfig::default()),
+            ip_address: "127.0.0.1".to_string(),
+            session_id: uuid::Uuid::new_v4(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![],
+            allowed_trigger_types: None,
+            allow_function_registration: true,
+            allow_trigger_type_registration: true,
+            context: serde_json::json!({}),
+            function_registration_prefix: Some(prefix.to_string()),
+        })
+    }
+
+    /// A prefixed session registers its functions under `prefix::id`, so a
+    /// trigger bound via `engine::register_trigger` must target the prefixed
+    /// function — parity with the `Message::RegisterTrigger` path. Before the
+    /// fix the raw id was stored and firing missed the real function.
+    #[tokio::test]
+    async fn register_trigger_fn_applies_session_function_prefix() {
+        let (engine, module) = setup_engine_and_module();
+        register_test_trigger_type(&engine, &module).await;
+        register_simple_function(&engine, "pfx::test::target", None);
+
+        let session = session_with_prefix(engine.clone(), "pfx");
+        let id = match module
+            .register_trigger_fn(
+                RegisterTriggerInput {
+                    trigger_type: "test-type".to_string(),
+                    function_id: "test::target".to_string(),
+                    config: serde_json::json!({}),
+                    metadata: None,
+                    caller_worker_id: None,
+                },
+                Some(session),
+            )
+            .await
+        {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected register success"),
+        };
+
+        let trig = engine
+            .trigger_registry
+            .triggers
+            .get(&id)
+            .expect("trigger registered");
+        assert_eq!(
+            trig.function_id, "pfx::test::target",
+            "trigger must bind to the session-prefixed function id"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_trigger_fn_unknown_type_fails_without_registering() {
+        let (engine, module) = setup_engine_and_module();
+        register_simple_function(&engine, "test::target", None);
+
+        let result = module
+            .register_trigger_fn(
+                RegisterTriggerInput {
+                    trigger_type: "no-such-type".to_string(),
+                    function_id: "test::target".to_string(),
+                    config: serde_json::json!({}),
+                    metadata: None,
+                    caller_worker_id: None,
+                },
+                None,
+            )
+            .await;
+        assert!(matches!(result, FunctionResult::Failure(_)));
+
+        // A failed bind leaves no trigger behind.
+        assert!(engine.trigger_registry.triggers.is_empty());
     }
 }

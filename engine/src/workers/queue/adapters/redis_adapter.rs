@@ -267,7 +267,11 @@ impl QueueAdapter for RedisAdapter {
                     queue = %topic_for_span,
                     otel.status_code = tracing::field::Empty,
                 )
-                .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+                .with_parent_headers(
+                    traceparent.as_deref(),
+                    None,
+                    baggage.as_deref(),
+                );
 
                 tokio::spawn(
                     async move {
@@ -353,6 +357,7 @@ impl QueueAdapter for RedisAdapter {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn publish_to_function_queue(
         &self,
         queue_name: &str,
@@ -363,6 +368,8 @@ impl QueueAdapter for RedisAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        // RabbitMQ-only feature; the redis pub/sub adapter ignores it.
+        _priority: Option<u8>,
     ) {
         let channel = format!("__queue::{}", queue_name);
         let publisher = Arc::clone(&self.publisher);

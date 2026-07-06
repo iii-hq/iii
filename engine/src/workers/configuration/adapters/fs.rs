@@ -44,8 +44,13 @@ pub(crate) const ADAPTER_NAME: &str = "fs";
 // `DEFAULT_DIRECTORY` / `FILE_EXTENSION` are `pub(crate)` so boot-time
 // persisted-config readers (e.g. the `iii-state` boot-read) resolve the same
 // on-disk location the configuration worker persists entries under.
-pub(crate) const DEFAULT_DIRECTORY: &str = "./data/configuration";
+pub(crate) const DEFAULT_DIRECTORY: &str = "./config";
 pub(crate) const FILE_EXTENSION: &str = "yaml";
+/// The previous default store location. When the resolved directory is the
+/// current default and this legacy folder still holds entries, `new` migrates
+/// them across once (a soft transition) so upgrading doesn't silently start the
+/// store from empty. An explicit `directory:` override is never touched.
+const LEGACY_DEFAULT_DIRECTORY: &str = "./data/configuration";
 
 pub struct FsAdapter {
     directory: PathBuf,
@@ -73,6 +78,13 @@ impl FsAdapter {
             )
         })?;
 
+        // Soft transition: when running on the current default location, move any
+        // entries left in the legacy default folder across once. Guarded on the
+        // default dir, so an explicit `directory:` override is never disturbed.
+        if directory.as_path() == Path::new(DEFAULT_DIRECTORY) {
+            Self::migrate_legacy_default(&directory).await;
+        }
+
         let cache = Self::load_directory(&directory).await?;
         tracing::info!(
             directory = %directory.display(),
@@ -89,6 +101,69 @@ impl FsAdapter {
 
     fn entry_path(&self, id: &str) -> PathBuf {
         self.directory.join(format!("{}.{}", id, FILE_EXTENSION))
+    }
+
+    /// One-time soft migration of `*.yaml` entries from the legacy default
+    /// store location ([`LEGACY_DEFAULT_DIRECTORY`]) into `target`.
+    async fn migrate_legacy_default(target: &Path) {
+        Self::migrate_dir(Path::new(LEGACY_DEFAULT_DIRECTORY), target).await;
+    }
+
+    /// Move every `*.yaml` entry from `legacy` into `target`. Best-effort: a
+    /// file already present in `target` is left in place (WARNING, the legacy
+    /// copy is kept so the operator can reconcile); any I/O error is logged and
+    /// the file is skipped. Never fails the adapter.
+    async fn migrate_dir(legacy: &Path, target: &Path) {
+        if legacy == target {
+            return;
+        }
+        let mut read_dir = match tokio::fs::read_dir(legacy).await {
+            Ok(rd) => rd,
+            // Legacy folder absent (a fresh install) — nothing to migrate.
+            Err(_) => return,
+        };
+
+        let mut moved = 0usize;
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some(FILE_EXTENSION)
+            {
+                continue;
+            }
+            let Some(name) = path.file_name() else {
+                continue;
+            };
+            let dest = target.join(name);
+            if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+                tracing::warn!(
+                    file = %name.to_string_lossy(),
+                    location = %target.display(),
+                    "Skipped migrating configuration file from the legacy '{}' folder: a file with that name already exists in the new location; the legacy copy was left untouched",
+                    LEGACY_DEFAULT_DIRECTORY,
+                );
+                continue;
+            }
+            match tokio::fs::rename(&path, &dest).await {
+                Ok(()) => moved += 1,
+                Err(err) => tracing::warn!(
+                    file = %name.to_string_lossy(),
+                    error = %err,
+                    "Failed to migrate configuration file from the legacy '{}' folder; leaving it in place",
+                    LEGACY_DEFAULT_DIRECTORY,
+                ),
+            }
+        }
+
+        if moved > 0 {
+            tracing::info!(
+                from = %legacy.display(),
+                to = %target.display(),
+                count = moved,
+                "The configuration store now defaults to '{}'; migrated existing entries out of the legacy '{}' folder",
+                DEFAULT_DIRECTORY,
+                LEGACY_DEFAULT_DIRECTORY,
+            );
+        }
     }
 
     async fn load_directory(dir: &Path) -> anyhow::Result<HashMap<String, ConfigurationEntry>> {
@@ -240,16 +315,25 @@ impl ConfigurationAdapter for FsAdapter {
             }
         })
         .map_err(|e| anyhow::anyhow!("failed to create configuration watcher: {}", e))?;
+        // Watch an absolute path: the macOS FSEvents backend can silently fail
+        // to deliver events for a relative path like `./config`, which is
+        // exactly the default. Canonicalize (the dir always exists by now —
+        // `new` created it) and fall back to the raw path only if that fails.
+        let watch_path = std::fs::canonicalize(&directory).unwrap_or_else(|_| directory.clone());
         watcher
-            .watch(&directory, RecursiveMode::NonRecursive)
+            .watch(&watch_path, RecursiveMode::NonRecursive)
             .map_err(|e| {
                 anyhow::anyhow!(
                     "failed to watch configuration directory '{}': {}",
-                    directory.display(),
+                    watch_path.display(),
                     e
                 )
             })?;
         *self.watcher.lock().await = Some(watcher);
+        tracing::info!(
+            directory = %watch_path.display(),
+            "Watching configuration directory for external edits (hot-reload enabled)"
+        );
 
         // Debounce loop: drains every queued raw event in a 500ms window
         // and then diffs the directory snapshot against the cache, emitting
@@ -567,6 +651,126 @@ mod tests {
             }
             other => panic!("expected Updated, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn internal_set_does_not_echo_through_watcher() {
+        // An internal `set` writes the file AND updates the adapter cache, so
+        // the watcher's diff sees disk == cache and emits nothing. This is what
+        // stops a save → reload → save loop. (An *external* edit, where the
+        // cache is stale relative to disk, still fires — see the tests above.)
+        let dir = temp_dir();
+        let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
+            .await
+            .unwrap();
+        adapter.register(sample_entry("looptest")).await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        adapter.watch(tx).await.unwrap();
+
+        adapter
+            .set("looptest", json!({ "port": 4242 }))
+            .await
+            .unwrap();
+
+        // Well past the 500ms debounce: the self-write must not surface as an
+        // external change.
+        let echoed = tokio::time::timeout(Duration::from_millis(1500), rx.recv()).await;
+        assert!(
+            echoed.is_err(),
+            "an internal set must not echo back through the watcher (would loop)"
+        );
+    }
+
+    #[tokio::test]
+    async fn migrate_dir_moves_yaml_entries_and_ignores_others() {
+        let legacy = temp_dir();
+        let target = temp_dir();
+        let stream = "id: iii-stream\nvalue:\n  port: 1\n";
+        tokio::fs::write(legacy.path().join("iii-stream.yaml"), stream)
+            .await
+            .unwrap();
+        tokio::fs::write(legacy.path().join("iii-http.yaml"), "id: iii-http\n")
+            .await
+            .unwrap();
+        // A non-yaml file must be left behind.
+        tokio::fs::write(legacy.path().join("notes.txt"), "ignore me")
+            .await
+            .unwrap();
+
+        FsAdapter::migrate_dir(legacy.path(), target.path()).await;
+
+        assert!(target.path().join("iii-stream.yaml").exists());
+        assert!(target.path().join("iii-http.yaml").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(target.path().join("iii-stream.yaml"))
+                .await
+                .unwrap(),
+            stream,
+            "content must be preserved across the move"
+        );
+        // Moved, not copied.
+        assert!(!legacy.path().join("iii-stream.yaml").exists());
+        assert!(!legacy.path().join("iii-http.yaml").exists());
+        // Non-yaml left untouched in the legacy folder.
+        assert!(!target.path().join("notes.txt").exists());
+        assert!(legacy.path().join("notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn migrate_dir_skips_conflicts_and_keeps_legacy_copy() {
+        let legacy = temp_dir();
+        let target = temp_dir();
+        tokio::fs::write(
+            legacy.path().join("iii-stream.yaml"),
+            "id: iii-stream\nvalue:\n  port: 1\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(legacy.path().join("iii-http.yaml"), "id: iii-http\n")
+            .await
+            .unwrap();
+        // The new location already has a file with the same name (different
+        // content): the migration of THAT file must be skipped (WARNING).
+        let existing = "id: iii-stream\nvalue:\n  port: 999\n";
+        tokio::fs::write(target.path().join("iii-stream.yaml"), existing)
+            .await
+            .unwrap();
+
+        FsAdapter::migrate_dir(legacy.path(), target.path()).await;
+
+        // Conflict: target keeps its own content; legacy copy is left in place.
+        assert_eq!(
+            tokio::fs::read_to_string(target.path().join("iii-stream.yaml"))
+                .await
+                .unwrap(),
+            existing,
+            "a conflicting file must not be overwritten"
+        );
+        assert!(
+            legacy.path().join("iii-stream.yaml").exists(),
+            "the conflicting legacy copy is kept for the operator to reconcile"
+        );
+        // The non-conflicting file still migrates.
+        assert!(target.path().join("iii-http.yaml").exists());
+        assert!(!legacy.path().join("iii-http.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn migrate_dir_is_a_noop_when_legacy_absent() {
+        let target = temp_dir();
+        let legacy = target.path().join("nonexistent-legacy");
+        // Must not panic or create anything.
+        FsAdapter::migrate_dir(&legacy, target.path()).await;
+        assert!(
+            tokio::fs::read_dir(target.path())
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -136,6 +136,7 @@ async fn wait_for_worker_ready(ws_url: &str) {
                 traceparent: None,
                 baggage: None,
                 action: None,
+                metadata: None,
             };
             let _ = socket
                 .send(WsMessage::Text(
@@ -259,6 +260,7 @@ async fn invoke_and_wait(
         traceparent: None,
         baggage: None,
         action: None,
+        metadata: None,
     };
     writer
         .send(WsMessage::Text(

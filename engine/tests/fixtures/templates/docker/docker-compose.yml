@@ -11,6 +11,7 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - iii_data:/app/data
+    env_file: .env
     environment:
       - RUST_LOG=info
       - III_EXECUTION_CONTEXT=docker

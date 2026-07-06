@@ -94,6 +94,12 @@ pub enum Message {
         baggage: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         action: Option<TriggerAction>,
+        /// Per-invocation metadata sidecar, delivered to the target handler as a
+        /// distinct argument (not folded into `data`). Optional and additive:
+        /// omitted when absent, so older peers that don't send/expect it stay
+        /// wire-compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     InvocationResult {
         invocation_id: Uuid,
@@ -385,6 +391,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
         let json = serde_json::to_string(&msg).expect("message should serialize");
 
@@ -400,5 +407,42 @@ mod tests {
             !json.contains("\"baggage\""),
             "baggage field should be omitted when None, got: {json}"
         );
+        assert!(
+            !json.contains("\"metadata\""),
+            "metadata field should be omitted when None, got: {json}"
+        );
+    }
+
+    #[test]
+    fn invoke_function_metadata_roundtrips_and_is_backward_compatible() {
+        // Present: metadata survives a serialize → deserialize round-trip.
+        let msg = Message::InvokeFunction {
+            invocation_id: None,
+            function_id: "test.fn".to_string(),
+            data: serde_json::json!({ "k": 1 }),
+            traceparent: None,
+            baggage: None,
+            action: None,
+            metadata: Some(serde_json::json!({ "session_id": "s_1" })),
+        };
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(json.contains("\"metadata\""));
+        match serde_json::from_str::<Message>(&json).expect("deserialize") {
+            Message::InvokeFunction { metadata, data, .. } => {
+                assert_eq!(metadata, Some(serde_json::json!({ "session_id": "s_1" })));
+                // Payload is untouched — metadata is not folded into `data`.
+                assert_eq!(data, serde_json::json!({ "k": 1 }));
+            }
+            _ => panic!("expected InvokeFunction"),
+        }
+
+        // Backward compatible: a payload from an older peer that omits the
+        // field deserializes to `metadata: None`.
+        let legacy =
+            r#"{"type":"invokefunction","invocation_id":null,"function_id":"f","data":{}}"#;
+        match serde_json::from_str::<Message>(legacy).expect("deserialize legacy") {
+            Message::InvokeFunction { metadata, .. } => assert_eq!(metadata, None),
+            _ => panic!("expected InvokeFunction"),
+        }
     }
 }

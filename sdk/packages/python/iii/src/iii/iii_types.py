@@ -92,7 +92,7 @@ class RegisterTriggerInput(BaseModel):
     type: str = Field(description="Trigger type identifier.")
     function_id: str = Field(description="ID of the function this trigger invokes.")
     config: Any = Field(default=None, description="Trigger-type-specific configuration.")
-    metadata: dict[str, Any] | None = Field(
+    metadata: Any | None = Field(
         default=None, description="Arbitrary metadata attached to the trigger."
     )
 
@@ -104,7 +104,7 @@ class RegisterTriggerMessage(BaseModel):
     trigger_type: str = Field(alias="trigger_type")
     function_id: str = Field()
     config: Any
-    metadata: dict[str, Any] | None = Field(default=None)
+    metadata: Any | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
 
 
@@ -148,7 +148,7 @@ class RegisterFunctionInput(BaseModel):
     response_format: RegisterFunctionFormat | dict[str, Any] | None = Field(
         default=None, description="Schema describing expected output."
     )
-    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
+    metadata: Any | None = Field(default=None, description="Arbitrary metadata attached to the function.")
     invocation: HttpInvocationConfig | None = Field(
         default=None,
         description="HTTP invocation config for externally hosted functions.",
@@ -162,7 +162,7 @@ class RegisterFunctionMessage(BaseModel):
     description: str | None = None
     request_format: RegisterFunctionFormat | dict[str, Any] | None = Field(default=None)
     response_format: RegisterFunctionFormat | dict[str, Any] | None = Field(default=None)
-    metadata: dict[str, Any] | None = None
+    metadata: Any | None = None
     invocation: HttpInvocationConfig | None = None
     message_type: MessageType = Field(default=MessageType.REGISTER_FUNCTION, alias="type")
 
@@ -223,6 +223,8 @@ class TriggerRequest(BaseModel):
         action: Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)``
             for queue, ``TriggerAction.Void()`` for fire-and-forget.
         timeout_ms: Override the default invocation timeout.
+        metadata: Arbitrary per-invocation metadata delivered to the handler
+            as a separate channel (not folded into ``payload``).
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
@@ -236,6 +238,10 @@ class TriggerRequest(BaseModel):
         ),
     )
     timeout_ms: int | None = Field(default=None, description="Override the default invocation timeout.")
+    metadata: Any | None = Field(
+        default=None,
+        description="Arbitrary per-invocation metadata delivered to the handler.",
+    )
 
 
 class InvokeFunctionMessage(BaseModel):
@@ -243,6 +249,7 @@ class InvokeFunctionMessage(BaseModel):
 
     function_id: str = Field()
     data: Any
+    metadata: Any | None = Field(default=None)
     invocation_id: str | None = Field(default=None)
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)

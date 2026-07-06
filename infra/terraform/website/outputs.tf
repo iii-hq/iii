@@ -28,6 +28,11 @@ output "cert_arn" {
   value       = aws_acm_certificate.site.arn
 }
 
+output "routes_kvs_arn" {
+  description = "ARN of the CloudFront KeyValueStore holding the pretty-URL route map — set as GitHub repo variable CF_KVS_ARN so deploy-website.yml can sync it"
+  value       = aws_cloudfront_key_value_store.routes.arn
+}
+
 output "github_deploy_role_arn" {
   description = "IAM role ARN assumed by GitHub Actions from iii-hq/iii main branch + production env — set as GitHub secret AWS_DEPLOY_ROLE_ARN"
   value       = aws_iam_role.github_deploy_website.arn

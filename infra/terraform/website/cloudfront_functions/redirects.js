@@ -1,5 +1,7 @@
 // Viewer-request handler for the default (S3) behavior. Tested in redirects.test.js.
 
+import cf from 'cloudfront'
+
 function redirect(location) {
   return {
     statusCode: 301,
@@ -55,9 +57,16 @@ function serializeQuerystring(qs) {
   return parts.length ? '?' + parts.join('&') : ''
 }
 
+// Pretty-URL route map (/<page> → /<page>.html) lives in a CloudFront
+// KeyValueStore, populated by deploy-website.yml from the set of website/*.html
+// files. Adding a page needs no code change and no `terraform apply` — see
+// infra/terraform/website/README.md. The function is associated with exactly
+// one store, so cf.kvs() needs no store id.
+var routes = cf.kvs()
+
 // biome-ignore lint/correctness/noUnusedVariables: CloudFront Function entry point
 // biome-ignore lint/complexity/useOptionalChain: cloudfront-js-2.0 does NOT support optional chaining
-function handler(event) {
+async function handler(event) {
   var request = event.request
   var uri = request.uri
   var host = request.headers && request.headers.host ? request.headers.host.value : undefined
@@ -67,18 +76,6 @@ function handler(event) {
   }
 
   if (uri.indexOf('/.well-known/') === 0) return request
-
-  // Pretty URLs → matching *.html objects in S3 (Option A). Add a key when you
-  // ship a new top-level page as `pagename.html`.
-  var htmlPretty = {
-    '/manifesto': '/manifesto.html',
-    '/privacy-policy': '/privacy-policy.html',
-  }
-  var htmlTarget = htmlPretty[uri]
-  if (htmlTarget !== undefined) {
-    request.uri = htmlTarget
-    return request
-  }
 
   // /blog/* — Astro emits build.format: 'directory' with trailingSlash:
   // 'always', so canonical URLs are /blog/<slug>/. CloudFront's
@@ -103,14 +100,23 @@ function handler(event) {
     return request
   }
 
-  // Real 404 for extensionless paths not in the pretty-URL map. Previously
-  // this rewrote to /index.html (soft-404 cloning the homepage) — see
-  // notFound() comment above for the SEO impact.
+  // Extensionless top-level paths resolve to a pretty page via the KVS route
+  // map (e.g. /privacy-policy → /privacy-policy.html), or return a real 404.
+  // Previously the map was hardcoded here, so a new page needed a `terraform
+  // apply` to republish the function; it now lives in a CloudFront
+  // KeyValueStore that deploy-website.yml syncs from website/*.html, making a
+  // new page a content-only change. See notFound() for why unknown paths 404
+  // instead of falling back to /index.html.
   if (uri !== '/' && uri.charAt(uri.length - 1) !== '/') {
     const lastSlash = uri.lastIndexOf('/')
     const lastSegment = uri.substring(lastSlash + 1)
     if (lastSegment.indexOf('.') === -1) {
-      return notFound()
+      try {
+        request.uri = await routes.get(uri)
+        return request
+      } catch (err) {
+        return notFound()
+      }
     }
   }
 
