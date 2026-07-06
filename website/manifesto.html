@@ -11,6 +11,11 @@
         var STORAGE_KEY = "iii_cookie_consent";
         window.iiiLoadGTM = function () {
           if (window.__iiiGTMLoaded) return;
+          try {
+            if (localStorage.getItem(STORAGE_KEY) !== "accepted") return;
+          } catch (_) {
+            return;
+          }
           window.__iiiGTMLoaded = true;
           (function (w, d, s, l, i) {
             w[l] = w[l] || [];
@@ -23,9 +28,7 @@
             f.parentNode.insertBefore(j, f);
           })(window, document, "script", "dataLayer", "GTM-N8DCTFB8");
         };
-        try {
-          if (localStorage.getItem(STORAGE_KEY) === "accepted") window.iiiLoadGTM();
-        } catch (_) {}
+        window.iiiLoadGTM();
       })();
     </script>
     <!-- End Google Tag Manager -->
@@ -36,6 +39,11 @@
         var STORAGE_KEY = "iii_cookie_consent";
         window.iiiLoadCommonRoomSignals = function () {
           if (typeof window.signals !== "undefined") return;
+          try {
+            if (localStorage.getItem(STORAGE_KEY) !== "accepted") return;
+          } catch (_) {
+            return;
+          }
           var script = document.createElement("script");
           script.src =
             "https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js";
@@ -60,9 +68,7 @@
             window.signals.form({ email: email });
           } catch (_) {}
         };
-        try {
-          if (localStorage.getItem(STORAGE_KEY) === "accepted") window.iiiLoadCommonRoomSignals();
-        } catch (_) {}
+        window.iiiLoadCommonRoomSignals();
       })();
     </script>
     <script src="/posthog-consent.js"></script>
