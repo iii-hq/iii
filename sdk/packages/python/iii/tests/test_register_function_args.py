@@ -2,6 +2,7 @@
 
 import json
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,6 +17,8 @@ from iii.iii_types import RegisterFunctionFormat
 # ---------------------------------------------------------------------------
 # FakeWs helpers
 # ---------------------------------------------------------------------------
+
+_CREATED_CLIENTS: list[III] = []
 
 
 class FakeWebSocket:
@@ -51,8 +54,36 @@ def _patch_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWebSocket:
 
 def _make_client() -> III:
     client = III("ws://fake", InitOptions())
-    time.sleep(0.05)
+    _CREATED_CLIENTS.append(client)
+    _wait_for(lambda: client.get_connection_state() == "connected", "fake WebSocket client to connect")
     return client
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_created_clients() -> None:
+    yield
+    while _CREATED_CLIENTS:
+        client = _CREATED_CLIENTS.pop()
+        if client._thread.is_alive():
+            client.shutdown()
+
+
+def _wait_for(predicate: Callable[[], bool], what: str, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.005)
+    pytest.fail(f"timed out waiting for {what}")
+
+
+def _registration_messages(ws: FakeWebSocket, function_id: str) -> list[dict[str, Any]]:
+    return [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == function_id]
+
+
+def _wait_for_registration(ws: FakeWebSocket, function_id: str) -> list[dict[str, Any]]:
+    _wait_for(lambda: bool(_registration_messages(ws, function_id)), f"registration for {function_id}")
+    return _registration_messages(ws, function_id)
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +109,8 @@ def test_register_function_str_with_request_format(monkeypatch: pytest.MonkeyPat
         return data
 
     client.register_function("demo.with_args", handler, request_format=req_fmt)
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.with_args"]
+    reg_msgs = _wait_for_registration(ws, "demo.with_args")
     assert len(reg_msgs) == 1
 
     sent_req_fmt = reg_msgs[0].get("request_format")
@@ -127,9 +157,8 @@ def test_register_function_str_with_both_formats(monkeypatch: pytest.MonkeyPatch
         response_format=res_fmt,
         metadata={"version": "1"},
     )
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.both_formats"]
+    reg_msgs = _wait_for_registration(ws, "demo.both_formats")
     assert len(reg_msgs) == 1
     assert reg_msgs[0].get("description") == "A search function"
     assert reg_msgs[0].get("request_format") is not None
@@ -149,9 +178,8 @@ def test_register_function_str_minimal(monkeypatch: pytest.MonkeyPatch) -> None:
         return data
 
     client.register_function("demo.minimal", handler)
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.minimal"]
+    reg_msgs = _wait_for_registration(ws, "demo.minimal")
     assert len(reg_msgs) == 1
     assert "request_format" not in reg_msgs[0]
     assert "response_format" not in reg_msgs[0]
@@ -179,9 +207,8 @@ def test_register_function_str_with_http_invocation_and_format(monkeypatch: pyte
         HttpInvocationConfig(url="https://example.com/fn", method="POST"),
         request_format=req_fmt,
     )
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "external::with_format"]
+    reg_msgs = _wait_for_registration(ws, "external::with_format")
     assert len(reg_msgs) == 1
     assert reg_msgs[0].get("invocation", {}).get("url") == "https://example.com/fn"
     assert reg_msgs[0].get("request_format") is not None
@@ -230,9 +257,8 @@ def test_register_function_str_id_auto_extracts_formats(monkeypatch: pytest.Monk
         return UserOutput(message=f"Hello {data.name}")
 
     client.register_function("demo.auto", handler, description="Auto-extract demo")
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.auto"]
+    reg_msgs = _wait_for_registration(ws, "demo.auto")
     assert len(reg_msgs) == 1
     msg = reg_msgs[0]
 
@@ -282,9 +308,8 @@ def test_register_function_str_id_explicit_formats_override(monkeypatch: pytest.
         request_format=explicit_req,
         response_format=explicit_res,
     )
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.explicit"]
+    reg_msgs = _wait_for_registration(ws, "demo.explicit")
     assert len(reg_msgs) == 1
     msg = reg_msgs[0]
 
@@ -306,9 +331,8 @@ def test_register_function_str_id_no_annotations(monkeypatch: pytest.MonkeyPatch
         return data
 
     client.register_function("demo.no_hints", handler)
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.no_hints"]
+    reg_msgs = _wait_for_registration(ws, "demo.no_hints")
     assert len(reg_msgs) == 1
     assert "request_format" not in reg_msgs[0]
     assert "response_format" not in reg_msgs[0]
@@ -325,9 +349,8 @@ def test_register_function_str_id_with_metadata(monkeypatch: pytest.MonkeyPatch)
         return data
 
     client.register_function("demo.meta", handler, metadata={"version": "2.0"})
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.meta"]
+    reg_msgs = _wait_for_registration(ws, "demo.meta")
     assert len(reg_msgs) == 1
     assert reg_msgs[0]["metadata"] == {"version": "2.0"}
 
@@ -352,9 +375,8 @@ def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.Monke
         HttpInvocationConfig(url="https://example.com/fn", method="POST"),
         description="HTTP function",
     )
-    time.sleep(0.02)
 
-    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.http"]
+    reg_msgs = _wait_for_registration(ws, "demo.http")
     assert len(reg_msgs) == 1
     assert reg_msgs[0]["invocation"]["url"] == "https://example.com/fn"
     assert reg_msgs[0]["description"] == "HTTP function"
