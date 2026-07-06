@@ -1223,23 +1223,22 @@ pub fn validate_bundle_manifest(
         }
     }
 
-    // runtime.base_image may only name an engine-preset image ref
-    // verbatim (e.g. docker.io/iiidev/python:latest) — that's how a
-    // non-node bundle picks its rootfs now that runtime.kind is
-    // deprecated. Anything else stays rejected: bundles must not pull
-    // a publisher-controlled rootfs.
+    // runtime.base_image may name any OCI image ref — the rootfs is
+    // publisher-chosen, same trust context as scripts.start (which we
+    // already execute). First-gate the characters here so a bad ref
+    // fails at install time instead of silently falling back to the
+    // kind default at start (see project.rs::load_project_info).
     if let Some(img) = doc.get("runtime").and_then(|r| r.get("base_image")) {
-        let is_preset_ref = img
+        let plausible = img
             .as_str()
             .map(str::trim)
-            .is_some_and(crate::sandbox_daemon::catalog::is_preset_ref);
-        if !is_preset_ref {
+            .is_some_and(super::project::is_plausible_image_ref);
+        if !plausible {
             return Err(WorkerOpError::BundleManifestRejected {
                 field: "runtime.base_image".into(),
-                reason: "bundle workers may only set runtime.base_image to an \
-                         engine-preset image ref (docker.io/iiidev/python:latest \
-                         or docker.io/iiidev/node:latest); use a binary or OCI \
-                         worker if you need a custom rootfs"
+                reason: "runtime.base_image must be a plausible OCI image \
+                         reference (alphanumerics and `._-/:@+`), e.g. \
+                         \"oven/bun:1\""
                     .into(),
             });
         }
@@ -1719,11 +1718,22 @@ mod tests {
     }
 
     #[test]
-    fn validate_bundle_manifest_rejects_runtime_base_image() {
+    fn validate_bundle_manifest_accepts_any_base_image() {
         let tmp = tempfile::tempdir().unwrap();
         write_manifest(
             tmp.path(),
-            "name: foo\nruntime:\n  base_image: evil/img:latest\nscripts:\n  start: node x.js\n",
+            "name: foo\nruntime:\n  base_image: oven/bun:1\nscripts:\n  start: node x.js\n",
+        );
+        let cmd = validate_bundle_manifest(tmp.path(), "foo").expect("custom ref accepted");
+        assert_eq!(cmd, "node x.js");
+    }
+
+    #[test]
+    fn validate_bundle_manifest_rejects_implausible_base_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(
+            tmp.path(),
+            "name: foo\nruntime:\n  base_image: \"bad image!\"\nscripts:\n  start: node x.js\n",
         );
         match validate_bundle_manifest(tmp.path(), "foo") {
             Err(WorkerOpError::BundleManifestRejected { field, .. }) => {

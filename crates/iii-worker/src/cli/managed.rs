@@ -324,8 +324,8 @@ pub async fn handle_bundle_add(
         return 1;
     }
 
-    // 4. Strict manifest validation: rejects scripts.setup, scripts.install,
-    //    runtime.base_image; enforces name match + non-empty scripts.start.
+    // 4. Strict manifest validation: rejects scripts.setup; enforces
+    //    name match + non-empty scripts.start.
     if let Err(e) = super::bundle_download::validate_bundle_manifest(&staging_dir, worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;

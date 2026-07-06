@@ -22,15 +22,6 @@ pub fn is_preset(image: &str) -> bool {
     PRESETS.iter().any(|(name, _)| *name == image)
 }
 
-/// `true` when `oci_ref` is exactly one of the preset images' pinned OCI
-/// references. Lets the bundle-manifest validator accept a
-/// `runtime.base_image` that names an engine preset verbatim (the only
-/// way a non-node bundle picks its rootfs now that `runtime.kind` is
-/// deprecated) without opening the door to publisher-controlled refs.
-pub fn is_preset_ref(oci_ref: &str) -> bool {
-    PRESETS.iter().any(|(_, oci)| *oci == oci_ref)
-}
-
 /// Names of the built-in presets. Used by `SandboxConfig` validation to
 /// reject `custom_images` entries that would otherwise silently be
 /// ignored (presets always win in `resolve_image`).
