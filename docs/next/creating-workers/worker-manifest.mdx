@@ -185,3 +185,15 @@ Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
 ### `memory`
 
 Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
+
+## Publish metadata: `iii`, `deploy`, `manifest`
+
+Optional strings used by the workers-repository release pipeline, not by the engine. The engine
+accepts these keys (so a manifest published from the workers repo also works with local
+`iii worker add`) but never reads them.
+
+```yaml
+iii: v1 # manifest format marker
+deploy: image # release artifact type: binary | image | bundle
+manifest: pyproject.toml # file the release version is read from
+```

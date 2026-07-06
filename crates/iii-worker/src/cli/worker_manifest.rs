@@ -94,6 +94,25 @@ pub struct WorkerManifest {
     )]
     pub resources: Option<ResourcesSection>,
 
+    // Registry publish metadata. The workers-repo release CI requires these
+    // keys (deploy/manifest pick the release artifact type and version
+    // source); the engine accepts them so one iii.worker.yaml can satisfy
+    // both validators, but never reads them at add/start time.
+    #[schemars(
+        description = "Registry publish metadata: manifest format marker, e.g. `v1`. Accepted and ignored by the engine."
+    )]
+    pub iii: Option<String>,
+
+    #[schemars(
+        description = "Registry publish metadata: release artifact type (`binary` | `image` | `bundle`), consumed by the workers-repo release CI. Accepted and ignored by the engine."
+    )]
+    pub deploy: Option<String>,
+
+    #[schemars(
+        description = "Registry publish metadata: file the release version is read from (e.g. `Cargo.toml`, `package.json`, `pyproject.toml`), consumed by the workers-repo release CI. Accepted and ignored by the engine."
+    )]
+    pub manifest: Option<String>,
+
     #[schemars(
         with = "Option<JsonValue>",
         description = "DEPRECATED — set per-worker config directly in your project's config.yaml entry instead. Copied verbatim into config.yaml at add time."
@@ -232,7 +251,15 @@ fn shape_problems(doc: &YamlValue) -> Vec<String> {
         }
     }
 
-    for field in ["name", "description", "language", "entry"] {
+    for field in [
+        "name",
+        "description",
+        "language",
+        "entry",
+        "iii",
+        "deploy",
+        "manifest",
+    ] {
         if let Some(v) = present(doc.get(field))
             && v.as_str().is_none()
         {
@@ -652,6 +679,36 @@ mod tests {
     }
 
     #[test]
+    fn report_accepts_publish_metadata_keys() {
+        // The workers-repo release CI REQUIRES iii/deploy/manifest; the engine
+        // must accept them (and ignore them) so one manifest satisfies both
+        // validators. Regression: they used to land in the unknown catch-all
+        // and hard-fail `worker add`.
+        let r = report(
+            "iii: v1\nname: w\nlanguage: python\ndeploy: image\nmanifest: pyproject.toml\n\
+             scripts:\n  install: \"pip install -e .\"\n  start: \"python -m src.main\"\n",
+        );
+        assert!(r.valid, "publish metadata must not invalidate: {r:?}");
+        assert!(r.unknown_keys.is_empty(), "got: {:?}", r.unknown_keys);
+        for key in ["iii", "deploy", "manifest"] {
+            assert!(
+                !r.deprecated_keys.iter().any(|k| k == key),
+                "`{key}` must not be deprecated: {:?}",
+                r.deprecated_keys
+            );
+        }
+        // Non-string values still get the friendly dotted-path shape error.
+        let r = report("name: w\nscripts:\n  start: x\ndeploy:\n  kind: image\n");
+        assert!(!r.valid);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("`deploy` must be a string, got a mapping")),
+            "got: {r:?}"
+        );
+    }
+
+    #[test]
     fn report_minimal_manifest_is_valid() {
         let r = report("name: w\nscripts:\n  start: \"node i.js\"\n");
         assert!(r.valid, "got: {r:?}");
@@ -871,6 +928,15 @@ mod tests {
                 .as_str()
                 .unwrap_or("");
         assert!(runtime_kind_desc.contains("DEPRECATED"));
+        // Publish metadata is in the schema (so authored manifests validate)
+        // and described as engine-ignored (so LLMs don't cargo-cult it).
+        for field in ["iii", "deploy", "manifest"] {
+            let desc = s["properties"][field]["description"].as_str().unwrap_or("");
+            assert!(
+                desc.contains("ignored by the engine"),
+                "`{field}` must be described as engine-ignored: {desc:?}"
+            );
+        }
     }
 
     #[test]
