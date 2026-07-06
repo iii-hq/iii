@@ -12,6 +12,7 @@ docs:
     - "docs/0-16-0/**"
     - "docs/0-17-0/**"
     - "docs/0-18-0/**"
+    - "docs/RELEASING.md"
     - "docs/changelog/**"
     - "docs/**/changelog/**"
     - "docs/next/tutorials/linkly/_workspace/**"
