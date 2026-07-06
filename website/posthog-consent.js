@@ -5,6 +5,11 @@
 
   window.iiiLoadPostHog = function () {
     if (window.__iiiPostHogLoaded) return;
+    try {
+      if (localStorage.getItem(STORAGE_KEY) !== 'accepted') return;
+    } catch (_) {
+      return;
+    }
     window.__iiiPostHogLoaded = true;
 
     !(function (t, e) {
@@ -69,7 +74,5 @@
     });
   };
 
-  try {
-    if (localStorage.getItem(STORAGE_KEY) === 'accepted') window.iiiLoadPostHog();
-  } catch (_) {}
+  window.iiiLoadPostHog();
 })();
