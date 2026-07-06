@@ -1223,50 +1223,47 @@ pub fn validate_bundle_manifest(
         }
     }
 
-    // Reject runtime.base_image. Bundles use the engine-allowlisted
-    // base image, not whatever the publisher picks.
-    if doc
-        .get("runtime")
-        .and_then(|r| r.get("base_image"))
-        .is_some()
-    {
-        return Err(WorkerOpError::BundleManifestRejected {
-            field: "runtime.base_image".into(),
-            reason: "bundle workers cannot override the base image; \
-                     use a binary or OCI worker if you need a custom rootfs"
-                .into(),
-        });
+    // runtime.base_image may only name an engine-preset image ref
+    // verbatim (e.g. docker.io/iiidev/python:latest) — that's how a
+    // non-node bundle picks its rootfs now that runtime.kind is
+    // deprecated. Anything else stays rejected: bundles must not pull
+    // a publisher-controlled rootfs.
+    if let Some(img) = doc.get("runtime").and_then(|r| r.get("base_image")) {
+        let is_preset_ref = img
+            .as_str()
+            .map(str::trim)
+            .is_some_and(crate::sandbox_daemon::catalog::is_preset_ref);
+        if !is_preset_ref {
+            return Err(WorkerOpError::BundleManifestRejected {
+                field: "runtime.base_image".into(),
+                reason: "bundle workers may only set runtime.base_image to an \
+                         engine-preset image ref (docker.io/iiidev/python:latest \
+                         or docker.io/iiidev/node:latest); use a binary or OCI \
+                         worker if you need a custom rootfs"
+                    .into(),
+            });
+        }
     }
 
-    // Reject scripts.setup and scripts.install — they would execute
-    // publisher-supplied shell during install.
-    if let Some(scripts) = doc.get("scripts") {
-        if scripts
+    // Reject scripts.setup (OS provisioning belongs in the preset image).
+    // scripts.install is ALLOWED: it runs inside the sandbox VM exactly
+    // like scripts.start (same publisher-shell trust context), and the
+    // boot script's /var/.iii-prepared guard makes it run once — which
+    // python bundles need for pip/browser bootstrap that can't be
+    // vendored per-arch into the archive.
+    if let Some(scripts) = doc.get("scripts")
+        && scripts
             .get("setup")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .is_some_and(|s| !s.is_empty())
-        {
-            return Err(WorkerOpError::BundleManifestRejected {
-                field: "scripts.setup".into(),
-                reason: "bundle manifests must not declare scripts.setup; \
-                         pre-build the bundle and ship it ready-to-run"
-                    .into(),
-            });
-        }
-        if scripts
-            .get("install")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .is_some_and(|s| !s.is_empty())
-        {
-            return Err(WorkerOpError::BundleManifestRejected {
-                field: "scripts.install".into(),
-                reason: "bundle manifests must not declare scripts.install; \
-                         vendor dependencies into the bundle"
-                    .into(),
-            });
-        }
+    {
+        return Err(WorkerOpError::BundleManifestRejected {
+            field: "scripts.setup".into(),
+            reason: "bundle manifests must not declare scripts.setup; \
+                     pre-build the bundle and ship it ready-to-run"
+                .into(),
+        });
     }
 
     // scripts.start is the only command we will execute. Must be a
@@ -1711,18 +1708,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_bundle_manifest_rejects_install() {
+    fn validate_bundle_manifest_accepts_install() {
         let tmp = tempfile::tempdir().unwrap();
         write_manifest(
             tmp.path(),
-            "name: foo\nscripts:\n  install: npm i\n  start: node x.js\n",
+            "name: foo\nscripts:\n  install: pip install -e .\n  start: python -m src.main\n",
         );
-        match validate_bundle_manifest(tmp.path(), "foo") {
-            Err(WorkerOpError::BundleManifestRejected { field, .. }) => {
-                assert_eq!(field, "scripts.install");
-            }
-            other => panic!("expected BundleManifestRejected scripts.install, got {other:?}"),
-        }
+        let cmd = validate_bundle_manifest(tmp.path(), "foo").expect("install allowed");
+        assert_eq!(cmd, "python -m src.main");
     }
 
     #[test]
@@ -1738,6 +1731,17 @@ mod tests {
             }
             other => panic!("expected BundleManifestRejected runtime.base_image, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn validate_bundle_manifest_accepts_preset_base_image() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(
+            tmp.path(),
+            "name: foo\nruntime:\n  base_image: docker.io/iiidev/python:latest\nscripts:\n  start: python -m src.main\n",
+        );
+        let cmd = validate_bundle_manifest(tmp.path(), "foo").expect("preset ref accepted");
+        assert_eq!(cmd, "python -m src.main");
     }
 
     #[test]
