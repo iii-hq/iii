@@ -29,6 +29,20 @@ async function listAstroAssets(distDir: string): Promise<string[]> {
   }
 }
 
+const POST_ASSET_RE = /\/blog\/_astro\/([^"'\s)]+)/g
+
+async function listPostAstroAssets(distDir: string, slug: string): Promise<string[] | null> {
+  let html: string
+  try {
+    html = await fs.readFile(path.join(distDir, slug, 'index.html'), 'utf8')
+  } catch {
+    return null
+  }
+  const assets = new Set<string>()
+  for (const match of html.matchAll(POST_ASSET_RE)) assets.add(match[1])
+  return assets.size > 0 ? [...assets] : null
+}
+
 function resolveAssetUrl(filename: string, astroAssets: string[]): string | null {
   const stem = path.basename(filename, path.extname(filename))
   const match = astroAssets.find((file) => file.startsWith(`${stem}.`))
@@ -47,16 +61,23 @@ export async function exportBlogMarkdown(
   distDir = BLOG_DIST,
 ): Promise<number> {
   const posts = (await readBlogPosts(contentDir)).filter((post) => !post.draft)
-  const astroAssets = await listAstroAssets(distDir)
-  let count = 0
-
-  for (const post of posts) {
-    const sourcePath = path.join(contentDir, post.sourceFile)
-    const raw = await fs.readFile(sourcePath, 'utf8')
-    const exported = rewriteBlogImagePaths(raw, astroAssets)
-    await fs.writeFile(path.join(distDir, `${post.slug}.md`), exported, 'utf8')
-    count++
+  if (posts.length === 0) {
+    throw new Error(`no publishable blog posts found in ${contentDir} — refusing to export an empty blog`)
   }
+  const astroAssets = await listAstroAssets(distDir)
+
+  await Promise.all(
+    posts.map(async (post) => {
+      if (post.slug === 'index') {
+        throw new Error(`blog post slug "index" collides with the generated blog/index.md`)
+      }
+      const sourcePath = path.join(contentDir, post.sourceFile)
+      const raw = await fs.readFile(sourcePath, 'utf8')
+      const postAssets = (await listPostAstroAssets(distDir, post.slug)) ?? astroAssets
+      const exported = rewriteBlogImagePaths(raw, postAssets)
+      await fs.writeFile(path.join(distDir, `${post.slug}.md`), exported, 'utf8')
+    }),
+  )
 
   const indexLines = posts.map(formatBlogPostLinkLine)
   await fs.writeFile(
@@ -74,7 +95,7 @@ export async function exportBlogMarkdown(
     'utf8',
   )
 
-  return count
+  return posts.length
 }
 
 /** Markdown bullet list for llms.txt / AGENTS.md — links to agent-readable .md URLs. */
