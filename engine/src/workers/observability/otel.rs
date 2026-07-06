@@ -3480,6 +3480,106 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    // ── Coverage: TeeSpanExporter resource forwarding ───────────────────────
+    // Regression test for the `exporter: both` path: the provider hands its
+    // resource to the exporter chain via `set_resource`; if TeeSpanExporter
+    // does not forward it (the trait default is a no-op), the wrapped OTLP
+    // exporter serializes an EMPTY resource and collectors see engine spans
+    // without a `service.name`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn tee_span_exporter_forwards_resource_to_otlp_payload() -> anyhow::Result<()> {
+        use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        const SERVICE_NAME: &str = "tee-resource-forwarding-test";
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let endpoint = format!("http://{addr}");
+
+        // Accumulate everything the exporter writes (headers + protobuf body
+        // may arrive across several writes; the peer never responds, so stop
+        // on read timeout).
+        let mut accept = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut bytes = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(750),
+                    socket.read(&mut buf),
+                )
+                .await
+                {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(n)) => bytes.extend_from_slice(&buf[..n]),
+                    Ok(Err(e)) => return Err(e.into()),
+                }
+            }
+            Ok::<_, anyhow::Error>(bytes)
+        });
+
+        let storage = Arc::new(InMemorySpanStorage::new(16));
+        let export_storage = storage.clone();
+        let mut export = tokio::spawn(async move {
+            // http/protobuf keeps the capture a plain HTTP/1.1 request whose
+            // body embeds resource strings as UTF-8, so the assertion below
+            // can scan raw bytes without a protobuf decoder.
+            let otlp_exporter = temp_env::with_vars(
+                [
+                    ("OTEL_EXPORTER_OTLP_PROTOCOL", Some("http/protobuf")),
+                    ("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", None),
+                    ("OTEL_EXPORTER_OTLP_HEADERS", None),
+                    ("OTEL_EXPORTER_OTLP_TIMEOUT", Some("250")),
+                    ("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", Some("250")),
+                ],
+                || build_span_exporter(&endpoint).expect("build span exporter"),
+            );
+            let tee = TeeSpanExporter::new(otlp_exporter, export_storage, SERVICE_NAME.to_string());
+
+            // The REAL production path: the provider pushes its resource down
+            // through the batch processor to the tee via `set_resource`.
+            let provider = SdkTracerProvider::builder()
+                .with_batch_exporter(tee)
+                .with_resource(
+                    Resource::builder_empty()
+                        .with_attributes([KeyValue::new("service.name", SERVICE_NAME)])
+                        .build(),
+                )
+                .build();
+            let tracer = provider.tracer("tee-resource-test");
+            let mut span = tracer.start("tee-resource-span");
+            span.end();
+            let _ = provider.shutdown_with_timeout(std::time::Duration::from_secs(1));
+        });
+
+        let bytes =
+            tokio::time::timeout(std::time::Duration::from_secs(5), &mut accept).await???;
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut export)
+            .await
+            .is_err()
+        {
+            export.abort();
+            let _ = export.await;
+        }
+
+        // The memory side always carries the service name explicitly …
+        assert_eq!(storage.len(), 1, "span should land in in-memory storage");
+
+        // … and the OTLP payload must carry it too (this is what breaks when
+        // set_resource is not forwarded to the wrapped exporter).
+        let needle = SERVICE_NAME.as_bytes();
+        assert!(
+            bytes.windows(needle.len()).any(|w| w == needle),
+            "OTLP payload should contain the provider resource service.name; \
+             got {} bytes without it",
+            bytes.len()
+        );
+        Ok(())
+    }
+
     #[test]
     #[serial]
     fn otlp_logs_headers_fallback_decodes_percent_encoded_values() {
