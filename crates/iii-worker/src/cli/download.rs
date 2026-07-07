@@ -84,20 +84,18 @@ pub async fn stream_response_to_path(
     use futures::StreamExt as _;
     use tokio::io::AsyncWriteExt as _;
 
-    if let Some(prefix) = opts.allowed_content_type_prefix {
-        if let Some(ct) = response
+    if let Some(prefix) = opts.allowed_content_type_prefix
+        && let Some(ct) = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-        {
-            if !ct.to_ascii_lowercase().starts_with(prefix) {
-                return Err(DownloadError::UnexpectedContentType {
-                    url: opts.url_for_logs.to_string(),
-                    content_type: ct.to_string(),
-                    expected_prefix: prefix.to_string(),
-                });
-            }
-        }
+        && !ct.to_ascii_lowercase().starts_with(prefix)
+    {
+        return Err(DownloadError::UnexpectedContentType {
+            url: opts.url_for_logs.to_string(),
+            content_type: ct.to_string(),
+            expected_prefix: prefix.to_string(),
+        });
     }
 
     if let Some(len) = response.content_length()
@@ -263,7 +261,7 @@ pub fn validate_archive_url_for_ssrf(url_str: &str) -> Result<(), SsrfError> {
 /// compile on stable. The conditions mirror RFC 6890 / 3927 / 1918 /
 /// 4291 / 5737 / 3849.
 fn ip_is_non_routable(ip: std::net::IpAddr) -> Option<&'static str> {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv6Addr};
     match ip {
         IpAddr::V4(v4) => {
             if v4.is_loopback() {
@@ -329,7 +327,7 @@ fn ip_is_non_routable(ip: std::net::IpAddr) -> Option<&'static str> {
             }
             // IPv4-mapped IPv6 (::ffff:0:0/96): recurse on the embedded v4.
             if let Some(mapped) = v6.to_ipv4_mapped() {
-                let _ = Ipv4Addr::from(mapped); // type-check
+                let _ = mapped; // type-check
                 return ip_is_non_routable(IpAddr::V4(mapped));
             }
             // IPv4-compatible (::a.b.c.d/96, deprecated) and IPv4-in-IPv6.

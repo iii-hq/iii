@@ -314,7 +314,7 @@ pub async fn init_otel(config: OtelConfig) -> bool {
 
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
-        .with_span_processor(baggage_span_processor::BaggageSpanProcessor::default())
+        .with_span_processor(baggage_span_processor::BaggageSpanProcessor)
         .with_span_processor(span_processor)
         .build();
 

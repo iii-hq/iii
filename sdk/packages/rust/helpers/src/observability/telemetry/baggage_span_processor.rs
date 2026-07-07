@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn copies_every_baggage_entry_to_attributes() {
-        let (tracer, exporter) = build_test_provider(BaggageSpanProcessor::default());
+        let (tracer, exporter) = build_test_provider(BaggageSpanProcessor);
 
         let cx = Context::new().with_baggage(vec![
             KeyValue::new("iii.session.id", "S-1"),
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn missing_baggage_entry_means_attribute_not_set() {
-        let (tracer, exporter) = build_test_provider(BaggageSpanProcessor::default());
+        let (tracer, exporter) = build_test_provider(BaggageSpanProcessor);
 
         let cx = Context::new().with_baggage(vec![KeyValue::new("iii.message.id", "M-only")]);
 
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn empty_parent_context_produces_no_attributes() {
-        let (tracer, exporter) = build_test_provider(BaggageSpanProcessor::default());
+        let (tracer, exporter) = build_test_provider(BaggageSpanProcessor);
 
         let span = tracer.start("inner");
         drop(span);
@@ -159,7 +159,7 @@ mod tests {
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_sampler(opentelemetry_sdk::trace::Sampler::AlwaysOff)
-            .with_span_processor(BaggageSpanProcessor::default())
+            .with_span_processor(BaggageSpanProcessor)
             .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
             .build();
         let tracer = provider.tracer("test");
