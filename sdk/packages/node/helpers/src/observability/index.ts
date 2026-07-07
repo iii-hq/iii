@@ -3,7 +3,6 @@ export { executeTracedRequest } from './http-instrumentation'
 export type { TracedFetchInit } from './http-instrumentation'
 export {
   BaggageSpanProcessor,
-  DEFAULT_ALLOWLIST,
   currentSpanId,
   currentSpanIsRecording,
   currentTraceId,

@@ -41,6 +41,10 @@ use crate::{
 pub struct TracesListInput {
     /// Filter by specific trace ID
     trace_id: Option<String>,
+    /// Filter to a specific set of trace IDs (ignored when `trace_id` is set;
+    /// used by grouped views to expand one group's members in a single call).
+    #[serde(default)]
+    trace_ids: Option<Vec<String>>,
     /// Pagination offset (default: 0)
     offset: Option<usize>,
     /// Pagination limit (default: 100)
@@ -67,6 +71,11 @@ pub struct TracesListInput {
     sort_order: Option<String>,
     /// Filter by span attributes (array of [key, value] pairs, AND logic, exact match)
     attributes: Option<Vec<Vec<String>>>,
+    /// Exclude listed rows whose own attributes match ANY [key, value] pair
+    /// (OR logic, exact match). Applied to the root/row span itself — hiding
+    /// a function hides traces rooted at it, not traces that merely call it.
+    #[serde(default)]
+    exclude_attributes: Option<Vec<Vec<String>>>,
     /// Include internal engine traces (engine.* functions). Defaults to false.
     #[serde(default)]
     include_internal: Option<bool>,
@@ -99,11 +108,18 @@ pub struct TracesGroupByInput {
     /// Include engine-internal spans. Defaults to false, matching `traces::list`.
     #[serde(default)]
     include_internal: Option<bool>,
+    /// Attribute whose value becomes each group's human-readable `label`
+    /// (e.g. group by `iii.session.id` with label `iii.session.name`). The
+    /// newest group member carrying the attribute wins, so renames surface.
+    #[serde(default)]
+    label_attribute: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TraceGroup {
     pub value: String,
+    /// Display label resolved from `label_attribute`, when requested and present.
+    pub label: Option<String>,
     pub trace_ids: Vec<String>,
     pub span_count: u32,
     pub first_seen_ms: u64,
@@ -149,6 +165,33 @@ pub struct TracesTreeResult {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TracesGroupByResult {
     pub groups: Vec<TraceGroup>,
+}
+
+/// Generic trace-tag namespace: `iii.tag.<key>` span attributes (stamped via
+/// OTel baggage; see the SDK `BaggageSpanProcessor` allowed prefixes).
+const TRACE_TAG_PREFIX: &str = "iii.tag.";
+
+/// Identity attributes surfaced alongside `iii.tag.*` as trace-level tags.
+const TRACE_TAG_EXACT_KEYS: &[&str] = &["iii.session.id", "iii.session.name", "iii.message.id"];
+
+/// Merge trace-level tags from every span of a trace. Worker-set baggage
+/// never lands on the engine-side root `call` span (it starts before the
+/// handler runs), so listing roots alone would miss these; the row instead
+/// carries the union, newest span winning on key conflicts (e.g. renames).
+fn collect_trace_tags(
+    trace_spans: &[otel::StoredSpan],
+) -> std::collections::BTreeMap<String, String> {
+    let mut spans: Vec<&otel::StoredSpan> = trace_spans.iter().collect();
+    spans.sort_by_key(|s| s.start_time_unix_nano);
+    let mut tags = std::collections::BTreeMap::new();
+    for span in spans {
+        for (k, v) in &span.attributes {
+            if k.starts_with(TRACE_TAG_PREFIX) || TRACE_TAG_EXACT_KEYS.contains(&k.as_str()) {
+                tags.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    tags
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -1934,13 +1977,22 @@ impl ObservabilityWorker {
     ) -> FunctionResult<TracesListResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(storage) => {
-                let all_spans = match input.trace_id {
-                    Some(trace_id) => storage.get_spans_by_trace_id(&trace_id),
-                    None => storage.get_spans(),
+                let all_spans = if let Some(ref trace_id) = input.trace_id {
+                    storage.get_spans_by_trace_id(trace_id)
+                } else if let Some(ref trace_ids) = input.trace_ids {
+                    trace_ids
+                        .iter()
+                        .flat_map(|id| storage.get_spans_by_trace_id(id))
+                        .collect()
+                } else {
+                    storage.get_spans()
                 };
 
                 let include_internal = input.include_internal.unwrap_or(false);
                 let search_all = input.search_all_spans.unwrap_or(false);
+                // One "now" for the whole listing — pending spans measure
+                // duration-so-far / activity against it.
+                let now_ns = otel::now_unix_nanos();
 
                 // Pre-compute trace IDs that have any span matching the name filter
                 let name_matched_trace_ids: Option<std::collections::HashSet<String>> =
@@ -2016,6 +2068,19 @@ impl ObservabilityWorker {
                         true
                     })
                     .filter(|s| {
+                        // Row-level exclusion (e.g. the console's hidden
+                        // functions): drop rows matching ANY [key, value] pair.
+                        let Some(ref excl) = input.exclude_attributes else {
+                            return true;
+                        };
+                        !excl.iter().any(|pair| {
+                            pair.len() == 2
+                                && s.attributes
+                                    .iter()
+                                    .any(|(k, v)| k == &pair[0] && v == &pair[1])
+                        })
+                    })
+                    .filter(|s| {
                         if let Some(ref sn) = input.service_name
                             && !s.service_name.to_lowercase().contains(&sn.to_lowercase())
                         {
@@ -2041,9 +2106,12 @@ impl ObservabilityWorker {
                         {
                             return false;
                         }
-                        let duration_ns =
-                            s.end_time_unix_nano.saturating_sub(s.start_time_unix_nano);
-                        let duration_ms: f64 = duration_ns as f64 / 1_000_000.0;
+                        // Pending (in-flight) spans measure duration-so-far
+                        // and count as active "now" for the time window — a
+                        // span running for 10s legitimately matches
+                        // `min_duration_ms: 5000`, and an end sentinel of 0
+                        // must not drop it from "recent" views.
+                        let duration_ms: f64 = s.duration_ns(now_ns) as f64 / 1_000_000.0;
                         if let Some(min) = input.min_duration_ms
                             && duration_ms < min
                         {
@@ -2056,7 +2124,7 @@ impl ObservabilityWorker {
                         }
                         if let Some(start) = input.start_time {
                             let start_ns = start * 1_000_000;
-                            if s.end_time_unix_nano < start_ns {
+                            if s.effective_end_ns(now_ns) < start_ns {
                                 return false;
                             }
                         }
@@ -2106,10 +2174,8 @@ impl ObservabilityWorker {
                         // span `duration_ms`) uses the `_ms` suffix, so callers
                         // reasonably pass either spelling.
                         "duration" | "duration_ms" => {
-                            let da =
-                                a.end_time_unix_nano.saturating_sub(a.start_time_unix_nano) as f64;
-                            let db =
-                                b.end_time_unix_nano.saturating_sub(b.start_time_unix_nano) as f64;
+                            let da = a.duration_ns(now_ns) as f64;
+                            let db = b.duration_ns(now_ns) as f64;
                             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
                         }
                         "service_name" => a.service_name.cmp(&b.service_name),
@@ -2128,7 +2194,23 @@ impl ObservabilityWorker {
                 FunctionResult::Success(TracesListResult {
                     spans: spans
                         .into_iter()
-                        .map(|s| serde_json::to_value(s).unwrap_or(Value::Null))
+                        .map(|s| {
+                            // Attach trace-level tags to the returned page only
+                            // (per-row index lookup, bounded by `limit`).
+                            let tags = collect_trace_tags(
+                                &storage.get_spans_by_trace_id(&s.trace_id),
+                            );
+                            let mut value = serde_json::to_value(s).unwrap_or(Value::Null);
+                            if !tags.is_empty()
+                                && let Value::Object(ref mut map) = value
+                            {
+                                map.insert(
+                                    "trace_tags".to_string(),
+                                    serde_json::to_value(tags).unwrap_or(Value::Null),
+                                );
+                            }
+                            value
+                        })
                         .collect(),
                     total,
                     offset,
@@ -2205,6 +2287,9 @@ impl ObservabilityWorker {
                 let include_internal = input.include_internal.unwrap_or(false);
                 let since_ns = input.since_ms.map(|ms| ms.saturating_mul(1_000_000));
                 let limit = input.limit.unwrap_or(100) as usize;
+                // Pending spans count as active "now" for the window and for
+                // last_seen (their end sentinel is 0).
+                let now_ns = otel::now_unix_nanos();
 
                 struct GroupBuilder {
                     trace_ids: std::collections::HashSet<String>,
@@ -2212,6 +2297,8 @@ impl ObservabilityWorker {
                     first_seen_ns: u64,
                     last_seen_ns: u64,
                     error_count: u32,
+                    label: Option<String>,
+                    label_seen_at_ns: u64,
                 }
                 let mut groups: std::collections::HashMap<String, GroupBuilder> =
                     std::collections::HashMap::new();
@@ -2227,7 +2314,7 @@ impl ObservabilityWorker {
                         }
                     }
                     if let Some(min_ns) = since_ns
-                        && span.end_time_unix_nano < min_ns
+                        && span.effective_end_ns(now_ns) < min_ns
                     {
                         continue;
                     }
@@ -2242,15 +2329,27 @@ impl ObservabilityWorker {
                         trace_ids: std::collections::HashSet::new(),
                         span_count: 0,
                         first_seen_ns: span.start_time_unix_nano,
-                        last_seen_ns: span.end_time_unix_nano,
+                        last_seen_ns: span.effective_end_ns(now_ns),
                         error_count: 0,
+                        label: None,
+                        label_seen_at_ns: 0,
                     });
                     entry.trace_ids.insert(span.trace_id.clone());
                     entry.span_count += 1;
                     entry.first_seen_ns = entry.first_seen_ns.min(span.start_time_unix_nano);
-                    entry.last_seen_ns = entry.last_seen_ns.max(span.end_time_unix_nano);
+                    entry.last_seen_ns = entry.last_seen_ns.max(span.effective_end_ns(now_ns));
                     if is_error {
                         entry.error_count += 1;
+                    }
+                    // Newest span carrying the label attribute wins, so e.g.
+                    // session renames surface on the group heading.
+                    if let Some(ref label_key) = input.label_attribute
+                        && span.start_time_unix_nano >= entry.label_seen_at_ns
+                        && let Some((_, label)) =
+                            span.attributes.iter().find(|(k, _)| k == label_key)
+                    {
+                        entry.label = Some(label.clone());
+                        entry.label_seen_at_ns = span.start_time_unix_nano;
                     }
                 }
 
@@ -2266,6 +2365,7 @@ impl ObservabilityWorker {
                         trace_ids.sort();
                         TraceGroup {
                             value,
+                            label: b.label,
                             trace_ids,
                             span_count: b.span_count,
                             first_seen_ms: first_ms,
@@ -3606,6 +3706,7 @@ mod tests {
             instrumentation_scope_version: None,
             flags: None,
             trace_state: None,
+            pending: false,
         }
     }
 
@@ -4954,6 +5055,43 @@ mod tests {
         let bare = make_span("t", "s", None, "n", "svc", 1, 2, "ok", vec![]);
         assert!(!is_internal_span(&bare));
         assert_eq!(span_function_id(&bare), None);
+    }
+
+    #[test]
+    fn pending_internal_span_is_still_filtered_from_trigger_feed() {
+        // Loop-safety regression: a live (pending) snapshot of an internal
+        // wrapper span carries its `iii.function.kind=internal` creation attr,
+        // so the trace-trigger subscriber's `is_internal_span` post-filter
+        // excludes it exactly like the final span — pending snapshots must not
+        // re-fire the feed that produced them.
+        let mut pending_wrapper = make_span(
+            "t",
+            "s",
+            None,
+            "stream_triggers",
+            "iii",
+            1,
+            0,
+            "unset",
+            vec![("iii.function.kind", "internal")],
+        );
+        pending_wrapper.pending = true;
+        assert!(is_internal_span(&pending_wrapper));
+
+        // Same for a pending engine::* builtin call span.
+        let mut pending_builtin = make_span(
+            "t",
+            "s2",
+            None,
+            "call engine::traces::list",
+            "iii",
+            1,
+            0,
+            "unset",
+            vec![("function_id", "engine::traces::list")],
+        );
+        pending_builtin.pending = true;
+        assert!(is_internal_span(&pending_builtin));
     }
 
     // =========================================================================
@@ -6342,6 +6480,7 @@ mod tests {
 
         let input = TracesListInput {
             trace_id: None,
+            trace_ids: None,
             offset: Some(0),
             limit: Some(10),
             service_name: None,
@@ -6354,6 +6493,7 @@ mod tests {
             sort_by: None,
             sort_order: None,
             attributes: None,
+            exclude_attributes: None,
             include_internal: Some(false),
             search_all_spans: None,
         };
@@ -6424,6 +6564,7 @@ mod tests {
 
         let base_input = || TracesListInput {
             trace_id: None,
+            trace_ids: None,
             offset: Some(0),
             limit: Some(10),
             service_name: None,
@@ -6436,6 +6577,7 @@ mod tests {
             sort_by: None,
             sort_order: None,
             attributes: None,
+            exclude_attributes: None,
             include_internal: Some(false),
             search_all_spans: None,
         };
@@ -6550,6 +6692,7 @@ mod tests {
         let traces_result = module
             .list_traces(TracesListInput {
                 trace_id: None,
+                trace_ids: None,
                 offset: Some(0),
                 limit: Some(10),
                 service_name: Some("svc".to_string()),
@@ -6562,6 +6705,7 @@ mod tests {
                 sort_by: Some("name".to_string()),
                 sort_order: Some("asc".to_string()),
                 attributes: Some(vec![vec!["http.method".to_string(), "GET".to_string()]]),
+                exclude_attributes: None,
                 include_internal: Some(false),
                 search_all_spans: None,
             })
@@ -6768,6 +6912,7 @@ mod tests {
         let result = module
             .list_traces(TracesListInput {
                 trace_id: None,
+                trace_ids: None,
                 offset: Some(0),
                 limit: Some(10),
                 service_name: None,
@@ -6783,6 +6928,7 @@ mod tests {
                     "iii.message.id".to_string(),
                     "M-target".to_string(),
                 ]]),
+                exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(true),
             })
@@ -6849,6 +6995,7 @@ mod tests {
         let result_root_only = module
             .list_traces(TracesListInput {
                 trace_id: None,
+                trace_ids: None,
                 offset: Some(0),
                 limit: Some(10),
                 service_name: None,
@@ -6861,6 +7008,7 @@ mod tests {
                 sort_by: None,
                 sort_order: None,
                 attributes: None,
+                exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(false),
             })
@@ -6878,6 +7026,7 @@ mod tests {
         let result_all = module
             .list_traces(TracesListInput {
                 trace_id: None,
+                trace_ids: None,
                 offset: Some(0),
                 limit: Some(10),
                 service_name: None,
@@ -6890,6 +7039,7 @@ mod tests {
                 sort_by: None,
                 sort_order: None,
                 attributes: None,
+                exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(true),
             })
@@ -6948,6 +7098,7 @@ mod tests {
         let result = module
             .list_traces(TracesListInput {
                 trace_id: None,
+                trace_ids: None,
                 offset: Some(0),
                 limit: Some(10),
                 service_name: None,
@@ -6963,6 +7114,7 @@ mod tests {
                     "iii.message.id".to_string(),
                     "M-target".to_string(),
                 ]]),
+                exclude_attributes: None,
                 include_internal: Some(true),
                 search_all_spans: Some(false),
             })
@@ -7068,6 +7220,7 @@ mod tests {
                 since_ms: None,
                 limit: Some(100),
                 include_internal: Some(true),
+                label_attribute: None,
             })
             .await;
 
@@ -7140,6 +7293,7 @@ mod tests {
                 since_ms: Some(2000),
                 limit: Some(100),
                 include_internal: Some(true),
+                label_attribute: None,
             })
             .await;
 
@@ -7189,6 +7343,7 @@ mod tests {
                 since_ms: None,
                 limit: Some(2),
                 include_internal: Some(true),
+                label_attribute: None,
             })
             .await;
 
@@ -7263,6 +7418,7 @@ mod tests {
                 since_ms: None,
                 limit: Some(100),
                 include_internal: None,
+                label_attribute: None,
             })
             .await;
 
@@ -7278,6 +7434,329 @@ mod tests {
                 assert_eq!(groups[0]["value"], "M-user");
             }
             _ => panic!("expected group_traces_by success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_traces_group_by_label_attribute_newest_wins() {
+        reset_observability_test_state();
+
+        let engine = Arc::new(Engine::new());
+        let module = make_test_module(engine.clone());
+
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            // Session S-1 renamed between turns: the newest span's name wins.
+            make_span(
+                "trace-A",
+                "A1",
+                None,
+                "turn-1",
+                "harness",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![("iii.session.id", "S-1"), ("iii.session.name", "untitled")],
+            ),
+            make_span(
+                "trace-B",
+                "B1",
+                None,
+                "turn-2",
+                "harness",
+                3_000_000_000,
+                4_000_000_000,
+                "OK",
+                vec![
+                    ("iii.session.id", "S-1"),
+                    ("iii.session.name", "refactor auth"),
+                ],
+            ),
+            // Session S-2 has no name attribute anywhere: label stays null.
+            make_span(
+                "trace-C",
+                "C1",
+                None,
+                "turn-3",
+                "harness",
+                5_000_000_000,
+                6_000_000_000,
+                "OK",
+                vec![("iii.session.id", "S-2")],
+            ),
+        ]);
+
+        let result = module
+            .group_traces_by(TracesGroupByInput {
+                attribute: "iii.session.id".to_string(),
+                since_ms: None,
+                limit: Some(100),
+                include_internal: Some(true),
+                label_attribute: Some("iii.session.name".to_string()),
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
+                let groups = value["groups"].as_array().expect("groups array");
+                assert_eq!(groups.len(), 2);
+                // Sorted by first_seen_ms DESC: S-2 first, then S-1.
+                assert_eq!(groups[0]["value"], "S-2");
+                assert!(groups[0]["label"].is_null());
+                assert_eq!(groups[1]["value"], "S-1");
+                assert_eq!(groups[1]["label"], "refactor auth");
+            }
+            _ => panic!("expected group_traces_by success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_exclude_attributes_hides_matching_roots() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span(
+                "t-noisy",
+                "n1",
+                None,
+                "call ui::subscribe",
+                "engine",
+                1_000_000_000,
+                1_100_000_000,
+                "OK",
+                vec![("function_id", "ui::subscribe")],
+            ),
+            make_span(
+                "t-kept",
+                "k1",
+                None,
+                "call harness::turn",
+                "engine",
+                2_000_000_000,
+                2_100_000_000,
+                "OK",
+                vec![("function_id", "harness::turn")],
+            ),
+            // The excluded function appearing INSIDE a trace must not hide it
+            // (root-match only).
+            make_span(
+                "t-kept-2",
+                "k2",
+                None,
+                "call other::fn",
+                "engine",
+                3_000_000_000,
+                3_200_000_000,
+                "OK",
+                vec![("function_id", "other::fn")],
+            ),
+            make_span(
+                "t-kept-2",
+                "k2-child",
+                Some("k2"),
+                "call ui::subscribe",
+                "engine",
+                3_050_000_000,
+                3_100_000_000,
+                "OK",
+                vec![("function_id", "ui::subscribe")],
+            ),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                trace_id: None,
+                trace_ids: None,
+                offset: None,
+                limit: None,
+                service_name: None,
+                name: None,
+                status: None,
+                min_duration_ms: None,
+                max_duration_ms: None,
+                start_time: None,
+                end_time: None,
+                sort_by: None,
+                sort_order: None,
+                attributes: None,
+                exclude_attributes: Some(vec![vec![
+                    "function_id".to_string(),
+                    "ui::subscribe".to_string(),
+                ]]),
+                include_internal: Some(true),
+                search_all_spans: None,
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
+                let spans = value["spans"].as_array().expect("spans array");
+                let trace_ids: Vec<&str> = spans
+                    .iter()
+                    .map(|s| s["trace_id"].as_str().unwrap())
+                    .collect();
+                assert_eq!(
+                    trace_ids,
+                    vec!["t-kept", "t-kept-2"],
+                    "root matching the excluded pair is hidden; a child match is not"
+                );
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_trace_ids_filters_to_requested_set() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span("t-1", "s1", None, "op-1", "svc", 1_000_000_000, 1_100_000_000, "OK", vec![]),
+            make_span("t-2", "s2", None, "op-2", "svc", 2_000_000_000, 2_100_000_000, "OK", vec![]),
+            make_span("t-3", "s3", None, "op-3", "svc", 3_000_000_000, 3_100_000_000, "OK", vec![]),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                trace_id: None,
+                trace_ids: Some(vec!["t-1".to_string(), "t-3".to_string()]),
+                offset: None,
+                limit: None,
+                service_name: None,
+                name: None,
+                status: None,
+                min_duration_ms: None,
+                max_duration_ms: None,
+                start_time: None,
+                end_time: None,
+                sort_by: None,
+                sort_order: None,
+                attributes: None,
+                exclude_attributes: None,
+                include_internal: Some(true),
+                search_all_spans: None,
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
+                let spans = value["spans"].as_array().expect("spans array");
+                let trace_ids: Vec<&str> = spans
+                    .iter()
+                    .map(|s| s["trace_id"].as_str().unwrap())
+                    .collect();
+                assert_eq!(trace_ids, vec!["t-1", "t-3"]);
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_merges_trace_tags_from_child_spans() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        // Engine-side root has no baggage-derived attributes (it starts before
+        // the worker handler stamps baggage); children carry them.
+        span_storage.add_spans(vec![
+            make_span(
+                "t-turn",
+                "root",
+                None,
+                "call harness::turn",
+                "engine",
+                1_000_000_000,
+                2_000_000_000,
+                "OK",
+                vec![("function_id", "harness::turn")],
+            ),
+            make_span(
+                "t-turn",
+                "child-1",
+                Some("root"),
+                "call session::messages",
+                "session-manager",
+                1_100_000_000,
+                1_200_000_000,
+                "OK",
+                vec![
+                    ("iii.session.id", "S-1"),
+                    ("iii.session.name", "untitled"),
+                    ("iii.tag.message", "fix the login bug"),
+                ],
+            ),
+            // Newer child carries the renamed session: it wins the merge.
+            make_span(
+                "t-turn",
+                "child-2",
+                Some("root"),
+                "call router::chat",
+                "llm-router",
+                1_300_000_000,
+                1_900_000_000,
+                "OK",
+                vec![
+                    ("iii.session.id", "S-1"),
+                    ("iii.session.name", "refactor auth"),
+                    ("iii.message.id", "turn-9"),
+                ],
+            ),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                trace_id: None,
+                trace_ids: None,
+                offset: None,
+                limit: None,
+                service_name: None,
+                name: None,
+                status: None,
+                min_duration_ms: None,
+                max_duration_ms: None,
+                start_time: None,
+                end_time: None,
+                sort_by: None,
+                sort_order: None,
+                attributes: None,
+                exclude_attributes: None,
+                include_internal: Some(true),
+                search_all_spans: None,
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
+                let spans = value["spans"].as_array().expect("spans array");
+                assert_eq!(spans.len(), 1, "one root row expected");
+                let tags = &spans[0]["trace_tags"];
+                assert_eq!(tags["iii.tag.message"], "fix the login bug");
+                assert_eq!(tags["iii.session.id"], "S-1");
+                assert_eq!(
+                    tags["iii.session.name"], "refactor auth",
+                    "newest span's value wins on key conflict"
+                );
+                assert_eq!(tags["iii.message.id"], "turn-9");
+                // Non-tag attributes must not leak into trace_tags.
+                assert!(tags.get("function_id").is_none());
+            }
+            _ => panic!("expected list_traces success"),
         }
     }
 

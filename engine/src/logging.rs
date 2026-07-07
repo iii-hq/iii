@@ -411,6 +411,13 @@ fn otel_config_from_module(
     if let Some(max_spans) = module_config.memory_max_spans {
         otel_cfg.memory_max_spans = max_spans;
     }
+    // Re-derive rather than override: the mode-aware default (memory → on)
+    // must be computed against the exporter resolved just above, not the one
+    // `OtelConfig::default()` saw before this block applied the yaml config.
+    otel_cfg.live_spans = crate::workers::observability::otel::resolve_live_spans(
+        module_config.live_spans,
+        &otel_cfg.exporter,
+    );
 
     otel_cfg
 }

@@ -1,36 +1,34 @@
-"""Baggage -> span attribute processor."""
+"""Baggage -> span attribute processor.
+
+Copies EVERY baggage entry onto every span started in its scope,
+unconditionally -- the same contract as the upstream OTel contrib
+``BaggageSpanProcessor``. There is deliberately no key filtering here: a
+filtering policy baked into worker binaries has to be kept in lockstep
+across every SDK language and every deployed worker, and a stale binary
+silently drops newer keys. Which attributes *mean* something (e.g. the
+``iii.tag.*`` trace-tag namespace, ``iii.session.*``) is a query-side
+convention owned by the engine's traces API, where it can evolve without
+touching workers.
+"""
 
 from __future__ import annotations
-
-from typing import Sequence
 
 from opentelemetry import baggage
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
-#: DEFAULT_ALLOWLIST drift across languages would break worker chains;
-#: lockstep tests in each SDK pin this constant at CI time.
-DEFAULT_ALLOWLIST: tuple[str, ...] = (
-    "iii.session.id",
-    "iii.message.id",
-    "iii.function.id",
-)
-
 
 class BaggageSpanProcessor(SpanProcessor):
-
-    def __init__(self, allowlist: Sequence[str] = DEFAULT_ALLOWLIST) -> None:
-        self._allowlist: tuple[str, ...] = tuple(allowlist)
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         # NoOp guard: skip allocation when sampler drops the span.
         if not span.is_recording():
             return
 
-        for key in self._allowlist:
-            value = baggage.get_baggage(key, parent_context)
-            if value is not None:
-                span.set_attribute(key, str(value))
+        for key, value in baggage.get_all(parent_context).items():
+            if value is None:
+                continue
+            span.set_attribute(key, str(value))
 
     def on_end(self, span: ReadableSpan) -> None:  # noqa: ARG002
         pass

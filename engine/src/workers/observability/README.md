@@ -98,6 +98,7 @@ engine restart. Memory-backed stores are unaffected.
 | `endpoint`                  | string      | OTLP collector base endpoint. Defaults to `"http://localhost:4317"`. Env: `OTEL_EXPORTER_OTLP_ENDPOINT`.                                                                     |
 | `sampling_ratio`            | number      | Global trace sampling ratio (`0.0`–`1.0`). Defaults to `1.0`. Env: `OTEL_TRACES_SAMPLER_ARG`.                                                                                |
 | `memory_max_spans`          | number      | Max spans to keep in memory. Defaults to `1000`. Env: `OTEL_MEMORY_MAX_SPANS`.                                                                                               |
+| `live_spans`                | boolean     | Mirror spans into the in-memory store at start as pending snapshots (see [Live (pending) spans](#live-pending-spans)). Defaults to `true` for `exporter: memory`, `false` otherwise — set it to opt in with `both` in production. Ignored for `otlp`-only. Restart-tier. Env: `OTEL_LIVE_SPANS`. |
 | `metrics_enabled`           | boolean     | Whether metrics collection is enabled. Defaults to `false`. Env: `OTEL_METRICS_ENABLED`.                                                                                     |
 | `metrics_exporter`          | string      | Metrics exporter: `memory` or `otlp`. Defaults to `memory`. Env: `OTEL_METRICS_EXPORTER`.                                                                                    |
 | `metrics_retention_seconds` | number      | How long to retain metrics in memory. Defaults to `3600`. Env: `OTEL_METRICS_RETENTION_SECONDS`.                                                                             |
@@ -215,6 +216,35 @@ All logging functions accept: `message` (string, required), `data` (object), `tr
 | `engine::traces::tree`  | Retrieve a trace as a hierarchical span tree. Parameters: `trace_id` (required).                                                                                                                                        |
 | `engine::traces::clear` | Clear all stored trace spans from memory.                                                                                                                                                                               |
 
+### Live (pending) spans
+
+With the `memory` exporter (the local-dev default), spans are additionally mirrored into the
+in-memory store the moment they **start**. This is on by default for `memory` only; a `both`
+setup — the production shape that also exports OTLP — opts in explicitly with `live_spans: true`
+(or `OTEL_LIVE_SPANS=true`), and `otlp`-only can never mirror (engine finals don't land in the
+memory store there, so pending snapshots would never be replaced). A live snapshot is marked
+`pending: true` with `end_time_unix_nano: 0` and carries the attributes known at creation (span
+macro fields plus baggage-stamped `iii.*` attributes); attributes recorded later, like
+`otel.status_code`, are absent, so pending spans read `status: "unset"`. When the span closes, the
+final span **replaces the snapshot in place** — same storage position, one entry per span id.
+
+This is what lets live trace views show in-progress work: engine-side parent spans (`trigger <fn>`,
+`enqueue`, builtin `call <fn>`) become visible while the work under them is still running, traces
+appear in list views as soon as they start, and the trace trigger / devtools streams tick on span
+start as well as close. Worker (SDK) spans still arrive only when they close — they are ingested
+over OTLP, which has no notion of an unfinished span.
+
+Consumers of the Traces API should treat `pending: true` (or `end_time_unix_nano == 0`) as
+"still running": duration filters and sorts already measure such spans as duration-so-far, and
+`engine::metrics::list` excludes them from latency statistics. The `pending` field is only
+serialized when true, so the wire shape of finished spans is unchanged.
+
+**OTEL compliance:** pending snapshots exist ONLY in the in-memory store and the `iii:devtools:*`
+streams fed from it. The OTLP export path (both the engine exporter and the SDK-span forwarder) is
+untouched and only ever ships complete spans — `end_time_unix_nano` is semantically required on the
+OTLP wire, and nothing partial ever reaches it. Spans that never close (e.g. a leaked guard) remain
+pending until buffer eviction; they are a dev-store artifact, not exported data.
+
 ### Metrics API
 
 | Function                | Description                                                                                                                                                 |
@@ -270,9 +300,11 @@ Log entry payload fields: `timestamp_unix_nano`, `observed_timestamp_unix_nano`,
 Register a function to react to span activity in the in-memory trace store, so any client — a worker
 or the web console — can refresh reactively instead of polling. The trigger is a **coalesced "traces
 changed" tick**, not a per-span feed: span activity is debounced (~300ms) and the handler receives
-the distinct affected trace ids for the window. Re-read details via `engine::traces::list` /
-`engine::traces::tree`. Requires the memory exporter (`exporter: memory` or `both`); with the
-OTLP-only exporter there is no in-memory store and trace triggers stay dormant.
+the distinct affected trace ids for the window. With `live_spans` on, the tick also fires when spans
+**start** (pending snapshots land in the store), not just when they close. Re-read details via
+`engine::traces::list` / `engine::traces::tree`. Requires the memory exporter (`exporter: memory` or
+`both`); in OTLP-only mode engine spans never land in the store, so the trigger only ever sees
+OTLP-ingested SDK spans there.
 
 Engine-internal spans and the trigger's **own delivery spans** are excluded from firing it —
 delivering a trigger via `engine.call` is itself instrumented as a span, so without this exclusion
