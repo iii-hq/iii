@@ -449,7 +449,10 @@ mod tests {
             crate::telemetry::inject_baggage_from_context(&rewritten).expect("baggage header");
         assert!(header.contains("iii.function.id=child::fn"));
         assert!(!header.contains("iii.function.id=parent::fn"));
-        assert!(header.contains("iii.session.id=s-1"), "other entries preserved");
+        assert!(
+            header.contains("iii.session.id=s-1"),
+            "other entries preserved"
+        );
     }
 
     #[test]

@@ -5211,7 +5211,10 @@ mod tests {
         let span = tracer.start("dropped");
         drop(span);
 
-        assert!(storage.get_spans().is_empty(), "sampled-out spans leave no pending");
+        assert!(
+            storage.get_spans().is_empty(),
+            "sampled-out spans leave no pending"
+        );
     }
 
     #[test]

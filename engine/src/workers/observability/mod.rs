@@ -2197,9 +2197,8 @@ impl ObservabilityWorker {
                         .map(|s| {
                             // Attach trace-level tags to the returned page only
                             // (per-row index lookup, bounded by `limit`).
-                            let tags = collect_trace_tags(
-                                &storage.get_spans_by_trace_id(&s.trace_id),
-                            );
+                            let tags =
+                                collect_trace_tags(&storage.get_spans_by_trace_id(&s.trace_id));
                             let mut value = serde_json::to_value(s).unwrap_or(Value::Null);
                             if !tags.is_empty()
                                 && let Value::Object(ref mut map) = value
@@ -7622,9 +7621,39 @@ mod tests {
         let span_storage = otel::get_span_storage().expect("span storage should exist");
         span_storage.clear();
         span_storage.add_spans(vec![
-            make_span("t-1", "s1", None, "op-1", "svc", 1_000_000_000, 1_100_000_000, "OK", vec![]),
-            make_span("t-2", "s2", None, "op-2", "svc", 2_000_000_000, 2_100_000_000, "OK", vec![]),
-            make_span("t-3", "s3", None, "op-3", "svc", 3_000_000_000, 3_100_000_000, "OK", vec![]),
+            make_span(
+                "t-1",
+                "s1",
+                None,
+                "op-1",
+                "svc",
+                1_000_000_000,
+                1_100_000_000,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "t-2",
+                "s2",
+                None,
+                "op-2",
+                "svc",
+                2_000_000_000,
+                2_100_000_000,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "t-3",
+                "s3",
+                None,
+                "op-3",
+                "svc",
+                3_000_000_000,
+                3_100_000_000,
+                "OK",
+                vec![],
+            ),
         ]);
 
         let result = module
