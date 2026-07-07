@@ -129,6 +129,61 @@ async fn functions_info_returns_schemas_for_engine_builtin() {
     );
 }
 
+/// `engine::functions::info { function_ids: [...] }` fetches several
+/// contracts in ONE call: full `FunctionDetail` rows for known ids, a
+/// `{ function_id, error: "not_found" }` marker for unknown ones — in
+/// request order, without failing the batch.
+#[tokio::test]
+async fn functions_info_batch_returns_details_and_markers() {
+    let builder = boot_bare_engine().await;
+    let engine = builder.engine();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let result = engine
+        .call(
+            "engine::functions::info",
+            json!({ "function_ids": [
+                "engine::functions::list",
+                "does::not::exist",
+                "engine::functions::info",
+            ] }),
+        )
+        .await
+        .expect("batch engine::functions::info should succeed")
+        .expect("response should not be None");
+
+    let functions = result
+        .get("functions")
+        .and_then(|v| v.as_array())
+        .expect("batch response must carry a functions array");
+    assert_eq!(functions.len(), 3);
+
+    assert_eq!(
+        functions[0].get("function_id").and_then(|v| v.as_str()),
+        Some("engine::functions::list")
+    );
+    assert!(
+        functions[0].get("request_schema").is_some(),
+        "batch entries must carry the full FunctionDetail"
+    );
+
+    assert_eq!(
+        functions[1].get("function_id").and_then(|v| v.as_str()),
+        Some("does::not::exist")
+    );
+    assert_eq!(
+        functions[1].get("error").and_then(|v| v.as_str()),
+        Some("not_found")
+    );
+
+    assert_eq!(
+        functions[2].get("function_id").and_then(|v| v.as_str()),
+        Some("engine::functions::info")
+    );
+    assert!(functions[2].get("error").is_none());
+}
+
 /// `engine::triggers::list` now returns trigger TYPES (templates), not
 /// instances. Every row must carry an `id`, `worker_name`, and `description`.
 #[tokio::test]
