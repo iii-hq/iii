@@ -58,19 +58,40 @@ def collect_worker_info(worker_name: str) -> dict[str, object]:
     return run_iii("engine::workers::info", {"name": worker_name})
 
 
+# `engine::functions::info` accepts at most 32 ids per `function_ids` batch.
+FUNCTIONS_INFO_BATCH_MAX = 32
+
+
 def collect_function_details(function_ids: list[str]) -> list[dict[str, object]]:
     # `engine::functions::list` is lean post-rework — schemas live behind
-    # `engine::functions::info`. We fetch detail for each function the
-    # worker owns so the registry payload still carries request/response
-    # schemas + metadata.
+    # `engine::functions::info`. Its `function_ids` batch mode fetches up
+    # to 32 details per round-trip; a per-item `error` marker ("forbidden"
+    # / "not_found") fails the collection, matching the old per-id loop.
     details: list[dict[str, object]] = []
-    for fn_id in function_ids:
+    for start in range(0, len(function_ids), FUNCTIONS_INFO_BATCH_MAX):
+        chunk = function_ids[start : start + FUNCTIONS_INFO_BATCH_MAX]
         try:
-            details.append(run_iii("engine::functions::info", {"function_id": fn_id}))
+            response = run_iii("engine::functions::info", {"function_ids": chunk})
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
             raise RuntimeError(
-                f"could not collect function info for {fn_id!r}: {exc}"
+                f"could not collect function info for batch {chunk!r}: {exc}"
             ) from exc
+        entries = response.get("functions")
+        if not isinstance(entries, list):
+            raise RuntimeError(
+                f"functions::info batch response missing `functions` array: {response!r}"
+            )
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    f"functions::info batch entry is not an object: {entry!r}"
+                )
+            if entry.get("error"):
+                raise RuntimeError(
+                    f"could not collect function info for "
+                    f"{entry.get('function_id')!r}: {entry['error']}"
+                )
+            details.append(entry)
     return details
 
 

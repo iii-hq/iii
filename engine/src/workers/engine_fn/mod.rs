@@ -93,10 +93,25 @@ pub struct FunctionsListInput {
     pub include_internal: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct FunctionInfoInput {
-    pub function_id: String,
+    /// One function id — returns that function's flat `FunctionDetail`
+    /// (the historical single-id shape). Exactly one of `function_id` /
+    /// `function_ids` must be set.
+    #[serde(default)]
+    pub function_id: Option<String>,
+    /// Several function ids at once (max 32, deduplicated in request order) —
+    /// returns `{ "functions": [...] }` with one entry per id: the
+    /// `FunctionDetail`, or `{ "function_id", "error": "forbidden" |
+    /// "not_found" }` for an id this caller cannot see. One call replaces N
+    /// single-id round-trips.
+    #[serde(default)]
+    pub function_ids: Option<Vec<String>>,
 }
+
+/// Hard cap on `function_ids` per call — a batch exists to save round-trips,
+/// not to dump the catalog (that is `engine::functions::list`).
+const FUNCTION_INFO_BATCH_MAX: usize = 32;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct TriggersListInput {
@@ -200,6 +215,36 @@ pub struct FunctionDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     pub registered_triggers: Vec<RegisteredTriggerRef>,
+}
+
+/// One `function_ids` batch entry: the detail, or a per-id marker mirroring
+/// the single-id error codes (`forbidden` / `not_found`) — a bad id never
+/// fails the whole batch.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum FunctionInfoEntry {
+    Detail(Box<FunctionDetail>),
+    Unavailable {
+        function_id: String,
+        /// `"forbidden"` (RBAC-hidden from this session) or `"not_found"`.
+        error: String,
+    },
+}
+
+/// Batch envelope for `engine::functions::info { function_ids: [...] }`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FunctionInfoBatch {
+    /// One entry per requested id, in request order.
+    pub functions: Vec<FunctionInfoEntry>,
+}
+
+/// `engine::functions::info` output: the flat single-id `FunctionDetail`
+/// (byte-identical wire shape for existing callers) or the batch envelope.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum FunctionInfoOutput {
+    Single(Box<FunctionDetail>),
+    Batch(FunctionInfoBatch),
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -705,10 +750,34 @@ impl EngineFunctionsWorker {
 
     // ── Detail builders ─────────────────────────────────────────────────
 
+    /// The per-id RBAC visibility check `functions_info` applies for
+    /// session-scoped callers (single and batch paths share it).
+    fn session_allows_function(&self, session: &Arc<Session>, function_id: &str) -> bool {
+        let function = self.engine.functions.get(function_id);
+        crate::workers::worker::rbac_config::is_function_allowed(
+            function_id,
+            session.config.rbac.clone(),
+            &session.allowed_functions,
+            &session.forbidden_functions,
+            function.as_ref(),
+        )
+    }
+
     async fn build_function_detail(&self, function_id: &str) -> Option<FunctionDetail> {
-        let function = self.engine.functions.get(function_id)?;
         let index = self.function_owner_index().await;
-        let worker_name = Self::worker_name_for_function_id(&index, function_id);
+        self.build_function_detail_indexed(&index, function_id)
+    }
+
+    /// Like [`Self::build_function_detail`] but with the owner index built
+    /// once by the caller — a `function_ids` batch would otherwise rebuild
+    /// the O(workers × functions) index per id.
+    fn build_function_detail_indexed(
+        &self,
+        index: &HashMap<String, String>,
+        function_id: &str,
+    ) -> Option<FunctionDetail> {
+        let function = self.engine.functions.get(function_id)?;
+        let worker_name = Self::worker_name_for_function_id(index, function_id);
 
         Some(FunctionDetail {
             function_id: function_id.to_string(),
@@ -1207,42 +1276,103 @@ impl EngineFunctionsWorker {
 
     #[function(
         id = "engine::functions::info",
-        description = "Inspect one function: schemas, owner, and registered triggers."
+        description = "Inspect functions: schemas, owner, and registered triggers. Single \
+                       `function_id`, or `function_ids: [...]` (max 32) to fetch several \
+                       contracts in one call."
     )]
     pub async fn functions_info(
         &self,
         input: FunctionInfoInput,
         session: Option<Arc<Session>>,
-    ) -> FunctionResult<FunctionDetail, ErrorBody> {
-        if let Some(session) = &session {
-            let function = self.engine.functions.get(&input.function_id);
-            let allowed = crate::workers::worker::rbac_config::is_function_allowed(
-                &input.function_id,
-                session.config.rbac.clone(),
-                &session.allowed_functions,
-                &session.forbidden_functions,
-                function.as_ref(),
-            );
-            if !allowed {
+    ) -> FunctionResult<FunctionInfoOutput, ErrorBody> {
+        let function_ids = match (input.function_id, input.function_ids) {
+            (Some(_), Some(_)) => {
                 return FunctionResult::Failure(ErrorBody {
-                    code: "FORBIDDEN".into(),
-                    message: format!(
-                        "Function '{}' is not visible to this session.",
-                        input.function_id
-                    ),
+                    code: "INVALID_ARGUMENTS".into(),
+                    message: "pass either `function_id` or `function_ids`, not both".into(),
                     stacktrace: None,
                 });
             }
+            (None, None) => {
+                return FunctionResult::Failure(ErrorBody {
+                    code: "INVALID_ARGUMENTS".into(),
+                    message: "missing field `function_id` (or `function_ids` for a batch)".into(),
+                    stacktrace: None,
+                });
+            }
+            // Single id: keep the historical flat shape and error codes.
+            (Some(function_id), None) => {
+                if let Some(session) = &session
+                    && !self.session_allows_function(session, &function_id)
+                {
+                    return FunctionResult::Failure(ErrorBody {
+                        code: "FORBIDDEN".into(),
+                        message: format!(
+                            "Function '{function_id}' is not visible to this session."
+                        ),
+                        stacktrace: None,
+                    });
+                }
+                return match self.build_function_detail(&function_id).await {
+                    Some(detail) => {
+                        FunctionResult::Success(FunctionInfoOutput::Single(Box::new(detail)))
+                    }
+                    None => FunctionResult::Failure(ErrorBody {
+                        code: "NOT_FOUND".into(),
+                        message: format!("Function '{function_id}' is not registered."),
+                        stacktrace: None,
+                    }),
+                };
+            }
+            (None, Some(function_ids)) => function_ids,
+        };
+
+        // Batch: per-id markers mirror the single-id error codes — one bad id
+        // never fails the batch.
+        let mut ids: Vec<String> = Vec::with_capacity(function_ids.len());
+        for id in function_ids {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if ids.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "INVALID_ARGUMENTS".into(),
+                message: "`function_ids` must be a non-empty array of function ids".into(),
+                stacktrace: None,
+            });
+        }
+        if ids.len() > FUNCTION_INFO_BATCH_MAX {
+            return FunctionResult::Failure(ErrorBody {
+                code: "INVALID_ARGUMENTS".into(),
+                message: format!("too many function_ids (max {FUNCTION_INFO_BATCH_MAX})"),
+                stacktrace: None,
+            });
         }
 
-        match self.build_function_detail(&input.function_id).await {
-            Some(detail) => FunctionResult::Success(detail),
-            None => FunctionResult::Failure(ErrorBody {
-                code: "NOT_FOUND".into(),
-                message: format!("Function '{}' is not registered.", input.function_id),
-                stacktrace: None,
-            }),
-        }
+        let index = self.function_owner_index().await;
+        let functions = ids
+            .into_iter()
+            .map(|function_id| {
+                if let Some(session) = &session
+                    && !self.session_allows_function(session, &function_id)
+                {
+                    return FunctionInfoEntry::Unavailable {
+                        function_id,
+                        error: "forbidden".into(),
+                    };
+                }
+                match self.build_function_detail_indexed(&index, &function_id) {
+                    Some(detail) => FunctionInfoEntry::Detail(Box::new(detail)),
+                    None => FunctionInfoEntry::Unavailable {
+                        function_id,
+                        error: "not_found".into(),
+                    },
+                }
+            })
+            .collect();
+
+        FunctionResult::Success(FunctionInfoOutput::Batch(FunctionInfoBatch { functions }))
     }
 
     #[function(
@@ -1675,7 +1805,15 @@ mod tests {
         let _: WorkersListInput = serde_json::from_value(serde_json::json!({})).unwrap();
         let info: FunctionInfoInput =
             serde_json::from_value(serde_json::json!({"function_id": "test"})).unwrap();
-        assert_eq!(info.function_id, "test");
+        assert_eq!(info.function_id.as_deref(), Some("test"));
+        assert_eq!(info.function_ids, None);
+        let batch: FunctionInfoInput =
+            serde_json::from_value(serde_json::json!({"function_ids": ["a::b", "c::d"]})).unwrap();
+        assert_eq!(batch.function_id, None);
+        assert_eq!(
+            batch.function_ids,
+            Some(vec!["a::b".to_string(), "c::d".to_string()])
+        );
     }
 
     // ── list_function_summaries tests ───────────────────────────────────
@@ -2455,14 +2593,15 @@ mod tests {
         let result = module
             .functions_info(
                 FunctionInfoInput {
-                    function_id: "test::detailed".to_string(),
+                    function_id: Some("test::detailed".to_string()),
+                    function_ids: None,
                 },
                 None,
             )
             .await;
 
         match result {
-            FunctionResult::Success(detail) => {
+            FunctionResult::Success(FunctionInfoOutput::Single(detail)) => {
                 assert_eq!(detail.function_id, "test::detailed");
                 assert_eq!(detail.description.as_deref(), Some("a detailed function"));
                 assert_eq!(
@@ -2478,7 +2617,7 @@ mod tests {
                 assert_eq!(detail.registered_triggers[0].id, "trig-d");
                 assert_eq!(detail.registered_triggers[0].trigger_type, "cron");
             }
-            _ => panic!("expected functions_info success"),
+            _ => panic!("expected single functions_info success"),
         }
     }
 
@@ -2488,7 +2627,8 @@ mod tests {
         let result = module
             .functions_info(
                 FunctionInfoInput {
-                    function_id: "does::not::exist".to_string(),
+                    function_id: Some("does::not::exist".to_string()),
+                    function_ids: None,
                 },
                 None,
             )
@@ -2498,6 +2638,82 @@ mod tests {
                 assert_eq!(err.code, "NOT_FOUND");
             }
             _ => panic!("expected NOT_FOUND failure"),
+        }
+    }
+
+    #[tokio::test]
+    async fn functions_info_batch_mixes_details_and_markers() {
+        let (engine, module) = setup_engine_and_module();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: "test::batched".to_string(),
+                description: Some("a batched function".to_string()),
+                request_format: Some(serde_json::json!({"type": "object"})),
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(
+                |_input: Value| async move { FunctionResult::Success(None) },
+            ),
+        );
+
+        let result = module
+            .functions_info(
+                FunctionInfoInput {
+                    function_id: None,
+                    // Duplicate id collapses; unknown id becomes a marker.
+                    function_ids: Some(vec![
+                        "test::batched".to_string(),
+                        "does::not::exist".to_string(),
+                        "test::batched".to_string(),
+                    ]),
+                },
+                None,
+            )
+            .await;
+
+        let FunctionResult::Success(FunctionInfoOutput::Batch(batch)) = result else {
+            panic!("expected batch functions_info success");
+        };
+        assert_eq!(batch.functions.len(), 2);
+        match &batch.functions[0] {
+            FunctionInfoEntry::Detail(detail) => assert_eq!(detail.function_id, "test::batched"),
+            other => panic!("expected detail entry, got {other:?}"),
+        }
+        match &batch.functions[1] {
+            FunctionInfoEntry::Unavailable { function_id, error } => {
+                assert_eq!(function_id, "does::not::exist");
+                assert_eq!(error, "not_found");
+            }
+            other => panic!("expected not_found marker, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn functions_info_rejects_both_and_neither_id_forms() {
+        let (_engine, module) = setup_engine_and_module();
+        for input in [
+            FunctionInfoInput {
+                function_id: Some("a::b".to_string()),
+                function_ids: Some(vec!["a::b".to_string()]),
+            },
+            FunctionInfoInput {
+                function_id: None,
+                function_ids: None,
+            },
+            FunctionInfoInput {
+                function_id: None,
+                function_ids: Some(vec![]),
+            },
+            FunctionInfoInput {
+                function_id: None,
+                function_ids: Some((0..33).map(|i| format!("f::{i}")).collect()),
+            },
+        ] {
+            match module.functions_info(input, None).await {
+                FunctionResult::Failure(err) => assert_eq!(err.code, "INVALID_ARGUMENTS"),
+                _ => panic!("expected INVALID_ARGUMENTS failure"),
+            }
         }
     }
 
