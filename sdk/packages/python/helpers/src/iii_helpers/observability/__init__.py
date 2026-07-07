@@ -1,6 +1,6 @@
 """iii_helpers.observability: shared OTel + Logger primitives."""
 
-from .baggage_span_processor import DEFAULT_ALLOWLIST, BaggageSpanProcessor
+from .baggage_span_processor import BaggageSpanProcessor
 from .http_instrumentation import execute_traced_request
 from .logger import Logger
 from .payload import (
@@ -32,7 +32,6 @@ from .telemetry_types import OtelConfig
 
 __all__ = [
     "BaggageSpanProcessor",
-    "DEFAULT_ALLOWLIST",
     "Logger",
     "OtelConfig",
     "REDACTED_PLACEHOLDER",

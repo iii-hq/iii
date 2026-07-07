@@ -14,7 +14,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn install_test_provider() -> (InMemorySpanExporter, SdkTracerProvider) {
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
-        .with_span_processor(BaggageSpanProcessor::default())
+        .with_span_processor(BaggageSpanProcessor)
         .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
         .build();
     opentelemetry::global::set_tracer_provider(provider.clone());

@@ -604,7 +604,7 @@ fn register_validate(iii: &IIIClient) {
     let _ = iii.register_function("worker::validate", describe_op(rf, "worker::validate"));
 }
 
-fn sink_ref<'a>(sink: &'a Arc<IIIEventSink>) -> &'a dyn EventSink {
+fn sink_ref(sink: &Arc<IIIEventSink>) -> &dyn EventSink {
     // `IIIEventSink` is the only mutating-op sink today, but the
     // orchestrators take `&dyn EventSink` — this helper makes the
     // coercion site explicit at every call site.

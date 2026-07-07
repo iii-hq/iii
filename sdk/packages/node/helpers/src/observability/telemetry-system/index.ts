@@ -46,7 +46,7 @@ import { parseIntegerEnv, resolveFlushIntervalMs } from './utils'
 // Re-export everything from submodules
 export * from './types'
 export * from './context'
-export { BaggageSpanProcessor, DEFAULT_ALLOWLIST } from './baggage-span-processor'
+export { BaggageSpanProcessor } from './baggage-span-processor'
 export {
   currentSpanIsRecording,
   recordSpanEvent,

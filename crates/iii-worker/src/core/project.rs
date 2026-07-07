@@ -43,8 +43,7 @@ impl ProjectOperationLock {
         match nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
             Ok(lock) => {
                 let marker = format!("pid={}\n", std::process::id());
-                (&*lock)
-                    .set_len(0)
+                lock.set_len(0)
                     .and_then(|_| (&*lock).write_all(marker.as_bytes()))
                     .map_err(|source| WorkerOpError::LockIo { path, source })?;
                 Ok(Self { _lock: lock })

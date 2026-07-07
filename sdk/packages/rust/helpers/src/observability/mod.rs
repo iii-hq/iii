@@ -7,7 +7,7 @@ pub mod telemetry;
 pub use opentelemetry;
 
 pub use self::logger::Logger;
-pub use self::telemetry::baggage_span_processor::{BaggageSpanProcessor, DEFAULT_ALLOWLIST};
+pub use self::telemetry::baggage_span_processor::BaggageSpanProcessor;
 pub use self::telemetry::context::{
     CapturedContext, capture_otel_context, current_span_id, current_trace_id, extract_baggage,
     extract_context, extract_traceparent, get_all_baggage, get_baggage_entry, inject_baggage,

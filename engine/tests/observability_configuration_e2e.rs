@@ -740,6 +740,7 @@ fn make_span(i: u64) -> iii::workers::observability::otel::StoredSpan {
         instrumentation_scope_version: None,
         flags: None,
         trace_state: None,
+        pending: false,
     }
 }
 

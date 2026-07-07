@@ -96,10 +96,10 @@ impl InvocationHandler {
         //     volume. Suppressed by default; re-enable with
         //     `III_OTEL_TRACE_BUILTINS=true`.
         //   - Worker-routed (non-builtin) functions are executed by an external
-        //     worker that emits its OWN `call <fn>` span (service = that
-        //     worker). The engine's span would be a cross-service duplicate of
-        //     the same logical invocation, so suppress it and let the worker's
-        //     span be the canonical one.
+        //     worker that emits its own handler span (`execute <fn>`, INTERNAL,
+        //     service = that worker). An engine-side `call` span would wrap the
+        //     same logical invocation as a cross-service duplicate, so suppress
+        //     it and let the worker's span be the canonical one.
         let suppress_span = if is_builtin {
             !crate::workers::telemetry::trace_builtins_enabled()
         } else {
@@ -139,10 +139,18 @@ impl InvocationHandler {
         //     trace; attaching it nests the fan-out under the writer (e.g.
         //     `approval::resolve` → state write → `turn::on_approval`).
         let dispatch_cx = if traceparent.is_some() || baggage.is_some() {
-            Some(crate::telemetry::extract_context(
-                traceparent.as_deref(),
-                baggage.as_deref(),
-            ))
+            let cx = crate::telemetry::extract_context(traceparent.as_deref(), baggage.as_deref());
+            // The caller's baggage names the CALLER; rewrite `iii.function.id`
+            // to the function being invoked so worker-side spans are attributed
+            // to their owning function (mirrors the enqueue boundary in
+            // `engine/mod.rs` and the `fn_queue` consumer in `queue.rs`).
+            // Built-ins execute in-process under the caller's identity and are
+            // left untouched.
+            Some(if is_builtin {
+                cx
+            } else {
+                crate::telemetry::with_function_id_baggage(&cx, &function_id)
+            })
         } else {
             None
         };
@@ -426,6 +434,25 @@ mod tests {
         let id = Uuid::new_v4();
         // Should not panic.
         handler.halt_invocation(&id);
+    }
+
+    #[test]
+    fn dispatch_baggage_rewrite_names_the_target_function() {
+        // `handle_invocation` rewrites `iii.function.id` in the dispatch
+        // context for non-builtin targets (extract → rewrite → inject is the
+        // exact path the worker-bound baggage header takes), so worker-side
+        // spans are attributed to the function they serve — not the caller.
+        let caller = "iii.session.id=s-1,iii.function.id=parent::fn";
+        let cx = crate::telemetry::extract_context(None, Some(caller));
+        let rewritten = crate::telemetry::with_function_id_baggage(&cx, "child::fn");
+        let header =
+            crate::telemetry::inject_baggage_from_context(&rewritten).expect("baggage header");
+        assert!(header.contains("iii.function.id=child::fn"));
+        assert!(!header.contains("iii.function.id=parent::fn"));
+        assert!(
+            header.contains("iii.session.id=s-1"),
+            "other entries preserved"
+        );
     }
 
     #[test]

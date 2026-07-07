@@ -19,13 +19,13 @@ use super::sampler::AdvancedSampler;
 use opentelemetry::propagation::{TextMapCompositePropagator, TextMapPropagator};
 use opentelemetry::{
     Context, KeyValue, global,
-    trace::{TraceContextExt, TracerProvider as _},
+    trace::{Span as _, TraceContextExt, TracerProvider as _},
 };
 use opentelemetry_sdk::{
     Resource,
     error::OTelSdkResult,
     propagation::{BaggagePropagator, TraceContextPropagator},
-    trace::{RandomIdGenerator, Sampler, SdkTracerProvider, SpanData, SpanExporter},
+    trace::{RandomIdGenerator, Sampler, SdkTracerProvider, SpanData, SpanExporter, SpanProcessor},
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
@@ -145,6 +145,31 @@ pub struct OtelConfig {
     pub sampling_ratio: f64,
     /// Maximum spans to keep in memory. Used for Memory and Both exporters.
     pub memory_max_spans: usize,
+    /// Mirror spans into the in-memory store at start as `pending` snapshots
+    /// (`LiveSpanProcessor`), so live trace views show in-progress work.
+    /// Resolved by [`resolve_live_spans`]: on by default for the Memory
+    /// exporter (local dev), opt-in for Both (production), never effective
+    /// for Otlp-only. Restart-tier.
+    pub live_spans: bool,
+}
+
+/// `OTEL_LIVE_SPANS` env override for live-span mirroring.
+fn env_live_spans() -> Option<bool> {
+    env::var("OTEL_LIVE_SPANS")
+        .ok()
+        .map(|v| v == "true" || v == "1")
+}
+
+/// Resolve the live-spans switch: explicit config > `OTEL_LIVE_SPANS` env >
+/// mode-aware default. The default is ON only for the `memory` exporter (the
+/// local-dev mode where live trace views matter); `both` — the production
+/// shape that also exports OTLP — stays off unless explicitly enabled, and
+/// `otlp`-only can never mirror (engine finals don't land in the memory
+/// store there, so pendings would never be replaced).
+pub fn resolve_live_spans(explicit: Option<bool>, exporter: &ExporterType) -> bool {
+    explicit
+        .or_else(env_live_spans)
+        .unwrap_or(matches!(exporter, ExporterType::Memory))
 }
 
 impl Default for OtelConfig {
@@ -217,6 +242,8 @@ impl Default for OtelConfig {
             })
             .unwrap_or(DEFAULT_MEMORY_MAX_SPANS);
 
+        let live_spans = resolve_live_spans(global_cfg.and_then(|c| c.live_spans), &exporter);
+
         Self {
             enabled,
             service_name,
@@ -226,6 +253,7 @@ impl Default for OtelConfig {
             endpoint,
             sampling_ratio,
             memory_max_spans,
+            live_spans,
         }
     }
 }
@@ -365,6 +393,14 @@ pub struct StoredSpan {
     /// caller propagated a non-empty `tracestate` alongside `traceparent`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_state: Option<String>,
+    /// True while the span is in progress — a live snapshot taken by
+    /// `LiveSpanProcessor::on_start`, replaced in place by the final span when
+    /// it closes (`InMemorySpanStorage::add_spans`). Pending spans exist ONLY
+    /// in the in-memory store and the `iii:devtools:*` streams; they are never
+    /// exported via OTLP, where `end_time_unix_nano` is semantically required.
+    /// By convention `end_time_unix_nano == 0` while pending.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 
 impl StoredSpan {
@@ -464,8 +500,35 @@ impl StoredSpan {
                 let ts = span.span_context.trace_state().header();
                 if ts.is_empty() { None } else { Some(ts) }
             },
+            pending: false,
         }
     }
+
+    /// Effective end for time math: a pending span is active "now", so time
+    /// filters and durations must not read its `end_time_unix_nano == 0`
+    /// sentinel literally.
+    pub fn effective_end_ns(&self, now_ns: u64) -> u64 {
+        if self.pending {
+            now_ns
+        } else {
+            self.end_time_unix_nano
+        }
+    }
+
+    /// Duration so far for pending spans, final duration otherwise.
+    pub fn duration_ns(&self, now_ns: u64) -> u64 {
+        self.effective_end_ns(now_ns)
+            .saturating_sub(self.start_time_unix_nano)
+    }
+}
+
+/// Nanoseconds since the UNIX epoch, for `StoredSpan::effective_end_ns` /
+/// `duration_ns`. Compute once per request so one listing sees one "now".
+pub fn now_unix_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
 
 /// In-memory span storage with circular buffer and broadcast channel.
@@ -476,9 +539,45 @@ pub struct InMemorySpanStorage {
     max_spans: std::sync::atomic::AtomicUsize,
     /// Secondary index: trace_id -> set of span indices for O(1) trace lookups
     spans_by_trace_id: RwLock<HashMap<String, HashSet<usize>>>,
+    /// span_ids currently stored as pending (live snapshots awaiting their
+    /// final span). Gates the replace-scan in `add_spans` so the hot append
+    /// path (OTLP ingest, exporters) stays O(1) when no pending predecessor
+    /// exists. Lock order everywhere: `spans` → `spans_by_trace_id` → this.
+    pending_span_ids: RwLock<HashSet<String>>,
     /// Broadcast of every span as it lands, driving the `trace` trigger
     /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
+}
+
+/// Evict oldest spans until `len < max_spans`, maintaining the trace index
+/// (shift-down on every pop) and purging evicted ids from the pending set.
+/// Callers hold all three storage locks (see the lock-order note above).
+fn evict_to_capacity(
+    spans: &mut VecDeque<StoredSpan>,
+    index: &mut HashMap<String, HashSet<usize>>,
+    pending: &mut HashSet<String>,
+    max_spans: usize,
+) {
+    // Loop converges after a shrink
+    while spans.len() >= max_spans
+        && let Some(old) = spans.pop_front()
+    {
+        pending.remove(&old.span_id);
+        // Remove from index and shift all indices down
+        if let Some(set) = index.get_mut(&old.trace_id) {
+            set.remove(&0);
+            *set = set.iter().filter_map(|&i| i.checked_sub(1)).collect();
+            if set.is_empty() {
+                index.remove(&old.trace_id);
+            }
+        }
+        // Also shift indices for all other trace_ids
+        for (trace_id, set) in index.iter_mut() {
+            if trace_id != &old.trace_id {
+                *set = set.iter().filter_map(|&i| i.checked_sub(1)).collect();
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for InMemorySpanStorage {
@@ -501,6 +600,7 @@ impl InMemorySpanStorage {
             spans: RwLock::new(VecDeque::with_capacity(max_spans)),
             max_spans: std::sync::atomic::AtomicUsize::new(max_spans),
             spans_by_trace_id: RwLock::new(HashMap::new()),
+            pending_span_ids: RwLock::new(HashSet::new()),
             tx,
         }
     }
@@ -515,8 +615,11 @@ impl InMemorySpanStorage {
         let mut spans = self.spans.write().unwrap();
         if spans.len() > max {
             let mut index = self.spans_by_trace_id.write().unwrap();
+            let mut pending = self.pending_span_ids.write().unwrap();
             let excess = spans.len() - max;
-            spans.drain(..excess);
+            for old in spans.drain(..excess) {
+                pending.remove(&old.span_id);
+            }
             index.clear();
             for (idx, span) in spans.iter().enumerate() {
                 index.entry(span.trace_id.clone()).or_default().insert(idx);
@@ -527,31 +630,31 @@ impl InMemorySpanStorage {
     pub fn add_spans(&self, new_spans: Vec<StoredSpan>) {
         let mut spans = self.spans.write().unwrap();
         let mut index = self.spans_by_trace_id.write().unwrap();
+        let mut pending = self.pending_span_ids.write().unwrap();
 
         let max_spans = self
             .max_spans
             .load(std::sync::atomic::Ordering::Relaxed)
             .max(1);
         for span in new_spans {
-            // Evict oldest if at capacity (loop converges after a shrink)
-            while spans.len() >= max_spans
-                && let Some(old) = spans.pop_front()
+            // A final span replacing its live (pending) snapshot overwrites in
+            // place: same idx, same trace_id, so neither index changes. The set
+            // gate keeps the scan off the hot append path, and pending spans
+            // are by construction recent, so scan from the back. The reverse
+            // never happens — a pending snapshot must not overwrite a final
+            // (`on_start` always precedes `on_end`, and OTLP-ingested worker
+            // spans are never pending).
+            if pending.remove(&span.span_id)
+                && let Some(slot) = spans.iter_mut().rev().find(|s| s.span_id == span.span_id)
             {
-                // Remove from index and shift all indices down
-                if let Some(set) = index.get_mut(&old.trace_id) {
-                    set.remove(&0);
-                    *set = set.iter().filter_map(|&i| i.checked_sub(1)).collect();
-                    if set.is_empty() {
-                        index.remove(&old.trace_id);
-                    }
-                }
-                // Also shift indices for all other trace_ids
-                for (trace_id, set) in index.iter_mut() {
-                    if trace_id != &old.trace_id {
-                        *set = set.iter().filter_map(|&i| i.checked_sub(1)).collect();
-                    }
-                }
+                let _ = self.tx.send(span.clone());
+                *slot = span;
+                continue;
             }
+            // A tracked pending whose slot was already evicted falls through
+            // and appends as a fresh span.
+
+            evict_to_capacity(&mut spans, &mut index, &mut pending, max_spans);
 
             let idx = spans.len();
             let trace_id = span.trace_id.clone();
@@ -565,6 +668,31 @@ impl InMemorySpanStorage {
             spans.push_back(span);
             index.entry(trace_id).or_default().insert(idx);
         }
+    }
+
+    /// Record an in-progress span snapshot (`LiveSpanProcessor::on_start`).
+    /// Appends + broadcasts exactly like `add_spans` and marks the id pending
+    /// so the final span replaces it in place when it closes. Pending spans
+    /// live ONLY in this store and the streams fed from it — the OTLP export
+    /// path never sees them.
+    pub fn add_pending_span(&self, span: StoredSpan) {
+        debug_assert!(span.pending && span.end_time_unix_nano == 0);
+        let mut spans = self.spans.write().unwrap();
+        let mut index = self.spans_by_trace_id.write().unwrap();
+        let mut pending = self.pending_span_ids.write().unwrap();
+
+        let max_spans = self
+            .max_spans
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1);
+        evict_to_capacity(&mut spans, &mut index, &mut pending, max_spans);
+
+        let idx = spans.len();
+        let trace_id = span.trace_id.clone();
+        pending.insert(span.span_id.clone());
+        let _ = self.tx.send(span.clone());
+        spans.push_back(span);
+        index.entry(trace_id).or_default().insert(idx);
     }
 
     pub fn get_spans(&self) -> Vec<StoredSpan> {
@@ -587,8 +715,10 @@ impl InMemorySpanStorage {
     pub fn clear(&self) {
         let mut spans = self.spans.write().unwrap();
         let mut index = self.spans_by_trace_id.write().unwrap();
+        let mut pending = self.pending_span_ids.write().unwrap();
         spans.clear();
         index.clear();
+        pending.clear();
     }
 
     /// Subscribe to a broadcast of every span as it lands in storage. Drives
@@ -614,9 +744,12 @@ impl InMemorySpanStorage {
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         }
 
-        // Calculate duration in milliseconds for each span
+        // Calculate duration in milliseconds for each span. In-flight
+        // (pending) spans are excluded — their duration isn't known yet, and
+        // counting them as 0/partial would drag down min/percentiles.
         let mut durations: Vec<f64> = spans
             .iter()
+            .filter(|span| !span.pending)
             .map(|span| {
                 let duration_nanos = span
                     .end_time_unix_nano
@@ -703,6 +836,68 @@ impl SpanExporter for InMemorySpanExporter {
 
     fn shutdown_with_timeout(&mut self, _timeout: std::time::Duration) -> OTelSdkResult {
         // Nothing to clean up for in-memory storage
+        Ok(())
+    }
+}
+
+/// Mirrors spans into the in-memory store at START (as `pending` snapshots) so
+/// live trace views can render in-progress work — most importantly the
+/// engine-side parent spans (`trigger <fn>`, `enqueue`, `call <fn>`) that
+/// otherwise only land after everything under them has finished.
+///
+/// The final span still arrives exclusively via the exporter path on close and
+/// replaces the snapshot in place (`InMemorySpanStorage::add_spans`). The OTLP
+/// export path is untouched: no partial spans ever reach the wire, where the
+/// proto documents `end_time_unix_nano` as semantically required.
+///
+/// Registered when `live_spans` resolves on (see [`resolve_live_spans`]:
+/// default for the `memory` exporter, explicit opt-in for `both`) — and never
+/// in OTLP-only mode, where engine finals don't land in memory storage and
+/// pendings would never be replaced.
+#[derive(Debug)]
+pub struct LiveSpanProcessor {
+    storage: Arc<InMemorySpanStorage>,
+    service_name: String,
+}
+
+impl LiveSpanProcessor {
+    pub fn new(storage: Arc<InMemorySpanStorage>, service_name: String) -> Self {
+        Self {
+            storage,
+            service_name,
+        }
+    }
+}
+
+impl SpanProcessor for LiveSpanProcessor {
+    fn on_start(&self, span: &mut opentelemetry_sdk::trace::Span, _cx: &Context) {
+        // RecordOnly spans are recorded but never exported (the exporter-side
+        // processors skip !is_sampled on_end) — skip them here too, or their
+        // pendings would never be finalized. Covers sampled-out spans as well.
+        if !span.span_context().is_sampled() {
+            return;
+        }
+        // None for non-recording spans.
+        let Some(data) = span.exported_data() else {
+            return;
+        };
+        let mut stored = StoredSpan::from_span_data(&data, &self.service_name);
+        stored.pending = true;
+        // The SDK initializes end_time = start_time at build; zero is the
+        // live-span sentinel (see the `StoredSpan::pending` docs).
+        stored.end_time_unix_nano = 0;
+        self.storage.add_pending_span(stored);
+    }
+
+    // MUST stay a no-op: the final span lands via the exporter path; replacing
+    // the pending here as well would race it and duplicate the span.
+    fn on_end(&self, _span: SpanData) {}
+
+    fn force_flush(&self) -> OTelSdkResult {
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _timeout: std::time::Duration) -> OTelSdkResult {
         Ok(())
     }
 }
@@ -987,6 +1182,9 @@ where
                         Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
                     let _ = IN_MEMORY_STORAGE.set(memory_storage);
 
+                    // No LiveSpanProcessor here: in OTLP-only mode engine
+                    // finals never land in memory storage, so pending
+                    // snapshots would never be replaced.
                     SdkTracerProvider::builder()
                         .with_span_processor(
                             iii_helpers::observability::BaggageSpanProcessor::default(),
@@ -1004,14 +1202,25 @@ where
                         "Failed to create OTLP exporter, falling back to memory-only mode"
                     );
                     // Fall back to memory-only mode
-                    let exporter = InMemorySpanExporter::new(
-                        config.memory_max_spans,
+                    let memory_storage =
+                        Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
+                    if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
+                        tracing::debug!("In-memory span storage already initialized");
+                    }
+                    let exporter = InMemorySpanExporter::with_storage(
+                        memory_storage.clone(),
                         config.service_name.clone(),
                     );
-                    SdkTracerProvider::builder()
-                        .with_span_processor(
-                            iii_helpers::observability::BaggageSpanProcessor::default(),
-                        )
+                    let mut builder = SdkTracerProvider::builder().with_span_processor(
+                        iii_helpers::observability::BaggageSpanProcessor::default(),
+                    );
+                    if config.live_spans {
+                        builder = builder.with_span_processor(LiveSpanProcessor::new(
+                            memory_storage,
+                            config.service_name.clone(),
+                        ));
+                    }
+                    builder
                         .with_simple_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -1021,11 +1230,30 @@ where
             }
         }
         ExporterType::Memory => {
-            let exporter =
-                InMemorySpanExporter::new(config.memory_max_spans, config.service_name.clone());
+            // Create the storage explicitly (rather than via
+            // `InMemorySpanExporter::new`) so the LiveSpanProcessor is
+            // guaranteed to share the exact storage the exporter writes to,
+            // even when the global slot was already taken by a prior init.
+            let memory_storage = Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
+            if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
+                tracing::debug!("In-memory span storage already initialized");
+            }
+            let exporter = InMemorySpanExporter::with_storage(
+                memory_storage.clone(),
+                config.service_name.clone(),
+            );
 
-            SdkTracerProvider::builder()
-                .with_span_processor(iii_helpers::observability::BaggageSpanProcessor::default())
+            let mut builder = SdkTracerProvider::builder()
+                .with_span_processor(iii_helpers::observability::BaggageSpanProcessor::default());
+            if config.live_spans {
+                // After BaggageSpanProcessor, so pending snapshots carry the
+                // baggage-stamped attributes.
+                builder = builder.with_span_processor(LiveSpanProcessor::new(
+                    memory_storage,
+                    config.service_name.clone(),
+                ));
+            }
+            builder
                 .with_simple_exporter(exporter)
                 .with_sampler(sampler)
                 .with_id_generator(RandomIdGenerator::default())
@@ -1047,14 +1275,22 @@ where
                     // Create tee exporter that sends to both
                     let tee_exporter = TeeSpanExporter::new(
                         otlp_exporter,
-                        memory_storage,
+                        memory_storage.clone(),
                         config.service_name.clone(),
                     );
 
-                    SdkTracerProvider::builder()
-                        .with_span_processor(
-                            iii_helpers::observability::BaggageSpanProcessor::default(),
-                        )
+                    let mut builder = SdkTracerProvider::builder().with_span_processor(
+                        iii_helpers::observability::BaggageSpanProcessor::default(),
+                    );
+                    if config.live_spans {
+                        // Pending snapshots feed ONLY the memory side; the
+                        // OTLP half of the tee still sees spans on close only.
+                        builder = builder.with_span_processor(LiveSpanProcessor::new(
+                            memory_storage,
+                            config.service_name.clone(),
+                        ));
+                    }
+                    builder
                         .with_batch_exporter(tee_exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -1069,13 +1305,19 @@ where
                     );
                     // Fall back to memory-only with our already-created storage
                     let exporter = InMemorySpanExporter::with_storage(
-                        memory_storage,
+                        memory_storage.clone(),
                         config.service_name.clone(),
                     );
-                    SdkTracerProvider::builder()
-                        .with_span_processor(
-                            iii_helpers::observability::BaggageSpanProcessor::default(),
-                        )
+                    let mut builder = SdkTracerProvider::builder().with_span_processor(
+                        iii_helpers::observability::BaggageSpanProcessor::default(),
+                    );
+                    if config.live_spans {
+                        builder = builder.with_span_processor(LiveSpanProcessor::new(
+                            memory_storage,
+                            config.service_name.clone(),
+                        ));
+                    }
+                    builder
                         .with_simple_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -1244,7 +1486,7 @@ pub fn extract_context_with_state(
 }
 
 /// Baggage key the `BaggageSpanProcessor` copies onto every span as the
-/// `iii.function.id` attribute (see the SDK observability crate allowlist).
+/// `iii.function.id` attribute (baggage entries copy to spans unconditionally).
 const FUNCTION_ID_BAGGAGE_KEY: &str = "iii.function.id";
 
 /// Return a context identical to `cx` but with the `iii.function.id` baggage
@@ -2076,6 +2318,8 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
                         flags: span.flags,
                         // OTLP-ingested spans don't currently carry tracestate.
                         trace_state: None,
+                        // Worker spans arrive only when closed — never pending.
+                        pending: false,
                     };
 
                     stored_spans.push(stored_span);
@@ -4634,6 +4878,7 @@ mod tests {
             instrumentation_scope_version: None,
             flags: None,
             trace_state: None,
+            pending: false,
         }
     }
 
@@ -4729,6 +4974,249 @@ mod tests {
         assert!(storage.get_spans_by_trace_id("t2").is_empty());
     }
 
+    // ==========================================================================
+    // Pending (live) span tests
+    // ==========================================================================
+
+    /// Pending-span variant of `make_stored_span` (end sentinel 0).
+    fn make_pending_span(trace_id: &str, span_id: &str, name: &str, start_ns: u64) -> StoredSpan {
+        let mut span = make_stored_span(trace_id, span_id, name, start_ns, 0);
+        span.pending = true;
+        span.status = "unset".to_string();
+        span
+    }
+
+    #[test]
+    fn pending_span_replaced_in_place_by_final() {
+        let storage = InMemorySpanStorage::new(10);
+
+        storage.add_spans(vec![make_stored_span("t1", "a", "op-a", 1_000, 2_000)]);
+        storage.add_pending_span(make_pending_span("t1", "p", "op-p", 3_000));
+        storage.add_spans(vec![make_stored_span("t1", "b", "op-b", 4_000, 5_000)]);
+        assert_eq!(storage.pending_span_ids.read().unwrap().len(), 1);
+
+        // Final arrives: replaces the pending snapshot at its original position.
+        storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 3_000, 9_000)]);
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 3, "replace, not append");
+        assert_eq!(spans[1].span_id, "p", "position preserved");
+        assert!(!spans[1].pending);
+        assert_eq!(spans[1].end_time_unix_nano, 9_000);
+        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+        assert_eq!(storage.get_spans_by_trace_id("t1").len(), 3);
+
+        // The id is no longer pending-tracked: a duplicate final appends
+        // (unchanged pre-existing behavior for duplicate finals).
+        storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 3_000, 9_500)]);
+        assert_eq!(storage.get_spans().len(), 4);
+    }
+
+    #[test]
+    fn pending_span_evicted_before_final_appends_fresh() {
+        let storage = InMemorySpanStorage::new(2);
+
+        storage.add_pending_span(make_pending_span("t1", "p", "op-p", 1_000));
+        storage.add_spans(vec![
+            make_stored_span("t2", "a", "op-a", 2_000, 3_000),
+            // Third insert evicts the oldest (the pending snapshot).
+            make_stored_span("t3", "b", "op-b", 4_000, 5_000),
+        ]);
+        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+
+        // The late final no longer has a pending predecessor — plain append.
+        storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 1_000, 6_000)]);
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2);
+        let last = spans.last().unwrap();
+        assert_eq!(last.span_id, "p");
+        assert!(!last.pending);
+        assert_eq!(last.end_time_unix_nano, 6_000);
+    }
+
+    #[test]
+    fn set_max_spans_and_clear_purge_pending_ids() {
+        let storage = InMemorySpanStorage::new(10);
+        storage.add_pending_span(make_pending_span("t1", "p1", "op", 1_000));
+        storage.add_pending_span(make_pending_span("t2", "p2", "op", 2_000));
+
+        storage.set_max_spans(1); // drains p1
+        assert_eq!(storage.len(), 1);
+        let pending: Vec<String> = storage
+            .pending_span_ids
+            .read()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(pending, vec!["p2".to_string()]);
+
+        storage.clear();
+        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn performance_metrics_exclude_pending_spans() {
+        let storage = InMemorySpanStorage::new(10);
+        let base = 1_000_000_000u64;
+        storage.add_spans(vec![
+            make_stored_span("t1", "s1", "op1", base, base + 10_000_000),
+            make_stored_span("t2", "s2", "op2", base, base + 30_000_000),
+        ]);
+        // An in-flight span must not drag the statistics toward 0.
+        storage.add_pending_span(make_pending_span("t3", "p", "op-p", base));
+
+        let (avg, _p50, _p95, _p99, min, max) = storage.calculate_performance_metrics();
+        assert_eq!(min, 10.0);
+        assert_eq!(max, 30.0);
+        assert_eq!(avg, 20.0);
+    }
+
+    #[test]
+    fn effective_end_and_duration_treat_pending_as_active_now() {
+        let now = 10_000u64;
+        let done = make_stored_span("t", "s", "op", 1_000, 2_000);
+        assert_eq!(done.effective_end_ns(now), 2_000);
+        assert_eq!(done.duration_ns(now), 1_000);
+
+        let live = make_pending_span("t", "p", "op", 1_000);
+        assert_eq!(live.effective_end_ns(now), now);
+        assert_eq!(live.duration_ns(now), 9_000);
+    }
+
+    #[test]
+    #[serial]
+    fn live_spans_defaults_on_for_memory_exporter_only() {
+        temp_env::with_vars([("OTEL_LIVE_SPANS", None::<&str>)], || {
+            // Mode-aware default: local-dev memory mode mirrors live spans;
+            // production shapes (both/otlp) don't unless asked to.
+            assert!(resolve_live_spans(None, &ExporterType::Memory));
+            assert!(!resolve_live_spans(None, &ExporterType::Both));
+            assert!(!resolve_live_spans(None, &ExporterType::Otlp));
+            // Explicit config beats the mode default in either direction.
+            assert!(resolve_live_spans(Some(true), &ExporterType::Both));
+            assert!(!resolve_live_spans(Some(false), &ExporterType::Memory));
+        });
+        // The env var opts a production (both) setup in…
+        temp_env::with_vars([("OTEL_LIVE_SPANS", Some("true"))], || {
+            assert!(resolve_live_spans(None, &ExporterType::Both));
+        });
+        // …or a memory setup out, and explicit config still wins over it.
+        temp_env::with_vars([("OTEL_LIVE_SPANS", Some("false"))], || {
+            assert!(!resolve_live_spans(None, &ExporterType::Memory));
+            assert!(resolve_live_spans(Some(true), &ExporterType::Both));
+        });
+    }
+
+    #[test]
+    fn pending_field_serialized_only_when_true() {
+        let done = make_stored_span("t", "s", "op", 1, 2);
+        let json = serde_json::to_value(&done).unwrap();
+        assert!(
+            json.get("pending").is_none(),
+            "wire shape of finished spans must be unchanged"
+        );
+
+        let live = make_pending_span("t", "p", "op", 1);
+        let json = serde_json::to_value(&live).unwrap();
+        assert_eq!(json["pending"], serde_json::Value::Bool(true));
+        assert_eq!(json["end_time_unix_nano"], 0);
+    }
+
+    /// Test stand-in for the OTLP exporter: captures what would go on the wire.
+    #[derive(Debug, Clone)]
+    struct CapturingExporter(Arc<std::sync::Mutex<Vec<SpanData>>>);
+
+    impl SpanExporter for CapturingExporter {
+        fn export(
+            &self,
+            batch: Vec<SpanData>,
+        ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+            self.0.lock().unwrap().extend(batch);
+            async { Ok(()) }
+        }
+    }
+
+    #[test]
+    fn live_span_processor_mirrors_pending_and_wire_stays_clean() {
+        use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
+
+        let storage = Arc::new(InMemorySpanStorage::new(100));
+        let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(iii_helpers::observability::BaggageSpanProcessor::default())
+            .with_span_processor(LiveSpanProcessor::new(storage.clone(), "test-svc".into()))
+            // Memory side (final replaces pending) + wire stand-in (OTLP path).
+            .with_simple_exporter(InMemorySpanExporter::with_storage(
+                storage.clone(),
+                "test-svc".into(),
+            ))
+            .with_simple_exporter(CapturingExporter(wire.clone()))
+            .build();
+        let tracer = provider.tracer("test");
+
+        let mut span = tracer
+            .span_builder("call fn::x")
+            .with_attributes([KeyValue::new("function_id", "fn::x")])
+            .start(&tracer);
+
+        {
+            let stored = storage.get_spans();
+            assert_eq!(stored.len(), 1, "pending snapshot lands at start");
+            assert!(stored[0].pending);
+            assert_eq!(stored[0].end_time_unix_nano, 0);
+            assert_eq!(stored[0].name, "call fn::x");
+            assert!(
+                stored[0]
+                    .attributes
+                    .iter()
+                    .any(|(k, v)| k == "function_id" && v == "fn::x"),
+                "creation attributes present on the pending snapshot"
+            );
+            assert!(wire.lock().unwrap().is_empty(), "nothing exported at start");
+        }
+
+        span.end();
+
+        let stored = storage.get_spans();
+        assert_eq!(stored.len(), 1, "final replaced the pending snapshot");
+        assert!(!stored[0].pending);
+        assert!(stored[0].end_time_unix_nano > 0);
+
+        let exported = wire.lock().unwrap();
+        assert_eq!(exported.len(), 1, "exactly one span on the wire");
+        let end_ns = exported[0]
+            .end_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        assert!(end_ns > 0, "no unfinished span ever reaches the wire");
+    }
+
+    #[test]
+    fn live_span_processor_skips_sampled_out_spans() {
+        use opentelemetry::trace::{Tracer as _, TracerProvider as _};
+
+        let storage = Arc::new(InMemorySpanStorage::new(100));
+        let provider = SdkTracerProvider::builder()
+            .with_sampler(Sampler::AlwaysOff)
+            .with_span_processor(LiveSpanProcessor::new(storage.clone(), "test-svc".into()))
+            .with_simple_exporter(InMemorySpanExporter::with_storage(
+                storage.clone(),
+                "test-svc".into(),
+            ))
+            .build();
+        let tracer = provider.tracer("test");
+
+        let span = tracer.start("dropped");
+        drop(span);
+
+        assert!(
+            storage.get_spans().is_empty(),
+            "sampled-out spans leave no pending"
+        );
+    }
+
     #[test]
     fn test_span_storage_len_and_is_empty() {
         let storage = InMemorySpanStorage::new(10);
@@ -4815,6 +5303,7 @@ mod tests {
             endpoint: "http://localhost:4317".to_string(),
             sampling_ratio: 1.0,
             memory_max_spans: 100,
+            live_spans: true,
         };
 
         let sampler = build_sampler(&config);
@@ -4833,6 +5322,7 @@ mod tests {
             endpoint: "http://localhost:4317".to_string(),
             sampling_ratio: 0.0,
             memory_max_spans: 100,
+            live_spans: true,
         };
 
         let sampler = build_sampler(&config);
@@ -4850,6 +5340,7 @@ mod tests {
             endpoint: "http://localhost:4317".to_string(),
             sampling_ratio: 0.5,
             memory_max_spans: 100,
+            live_spans: true,
         };
 
         let sampler = build_sampler(&config);

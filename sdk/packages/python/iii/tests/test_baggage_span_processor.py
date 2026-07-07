@@ -10,10 +10,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 
-from iii_helpers.observability import (
-    DEFAULT_ALLOWLIST,
-    BaggageSpanProcessor,
-)
+from iii_helpers.observability import BaggageSpanProcessor
 
 
 def _build_test_provider(
@@ -40,26 +37,35 @@ def _first_span_attr(exporter: InMemorySpanExporter, key: str) -> object | None:
     return spans[0].attributes.get(key) if spans[0].attributes else None
 
 
-def test_copies_default_allowlist_from_baggage_to_attributes() -> None:
+def test_copies_every_baggage_entry_to_attributes() -> None:
+    """No key policy: baggage copies to span attributes unconditionally.
+
+    Which attributes *mean* something (`iii.tag.*`, `iii.session.*`) is a
+    query-side convention owned by the engine's traces API — a filtering
+    policy baked into worker binaries would silently drop newer keys from
+    any worker running an older SDK.
+    """
     provider, exporter = _build_test_provider(BaggageSpanProcessor())
     tracer = provider.get_tracer("test")
 
-    token = _attach_baggage(
-        {
-            "iii.session.id": "S-1",
-            "iii.message.id": "M-1",
-            "iii.function.id": "auth::set_token",
-        }
-    )
+    entries = {
+        "iii.session.id": "S-1",
+        "iii.session.name": "refactor auth",
+        "iii.message.id": "M-1",
+        "iii.function.id": "auth::set_token",
+        "iii.tag.message": "fix the login bug",
+        # Non-iii baggage is a first-class tag source too.
+        "tenant.id": "t-42",
+    }
+    token = _attach_baggage(entries)
     try:
         with tracer.start_as_current_span("inner"):
             pass
     finally:
         context.detach(token)
 
-    assert _first_span_attr(exporter, "iii.session.id") == "S-1"
-    assert _first_span_attr(exporter, "iii.message.id") == "M-1"
-    assert _first_span_attr(exporter, "iii.function.id") == "auth::set_token"
+    for key, value in entries.items():
+        assert _first_span_attr(exporter, key) == value, key
 
 
 def test_missing_baggage_entry_means_attribute_not_set() -> None:
@@ -76,51 +82,6 @@ def test_missing_baggage_entry_means_attribute_not_set() -> None:
     assert _first_span_attr(exporter, "iii.message.id") == "M-only"
     assert _first_span_attr(exporter, "iii.session.id") is None
     assert _first_span_attr(exporter, "iii.function.id") is None
-
-
-def test_baggage_entries_not_in_allowlist_are_dropped() -> None:
-    provider, exporter = _build_test_provider(BaggageSpanProcessor())
-    tracer = provider.get_tracer("test")
-
-    token = _attach_baggage(
-        {
-            "iii.message.id": "M",
-            "tenant.id": "t-42",
-            "debug.feature_flag": "on",
-        }
-    )
-    try:
-        with tracer.start_as_current_span("inner"):
-            pass
-    finally:
-        context.detach(token)
-
-    assert _first_span_attr(exporter, "iii.message.id") == "M"
-    assert _first_span_attr(exporter, "tenant.id") is None
-    assert _first_span_attr(exporter, "debug.feature_flag") is None
-
-
-def test_custom_allowlist_is_honored() -> None:
-    processor = BaggageSpanProcessor(allowlist=["tenant.id", "iii.message.id"])
-    provider, exporter = _build_test_provider(processor)
-    tracer = provider.get_tracer("test")
-
-    token = _attach_baggage(
-        {
-            "tenant.id": "t-1",
-            "iii.message.id": "M",
-            "iii.session.id": "S-not-copied",
-        }
-    )
-    try:
-        with tracer.start_as_current_span("inner"):
-            pass
-    finally:
-        context.detach(token)
-
-    assert _first_span_attr(exporter, "tenant.id") == "t-1"
-    assert _first_span_attr(exporter, "iii.message.id") == "M"
-    assert _first_span_attr(exporter, "iii.session.id") is None
 
 
 def test_empty_parent_context_produces_no_attributes() -> None:
@@ -151,12 +112,3 @@ def test_noop_guard_skips_processing_when_sampled_out() -> None:
         context.detach(token)
 
     assert exporter.get_finished_spans() == ()
-
-
-def test_default_allowlist_matches_other_sdks() -> None:
-    """DEFAULT_ALLOWLIST drift across languages would break worker chains."""
-    assert tuple(DEFAULT_ALLOWLIST) == (
-        "iii.session.id",
-        "iii.message.id",
-        "iii.function.id",
-    )

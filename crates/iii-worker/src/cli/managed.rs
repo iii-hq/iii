@@ -521,7 +521,7 @@ impl WorkerActivationLock {
         match nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
             Ok(lock) => {
                 use std::io::Write as _;
-                let _ = (&*lock).set_len(0);
+                let _ = &lock.set_len(0);
                 let _ = writeln!(&*lock, "pid={}", std::process::id());
                 Ok(Self { _lock: lock })
             }
@@ -3494,7 +3494,7 @@ pub async fn handle_worker_list() -> i32 {
     // pidfile signal-0 check or because we just saw it in `ps`). Dead disk-only
     // entries are stale runtime state, not what the user is asking about.
     let candidate_names: std::collections::BTreeSet<String> =
-        disk_names.into_iter().chain(ps_names.into_iter()).collect();
+        disk_names.into_iter().chain(ps_names).collect();
     let orphan_names: Vec<String> = candidate_names
         .into_iter()
         .filter(|n| !config_set.contains(n.as_str()))

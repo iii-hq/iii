@@ -255,6 +255,15 @@ pub struct ObservabilityWorkerConfig {
     #[schemars(range(min = 1))]
     pub memory_max_spans: Option<usize>,
 
+    /// Mirror spans into the in-memory store at start as `pending` snapshots
+    /// so live trace views show in-progress work. Defaults to on for the
+    /// "memory" exporter (local dev) and off otherwise — set `true` to opt in
+    /// with "both" in production. Ignored for "otlp"-only (no in-memory
+    /// finals to replace pendings); never affects OTLP output either way.
+    /// Restart-tier: the span processor set is fixed at provider build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_spans: Option<bool>,
+
     /// Whether OpenTelemetry metrics export is enabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics_enabled: Option<bool>,
@@ -349,6 +358,7 @@ impl Default for ObservabilityWorkerConfig {
             sampling_ratio: None,
             sampling: None,
             memory_max_spans: None,
+            live_spans: None,
             metrics_retention_seconds: None,
             metrics_max_count: None,
             logs_max_count: None,
@@ -528,6 +538,7 @@ mod tests {
             "sampling_ratio",
             "sampling",
             "memory_max_spans",
+            "live_spans",
             "metrics_enabled",
             "metrics_exporter",
             "metrics_retention_seconds",
