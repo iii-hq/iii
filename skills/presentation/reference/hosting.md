@@ -19,7 +19,7 @@ any repo.
 
 **The pairing contract.** `slug` = the spec directory's basename, used
 identically in three places: `tech-specs/<slug>/` (the md), `<base>/<slug>/`
-(the deck), and the URL `/tech-specs/<slug>/`. The build fails on an orphan
+(the deck), and the URL `/roadmap/<slug>/`. The build fails on an orphan
 deck dir (no matching spec) and never needs a manifest — the folder is the
 identity, so the old "manifest slug ≠ dirname → 404" bug class cannot exist.
 
@@ -96,9 +96,9 @@ pnpm build && pnpm preview        the full site at :4173
 
 **Deploy (iii):** merging to main runs `.github/workflows/deploy-website.yml`,
 which builds the base (`pnpm --filter iii-presentations build`) and syncs
-`dist/` to S3 under the `/tech-specs/` prefix (immutable hashed assets;
+`dist/` to S3 under the `/roadmap/` prefix (immutable hashed assets;
 must-revalidate html/json/md), then invalidates CloudFront. The CloudFront
-viewer-request function rewrites `/tech-specs/…/` directory URLs to
+viewer-request function rewrites `/roadmap/…/` directory URLs to
 `…/index.html` and 301s extensionless forms to the trailing-slash canonical —
 same mechanism as `/blog/`. No Vercel, no manual deploy, no per-deck pipeline.
 

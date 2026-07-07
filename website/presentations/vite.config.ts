@@ -8,7 +8,7 @@ import { specManifestPlugin } from './scripts/manifest.mjs'
 // `/` and every deck at `/<slug>/` from a single server; `build.mjs` reuses
 // this file programmatically with a per-deck `root`/`outDir`, so each deck
 // ships as a self-contained, relative-path static site that works under any
-// URL prefix (deployed at iii.dev/tech-specs/<slug>/).
+// URL prefix (deployed at iii.dev/roadmap/<slug>/).
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss(), specManifestPlugin()],

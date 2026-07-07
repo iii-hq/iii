@@ -10,7 +10,7 @@ description: >-
 # Presentation
 
 Turn a technical specification into an interactive, persuasive web deck —
-the kind at iii.dev/tech-specs/. The output is a **content layer** inside the
+the kind at iii.dev/roadmap/. The output is a **content layer** inside the
 repo's presentations site (one Vite project that builds every deck, the
 gallery, and a markdown spec viewer into one static site):
 
@@ -243,7 +243,7 @@ Report: the deck path (`<base>/<slug>/`), the dev URL, the slide list, which
 interactions are live, the frontmatter written, and any promoted components
 (with their registry entries). Offer to flip `status: draft` → `live`.
 Deploy is not a step: **in iii, merging to main ships everything via
-`.github/workflows/deploy-website.yml` to `iii.dev/tech-specs/<slug>/`**; in
+`.github/workflows/deploy-website.yml` to `iii.dev/roadmap/<slug>/`**; in
 other repos `dist/` is a portable static site for whatever CI they use. Do
 **not** commit, push, or configure hosting unless asked. Never run `vercel`.
 

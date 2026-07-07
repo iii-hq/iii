@@ -2,7 +2,7 @@
 /**
  * build.mjs — assembles the whole tech-specs site into dist/.
  *
- * Output layout (deployed to iii.dev under /tech-specs/ by
+ * Output layout (deployed to iii.dev under /roadmap/ by
  * .github/workflows/deploy-website.yml):
  *
  *   dist/index.html            the gallery (index of every spec)
@@ -15,7 +15,7 @@
  * Contracts enforced here (fail fast, named paths):
  *   - every deck dir pairs with a tech-specs/<slug>/ spec dir (no orphans)
  *   - deck index.html entries are relative (./src/main.tsx) so the single dev
- *     server and the /tech-specs/ prefix both work
+ *     server and the /roadmap/ prefix both work
  *   - every shared src component has a COMPONENTS.md entry (warn; hard fail
  *     with --strict-registry)
  *
@@ -190,7 +190,7 @@ async function main() {
         tags,
         status,
         hasDeck,
-        url: `/tech-specs/${slug}/`,
+        url: `/roadmap/${slug}/`,
       })),
   }
   writeFileSync(join(DIST, 'index.json'), `${JSON.stringify(feed, null, 2)}\n`)

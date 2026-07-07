@@ -265,7 +265,7 @@ test('/.well-known/foo (no extension) → pass through, NOT SPA rewritten', asyn
 
 // ---------------------------------------------------------------------------
 // Directory-style sites — /blog/* (Astro, build.format 'directory' with
-// trailingSlash 'always') and /tech-specs/* (the presentations build: gallery
+// trailingSlash 'always') and /roadmap/* (the presentations build: gallery
 // + one directory per spec). Each page is a key like <prefix>/<slug>/index.html
 // in S3. CloudFront's default_root_object only applies to the apex, so
 // /<prefix>/<slug>/ must be rewritten to .../index.html and extensionless
@@ -273,7 +273,7 @@ test('/.well-known/foo (no extension) → pass through, NOT SPA rewritten', asyn
 // prefixes, so the cases are parameterized.
 // ---------------------------------------------------------------------------
 
-for (const prefix of ['/blog', '/tech-specs']) {
+for (const prefix of ['/blog', '/roadmap']) {
   test(`${prefix} → 301 https://iii.dev${prefix}/ (canonical trailing slash)`, async () => {
     const result = await handler(buildEvent(prefix, 'iii.dev'))
     assert.ok(isRedirect(result))
@@ -318,23 +318,23 @@ for (const prefix of ['/blog', '/tech-specs']) {
 
   test(`${prefix}foo → NOT matched as ${prefix}/, falls through to 404`, async () => {
     // Boundary check: the prefix must require the trailing slash so unrelated
-    // top-level paths like /blogfoo or /tech-specsfoo are not hijacked.
+    // top-level paths like /blogfoo or /roadmapfoo are not hijacked.
     const result = await handler(buildEvent(`${prefix}foo`, 'iii.dev'))
     assert.ok(!isRedirect(result))
     assert.ok(isNotFound(result))
   })
 }
 
-test('/tech-specs/index.json → pass through unchanged (the landing-page feed)', async () => {
-  const result = await handler(buildEvent('/tech-specs/index.json', 'iii.dev'))
+test('/roadmap/index.json → pass through unchanged (the landing-page feed)', async () => {
+  const result = await handler(buildEvent('/roadmap/index.json', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/tech-specs/index.json')
+  assert.equal(result.uri, '/roadmap/index.json')
 })
 
-test('/tech-specs/2026-06-29-codegen/harness.md → pass through unchanged (raw spec md)', async () => {
-  const result = await handler(buildEvent('/tech-specs/2026-06-29-codegen/harness.md', 'iii.dev'))
+test('/roadmap/2026-06-29-codegen/harness.md → pass through unchanged (raw spec md)', async () => {
+  const result = await handler(buildEvent('/roadmap/2026-06-29-codegen/harness.md', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/tech-specs/2026-06-29-codegen/harness.md')
+  assert.equal(result.uri, '/roadmap/2026-06-29-codegen/harness.md')
 })
 
 // ---------------------------------------------------------------------------
@@ -343,34 +343,94 @@ test('/tech-specs/2026-06-29-codegen/harness.md → pass through unchanged (raw 
 // the new slug with path suffix and query preserved.
 // ---------------------------------------------------------------------------
 
-test('/tech-specs/2026-06-codegen/ → 301 to /tech-specs/2026-06-29-codegen/', async () => {
-  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/', 'iii.dev'))
+test('/roadmap/2026-06-codegen/ → 301 to /roadmap/2026-06-29-codegen/', async () => {
+  const result = await handler(buildEvent('/roadmap/2026-06-codegen/', 'iii.dev'))
   assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-29-codegen/')
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-29-codegen/')
 })
 
-test('/tech-specs/2026-06-agentic (no slash) → 301 straight to the new slash form', async () => {
-  const result = await handler(buildEvent('/tech-specs/2026-06-agentic', 'iii.dev'))
+test('/roadmap/2026-06-agentic (no slash) → 301 straight to the new slash form', async () => {
+  const result = await handler(buildEvent('/roadmap/2026-06-agentic', 'iii.dev'))
   assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-08-agentic/')
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-08-agentic/')
 })
 
-test('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md → 301 preserves the file suffix', async () => {
-  const result = await handler(buildEvent('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md', 'iii.dev'))
+test('/roadmap/2026-06-rbac-proxy-worker/rbac-proxy.md → 301 preserves the file suffix', async () => {
+  const result = await handler(buildEvent('/roadmap/2026-06-rbac-proxy-worker/rbac-proxy.md', 'iii.dev'))
   assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-22-rbac-proxy-worker/rbac-proxy.md')
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-22-rbac-proxy-worker/rbac-proxy.md')
 })
 
 test('renamed slug preserves querystring on the 301', async () => {
-  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/', 'iii.dev', { utm_source: { value: 'x' } }))
+  const result = await handler(buildEvent('/roadmap/2026-06-codegen/', 'iii.dev', { utm_source: { value: 'x' } }))
   assert.ok(isRedirect(result))
-  assert.equal(locationOf(result), 'https://iii.dev/tech-specs/2026-06-29-codegen/?utm_source=x')
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-29-codegen/?utm_source=x')
 })
 
 test('a new-slug URL is NOT rename-redirected (map matches whole segment only)', async () => {
-  const result = await handler(buildEvent('/tech-specs/2026-06-29-codegen/', 'iii.dev'))
+  const result = await handler(buildEvent('/roadmap/2026-06-29-codegen/', 'iii.dev'))
   assert.ok(!isRedirect(result))
-  assert.equal(result.uri, '/tech-specs/2026-06-29-codegen/index.html')
+  assert.equal(result.uri, '/roadmap/2026-06-29-codegen/index.html')
+})
+
+// ---------------------------------------------------------------------------
+// Legacy /tech-specs prefix — the roadmap first shipped under /tech-specs and
+// those URLs were published (sitemap, social links). The whole prefix 301s to
+// /roadmap in one hop, applying slug renames along the way.
+// ---------------------------------------------------------------------------
+
+test('/tech-specs → 301 to /roadmap/', async () => {
+  const result = await handler(buildEvent('/tech-specs', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/')
+})
+
+test('/tech-specs/ → 301 to /roadmap/', async () => {
+  const result = await handler(buildEvent('/tech-specs/', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/')
+})
+
+test('/tech-specs/2026-06-29-codegen/ → 301 to /roadmap/2026-06-29-codegen/', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-29-codegen/', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-29-codegen/')
+})
+
+test('/tech-specs/2026-06-codegen/ → 301 to /roadmap/2026-06-29-codegen/ (prefix + slug rename in ONE hop)', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-codegen/', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-29-codegen/')
+})
+
+test('/tech-specs/2026-06-agentic (no slash) → 301 to /roadmap/2026-06-08-agentic/ in one hop', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-agentic', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-08-agentic/')
+})
+
+test('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md → 301 preserves the file suffix across the prefix move', async () => {
+  const result = await handler(buildEvent('/tech-specs/2026-06-rbac-proxy-worker/rbac-proxy.md', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/2026-06-22-rbac-proxy-worker/rbac-proxy.md')
+})
+
+test('/tech-specs/index.json → 301 to /roadmap/index.json (feed moved too)', async () => {
+  const result = await handler(buildEvent('/tech-specs/index.json', 'iii.dev'))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/index.json')
+})
+
+test('legacy prefix preserves querystring on the 301', async () => {
+  const result = await handler(buildEvent('/tech-specs/', 'iii.dev', { utm_source: { value: 'x' } }))
+  assert.ok(isRedirect(result))
+  assert.equal(locationOf(result), 'https://iii.dev/roadmap/?utm_source=x')
+})
+
+test('/tech-specsfoo → NOT matched as legacy prefix, falls through to 404', async () => {
+  const result = await handler(buildEvent('/tech-specsfoo', 'iii.dev'))
+  assert.ok(!isRedirect(result))
+  assert.ok(isNotFound(result))
 })
 
 test('/blog/hello-world/ preserves querystring on rewrite', async () => {

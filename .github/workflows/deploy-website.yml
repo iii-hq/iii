@@ -64,13 +64,13 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Blog, tech-specs, and the website share the bucket; blog/ and
-      # tech-specs/ prefixes are wiped + repopulated by their own syncs below.
-      # The website sync therefore must exclude blog/* and tech-specs/* so its
-      # --delete doesn't wipe their output between steps, and must exclude
-      # presentations/* so the tech-specs project SOURCE (src/, deck dirs,
-      # node_modules) never uploads — only its built dist/ ships, under the
-      # /tech-specs/ prefix.
+      # Blog, the roadmap (tech-spec presentations), and the website share the
+      # bucket; the blog/ and roadmap/ prefixes are wiped + repopulated by
+      # their own syncs below. The website sync therefore must exclude blog/*
+      # and roadmap/* so its --delete doesn't wipe their output between steps,
+      # and must exclude presentations/* so the presentations project SOURCE
+      # (src/, deck dirs, node_modules) never uploads — only its built dist/
+      # ships, under the /roadmap/ prefix.
       - name: Sync website static assets (long cache, immutable)
         run: |
           aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
@@ -87,7 +87,7 @@ jobs:
             --exclude "README.md" \
             --exclude "vercel.json" \
             --exclude "blog/*" \
-            --exclude "tech-specs/*" \
+            --exclude "roadmap/*" \
             --exclude "presentations/*"
 
       - name: Sync website HTML and AI snapshot (no cache, must revalidate)
@@ -100,7 +100,7 @@ jobs:
             --include "llms.txt" \
             --include "AGENTS.md" \
             --exclude "blog/*" \
-            --exclude "tech-specs/*" \
+            --exclude "roadmap/*" \
             --exclude "presentations/*"
 
       # Keep the CloudFront KeyValueStore route map (pretty URL → .html) in sync
@@ -152,21 +152,22 @@ jobs:
             --include "*.html" \
             --include "*.xml"
 
-      # Tech-specs assets are content-hashed by Vite → immutable. HTML,
-      # index.json (the landing-page feed), raw spec *.md, and the viewers'
-      # spec.json are unhashed and content-mutable → must revalidate.
-      - name: Sync tech-specs static assets (long cache, immutable)
+      # Roadmap (tech-spec presentations) assets are content-hashed by Vite →
+      # immutable. HTML, index.json (the landing-page feed), raw spec *.md, and
+      # the viewers' spec.json are unhashed and content-mutable → must
+      # revalidate.
+      - name: Sync roadmap static assets (long cache, immutable)
         run: |
-          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/tech-specs/" \
+          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/roadmap/" \
             --delete \
             --cache-control "public,max-age=31536000,immutable" \
             --exclude "*.html" \
             --exclude "*.json" \
             --exclude "*.md"
 
-      - name: Sync tech-specs HTML, markdown and index (no cache, must revalidate)
+      - name: Sync roadmap HTML, markdown and index (no cache, must revalidate)
         run: |
-          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/tech-specs/" \
+          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/roadmap/" \
             --delete \
             --cache-control "public,max-age=0,must-revalidate" \
             --exclude "*" \

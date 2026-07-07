@@ -5884,7 +5884,7 @@ iii.register_function(
 
 
   <!-- TECH SPECS — fully self-contained (markup + styles + script in this one
-       block, data fetched from /tech-specs/index.json which the presentations
+       block, data fetched from /roadmap/index.json which the presentations
        build emits). New specs appear here with zero edits to this file; if the
        fetch fails the section simply stays hidden. -->
   <section class="specs" id="tech-specs" aria-label="Tech specs" hidden>
@@ -5931,7 +5931,7 @@ iii.register_function(
     </style>
     <header class="specs-head">
       <h2 class="specs-title"><span class="accent">tech specs.</span> <span class="mute">designs published before they're built — read the spec, step through the architecture.</span></h2>
-      <a class="specs-all" href="/tech-specs/">view all specs →</a>
+      <a class="specs-all" href="/roadmap/">view all specs →</a>
     </header>
     <ol class="specs-list" id="specs-list"></ol>
     <script>
@@ -5939,7 +5939,7 @@ iii.register_function(
         var section = document.getElementById('tech-specs');
         var list = document.getElementById('specs-list');
         if (!section || !list || typeof fetch !== 'function') return;
-        fetch('/tech-specs/index.json')
+        fetch('/roadmap/index.json')
           .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error(String(r.status))); })
           .then(function (data) {
             var specs = ((data && data.specs) || [])

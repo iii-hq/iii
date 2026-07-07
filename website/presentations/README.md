@@ -1,6 +1,6 @@
 # tech-spec presentations — one site
 
-One Vite project that builds every tech spec into **iii.dev/tech-specs/** — a
+One Vite project that builds every tech spec into **iii.dev/roadmap/** — a
 roadmap at `/` (a one-column timeline, newest spec first, grouped by month),
 one page per spec at `/<slug>/` (an interactive deck when one exists, a
 rendered markdown viewer when only the spec does), the raw `.md` linkable
@@ -15,7 +15,7 @@ website/presentations/src/        the shared design system + component library
 ```
 
 The slug is the directory basename, used identically in three places: the spec
-dir, the deck dir, and the URL `/tech-specs/<slug>/`. Never prettify it; never
+dir, the deck dir, and the URL `/roadmap/<slug>/`. Never prettify it; never
 rename after publishing.
 
 ## the conflict contract (read this first)
@@ -59,7 +59,7 @@ featured: false                                 # pin in the landing feed
 
 `slug` is never a frontmatter field — the build hard-errors if present.
 
-4. Merge. The site now serves `/tech-specs/<slug>/` as a rendered spec viewer,
+4. Merge. The site now serves `/roadmap/<slug>/` as a rendered spec viewer,
    the gallery gets a card, and the landing timeline picks it up. A deck can
    come later — or never.
 
@@ -108,12 +108,12 @@ pnpm build && pnpm preview            # the full site at :4173
 
 Open a PR — expected surface is the two per-spec paths only (reviewers should
 bounce anything else). On merge to main, `.github/workflows/deploy-website.yml`
-builds this project and syncs `dist/` to S3 under `/tech-specs/` + invalidates
+builds this project and syncs `dist/` to S3 under `/roadmap/` + invalidates
 CloudFront. No Vercel, no manual deploy, no per-deck pipeline.
 
-URLs: `iii.dev/tech-specs/` (gallery) · `iii.dev/tech-specs/<slug>/` (deck or
+URLs: `iii.dev/roadmap/` (gallery) · `iii.dev/roadmap/<slug>/` (deck or
 viewer) · `…/<slug>/#/spec` (a deck's reading mode) · `…/<slug>/<file>.md`
-(raw markdown) · `iii.dev/tech-specs/index.json` (machine-readable list).
+(raw markdown) · `iii.dev/roadmap/index.json` (machine-readable list).
 
 ## f. troubleshooting
 

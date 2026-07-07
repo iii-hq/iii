@@ -87,7 +87,7 @@ async function handler(event) {
   if (uri.indexOf('/.well-known/') === 0) return request
 
   // Directory-style sites: /blog/* (Astro, build.format 'directory') and
-  // /tech-specs/* (the presentations build — a gallery at the prefix root plus
+  // /roadmap/* (the presentations build — a gallery at the prefix root plus
   // one directory per spec). Canonical URLs carry a trailing slash.
   // CloudFront's default_root_object only applies to the apex, so we rewrite
   // directory URLs to .../index.html and 301 extensionless paths to the
@@ -96,11 +96,31 @@ async function handler(event) {
   // /<prefix>/<slug> doesn't 404.
   var redirectHost = host || 'iii.dev'
 
+  // The roadmap first shipped as /tech-specs and those URLs were already
+  // published (sitemap, social links), so the whole legacy prefix 301s to
+  // /roadmap — slug renames applied in the same hop so no redirect chain,
+  // path suffix and query preserved.
+  if (uri === '/tech-specs' || uri.indexOf('/tech-specs/') === 0) {
+    var legacyRest = uri === '/tech-specs' ? '/' : uri.substring('/tech-specs'.length)
+    var legacySlugEnd = legacyRest.indexOf('/', 1)
+    var legacySlug =
+      legacySlugEnd === -1 ? legacyRest.substring(1) : legacyRest.substring(1, legacySlugEnd)
+    if (Object.prototype.hasOwnProperty.call(TECH_SPEC_RENAMES, legacySlug)) {
+      legacyRest =
+        '/' +
+        TECH_SPEC_RENAMES[legacySlug] +
+        (legacySlugEnd === -1 ? '/' : legacyRest.substring(legacySlugEnd))
+    }
+    return redirect(
+      'https://' + redirectHost + '/roadmap' + legacyRest + serializeQuerystring(request.querystring),
+    )
+  }
+
   // Renamed tech-spec slugs 301 to their new home before the generic
   // directory handling (which would otherwise rewrite them to a now-missing
   // <old-slug>/index.html).
-  if (uri.indexOf('/tech-specs/') === 0) {
-    var specRest = uri.substring('/tech-specs/'.length)
+  if (uri.indexOf('/roadmap/') === 0) {
+    var specRest = uri.substring('/roadmap/'.length)
     var specSlash = specRest.indexOf('/')
     var specSlug = specSlash === -1 ? specRest : specRest.substring(0, specSlash)
     if (Object.prototype.hasOwnProperty.call(TECH_SPEC_RENAMES, specSlug)) {
@@ -108,7 +128,7 @@ async function handler(event) {
       return redirect(
         'https://' +
           redirectHost +
-          '/tech-specs/' +
+          '/roadmap/' +
           TECH_SPEC_RENAMES[specSlug] +
           specSuffix +
           serializeQuerystring(request.querystring),
@@ -116,7 +136,7 @@ async function handler(event) {
     }
   }
 
-  var DIR_SITES = ['/blog', '/tech-specs']
+  var DIR_SITES = ['/blog', '/roadmap']
   for (var d = 0; d < DIR_SITES.length; d++) {
     var prefix = DIR_SITES[d]
     if (uri === prefix) {

@@ -1,7 +1,7 @@
 # /presentation
 
 Turn a tech-spec directory into an interactive, marketing-grade web
-presentation — the kind at [iii.dev/tech-specs/](https://iii.dev/tech-specs/).
+presentation — the kind at [iii.dev/roadmap/](https://iii.dev/roadmap/).
 
 The deck is built to: help engineers **understand** the design (the
 architecture is a navigable map, not prose), be **interactive** (steppable
@@ -30,7 +30,7 @@ Specs are markdown-only at `tech-specs/<slug>/`; decks are content layers
 inside the repo's single presentations site (the "base"). The base owns the
 one `package.json`, the shared component library + design tokens, the gallery,
 a markdown viewer for specs without decks, and `build.mjs`. In iii, merging to
-main deploys everything to `iii.dev/tech-specs/` via the website workflow —
+main deploys everything to `iii.dev/roadmap/` via the website workflow —
 no Vercel, no manual step. See `reference/hosting.md`.
 
 ## What's in here

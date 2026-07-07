@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 
 /**
  * The generic markdown spec viewer — the page a spec gets at
- * /tech-specs/<slug>/ before (or without) an interactive deck. build.mjs
+ * /roadmap/<slug>/ before (or without) an interactive deck. build.mjs
  * copies this app per md-only spec and drops a spec.json beside it; the raw
  * `.md` files sit in the same directory, so everything is fetched relative.
  */
