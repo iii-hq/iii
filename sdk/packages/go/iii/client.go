@@ -80,11 +80,33 @@ type Client struct {
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
-// sent; the returned value is marshaled into the InvocationResult.result. Returning an
+// sent. The returned value is marshaled into the InvocationResult.result. Returning an
 // error produces an InvocationResult.error; if the error is an *InvocationError its code
 // and stacktrace are preserved, otherwise it is reported with code "invocation_failed"
 // (matching the Rust and Node SDKs).
+//
+// Per-invocation metadata, when the call carries any, rides on ctx rather than the
+// signature (so adding it is non-breaking): read it with [MetadataFromContext].
 type Handler func(ctx context.Context, data json.RawMessage) (any, error)
+
+// RegisterFunctionOptions configures a function registration. The zero value preserves
+// the default registration shape.
+type RegisterFunctionOptions struct {
+	// Metadata is arbitrary JSON attached to the function registration. It is stored
+	// with the function and is distinct from the per-invocation metadata passed to
+	// handlers.
+	Metadata json.RawMessage
+}
+
+func resolveRegisterFunctionOptions(name, id string, opts []RegisterFunctionOptions) (RegisterFunctionOptions, error) {
+	if len(opts) == 0 {
+		return RegisterFunctionOptions{}, nil
+	}
+	if len(opts) > 1 {
+		return RegisterFunctionOptions{}, fmt.Errorf("iii: %s(%q): expected at most one RegisterFunctionOptions, got %d", name, id, len(opts))
+	}
+	return opts[0], nil
+}
 
 type registeredFunction struct {
 	message *RegisterFunctionMessage
@@ -189,12 +211,24 @@ func (c *Client) setState(s ConnectionState) {
 
 // RegisterFunction registers a function this worker can handle. It may be called before
 // or after Connect; the registration is sent on the next (re)connect. Calling it again
-// with the same id replaces the handler.
-func (c *Client) RegisterFunction(id string, handler Handler) error {
+// with the same id replaces the handler. Pass a single [RegisterFunctionOptions] value
+// to attach registration metadata without changing the registration method.
+//
+// Handlers read the optional per-invocation metadata sidecar from their ctx with
+// [MetadataFromContext].
+func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFunctionOptions) error {
 	if handler == nil {
 		return fmt.Errorf("iii: RegisterFunction(%q): handler is nil", id)
 	}
-	msg := &RegisterFunctionMessage{ID: id}
+	return c.registerFunction("RegisterFunction", id, handler, opts)
+}
+
+func (c *Client) registerFunction(name, id string, handler Handler, opts []RegisterFunctionOptions) error {
+	cfg, err := resolveRegisterFunctionOptions(name, id, opts)
+	if err != nil {
+		return err
+	}
+	msg := &RegisterFunctionMessage{ID: id, Metadata: cfg.Metadata}
 	c.mu.Lock()
 	c.functions[id] = registeredFunction{message: msg, handler: handler}
 	c.mu.Unlock()
@@ -219,17 +253,24 @@ func (c *Client) RegisterTriggerType(id, description string, handler TriggerHand
 }
 
 // RegisterTrigger registers a trigger instance: fire functionID when a trigger of
-// triggerType matches config. config and metadata are raw JSON (may be nil).
-func (c *Client) RegisterTrigger(id, triggerType, functionID string, config, metadata json.RawMessage) error {
+// triggerType matches config. config and optional metadata are raw JSON (may be nil).
+func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json.RawMessage, metadata ...json.RawMessage) error {
 	if config == nil {
 		config = json.RawMessage("{}")
+	}
+	var meta json.RawMessage
+	if len(metadata) > 1 {
+		return fmt.Errorf("iii: RegisterTrigger(%q): expected at most one metadata argument, got %d", id, len(metadata))
+	}
+	if len(metadata) == 1 {
+		meta = metadata[0]
 	}
 	msg := &RegisterTriggerMessage{
 		ID:          id,
 		TriggerType: triggerType,
 		FunctionID:  functionID,
 		Config:      config,
-		Metadata:    metadata,
+		Metadata:    meta,
 	}
 	c.mu.Lock()
 	c.triggers[id] = msg
@@ -246,6 +287,9 @@ type TriggerRequest struct {
 	FunctionID string
 	// Data is the JSON payload. nil is sent as {}.
 	Data json.RawMessage
+	// Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside Data
+	// on the wire's metadata channel, not folded into the payload. nil is omitted.
+	Metadata json.RawMessage
 	// Action selects void/enqueue semantics; nil means the default await path.
 	Action *TriggerAction
 	// Timeout overrides [DefaultInvocationTimeout] for an await/enqueue call.
@@ -271,6 +315,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 		frame, err := MarshalMessage(&InvokeFunctionMessage{
 			FunctionID:  req.FunctionID,
 			Data:        data,
+			Metadata:    req.Metadata,
 			Action:      req.Action,
 			Traceparent: tc.traceparent,
 			Baggage:     tc.baggage,
@@ -295,6 +340,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 		InvocationID: &id,
 		FunctionID:   req.FunctionID,
 		Data:         data,
+		Metadata:     req.Metadata,
 		Action:       req.Action,
 		Traceparent:  tc.traceparent,
 		Baggage:      tc.baggage,
@@ -608,7 +654,7 @@ type workerMetadata struct {
 
 // sdkVersion is reported in the worker metadata. Kept as a const for v1; a release
 // process can wire this to the module version later.
-const sdkVersion = "0.20.0"
+const sdkVersion = "0.21.0-next.1"
 
 // writeLoop is the single writer for one connection. It drains the shared outbound
 // channel (connection-agnostic frames) and this connection's own reply channel
@@ -715,7 +761,11 @@ func (c *Client) handleInvoke(ctx context.Context, msg *InvokeFunctionMessage) {
 		return
 	}
 
-	result, herr := c.runHandler(injectTraceContext(ctx, tc), fn.handler, msg.Data)
+	// Attach trace context and per-invocation metadata to ctx before invoking the
+	// handler; metadata is delivered out-of-band on ctx (see MetadataFromContext) so the
+	// Handler signature stays stable.
+	hctx := withMetadata(injectTraceContext(ctx, tc), msg.Metadata)
+	result, herr := c.runHandler(hctx, fn.handler, msg.Data)
 	if herr != nil {
 		c.replyInvocation(msg, nil, errorBodyFromHandlerError(herr), tc)
 		return

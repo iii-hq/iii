@@ -343,6 +343,7 @@ mod tests {
                                 traceparent: None,
                                 baggage: None,
                                 action: None,
+                                metadata: None,
                             };
                             websocket
                                 .send(WsMessage::Text(

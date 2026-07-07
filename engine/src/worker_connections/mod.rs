@@ -11,7 +11,7 @@ use std::{collections::HashSet, str::FromStr, sync::Arc};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use opentelemetry::KeyValue;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use uuid::Uuid;
 
 use schemars::JsonSchema;
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     engine::Outbound,
+    protocol::ErrorBody,
     workers::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
 };
 
@@ -240,6 +241,11 @@ pub struct WorkerConnection {
     pub pid: Option<u32>,
     pub isolation: Option<String>,
     pub session: Option<Arc<Session>>,
+    /// In-flight `Message::RegisterTrigger` deliveries awaiting this worker's
+    /// `TriggerRegistrationResult` ack, keyed by trigger id. Only ownerless
+    /// (function-path) registrations wait on an entry here — see the
+    /// `TriggerRegistrator` impl in `traits.rs`.
+    pub pending_trigger_acks: Arc<DashMap<String, oneshot::Sender<Option<ErrorBody>>>>,
 }
 
 impl WorkerConnection {
@@ -262,6 +268,7 @@ impl WorkerConnection {
             pid: None,
             isolation: None,
             session: None,
+            pending_trigger_acks: Arc::new(DashMap::new()),
         }
     }
 
@@ -284,6 +291,7 @@ impl WorkerConnection {
             pid: None,
             isolation: None,
             session: Some(Arc::new(session)),
+            pending_trigger_acks: Arc::new(DashMap::new()),
         }
     }
 

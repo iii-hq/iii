@@ -26,6 +26,9 @@ import (
 // TypedHandler is a function handler with a typed request and response. The SDK
 // unmarshals the invocation payload into Req before calling it and marshals the returned
 // Resp into the result, so handlers work with concrete types instead of json.RawMessage.
+//
+// Per-invocation metadata, when the call carries any, rides on ctx rather than the
+// signature (so adding it is non-breaking): read it with [MetadataFromContext].
 type TypedHandler[Req any, Resp any] func(ctx context.Context, req Req) (Resp, error)
 
 // RegisterFunctionTyped registers a function whose request and response schemas are
@@ -38,10 +41,15 @@ type TypedHandler[Req any, Resp any] func(ctx context.Context, req Req) (Resp, e
 //
 // Use [Client.RegisterFunction] directly for schemaless functions or when you need to
 // hand the engine a hand-written schema. See [InferSchema] to obtain a type's schema on
-// its own.
-func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp]) error {
+// its own. Pass a single [RegisterFunctionOptions] value to attach registration
+// metadata.
+func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp], opts ...RegisterFunctionOptions) error {
 	if handler == nil {
 		return fmt.Errorf("iii: RegisterFunctionTyped(%q): handler is nil", id)
+	}
+	cfg, err := resolveRegisterFunctionOptions("RegisterFunctionTyped", id, opts)
+	if err != nil {
+		return err
 	}
 
 	reqSchema, err := reflectSchema[Req]()
@@ -57,6 +65,7 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
 		ID:             id,
 		RequestFormat:  reqSchema,
 		ResponseFormat: respSchema,
+		Metadata:       cfg.Metadata,
 	}
 
 	// Adapt the typed handler to the raw Handler the dispatcher calls.

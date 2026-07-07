@@ -202,6 +202,15 @@ pub trait EngineTrait: Send + Sync {
         &self,
         function_id: &str,
         input: impl Serialize + Send,
+    ) -> Result<Option<Value>, ErrorBody> {
+        self.call_with_metadata(function_id, input, None).await
+    }
+
+    async fn call_with_metadata(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+        metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
@@ -410,6 +419,7 @@ impl Engine {
         body: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
+        metadata: Option<Value>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
@@ -441,6 +451,7 @@ impl Engine {
                     traceparent,
                     baggage,
                     session,
+                    metadata,
                 )
                 .await
         } else {
@@ -467,6 +478,7 @@ impl Engine {
         traceparent: &Option<String>,
         baggage: &Option<String>,
         invocation_id: Option<Uuid>,
+        metadata: Option<Value>,
     ) {
         // The canonical engine span for an invocation is the `call <fn>` span
         // opened in `InvocationHandler::handle_invocation`. We intentionally do
@@ -510,6 +522,7 @@ impl Engine {
                         data,
                         downstream_traceparent.clone(),
                         downstream_baggage.clone(),
+                        metadata,
                     )
                     .await;
 
@@ -595,6 +608,18 @@ impl Engine {
                 error,
             } => {
                 tracing::debug!(id = %id, trigger_type = %trigger_type, function_id = %function_id, error = ?error, "TriggerRegistrationResult");
+
+                // Synchronous-ack path: a function-path registration is
+                // awaiting this result inside the registrator proxy (see
+                // `TriggerRegistrator for WorkerConnection`), and the trigger
+                // is NOT in the registry yet — insertion happens only after
+                // the ack. The pending map lives on the acking worker's own
+                // connection, so another worker cannot spoof a result (its
+                // map has no entry for this id).
+                if let Some((_, tx)) = worker.pending_trigger_acks.remove(id) {
+                    let _ = tx.send(error.clone());
+                    return Ok(());
+                }
 
                 let Some(trigger_entry) = self.trigger_registry.triggers.get(id) else {
                     tracing::debug!(
@@ -887,6 +912,7 @@ impl Engine {
                 traceparent,
                 baggage,
                 action,
+                metadata,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -953,9 +979,16 @@ impl Engine {
                         let function_id = function_id.clone();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
+                        let middleware_metadata = metadata.clone();
 
                         tokio::spawn(async move {
-                            let response = match engine.call(&middleware_id, middleware_input).await
+                            let response = match engine
+                                .call_with_metadata(
+                                    &middleware_id,
+                                    middleware_input,
+                                    middleware_metadata,
+                                )
+                                .await
                             {
                                 Ok(result) => Message::InvocationResult {
                                     invocation_id: inv_id,
@@ -1092,6 +1125,7 @@ impl Engine {
                             traceparent,
                             baggage,
                             None, // force invocation_id to None — no result sent
+                            metadata.clone(),
                         );
                         Ok(())
                     }
@@ -1105,6 +1139,7 @@ impl Engine {
                             traceparent,
                             baggage,
                             *invocation_id,
+                            metadata.clone(),
                         );
                         Ok(())
                     }
@@ -1411,12 +1446,13 @@ impl Engine {
         for trigger in triggers {
             let engine = self.clone();
             let function_id = trigger.function_id.clone();
+            let metadata = trigger.metadata.clone();
             let data = data.clone();
             let parent = current_span.clone();
             let span_function_id = function_id.clone();
             tokio::spawn(
                 async move {
-                    match engine.call(&function_id, data).await {
+                    match engine.call_with_metadata(&function_id, data, metadata).await {
                         Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
                         Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
                     }
@@ -1791,10 +1827,11 @@ impl EngineTrait for Engine {
     /// orchestration; the boot-heartbeat wakeup should only fire for actual
     /// user-initiated invocations arriving via `remember_invocation` and not
     /// things the engine can fire itself without user involvement, such as cron.
-    async fn call(
+    async fn call_with_metadata(
         &self,
         function_id: &str,
         input: impl Serialize + Send,
+        metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody> {
         let input = serde_json::to_value(input).map_err(|e| ErrorBody {
             code: "serialization_error".into(),
@@ -1821,6 +1858,7 @@ impl EngineTrait for Engine {
                     traceparent,
                     baggage,
                     None,
+                    metadata,
                 )
                 .await;
 
@@ -1842,14 +1880,25 @@ impl EngineTrait for Engine {
     }
 
     async fn register_trigger_type(&self, trigger_type: TriggerType) {
-        let trigger_type_id = &trigger_type.id;
+        // Re-registration is a REPLACE, never a skip: a reloaded in-process
+        // worker re-runs `initialize()` (reload.rs) and a reconnected SDK
+        // worker replays its trigger types, and each must swap in its LIVE
+        // registrator — the registry then re-delivers the type's existing
+        // registrations to it. Keeping the old registrator strands new (and
+        // replayed) bindings on a destroyed instance or dead connection:
+        // `engine::register_trigger` succeeds but the binding lands where the
+        // live fire path never reads, so it "lands but never fires". This
+        // matches the WS `Message::RegisterTriggerType` path, which has always
+        // replaced.
         if self
             .trigger_registry
             .trigger_types
-            .contains_key(trigger_type_id)
+            .contains_key(&trigger_type.id)
         {
-            tracing::warn!(trigger_type_id = %trigger_type_id, "Trigger type already registered");
-            return;
+            tracing::info!(
+                trigger_type_id = %trigger_type.id,
+                "Trigger type re-registered; replacing registrator and re-delivering its registrations"
+            );
         }
 
         let _ = self
@@ -1875,10 +1924,14 @@ impl EngineTrait for Engine {
         let handler_function_id = function_id.clone();
 
         let function = Function {
-            handler: Arc::new(move |invocation_id, input, _session| {
+            handler: Arc::new(move |invocation_id, input, _session, metadata| {
                 let handler = handler_arc.clone();
                 let path = handler_function_id.clone();
-                Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
+                Box::pin(async move {
+                    handler
+                        .handle_function(invocation_id, path, input, metadata)
+                        .await
+                })
             }),
             _function_id: function_id.clone(),
             _description: description,
@@ -1899,7 +1952,7 @@ impl EngineTrait for Engine {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input, _session| {
+            handler: Arc::new(move |_id, input, _session, _metadata| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
             }),
@@ -1925,7 +1978,7 @@ impl EngineTrait for Engine {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input, session| {
+            handler: Arc::new(move |_id, input, session, _metadata| {
                 let handler = handler_arc.clone();
                 let session = session.clone();
                 Box::pin(async move { handler(input, session).await })
@@ -2520,6 +2573,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2568,6 +2622,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2633,6 +2688,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2681,6 +2737,7 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
+            metadata: None,
         };
 
         engine
@@ -2820,7 +2877,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_trigger_type_duplicate_is_noop() {
+    async fn test_register_trigger_type_duplicate_replaces() {
+        // Re-registration must REPLACE the type (registrator included): a
+        // reloaded in-process worker or a reconnected SDK worker re-registers
+        // its types, and keeping the old registrator would strand new bindings
+        // on a destroyed instance / dead connection ("lands but never fires").
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
@@ -2849,7 +2910,7 @@ mod tests {
             .trigger_types
             .get("duplicate")
             .expect("trigger type should remain registered");
-        assert_eq!(trigger_type._description, "first");
+        assert_eq!(trigger_type._description, "second");
     }
 
     #[tokio::test]
@@ -2988,6 +3049,7 @@ mod tests {
                 Some(uuid::Uuid::new_v4()),
                 "nonexistent_func",
                 serde_json::json!({}),
+                None,
                 None,
                 None,
             )

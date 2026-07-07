@@ -1,6 +1,7 @@
 """III SDK implementation for WebSocket communication with the III Engine."""
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -62,6 +63,45 @@ RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
 TResult = TypeVar("TResult")
 
 log = logging.getLogger("iii.iii")
+
+
+def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
+    """Decide how (if at all) to forward per-invocation metadata to a handler.
+
+    Only handlers that explicitly declare a parameter named ``metadata``
+    receive the sidecar; every other signature keeps its exact pre-metadata
+    call shape (``handler(data)``), so existing handlers -- including ones
+    with unrelated optional parameters, ``*args``, or ``**kwargs`` -- keep
+    working unchanged. Returns one of:
+
+    - ``"positional"``: ``metadata`` is the second positional parameter
+      (e.g. ``def handler(data, metadata=None)``).
+    - ``"keyword"``: ``metadata`` is keyword-only
+      (e.g. ``def handler(data, *, metadata=None)``).
+    - ``"none"``: no ``metadata`` parameter -- omit metadata.
+
+    If the signature cannot be introspected (some builtins/C callables),
+    falls back to ``"none"`` to preserve back-compat.
+    """
+    try:
+        sig = inspect.signature(handler)
+    except (ValueError, TypeError):
+        return "none"
+
+    meta_param = sig.parameters.get("metadata")
+    if meta_param is None:
+        return "none"
+    if meta_param.kind == inspect.Parameter.KEYWORD_ONLY:
+        return "keyword"
+
+    positional = [
+        p
+        for p in sig.parameters.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) >= 2 and positional[1].name == "metadata":
+        return "positional"
+    return "none"
 
 
 def _resolve_format(fmt: Any) -> Any | None:
@@ -434,6 +474,7 @@ class III:
                     data.get("data"),
                     data.get("traceparent"),
                     data.get("baggage"),
+                    data.get("metadata"),
                 )
             )
         elif msg_type == MessageType.REGISTER_TRIGGER.value:
@@ -483,10 +524,11 @@ class III:
     async def _invoke_with_otel_context(
         self,
         function_id: str,
-        handler: Callable[[Any], Awaitable[Any]],
+        handler: Callable[..., Awaitable[Any]],
         data: Any,
         traceparent: str | None,
         baggage: str | None,
+        metadata: dict[str, Any] | None = None,
     ) -> tuple[Any, str | None]:
         from opentelemetry import context as otel_context
         from opentelemetry import propagate, trace
@@ -531,7 +573,7 @@ class III:
                     },
                 )
             try:
-                result = await handler(data)
+                result = await handler(data, metadata)
                 if trace_payloads and span.is_recording():
                     out_json, out_truncated = redact_and_truncate(result, payload_max_bytes)
                     span.add_event(
@@ -586,6 +628,7 @@ class III:
         data: Any,
         traceparent: str | None = None,
         baggage: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         func = self._functions.get(path)
 
@@ -627,7 +670,7 @@ class III:
         if not invocation_id:
             task = asyncio.create_task(
                 self._invoke_with_otel_context(
-                    path, func.handler, resolved_data, traceparent, baggage
+                    path, func.handler, resolved_data, traceparent, baggage, metadata
                 )
             )
             task.add_done_callback(self._log_task_exception)
@@ -640,6 +683,7 @@ class III:
                 resolved_data,
                 traceparent,
                 baggage,
+                metadata,
             )
             await self._send(
                 InvocationResultMessage(
@@ -927,8 +971,14 @@ class III:
 
         Handlers can be synchronous or asynchronous.  Sync handlers are
         automatically wrapped with ``run_in_executor`` so they do not
-        block the event loop.  Each handler receives a single ``data``
-        argument containing the trigger payload.
+        block the event loop.  Each handler receives a ``data`` argument
+        containing the trigger payload, and may optionally accept a second
+        ``metadata`` argument carrying per-invocation metadata (e.g.
+        ``def handler(data, metadata=None)`` or ``def handler(data, *,
+        metadata=None)``).  Metadata is only forwarded to handlers that
+        declare a parameter literally named ``metadata``, so existing
+        handlers -- including ones with unrelated extra parameters,
+        ``*args``, or ``**kwargs`` -- keep working unchanged.
 
         ``request_format`` and ``response_format`` are auto-extracted
         from the handler's type hints when omitted or passed as ``None``
@@ -940,9 +990,10 @@ class III:
         Args:
             function_id: Unique string identifier for the function.
             handler_or_invocation: A callable handler or
-                ``HttpInvocationConfig``.  Callable handlers receive one
-                positional argument (``data`` -- the trigger payload) and
-                may return a value.
+                ``HttpInvocationConfig``.  Callable handlers receive
+                ``data`` (the trigger payload) as the first argument and
+                may optionally accept ``metadata`` (per-invocation
+                metadata) as a second argument; they may return a value.
             description: Human-readable description.
             metadata: Arbitrary metadata.
             request_format: Schema describing expected input.  When
@@ -1020,7 +1071,7 @@ class III:
                 raise TypeError(
                     f"handler_or_invocation must be callable or HttpInvocationConfig, got {actual_type}"
                 )
-            handler = handler_or_invocation
+            handler = cast("Callable[..., Any]", handler_or_invocation)
             msg = RegisterFunctionMessage(
                 id=func.id,
                 description=func.description,
@@ -1030,20 +1081,31 @@ class III:
             )
             self._send_if_connected(msg)
 
+            # Decide once, at registration time, whether this handler accepts
+            # per-invocation metadata. 1-arg handlers keep working unchanged.
+            metadata_mode = _metadata_passing_mode(handler)
+
+            def _call_handler(input_data: Any, metadata: dict[str, Any] | None) -> Any:
+                if metadata_mode == "positional":
+                    return handler(input_data, metadata)
+                if metadata_mode == "keyword":
+                    return handler(input_data, metadata=metadata)
+                return handler(input_data)
+
             if asyncio.iscoroutinefunction(handler):
 
-                async def wrapped(input_data: Any) -> Any:
-                    return await handler(input_data)
+                async def wrapped(input_data: Any, metadata: dict[str, Any] | None = None) -> Any:
+                    return await _call_handler(input_data, metadata)
 
             else:
 
-                async def wrapped(input_data: Any) -> Any:
+                async def wrapped(input_data: Any, metadata: dict[str, Any] | None = None) -> Any:
                     loop = asyncio.get_running_loop()
                     future: asyncio.Future[Any] = loop.create_future()
 
                     def _run() -> None:
                         try:
-                            result = handler(input_data)
+                            result = _call_handler(input_data, metadata)
                             loop.call_soon_threadsafe(future.set_result, result)
                         except BaseException as exc:
                             loop.call_soon_threadsafe(future.set_exception, exc)
@@ -1120,6 +1182,7 @@ class III:
         function_id = req["function_id"]
         payload = req.get("payload")
         action = req.get("action")
+        metadata = req.get("metadata")
 
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 
@@ -1137,6 +1200,7 @@ class III:
                 InvokeFunctionMessage(
                     function_id=function_id,
                     data=payload,
+                    metadata=metadata,
                     traceparent=self._inject_traceparent(),
                     baggage=self._inject_baggage(),
                     action=action,
@@ -1160,6 +1224,7 @@ class III:
             InvokeFunctionMessage(
                 function_id=function_id,
                 data=payload,
+                metadata=metadata,
                 invocation_id=invocation_id,
                 traceparent=self._inject_traceparent(),
                 baggage=self._inject_baggage(),

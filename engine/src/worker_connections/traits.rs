@@ -8,6 +8,7 @@ use std::pin::Pin;
 
 use futures::Future;
 use serde_json::Value;
+use tokio::sync::oneshot;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
@@ -21,15 +22,39 @@ use crate::{
     worker_connections::WorkerConnection,
 };
 
+/// How long a function-path registration waits for the registrator worker's
+/// `TriggerRegistrationResult` before failing open (legacy / stalled workers
+/// are still covered by the late-unwind path in `router_msg`).
+const REGISTRATION_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl TriggerRegistrator for WorkerConnection {
     fn register_trigger(
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         let sender = self.channel.clone();
+        let acks = self.pending_trigger_acks.clone();
 
         Box::pin(async move {
-            sender
+            // Ownerless registrations come from the `engine::register_trigger`
+            // FUNCTION, whose invocation runs in a spawned task — awaiting the
+            // worker's ack there is safe and makes validation failures
+            // synchronous (no id-then-unwind). Connection-owned registrations
+            // (`Message::RegisterTrigger`, a worker's own lifecycle bindings)
+            // are processed INLINE in the origin connection's read loop; a
+            // worker binding its own trigger type would deadlock on its ack,
+            // so those keep fire-and-forget + late unwind.
+            let await_ack = trigger.worker_id.is_none();
+            let trigger_id = trigger.id.clone();
+            let rx = if await_ack {
+                let (tx, rx) = oneshot::channel();
+                acks.insert(trigger_id.clone(), tx);
+                Some(rx)
+            } else {
+                None
+            };
+
+            let sent = sender
                 .send(Outbound::Protocol(Message::RegisterTrigger {
                     id: trigger.id,
                     trigger_type: trigger.trigger_type,
@@ -37,15 +62,31 @@ impl TriggerRegistrator for WorkerConnection {
                     config: trigger.config,
                     metadata: trigger.metadata,
                 }))
-                .await
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "failed to send register trigger message through worker channel: {}",
-                        err
-                    )
-                })?;
+                .await;
+            if let Err(err) = sent {
+                acks.remove(&trigger_id);
+                return Err(anyhow::anyhow!(
+                    "failed to send register trigger message through worker channel: {}",
+                    err
+                ));
+            }
 
-            Ok(())
+            let Some(rx) = rx else { return Ok(()) };
+            match tokio::time::timeout(REGISTRATION_ACK_TIMEOUT, rx).await {
+                Ok(Ok(None)) => Ok(()),
+                Ok(Ok(Some(err))) => Err(anyhow::anyhow!("{}: {}", err.code, err.message)),
+                // Ack channel dropped (connection teardown) — fail open; the
+                // disconnect GC / late-unwind own the cleanup.
+                Ok(Err(_)) => Ok(()),
+                Err(_elapsed) => {
+                    acks.remove(&trigger_id);
+                    tracing::debug!(
+                        trigger_id = %trigger_id,
+                        "no TriggerRegistrationResult within timeout; accepting registration (late unwind still applies)"
+                    );
+                    Ok(())
+                }
+            }
         })
     }
 
@@ -80,6 +121,7 @@ impl FunctionHandler for WorkerConnection {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
+        metadata: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         // Capture OTel context from current tracing span BEFORE async move
         // This ensures we get the trace context from the #[tracing::instrument] span.
@@ -125,6 +167,7 @@ impl FunctionHandler for WorkerConnection {
                     traceparent,
                     baggage,
                     action: None,
+                    metadata,
                 }))
                 .await;
 
@@ -155,32 +198,82 @@ mod tests {
         (WorkerConnection::new(tx), rx)
     }
 
-    #[tokio::test]
-    async fn register_trigger_sends_message() {
-        let (worker, mut rx) = make_worker();
-        let trigger = Trigger {
-            id: "t1".into(),
+    fn trigger(id: &str, worker_id: Option<Uuid>) -> Trigger {
+        Trigger {
+            id: id.into(),
             trigger_type: "http".into(),
             function_id: "fn1".into(),
             config: json!({}),
-            worker_id: None,
+            worker_id,
             metadata: None,
-        };
-        worker.register_trigger(trigger).await.unwrap();
-        let msg = rx.recv().await.unwrap();
-        match msg {
-            Outbound::Protocol(Message::RegisterTrigger {
-                id,
-                trigger_type,
-                function_id,
-                ..
-            }) => {
-                assert_eq!(id, "t1");
-                assert_eq!(trigger_type, "http");
-                assert_eq!(function_id, "fn1");
-            }
-            _ => panic!("Expected RegisterTrigger message"),
         }
+    }
+
+    /// Resolve the pending ack for `id` once the delivery message lands.
+    async fn ack(
+        worker: &WorkerConnection,
+        rx: &mut mpsc::Receiver<Outbound>,
+        id: &str,
+        error: Option<ErrorBody>,
+    ) {
+        let msg = rx.recv().await.expect("RegisterTrigger delivered");
+        assert!(matches!(
+            msg,
+            Outbound::Protocol(Message::RegisterTrigger { .. })
+        ));
+        let (_, tx) = worker
+            .pending_trigger_acks
+            .remove(id)
+            .expect("pending ack entry");
+        tx.send(error).unwrap();
+    }
+
+    #[tokio::test]
+    async fn register_trigger_sends_message_and_accepts_on_ok_ack() {
+        let (worker, mut rx) = make_worker();
+        let (res, ()) = tokio::join!(
+            worker.register_trigger(trigger("t1", None)),
+            ack(&worker, &mut rx, "t1", None),
+        );
+        res.unwrap();
+        assert!(worker.pending_trigger_acks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ownerless_registration_rejects_synchronously_on_error_ack() {
+        let (worker, mut rx) = make_worker();
+        let (res, ()) = tokio::join!(
+            worker.register_trigger(trigger("t_bad", None)),
+            ack(
+                &worker,
+                &mut rx,
+                "t_bad",
+                Some(ErrorBody::new(
+                    "trigger_registration_failed",
+                    "unknown model"
+                )),
+            ),
+        );
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("unknown model"), "got: {err}");
+        assert!(worker.pending_trigger_acks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connection_owned_registration_stays_fire_and_forget() {
+        let (worker, mut rx) = make_worker();
+        // A worker's own lifecycle binding: returns as soon as the delivery is
+        // queued, never waits on (or creates) a pending ack.
+        worker
+            .register_trigger(trigger("t_owned", Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert!(worker.pending_trigger_acks.is_empty());
+        let msg = rx.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            Outbound::Protocol(Message::RegisterTrigger { .. })
+        ));
     }
 
     #[tokio::test]
@@ -210,7 +303,12 @@ mod tests {
         let (worker, mut rx) = make_worker();
         let inv_id = Uuid::new_v4();
         let result = worker
-            .handle_function(Some(inv_id), "fn1".into(), json!({"key": "val"}))
+            .handle_function(
+                Some(inv_id),
+                "fn1".into(),
+                json!({"key": "val"}),
+                Some(json!({"session_id": "s_1"})),
+            )
             .await;
         assert!(matches!(result, FunctionResult::Deferred));
 
@@ -220,11 +318,15 @@ mod tests {
                 invocation_id,
                 function_id,
                 data,
+                metadata,
                 ..
             }) => {
                 assert_eq!(invocation_id, Some(inv_id));
                 assert_eq!(function_id, "fn1");
                 assert_eq!(data, json!({"key": "val"}));
+                // Metadata rides as a distinct field on the wire message, not
+                // folded into `data`.
+                assert_eq!(metadata, Some(json!({"session_id": "s_1"})));
             }
             _ => panic!("Expected InvokeFunction message"),
         }

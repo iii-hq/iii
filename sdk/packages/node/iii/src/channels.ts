@@ -100,7 +100,18 @@ export class ChannelWriter {
   }
 
   private ensureConnected(): void {
-    if (this.ws) return
+    // A non-null socket is only reusable while it is still connecting or open.
+    // A CLOSING/CLOSED socket is dead and must be replaced — guarding solely on
+    // `this.ws` being non-null would pin a terminated socket forever, so every
+    // subsequent send would target a connection that can never deliver it.
+    if (
+      this.ws &&
+      this.ws.readyState !== WebSocket.CLOSING &&
+      this.ws.readyState !== WebSocket.CLOSED
+    ) {
+      return
+    }
+    this.wsReady = false
     this.ws = new WebSocket(this.url)
 
     this.ws.on('open', () => {
@@ -112,10 +123,12 @@ export class ChannelWriter {
     })
 
     this.ws.on('error', (err) => {
+      this.wsReady = false
       this.stream.destroy(err)
     })
 
     this.ws.on('close', () => {
+      this.wsReady = false
       if (!this.stream.destroyed) {
         this.stream.destroy()
       }
@@ -168,8 +181,16 @@ export class ChannelWriter {
 
   private sendRaw(data: Buffer | string, callback: (err?: Error | null) => void): void {
     this.ensureConnected()
-    if (this.wsReady && this.ws) {
-      this.ws.send(data, (err) => callback(err ?? null))
+    // Trust the socket's live readyState over the tracked `wsReady` flag, which
+    // can stay true after a drop. Queue anything we cannot send right now — and
+    // requeue a send() that throws because the socket died underneath us — so it
+    // flushes on the next open instead of being lost or throwing to the caller.
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(data, (err) => callback(err ?? null))
+      } catch {
+        this.pendingMessages.push({ data, callback })
+      }
     } else {
       this.pendingMessages.push({ data, callback })
     }

@@ -122,7 +122,7 @@ SHARED_ROOTS = {"changelog"}
 _EXCLUDED_NAMES = {
     "docs.json", "package.json", "package-lock.json", "node_modules",
     "custom.css", "navbar-counters.js", ".gitignore", ".mintignore",
-    ".prettierrc", "README.md", "LICENSE", NEXT_DIR,
+    ".prettierrc", "README.md", "RELEASING.md", "LICENSE", NEXT_DIR,
 }
 
 

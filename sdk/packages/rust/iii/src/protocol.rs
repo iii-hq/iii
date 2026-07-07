@@ -18,8 +18,7 @@ pub enum TriggerAction {
     Void,
 }
 
-/// Request object for `trigger()`. Matches the Node/Python SDK signature:
-/// `trigger({ function_id, payload, action?, timeout_ms? })`
+/// Request object for `trigger()`.
 ///
 /// ```rust
 /// # use iii_sdk::protocol::{TriggerRequest, TriggerAction};
@@ -39,6 +38,15 @@ pub enum TriggerAction {
 ///     action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
 ///     timeout_ms: None,
 /// };
+///
+/// // With metadata
+/// TriggerRequest {
+///     function_id: "my::function".to_string(),
+///     payload: json!({}),
+///     action: None,
+///     timeout_ms: None,
+/// }
+/// .metadata(json!({ "tenant": "acme" }));
 /// ```
 #[derive(Debug, Clone)]
 pub struct TriggerRequest {
@@ -46,6 +54,36 @@ pub struct TriggerRequest {
     pub payload: Value,
     pub action: Option<TriggerAction>,
     pub timeout_ms: Option<u64>,
+}
+
+impl TriggerRequest {
+    /// Attach per-invocation metadata without adding a required field to
+    /// [`TriggerRequest`] struct literals.
+    pub fn metadata(self, metadata: Value) -> TriggerRequestWithMetadata {
+        TriggerRequestWithMetadata {
+            request: self,
+            metadata: Some(metadata),
+        }
+    }
+}
+
+/// Trigger request plus optional per-invocation metadata.
+#[derive(Debug, Clone)]
+pub struct TriggerRequestWithMetadata {
+    pub(crate) request: TriggerRequest,
+    pub(crate) metadata: Option<Value>,
+}
+
+impl<T> From<T> for TriggerRequestWithMetadata
+where
+    T: Into<TriggerRequest>,
+{
+    fn from(request: T) -> Self {
+        Self {
+            request: request.into(),
+            metadata: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +145,11 @@ pub enum Message {
         baggage: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         action: Option<TriggerAction>,
+        /// Per-invocation metadata sidecar, surfaced to the handler as a
+        /// distinct argument (not folded into `data`). Optional and additive
+        /// for wire compatibility with engines that don't send it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     InvocationResult {
         invocation_id: Uuid,

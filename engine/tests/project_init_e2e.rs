@@ -22,6 +22,18 @@ fn fixtures() -> PathBuf {
         .join("templates")
 }
 
+fn assert_compose_mounts_engine_data_volume(project: &Path) {
+    let compose = std::fs::read_to_string(project.join("docker-compose.yml")).unwrap();
+    assert!(
+        compose.contains("- iii_data:/app/data"),
+        "docker-compose.yml should mount writable engine data, got:\n{compose}"
+    );
+    assert!(
+        compose.contains("volumes:\n  iii_data:"),
+        "docker-compose.yml should declare the iii_data named volume, got:\n{compose}"
+    );
+}
+
 fn assert_compose_reads_env_file(project_dir: &Path) {
     let compose = std::fs::read_to_string(project_dir.join("docker-compose.yml")).unwrap();
     assert!(
@@ -172,6 +184,7 @@ fn project_init_with_docker_flag_writes_docker_assets_with_device_id() {
     assert!(dir.path().join("Dockerfile").exists());
     assert!(dir.path().join("docker-compose.yml").exists());
     assert!(dir.path().join(".env").exists());
+    assert_compose_mounts_engine_data_volume(dir.path());
     assert_compose_reads_env_file(dir.path());
 
     let ini = std::fs::read_to_string(dir.path().join(".iii").join("project.ini")).unwrap();
@@ -226,6 +239,7 @@ fn project_generate_docker_uses_existing_project_ini_device_id() {
         dockerfile.contains("ENV III_HOST_USER_ID=preseeded-xyz"),
         "Dockerfile should bake the existing device_id, got:\n{dockerfile}"
     );
+    assert_compose_mounts_engine_data_volume(dir.path());
     assert_compose_reads_env_file(dir.path());
 
     let env = std::fs::read_to_string(dir.path().join(".env")).unwrap();

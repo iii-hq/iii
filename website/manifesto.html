@@ -5,18 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>iii / manifesto</title>
 
-    <!-- Google Tag Manager -->
+    <!-- Google Tag Manager: loads only after analytics consent (see cookie banner below) -->
     <script>
-      (function (w, d, s, l, i) {
-        w[l] = w[l] || [];
-        w[l].push({ "gtm.start": new Date().getTime(), event: "gtm.js" });
-        var f = d.getElementsByTagName(s)[0],
-          j = d.createElement(s),
-          dl = l != "dataLayer" ? "&l=" + l : "";
-        j.async = true;
-        j.src = "https://www.googletagmanager.com/gtm.js?id=" + i + dl;
-        f.parentNode.insertBefore(j, f);
-      })(window, document, "script", "dataLayer", "GTM-N8DCTFB8");
+      (function () {
+        var STORAGE_KEY = "iii_cookie_consent";
+        window.iiiLoadGTM = function () {
+          if (window.__iiiGTMLoaded) return;
+          try {
+            if (localStorage.getItem(STORAGE_KEY) !== "accepted") return;
+          } catch (_) {
+            return;
+          }
+          window.__iiiGTMLoaded = true;
+          (function (w, d, s, l, i) {
+            w[l] = w[l] || [];
+            w[l].push({ "gtm.start": new Date().getTime(), event: "gtm.js" });
+            var f = d.getElementsByTagName(s)[0],
+              j = d.createElement(s),
+              dl = l != "dataLayer" ? "&l=" + l : "";
+            j.async = true;
+            j.src = "https://www.googletagmanager.com/gtm.js?id=" + i + dl;
+            f.parentNode.insertBefore(j, f);
+          })(window, document, "script", "dataLayer", "GTM-N8DCTFB8");
+        };
+        window.iiiLoadGTM();
+      })();
     </script>
     <!-- End Google Tag Manager -->
 
@@ -26,6 +39,11 @@
         var STORAGE_KEY = "iii_cookie_consent";
         window.iiiLoadCommonRoomSignals = function () {
           if (typeof window.signals !== "undefined") return;
+          try {
+            if (localStorage.getItem(STORAGE_KEY) !== "accepted") return;
+          } catch (_) {
+            return;
+          }
           var script = document.createElement("script");
           script.src =
             "https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js";
@@ -50,9 +68,7 @@
             window.signals.form({ email: email });
           } catch (_) {}
         };
-        try {
-          if (localStorage.getItem(STORAGE_KEY) === "accepted") window.iiiLoadCommonRoomSignals();
-        } catch (_) {}
+        window.iiiLoadCommonRoomSignals();
       })();
     </script>
     <script src="/posthog-consent.js"></script>
@@ -571,6 +587,7 @@
               localStorage.setItem(STORAGE_KEY, "accepted");
             } catch (_) {}
             banner.remove();
+            if (window.iiiLoadGTM) window.iiiLoadGTM();
             if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
             if (window.iiiLoadPostHog) window.iiiLoadPostHog();
           });

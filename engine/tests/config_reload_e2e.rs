@@ -81,7 +81,7 @@ async fn wait_for_config_rewrite(path: &Path, needle: &str) -> String {
 
 fn make_dummy_function(id: &str) -> Function {
     Function {
-        handler: Arc::new(|_invocation_id, _input, _session| {
+        handler: Arc::new(|_invocation_id, _input, _session, _metadata| {
             Box::pin(async { FunctionResult::Success(None) })
         }),
         _function_id: id.to_string(),
