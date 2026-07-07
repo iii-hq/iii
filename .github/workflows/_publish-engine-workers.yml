@@ -69,6 +69,9 @@ jobs:
         env:
           VERSION_INPUT: ${{ inputs.version }}
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          # install.sh queries the GitHub releases API; unauthenticated calls
+          # share a 60/hr per-IP limit that hosted runners routinely exhaust.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
