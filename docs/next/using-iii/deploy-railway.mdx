@@ -1,0 +1,427 @@
+---
+title: "Deploy to Railway"
+description: "Run the iii engine and your workers on Railway with a clean, reusable base image."
+owner: "devrel"
+type: "how-to"
+---
+
+This guide deploys the iii engine and your workers to [Railway](https://railway.com).
+The approach is the same one used everywhere else (see
+[Self-hosted deployment](./deployment)): ship a **clean engine image** and let your
+`config.yaml` decide what runs. The base image contains **no** workers. You add
+capabilities by declaring them, and the engine provisions them. One image stays
+reusable across every app, and adding an integration is another config entry.
+
+Railway differs from a bare-host deploy in three ways that shape the rest of this
+guide: its private network is IPv6-only, durable state persists on a mounted
+volume, and its edge terminates TLS so you do not run your own reverse proxy.
+
+## Deploy from the template
+
+The fastest path is the starter repo at
+[iii-experimental/railway-template](https://github.com/iii-experimental/railway-template).
+It ships the debian base `Dockerfile`, a Railway-ready `config.yaml`, `railway.json`
+with restart policy `ALWAYS`, and an optional `hello-worker` service for end-to-end
+verification. Fork it or generate a Railway template from a deployed copy of the
+project, then deploy.
+
+After the first deploy, set `PORT=3111` on the engine service (see
+[Public domain, TLS, and routing](#public-domain-tls-and-routing)). The debian
+Dockerfile runs as root, so you do not need `RAILWAY_RUN_UID=0` unless you switch
+to the non-root `iiidev/iii` image.
+
+## A base image worth reusing
+
+Build a base that contains the engine **and** the `iii-worker` daemon (the
+process that runs add-on workers), but nothing app-specific. The pre-built
+distroless `iiidev/iii:latest` is engine-only and can't be extended (no shell),
+so for any deployment that uses registry workers, build a small base from the
+install script instead. Railway builds it from this repo
+[Dockerfile](https://docs.railway.com/builds/dockerfiles):
+
+```dockerfile
+# Dockerfile: clean iii base. Contains NO workers.
+FROM debian:bookworm-slim
+
+# curl, ca-certificates, and jq drive the installer. libssl3 and libcap2 are
+# engine runtime deps; libcap-ng0 provides libcap-ng.so.0, which the iii-worker
+# daemon needs to launch binary registry workers (for example `database`).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates jq libssl3 libcap2 libcap-ng0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Installs both `iii` (engine) and `iii-worker` (the add-on worker daemon).
+RUN curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+WORKDIR /app
+COPY config.yaml /app/config.yaml
+
+EXPOSE 49134 3111 3112
+CMD ["iii", "--config", "/app/config.yaml"]
+```
+
+<Note>
+  A ready-to-fork starter with this `Dockerfile`, a `config.yaml`, and a
+  `railway.json` (Dockerfile builder + restart policy) is at
+  [iii-experimental/railway-template](https://github.com/iii-experimental/railway-template).
+</Note>
+
+## A Railway-ready config.yaml
+
+The only opinionated file is `config.yaml`. Two things make it Railway-ready:
+**bind to `[::]`** (Railway private networking is IPv6-only) and **put all
+durable state under `/data`** (a Railway volume):
+
+```yaml
+workers:
+  # The first manager entry is the engine WS port. Bind [::] so worker
+  # services can reach it over Railway's IPv6 private network.
+  - name: iii-worker-manager
+    config:
+      host: "[::]"
+      port: 49134
+
+  - name: iii-http
+    config:
+      host: "[::]"
+      port: 3111
+      cors:
+        allowed_origins: ["*"]   # tighten to your domains in production
+
+  - name: iii-stream
+    config:
+      host: "[::]"
+      port: 3112
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: /data/stream_store
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: /data/state_store.db
+
+  - name: iii-queue
+    config:
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: /data/queue_store
+
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: /data/configuration
+```
+
+<Note>
+  On first boot, seeded worker blocks are copied into the `configuration` worker
+  under `/data/configuration` and stripped from the live `config.yaml`. Later edits
+  to adapter blocks in `config.yaml` have no effect until you update the persisted
+  entry or clear the volume. See
+  [Make storage durable with file_based](./deployment#make-storage-durable-with-file_based).
+</Note>
+
+## Add workers by declaring them
+
+Each entry above is a worker. That is all there is in iii: everything is a
+worker, and you run one by **declaring it** in `config.yaml`. Nothing is added
+to the image itself. If a worker you declare isn't present locally, the
+engine fetches it from the registry on boot. For example, add a SQLite-backed
+database with nothing in the image:
+
+```yaml
+  - name: database
+    config:
+      databases:
+        primary:
+          url: sqlite:/data/iii.db
+```
+
+The `iii-worker` daemon logs `Worker 'database' not found locally, checking registry...`
+to `iii worker logs database`. The engine log shows `Starting external worker via
+iii-worker` and the registered `database::*` functions. Add any worker the same way:
+a `- name: <worker>` entry plus its config schema (see the worker's page on
+[workers.iii.dev](https://workers.iii.dev)). Check the worker's top-level `deploy:`
+field in its `iii.worker.yaml`: `binary` runs as a plain host process on Railway;
+`bundle` and `image` boot libkrun guests and need `/dev/kvm`. Supply secrets
+(database URLs, S3/R2 credentials) from Railway service variables, covered below.
+
+<Note>
+  Auto-provisioning downloads the worker on first boot, which adds cold-start
+  time and needs registry access at runtime. For reproducible, fast starts in
+  production, **pin it into the image**: add `RUN iii worker add <name>` to your
+  Dockerfile. The base stays generic; the build step is your version lock.
+</Note>
+
+## The Railway architecture for iii
+
+You can run **every** declarable worker on the **same engine service** by listing
+them in `config.yaml`: `database`, `iii-http`, and the rest share one `/data`
+volume on one Machine. Separate Railway services are optional: use them when you
+want a different language runtime, independent scaling, or stronger isolation.
+Both patterns are valid and can be mixed.
+
+![Railway project with engine volume and worker services](/next/using-iii/assets/railway-canvas.png)
+
+## Connect the services
+
+A typical app is the engine plus one or more worker services that connect to it
+over the private network:
+
+| Service | What it is | Key setting |
+| --- | --- | --- |
+| `engine` | the base image above + your `config.yaml` | volume at `/data`; `PORT=3111` on the public domain; `RAILWAY_RUN_UID=0` only if you use the non-root `iiidev/iii` image directly |
+| `api-worker` (and friends) | your Node/Python/Rust worker code | `III_URL=ws://engine.railway.internal:49134` |
+
+Worker services stay private (no public domain) and reach the engine over
+`engine.railway.internal`, Railway's internal DNS name for the engine service.
+Railway [private networking](https://docs.railway.com/private-networking) is
+IPv6-only, which is why the engine manager binds `[::]`. A worker that binds or
+dials `127.0.0.1` will not find the engine across services; always use the
+`.railway.internal` hostname.
+
+<Note>
+  Set the engine service's
+  [restart policy](https://docs.railway.com/deployments/restarts) to **`ALWAYS`**.
+  A **successful** `config.yaml` reload is applied hot in-process; the engine keeps
+  running and does not exit. Failed reloads exit non-zero (`ON_FAILURE` would restart
+  those too). `ALWAYS` keeps the engine running through platform restarts and
+  maintenance. The `railway.json` in the
+  [starter template](https://github.com/iii-experimental/railway-template) sets this.
+</Note>
+
+## Create the Railway services
+
+Whether you start from the [template repo](https://github.com/iii-experimental/railway-template)
+or your own fork, create the services explicitly. The guide above describes what
+each one does; these are the steps we validated on Railway:
+
+1. **Link the project**: `railway login`, then `railway init --name my-iii-app` (or
+   connect the GitHub repo in the Railway dashboard).
+2. **Create the engine service**: `railway add --service engine` (or **New → GitHub
+   Repo** in the dashboard). Point it at the directory with the engine `Dockerfile`.
+3. **Attach a volume**: in the engine service: **Volumes → Add volume**, mount at
+   `/data`.
+4. **Set variables before deploy**: any `${VAR}` placeholders in `config.yaml` must
+   exist before the engine boots (see [Secrets and environment](#secrets-and-environment)).
+   After the first deploy, set `PORT=3111` so the public domain targets `iii-http`.
+5. **Deploy the engine**: `railway up --ci --service engine`.
+6. **Create worker services**: `railway add --service hello-worker` (no public
+   domain). Set `III_URL=ws://engine.railway.internal:49134` (match your engine
+   service name). Deploy from the worker subdirectory (`hello-worker/` in the
+   template).
+7. **Public domain**: `railway domain --service engine`, then verify with
+   `POST /hello` ([Verify the deployment](#verify-the-deployment)).
+
+![Engine service variables including PORT=3111](/next/using-iii/assets/railway-variables.png)
+
+## Deploy with the Railway CLI
+
+```bash
+railway login
+railway init --name my-iii-app
+railway add --service engine
+railway variables --set PORT=3111 --service engine   # set before or right after first deploy
+railway up --ci --service engine
+railway domain --service engine
+railway add --service hello-worker
+railway variables --set III_URL=ws://engine.railway.internal:49134 --service hello-worker
+cd hello-worker && railway up --ci --service hello-worker
+railway logs --service engine
+```
+
+Railway auto-detects a listening port from `EXPOSE`. This Dockerfile exposes
+`49134`, `3111`, and `3112`, so Railway may pick `49134` (worker WebSocket) and
+return `502` for HTTP. Set `PORT=3111` so the edge targets `iii-http`.
+
+If you deploy `FROM iiidev/iii:latest` with a volume instead of the debian base,
+also set `RAILWAY_RUN_UID=0` so the non-root image can write the root-owned
+volume.
+
+## Public domain, TLS, and routing
+
+Railway's edge is your reverse proxy. It terminates TLS and forwards one public
+domain to one port on one service, so you do not run Caddy or nginx yourself
+(contrast the bare-host [Hardening](./deployment#hardening) section). See Railway's
+[public networking](https://docs.railway.com/public-networking) guide for the
+domain and `PORT` details.
+
+- Attach the public domain to the **engine** service and target port **3111**,
+  the `iii-http` worker that serves your registered HTTP routes. Set the service
+  variable `PORT=3111` so Railway's edge routes HTTP to `iii-http` instead of
+  auto-detecting `49134` from `EXPOSE`. Railway issues and renews the
+  certificate, so the domain serves HTTPS with no extra config.
+- A custom domain works the same way: add it on the engine service and point your
+  DNS `CNAME` at the Railway target Railway shows you.
+- Keep worker services private. They have no domain and are reachable only on the
+  internal network.
+- If an external client needs the raw engine WebSocket port (`49134`), expose it
+  with a Railway [TCP proxy](https://docs.railway.com/networking/tcp-proxy).
+  Inside Railway, prefer the private network.
+- Health check (optional): set the service
+  [healthcheck](https://docs.railway.com/deployments/healthchecks) path to a route
+  your `iii-http` worker serves (for example `/hello` once the hello-worker is
+  deployed).
+
+## Secrets and environment
+
+Supply every credential through Railway
+[service variables](https://docs.railway.com/variables), never the image or git.
+Reference them in `config.yaml` with `${VAR}` placeholders
+(`${VAR:default}` for a fallback); the engine substitutes them at boot:
+
+```yaml
+  - name: database
+    config:
+      databases:
+        primary:
+          url: ${DATABASE_URL}        # set DATABASE_URL on the engine service
+```
+
+Shared variables let several services read one value, which is useful when a
+worker and the engine both need the same connection string. Change a variable and
+redeploy (or restart) the service for the engine to pick it up.
+
+## Stateful workers and object storage
+
+Attach a Railway [volume](https://docs.railway.com/volumes) to the engine
+service, mount it at `/data`, and keep every worker's persistence path under it
+(`sqlite:/data/iii.db`, `/data/queue_store`, `/data/state_store.db`). Railway
+mounts volumes as `root`. The debian Dockerfile in this guide runs as root, so
+no extra UID setting is needed. If you deploy the non-root `iiidev/iii` image
+directly, set `RAILWAY_RUN_UID=0`.
+
+For object storage, use the `storage` worker's **remote providers**, which need
+no local disk:
+
+```yaml
+  - name: storage
+    config:
+      buckets:
+        uploads:
+          provider: s3
+          bucket: my-bucket
+          region: us-east-1
+        avatars:
+          provider: r2
+          bucket: avatars
+          account_id: ${R2_ACCOUNT_ID}
+          access_key_id: ${R2_ACCESS_KEY_ID}
+          secret_access_key: ${R2_SECRET_ACCESS_KEY}
+```
+
+<Note>
+  The `storage` worker's `local` provider runs a `rustfs` sidecar that does not
+  reach a healthy state inside Railway's container (a worker-internal lifecycle
+  issue, not a config one). On Railway, use a remote provider (`s3`, `gcs`, `r2`)
+  for object storage.
+</Note>
+
+## Scaling
+
+- **More workers**: add another service per worker (or per language runtime).
+  They all dial the same `engine.railway.internal:49134`.
+- **External adapters**: swap the `file_based`/`builtin` adapters for Redis and
+  RabbitMQ when you outgrow single-instance file storage. See
+  [Scale out with Redis and RabbitMQ](./deployment#scale-out-with-redis-and-rabbitmq).
+  Add those as Railway services (or use a managed add-on) and point the
+  adapter config at their private hostnames.
+- **Object storage**: the `storage` worker's remote providers (`s3`, `gcs`,
+  `r2`) are the durable, scalable path on Railway; supply credentials from
+  service variables.
+
+## What cannot run on Railway
+
+Railway containers do **not** expose `/dev/kvm`. Guest execution that needs
+libkrun therefore cannot run there:
+
+- `iii-sandbox` and any OCI/image (managed) worker. The worker may register on
+  boot, but `sandbox::run`, `sandbox::exec`, and similar guest paths need
+  `/dev/kvm`. See
+  [Engine-managed workers (micro-VMs)](./deployment#engine-managed-workers-micro-vms).
+- Bundle workers dispatched through the same libkrun rails. Check the top-level
+  `deploy:` field in the worker's `iii.worker.yaml` on
+  [workers.iii.dev](https://workers.iii.dev) before adding it.
+
+Every other worker runs there, including `deploy: binary` workers, which run as
+plain processes.
+
+## Verify the deployment
+
+Once the engine service is live, the engine log shows each declared worker
+registering, including any it auto-provisioned from the registry. Deploy a worker
+service that registers an HTTP route (the
+[hello-worker](https://github.com/iii-experimental/railway-template/tree/main/hello-worker)
+in the starter template is a minimal example), then call it through the public
+domain:
+
+```bash
+curl -s -X POST https://<your-engine-domain>/hello \
+  -H 'content-type: application/json' \
+  -d '{"name":"world"}'
+```
+
+A `200` with your handler's JSON confirms Railway edge → `iii-http` → your worker
+over the private network.
+
+<Note>
+  Redeploying the engine briefly re-registers HTTP routes, which can race a
+  worker that still holds the old route. Prefer `railway restart` over a full
+  redeploy when only restarting, and restart dependent worker services after an
+  engine redeploy so they reconnect and re-register.
+</Note>
+
+## Railway deployment checklist
+
+This is the Railway-specific layer on top of the general
+[Deployment checklist](./deployment#deployment-checklist).
+
+**Image and build**
+
+- [ ] Clean engine base built from the install script (not the distroless image) when you
+      use registry workers; distroless is engine-only with no shell to extend.
+- [ ] `config.yaml` baked into the image; rebuild and redeploy to change it (Railway builds
+      from the Dockerfile, with no live file mount).
+- [ ] `libcap-ng0` installed in the image if you run binary registry workers (for example
+      `database`); the `iii-worker` daemon needs it to launch them.
+- [ ] Registry workers pinned with `RUN iii worker add <name>` for fast, reproducible
+      starts and no runtime registry dependency.
+
+**Networking**
+
+- [ ] Engine binds `[::]`; worker services dial `ws://engine.railway.internal:49134`, never
+      `127.0.0.1`.
+- [ ] `PORT=3111` set on the engine service so the public domain targets `iii-http`.
+- [ ] Public domain on the engine; worker services have no public domain.
+- [ ] Raw `49134` exposed (via TCP proxy) only behind an RBAC listener
+      ([RBAC](./deployment#rbac)); otherwise keep it on the private network.
+
+**State and resiliency**
+
+- [ ] Volume mounted at `/data`; every worker `file_path` is stored under it.
+- [ ] `RAILWAY_RUN_UID=0` set only when using the non-root `iiidev/iii` image with a
+      volume (not needed for the debian Dockerfile in this guide).
+- [ ] No `DO NOT USE IN_MEMORY` warnings in the boot logs.
+- [ ] Single engine service while on `file_based` storage; move to Redis/RabbitMQ before
+      scaling to multiple replicas.
+- [ ] Engine restart policy set to `ALWAYS` for platform resilience (successful
+      config reload is hot in-process and does not exit).
+
+**Security and operations**
+
+- [ ] CORS narrowed to real origins (the sample uses `*`).
+- [ ] Secrets supplied through Railway variables, never the image or git.
+- [ ] Dependent worker services restarted after an engine redeploy (HTTP-route
+      re-registration race).
+- [ ] Health check path pointed at a real `iii-http` route; observability exporter chosen
+      deliberately ([Observability](./deployment#observability)).

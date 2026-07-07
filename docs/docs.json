@@ -92,7 +92,13 @@
                   "next/using-iii/engine",
                   "next/using-iii/console",
                   "next/using-iii/cli",
-                  "next/using-iii/deployment"
+                  {
+                    "group": "Deployment",
+                    "pages": [
+                      "next/using-iii/deployment",
+                      "next/using-iii/deploy-railway"
+                    ]
+                  }
                 ]
               },
               {
@@ -222,7 +228,13 @@
                   "using-iii/engine",
                   "using-iii/console",
                   "using-iii/cli",
-                  "using-iii/deployment"
+                  {
+                    "group": "Deployment",
+                    "pages": [
+                      "using-iii/deployment",
+                      "using-iii/deploy-railway"
+                    ]
+                  }
                 ]
               },
               {
