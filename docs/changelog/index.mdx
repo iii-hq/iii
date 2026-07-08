@@ -5,7 +5,41 @@ owner: "devrel"
 type: "reference"
 ---
 
-<Update label="0.21.0" description="July 2026">
+<Update label="0.21.3" description="July 2026">
+  ## Register triggers from anywhere: `engine::register_trigger` + invocation metadata
+
+  New `engine::register_trigger` / `engine::unregister_trigger` builtins register a trigger whose fire is delivered to a `function_id`, with arbitrary `metadata` recovered at fire time. The call returns the trigger id, unregister is idempotent, and session `allowed_trigger_types` RBAC is honored.
+
+  Per-invocation metadata is now a first-class argument through the whole invocation path — delivered to the target function as a separate argument, never injected into the payload. All four SDKs read it idiomatically: Rust two-arg closures (`|data, meta: Option<Value>|`) and `TriggerRequest.metadata(...)`, Node `(data, metadata?)` and `trigger({ ..., metadata })`, Python `def handler(data, metadata=None)` (forwarded only if the handler declares it), Go `iii.MetadataFromContext(ctx)`.
+
+  ## Triggers survive reconnects and provider reloads
+
+  Two lifecycle fixes. When a trigger-type provider re-registers (e.g. after a reload), the engine now replaces the stale registrator and replays existing bindings to it — previously new bindings landed but never fired. And `engine::register_trigger` bindings are durable engine-side state, removed only by explicit `engine::unregister_trigger` — a CLI's short-lived connection or a proxy restart no longer reaps them. Worker-owned `RegisterTrigger` bindings keep connection ownership and disconnect GC.
+
+  ## `engine::functions::list` results are relevance-ranked
+
+  Search results are ordered by relevance instead of alphabetically: id-anchored matches first (a `::` segment equals the needle, or the id starts with it), id substrings second, description-only matches last. The same functions are returned — only the order changes. Listing without a search term stays alphabetical.
+
+  ## `engine::functions::info` accepts batches
+
+  `engine::functions::info` now takes a `function_ids: [...]` batch (up to 32, deduplicated in request order) alongside the historical single `function_id`, eliminating one round-trip per function after `functions::list`. Batch calls return `{ functions: [...] }` with a per-id `FunctionDetail` or `{ function_id, error: "forbidden" | "not_found" }` — one bad id never fails the batch. Single-id calls keep the flat wire shape and error codes unchanged.
+
+  ## Live pending spans: traces show work in flight
+
+  Trace views previously only showed spans after they finished, so long-running invocations looked idle. With the new `live_spans` setting (default on for `exporter: memory`, opt-in for `both`), the engine mirrors spans into the in-memory store at start as `pending` snapshots; the final span replaces the snapshot in place, and OTLP still exports only finished spans. `engine::traces::list` / `group_by` understand pending spans (duration-so-far) and gain `trace_ids` batch lookup, `exclude_attributes` filtering, `label_attribute` for group headings, and merged `trace_tags` from `iii.tag.*` attributes. There is also a global feed that includes every span seen in each processing window.
+
+  ## Distributed traces: inbound `tracestate` honored, remote-parent traces visible
+
+  The engine previously seeded only `traceparent` on inbound HTTP and dropped the companion `tracestate` header; it is now honored at the HTTP boundary and exposed on spans through the traces API. Traces entering iii from a remote caller were also invisible — `traces::list` and `traces::tree` only treated spans with no parent as roots, so a trace whose server span pointed at a remote (never-stored) parent was hidden. Spans with dangling remote parents are now treated as roots. The `baggage` header is redacted in header logs.
+
+  ## RabbitMQ priority queues
+
+  The RabbitMQ queue provider supports priority queues on both function and subscriber queues. Configure `max_priority` (declares the queue with `x-max-priority`) and `priority_field` (an integer field in the message `data` that stamps each message's priority — no enqueue API or SDK change) under `queue_configs.<name>`; subscribers use `maxPriority` in their `queue_config`. Main and retry queues both carry `x-max-priority`, so priority survives retries and DLQ redrive. Note that `x-max-priority` is fixed at queue creation. Subscriber consumers also gain per-consumer `basic_qos` prefetch for broker-side backpressure.
+
+  ## `iii t` — a shorthand for `trigger`
+
+  `iii t my::function key=value` is equivalent to `iii trigger my::function key=value`, with all arguments and dynamic help unchanged.
+
   ## One `iii.worker.yaml` for the registry and the engine
 
   Manifests published from the workers repo carry `iii`, `deploy`, and `manifest` top-level keys — required by the registry's release CI. The engine's validator treated them as unknown keys and hard-failed `iii worker add`, so a single manifest could not satisfy both. The validator now accepts the three publish metadata keys and ignores them at add/start time; a non-string value still gets the friendly dotted-path error.
@@ -19,6 +53,22 @@ type: "reference"
   ## Compound `scripts.start` commands run correctly
 
   A `scripts.start` with shell metacharacters (`&&`, pipes, env prefixes) is now exec'd via a quoted `sh -c`, so compound start commands behave the same as they do in a terminal instead of being split naively on whitespace.
+
+  ## Configuration: env placeholders in numeric fields, and a friendlier config directory
+
+  A lone `${VAR:default}` placeholder in a numeric field — e.g. `port: ${HTTP_PORT:3111}` — is now env-expanded and coerced to the right scalar type, so schema validation passes instead of rejecting it as a string. The default config store moved from `./data/configuration` to `./iii-config` (one-time auto-migration on first boot; explicit `directory:` overrides are untouched), and direct edits to `./iii-config/*.yaml` hot-reload through the same rebind path as `configuration::set`. The HTTP worker also gracefully shuts down the old listener when its host or port rebinds.
+
+  ## Docker projects start cleanly on Linux
+
+  `iii project init --docker && docker compose up` could crash-loop on Linux: the distroless engine image runs as non-root UID 65532 with no writable data directory. The image now pre-creates `/app/data` and `/data` owned by that UID, and the generated compose template mounts an `iii_data` named volume at `/app/data`, so configuration data persists across restarts. Generated compose files also load `.env` via `env_file`, so `${VAR}` placeholders in worker configs resolve from the project's `.env`. The stale port `9464` exposure is dropped.
+
+  ## `exporter: both` no longer strips the service name from OTLP spans
+
+  With `exporter: both`, the tee exporter didn't forward `set_resource` to the wrapped OTLP exporter, so every engine span shipped with an empty resource — Tempo showed root spans as `<root span not yet received>` and span-metrics lost their `service` label. Engine spans now carry the configured `service_name` and version in OTLP payloads. Pure `exporter: otlp` was never affected.
+
+  ## Node SDK: `ChannelWriter` reconnects after a dropped WebSocket
+
+  After a connection drop, sends went to a dead socket — throwing or silently dropping data — because the writer's ready flag was never reset on `close`/`error`. Sends now check the live socket state, requeue on failure, and the writer transparently reconnects and flushes the queue when the new socket opens.
 </Update>
 
 <Update label="0.20.0" description="June 2026">
