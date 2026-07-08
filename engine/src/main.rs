@@ -129,6 +129,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Invoke a function on a running iii engine
+    #[command(short_flag = 't')]
     Trigger(TriggerArgs),
 
     /// Launch the iii web console
@@ -410,6 +411,19 @@ mod tests {
                 assert_eq!(args.function_path.as_deref(), Some("my::fn"));
                 assert_eq!(args.kv, vec!["a=99"]);
                 assert_eq!(args.json.as_deref(), Some(r#"{"a":1,"b":2}"#));
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_short_flag_parses_with_kv_pairs() {
+        let cli = Cli::try_parse_from(["iii", "-t", "my::fn", "a=10", "b=hello"])
+            .expect("should parse -t shorthand with kv args");
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.kv, vec!["a=10", "b=hello"]);
             }
             _ => panic!("expected Trigger subcommand"),
         }
