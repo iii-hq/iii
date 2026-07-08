@@ -79,8 +79,10 @@ iii project init [OPTIONS] [NAME]
 
 Invoke a function on a running iii engine
 
+Alias: `t`
+
 ```text
-iii {trigger|-t} [OPTIONS] [FUNCTION_PATH] [KV]...
+iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 ```
 
 | Argument | Description |
