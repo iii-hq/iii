@@ -1,0 +1,148 @@
+---
+title: "HTTP"
+description: "Expose functions as HTTP endpoints with the iii-http worker."
+owner: "devrel"
+type: "how-to"
+---
+
+The `iii-http` worker exposes your functions as HTTP endpoints, turning a function into a REST route
+without standing up a separate web server.
+
+```bash
+iii worker add iii-http
+```
+
+<Note>
+  This page is a quick tour. For path patterns, methods, headers, and response handling, see the
+  [iii-http worker docs](https://workers.iii.dev/workers/iii-http).
+</Note>
+
+## Create endpoints
+
+The http worker exposes an `http` trigger type that binds a function to an HTTP method and path; the
+function then runs on every matching request. Here is the full path from a running engine to a live
+endpoint.
+
+1. Start the engine, if it isn't already running:
+
+```bash
+iii --config config.yaml
+```
+
+2. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
+   not have a worker yet, scaffold one with
+   [`iii worker init`](./workers#scaffold-a-new-worker), then edit its source. The
+   handler receives the request (`body`, `headers`, method) and its return value becomes the
+   response:
+
+```bash
+iii worker init my-worker --language typescript
+```
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "my-worker" });
+
+    worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
+      status_code: 200,
+      body: { c: payload.body.a + payload.body.b },
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    worker.registerTrigger({
+      type: "http",
+      function_id: "http::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="my-worker"),
+    )
+
+    def add(payload: dict) -> dict:
+        body = payload["body"]
+        return {
+            "status_code": 200,
+            "body": {"c": body["a"] + body["b"]},
+            "headers": {"Content-Type": "application/json"},
+        }
+
+    worker.register_function("http::add", add)
+
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "http::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
+    use iii_sdk::{IIITrigger, InitOptions, RegisterFunction, register_worker};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct AddRequest {
+        body: AddBody,
+    }
+    #[derive(Deserialize, JsonSchema)]
+    struct AddBody {
+        a: i64,
+        b: i64,
+    }
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(&url, InitOptions::default());
+
+    worker.register_function(
+        "http::add",
+        RegisterFunction::new(|req: AddRequest| {
+            Ok(json!({
+                "status_code": 200,
+                "body": { "c": req.body.a + req.body.b },
+                "headers": { "Content-Type": "application/json" }
+            }))
+        }),
+    );
+
+    worker.register_trigger(
+        IIITrigger::Http(HttpTriggerConfig::new("/math/add").method(HttpMethod::Post))
+            .for_function("http::add"),
+    )?;
+    ```
+
+  </Tab>
+</Tabs>
+
+3. Add the worker to start it, pointing at its directory:
+
+```bash
+iii worker add ./my-worker
+```
+
+For path patterns, request and response shapes, and the other configuration options, see the
+[iii-http worker docs](https://workers.iii.dev/workers/iii-http).
+
+## Calling the endpoint
+
+Once the trigger is registered, call the path on the engine's HTTP port (`3111` by default):
+
+```bash
+# call the exposed function
+curl -X POST http://localhost:3111/math/add -H 'content-type: application/json' -d '{"a":2,"b":3}'
+```

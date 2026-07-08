@@ -61,7 +61,7 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.21.x",
+        "version": "0.22.x",
         "tag": "Next",
         "tabs": [
           {
@@ -190,7 +190,7 @@
         ]
       },
       {
-        "version": "0.20.x",
+        "version": "0.21.x",
         "tag": "Latest",
         "default": true,
         "tabs": [
@@ -307,6 +307,134 @@
                 "group": "CLI reference",
                 "pages": [
                   "cli-reference/index"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "pages": [
+              "changelog/index"
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.20.x",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "0-20-0/index",
+                  "0-20-0/install",
+                  "0-20-0/quickstart",
+                  "0-20-0/troubleshooting"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "0-20-0/upgrading/from-0-19-x"
+                ]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "0-20-0/using-iii/workers",
+                  "0-20-0/using-iii/workers-registry",
+                  "0-20-0/using-iii/triggers",
+                  "0-20-0/using-iii/functions",
+                  "0-20-0/using-iii/engine",
+                  "0-20-0/using-iii/console",
+                  "0-20-0/using-iii/cli",
+                  "0-20-0/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "0-20-0/understanding-iii/index",
+                  "0-20-0/understanding-iii/engine",
+                  "0-20-0/understanding-iii/channels"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "0-20-0/creating-workers/index",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "0-20-0/creating-workers/http",
+                      "0-20-0/creating-workers/queues",
+                      "0-20-0/creating-workers/observability",
+                      "0-20-0/creating-workers/sandboxes",
+                      "0-20-0/creating-workers/worker-manager"
+                    ]
+                  },
+                  "0-20-0/creating-workers/workers",
+                  "0-20-0/creating-workers/worker-manifest",
+                  "0-20-0/creating-workers/triggers",
+                  "0-20-0/creating-workers/functions",
+                  "0-20-0/creating-workers/channels"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "0-20-0/tutorials/linkly/overview",
+                  "0-20-0/tutorials/linkly/foundations",
+                  "0-20-0/tutorials/linkly/observability",
+                  "0-20-0/tutorials/linkly/persistence",
+                  "0-20-0/tutorials/linkly/durable-execution",
+                  "0-20-0/tutorials/linkly/streaming",
+                  "0-20-0/tutorials/linkly/channels",
+                  "0-20-0/tutorials/linkly/frontend"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": [
+                  "0-20-0/sdk-reference/engine-sdk"
+                ]
+              },
+              {
+                "group": "Language SDKs",
+                "expanded": true,
+                "pages": [
+                  "0-20-0/api-reference/sdk-node",
+                  "0-20-0/api-reference/sdk-python",
+                  "0-20-0/api-reference/sdk-rust",
+                  "0-20-0/api-reference/sdk-browser"
+                ]
+              },
+              {
+                "group": "Helpers",
+                "expanded": true,
+                "pages": [
+                  "0-20-0/api-reference/helpers-node",
+                  "0-20-0/api-reference/helpers-python",
+                  "0-20-0/api-reference/helpers-rust"
+                ]
+              },
+              {
+                "group": "CLI reference",
+                "pages": [
+                  "0-20-0/cli-reference/index"
                 ]
               }
             ]

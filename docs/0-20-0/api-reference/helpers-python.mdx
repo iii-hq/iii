@@ -1,0 +1,897 @@
+---
+title: "Helpers (Python)"
+sidebarTitle: "Python"
+description: "API reference for the iii-helpers package (Python)."
+owner: "engineering"
+type: "reference"
+---
+
+{/* AUTO-GENERATED FILE. Do not edit. Regenerate with docs/next/scripts/generate-api-docs.mts. */}
+{/* AI: any skill-check (vale/AI) text fixes belong in the source doc-comments under sdk/packages/python/helpers/src (prose) or docs/next/scripts/ (structure/formatting), then regenerate. Never edit this file directly. */}
+
+## Installation
+
+```bash
+pip install iii-helpers
+```
+
+API reference for the iii-helpers package (Python).
+
+## http
+
+HTTP request/response types, auth config, and the `http` helper.
+
+**Import**
+
+```python
+from iii_helpers.http import ...
+```
+
+### Functions
+
+### http
+
+Wrap a streaming handler so it receives typed StreamRequest and StreamResponse.
+
+Takes a callback ``(req, res) -> HttpResponse | None`` and returns a
+function the iii engine can invoke directly.  The wrapper converts the
+raw dict (or ``InternalHttpRequest``) delivered by the engine into the
+typed ``StreamRequest`` / ``StreamResponse`` pair that the callback expects.
+
+**Signature**
+
+```python
+http(callback: Callable[Awaitable[HttpResponse[Any] | None]])
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `callback` | Callable[Awaitable[[`HttpResponse`](#httpresponse)[Any] \| None]] | Yes | - |
+
+### Types
+
+[`HttpAuthApiKey`](#httpauthapikey) · [`HttpAuthBearer`](#httpauthbearer) · [`HttpAuthHmac`](#httpauthhmac) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpRequest`](#httprequest) · [`HttpResponse`](#httpresponse)
+
+### HttpAuthApiKey
+
+API key sent via a custom header.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `header` | `str` | No | - |
+| `type` | `Literal['api_key']` | No | - |
+| `value_key` | `str` | No | - |
+
+### HttpAuthBearer
+
+Bearer token authentication.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `token_key` | `str` | No | - |
+| `type` | `Literal['bearer']` | No | - |
+
+### HttpAuthHmac
+
+HMAC signature verification using a shared secret.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `secret_key` | `str` | No | - |
+| `type` | `Literal['hmac']` | No | - |
+
+### HttpInvocationConfig
+
+Config for HTTP external function invocation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `auth` | `HttpAuthConfig \| None` | No | Authentication configuration (bearer, HMAC, or API key). |
+| `headers` | `dict[str, str] \| None` | No | Additional HTTP headers to include in the request. |
+| `method` | `HttpMethod` | No | HTTP method. Defaults to ``'POST'``. |
+| `timeout_ms` | `int \| None` | No | Request timeout in milliseconds. |
+| `url` | `str` | No | Target URL for the HTTP invocation. |
+
+### HttpRequest
+
+Represents a buffered HTTP request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | `Any \| None` | No | - |
+| `headers` | `dict[str, str \| list[str]]` | No | - |
+| `method` | `str` | No | - |
+| `path_params` | `dict[str, str]` | No | - |
+| `query_params` | `dict[str, str \| list[str]]` | No | - |
+
+### HttpResponse
+
+Represents a buffered HTTP response.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | `Any \| None` | No | - |
+| `headers` | `dict[str, str]` | No | - |
+| `model_config` | `Any` | No | - |
+| `status_code` | `int` | No | - |
+
+## observability
+
+Logger, OpenTelemetry config, and span helpers.
+
+**Import**
+
+```python
+from iii_helpers.observability import ...
+```
+
+### Functions
+
+### current_span_id
+
+Return current active span_id as 16-char hex, or None when unavailable.
+
+**Signature**
+
+```python
+current_span_id()
+```
+
+### current_span_is_recording
+
+Returns ``False`` when there is no active span or the sampler dropped it.
+
+**Signature**
+
+```python
+current_span_is_recording()
+```
+
+### current_trace_id
+
+Return current active trace_id as 32-char hex, or None when unavailable.
+
+**Signature**
+
+```python
+current_trace_id()
+```
+
+### execute_traced_request
+
+Execute an httpx Request inside an OTel CLIENT span.
+
+- Injects W3C traceparent into outgoing request headers.
+- Records HTTP semantic-convention attributes on the span.
+- Sets ERROR span status for responses with status >= 400.
+- Records exceptions for network-level errors.
+
+**Signature**
+
+```python
+async (client, request)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `client` | `Any` | Yes | - |
+| `request` | `Any` | Yes | - |
+
+### extract_baggage
+
+Extract baggage from a W3C baggage header string.
+
+**Signature**
+
+```python
+extract_baggage(baggage: str)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `baggage` | `str` | Yes | - |
+
+### extract_traceparent
+
+Extract a trace context from a W3C traceparent header string.
+
+**Signature**
+
+```python
+extract_traceparent(traceparent: str)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `traceparent` | `str` | Yes | - |
+
+### flush_otel
+
+Force-flush all OTel providers without tearing them down.
+
+Counterpart to :func:`shutdown_otel`. Use before short-lived process exits
+where you want pending spans/metrics/logs delivered but plan to keep using
+OTel afterwards.
+
+**Signature**
+
+```python
+async ()
+```
+
+### init_otel
+
+Initialize OpenTelemetry. Subsequent calls are no-ops.
+
+**Signature**
+
+```python
+init_otel(config: OtelConfig | None = None, loop: None = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | [`OtelConfig`](#otelconfig) \| None | No | - |
+| `loop` | `None` | No | - |
+
+### inject_baggage
+
+Inject the current baggage into a W3C baggage header string.
+
+**Signature**
+
+```python
+inject_baggage()
+```
+
+### inject_traceparent
+
+Inject the current trace context into a W3C traceparent header string.
+
+**Signature**
+
+```python
+inject_traceparent()
+```
+
+### record_span_event
+
+No-op when the current span is not recording.
+
+**Signature**
+
+```python
+record_span_event(name: str, attrs: dict[str, Any] | None = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `str` | Yes | - |
+| `attrs` | `dict[str, Any] \| None` | No | - |
+
+### redact
+
+
+
+**Signature**
+
+```python
+redact(value: Any)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `value` | `Any` | Yes | - |
+
+### redact_and_truncate
+
+
+
+**Signature**
+
+```python
+redact_and_truncate(value: Any, max_bytes: Optional[int] = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `value` | `Any` | Yes | - |
+| `max_bytes` | `Optional[int]` | No | - |
+
+### resolve_max_bytes_from_env
+
+
+
+**Signature**
+
+```python
+resolve_max_bytes_from_env()
+```
+
+### set_current_span_attribute
+
+No-op when the current span is not recording.
+
+**Signature**
+
+```python
+set_current_span_attribute(key: str, value: Any)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | `str` | Yes | - |
+| `value` | `Any` | Yes | - |
+
+### set_current_span_error
+
+No-op when there is no active span.
+
+**Signature**
+
+```python
+set_current_span_error(message: str)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `str` | Yes | - |
+
+### shutdown_otel
+
+Shut down OTel synchronously (best-effort; does not await WS flush).
+
+**Signature**
+
+```python
+shutdown_otel()
+```
+
+### with_span
+
+Start a new span and run *fn(span)* within it.
+
+If the tracer is not initialized, *fn* is called with a no-op span
+that silently ignores attribute/event calls.
+
+**Signature**
+
+```python
+async (name: str, fn: Any, kind: Any = None, traceparent: str | None = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `str` | Yes | - |
+| `fn` | `Any` | Yes | - |
+| `kind` | `Any` | No | - |
+| `traceparent` | `str \| None` | No | - |
+
+### Types
+
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`DEFAULT_ALLOWLIST`](#default_allowlist) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
+
+### BaggageSpanProcessor
+
+### DEFAULT_ALLOWLIST
+
+```python
+DEFAULT_ALLOWLIST = tuple[str, ...]
+```
+
+### Logger
+
+Structured logger that emits logs as OpenTelemetry LogRecords.
+
+Every log call automatically captures the active trace and span context,
+correlating your logs with distributed traces without any manual wiring.
+When OTel is not initialized, Logger gracefully falls back to Python
+``logging``.
+
+Pass structured data as the second argument to any log method. Using a
+dict of key-value pairs (instead of string interpolation) lets you
+filter, aggregate, and build dashboards in your observability backend.
+
+### OtelConfig
+
+Configuration for OpenTelemetry initialization.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | `bool \| None` | No | Enable OTel. Defaults to True. Set OTEL_ENABLED=false/0/no/off to disable. |
+| `engine_ws_url` | `str \| None` | No | III Engine WebSocket URL. Defaults to env III_URL or 'ws://localhost:49134'. |
+| `fetch_instrumentation_enabled` | `bool` | No | Auto-instrument urllib HTTP calls via URLLibInstrumentor. Defaults to True. |
+| `logs_batch_size` | `int \| None` | No | Maximum number of log records exported per batch. Defaults to 1 when not set. |
+| `logs_enabled` | `bool \| None` | No | Enable OTel log export via EngineLogExporter. Defaults to True when OTel is enabled. |
+| `logs_flush_interval_ms` | `int \| None` | No | Log processor flush delay in milliseconds. Defaults to 100ms when not set. |
+| `metrics_enabled` | `bool` | No | Enable OTel metrics export via EngineMetricsExporter. Defaults to True. |
+| `metrics_export_interval_ms` | `int` | No | Metrics export interval in milliseconds. Defaults to 60000 (60 seconds). |
+| `service_instance_id` | `str \| None` | No | Service instance ID. Defaults to a random UUID. |
+| `service_name` | `str \| None` | No | Service name. Defaults to env OTEL_SERVICE_NAME or 'iii-python-sdk'. |
+| `service_namespace` | `str \| None` | No | Service namespace attribute. |
+| `service_version` | `str \| None` | No | Service version. Defaults to env SERVICE_VERSION or 'unknown'. |
+| `spans_flush_interval_ms` | `int \| None` | No | Span processor flush delay in milliseconds. Defaults to 100ms when not set.<br /><br />The OpenTelemetry default of 5000ms is what makes traces appear seconds<br />after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS. |
+
+### ReconnectionConfig
+
+Configuration for WebSocket reconnection behavior.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `backoff_multiplier` | `float` | No | Exponential backoff multiplier. Default ``2.0``. |
+| `initial_delay_ms` | `int` | No | Starting delay in milliseconds. Default ``1000``. |
+| `jitter_factor` | `float` | No | Random jitter factor (0--1). Default ``0.3``. |
+| `max_delay_ms` | `int` | No | Maximum delay cap in milliseconds. Default ``30000``. |
+| `max_retries` | `int` | No | Maximum retry attempts. ``-1`` for infinite. Default ``-1``. |
+
+## queue
+
+Queue enqueue result types.
+
+**Import**
+
+```python
+from iii_helpers.queue import ...
+```
+
+### Types
+
+[`EnqueueResult`](#enqueueresult)
+
+### EnqueueResult
+
+Result returned when a function is invoked with ``TriggerAction.Enqueue``.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messageReceiptId` | `str` | No | UUID assigned by the engine to the enqueued job. |
+
+## stream
+
+Stream trigger configs, change events, IO inputs, and update operations.
+
+**Import**
+
+```python
+from iii_helpers.stream import ...
+```
+
+### Types
+
+[`StreamAuthInput`](#streamauthinput) · [`StreamAuthResult`](#streamauthresult) · [`StreamChangeEvent`](#streamchangeevent) · [`StreamChangeEventDetail`](#streamchangeeventdetail) · [`StreamDeleteInput`](#streamdeleteinput) · [`StreamDeleteResult`](#streamdeleteresult) · [`StreamGetInput`](#streamgetinput) · [`StreamJoinLeaveEvent`](#streamjoinleaveevent) · [`StreamJoinLeaveTriggerConfig`](#streamjoinleavetriggerconfig) · [`StreamJoinResult`](#streamjoinresult) · [`StreamListGroupsInput`](#streamlistgroupsinput) · [`StreamListInput`](#streamlistinput) · [`StreamSetInput`](#streamsetinput) · [`StreamSetResult`](#streamsetresult) · [`StreamTriggerConfig`](#streamtriggerconfig) · [`StreamUpdateInput`](#streamupdateinput) · [`StreamUpdateResult`](#streamupdateresult) · [`UpdateAppend`](#updateappend) · [`UpdateDecrement`](#updatedecrement) · [`UpdateIncrement`](#updateincrement) · [`UpdateMerge`](#updatemerge) · [`UpdateOpError`](#updateoperror) · [`UpdateRemove`](#updateremove) · [`UpdateSet`](#updateset)
+
+### StreamAuthInput
+
+Input for stream authentication.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addr` | `str` | Yes | - |
+| `headers` | `dict[str, str]` | Yes | - |
+| `path` | `str` | Yes | - |
+| `query_params` | `dict[str, list[str]]` | Yes | - |
+
+### StreamAuthResult
+
+Result of stream authentication.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `context` | `Any \| None` | No | - |
+
+### StreamChangeEvent
+
+Handler input for ``stream`` triggers, fired when an item changes.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `event` | [`StreamChangeEventDetail`](#streamchangeeventdetail) | Yes | - |
+| `groupId` | `str` | Yes | - |
+| `id` | `str \| None` | No | - |
+| `streamName` | `str` | Yes | - |
+| `timestamp` | `int` | Yes | - |
+| `type` | `Literal['stream']` | Yes | - |
+
+### StreamChangeEventDetail
+
+Detail of a stream change event containing the mutation type and data.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `data` | `Any` | Yes | - |
+| `type` | `Literal['create', 'update', 'delete']` | Yes | - |
+
+### StreamDeleteInput
+
+Input for stream delete operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `group_id` | `str` | Yes | - |
+| `item_id` | `str` | Yes | - |
+| `stream_name` | `str` | Yes | - |
+
+### StreamDeleteResult
+
+Result of stream delete operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `Any \| None` | No | - |
+
+### StreamGetInput
+
+Input for stream get operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `group_id` | `str` | Yes | - |
+| `item_id` | `str` | Yes | - |
+| `stream_name` | `str` | Yes | - |
+
+### StreamJoinLeaveEvent
+
+Event for stream join/leave.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `context` | `Any \| None` | No | - |
+| `group_id` | `str` | Yes | - |
+| `id` | `str \| None` | No | - |
+| `stream_name` | `str` | Yes | - |
+| `subscription_id` | `str` | Yes | - |
+
+### StreamJoinLeaveTriggerConfig
+
+Trigger config for ``stream:join`` and ``stream:leave`` triggers.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `condition_function_id` | `str \| None` | No | - |
+
+### StreamJoinResult
+
+Result of stream join.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `unauthorized` | `bool` | Yes | - |
+
+### StreamListGroupsInput
+
+Input for stream list groups operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `str` | Yes | - |
+
+### StreamListInput
+
+Input for stream list operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `group_id` | `str` | Yes | - |
+| `stream_name` | `str` | Yes | - |
+
+### StreamSetInput
+
+Input for stream set operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `data` | `Any` | Yes | - |
+| `group_id` | `str` | Yes | - |
+| `item_id` | `str` | Yes | - |
+| `stream_name` | `str` | Yes | - |
+
+### StreamSetResult
+
+Result of stream set operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new_value` | `TData` | Yes | - |
+| `old_value` | `TData \| None` | No | - |
+
+### StreamTriggerConfig
+
+Trigger config for ``stream`` triggers. Filters which item changes fire the handler.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `condition_function_id` | `str \| None` | No | - |
+| `group_id` | `str \| None` | No | - |
+| `item_id` | `str \| None` | No | - |
+| `stream_name` | `str` | Yes | - |
+
+### StreamUpdateInput
+
+Input for stream update operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `group_id` | `str` | Yes | - |
+| `item_id` | `str` | Yes | - |
+| `ops` | `list['UpdateOp']` | Yes | - |
+| `stream_name` | `str` | Yes | - |
+
+### StreamUpdateResult
+
+Result of stream update operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `errors` | list[[`UpdateOpError`](#updateoperror)] | No | - |
+| `new_value` | `TData` | Yes | - |
+| `old_value` | `TData \| None` | No | - |
+
+### UpdateAppend
+
+Append an element to an array, concatenate a string, or push at a nested path.
+
+The target is the root (when ``path`` is omitted, an empty string,
+or an empty list), a single first-level key (when ``path`` is a
+non-empty string), or an arbitrary nested location (when ``path``
+is a list of literal segments).
+
+Path forms accepted (mirrors :class:`UpdateMerge` after #1547):
+  - ``None`` / ``""`` / ``[]``: append at the root.
+  - ``"foo"``: append at the first-level key ``foo``. A dotted
+    string like ``"a.b"`` is the literal key ``"a.b"``, *not*
+    traversed as ``a -> b``.
+  - ``["a", "b", "c"]``: nested path; each element is a literal
+    segment.
+
+Engine semantics:
+  - Missing/non-object intermediates along a nested path are
+    auto-created/replaced with ``\{\}``.
+  - At the leaf:
+      - missing/null + nested path -> ``[value]`` (always an array)
+      - missing/null + single-string path -> string-as-string for
+        the string-concat tier, otherwise ``[value]``
+      - existing array -> push
+      - existing string + string value -> concatenate
+      - existing object/scalar at the leaf -> ``append.type_mismatch``
+
+Validation: invalid paths (depth > 32 segments, segment > 256
+bytes, or any ``__proto__`` / ``constructor`` / ``prototype``
+segment) are rejected with a structured error in the ``errors``
+field of the ``state::update`` / ``stream::update`` response. The
+append does not apply when an error is returned for that op.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `MergePath \| None` | No | - |
+| `type` | `str` | No | - |
+| `value` | `Any` | Yes | - |
+
+### UpdateDecrement
+
+Decrement operation for stream update.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `by` | `int \| float` | Yes | - |
+| `path` | `str` | Yes | - |
+| `type` | `str` | No | - |
+
+### UpdateIncrement
+
+Increment operation for stream update.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `by` | `int \| float` | Yes | - |
+| `path` | `str` | Yes | - |
+| `type` | `str` | No | - |
+
+### UpdateMerge
+
+Shallow merge an object into the target.
+
+The target is the root (when ``path`` is omitted, an empty string,
+or an empty list) or an arbitrary nested location specified by an
+array of literal segments.
+
+Path forms accepted:
+  - ``None`` / ``""`` / ``[]``: merge at the root.
+  - ``"foo"``: equivalent to ``["foo"]`` -- single first-level key.
+  - ``["a", "b", "c"]``: nested path. Each element is a *literal*
+    key. ``["a.b"]`` writes a single key named ``"a.b"``, not
+    ``a -> b``.
+
+Engine semantics:
+  - Missing or non-object intermediates along the path are
+    auto-replaced with ``\{\}``.
+  - The merge is shallow at the target node (top-level keys of
+    ``value`` overwrite same-named keys; siblings preserved).
+
+Validation: invalid paths/values (depth > 32 segments, segment >
+256 bytes, value depth > 16, > 1024 top-level keys, or any
+``__proto__`` / ``constructor`` / ``prototype`` segment or
+top-level key) are rejected with a structured error in the
+``errors`` array of the ``state::update`` / ``stream::update``
+response. The merge does not apply when an error is returned.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `MergePath \| None` | No | - |
+| `type` | `str` | No | - |
+| `value` | `Any` | Yes | - |
+
+### UpdateOpError
+
+Per-op error returned by ``state::update`` / ``stream::update``.
+
+Currently emitted only by the ``merge`` op when input violates the
+new validation bounds. Successfully applied ops are still
+reflected in the response's ``new_value``.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `str` | Yes | - |
+| `doc_url` | `str \| None` | No | - |
+| `message` | `str` | Yes | - |
+| `op_index` | `int` | Yes | - |
+
+### UpdateRemove
+
+Remove operation for stream update.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `str` | Yes | - |
+| `type` | `str` | No | - |
+
+### UpdateSet
+
+Set operation for stream update.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `str` | Yes | - |
+| `type` | `str` | No | - |
+| `value` | `Any` | Yes | - |
+
+## worker_connection_manager
+
+RBAC auth and registration callback types.
+
+**Import**
+
+```python
+from iii_helpers.worker_connection_manager import ...
+```
+
+### Types
+
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult)
+
+### AuthInput
+
+Input passed to the RBAC auth function during WebSocket upgrade.
+
+Contains the HTTP headers, query parameters, and client IP from the
+connecting worker's upgrade request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `headers` | `dict[str, str]` | No | HTTP headers from the WebSocket upgrade request. |
+| `ip_address` | `str` | No | IP address of the connecting client. |
+| `query_params` | `dict[str, list[str]]` | No | Query parameters from the upgrade URL. Each key maps to a list of values to support repeated keys. |
+
+### AuthResult
+
+Return value from the RBAC auth function.
+
+Controls which functions the authenticated worker can invoke and what
+context is forwarded to the middleware.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `allow_function_registration` | `bool` | No | - |
+| `allow_trigger_type_registration` | `bool` | No | Whether the worker may register new trigger types. |
+| `allowed_functions` | `list[str]` | No | Additional function IDs to allow beyond ``expose_functions``. |
+| `allowed_trigger_types` | `list[str] \| None` | No | Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed. |
+| `context` | `dict[str, Any]` | No | Arbitrary context forwarded to the middleware function on every invocation. |
+| `forbidden_functions` | `list[str]` | No | Function IDs to deny even if they match ``expose_functions``. |
+| `function_registration_prefix` | `str \| None` | No | Optional prefix applied to all function IDs registered by this worker. |
+
+### OnFunctionRegistrationInput
+
+Input passed to the ``on_function_registration_function_id`` hook
+when a worker attempts to register a function through the RBAC port.
+Return an ``OnFunctionRegistrationResult`` with the (possibly mapped)
+fields, or raise an exception to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `context` | `dict[str, Any]` | No | Auth context from ``AuthResult.context`` for this session. |
+| `description` | `str \| None` | No | Human-readable description of the function. |
+| `function_id` | `str` | No | ID of the function being registered. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
+
+### OnFunctionRegistrationResult
+
+Result returned from the ``on_function_registration_function_id`` hook.
+Omitted fields keep the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `str \| None` | No | Mapped description. |
+| `function_id` | `str \| None` | No | Mapped function ID. |
+| `metadata` | `dict[str, Any] \| None` | No | Mapped metadata. |
+
+### OnTriggerRegistrationInput
+
+Input passed to the ``on_trigger_registration_function_id`` hook
+when a worker attempts to register a trigger through the RBAC port.
+Return an ``OnTriggerRegistrationResult`` with the (possibly mapped)
+fields, or raise an exception to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `Any` | No | Trigger-specific configuration. |
+| `context` | `dict[str, Any]` | No | Auth context from ``AuthResult.context`` for this session. |
+| `function_id` | `str` | No | ID of the function this trigger is bound to. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
+| `trigger_id` | `str` | No | ID of the trigger being registered. |
+| `trigger_type` | `str` | No | Trigger type identifier. |
+
+### OnTriggerRegistrationResult
+
+Result returned from the ``on_trigger_registration_function_id`` hook.
+Omitted fields keep the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `Any` | No | Mapped trigger configuration. |
+| `function_id` | `str \| None` | No | Mapped function ID. |
+| `trigger_id` | `str \| None` | No | Mapped trigger ID. |
+| `trigger_type` | `str \| None` | No | Mapped trigger type. |
+
+### OnTriggerTypeRegistrationInput
+
+Input passed to the ``on_trigger_type_registration_function_id`` hook
+when a worker attempts to register a new trigger type through the RBAC port.
+Return an ``OnTriggerTypeRegistrationResult`` with the (possibly mapped)
+fields, or raise an exception to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `context` | `dict[str, Any]` | No | Auth context from ``AuthResult.context`` for this session. |
+| `description` | `str` | No | Human-readable description of the trigger type. |
+| `trigger_type_id` | `str` | No | ID of the trigger type being registered. |
+
+### OnTriggerTypeRegistrationResult
+
+Result returned from the ``on_trigger_type_registration_function_id`` hook.
+Omitted fields keep the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `str \| None` | No | Mapped description. |
+| `trigger_type_id` | `str \| None` | No | Mapped trigger type ID. |

@@ -1,0 +1,621 @@
+---
+title: "Helpers (Rust)"
+sidebarTitle: "Rust"
+description: "API reference for the iii-helpers crate (Rust)."
+owner: "engineering"
+type: "reference"
+---
+
+{/* AUTO-GENERATED FILE. Do not edit. Regenerate with docs/next/scripts/generate-api-docs.mts. */}
+{/* AI: any skill-check (vale/AI) text fixes belong in the source doc-comments under sdk/packages/rust/helpers/src (prose) or docs/next/scripts/ (structure/formatting), then regenerate. Never edit this file directly. */}
+
+## Installation
+
+```bash
+cargo add iii-helpers
+```
+
+API reference for the iii-helpers crate (Rust).
+
+## http
+
+HTTP request/response types, auth config, and the `http` helper.
+
+**Import**
+
+```rust
+use iii_helpers::http;
+```
+
+### Types
+
+[`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpMethod`](#httpmethod) · [`HttpRequest`](#httprequest) · [`HttpResponse`](#httpresponse)
+
+### HttpAuthConfig
+
+Authentication configuration for HTTP-invoked functions.
+
+- `Hmac` -- HMAC signature verification using a shared secret.
+- `Bearer` -- Bearer token authentication.
+- `ApiKey` -- API key sent via a custom header.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Hmac` | `{ secret_key: String }` | Yes | - |
+| `Bearer` | `{ token_key: String }` | Yes | - |
+| `ApiKey` | `{ header: String, value_key: String }` | Yes | - |
+
+### HttpInvocationConfig
+
+Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
+Workers, etc.) instead of a local handler.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | `String` | Yes | - |
+| `method` | [`HttpMethod`](#httpmethod) | Yes | - |
+| `timeout_ms` | `Option<u64>` | No | - |
+| `headers` | `HashMap<String, String>` | Yes | - |
+| `auth` | Option&lt;[`HttpAuthConfig`](#httpauthconfig)&gt; | No | - |
+
+### HttpMethod
+
+HTTP method accepted by `HttpInvocationConfig`. Distinct from the core
+`builtin_triggers` HTTP method enum, which also covers HEAD/OPTIONS.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Get` | `unit` | Yes | - |
+| `Post` | `unit` | Yes | - |
+| `Put` | `unit` | Yes | - |
+| `Patch` | `unit` | Yes | - |
+| `Delete` | `unit` | Yes | - |
+
+### HttpRequest
+
+Buffered HTTP request received by a function handler.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `query_params` | `HashMap<String, String>` | Yes | - |
+| `path_params` | `HashMap<String, String>` | Yes | - |
+| `headers` | `HashMap<String, String>` | Yes | - |
+| `path` | `String` | Yes | - |
+| `method` | `String` | Yes | - |
+| `body` | `T` | Yes | - |
+
+### HttpResponse
+
+Buffered HTTP response returned from a function handler.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `status_code` | `u16` | Yes | - |
+| `headers` | `HashMap<String, String>` | Yes | - |
+| `body` | `T` | Yes | - |
+
+## observability
+
+Logger, OpenTelemetry config, and span helpers.
+
+**Import**
+
+```rust
+use iii_helpers::observability;
+```
+
+### Types
+
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`CapturedContext`](#capturedcontext) · [`ConnectionState`](#connectionstate) · [`EngineLogExporter`](#enginelogexporter) · [`EngineMetricsExporter`](#enginemetricsexporter) · [`EngineSpanExporter`](#enginespanexporter) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`OtelMessage`](#otelmessage) · [`ReconnectionConfig`](#reconnectionconfig) · [`SharedEngineConnection`](#sharedengineconnection) · [`WorkerGaugesHandle`](#workergaugeshandle) · [`WorkerGaugesOptions`](#workergaugesoptions) · [`WorkerMetrics`](#workermetrics) · [`WorkerMetricsCollector`](#workermetricscollector)
+
+### BaggageSpanProcessor
+
+### CapturedContext
+
+Snapshot of the current OTel context for use across `tokio::spawn`.
+
+`tokio::spawn` does NOT carry OTel context into the spawned task;
+without this, child spans become orphan roots. Capture before spawn,
+then call `.attach(future)` inside the spawned block.
+
+### ConnectionState
+
+Connection state for the shared WebSocket
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Disconnected` | `unit` | Yes | - |
+| `Connecting` | `unit` | Yes | - |
+| `Connected` | `unit` | Yes | - |
+| `Reconnecting` | `unit` | Yes | - |
+| `Failed` | `unit` | Yes | - |
+
+### EngineLogExporter
+
+Custom log exporter that sends OTLP JSON over a shared WebSocket connection.
+
+Uses a hand-built JSON serializer to match the III Engine's expected format.
+
+### EngineMetricsExporter
+
+Custom metrics exporter that sends OTLP JSON over a shared WebSocket connection.
+
+Uses a hand-built JSON serializer to match the III Engine's expected format.
+
+### EngineSpanExporter
+
+Custom span exporter that sends OTLP JSON over a shared WebSocket connection.
+
+Uses a hand-built JSON serializer (not opentelemetry-proto serde) to match
+the format the III Engine expects: camelCase field names, integer attribute
+values as JSON numbers, and hex-encoded trace/span IDs.
+
+### Logger
+
+Structured logger that emits logs as OpenTelemetry LogRecords.
+
+Every log call automatically captures the active trace and span context,
+correlating your logs with distributed traces without any manual wiring.
+When OTel is not initialized, Logger gracefully falls back to the `tracing`
+crate.
+
+Pass structured data as the second argument to any log method. Using a
+`serde_json::Value` object of key-value pairs (instead of string
+interpolation) lets you filter, aggregate, and build dashboards in your
+observability backend.
+
+### OtelConfig
+
+Configuration for OpenTelemetry initialization
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | `Option<bool>` | No | - |
+| `service_name` | `Option<String>` | No | - |
+| `service_version` | `Option<String>` | No | - |
+| `service_namespace` | `Option<String>` | No | - |
+| `service_instance_id` | `Option<String>` | No | - |
+| `engine_ws_url` | `Option<String>` | No | - |
+| `metrics_enabled` | `Option<bool>` | No | - |
+| `metrics_export_interval_ms` | `Option<u64>` | No | - |
+| `reconnection_config` | Option&lt;[`ReconnectionConfig`](#reconnectionconfig)&gt; | No | - |
+| `shutdown_timeout_ms` | `Option<u64>` | No | Timeout in milliseconds for the shutdown sequence (default: 10,000) |
+| `channel_capacity` | `Option<usize>` | No | Capacity of the internal telemetry message channel (default: 10,000).<br />This controls the in-flight message buffer between exporters and the<br />WebSocket connection loop. Intentionally larger than<br />`ReconnectionConfig::max_pending_messages` to absorb bursts during<br />normal operation while limiting stale data across reconnects. |
+| `spans_flush_interval_ms` | `Option<u64>` | No | Span processor flush delay in milliseconds. Defaults to 100ms when not<br />set. The OpenTelemetry default of 5000ms is what makes traces appear<br />seconds after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS. |
+| `logs_enabled` | `Option<bool>` | No | Whether to enable the log exporter (default: true) |
+| `logs_flush_interval_ms` | `Option<u64>` | No | Log processor flush delay in milliseconds. Defaults to 100ms when not set. |
+| `logs_batch_size` | `Option<usize>` | No | Maximum number of log records exported per batch. Defaults to 1 when not set. |
+| `fetch_instrumentation_enabled` | `Option<bool>` | No | Whether to auto-instrument outgoing HTTP calls.<br />When `Some(true)` (default), `execute_traced_request()` can be used to<br />create CLIENT spans for reqwest requests. Set `Some(false)` to opt out.<br />`None` is treated as `true`. |
+
+### OtelMessage
+
+Message to send over the shared WebSocket connection
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `prefix` | `&'static [u8]` | Yes | - |
+| `data` | `Vec<u8>` | Yes | - |
+
+### ReconnectionConfig
+
+Configuration for WebSocket reconnection behavior
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `initial_delay_ms` | `u64` | Yes | - |
+| `max_delay_ms` | `u64` | Yes | - |
+| `backoff_multiplier` | `f64` | Yes | - |
+| `jitter_factor` | `f64` | Yes | - |
+| `max_retries` | `Option<u64>` | No | - |
+| `max_pending_messages` | `usize` | Yes | Maximum messages preserved across reconnects. Messages beyond this limit<br />are dropped to prevent delivering stale data after a long disconnect.<br />This is intentionally smaller than `OtelConfig::channel_capacity` (the<br />in-flight buffer between exporters and the WebSocket loop). |
+
+### SharedEngineConnection
+
+Shared WebSocket connection for all OTEL exporters
+
+### WorkerGaugesHandle
+
+Handle that keeps the OTEL gauges alive. Drop to stop reporting.
+
+### WorkerGaugesOptions
+
+Options for registering worker gauges
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `worker_id` | `String` | Yes | - |
+| `worker_name` | `Option<String>` | No | - |
+
+### WorkerMetrics
+
+Collected worker metrics snapshot
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `memory_rss` | `u64` | Yes | - |
+| `memory_virtual` | `u64` | Yes | - |
+| `cpu_percent` | `f32` | Yes | - |
+| `uptime_seconds` | `f64` | Yes | - |
+| `timestamp_ms` | `u64` | Yes | - |
+| `runtime` | `&'static str` | Yes | - |
+
+### WorkerMetricsCollector
+
+Collects system metrics for the current process
+
+## queue
+
+Queue enqueue result types.
+
+**Import**
+
+```rust
+use iii_helpers::queue;
+```
+
+### Types
+
+[`EnqueueResult`](#enqueueresult)
+
+### EnqueueResult
+
+Result returned by the engine when a message is successfully enqueued.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message_receipt_id` | `String` | Yes | - |
+
+## stream
+
+Stream trigger configs, change events, IO inputs, and update operations.
+
+**Import**
+
+```rust
+use iii_helpers::stream;
+```
+
+### Types
+
+[`MergePath`](#mergepath) · [`StreamAuthInput`](#streamauthinput) · [`StreamAuthResult`](#streamauthresult) · [`StreamChangeEvent`](#streamchangeevent) · [`StreamChangeEventDetail`](#streamchangeeventdetail) · [`StreamDeleteInput`](#streamdeleteinput) · [`StreamDeleteResult`](#streamdeleteresult) · [`StreamEventType`](#streameventtype) · [`StreamGetInput`](#streamgetinput) · [`StreamJoinLeaveEvent`](#streamjoinleaveevent) · [`StreamJoinLeaveTriggerConfig`](#streamjoinleavetriggerconfig) · [`StreamJoinResult`](#streamjoinresult) · [`StreamListGroupsInput`](#streamlistgroupsinput) · [`StreamListInput`](#streamlistinput) · [`StreamSetInput`](#streamsetinput) · [`StreamSetResult`](#streamsetresult) · [`StreamTriggerConfig`](#streamtriggerconfig) · [`StreamUpdateInput`](#streamupdateinput) · [`StreamUpdateResult`](#streamupdateresult) · [`UpdateOp`](#updateop) · [`UpdateOpError`](#updateoperror)
+
+### MergePath
+
+Path target for a `UpdateOp::Merge` operation. Accepts either a
+single string (legacy / first-level field) or an array of literal
+segments (nested path).
+
+Path normalization rules applied by the engine:
+- absent / `Single("")` / `Segments(vec![])` → root merge
+- `Single("foo")` is equivalent to `Segments(vec!["foo".into()])`
+- `Segments(["a", "b", "c"])` walks three literal keys, never
+  interpreting dots specially. `Segments(vec!["a.b".into()])` is a
+  single literal key named `"a.b"`.
+
+**Variant ordering is load-bearing.** `#[serde(untagged)]` tries
+variants in declaration order, `Single` MUST come before
+`Segments` so a JSON string deserializes into `Single` rather than
+failing the array match first.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Single` | `(String)` | Yes | - |
+| `Segments` | `(Vec<String>)` | Yes | - |
+
+### StreamAuthInput
+
+Input for stream authentication.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `headers` | `HashMap<String, String>` | Yes | - |
+| `path` | `String` | Yes | - |
+| `query_params` | `HashMap<String, Vec<String>>` | Yes | - |
+| `addr` | `String` | Yes | - |
+
+### StreamAuthResult
+
+Result of stream authentication.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `context` | `Option<Value>` | No | - |
+
+### StreamChangeEvent
+
+Handler input for `stream` triggers, fired when an item changes
+via `stream::set`, `stream::update`, or `stream::delete`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `event_type` | `String` | Yes | Always `"stream"`. |
+| `timestamp` | `i64` | Yes | Unix timestamp (milliseconds) of the event. |
+| `stream_name` | `String` | Yes | The stream where the change occurred. |
+| `group_id` | `String` | Yes | The group where the change occurred. |
+| `id` | `Option<String>` | No | The item ID that changed. |
+| `event` | [`StreamChangeEventDetail`](#streamchangeeventdetail) | Yes | The event detail containing mutation type and data. |
+
+### StreamChangeEventDetail
+
+Detail of a stream change event containing the mutation type and data.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `event_type` | [`StreamEventType`](#streameventtype) | Yes | The kind of mutation (create, update, or delete). |
+| `data` | `Value` | Yes | The data associated with the event. |
+
+### StreamDeleteInput
+
+Input for deleting a stream item.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `String` | Yes | - |
+| `group_id` | `String` | Yes | - |
+| `item_id` | `String` | Yes | - |
+
+### StreamDeleteResult
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
+
+### StreamEventType
+
+The kind of mutation that occurred on a stream item.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Create` | `unit` | Yes | - |
+| `Update` | `unit` | Yes | - |
+| `Delete` | `unit` | Yes | - |
+
+### StreamGetInput
+
+Input for retrieving a single stream item.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `String` | Yes | - |
+| `group_id` | `String` | Yes | - |
+| `item_id` | `String` | Yes | - |
+
+### StreamJoinLeaveEvent
+
+Event payload for stream join/leave triggers.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `subscription_id` | `String` | Yes | - |
+| `stream_name` | `String` | Yes | - |
+| `group_id` | `String` | Yes | - |
+| `id` | `Option<String>` | No | - |
+| `context` | `Option<Value>` | No | - |
+
+### StreamJoinLeaveTriggerConfig
+
+Trigger config for `stream:join` and `stream:leave` triggers.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `Option<String>` | No | Stream name to watch |
+| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+
+### StreamJoinResult
+
+Result of a stream join request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `unauthorized` | `bool` | Yes | - |
+
+### StreamListGroupsInput
+
+Input for listing all groups in a stream.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `String` | Yes | - |
+
+### StreamListInput
+
+Input for listing all items in a stream group.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `String` | Yes | - |
+| `group_id` | `String` | Yes | - |
+
+### StreamSetInput
+
+Input for setting a stream item.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `String` | Yes | - |
+| `group_id` | `String` | Yes | - |
+| `item_id` | `String` | Yes | - |
+| `data` | `Value` | Yes | - |
+
+### StreamSetResult
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
+| `new_value` | `Value` | Yes | The value after the update |
+
+### StreamTriggerConfig
+
+Trigger config for `stream` triggers. Filters which item changes fire the handler.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `Option<String>` | No | Stream name to watch |
+| `group_id` | `Option<String>` | No | Group ID filter |
+| `item_id` | `Option<String>` | No | Item ID filter |
+| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+
+### StreamUpdateInput
+
+Input for atomically updating a stream item.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream_name` | `String` | Yes | - |
+| `group_id` | `String` | Yes | - |
+| `item_id` | `String` | Yes | - |
+| `ops` | Vec&lt;[`UpdateOp`](#updateop)&gt; | Yes | - |
+
+### StreamUpdateResult
+
+Result of an atomic update operation
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
+| `new_value` | `Value` | Yes | The value after the update |
+| `errors` | Vec&lt;[`UpdateOpError`](#updateoperror)&gt; | Yes | Errors encountered while applying ops. Successfully applied ops<br />are still reflected in `new_value`. Field is omitted from JSON<br />when empty for backward compatibility. |
+
+### UpdateOp
+
+Operations that can be performed atomically on a stream value
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Set` | `{ path: String, value: Option<Value> }` | Yes | Set a value at path (overwrite) |
+| `Merge` | \{ path: Option&lt;[`MergePath`](#mergepath)&gt;, value: Value \} | Yes | Merge object into existing value (object-only). Path may be<br />omitted (root merge), a single first-level key, or an array of<br />literal segments for nested merge. See `MergePath`. |
+| `Increment` | `{ path: String, by: i64 }` | Yes | Increment numeric value |
+| `Decrement` | `{ path: String, by: i64 }` | Yes | Decrement numeric value |
+| `Append` | \{ path: Option&lt;[`MergePath`](#mergepath)&gt;, value: Value \} | Yes | Append an element to an array or concatenate a string at the<br />optional path. Path may be omitted (root append), a single<br />first-level key, or an array of literal segments for nested<br />append. See `MergePath` for the variant shape. |
+| `Remove` | `{ path: String }` | Yes | Remove a field |
+
+### UpdateOpError
+
+Per-op error reported by an atomic update operation.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `op_index` | `usize` | Yes | Index of the offending op within the original `ops` array. |
+| `code` | `String` | Yes | Stable error code, e.g. `"merge.path.too_deep"`. |
+| `message` | `String` | Yes | Human-readable description with concrete numbers when applicable. |
+| `doc_url` | `Option<String>` | No | Optional documentation URL for this error class. |
+
+## worker_connection_manager
+
+RBAC auth and registration callback types.
+
+**Import**
+
+```rust
+use iii_helpers::worker_connection_manager;
+```
+
+### Types
+
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult)
+
+### AuthInput
+
+Input passed to the RBAC auth function during WebSocket upgrade.
+
+Contains the HTTP headers, query parameters, and client IP from the
+connecting worker's upgrade request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `headers` | `HashMap<String, String>` | Yes | HTTP headers from the WebSocket upgrade request. |
+| `query_params` | `HashMap<String, Vec<String>>` | Yes | Query parameters from the upgrade URL. Each key maps to a vec of values<br />to support repeated keys (e.g. `?a=1&a=2`). |
+| `ip_address` | `String` | Yes | IP address of the connecting client. |
+
+### AuthResult
+
+Return value from the RBAC auth function.
+
+Controls which functions the authenticated worker can invoke and what
+context is forwarded to the middleware.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `allowed_functions` | `Vec<String>` | Yes | Additional function IDs to allow beyond the `expose_functions` config. |
+| `forbidden_functions` | `Vec<String>` | Yes | Function IDs to deny even if they match `expose_functions`.<br />Takes precedence over allowed. |
+| `allowed_trigger_types` | `Option<Vec<String>>` | No | Trigger type IDs the worker may register triggers for.<br />When `None`, all types are allowed. |
+| `allow_trigger_type_registration` | `bool` | Yes | Whether the worker may register new trigger types. Defaults to `false`. |
+| `allow_function_registration` | `bool` | Yes | Whether the worker may register new functions. Defaults to `true`. |
+| `context` | `Value` | Yes | Arbitrary context forwarded to the middleware function on every<br />invocation. |
+| `function_registration_prefix` | `Option<String>` | No | Optional prefix applied to all function IDs registered by this worker. |
+
+### OnFunctionRegistrationInput
+
+Input passed to the `on_function_registration_function_id` hook
+when a worker attempts to register a function through the RBAC port.
+Return an `OnFunctionRegistrationResult` with the (possibly mapped)
+fields, or return an error to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | ID of the function being registered. |
+| `description` | `Option<String>` | No | Human-readable description of the function. |
+| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the function. |
+| `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
+
+### OnFunctionRegistrationResult
+
+Result returned from the `on_function_registration_function_id` hook.
+Omitted fields keep the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `Option<String>` | No | Mapped function ID. |
+| `description` | `Option<String>` | No | Mapped description. |
+| `metadata` | `Option<Value>` | No | Mapped metadata. |
+
+### OnTriggerRegistrationInput
+
+Input passed to the `on_trigger_registration_function_id` hook
+when a worker attempts to register a trigger through the RBAC port.
+Return an `OnTriggerRegistrationResult` with the (possibly mapped)
+fields, or return an error to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_id` | `String` | Yes | ID of the trigger being registered. |
+| `trigger_type` | `String` | Yes | Trigger type identifier. |
+| `function_id` | `String` | Yes | ID of the function this trigger is bound to. |
+| `config` | `Value` | Yes | Trigger-specific configuration. |
+| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the trigger. |
+| `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
+
+### OnTriggerRegistrationResult
+
+Result returned from the `on_trigger_registration_function_id` hook.
+Omitted fields keep the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_id` | `Option<String>` | No | Mapped trigger ID. |
+| `trigger_type` | `Option<String>` | No | Mapped trigger type. |
+| `function_id` | `Option<String>` | No | Mapped function ID. |
+| `config` | `Option<Value>` | No | Mapped trigger configuration. |
+
+### OnTriggerTypeRegistrationInput
+
+Input passed to the `on_trigger_type_registration_function_id` hook
+when a worker attempts to register a new trigger type through the RBAC port.
+Return an `OnTriggerTypeRegistrationResult` with the (possibly mapped)
+fields, or return an error to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_type_id` | `String` | Yes | ID of the trigger type being registered. |
+| `description` | `String` | Yes | Human-readable description of the trigger type. |
+| `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
+
+### OnTriggerTypeRegistrationResult
+
+Result returned from the `on_trigger_type_registration_function_id` hook.
+Omitted fields keep the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_type_id` | `Option<String>` | No | Mapped trigger type ID. |
+| `description` | `Option<String>` | No | Mapped description. |
