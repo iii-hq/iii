@@ -858,13 +858,23 @@ impl QueueWorker {
                 let permit = permit.unwrap();
 
                 let traceparent = msg.traceparent.clone();
-                let baggage = msg.baggage.clone();
+                // Publisher-scope relevance tags must not leak into the
+                // delivery's scope — see `scrub_relevance_tags`.
+                let baggage = msg.baggage.as_deref().and_then(scrub_relevance_tags);
 
                 tokio::spawn(async move {
                     let delivery_id = msg.delivery_id;
                     let function_id = msg.function_id.clone();
                     let attempt = msg.attempt;
 
+                    // `iii.tag.*` is the console timeline's relevant-span
+                    // convention (workers/console/docs/timeline-span-tags.md):
+                    // `queue.process` marks this span as THE function-trigger
+                    // span of a queue dispatch, and the display name renders
+                    // it as `<function> (<queue>)` instead of the raw
+                    // `fn_queue <queue>` span name. Stamped directly as span
+                    // attributes — no baggage involved, so nothing here leaks
+                    // onto child spans.
                     let span = tracing::info_span!(
                         "fn_queue_job",
                         otel.name = %format!("fn_queue {}", queue_name),
@@ -875,6 +885,8 @@ impl QueueWorker {
                         "messaging.system" = "iii-queue",
                         "messaging.destination.name" = %queue_name,
                         "messaging.operation.type" = "process",
+                        "iii.tag.kind" = "queue.process",
+                        "iii.tag.display_name" = %format!("queue({}) {}", queue_name, function_id),
                         otel.status_code = tracing::field::Empty,
                     )
                     .with_parent_headers(
@@ -1079,6 +1091,33 @@ impl QueueWorker {
         }
 
         Ok(())
+    }
+}
+
+/// Strip the timeline relevance tags (`iii.tag.kind`, `iii.tag.display_name`)
+/// from an incoming W3C baggage header before attaching it to a queue job's
+/// span context. The publisher's baggage necessarily carries its OWN scope's
+/// tags (a turn enqueuing its next step is inside `iii.tag.kind=harness.turn`),
+/// and a delivery starts a NEW logical scope: the `fn_queue` span stamps its
+/// own `queue.process` identity directly, and the consumed function re-stamps
+/// its own tags. Without the scrub, a baggage-materializing span processor
+/// copies the stale publisher tags onto this span (duplicate keys next to the
+/// direct ones) and onto every span under it. Identity/lineage keys
+/// (`iii.session.id`, `iii.message.id`, `iii.tag.message`, …) pass through
+/// untouched. Returns `None` when nothing is left.
+fn scrub_relevance_tags(header: &str) -> Option<String> {
+    const SCRUBBED: [&str; 2] = ["iii.tag.kind", "iii.tag.display_name"];
+    let kept: Vec<&str> = header
+        .split(',')
+        .filter(|entry| {
+            let key = entry.split(['=', ';']).next().unwrap_or("").trim();
+            !SCRUBBED.contains(&key)
+        })
+        .collect();
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept.join(","))
     }
 }
 
@@ -1302,6 +1341,28 @@ crate::register_worker!(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // =========================================================================
+    // Baggage relevance-tag scrub
+    // =========================================================================
+
+    #[test]
+    fn scrub_relevance_tags_drops_only_the_relevance_keys() {
+        let header = "iii.session.id=S-1,iii.tag.kind=harness.turn,\
+                      iii.tag.message=fix%20login,iii.tag.display_name=Sub-agent%20x,\
+                      iii.message.id=M-1";
+        assert_eq!(
+            scrub_relevance_tags(header).as_deref(),
+            Some("iii.session.id=S-1,iii.tag.message=fix%20login,iii.message.id=M-1"),
+        );
+        // Properties after the value don't confuse key extraction.
+        assert_eq!(
+            scrub_relevance_tags("iii.tag.kind=x;prop=1, iii.session.id=S-1").as_deref(),
+            Some(" iii.session.id=S-1"),
+        );
+        // All entries scrubbed → no header at all.
+        assert_eq!(scrub_relevance_tags("iii.tag.kind=queue.process"), None);
+    }
 
     // =========================================================================
     // QueueInput deserialization

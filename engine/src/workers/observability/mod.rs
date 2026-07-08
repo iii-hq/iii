@@ -605,6 +605,11 @@ const TRACE_COALESCE_MS: u64 = 300;
 /// re-read once on (re)connect, so a dropped frame self-heals.
 const TRACE_ROWS_STREAM: &str = "iii:devtools:trace-rows";
 const TRACE_SPANS_STREAM: &str = "iii:devtools:trace-spans";
+/// EVERY span of each coalesce window (engine-internal spans and trigger
+/// deliveries already excluded by the subscriber loop), one global feed —
+/// the console masthead's per-span live view. The rows stream above stays
+/// roots-only for the trace LIST.
+const TRACE_ALL_SPANS_STREAM: &str = "iii:devtools:all-spans";
 /// The single group every list subscriber joins — the list is a global
 /// firehose, not per-trace. Detail subscribers join the `trace_id` group.
 const TRACE_ROWS_GROUP: &str = "all";
@@ -1918,6 +1923,21 @@ impl ObservabilityWorker {
             send(
                 engine,
                 TRACE_ROWS_STREAM,
+                TRACE_ROWS_GROUP.to_string(),
+                spans,
+            );
+        }
+
+        // All spans: the whole window as-is to the global per-span feed (the
+        // console masthead renders one bar per span across all traces). Loop-
+        // safe for the same reason the window itself is: engine-internal
+        // spans and the triggers' own delivery spans never entered the batch,
+        // and the `iii::console::*` consumer handlers are builtins whose
+        // delivery spans are internal.
+        if let Ok(spans) = serde_json::to_value(batch) {
+            send(
+                engine,
+                TRACE_ALL_SPANS_STREAM,
                 TRACE_ROWS_GROUP.to_string(),
                 spans,
             );
