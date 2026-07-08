@@ -46,6 +46,11 @@ commits the new config. Workers that did not change in the diff stay running thr
 only added, removed, or changed Workers are restarted. An invalid config (parse error or validation
 failure) causes the Engine to exit rather than enter an indeterminate state.
 
+Worker *settings* are a separate layer: a Worker that registers a configuration schema reads its
+`config:` block once, as a first-boot seed, and its runtime settings live in the
+[configuration worker](../using-iii/configuration) from then on — updated live, without an engine
+reload.
+
 ## Architecture-agnostic routing
 
 Routing is independent of language, runtime, and location. The Engine applies the same routing path

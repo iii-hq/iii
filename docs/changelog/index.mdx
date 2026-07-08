@@ -69,6 +69,28 @@ type: "reference"
   ## Node SDK: `ChannelWriter` reconnects after a dropped WebSocket
 
   After a connection drop, sends went to a dead socket — throwing or silently dropping data — because the writer's ready flag was never reset on `close`/`error`. Sends now check the live socket state, requeue on failure, and the writer transparently reconnects and flushes the queue when the new socket opens.
+
+  ## Worker configuration moves to `./config` and edits apply in real time
+
+  Every worker's runtime settings live in the **configuration worker** — one schema-validated YAML file per worker — and 0.21 makes that layer visible, relocatable, and truly live. The new [Using iii / Configuration](/next/using-iii/configuration) page documents the full lifecycle: a worker's `config:` block in `config.yaml` is a first-boot seed; after that, its settings are managed in real time from the file on disk, the console, or `configuration::set`.
+
+  **The default store moves from `./data/configuration/` to `./config/`.** When running on the default location, entries still in `./data/configuration` are migrated across once on boot (logged at INFO); a file that already exists at the new location is skipped with a WARNING and the legacy copy is left in place to reconcile. An explicit `directory:` override disables the migration entirely. The folder is set on the configuration worker's own block:
+
+  ```yaml config.yaml
+  workers:
+    - name: configuration
+      config:
+        adapter:
+          name: fs
+          config:
+            directory: ./config
+  ```
+
+  **Editing a persisted file on disk now hot-applies.** Direct edits to `./config/<id>.yaml` are picked up by the fs adapter's watcher (the watch path is canonicalized, fixing macOS FSEvents on relative paths) and fan out through the same validate/apply path as `configuration::set` — a hand edit rebinds a port the same way an SDK call does. Edits are validated against the registered schema after `${VAR}` expansion: an invalid edit is rejected with a warning and the previous good value stays in effect. The worker's own writes are deduped so a save can't trigger a reload loop.
+
+  **`${VAR}` placeholders work in numeric fields.** A field that consists of a single placeholder — e.g. `port: ${HTTP_PORT:3111}` — is env-expanded and YAML-coerced to the schema's scalar type (int, bool, float), so it validates as the integer `3111` instead of being rejected as a string. Validation always runs against the expanded value; the template is stored verbatim and re-expanded on every read. A placeholder with no env value and no default keeps the entry on its last valid value instead of failing the load.
+
+  **Host/port rebinds free the old port for real.** When a configuration change rebinds the `iii-http` listener, the old server is now shut down gracefully — closing its open connections, including idle keep-alive connections that would otherwise keep serving the old address — with a hard-abort backstop after 10 seconds so a stuck connection can't pin the old port. The engine REST API server rebinds the same way.
 </Update>
 
 <Update label="0.20.0" description="June 2026">

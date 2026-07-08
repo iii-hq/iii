@@ -29,6 +29,13 @@ mkdir -p data
 
 Adjust your database worker in `config.yaml` so that it looks like the below.
 
+<Note>
+  If the `database` worker already booted with its default settings, the `config.yaml` block has
+  been consumed as a seed (and may have been replaced with a breadcrumb comment). In that case make
+  the same change under `value:` in `./config/database.yaml` — it applies live. See
+  [Configuration](/using-iii/configuration).
+</Note>
+
 <Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
 
 <Info>

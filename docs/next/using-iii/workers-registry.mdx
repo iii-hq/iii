@@ -19,7 +19,8 @@ Workers can also be found on Docker and OCI-compatible registries.
 ## Adding a worker
 
 `iii worker add` accepts three sources. In every case the worker is added to your project's
-`config.yaml` and started automatically.
+`config.yaml` and started automatically. Its settings are seeded from `config.yaml` on first boot
+and managed through the [configuration worker](./configuration) afterwards.
 
 ```bash
 iii worker add iii-state # Downloads and adds a worker from iii registry

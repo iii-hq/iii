@@ -90,6 +90,7 @@
                   "next/using-iii/triggers",
                   "next/using-iii/functions",
                   "next/using-iii/engine",
+                  "next/using-iii/configuration",
                   "next/using-iii/console",
                   "next/using-iii/cli",
                   "next/using-iii/deployment"

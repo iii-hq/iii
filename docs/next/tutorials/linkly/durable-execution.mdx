@@ -46,6 +46,13 @@ workers:
   a given queue.
 </Note>
 
+<Note>
+  `iii-queue` has been running since Chapter 1, so its `config.yaml` block was already consumed as a
+  first-boot seed — its settings now live in `./config/iii-queue.yaml`. If the block above is no
+  longer in your `config.yaml`, make the same change under `value:` in that file instead; it applies
+  live, no restart needed. See [Configuration](/using-iii/configuration).
+</Note>
+
 You already wrote `link::record_click` in Chapter 3, where `http::redirect` triggers it directly.
 Nothing about that function needs to change to make it queuable. You only change how it's triggered
 with a `TriggerAction`.

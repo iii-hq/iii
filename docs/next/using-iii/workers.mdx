@@ -86,6 +86,10 @@ iii worker add ghcr.io/org/worker:tag # Pulls and adds a worker from a Docker or
 The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
+`iii worker add` also writes the worker's default `config:` block. That block seeds the worker's
+settings on its first boot; from then on, runtime settings are managed through the
+[configuration worker](./configuration), not `config.yaml`.
+
 <Note>
   `iii worker add` downloads worker images from remote repositories (the iii registry or an OCI
   registry) or from a local folder, then runs them in a microVM. A bare reference such as
