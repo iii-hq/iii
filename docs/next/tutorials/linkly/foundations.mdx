@@ -49,12 +49,6 @@ workers:
 #         file_path: ./data/state_store.db
 ```
 
-<Note>
-  A worker's `config.yaml` block seeds its settings on that worker's first boot. After that boot,
-  settings live in one file per worker under `./config/` and are edited there or from the console —
-  a later `config.yaml` edit won't apply. See [Configuration](/using-iii/configuration).
-</Note>
-
 Since we're using an in-memory store every restart will clear the data we're storing. That's fine
 here; [Ch. 3: Persist everything](/tutorials/linkly/persistence) swaps in durable storage.
 

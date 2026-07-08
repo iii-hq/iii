@@ -87,8 +87,9 @@ The worker is added to `config.yaml` and started automatically. To force a redow
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
 `iii worker add` also writes the worker's default `config:` block. That block seeds the worker's
-settings on its first boot; from then on, runtime settings are managed through the
-[configuration worker](./configuration), not `config.yaml`.
+settings once, on its first boot; from then on, runtime settings are managed through the
+[configuration worker](./configuration), not `config.yaml`. The settings remain editable as local
+files under `./config/`; see [Configuration](./configuration).
 
 <Note>
   `iii worker add` downloads worker images from remote repositories (the iii registry or an OCI

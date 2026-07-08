@@ -17,7 +17,7 @@ iii --config config.yaml
 
 `config.yaml` has a single top-level key, `workers:`, that lists the workers the engine should load.
 Each entry has a `name` (a registry slug or local worker name) and a `config` block whose shape is
-defined by that worker.
+defined by that worker and is read once, as a first-boot seed.
 
 ```yaml
 workers:
@@ -34,6 +34,13 @@ workers:
           store_method: file_based
           file_path: ./data/state_store.db
 ```
+
+The `config:` block under a worker is a **first-boot seed**. A worker that registers a
+configuration schema reads it once to create its entry in the
+[configuration worker](./configuration); from then on its settings are stored in one file per
+worker under `./config/`, editable in real time from disk, the console, or `configuration::set`,
+and the engine removes the consumed block from `config.yaml`, leaving a comment in its place. See
+[Configuration](./configuration) for the full lifecycle.
 
 {/* TODO: replace this paragraph with the auto-generated engine config reference. Per project-rules/config.md, the per-field `workers:` schema should not be hand-authored here; this section is a placeholder pending the generated reference. */}
 
@@ -57,7 +64,9 @@ Per-worker config schemas live on each worker's Worker Docs page. See
 
 Values in `config.yaml` support `${VAR:default}` syntax. The expansion uses the value of the
 environment variable `VAR`, falling back to `default` when the variable is not set. Use this to swap
-ports, URLs, and feature flags per environment without forking the config file.
+ports, URLs, and feature flags per environment without forking the config file. The same syntax
+works inside the per-worker configuration files, where placeholders are re-expanded on every read;
+see [Configuration / Environment variables in values](./configuration#environment-variables-in-values).
 
 ```yaml
 workers:
