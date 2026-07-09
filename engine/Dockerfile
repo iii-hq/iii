@@ -15,6 +15,12 @@ COPY --from=data-dirs --chown=65532:65532 /app/data /app/data
 COPY --from=data-dirs --chown=65532:65532 /app/config /app/config
 COPY --from=data-dirs --chown=65532:65532 /data /data
 
+# The engine resolves relative defaults (./config store, ./data) against the
+# working directory. Anchor it at /app so they land in the pre-created,
+# volume-mountable directories above even when the image is run directly,
+# without a project Dockerfile setting its own WORKDIR.
+WORKDIR /app
+
 ENV III_EXECUTION_CONTEXT=docker
 ENV III_ENV=development
 
