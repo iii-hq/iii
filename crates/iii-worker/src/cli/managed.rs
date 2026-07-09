@@ -2637,6 +2637,25 @@ fn discover_running_worker_names_from_ps_output(
     names.into_iter().collect()
 }
 
+/// Pure form of [`find_worker_pids_from_ps`]: every PID whose cmdline
+/// resolves to `name`, in process-table order. Exposed for testing.
+fn find_worker_pids_in_processes(
+    processes: &[(u32, String)],
+    name: &str,
+    workers_prefix: &std::path::Path,
+    managed_prefix: &std::path::Path,
+) -> Vec<u32> {
+    processes
+        .iter()
+        .filter_map(|(pid, cmdline)| {
+            match extract_worker_name_from_cmdline(cmdline, workers_prefix, managed_prefix) {
+                Some(n) if n == name => Some(*pid),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Pure parser used by [`find_worker_pid_from_ps`]. Returns the first PID
 /// whose cmdline resolves to `name`. Exposed for testing.
 fn find_worker_pid_in_processes(
@@ -2645,12 +2664,9 @@ fn find_worker_pid_in_processes(
     workers_prefix: &std::path::Path,
     managed_prefix: &std::path::Path,
 ) -> Option<u32> {
-    processes.iter().find_map(|(pid, cmdline)| {
-        match extract_worker_name_from_cmdline(cmdline, workers_prefix, managed_prefix) {
-            Some(n) if n == name => Some(*pid),
-            _ => None,
-        }
-    })
+    find_worker_pids_in_processes(processes, name, workers_prefix, managed_prefix)
+        .first()
+        .copied()
 }
 
 /// Every live PID whose cmdline resolves to `name` — plural sibling of
@@ -2664,15 +2680,7 @@ pub fn find_worker_pids_from_ps(name: &str) -> Vec<u32> {
     let home = dirs::home_dir().unwrap_or_default();
     let workers_prefix = home.join(".iii/workers");
     let managed_prefix = home.join(".iii/managed");
-    processes
-        .iter()
-        .filter_map(|(pid, cmdline)| {
-            match extract_worker_name_from_cmdline(cmdline, &workers_prefix, &managed_prefix) {
-                Some(n) if n == name => Some(*pid),
-                _ => None,
-            }
-        })
-        .collect()
+    find_worker_pids_in_processes(&processes, name, &workers_prefix, &managed_prefix)
 }
 
 /// One process's argv-joined cmdline, by PID. Cheap single-PID lookup — NOT a
@@ -6018,6 +6026,42 @@ dependencies:
             find_worker_pid_in_processes(&sandbox, "python", &workers, &managed),
             None
         );
+    }
+
+    #[test]
+    fn find_worker_pids_collects_duplicate_vms() {
+        // MOT-3931 duplicate-VM race in miniature: two overlapping boots of
+        // the same worker (one old-build via --rootfs, one new via
+        // --pid-file). kill_stale_worker's sweep needs BOTH; the singular
+        // lookup keeps first-match semantics.
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        let processes = vec![
+            (10, "/usr/bin/zsh".to_string()),
+            (
+                41,
+                "/h/.local/bin/iii-worker __vm-boot --pid-file /h/.iii/managed/todo/vm.pid"
+                    .to_string(),
+            ),
+            (
+                42,
+                "/h/.local/bin/iii-worker __vm-boot --rootfs /h/.iii/managed/todo".to_string(),
+            ),
+            (
+                43,
+                "/h/.local/bin/iii-worker __vm-boot --pid-file /h/.iii/managed/other/vm.pid"
+                    .to_string(),
+            ),
+        ];
+        assert_eq!(
+            find_worker_pids_in_processes(&processes, "todo", &workers, &managed),
+            vec![41, 42]
+        );
+        assert_eq!(
+            find_worker_pid_in_processes(&processes, "todo", &workers, &managed),
+            Some(41)
+        );
+        assert!(find_worker_pids_in_processes(&processes, "ghost", &workers, &managed).is_empty());
     }
 
     #[test]

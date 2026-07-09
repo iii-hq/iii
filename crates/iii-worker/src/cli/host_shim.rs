@@ -371,6 +371,21 @@ async fn engine_worker_snapshot(port: u16) -> Option<EngineWorkerSnapshot> {
     snap
 }
 
+/// Status derivation for a config worker when the engine answered. Engine
+/// truth wins: only a connected/registered worker is "running". A live local
+/// process the engine can't see is "starting" — booting, or wedged mid-
+/// connect (MOT-3931: this state used to read as "running"). Returns
+/// `(running, status)`.
+fn engine_status_for(connected: bool, worker_running: bool) -> (bool, &'static str) {
+    if connected {
+        (true, "running")
+    } else if worker_running {
+        (false, "starting")
+    } else {
+        (false, "stopped")
+    }
+}
+
 /// Pure parser for the `engine::workers::list` result. Exposed for testing.
 fn parse_engine_worker_snapshot(value: &serde_json::Value) -> Option<EngineWorkerSnapshot> {
     let workers = value.get("workers")?.as_array()?;
@@ -680,15 +695,9 @@ impl WorkerHostShim for CliHostShim {
             let worker_running = is_worker_running(name);
             let (alive, status) = match &engine {
                 Some(snap) => {
-                    let connected = snap.names.contains(name.as_str());
-                    let status = if connected {
-                        "running"
-                    } else if worker_running {
-                        "starting"
-                    } else {
-                        "stopped"
-                    };
-                    (connected, Some(status.to_string()))
+                    let (alive, status) =
+                        engine_status_for(snap.names.contains(name.as_str()), worker_running);
+                    (alive, Some(status.to_string()))
                 }
                 // Engine unreachable: config-only / engine-builtin entries
                 // run inside the engine process, so the port probe is the
@@ -929,6 +938,18 @@ fn dir_size(path: &std::path::Path) -> u64 {
 mod tests {
     use super::*;
     use crate::core::error::WorkerOpErrorKind;
+
+    #[test]
+    fn engine_status_mapping_is_engine_truth_first() {
+        // Connected wins regardless of local process signals (builtins have
+        // no local process at all).
+        assert_eq!(engine_status_for(true, true), (true, "running"));
+        assert_eq!(engine_status_for(true, false), (true, "running"));
+        // The MOT-3931 lie: process alive but engine can't see it — that is
+        // "starting", never "running".
+        assert_eq!(engine_status_for(false, true), (false, "starting"));
+        assert_eq!(engine_status_for(false, false), (false, "stopped"));
+    }
 
     #[test]
     fn engine_snapshot_parses_names_ids_versions_and_skips_disconnected() {

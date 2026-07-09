@@ -4,19 +4,23 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Integration tests for orphan-worker discovery in `iii worker list`.
+//! Integration tests for orphan-worker discovery in `iii worker list` and
+//! the stale-worker lifecycle guards.
 //!
 //! These tests exercise the public discovery functions
-//! ([`discover_disk_worker_names`], [`discover_running_worker_names_from_ps`])
-//! and the liveness check ([`is_worker_running`]) against a real filesystem
-//! tree under a temporary HOME, using the current test process's PID as a
-//! known-alive sentinel. This is the regression coverage for the bug where
-//! `iii worker list` missed workers whose project folders had moved or whose
-//! PID files had been removed while the process kept running.
+//! ([`discover_disk_worker_names`], [`discover_running_worker_names_from_ps`]),
+//! the liveness check ([`is_worker_running`]), and [`kill_stale_worker`]
+//! against a real filesystem tree under a temporary HOME, spawning copied
+//! `/bin/sleep` processes as known-alive sentinels (the identity cross-check
+//! inspects real argv, so a bare PID is no longer enough). This is the
+//! regression coverage for the bug where `iii worker list` missed workers
+//! whose project folders had moved or whose PID files had been removed while
+//! the process kept running (and its inverse: recycled PIDs reading as
+//! alive — MOT-3931).
 
 use iii_worker::cli::managed::{
     discover_disk_worker_names, discover_running_worker_names_from_ps, find_worker_pid_from_ps,
-    is_worker_running,
+    is_worker_running, kill_stale_worker,
 };
 use std::sync::Mutex;
 
@@ -120,6 +124,78 @@ fn is_worker_running_true_for_alive_pid() {
     assert!(
         running,
         "expected alive-worker (pid {pid}, live sleeper) to be detected as running"
+    );
+}
+
+/// MOT-3931: a pidfile whose PID number has been recycled by an UNRELATED
+/// process must not get that process killed. `kill_stale_worker` must skip
+/// the kill (identity mismatch) while still reaping the stale pidfile.
+#[tokio::test]
+async fn kill_stale_worker_spares_recycled_pid() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::new(tmp.path());
+
+    // Decoy: a live process that is NOT this worker — a sleeper running from
+    // outside ~/.iii/workers and ~/.iii/managed. Its PID lands in the
+    // worker's pidfile, simulating PID reuse after a crash left the pidfile
+    // behind.
+    let decoy_bin = tmp.path().join("decoy-sleep");
+    std::fs::copy("/bin/sleep", &decoy_bin).unwrap();
+    let mut decoy = std::process::Command::new(&decoy_bin)
+        .arg("30")
+        .spawn()
+        .expect("spawn decoy sleeper");
+
+    let pids_dir = tmp.path().join(".iii/pids");
+    std::fs::create_dir_all(&pids_dir).unwrap();
+    let pidfile = pids_dir.join("recycled-worker.pid");
+    std::fs::write(&pidfile, decoy.id().to_string()).unwrap();
+
+    kill_stale_worker("recycled-worker").await;
+
+    // try_wait() == Ok(None) means the child is still running.
+    let alive = decoy.try_wait().unwrap().is_none();
+    let _ = decoy.kill();
+    let _ = decoy.wait();
+    assert!(
+        alive,
+        "kill_stale_worker must not kill an unrelated process behind a recycled PID"
+    );
+    assert!(
+        !pidfile.exists(),
+        "the stale pidfile must still be reaped even when the kill is skipped"
+    );
+}
+
+/// MOT-3931 duplicate-VM guard: a live worker process whose pidfile was lost
+/// (crash, manual cleanup, overlapping restarts) must still die before a new
+/// instance shares its runtime dirs. The ps sweep finds it by argv and kills
+/// it.
+#[tokio::test]
+async fn kill_stale_worker_sweeps_pidfile_less_process() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = HomeGuard::new(tmp.path());
+
+    let workers_dir = tmp.path().join(".iii/workers");
+    std::fs::create_dir_all(&workers_dir).unwrap();
+    let worker_bin = workers_dir.join("sweep-me");
+    std::fs::copy("/bin/sleep", &worker_bin).unwrap();
+    let mut child = std::process::Command::new(&worker_bin)
+        .arg("30")
+        .spawn()
+        .expect("spawn sleeper as pidfile-less worker");
+    // Deliberately NO pidfile anywhere: the pidfile pass can't see this
+    // process; only the argv sweep can.
+
+    kill_stale_worker("sweep-me").await;
+
+    // The sweep SIGTERMs then SIGKILLs; either way the child must be gone.
+    let status = child.wait().expect("reap swept child");
+    assert!(
+        !status.success(),
+        "pidfile-less worker process must be killed by the ps sweep, got {status:?}"
     );
 }
 
