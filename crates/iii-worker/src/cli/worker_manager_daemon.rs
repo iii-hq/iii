@@ -942,7 +942,14 @@ mod tests {
         std::fs::create_dir_all(&pids).unwrap();
         std::fs::write(pids.join(format!("{name}.pid")), child.id().to_string()).unwrap();
 
-        let s = build_status(name).await.unwrap();
+        // `spawn()` returns pre-exec; on Linux the identity check reads the
+        // parent's argv until exec completes. Poll briefly.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut s = build_status(name).await.unwrap();
+        while !s.running && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            s = build_status(name).await.unwrap();
+        }
         let _ = child.kill();
         let _ = child.wait();
 

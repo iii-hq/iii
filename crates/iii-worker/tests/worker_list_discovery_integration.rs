@@ -118,7 +118,15 @@ fn is_worker_running_true_for_alive_pid() {
     let pid = child.id();
     std::fs::write(pids_dir.join("alive-worker.pid"), pid.to_string()).unwrap();
 
-    let running = is_worker_running("alive-worker");
+    // `spawn()` returns between fork and exec; on Linux /proc/<pid>/cmdline
+    // shows the PARENT's argv until exec completes, so the identity check
+    // can transiently miss the sleeper. Poll briefly instead of probing once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut running = is_worker_running("alive-worker");
+    while !running && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        running = is_worker_running("alive-worker");
+    }
     let _ = child.kill();
     let _ = child.wait();
     assert!(
@@ -189,10 +197,37 @@ async fn kill_stale_worker_sweeps_pidfile_less_process() {
     // Deliberately NO pidfile anywhere: the pidfile pass can't see this
     // process; only the argv sweep can.
 
+    // `spawn()` returns pre-exec; wait until the sleeper's real argv is
+    // visible to the ps matcher so the sweep can actually see it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while find_worker_pid_from_ps("sweep-me") != Some(child.id())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(
+        find_worker_pid_from_ps("sweep-me"),
+        Some(child.id()),
+        "fixture: sleeper never became visible to the ps matcher"
+    );
+
     kill_stale_worker("sweep-me").await;
 
     // The sweep SIGTERMs then SIGKILLs; either way the child must be gone.
-    let status = child.wait().expect("reap swept child");
+    // Bounded reap so a regressed sweep can't hang the suite for the
+    // sleeper's full 30s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("try_wait swept child") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("ps sweep did not kill the pidfile-less worker process within 10s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     assert!(
         !status.success(),
         "pidfile-less worker process must be killed by the ps sweep, got {status:?}"

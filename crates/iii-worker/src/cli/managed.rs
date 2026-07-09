@@ -2360,7 +2360,15 @@ pub async fn kill_stale_worker(worker_name: &str) {
                         let _ = kill(p, Signal::SIGTERM);
                         // Brief wait then force-kill.
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        let _ = kill(p, Signal::SIGKILL);
+                        // Re-check before the force-kill: the PID may have
+                        // exited on SIGTERM and been recycled by an
+                        // unrelated process during the grace window. `None`
+                        // (already dead, or a watch.pid whose argv we can't
+                        // name) falls through to a harmless SIGKILL of a
+                        // dead/zombie pid.
+                        if is_watch_pid || pid_identity_matches(pid, worker_name) != Some(false) {
+                            let _ = kill(p, Signal::SIGKILL);
+                        }
                     }
                 }
             }
@@ -2392,7 +2400,14 @@ pub async fn kill_stale_worker(worker_name: &str) {
                 let _ = kill(Pid::from_raw(*pid as i32), Signal::SIGTERM);
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            for pid in &leftovers {
+            // Re-scan before the force-kill: a PID from the first snapshot
+            // may have exited during the grace window and been recycled by
+            // an unrelated process. Force-kill only PIDs present in BOTH
+            // snapshots — the fresh scan alone could pick up a
+            // concurrently-started sibling this pass must not touch.
+            let survivors: std::collections::HashSet<u32> =
+                find_worker_pids_from_ps(worker_name).into_iter().collect();
+            for pid in leftovers.iter().filter(|p| survivors.contains(p)) {
                 let _ = kill(Pid::from_raw(*pid as i32), Signal::SIGKILL);
             }
         }

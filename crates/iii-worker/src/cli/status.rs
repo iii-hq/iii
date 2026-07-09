@@ -1922,7 +1922,14 @@ mod tests {
         std::fs::create_dir_all(&pids).unwrap();
         std::fs::write(pids.join(format!("{}.pid", name)), child.id().to_string()).unwrap();
 
-        let s = WorkerStatus::probe(name);
+        // `spawn()` returns pre-exec; on Linux the identity check reads the
+        // parent's argv until exec completes. Poll briefly.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut s = WorkerStatus::probe(name);
+        while !s.alive && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            s = WorkerStatus::probe(name);
+        }
         let alive_seen = s.alive;
         let pid_seen = s.pid;
         let _ = child.kill();
