@@ -137,7 +137,25 @@ pub(crate) fn apply_strip(path: &str, config_id: &str, location: &str) -> bool {
         return false; // nothing to strip (entry/block absent) — idempotent no-op
     };
     if let Err(err) = atomic_write(path, &updated) {
-        tracing::warn!(path, error = %err, "config seed-strip: failed to write config file");
+        match err.kind() {
+            // A read-only config file is a deliberate deployment choice (the
+            // Docker template bind-mounts config.yaml with `:ro`, and the
+            // distroless image runs as a non-root user that can't write to
+            // /app). The strip is just cleanup — the persisted store is the
+            // source of truth either way — so don't alarm on it.
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                tracing::debug!(
+                    path,
+                    error = %err,
+                    "config seed-strip: config file is not writable (expected when mounted \
+                     read-only, e.g. in Docker); skipping — the persisted configuration \
+                     store remains the source of truth"
+                );
+            }
+            _ => {
+                tracing::warn!(path, error = %err, "config seed-strip: failed to write config file");
+            }
+        }
         return false;
     }
     tracing::info!(
