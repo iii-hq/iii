@@ -19,21 +19,22 @@ iii worker add iii-pubsub
 ## Make redirects fast with a queue
 
 A queue holds work that is accepted now and run later. Here we'll define a `clicks` queue that we're
-going to use for `link::record_click`. Define the queue on the `iii-queue` worker (already in your
-project from `iii project init`), but requiring a few updates to `queue_configs`:
+going to use for `link::record_click`. `iii-queue` has been running since Chapter 1, so its settings
+are managed in `./config/iii-queue.yaml` (see [Configuration](/using-iii/configuration)). Define the
+queue by adding `queue_configs` under `value:` in that file and save; the change applies without a
+restart:
 
-```yaml {5-9} config.yaml
-workers:
-  # ...
-  - name: iii-queue
-    config:
-      queue_configs:
-        clicks:
-          type: standard
-          max_retries: 5
-          concurrency: 5
-      adapter:
-        name: builtin
+```yaml {4-8} config/iii-queue.yaml
+id: iii-queue
+# ...
+value:
+  queue_configs:
+    clicks:
+      type: standard
+      max_retries: 5
+      concurrency: 5
+  adapter:
+    name: builtin
 ```
 
 <Note>

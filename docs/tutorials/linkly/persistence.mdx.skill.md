@@ -22,7 +22,10 @@ iii worker add database
 mkdir -p data
 ```
 
-Adjust your database worker in `config.yaml` so that it looks like the below.
+The engine has been running since Chapter 1, so it starts the `database` worker as soon as it is
+added, and the worker's settings are managed in `./config/database.yaml` from that point on (see
+[Configuration](/using-iii/configuration)). Adjust the fields under `value:` in that file so it
+looks like the below and save; the change applies without a restart.
 
 <Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
 
@@ -31,18 +34,17 @@ Adjust your database worker in `config.yaml` so that it looks like the below.
   docs](https://workers.iii.dev/workers/database) for all supported databases.
 </Info>
 
-```yaml {3-11} config.yaml
-workers:
-  # ...
-  - name: database
-    config:
-      databases:
-        primary:
-          pool:
-            acquire_timeout_ms: 5000
-            idle_timeout_ms: 30000
-            max: 10
-          url: sqlite:./data/iii.db
+```yaml {3-10} config/database.yaml
+id: database
+# ...
+value:
+  databases:
+    primary:
+      pool:
+        acquire_timeout_ms: 5000
+        idle_timeout_ms: 30000
+        max: 10
+      url: sqlite:./data/iii.db
 ```
 
 The worker will be in charge of defining its own schema. We'll build up the necessary changes to

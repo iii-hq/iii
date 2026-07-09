@@ -39,8 +39,15 @@ rest of the system keeps serving.
 
 `config.yaml` is watched at runtime. When the file changes, the Engine parses, diffs, validates, and
 commits the new config. Workers that did not change in the diff stay running through the reload, so
-only added, removed, or changed Workers are restarted. An invalid config (parse error or validation
-failure) causes the Engine to exit rather than enter an indeterminate state.
+only added, removed, or changed Workers are restarted. An invalid `config.yaml` (parse error or
+validation failure) causes the Engine to exit rather than enter an indeterminate state.
+
+Worker *settings* are a separate layer. A Worker that registers a configuration schema reads its
+`config:` block once, at first boot, to bootstrap its entry in the
+[configuration worker](../using-iii/configuration); from then on its settings are managed there and
+updated dynamically, without an engine reload. Settings changes are validated against the Worker's
+schema: an invalid change is rejected and the previous value stays in effect, so a bad settings edit
+never takes the Engine down.
 
 ## Architecture-agnostic routing
 

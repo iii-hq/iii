@@ -1,0 +1,165 @@
+---
+title: "Configuration"
+description:
+  "Worker settings are stored in the configuration worker: one file per worker, updated in real time
+  from disk, the console, or configuration::set."
+owner: "devrel"
+type: "how-to"
+---
+
+## Two configuration layers
+
+iii splits configuration across two layers:
+
+- **`config.yaml`** declares _which workers run_ and provides bootstrap values for their settings.
+  It is the file the engine reads at startup; see
+  [Engine configuration](./engine#engine-configuration).
+- **The `configuration` worker** owns _each worker's runtime settings_. It is a schema-validated,
+  reactive registry that ships enabled by default: every worker registers its settings schema under
+  its own entry (`iii-http`, `iii-state`, `iii-queue`, ...), and every change is validated against
+  that schema and applied to the running worker. Most settings apply immediately; a few take effect
+  at the next engine start (see [How changes apply](#how-changes-apply)).
+
+The `config:` block under a worker in `config.yaml` is a **bootstrap seed**: it is read once, on the
+first boot after the worker registers its schema, to create the worker's configuration entry. From
+then on the entry is the source of truth. On the next boot the engine removes the consumed block
+from `config.yaml` and leaves a one-line comment pointing at the entry's new location; the `- name:`
+line and everything else in the file are preserved as written.
+
+<Note>
+  This applies to workers that register a configuration schema. A worker that doesn't register one
+  (for example `iii-worker-manager`) keeps reading its `config.yaml` block directly.
+</Note>
+
+<Note>
+  In earlier versions of iii, all worker settings stayed in `config.yaml` and the configuration
+  store defaulted to `./data/configuration`. When running on the default location, the engine
+  performs a one-time migration on boot and moves any entries it finds there into `./config`; an
+  explicit `directory:` override skips the migration. See the [0.21.0 changelog](/changelog) for
+  details.
+</Note>
+
+## One file per worker
+
+With the default `fs` adapter, every configuration entry is one YAML file named after the worker, in
+`./config` at your project root:
+
+```
+config/
+  iii-http.yaml
+  iii-queue.yaml
+  iii-state.yaml
+  ...
+```
+
+Each file carries the entry's identity plus its current value:
+
+```yaml config/iii-http.yaml
+id: iii-http
+name: HTTP
+description:
+  HTTP server settings — host/port binding, CORS, request timeout, concurrency limit, and global
+  middleware.
+value:
+  port: 3111
+  host: 127.0.0.1
+```
+
+The directory is created on boot and watched from then on. The registered JSON Schema is not part of
+the file; the worker re-registers it on every boot.
+
+## Three ways to change a setting
+
+### Edit the file
+
+Edit the fields under `value:` and save. The `fs` adapter watches the directory: the change is
+validated against the worker's registered schema and applied through exactly the same path as
+`configuration::set`. An edit that fails validation is rejected with a warning in the engine logs
+and the previous good value stays in effect, so a typo can't take a worker down.
+
+### Use the console
+
+The [console worker](https://workers.iii.dev/workers/console)'s **Configuration** page lists every
+registered entry and renders an editing form generated from its JSON Schema: typed fields,
+per-adapter variants, and validation before save. `${VAR:default}` templates are shown and saved
+verbatim, so a console edit does not overwrite an environment-driven value. Saving applies
+immediately.
+
+```bash
+iii worker add console
+```
+
+### Call `configuration::set`
+
+`configuration::set` replaces the value for an entry, validates it against the registered schema,
+and applies it, whether from the [CLI](./functions#trigger-functions-from-the-cli), any SDK, or your
+own automation:
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    iii trigger configuration::get --json '{"id": "iii-http"}'
+    iii trigger configuration::set --json '{"id": "iii-http", "value": {"port": 8080, "host": "127.0.0.1"}}'
+    ```
+  </Tab>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    await worker.trigger({
+      function_id: "configuration::set",
+      payload: { id: "iii-http", value: { port: 8080, host: "127.0.0.1" } },
+    });
+    ```
+  </Tab>
+</Tabs>
+
+`configuration::get` reads one entry, `configuration::list` enumerates every entry (schemas only;
+values are never included in the list), and `configuration::schema` returns the schema for one id.
+See the [configuration worker docs](https://workers.iii.dev/workers/configuration) for the full
+function reference and error codes.
+
+## Environment variables in values
+
+Values support the same `${VAR:default}` syntax as `config.yaml`. Templates are stored verbatim and
+expanded against the current process environment on every read, so changing an env var propagates
+without rewriting the stored value. A field that consists of a single placeholder is coerced to the
+schema's scalar type after expansion: `port: ${HTTP_PORT:3111}` validates as the integer `3111`, not
+a string. Pass `raw: true` to `configuration::get` to read the stored template form.
+
+## How changes apply
+
+Most settings hot-apply the moment they change: `iii-http` swaps CORS, timeout, and middleware
+without dropping the listener, and binds a new `host`/`port` before releasing the old one. A few
+fields are restart-tier: the change is recorded, logged, and takes effect at the next engine start
+(for example `iii-state`'s storage adapter). Each worker's page on
+[workers.iii.dev](https://workers.iii.dev/) documents its settings and how they apply.
+
+## Changing where configuration is stored
+
+The configuration worker itself is the one exception to the seed lifecycle: it cannot store its own
+settings in itself, so its `config:` block stays in `config.yaml` and is read directly on every
+boot. To store the per-worker files somewhere else, set the `fs` adapter's `directory`:
+
+```yaml config.yaml
+workers:
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: ./config
+```
+
+<Note>
+  The configuration worker also provides a `bridge` adapter for cases where multiple iii engines
+  need to share the same configuration source, and a `ttl_seconds` option that cleans up entries for
+  ephemeral workers. See the [configuration worker
+  docs](https://workers.iii.dev/workers/configuration) for both.
+</Note>
+
+## Reacting to configuration changes
+
+Workers subscribe to changes by binding a `configuration` trigger instead of polling: the bound
+function fires on every register, set, and delete, including file edits. This is the same mechanism
+workers use to hot-apply their own settings. See the
+[configuration worker docs](https://workers.iii.dev/workers/configuration) for the trigger's config
+fields and event types.
