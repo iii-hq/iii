@@ -208,7 +208,7 @@ pub async fn register_config_trigger(engine: &Engine) -> anyhow::Result<()> {
 /// not file-backed there, the file is simply absent and the yaml block is used.
 pub(super) fn resolve_boot_config(yaml_block: Option<Value>) -> Option<Value> {
     use crate::workers::configuration::adapters::fs;
-    resolve_boot_config_from(Path::new(fs::default_directory()), yaml_block)
+    resolve_boot_config_from(Path::new(fs::DEFAULT_DIRECTORY), yaml_block)
 }
 
 /// Directory-parameterized core of [`resolve_boot_config`], so the boot-read can

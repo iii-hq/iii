@@ -45,32 +45,12 @@ pub(crate) const ADAPTER_NAME: &str = "fs";
 // persisted-config readers (e.g. the `iii-state` boot-read) resolve the same
 // on-disk location the configuration worker persists entries under.
 pub(crate) const DEFAULT_DIRECTORY: &str = "./config";
-/// Default store location when running in Docker
-/// (`III_EXECUTION_CONTEXT=docker`). The Docker template mounts a data volume
-/// at `./data` and runs the engine as a non-root user that cannot create
-/// `./config` next to it (the image's `/app` is root-owned) — and even if it
-/// could, entries outside the volume would be lost on container recreate.
-pub(crate) const DOCKER_DEFAULT_DIRECTORY: &str = "./data/configuration";
 pub(crate) const FILE_EXTENSION: &str = "yaml";
 /// The previous default store location. When the resolved directory is the
 /// current default and this legacy folder still holds entries, `new` migrates
 /// them across once (a soft transition) so upgrading doesn't silently start the
 /// store from empty. An explicit `directory:` override is never touched.
 const LEGACY_DEFAULT_DIRECTORY: &str = "./data/configuration";
-
-/// Default store directory for the current execution context. Everything that
-/// needs the store's location without an explicit `directory:` override (the
-/// adapter itself, boot-time persisted-config reads, the seed-strip
-/// breadcrumb) must resolve it through here so they can never drift apart.
-pub(crate) fn default_directory() -> &'static str {
-    let is_docker = std::env::var(crate::workers::telemetry::environment::EXECUTION_CONTEXT_ENV)
-        .is_ok_and(|v| v == "docker");
-    if is_docker {
-        DOCKER_DEFAULT_DIRECTORY
-    } else {
-        DEFAULT_DIRECTORY
-    }
-}
 
 pub struct FsAdapter {
     directory: PathBuf,
@@ -87,7 +67,7 @@ impl FsAdapter {
             .as_ref()
             .and_then(|c| c.get("directory"))
             .and_then(|v| v.as_str())
-            .unwrap_or(default_directory())
+            .unwrap_or(DEFAULT_DIRECTORY)
             .to_string();
         let directory = PathBuf::from(directory);
         tokio::fs::create_dir_all(&directory).await.map_err(|e| {
@@ -101,7 +81,7 @@ impl FsAdapter {
         // Soft transition: when running on the current default location, move any
         // entries left in the legacy default folder across once. Guarded on the
         // default dir, so an explicit `directory:` override is never disturbed.
-        if directory.as_path() == Path::new(default_directory()) {
+        if directory.as_path() == Path::new(DEFAULT_DIRECTORY) {
             Self::migrate_legacy_default(&directory).await;
         }
 
@@ -458,33 +438,9 @@ crate::register_adapter!(<ConfigurationAdapterRegistration> name: ADAPTER_NAME, 
 mod tests {
     use super::*;
     use serde_json::json;
-    use serial_test::serial;
 
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("create tempdir")
-    }
-
-    const EXECUTION_CONTEXT_ENV: &str =
-        crate::workers::telemetry::environment::EXECUTION_CONTEXT_ENV;
-
-    #[test]
-    #[serial]
-    fn default_directory_follows_execution_context() {
-        let prior = std::env::var(EXECUTION_CONTEXT_ENV).ok();
-
-        unsafe { std::env::remove_var(EXECUTION_CONTEXT_ENV) };
-        assert_eq!(default_directory(), DEFAULT_DIRECTORY);
-
-        unsafe { std::env::set_var(EXECUTION_CONTEXT_ENV, "user") };
-        assert_eq!(default_directory(), DEFAULT_DIRECTORY);
-
-        unsafe { std::env::set_var(EXECUTION_CONTEXT_ENV, "docker") };
-        assert_eq!(default_directory(), DOCKER_DEFAULT_DIRECTORY);
-
-        match prior {
-            Some(v) => unsafe { std::env::set_var(EXECUTION_CONTEXT_ENV, v) },
-            None => unsafe { std::env::remove_var(EXECUTION_CONTEXT_ENV) },
-        }
     }
 
     fn sample_entry(id: &str) -> ConfigurationEntry {
