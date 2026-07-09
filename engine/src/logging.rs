@@ -528,7 +528,7 @@ fn read_persisted_observability_value(cfg: &EngineConfig) -> Option<serde_json::
         .and_then(|a| a.get("config"))
         .and_then(|c| c.get("directory"))
         .and_then(|v| v.as_str())
-        .unwrap_or(fs::DEFAULT_DIRECTORY);
+        .unwrap_or(fs::default_directory());
     let file_name = format!(
         "{}.{}",
         crate::workers::observability::configuration::CONFIG_ID,
@@ -810,6 +810,7 @@ mod tests {
         use crate::workers::configuration::adapters::fs;
         assert_eq!(fs::ADAPTER_NAME, "fs");
         assert_eq!(fs::DEFAULT_DIRECTORY, "./config");
+        assert_eq!(fs::DOCKER_DEFAULT_DIRECTORY, "./data/configuration");
         assert_eq!(fs::FILE_EXTENSION, "yaml");
         assert_eq!(
             format!(

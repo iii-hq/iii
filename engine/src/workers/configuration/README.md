@@ -53,7 +53,9 @@ config:
 
 | Field | Type | Description |
 |---|---|---|
-| `directory` | string | Directory holding `<id>.yaml` files. Created on boot. Defaults to `./config`. |
+| `directory` | string | Directory holding `<id>.yaml` files. Created on boot. Defaults to `./config` (`./data/configuration` when `III_EXECUTION_CONTEXT=docker`). |
+
+In Docker (`III_EXECUTION_CONTEXT=docker`, set by the official image) the default is `./data/configuration` instead: the Docker template mounts a persistent volume at `./data`, and the engine's non-root user cannot create `./config` in the root-owned working directory — nor would entries there survive a container recreate.
 
 The default location was previously `./data/configuration`. When running on the default `./config`, the adapter performs a one-time soft migration on boot: every `<id>.yaml` still in `./data/configuration` is moved across (logged at INFO). If a file with the same name already exists in `./config`, that file is **skipped with a WARNING** and the legacy copy is left untouched for you to reconcile. An explicit `directory:` override disables the migration.
 

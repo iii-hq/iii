@@ -777,7 +777,7 @@ impl EngineBuilder {
         if let Some(ref path) = config_path {
             use crate::engine::EngineTrait;
             use crate::workers::configuration::adapters::fs::{
-                ADAPTER_NAME, DEFAULT_DIRECTORY, FILE_EXTENSION,
+                ADAPTER_NAME, FILE_EXTENSION, default_directory,
             };
 
             // Where the fs adapter writes its `<id>.yaml` files, for the
@@ -798,7 +798,7 @@ impl EngineBuilder {
                         .and_then(|a| a.get("config"))
                         .and_then(|c| c.get("directory"))
                         .and_then(|d| d.as_str())
-                        .unwrap_or(DEFAULT_DIRECTORY)
+                        .unwrap_or(default_directory())
                         .to_string()
                 })
             };

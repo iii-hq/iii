@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 const TELEMETRY_SCHEMA_VERSION: u8 = 2;
 const DEVICE_ID_SALT: &str = "iii-machine-id";
-const EXECUTION_CONTEXT_ENV: &str = "III_EXECUTION_CONTEXT";
+pub(crate) const EXECUTION_CONTEXT_ENV: &str = "III_EXECUTION_CONTEXT";
 const EXECUTION_CONTEXT_YAML_DEFAULT: &str = "${III_EXECUTION_CONTEXT:user}";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
