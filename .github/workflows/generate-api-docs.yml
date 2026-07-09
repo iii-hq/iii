@@ -36,23 +36,23 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ── Node.js ──
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
 
       # ── Python ──
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       # ── Rust (stable + nightly for rustdoc JSON) ──
       - uses: dtolnay/rust-toolchain@stable

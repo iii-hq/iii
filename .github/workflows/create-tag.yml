@@ -49,13 +49,13 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ steps.generate_token.outputs.token }}
@@ -143,7 +143,7 @@ jobs:
       - name: Notify Slack — release blocked (missing docs)
         if: always() && steps.docs_check.outcome == 'failure'
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -297,7 +297,7 @@ jobs:
       - name: Generate templates token
         id: templates_token
         if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
@@ -316,7 +316,7 @@ jobs:
 
       - name: Notify Slack
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}

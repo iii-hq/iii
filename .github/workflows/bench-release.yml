@@ -21,7 +21,7 @@ jobs:
     name: Run Benchmarks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -58,7 +58,7 @@ jobs:
           alert-comment-cc-users: '@iii-hq/engine'
 
       - name: Upload raw criterion data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: criterion-data-${{ steps.meta.outputs.version }}
           path: target/criterion/
@@ -91,7 +91,7 @@ jobs:
       - name: Post to Slack
         if: always()
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}

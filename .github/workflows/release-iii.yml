@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
   actions: write
   security-events: write
 
@@ -57,7 +56,7 @@ jobs:
       - name: Post initial Slack message
         id: slack
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -88,31 +87,18 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.generate_token.outputs.token }}
           fetch-depth: 0
 
-      - name: Compute previous stable tag
-        id: prev
-        env:
-          CURRENT_TAG: ${{ needs.setup.outputs.tag }}
-        run: |
-          PREFIX="iii/v"
-          PREV_STABLE=$(git tag --list "${PREFIX}*" --sort=-v:refname \
-            | grep -E "^${PREFIX}[0-9]+\.[0-9]+\.[0-9]+\$" \
-            | grep -v "^${CURRENT_TAG}\$" \
-            | head -n 1 || true)
-          echo "previous_tag=${PREV_STABLE}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Previous stable tag for release notes: ${PREV_STABLE:-<none, GitHub default>}"
-
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -120,7 +106,6 @@ jobs:
           draft: false
           prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
-          previous_tag: ${{ steps.prev.outputs.previous_tag }}
 
   # ──────────────────────────────────────────────────────────────
   # Init Binary (cross-compiled for VM guests)
@@ -142,12 +127,12 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.generate_token.outputs.token }}
 
@@ -177,7 +162,7 @@ jobs:
         run: cargo build -p iii-init --target ${{ matrix.target }} --release
 
       - name: Upload init binary as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iii-init-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/iii-init
@@ -202,7 +187,7 @@ jobs:
 
       - name: Upload release assets
         if: needs.setup.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -235,12 +220,12 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.generate_token.outputs.token }}
 
@@ -271,7 +256,7 @@ jobs:
 
       - name: Upload release assets
         if: needs.setup.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ needs.setup.outputs.tag }}
@@ -341,13 +326,13 @@ jobs:
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -358,7 +343,7 @@ jobs:
       - name: Build frontend for binary embedding
         run: pnpm --filter console-frontend build:binary
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: console-frontend-dist
           path: console/packages/console-frontend/dist-binary/
@@ -459,23 +444,63 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
-  sdk-py:
-    name: SDK Python Publish
-    needs: [setup, create-iii-release, observability-py]
+  helpers-py-build:
+    name: Helpers Python Build
+    needs: [setup, create-iii-release]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_py.yml
     with:
-      package_path: sdk/packages/python/iii
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
-      slack_label: SDK Python (pypi)
-    secrets:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+      package_path: sdk/packages/python/helpers
+      artifact_name: pypi-helpers
 
-  observability-py:
-    name: Observability Python Publish
+  helpers-py:
+    name: Helpers Python Publish
+    needs: [setup, create-iii-release, helpers-py-build]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Notify Slack — in progress
+        if: needs.setup.outputs.slack_ts != ''
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v3
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ needs.setup.outputs.slack_ts }}"
+            text: ":large_yellow_circle: Helpers Python (pypi)${{ needs.setup.outputs.dry_run == 'true' && ' (dry run)' || '' }} — in progress"
+
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-helpers
+          path: dist/
+
+      - name: Publish to PyPI
+        if: needs.setup.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+      - name: Notify Slack — result
+        if: always() && steps.slack.outputs.ts != ''
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v3
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: "${{ steps.slack.outputs.ts }}"
+            text: "${{ job.status == 'success' && ':large_green_circle:' || ':red_circle:' }} Helpers Python (pypi)${{ needs.setup.outputs.dry_run == 'true' && ' (dry run)' || '' }} — ${{ job.status }}"
+
+  observability-py-build:
+    name: Observability Python Build
     # The shim pins iii-helpers at the release version; publish helpers first so
     # PyPI can resolve the dependency.
     needs: [setup, create-iii-release, helpers-py]
@@ -483,28 +508,108 @@ jobs:
     uses: ./.github/workflows/_py.yml
     with:
       package_path: sdk/packages/python/observability
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
-      slack_label: Observability Python (pypi)
-    secrets:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+      artifact_name: pypi-observability
 
-  helpers-py:
-    name: Helpers Python Publish
-    needs: [setup, create-iii-release]
+  observability-py:
+    name: Observability Python Publish
+    needs: [setup, create-iii-release, observability-py-build]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Notify Slack — in progress
+        if: needs.setup.outputs.slack_ts != ''
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v3
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ needs.setup.outputs.slack_ts }}"
+            text: ":large_yellow_circle: Observability Python (pypi)${{ needs.setup.outputs.dry_run == 'true' && ' (dry run)' || '' }} — in progress"
+
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-observability
+          path: dist/
+
+      - name: Publish to PyPI
+        if: needs.setup.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+      - name: Notify Slack — result
+        if: always() && steps.slack.outputs.ts != ''
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v3
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: "${{ steps.slack.outputs.ts }}"
+            text: "${{ job.status == 'success' && ':large_green_circle:' || ':red_circle:' }} Observability Python (pypi)${{ needs.setup.outputs.dry_run == 'true' && ' (dry run)' || '' }} — ${{ job.status }}"
+
+  sdk-py-build:
+    name: SDK Python Build
+    needs: [setup, create-iii-release, observability-py]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_py.yml
     with:
-      package_path: sdk/packages/python/helpers
-      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
-      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
-      slack_label: Helpers Python (pypi)
-    secrets:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+      package_path: sdk/packages/python/iii
+      artifact_name: pypi-sdk
+
+  sdk-py:
+    name: SDK Python Publish
+    needs: [setup, create-iii-release, sdk-py-build]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Notify Slack — in progress
+        if: needs.setup.outputs.slack_ts != ''
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v3
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ needs.setup.outputs.slack_ts }}"
+            text: ":large_yellow_circle: SDK Python (pypi)${{ needs.setup.outputs.dry_run == 'true' && ' (dry run)' || '' }} — in progress"
+
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-sdk
+          path: dist/
+
+      - name: Publish to PyPI
+        if: needs.setup.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+      - name: Notify Slack — result
+        if: always() && steps.slack.outputs.ts != ''
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v3
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: "${{ steps.slack.outputs.ts }}"
+            text: "${{ job.status == 'success' && ':large_green_circle:' || ':red_circle:' }} SDK Python (pypi)${{ needs.setup.outputs.dry_run == 'true' && ' (dry run)' || '' }} — ${{ job.status }}"
 
   sdk-rust:
     name: SDK Rust Publish
@@ -586,6 +691,7 @@ jobs:
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   # ──────────────────────────────────────────────────────────────
   # Homebrew
@@ -731,7 +837,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
@@ -858,7 +964,7 @@ jobs:
       - name: Update Slack parent message
         if: needs.setup.outputs.slack_ts != ''
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.update
           token: ${{ secrets.SLACK_BOT_TOKEN }}
