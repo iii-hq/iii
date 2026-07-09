@@ -2343,13 +2343,25 @@ pub async fn kill_stale_worker(worker_name: &str) {
                 use nix::sys::signal::{Signal, kill};
                 use nix::unistd::Pid;
                 let p = Pid::from_raw(pid as i32);
-                // Only kill if process is still alive.
+                // Only kill if the process is still alive AND is not a
+                // recycled PID now hosting an unrelated process. watch.pid
+                // points at a watcher helper the argv matcher can't name,
+                // so identity is only enforced for the worker pidfiles.
                 if kill(p, None).is_ok() {
-                    tracing::info!(worker = %worker_name, pid, "Killing stale worker process");
-                    let _ = kill(p, Signal::SIGTERM);
-                    // Brief wait then force-kill.
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let _ = kill(p, Signal::SIGKILL);
+                    let is_watch_pid =
+                        pid_file.file_name().and_then(|f| f.to_str()) == Some("watch.pid");
+                    if !is_watch_pid && pid_identity_matches(pid, worker_name) == Some(false) {
+                        tracing::warn!(
+                            worker = %worker_name, pid,
+                            "pidfile PID belongs to an unrelated process (recycled); not killing"
+                        );
+                    } else {
+                        tracing::info!(worker = %worker_name, pid, "Killing stale worker process");
+                        let _ = kill(p, Signal::SIGTERM);
+                        // Brief wait then force-kill.
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        let _ = kill(p, Signal::SIGKILL);
+                    }
                 }
             }
             #[cfg(not(unix))]
@@ -2359,6 +2371,30 @@ pub async fn kill_stale_worker(worker_name: &str) {
         }
         if existed {
             let _ = tokio::fs::remove_file(pid_file).await;
+        }
+    }
+
+    // Pidfile-less leftovers: a VM whose pidfile was lost (crash, manual
+    // cleanup, overlapping engine restarts) is invisible to the pass above
+    // but must still die before a new instance shares
+    // `~/.iii/managed/{worker_name}` (MOT-3931 duplicate-VM race).
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+        let leftovers = find_worker_pids_from_ps(worker_name);
+        if !leftovers.is_empty() {
+            tracing::info!(
+                worker = %worker_name, pids = ?leftovers,
+                "Killing pidfile-less worker process(es)"
+            );
+            for pid in &leftovers {
+                let _ = kill(Pid::from_raw(*pid as i32), Signal::SIGTERM);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            for pid in &leftovers {
+                let _ = kill(Pid::from_raw(*pid as i32), Signal::SIGKILL);
+            }
         }
     }
 }
@@ -2526,8 +2562,9 @@ fn collect_processes() -> Vec<(u32, String)> {
 }
 
 /// From a single process's `argv`-joined cmdline, return the worker name it
-/// represents (if any). Shared between name discovery and PID lookup so both
-/// match against the exact same recognition rules.
+/// represents (if any). Shared between name discovery, PID lookup, and the
+/// pidfile identity cross-check so all match against the exact same
+/// recognition rules.
 fn extract_worker_name_from_cmdline(
     cmdline: &str,
     workers_prefix: &std::path::Path,
@@ -2545,19 +2582,38 @@ fn extract_worker_name_from_cmdline(
         return Some(name.to_string());
     }
 
-    // Pattern 2: iii-worker __vm-boot --pid-file <...>/managed/{name}/vm.pid
+    // Pattern 2: iii-worker __vm-boot with a path under ~/.iii/managed/{name}
+    // in either `--pid-file <...>/managed/{name}/vm.pid` or
+    // `--rootfs <...>/managed/{name}`. The `--rootfs` fallback matters for VMs
+    // booted by older builds whose dev boot path didn't pass `--pid-file`.
     if exe_path.file_name().and_then(|s| s.to_str()) == Some("iii-worker")
         && tokens.next() == Some("__vm-boot")
     {
         let rest: Vec<&str> = tokens.collect();
         for i in 0..rest.len().saturating_sub(1) {
-            if rest[i] == "--pid-file"
-                && let Ok(rel) = std::path::Path::new(rest[i + 1]).strip_prefix(managed_prefix)
-                && let Some(name) = rel.iter().next().and_then(|c| c.to_str())
-                && !name.is_empty()
-            {
-                return Some(name.to_string());
+            let flag = rest[i];
+            if flag != "--pid-file" && flag != "--rootfs" {
+                continue;
             }
+            let Ok(rel) = std::path::Path::new(rest[i + 1]).strip_prefix(managed_prefix) else {
+                continue;
+            };
+            let mut components = rel.iter();
+            let Some(name) = components.next().and_then(|c| c.to_str()) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            // `--rootfs` only counts when it IS the managed dir: legacy-cache
+            // sandbox VMs boot with `--rootfs ~/.iii/managed/<preset>/rootfs`
+            // and must not be claimed as worker `<preset>` (worker dev VMs
+            // pass the managed dir itself). `--pid-file` is always
+            // `{name}/vm.pid`, so the extra component is expected there.
+            if flag == "--rootfs" && components.next().is_some() {
+                continue;
+            }
+            return Some(name.to_string());
         }
     }
     None
@@ -2597,7 +2653,107 @@ fn find_worker_pid_in_processes(
     })
 }
 
-/// Returns `true` if the worker has a valid PID file and the process is alive.
+/// Every live PID whose cmdline resolves to `name` — plural sibling of
+/// [`find_worker_pid_from_ps`] for callers that must handle duplicate VMs
+/// (e.g. two overlapping boots of the same managed worker).
+pub fn find_worker_pids_from_ps(name: &str) -> Vec<u32> {
+    let processes = collect_processes();
+    if processes.is_empty() {
+        return Vec::new();
+    }
+    let home = dirs::home_dir().unwrap_or_default();
+    let workers_prefix = home.join(".iii/workers");
+    let managed_prefix = home.join(".iii/managed");
+    processes
+        .iter()
+        .filter_map(|(pid, cmdline)| {
+            match extract_worker_name_from_cmdline(cmdline, &workers_prefix, &managed_prefix) {
+                Some(n) if n == name => Some(*pid),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// One process's argv-joined cmdline, by PID. Cheap single-PID lookup — NOT a
+/// full process-table scan — because the identity cross-check runs on every
+/// `is_worker_running` call (list loops, status --watch ticks).
+#[cfg(target_os = "linux")]
+fn process_cmdline(pid: u32) -> Option<String> {
+    let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    if bytes.is_empty() {
+        // Zombies and kernel threads have an empty cmdline: identity can't
+        // be judged, only liveness (which the caller already checked).
+        return None;
+    }
+    let line = String::from_utf8_lossy(&bytes).replace('\0', " ");
+    let trimmed = line.trim_end().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+#[cfg(target_os = "macos")]
+fn process_cmdline(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!line.is_empty()).then_some(line)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_cmdline(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Identity cross-check for a pidfile PID. `Some(true)` when `pid`'s cmdline
+/// says it runs `worker_name`, `Some(false)` when it demonstrably hosts
+/// something else (the PID number was recycled by an unrelated process),
+/// `None` when the cmdline can't be read so identity can't be judged.
+fn pid_identity_matches(pid: u32, worker_name: &str) -> Option<bool> {
+    let cmdline = process_cmdline(pid)?;
+    let home = dirs::home_dir().unwrap_or_default();
+    let workers_prefix = home.join(".iii/workers");
+    let managed_prefix = home.join(".iii/managed");
+    Some(cmdline_matches_worker(
+        &cmdline,
+        worker_name,
+        &workers_prefix,
+        &managed_prefix,
+    ))
+}
+
+/// Pure form of [`pid_identity_matches`]. Deliberately MORE lenient than the
+/// discovery matcher: identity asks "could this PID be worker N?", and a
+/// false veto makes a live worker read as stopped AND unkillable by
+/// `kill_stale_worker`. Beyond the discovery patterns, accept any argv token
+/// exactly equal to `~/.iii/workers/{name}` — an interpreter-wrapped binary
+/// worker (`#!/bin/sh` payload) runs as `/bin/sh ~/.iii/workers/{name} ...`,
+/// where argv[0] is the interpreter.
+fn cmdline_matches_worker(
+    cmdline: &str,
+    worker_name: &str,
+    workers_prefix: &std::path::Path,
+    managed_prefix: &std::path::Path,
+) -> bool {
+    if extract_worker_name_from_cmdline(cmdline, workers_prefix, managed_prefix).as_deref()
+        == Some(worker_name)
+    {
+        return true;
+    }
+    let worker_path = workers_prefix.join(worker_name);
+    cmdline
+        .split_whitespace()
+        .any(|tok| std::path::Path::new(tok) == worker_path)
+}
+
+/// Returns `true` if the worker has a valid PID file, the process is alive,
+/// and — when the process table is readable — the PID actually belongs to
+/// this worker. A stale pidfile whose PID number has been recycled by an
+/// unrelated process must not read as alive (MOT-3931).
 pub fn is_worker_running(worker_name: &str) -> bool {
     let home = dirs::home_dir().unwrap_or_default();
     let oci_pid = home.join(".iii/managed").join(worker_name).join("vm.pid");
@@ -2610,7 +2766,12 @@ pub fn is_worker_running(worker_name: &str) -> bool {
             {
                 use nix::sys::signal::kill;
                 use nix::unistd::Pid;
-                if kill(Pid::from_raw(pid as i32), None).is_ok() {
+                if kill(Pid::from_raw(pid as i32), None).is_ok()
+                    // `Some(false)` = the PID is alive but demonstrably not
+                    // this worker (recycled). `None` = can't enumerate
+                    // processes; fall back to trusting the pidfile.
+                    && pid_identity_matches(pid, worker_name) != Some(false)
+                {
                     return true;
                 }
             }
@@ -3478,128 +3639,6 @@ async fn start_binary_worker(
     }
 }
 
-pub async fn handle_worker_list() -> i32 {
-    let config_names = super::config_file::list_worker_names();
-
-    // Discovery union: on-disk PID files + on-disk managed dirs + live process
-    // table (catches workers whose pidfiles were removed but the process kept
-    // running -- the actual repro from the user's bug report).
-    let disk_names = discover_disk_worker_names();
-    let ps_names = discover_running_worker_names_from_ps();
-    let ps_set: std::collections::HashSet<String> = ps_names.iter().cloned().collect();
-    let config_set: std::collections::HashSet<&str> =
-        config_names.iter().map(String::as_str).collect();
-
-    // Orphan = not in current ./config.yaml AND demonstrably alive (either via
-    // pidfile signal-0 check or because we just saw it in `ps`). Dead disk-only
-    // entries are stale runtime state, not what the user is asking about.
-    let candidate_names: std::collections::BTreeSet<String> =
-        disk_names.into_iter().chain(ps_names).collect();
-    let orphan_names: Vec<String> = candidate_names
-        .into_iter()
-        .filter(|n| !config_set.contains(n.as_str()))
-        .filter(|n| ps_set.contains(n) || is_worker_running(n))
-        .collect();
-
-    if config_names.is_empty() && orphan_names.is_empty() {
-        eprintln!("  No workers. Use `iii worker add` to get started.");
-        return 0;
-    }
-
-    let engine_running = is_engine_running();
-
-    eprintln!();
-    eprintln!(
-        "  {:25} {:10} {}",
-        "NAME".bold(),
-        "TYPE".bold(),
-        "STATUS".bold()
-    );
-    eprintln!(
-        "  {:25} {:10} {}",
-        "----".dimmed(),
-        "----".dimmed(),
-        "------".dimmed()
-    );
-
-    for name in &config_names {
-        let worker_type = worker_list_type_label(name);
-
-        let running = if is_worker_running(name) {
-            "running".green().to_string()
-        } else if matches!(worker_type, "config" | "engine") && engine_running {
-            "running".green().to_string()
-        } else {
-            "stopped".dimmed().to_string()
-        };
-
-        eprintln!("  {:25} {:10} {}", name, worker_type.dimmed(), running);
-    }
-
-    // Orphans: alive on this machine but absent from the current ./config.yaml.
-    // The TYPE column is inferred from the on-disk evidence we found the worker
-    // through (managed dir vs binary pidfile/exe). Falls back to "?" only when
-    // a worker was discovered solely via `ps` and no on-disk artifact remains.
-    for name in &orphan_names {
-        let home = dirs::home_dir().unwrap_or_default();
-        let worker_type = resolve_orphan_type(
-            name,
-            &home.join(".iii/managed"),
-            &home.join(".iii/pids"),
-            &home.join(".iii/workers"),
-        );
-        eprintln!(
-            "  {:25} {:10} {}",
-            name,
-            worker_type.dimmed(),
-            "orphan".yellow()
-        );
-    }
-
-    eprintln!();
-    0
-}
-
-fn worker_list_type_label(name: &str) -> &'static str {
-    worker_list_type_label_from_resolved(name, super::config_file::resolve_worker_type(name))
-}
-
-fn worker_list_type_label_from_resolved(name: &str, resolved: ResolvedWorkerType) -> &'static str {
-    match resolved {
-        ResolvedWorkerType::Local { .. } => "local",
-        ResolvedWorkerType::Oci { .. } => "oci",
-        ResolvedWorkerType::Bundle { .. } => "bundle",
-        ResolvedWorkerType::Binary { .. } => "binary",
-        ResolvedWorkerType::Config if is_any_builtin(name) => "engine",
-        ResolvedWorkerType::Config => "config",
-    }
-}
-
-/// Infers the TYPE label for an orphan worker from on-disk evidence alone.
-///
-/// We can't rebuild the `ResolvedWorkerType` enum without a config entry, but
-/// we can tell `managed` (OCI/VM/local-path -- shares a directory shape) from
-/// `binary` (single executable + sidecar pidfile) just from where the artifact
-/// lives. Returns "?" when only a `ps` match exists and every artifact has been
-/// cleaned up under it -- the honest answer.
-///
-/// Path arguments are injected to keep the function unit-testable against a
-/// tempdir without an env override.
-fn resolve_orphan_type(
-    name: &str,
-    managed_dir: &std::path::Path,
-    pids_dir: &std::path::Path,
-    workers_dir: &std::path::Path,
-) -> &'static str {
-    if managed_dir.join(name).is_dir() {
-        return "managed";
-    }
-    if pids_dir.join(format!("{}.pid", name)).is_file() || workers_dir.join(name).is_file() {
-        return "binary";
-    }
-    "?"
-}
-
 /// Pick the log directory with the most recently modified, non-empty log file.
 /// Returns `None` when no candidate contains any usable log content.
 fn file_len(path: &std::path::Path) -> u64 {
@@ -3853,54 +3892,6 @@ mod tests {
     #[test]
     fn binary_config_yaml_omits_empty_registry_config() {
         assert_eq!(binary_config_yaml(&serde_json::json!({})), None);
-    }
-
-    #[test]
-    fn worker_list_type_label_marks_configured_builtin_as_engine() {
-        assert_eq!(
-            worker_list_type_label_from_resolved("iii-stream", ResolvedWorkerType::Config),
-            "engine"
-        );
-    }
-
-    #[test]
-    fn worker_list_type_label_keeps_non_builtin_config_as_config() {
-        assert_eq!(
-            worker_list_type_label_from_resolved("custom-config-only", ResolvedWorkerType::Config),
-            "config"
-        );
-    }
-
-    #[test]
-    fn worker_list_type_label_preserves_local_oci_and_binary_labels() {
-        assert_eq!(
-            worker_list_type_label_from_resolved(
-                "local-dev",
-                ResolvedWorkerType::Local {
-                    worker_path: "./worker".to_string(),
-                },
-            ),
-            "local"
-        );
-        assert_eq!(
-            worker_list_type_label_from_resolved(
-                "external-image",
-                ResolvedWorkerType::Oci {
-                    image: "ghcr.io/acme/external:1".to_string(),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            "oci"
-        );
-        assert_eq!(
-            worker_list_type_label_from_resolved(
-                "downloaded-worker",
-                ResolvedWorkerType::Binary {
-                    binary_path: std::path::PathBuf::from("/tmp/downloaded-worker"),
-                },
-            ),
-            "binary"
-        );
     }
 
     #[test]
@@ -5935,10 +5926,10 @@ dependencies:
    \n\
 /usr/bin/python\n\
 /h/.local/bin/iii-worker __serve\n\
-/h/.local/bin/iii-worker __vm-boot --rootfs /h/.iii/managed/x/rootfs\n\
+/h/.local/bin/iii-worker __vm-boot --rootfs /elsewhere/rootfs\n\
 /h/.local/bin/iii-worker __vm-boot --pid-file\n\
 /h/.local/bin/iii-worker __vm-boot --pid-file /elsewhere/vm.pid\n";
-        // No `--pid-file <path>` matching managed prefix → no orphans found.
+        // No `--pid-file`/`--rootfs` path under the managed prefix → no orphans found.
         let names = discover_running_worker_names_from_ps_output(ps, &workers, &managed);
         assert!(names.is_empty(), "got unexpected names: {names:?}");
     }
@@ -5998,60 +5989,70 @@ dependencies:
     }
 
     #[test]
-    fn resolve_orphan_type_managed_takes_priority() {
-        let tmp = tempfile::tempdir().unwrap();
-        let managed = tmp.path().join("managed");
-        let pids = tmp.path().join("pids");
-        let workers = tmp.path().join("workers");
-        std::fs::create_dir_all(managed.join("dual")).unwrap();
-        std::fs::create_dir_all(&pids).unwrap();
-        std::fs::write(pids.join("dual.pid"), "1").unwrap();
-        // managed/ wins because the directory shape carries more information
-        // (rootfs, logs, etc.) than a bare pidfile.
+    fn vm_boot_without_pid_file_is_recognized_via_rootfs() {
+        // Dev/bundle VMs booted by older builds have no `--pid-file` in argv;
+        // the `--rootfs <managed dir>` fallback must still name them
+        // (MOT-3931: permanent PID "-" / orphan-discovery blind spot).
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        let processes = vec![(
+            36134,
+            "/h/.local/bin/iii-worker __vm-boot --rootfs /h/.iii/managed/scrapling \
+             --rootfs-lower /h/.iii/cache/base.erofs --control-sock \
+             /h/.iii/managed/scrapling/control.sock --network"
+                .to_string(),
+        )];
         assert_eq!(
-            resolve_orphan_type("dual", &managed, &pids, &workers),
-            "managed"
+            find_worker_pid_in_processes(&processes, "scrapling", &workers, &managed),
+            Some(36134)
+        );
+        // Legacy-cache sandbox VMs boot with `--rootfs .../managed/<preset>/rootfs`
+        // (a SUBDIR of a managed path) and must NOT be claimed as a worker —
+        // `iii worker stop`/`start` would kill a live sandbox.
+        let sandbox = vec![(
+            500,
+            "/h/.local/bin/iii-worker __vm-boot --rootfs /h/.iii/managed/python/rootfs --network"
+                .to_string(),
+        )];
+        assert_eq!(
+            find_worker_pid_in_processes(&sandbox, "python", &workers, &managed),
+            None
         );
     }
 
     #[test]
-    fn resolve_orphan_type_binary_via_pidfile() {
-        let tmp = tempfile::tempdir().unwrap();
-        let managed = tmp.path().join("managed");
-        let pids = tmp.path().join("pids");
-        let workers = tmp.path().join("workers");
-        std::fs::create_dir_all(&pids).unwrap();
-        std::fs::write(pids.join("img-resize.pid"), "1234").unwrap();
-        assert_eq!(
-            resolve_orphan_type("img-resize", &managed, &pids, &workers),
-            "binary"
-        );
-    }
-
-    #[test]
-    fn resolve_orphan_type_binary_via_workers_executable() {
-        let tmp = tempfile::tempdir().unwrap();
-        let managed = tmp.path().join("managed");
-        let pids = tmp.path().join("pids");
-        let workers = tmp.path().join("workers");
-        std::fs::create_dir_all(&workers).unwrap();
-        std::fs::write(workers.join("img-resize"), b"#!/bin/sh\n").unwrap();
-        // No pidfile, only the executable -- still recognisable as binary.
-        assert_eq!(
-            resolve_orphan_type("img-resize", &managed, &pids, &workers),
-            "binary"
-        );
-    }
-
-    #[test]
-    fn resolve_orphan_type_unknown_when_only_ps_evidence() {
-        let tmp = tempfile::tempdir().unwrap();
-        let managed = tmp.path().join("managed");
-        let pids = tmp.path().join("pids");
-        let workers = tmp.path().join("workers");
-        // Nothing on disk under any of the three roots: a worker that is alive
-        // in ps but has had every artifact cleaned up. Honest answer is "?".
-        assert_eq!(resolve_orphan_type("ghost", &managed, &pids, &workers), "?");
+    fn cmdline_identity_rejects_recycled_pid_but_tolerates_interpreters() {
+        let workers = std::path::PathBuf::from("/h/.iii/workers");
+        let managed = std::path::PathBuf::from("/h/.iii/managed");
+        // Recycled PID hosting an unrelated process → no match.
+        assert!(!cmdline_matches_worker(
+            "/usr/bin/spotify",
+            "todo",
+            &workers,
+            &managed
+        ));
+        // VM-boot argv designating this worker.
+        let vm = "/h/.local/bin/iii-worker __vm-boot --pid-file /h/.iii/managed/todo/vm.pid";
+        assert!(cmdline_matches_worker(vm, "todo", &workers, &managed));
+        // Same argv, different worker name → mismatch.
+        assert!(!cmdline_matches_worker(vm, "other", &workers, &managed));
+        // Interpreter-wrapped binary worker: argv[0] is the interpreter, the
+        // workers-dir path appears as a later token. Identity must tolerate
+        // this (discovery does not) or the worker becomes invisible AND
+        // unkillable.
+        assert!(cmdline_matches_worker(
+            "/bin/sh /h/.iii/workers/todo --port 3111",
+            "todo",
+            &workers,
+            &managed
+        ));
+        // A path merely *under* the worker's dir is a different token.
+        assert!(!cmdline_matches_worker(
+            "tail -f /h/.iii/workers/todo.log",
+            "todo",
+            &workers,
+            &managed
+        ));
     }
 
     #[test]
@@ -6506,6 +6507,11 @@ dependencies:
 
     #[test]
     fn image_cache_dir_deterministic_hash() {
+        // Hold the HOME lock: the two calls must observe the same HOME, and
+        // concurrent tests legitimately override it under this lock.
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Same ref always produces same path
         let a = image_cache_dir("ghcr.io/org/worker:1.0");
         let b = image_cache_dir("ghcr.io/org/worker:1.0");
@@ -6519,6 +6525,9 @@ dependencies:
 
     #[test]
     fn image_cache_dir_under_iii_images() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = image_cache_dir("test:latest");
         let path_str = dir.to_string_lossy();
         assert!(path_str.contains(".iii/images/") || path_str.contains(".iii\\images\\"));

@@ -438,10 +438,16 @@ async fn async_main() -> anyhow::Result<()> {
                                 .pid
                                 .map(|p| p.to_string())
                                 .unwrap_or_else(|| "-".to_string());
-                            let status = if w.running {
-                                "running".green().to_string()
-                            } else {
-                                "stopped".dimmed().to_string()
+                            // Engine-truth status when present ("running" /
+                            // "starting" / "stopped"); fall back to the
+                            // process-signal bool when the engine couldn't
+                            // be asked.
+                            let status = match w.status.as_deref() {
+                                Some("running") => "running".green().to_string(),
+                                Some("starting") => "starting".yellow().to_string(),
+                                Some(other) => other.dimmed().to_string(),
+                                None if w.running => "running".green().to_string(),
+                                None => "stopped".dimmed().to_string(),
                             };
                             eprintln!(
                                 "  {:25} {:10} {:10} {}",

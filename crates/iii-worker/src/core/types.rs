@@ -357,6 +357,11 @@ pub struct WorkerEntry {
     pub version: Option<String>,
     #[schemars(description = "Whether the worker is currently running.")]
     pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Engine-truth status when the engine was reachable: \"running\" (connected/registered with the engine), \"starting\" (local process alive but not registered with the engine — booting, or stuck), \"stopped\". Null when the engine couldn't be asked; fall back to `running`."
+    )]
+    pub status: Option<String>,
     #[schemars(
         description = "Process id when discoverable via ps. Null for engine builtins or when the pid wasn't recoverable."
     )]

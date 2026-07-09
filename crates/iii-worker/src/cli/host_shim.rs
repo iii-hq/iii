@@ -299,6 +299,104 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// What the engine reports via `engine::workers::list`: every non-disconnected
+/// identifier (worker-reported `name` and engine-side `id` — in-process
+/// builtins carry the config entry name as `id`) plus per-identifier versions.
+pub(crate) struct EngineWorkerSnapshot {
+    pub(crate) names: std::collections::HashSet<String>,
+    pub(crate) versions: std::collections::HashMap<String, String>,
+}
+
+/// A held connection to the engine for repeated snapshot queries (e.g. the
+/// `iii worker status` watch loop). One connect/disconnect pair per probe
+/// lifetime — connecting per query would fire the engine's workers-available
+/// triggers on every poll.
+pub(crate) struct EngineProbe {
+    iii: iii_sdk::IIIClient,
+}
+
+impl EngineProbe {
+    pub(crate) fn connect(port: u16) -> Self {
+        let iii = iii_sdk::register_worker(
+            &format!("ws://127.0.0.1:{port}"),
+            iii_sdk::InitOptions {
+                // Identify the transient connection so it's attributable in
+                // the engine console instead of an anonymous
+                // `<hostname>:<pid>`.
+                metadata: Some(iii_sdk::runtime::WorkerMetadata {
+                    name: "iii-cli".to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        Self { iii }
+    }
+
+    pub(crate) async fn snapshot(&self) -> Option<EngineWorkerSnapshot> {
+        use iii_sdk::protocol::TriggerRequest;
+        let result = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "engine::workers::list".to_string(),
+                payload: serde_json::json!({}),
+                action: None,
+                // The engine is local; a short deadline keeps callers snappy
+                // when the port is open but the engine is wedged.
+                timeout_ms: Some(3_000),
+            })
+            .await;
+        parse_engine_worker_snapshot(&result.ok()?)
+    }
+
+    /// Non-joining shutdown: `shutdown()` joins the connection thread, which
+    /// parks forever inside connect_async() when the port is open but the WS
+    /// handshake never completes (wedged engine, port squatter). The thread
+    /// leaks; the process is a short-lived CLI (or the daemon, where a leak
+    /// per wedged-engine event is bounded).
+    pub(crate) async fn close(self) {
+        self.iii.shutdown_async().await;
+    }
+}
+
+/// One-shot: ask the engine what's actually connected/registered. `None`
+/// when the engine is unreachable, the call times out, or RBAC denies the
+/// discovery function — callers fall back to local pidfile/ps heuristics
+/// (MOT-3931: those heuristics alone made `iii worker list` report dead VMs
+/// as running).
+async fn engine_worker_snapshot(port: u16) -> Option<EngineWorkerSnapshot> {
+    let probe = EngineProbe::connect(port);
+    let snap = probe.snapshot().await;
+    probe.close().await;
+    snap
+}
+
+/// Pure parser for the `engine::workers::list` result. Exposed for testing.
+fn parse_engine_worker_snapshot(value: &serde_json::Value) -> Option<EngineWorkerSnapshot> {
+    let workers = value.get("workers")?.as_array()?;
+    let mut names = std::collections::HashSet::new();
+    let mut versions = std::collections::HashMap::new();
+    for w in workers {
+        if w.get("status").and_then(|v| v.as_str()) == Some("disconnected") {
+            continue;
+        }
+        let version = w.get("version").and_then(|v| v.as_str());
+        for key in ["name", "id"] {
+            if let Some(n) = w.get(key).and_then(|v| v.as_str())
+                && !n.is_empty()
+            {
+                names.insert(n.to_string());
+                if let Some(ver) = version {
+                    versions
+                        .entry(n.to_string())
+                        .or_insert_with(|| ver.to_string());
+                }
+            }
+        }
+    }
+    Some(EngineWorkerSnapshot { names, versions })
+}
+
 #[async_trait]
 impl WorkerHostShim for CliHostShim {
     async fn add(
@@ -552,25 +650,70 @@ impl WorkerHostShim for CliHostShim {
         };
 
         let engine_running = is_engine_running();
+        // Engine truth: what's actually connected/registered right now.
+        // `None` = engine down or query failed; local signals only.
+        let engine = if engine_running {
+            // Outer deadline as a backstop over the SDK's own trigger
+            // timeout: list must never hang on a half-up engine.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                engine_worker_snapshot(crate::cli::config_file::manager_port()),
+            )
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
 
         let mut workers = Vec::with_capacity(config_names.len() + orphan_names.len());
 
         for name in &config_names {
-            // Mirrors handle_worker_list's status logic: a worker counts as
-            // running if its own pidfile/ps match is alive, OR if it's a
-            // config-only / engine-builtin entry and the engine is up
-            // (those workers run inside the engine process, not standalone).
+            // `is_worker_running` is identity-checked (pidfile PID must map
+            // to this worker in the process table), so a live hit is a real
+            // local process — but a live process is NOT a serving worker: a
+            // VM can sit booting (or stuck reconnecting) for minutes. When
+            // the engine answered, connected/registered is the only signal
+            // that earns "running"; a live-but-unregistered process is
+            // "starting" (MOT-3931: list must not say running for a worker
+            // the engine can't see).
             let worker_running = is_worker_running(name);
-            let alive = worker_running
-                || (matches!(
-                    crate::cli::config_file::resolve_worker_type(name),
-                    crate::cli::config_file::ResolvedWorkerType::Config
-                ) && engine_running);
+            let (alive, status) = match &engine {
+                Some(snap) => {
+                    let connected = snap.names.contains(name.as_str());
+                    let status = if connected {
+                        "running"
+                    } else if worker_running {
+                        "starting"
+                    } else {
+                        "stopped"
+                    };
+                    (connected, Some(status.to_string()))
+                }
+                // Engine unreachable: config-only / engine-builtin entries
+                // run inside the engine process, so the port probe is the
+                // only signal available for them. status stays None —
+                // consumers fall back to the `running` bool.
+                None => (
+                    worker_running
+                        || (matches!(
+                            crate::cli::config_file::resolve_worker_type(name),
+                            crate::cli::config_file::ResolvedWorkerType::Config
+                        ) && engine_running),
+                    None,
+                ),
+            };
             let pid = find_worker_pid_from_ps(name);
+            let version = version_for(name).or_else(|| {
+                engine
+                    .as_ref()
+                    .and_then(|snap| snap.versions.get(name.as_str()).cloned())
+            });
             workers.push(WorkerEntry {
                 name: name.clone(),
-                version: version_for(name),
+                version,
                 running: alive,
+                status,
                 pid,
             });
         }
@@ -581,6 +724,7 @@ impl WorkerHostShim for CliHostShim {
                 name: name.clone(),
                 version: version_for(name),
                 running: true, // orphan filter already requires alive
+                status: None,
                 pid,
             });
         }
@@ -785,6 +929,38 @@ fn dir_size(path: &std::path::Path) -> u64 {
 mod tests {
     use super::*;
     use crate::core::error::WorkerOpErrorKind;
+
+    #[test]
+    fn engine_snapshot_parses_names_ids_versions_and_skips_disconnected() {
+        let value = serde_json::json!({
+            "workers": [
+                // WS worker: matchable by self-reported name.
+                {"name": "scrapling", "id": "b1e2...", "status": "connected", "version": "0.2.3"},
+                // In-process builtin: matchable by engine-side id.
+                {"name": "state", "id": "iii-state", "status": "available", "version": "0.21.2"},
+                // Disconnected workers must not read as running.
+                {"name": "ghost", "id": "dead...", "status": "disconnected", "version": "1.0.0"},
+                {"name": null, "id": "anon", "status": "connected"},
+            ]
+        });
+        let snap = parse_engine_worker_snapshot(&value).unwrap();
+        assert!(snap.names.contains("scrapling"));
+        assert!(snap.names.contains("iii-state"));
+        assert!(snap.names.contains("state"));
+        assert!(snap.names.contains("anon"));
+        assert!(!snap.names.contains("ghost"));
+        assert_eq!(
+            snap.versions.get("scrapling").map(String::as_str),
+            Some("0.2.3")
+        );
+        assert_eq!(
+            snap.versions.get("iii-state").map(String::as_str),
+            Some("0.21.2")
+        );
+        assert!(snap.versions.get("anon").is_none());
+        // Not a list result at all → None, caller falls back.
+        assert!(parse_engine_worker_snapshot(&serde_json::json!({"nope": 1})).is_none());
+    }
 
     /// Shared across every test that swaps fd 2 — fd 2 is process-
     /// global, so a per-test local `static` Mutex (one per function)

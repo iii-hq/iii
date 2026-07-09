@@ -89,22 +89,37 @@ fn discover_disk_worker_names_finds_managed_and_pids() {
 }
 
 /// `is_worker_running` must return `true` when the pidfile holds a PID that
-/// is actually alive. The current test process's PID is the simplest
-/// guaranteed-alive sentinel, exercising the real signal-0 path.
+/// is actually alive AND belongs to this worker. Since the identity
+/// cross-check (MOT-3931: recycled PIDs must not read as alive) inspects the
+/// process's argv, the pidfile has to point at a real process running from
+/// `~/.iii/workers/{name}` — a copied `/bin/sleep` is the simplest such
+/// sentinel, exercising the real signal-0 + identity path.
 #[test]
 fn is_worker_running_true_for_alive_pid() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let _home = HomeGuard::new(tmp.path());
 
+    let workers_dir = tmp.path().join(".iii/workers");
+    std::fs::create_dir_all(&workers_dir).unwrap();
+    let worker_bin = workers_dir.join("alive-worker");
+    std::fs::copy("/bin/sleep", &worker_bin).unwrap();
+    let mut child = std::process::Command::new(&worker_bin)
+        .arg("30")
+        .spawn()
+        .expect("spawn sleeper as fake binary worker");
+
     let pids_dir = tmp.path().join(".iii/pids");
     std::fs::create_dir_all(&pids_dir).unwrap();
-    let my_pid = std::process::id();
-    std::fs::write(pids_dir.join("alive-worker.pid"), my_pid.to_string()).unwrap();
+    let pid = child.id();
+    std::fs::write(pids_dir.join("alive-worker.pid"), pid.to_string()).unwrap();
 
+    let running = is_worker_running("alive-worker");
+    let _ = child.kill();
+    let _ = child.wait();
     assert!(
-        is_worker_running("alive-worker"),
-        "expected alive-worker (pid {my_pid}, this process) to be detected as running"
+        running,
+        "expected alive-worker (pid {pid}, live sleeper) to be detected as running"
     );
 }
 

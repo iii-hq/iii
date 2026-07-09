@@ -201,6 +201,12 @@ pub struct WorkerStatus {
     /// from phase so the render can distinguish "alive, deps still
     /// installing" (Preparing) from "stale pidfile" (dead).
     pub alive: bool,
+    /// Engine truth: is a worker with this name connected/registered with
+    /// the engine right now? `None` when the engine wasn't asked (down, or
+    /// query failed). A live VM process whose worker never registered
+    /// (wedged handshake, stuck boot) is `Some(false)` — the case where
+    /// every local signal lies (MOT-3931).
+    pub engine_registered: Option<bool>,
     pub logs_dir: Option<std::path::PathBuf>,
     pub logs_last_modified: Option<SystemTime>,
 }
@@ -228,6 +234,7 @@ impl WorkerStatus {
                 prepared: false,
                 pid: None,
                 alive: false,
+                engine_registered: None,
                 logs_dir: None,
                 logs_last_modified: None,
             };
@@ -302,8 +309,25 @@ impl WorkerStatus {
             prepared,
             pid,
             alive: running,
+            engine_registered: None,
             logs_dir,
             logs_last_modified,
+        }
+    }
+
+    /// Overlay engine truth onto a locally-derived status. A `Ready` verdict
+    /// built from pidfiles and markers is a lie when the engine has no
+    /// worker registered under this name (VM alive but its connection never
+    /// completed — MOT-3931); downgrade it to `Booting` so `--wait` keeps
+    /// waiting and the render says why.
+    pub(crate) fn apply_engine_truth(
+        &mut self,
+        snap: &crate::cli::host_shim::EngineWorkerSnapshot,
+    ) {
+        let registered = snap.names.contains(&self.name);
+        self.engine_registered = Some(registered);
+        if !registered && self.phase == Phase::Ready {
+            self.phase = Phase::Booting;
         }
     }
 
@@ -676,6 +700,25 @@ impl WorkerStatus {
         };
         out.push(process_line);
 
+        // Engine truth, when the engine was asked. A live process the engine
+        // can't see is the one state every local signal gets wrong.
+        match self.engine_registered {
+            Some(true) => out.push(format!(
+                "{:>12}  {} {}",
+                "worker:".dimmed(),
+                "registered".green(),
+                "(connected to engine)".dimmed()
+            )),
+            Some(false) => out.push(format!(
+                "{:>12}  {} {}",
+                "worker:".dimmed(),
+                "not registered".red(),
+                "(engine has no worker under this name — booting, or its connection is stuck)"
+                    .dimmed()
+            )),
+            None => {}
+        }
+
         let logs_line = match (&self.logs_dir, self.logs_last_modified) {
             (Some(_), Some(_)) => format!(
                 "{:>12}  {} {}",
@@ -736,7 +779,14 @@ pub(crate) fn read_pid(name: &str) -> Option<u32> {
 pub async fn handle_worker_status(worker_name: &str, watch: bool) -> i32 {
     let port = super::config_file::manager_port();
     if !watch {
-        let status = WorkerStatus::probe_on(worker_name, port);
+        let mut status = WorkerStatus::probe_on(worker_name, port);
+        if status.engine_running {
+            let probe = super::host_shim::EngineProbe::connect(port);
+            if let Some(snap) = probe.snapshot().await {
+                status.apply_engine_truth(&snap);
+            }
+            probe.close().await;
+        }
         for line in status.render() {
             eprintln!("{}", line);
         }
@@ -787,8 +837,28 @@ pub async fn watch_until_ready(
     // stat() calls + a TCP probe of the engine port), so faster polling
     // also tightens reaction time on phase transitions.
     let poll_interval = Duration::from_millis(200);
-    loop {
-        let status = WorkerStatus::probe_on(worker_name, port);
+    // One held engine connection for the whole watch session (connecting per
+    // tick would fire the engine's workers-available triggers 5×/s). The
+    // snapshot refreshes every 5th tick (~1s); in between, the last snapshot
+    // still applies — registration state doesn't flap at 200ms granularity.
+    let mut engine_probe: Option<super::host_shim::EngineProbe> = None;
+    let mut last_snap: Option<super::host_shim::EngineWorkerSnapshot> = None;
+    let final_status = loop {
+        let mut status = WorkerStatus::probe_on(worker_name, port);
+        if status.engine_running {
+            if engine_probe.is_none() {
+                engine_probe = Some(super::host_shim::EngineProbe::connect(port));
+            }
+            if tick % 5 == 0
+                && let Some(probe) = &engine_probe
+                && let Some(snap) = probe.snapshot().await
+            {
+                last_snap = Some(snap);
+            }
+        }
+        if let Some(snap) = &last_snap {
+            status.apply_engine_truth(snap);
+        }
         let progress = WatchProgress {
             tick,
             elapsed: started.elapsed(),
@@ -821,17 +891,21 @@ pub async fn watch_until_ready(
         }
 
         if status.is_terminal_for_wait() {
-            return status;
+            break status;
         }
         if let Some(t) = timeout
             && started.elapsed() >= t
         {
-            return status;
+            break status;
         }
 
         tick = tick.wrapping_add(1);
         tokio::time::sleep(poll_interval).await;
+    };
+    if let Some(probe) = engine_probe {
+        probe.close().await;
     }
+    final_status
 }
 
 /// Truncate a single line to `max` characters, suffixing `…` if cut.
@@ -935,6 +1009,7 @@ mod tests {
             prepared: true,
             pid: Some(42),
             alive: true,
+            engine_registered: None,
             logs_dir: None,
             logs_last_modified: None,
         };
@@ -1028,6 +1103,7 @@ mod tests {
             prepared: false,
             pid: None,
             alive: false,
+            engine_registered: None,
             logs_dir: Some(logs_dir),
             logs_last_modified: Some(SystemTime::now()),
         };
@@ -1069,6 +1145,7 @@ mod tests {
             prepared: false,
             pid: None,
             alive: false,
+            engine_registered: None,
             logs_dir: None,
             logs_last_modified: None,
         };
@@ -1129,6 +1206,7 @@ mod tests {
             prepared: true,
             pid: Some(123),
             alive: true,
+            engine_registered: None,
             logs_dir: Some(std::path::PathBuf::from("/tmp/logs")),
             logs_last_modified: Some(SystemTime::now()),
         };
@@ -1153,6 +1231,7 @@ mod tests {
             prepared: false,
             pid: None,
             alive: false,
+            engine_registered: None,
             logs_dir: None,
             logs_last_modified: None,
         };
@@ -1182,6 +1261,7 @@ mod tests {
             prepared: false,
             pid: Some(16795),
             alive: true,
+            engine_registered: None,
             logs_dir: None,
             logs_last_modified: None,
         };
@@ -1219,6 +1299,7 @@ mod tests {
             prepared: false,
             pid: Some(48350),
             alive: true,
+            engine_registered: None,
             logs_dir: None,
             logs_last_modified: None,
         };
@@ -1264,6 +1345,7 @@ mod tests {
             prepared: false,
             pid: Some(16795),
             alive: true,
+            engine_registered: None,
             logs_dir: None,
             logs_last_modified: None,
         };
@@ -1278,6 +1360,61 @@ mod tests {
             "process row must NOT call a live pid stale, got:\n{}",
             text
         );
+    }
+
+    #[test]
+    fn apply_engine_truth_downgrades_unregistered_ready_and_renders_row() {
+        // MOT-3931 live repro: VM alive, all local signals say Ready, but
+        // the engine has no worker registered under this name (connection
+        // wedged mid-handshake). Ready must downgrade to Booting and the
+        // render must say why.
+        let mut s = WorkerStatus {
+            name: "scrapling".into(),
+            phase: Phase::Ready,
+            engine_running: true,
+            worker_type: Some("bundle"),
+            worker_path: None,
+            managed_dir_exists: true,
+            prepared: false,
+            pid: Some(59049),
+            alive: true,
+            engine_registered: None,
+            logs_dir: None,
+            logs_last_modified: None,
+        };
+        let snap = crate::cli::host_shim::EngineWorkerSnapshot {
+            names: ["iii-state".to_string()].into_iter().collect(),
+            versions: Default::default(),
+        };
+        s.apply_engine_truth(&snap);
+        assert_eq!(s.phase, Phase::Booting);
+        assert_eq!(s.engine_registered, Some(false));
+        let text = s.render().join("\n");
+        assert!(
+            text.contains("not registered"),
+            "render must flag the unregistered worker, got:\n{}",
+            text
+        );
+
+        // Registered worker: Ready stays Ready, row says registered.
+        let mut ok = WorkerStatus {
+            name: "iii-state".into(),
+            phase: Phase::Ready,
+            engine_running: true,
+            worker_type: Some("config"),
+            worker_path: None,
+            managed_dir_exists: false,
+            prepared: false,
+            pid: None,
+            alive: false,
+            engine_registered: None,
+            logs_dir: None,
+            logs_last_modified: None,
+        };
+        ok.apply_engine_truth(&snap);
+        assert_eq!(ok.phase, Phase::Ready);
+        assert_eq!(ok.engine_registered, Some(true));
+        assert!(ok.render().join("\n").contains("registered"));
     }
 
     /// Regression for the classifier bug where binary workers reported
@@ -1365,6 +1502,7 @@ mod tests {
             prepared: false,
             pid: None,
             alive: false,
+            engine_registered: None,
             logs_dir: None,
             logs_last_modified: None,
         };
@@ -1766,24 +1904,31 @@ mod tests {
         .unwrap();
 
         // Binary worker is detected by presence of the binary file under
-        // ~/.iii/workers/{name}. Staging an empty file is enough for the
-        // classifier — we don't execute it.
+        // ~/.iii/workers/{name}. Since is_worker_running now cross-checks
+        // the pidfile PID against the process table (a recycled PID must
+        // not read as alive — MOT-3931), the pidfile has to point at a REAL
+        // process whose executable lives under the workers dir. Copy a
+        // harmless sleeper there and run it.
         let workers_dir = tmp.path().join(".iii/workers");
         std::fs::create_dir_all(&workers_dir).unwrap();
-        std::fs::write(workers_dir.join(name), b"").unwrap();
+        let worker_bin = workers_dir.join(name);
+        std::fs::copy("/bin/sleep", &worker_bin).unwrap();
+        let mut child = std::process::Command::new(&worker_bin)
+            .arg("30")
+            .spawn()
+            .expect("spawn sleeper as fake binary worker");
 
         let pids = tmp.path().join(".iii/pids");
         std::fs::create_dir_all(&pids).unwrap();
-        // Write OUR pid so kill(pid, 0) succeeds on the alive check.
-        std::fs::write(
-            pids.join(format!("{}.pid", name)),
-            std::process::id().to_string(),
-        )
-        .unwrap();
+        std::fs::write(pids.join(format!("{}.pid", name)), child.id().to_string()).unwrap();
 
         let s = WorkerStatus::probe(name);
-        assert_eq!(s.pid, Some(std::process::id()));
-        assert!(s.alive, "is_worker_running must see our live pidfile");
+        let alive_seen = s.alive;
+        let pid_seen = s.pid;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(pid_seen, Some(child.id()));
+        assert!(alive_seen, "is_worker_running must see our live pidfile");
         assert_eq!(
             s.worker_type,
             Some("binary"),

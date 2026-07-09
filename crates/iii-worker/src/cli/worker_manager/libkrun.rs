@@ -130,6 +130,7 @@ pub async fn run_dev(
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let control_sock = rootfs.join("control.sock");
     let shell_sock = rootfs.join("shell.sock");
+    let pid_file = rootfs.join("vm.pid");
 
     let mut cmd = tokio::process::Command::new(&self_exe);
     cmd.arg("__vm-boot");
@@ -146,6 +147,7 @@ pub async fn run_dev(
         exec_path,
         vcpus,
         ram_mib,
+        &pid_file,
         &control_sock,
         &shell_sock,
         &env_pairs,
@@ -223,7 +225,6 @@ pub async fn run_dev(
             // Hardened writer: O_NOFOLLOW + 0o600 on Unix so a symlink
             // pre-planted at vm.pid can't redirect our write to a
             // sensitive file. Matches the watch.pid hardening.
-            let pid_file = rootfs.join("vm.pid");
             let pid = child.id().unwrap_or(0);
             if pid > 0
                 && let Err(e) = crate::cli::pidfile::write_pid_file_strict(&pid_file, pid)
@@ -367,6 +368,7 @@ fn vm_boot_args_dev(
     exec_path: &str,
     vcpus: u32,
     ram_mib: u32,
+    pid_file: &Path,
     control_sock: &Path,
     shell_sock: &Path,
     env: &[(String, String)],
@@ -385,6 +387,12 @@ fn vm_boot_args_dev(
     out.push(OsString::from(vcpus.to_string()));
     out.push(OsString::from("--ram"));
     out.push(OsString::from(ram_mib.to_string()));
+    // `--pid-file` must be in argv (not just written post-spawn by the
+    // parent): it's how `extract_worker_name_from_cmdline` recognizes this
+    // VM in `ps`, and how `__vm-boot` knows to clean the pidfile on exit.
+    // Matching `vm_boot_args_oci`.
+    out.push(OsString::from("--pid-file"));
+    out.push(pid_file.as_os_str().to_owned());
     out.push(OsString::from("--control-sock"));
     out.push(control_sock.as_os_str().to_owned());
     out.push(OsString::from("--shell-sock"));
@@ -1027,6 +1035,7 @@ mod tests {
             "/bin/sh",
             2,
             2048,
+            Path::new("/tmp/vm.pid"),
             Path::new("/tmp/control.sock"),
             Path::new("/tmp/shell.sock"),
             &env,
@@ -1040,6 +1049,7 @@ mod tests {
         assert_eq!(parsed.workdir, "/workspace");
         assert_eq!(parsed.vcpus, 2);
         assert_eq!(parsed.ram, 2048);
+        assert_eq!(parsed.pid_file.as_deref(), Some("/tmp/vm.pid"));
         assert_eq!(parsed.control_sock.as_deref(), Some("/tmp/control.sock"));
         assert_eq!(parsed.shell_sock.as_deref(), Some("/tmp/shell.sock"));
         assert_eq!(parsed.env, vec!["III_URL=ws://localhost:3111".to_string()]);
