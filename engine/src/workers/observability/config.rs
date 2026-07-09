@@ -340,29 +340,40 @@ pub struct ObservabilityWorkerConfig {
 }
 
 impl Default for ObservabilityWorkerConfig {
+    /// Built-in defaults used when the worker is auto-injected with no
+    /// `config:` block (mandatory registration) and as the
+    /// `configuration::register` seed on first boot. Mirrors the former
+    /// `iii.worker.yaml` config block so removing that block is not a
+    /// behavior change.
+    ///
+    /// `service_version` keeps the `${SERVICE_VERSION:__III_ENGINE_VERSION__}`
+    /// template so the configuration worker expands it on every
+    /// `configuration::get` (and boot reads that go through the same
+    /// expander). Callers that publish this value into the live OTEL
+    /// global must expand it first.
     fn default() -> Self {
         Self {
             enabled: Some(true),
             service_name: Some("iii".to_string()),
+            service_version: Some("${SERVICE_VERSION:__III_ENGINE_VERSION__}".to_string()),
             exporter: Some(OtelExporterType::Memory),
+            memory_max_spans: Some(1_000_000),
             metrics_enabled: Some(true),
             metrics_exporter: Some(MetricsExporterType::Memory),
+            metrics_retention_seconds: Some(3600),
+            metrics_max_count: Some(10_000),
             logs_enabled: Some(true),
             logs_exporter: Some(LogsExporterType::Memory),
+            logs_max_count: Some(1000),
+            logs_retention_seconds: Some(3600),
             logs_console_output: true,
             logs_sampling_ratio: 1.0,
-            // All other fields left as None/empty — resolved at runtime
-            service_version: None,
+            sampling_ratio: Some(1.0),
+            // Optional / advanced fields left unset
             service_namespace: None,
             endpoint: None,
-            sampling_ratio: None,
             sampling: None,
-            memory_max_spans: None,
             live_spans: None,
-            metrics_retention_seconds: None,
-            metrics_max_count: None,
-            logs_max_count: None,
-            logs_retention_seconds: None,
             logs_batch_size: None,
             logs_flush_interval_ms: None,
             alerts: Vec::new(),
@@ -374,6 +385,22 @@ impl Default for ObservabilityWorkerConfig {
 }
 
 impl ObservabilityWorkerConfig {
+    /// Expand `${VAR:default}` placeholders (including the
+    /// `__III_ENGINE_VERSION__` sentinel) the same way `configuration::get`
+    /// does. Used when publishing this config into the live OTEL global —
+    /// the seed passed to `configuration::register` keeps the template form
+    /// so later reads re-expand against the process env.
+    pub fn with_env_expanded(self) -> Self {
+        let Ok(value) = serde_json::to_value(&self) else {
+            return self;
+        };
+        let (expanded, _missing) = crate::workers::configuration::store::expand_value(&value);
+        match serde_json::from_value::<Self>(expanded) {
+            Ok(parsed) => parsed.normalized(),
+            Err(_) => self,
+        }
+    }
+
     /// Clamp out-of-range top-level values into safe bounds.
     ///
     /// The JSON Schema rejects out-of-range values at `configuration::set`
@@ -617,9 +644,27 @@ mod tests {
         );
         assert!(!obj.contains_key("alerts"), "empty vecs must not serialize");
         assert!(obj.contains_key("enabled"));
+        assert_eq!(
+            obj.get("service_version").and_then(|v| v.as_str()),
+            Some("${SERVICE_VERSION:__III_ENGINE_VERSION__}"),
+            "default seed keeps the env template for configuration::register"
+        );
+        assert_eq!(
+            obj.get("memory_max_spans").and_then(|v| v.as_u64()),
+            Some(1_000_000)
+        );
         // Round-trips through the schema validator (all serialized fields valid).
         let parsed: ObservabilityWorkerConfig = serde_json::from_value(value).unwrap();
         assert_eq!(parsed, ObservabilityWorkerConfig::default());
+    }
+
+    #[test]
+    fn with_env_expanded_resolves_engine_version_sentinel() {
+        let expanded = ObservabilityWorkerConfig::default().with_env_expanded();
+        assert_eq!(
+            expanded.service_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

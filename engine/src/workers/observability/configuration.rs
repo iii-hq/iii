@@ -7,14 +7,16 @@
 //! Integration with the builtin `configuration` worker.
 //!
 //! The `iii-observability` worker registers its config schema under the id
-//! `iii-observability`, seeds it from the config.yaml block only when no
-//! value is stored yet, reads the live value (with `${VAR:default}`
-//! expansion), and hot-applies `configuration:updated` events per field tier
-//! (live globals, storage limits, sampler/alerts/level/collapse swaps, log
-//! exporter task rebuilds). After first boot the configuration worker entry
-//! is the runtime source of truth; the config.yaml block is seed-only —
-//! restart-tier fields (trace exporter wiring, resource identity, log
-//! format) are read from the persisted entry at the next engine start.
+//! `iii-observability`, seeds it from the config.yaml block (or
+//! [`ObservabilityWorkerConfig::default`] when auto-injected with no block)
+//! only when no value is stored yet, reads the live value (with
+//! `${VAR:default}` expansion), and hot-applies `configuration:updated`
+//! events per field tier (live globals, storage limits, sampler/alerts/
+//! level/collapse swaps, log exporter task rebuilds). After first boot the
+//! configuration worker entry is the runtime source of truth; the
+//! config.yaml block is seed-only — restart-tier fields (trace exporter
+//! wiring, resource identity, log format) are read from the persisted
+//! entry at the next engine start.
 
 use anyhow::anyhow;
 use serde_json::{Value, json};
@@ -39,9 +41,9 @@ pub(super) const CONFIG_BUS_TIMEOUT: std::time::Duration = std::time::Duration::
 const APPLY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Register the `iii-observability` configuration entry: schema and metadata
-/// refresh on every boot; `initial_value` (the config.yaml seed, or built-in
-/// defaults) is included only when nothing is stored yet, so runtime edits
-/// survive engine restarts.
+/// refresh on every boot; `initial_value` (the config.yaml seed, or
+/// [`ObservabilityWorkerConfig::default`]) is included only when nothing is
+/// stored yet, so runtime edits survive engine restarts.
 ///
 /// Makes unbounded bus calls — callers must wrap the call in
 /// `tokio::time::timeout(CONFIG_BUS_TIMEOUT, ...)`.

@@ -5,14 +5,13 @@
 // See LICENSE and PATENTS files for details.
 
 /// Configurable builtin workers: enabled by default and have a default YAML config.
-pub const BUILTIN_NAMES: [&str; 8] = [
+pub const BUILTIN_NAMES: [&str; 7] = [
     "iii-http",
     "iii-stream",
     "iii-state",
     "iii-queue",
     "iii-pubsub",
     "iii-cron",
-    "iii-observability",
     "iii-sandbox",
 ];
 
@@ -21,11 +20,14 @@ pub const BUILTIN_NAMES: [&str; 8] = [
 pub const OPTIONAL_BUILTIN_NAMES: [&str; 2] = ["iii-exec", "iii-bridge"];
 
 /// Internal builtin workers that are always present and never user-configured.
-pub const MANDATORY_BUILTIN_NAMES: [&str; 4] = [
+/// Defaults live in Rust (`ObservabilityWorkerConfig::default`, etc.), not in
+/// a `config:` block written into `config.yaml`.
+pub const MANDATORY_BUILTIN_NAMES: [&str; 5] = [
     "iii-worker-manager",
     "iii-telemetry",
     "iii-engine-functions",
     "iii-http-functions",
+    "iii-observability",
 ];
 
 /// Returns true if the name is any engine builtin (configurable, optional, or mandatory).
@@ -52,8 +54,6 @@ const STATE_MANIFEST: &str = include_str!("../../../../engine/src/workers/state/
 const QUEUE_MANIFEST: &str = include_str!("../../../../engine/src/workers/queue/iii.worker.yaml");
 const PUBSUB_MANIFEST: &str = include_str!("../../../../engine/src/workers/pubsub/iii.worker.yaml");
 const CRON_MANIFEST: &str = include_str!("../../../../engine/src/workers/cron/iii.worker.yaml");
-const OBSERVABILITY_MANIFEST: &str =
-    include_str!("../../../../engine/src/workers/observability/iii.worker.yaml");
 
 fn manifest_for_builtin(name: &str) -> Option<&'static str> {
     match name {
@@ -63,7 +63,6 @@ fn manifest_for_builtin(name: &str) -> Option<&'static str> {
         "iii-queue" => Some(QUEUE_MANIFEST),
         "iii-pubsub" => Some(PUBSUB_MANIFEST),
         "iii-cron" => Some(CRON_MANIFEST),
-        "iii-observability" => Some(OBSERVABILITY_MANIFEST),
         _ => None,
     }
 }
@@ -167,11 +166,14 @@ mod tests {
     }
 
     #[test]
-    fn observability_default_uses_engine_version_placeholder() {
-        let yaml = get_builtin_default("iii-observability").unwrap();
-
-        assert!(yaml.contains("service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}"));
-        assert!(!yaml.contains("service_version: 0.2.0"));
+    fn observability_is_mandatory_without_yaml_default() {
+        // Defaults live in ObservabilityWorkerConfig::default(); the
+        // iii.worker.yaml no longer carries a config: block, so
+        // get_builtin_default must not invent one for config.yaml.
+        assert!(MANDATORY_BUILTIN_NAMES.contains(&"iii-observability"));
+        assert!(!BUILTIN_NAMES.contains(&"iii-observability"));
+        assert!(get_builtin_default("iii-observability").is_none());
+        assert!(is_any_builtin("iii-observability"));
     }
 
     #[test]
@@ -267,27 +269,6 @@ mod tests {
         assert_eq!(
             adapter[&Value::String("name".into())],
             Value::String("local".into())
-        );
-    }
-
-    #[test]
-    fn observability_default_uses_memory_exporter() {
-        let yaml = get_builtin_default("iii-observability").unwrap();
-        let val: Value = serde_yaml::from_str(&yaml).unwrap();
-        let map = val.as_mapping().unwrap();
-
-        assert_eq!(map[&Value::String("enabled".into())], Value::Bool(true));
-        assert_eq!(
-            map[&Value::String("exporter".into())],
-            Value::String("memory".into())
-        );
-        assert_eq!(
-            map[&Value::String("metrics_exporter".into())],
-            Value::String("memory".into())
-        );
-        assert_eq!(
-            map[&Value::String("logs_exporter".into())],
-            Value::String("memory".into())
         );
     }
 

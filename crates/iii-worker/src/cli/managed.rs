@@ -26,7 +26,9 @@
 use colored::Colorize;
 
 use super::binary_download;
-use super::builtin_defaults::{get_builtin_default, is_any_builtin, resolve_builtin_version};
+use super::builtin_defaults::{
+    MANDATORY_BUILTIN_NAMES, get_builtin_default, is_any_builtin, resolve_builtin_version,
+};
 use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
@@ -61,7 +63,7 @@ async fn fire_worker_telemetry(name: &str, version: &str) {
     )
     .await
     {
-        Ok(Ok(resp)) if resp.status().as_u16() == 204 => {}
+        Ok(Ok(resp)) if matches!(resp.status().as_u16(), 200 | 204) => {}
         Ok(Ok(resp)) => {
             eprintln!(
                 "  {} telemetry for {} returned unexpected status {}",
@@ -1762,6 +1764,19 @@ pub async fn handle_managed_add(
 
     // Shorthand name — resolve via API
     let (name, version) = parse_worker_input(image_or_name);
+
+    // Mandatory builtins are always injected by the engine with Rust defaults;
+    // they must not be written into config.yaml via `iii worker add`.
+    if MANDATORY_BUILTIN_NAMES.contains(&name.as_str()) {
+        if !brief {
+            eprintln!(
+                "  {} '{}' is a mandatory engine worker (always on; configure via the configuration worker, not config.yaml).",
+                "info:".cyan(),
+                name.bold()
+            );
+        }
+        return 0;
+    }
 
     // Check for engine-builtin workers first (no network needed).
     if let Some(default_yaml) = get_builtin_default(&name) {

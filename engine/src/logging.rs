@@ -425,10 +425,11 @@ fn otel_config_from_module(
 /// Resolve the authoritative boot configuration for the `iii-observability`
 /// worker:
 ///
-/// 1. yaml entry with a config block → that block;
-/// 2. yaml entry without a config block → built-in defaults (enabled);
-/// 3. no yaml entry → `None` (observability stays off unless env-enabled,
-///    exactly as before — a stray persisted file must not switch it on).
+/// 1. persisted configuration-worker entry (when file-backed) → that value;
+/// 2. yaml entry with a config block → that block;
+/// 3. yaml entry without a config block, or no yaml entry → built-in
+///    [`ObservabilityWorkerConfig::default`] (the worker is mandatory and
+///    always auto-injected, same pattern as `configuration`).
 ///
 /// When the configuration worker uses the file-backed adapter and a
 /// persisted `iii-observability` entry exists, its value REPLACES the yaml
@@ -436,6 +437,9 @@ fn otel_config_from_module(
 /// seed-only after first boot). This is what lets restart-tier fields
 /// (trace exporter wiring, resource identity, log format) edited through
 /// `configuration::set` take effect at the next engine start.
+///
+/// Returned values have `${VAR:default}` placeholders expanded so the live
+/// OTEL global never carries template strings.
 ///
 /// Runs before any tracing subscriber exists, so diagnostics use stdio.
 fn resolve_boot_observability_config(
@@ -461,7 +465,7 @@ fn resolve_boot_observability_config(
                 println!(
                     "Using persisted iii-observability configuration entry (config.yaml block is seed-only)"
                 );
-                return Some(stored_cfg.normalized());
+                return Some(stored_cfg.normalized().with_env_expanded());
             }
             Err(err) => eprintln!(
                 "persisted iii-observability configuration is invalid ({err}); using the config.yaml block"
@@ -469,24 +473,26 @@ fn resolve_boot_observability_config(
         }
     }
 
-    // No persisted entry: first boot. Fall back to the config.yaml block when
-    // present; otherwise leave the global unset (the auto-injected worker
-    // seeds its own defaults in `from_config`) — exactly the prior behavior
-    // for engines that never declared the worker.
-    let entry = entry?;
-    let yaml_base: ObservabilityWorkerConfig = match &entry.config {
-        Some(value) => match serde_json::from_value(value.clone()) {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                eprintln!(
-                    "iii-observability config block in config.yaml is invalid ({err}); using built-in defaults"
-                );
-                ObservabilityWorkerConfig::default()
-            }
+    // No persisted entry: first boot. Prefer the config.yaml block when
+    // present; otherwise use built-in defaults — the worker is mandatory
+    // and always injected, so there is no "observability off" first-boot
+    // path anymore.
+    let yaml_base: ObservabilityWorkerConfig = match entry {
+        Some(entry) => match &entry.config {
+            Some(value) => match serde_json::from_value(value.clone()) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    eprintln!(
+                        "iii-observability config block in config.yaml is invalid ({err}); using built-in defaults"
+                    );
+                    ObservabilityWorkerConfig::default()
+                }
+            },
+            None => ObservabilityWorkerConfig::default(),
         },
         None => ObservabilityWorkerConfig::default(),
     };
-    Some(yaml_base.normalized())
+    Some(yaml_base.normalized().with_env_expanded())
 }
 
 /// Read the persisted `iii-observability` configuration value written by the
@@ -1459,16 +1465,25 @@ mod tests {
     }
 
     #[test]
-    fn boot_merge_returns_none_on_true_first_boot() {
-        // No yaml entry and no persisted file: leave the global unset so the
-        // auto-injected worker seeds its own defaults.
+    fn boot_merge_uses_defaults_on_true_first_boot() {
+        // No yaml entry and no persisted file: the mandatory worker still
+        // boots with ObservabilityWorkerConfig::default().
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = boot_cfg_with_dir(dir.path(), serde_json::json!({}));
         cfg.workers.remove(0); // drop the iii-observability yaml entry
 
-        assert!(
-            resolve_boot_observability_config(&cfg).is_none(),
-            "no yaml entry and no persisted file is a true first boot"
+        let resolved = resolve_boot_observability_config(&cfg).expect("defaults apply");
+        assert_eq!(resolved.enabled, Some(true));
+        assert_eq!(resolved.service_name.as_deref(), Some("iii"));
+        assert_eq!(
+            resolved.memory_max_spans,
+            Some(1_000_000),
+            "built-in defaults match the former iii.worker.yaml block"
+        );
+        // service_version template is expanded for the live OTEL global
+        assert_eq!(
+            resolved.service_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
         );
     }
 

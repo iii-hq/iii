@@ -673,10 +673,12 @@ pub struct BaggageGetAllInput {}
 /// It sets the global OTEL configuration from YAML before logging is initialized.
 #[derive(Clone)]
 pub struct ObservabilityWorker {
-    /// The config.yaml block passed to `create()` (or built-in defaults).
+    /// The config.yaml block passed to `create()`, or
+    /// [`config::ObservabilityWorkerConfig::default`] when auto-injected.
     /// Used as the seed for first-time `configuration::register` and as the
     /// fetch fallback; the configuration worker entry is the runtime source
-    /// of truth afterwards.
+    /// of truth afterwards. May still contain `${VAR:default}` templates —
+    /// the live OTEL global is published with those expanded.
     _config: config::ObservabilityWorkerConfig,
     triggers: Arc<OtelLogTriggers>,
     trace_triggers: Arc<OtelTraceTriggers>,
@@ -1000,11 +1002,13 @@ impl ObservabilityWorker {
         };
         let otel_config = otel_config.normalized();
 
-        // Seed the global OTEL config so logging can use it. On the serve
-        // path the global is already populated during logging init (from the
-        // persisted configuration entry or this same yaml block); first-set
-        // semantics keep that value authoritative.
-        if !otel::set_otel_config(otel_config.clone()) {
+        // Seed the global OTEL config so logging can use it. Expand
+        // `${VAR:default}` placeholders for the live snapshot; `_config`
+        // keeps the template form so first-boot `configuration::register`
+        // can seed it. On the serve path the global is already populated
+        // during logging init; first-set semantics keep that value
+        // authoritative.
+        if !otel::set_otel_config(otel_config.clone().with_env_expanded()) {
             tracing::debug!(
                 "ObservabilityWorker created with the global config already set; keeping it"
             );
