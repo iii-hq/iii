@@ -51,7 +51,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::rmq_handler", call_count.clone());
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -69,7 +69,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
         .expect("Module start_background_tasks should succeed");
 
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-default"),
         "test::rmq_handler",
         json!({"task": "process_order", "order_id": 42}),
@@ -100,7 +100,7 @@ async fn full_roundtrip_fifo_preserves_order() {
     let invocation_order: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_order_recording_function(&engine, "test::rmq_fifo", "seq", invocation_order.clone());
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -120,7 +120,7 @@ async fn full_roundtrip_fifo_preserves_order() {
     let message_count: usize = 5;
     for i in 0..message_count {
         enqueue(
-            &engine,
+            &module,
             &format!("{prefix}-payment"),
             "test::rmq_fifo",
             json!({
@@ -162,7 +162,7 @@ async fn retry_behavior_with_rabbitmq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_retry", call_count.clone());
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -180,7 +180,7 @@ async fn retry_behavior_with_rabbitmq() {
         .expect("Module start_background_tasks should succeed");
 
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-default"),
         "test::rmq_retry",
         json!({"key": "should_exhaust"}),
@@ -221,7 +221,7 @@ async fn exhausted_message_lands_in_dlq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_dlq", call_count.clone());
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -239,13 +239,13 @@ async fn exhausted_message_lands_in_dlq() {
         .expect("Module start_background_tasks should succeed");
 
     assert_eq!(
-        dlq_count(&engine, &format!("{prefix}-default")).await,
+        dlq_count(&module, &format!("{prefix}-default")).await,
         0,
         "DLQ should start empty"
     );
 
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-default"),
         "test::rmq_dlq",
         json!({"should_land_in": "dlq"}),
@@ -256,7 +256,7 @@ async fn exhausted_message_lands_in_dlq() {
     // Wait for retries to exhaust and message to land in DLQ
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    let count = dlq_count(&engine, &format!("{prefix}-default")).await;
+    let count = dlq_count(&module, &format!("{prefix}-default")).await;
     assert_eq!(
         count, 1,
         "Exactly one message should be in the DLQ after retry exhaustion, got {count}"
@@ -281,7 +281,7 @@ async fn concurrent_processing() {
         timestamps.clone(),
     );
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -302,7 +302,7 @@ async fn concurrent_processing() {
 
     for i in 0..3 {
         enqueue(
-            &engine,
+            &module,
             &format!("{prefix}-default"),
             "test::rmq_slow",
             json!({"idx": i}),
@@ -346,7 +346,7 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::rmq_default", default_count.clone());
     register_counting_function(&engine, "test::rmq_payment", payment_count.clone());
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -365,7 +365,7 @@ async fn multiple_queues_operate_independently() {
 
     for i in 0..3 {
         enqueue(
-            &engine,
+            &module,
             &format!("{prefix}-default"),
             "test::rmq_default",
             json!({"idx": i}),
@@ -374,7 +374,7 @@ async fn multiple_queues_operate_independently() {
         .expect("Enqueue to default should succeed");
 
         enqueue(
-            &engine,
+            &module,
             &format!("{prefix}-payment"),
             "test::rmq_payment",
             json!({"transaction_id": format!("txn-{i}"), "idx": i}),
@@ -516,7 +516,7 @@ async fn rmq_enqueue_process_ack_preserves_payload() {
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_payload_capturing_function(&engine, "test::rmq_payload", captured.clone());
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -541,7 +541,7 @@ async fn rmq_enqueue_process_ack_preserves_payload() {
     });
 
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-default"),
         "test::rmq_payload",
         sent_payload.clone(),
@@ -581,7 +581,7 @@ async fn rmq_topology_matches_expected_configuration() {
     register_counting_function(&engine, "test::rmq_topo_default", default_count);
     register_counting_function(&engine, "test::rmq_topo_payment", payment_count);
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -735,7 +735,7 @@ async fn rmq_retry_backoff_timing_is_flat() {
     );
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, max_retries, backoff_ms);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -750,7 +750,7 @@ async fn rmq_retry_backoff_timing_is_flat() {
         .expect("Module start_background_tasks should succeed");
 
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-test"),
         "test::rmq_flat_backoff",
         json!({"key": "flat_backoff_test"}),
@@ -802,7 +802,7 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
     register_failing_function(&engine, "test::rmq_dlq_content", call_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 300);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -819,7 +819,7 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
     let sent_payload = json!({"order_id": 42, "action": "verify_dlq_content"});
 
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-test"),
         "test::rmq_dlq_content",
         sent_payload.clone(),
@@ -836,7 +836,7 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
         "Expected 3 handler invocations (1 initial + 2 retries), got {total_calls}"
     );
 
-    let count = dlq_count(&engine, &format!("{prefix}-test")).await;
+    let count = dlq_count(&module, &format!("{prefix}-test")).await;
     assert_eq!(
         count, 1,
         "Exactly one message should be in the DLQ after retry exhaustion, got {count}"
@@ -900,7 +900,7 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
     register_failing_function(&engine, "test::rmq_zero_retry", call_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 0, 200);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -917,7 +917,7 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
     let sent_payload = json!({"zero_retry": true});
 
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-test"),
         "test::rmq_zero_retry",
         sent_payload.clone(),
@@ -934,7 +934,7 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
         "Expected exactly 1 handler invocation (no retries with max_retries=0), got {total_calls}"
     );
 
-    let count = dlq_count(&engine, &format!("{prefix}-test")).await;
+    let count = dlq_count(&module, &format!("{prefix}-test")).await;
     assert_eq!(
         count, 1,
         "Exactly one message should be in the DLQ, got {count}"
@@ -1016,7 +1016,7 @@ async fn rmq_fifo_multi_group_ordering() {
         }
     });
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -1036,7 +1036,7 @@ async fn rmq_fifo_multi_group_ordering() {
     for seq in 0..messages_per_group {
         for group in &groups {
             enqueue(
-                &engine,
+                &module,
                 &format!("{prefix}-fifo"),
                 "test::rmq_fifo_group",
                 json!({"group": group, "seq": seq}),
@@ -1098,7 +1098,7 @@ async fn rmq_handler_panic_recovery() {
     register_panicking_function(&engine, "test::rmq_panic", success_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 200);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -1114,7 +1114,7 @@ async fn rmq_handler_panic_recovery() {
 
     // Enqueue a panicking message
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-test"),
         "test::rmq_panic",
         json!({"panic": true}),
@@ -1127,7 +1127,7 @@ async fn rmq_handler_panic_recovery() {
 
     // Enqueue a normal message to prove consumer survived the panic
     enqueue(
-        &engine,
+        &module,
         &format!("{prefix}-test"),
         "test::rmq_panic",
         json!({"panic": false}),
@@ -1146,7 +1146,7 @@ async fn rmq_handler_panic_recovery() {
     );
 
     // Panicked message reached DLQ after retry exhaustion
-    let dlq = dlq_count(&engine, &format!("{prefix}-test")).await;
+    let dlq = dlq_count(&module, &format!("{prefix}-test")).await;
     assert!(
         dlq >= 1,
         "Panicked message should land in DLQ after exhausting retries, got {} DLQ entries",
@@ -1247,7 +1247,7 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
     let cap_a = register_rmq_capturing_function(&engine, "test::rmq_fan_a");
     let cap_b = register_rmq_capturing_function(&engine, "test::rmq_fan_b");
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -1311,7 +1311,7 @@ async fn rmq_fanout_replicas_compete_within_function() {
 
     let counter = register_rmq_counting_fn(&engine, "test::rmq_replica_fn");
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -1366,7 +1366,7 @@ async fn rmq_fanout_dlq_per_function() {
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_dlq_fail", fail_count.clone());
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
@@ -1493,7 +1493,7 @@ async fn rmq_priority_queue_orders_by_priority() {
         release.clone(),
     );
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_priority_queue_config(
             &ctx.amqp_url,
@@ -1514,7 +1514,7 @@ async fn rmq_priority_queue_orders_by_priority() {
     // Primer (lowest priority): grabbed first and held unacked while we build the
     // backlog. prefetch=1 (concurrency=1) keeps the broker from delivering more.
     enqueue(
-        &engine,
+        &module,
         &queue,
         "test::rmq_priority",
         json!({ "priority": 0 }),
@@ -1529,7 +1529,7 @@ async fn rmq_priority_queue_orders_by_priority() {
     // Enqueue the rest, scrambled, while the consumer is blocked on the primer.
     for p in [3u64, 1, 5, 2, 4] {
         enqueue(
-            &engine,
+            &module,
             &queue,
             "test::rmq_priority",
             json!({ "priority": p }),
@@ -1564,7 +1564,7 @@ async fn rmq_priority_queue_topology_declares_x_max_priority() {
         Arc::new(Engine::new())
     };
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_priority_queue_config(
             &ctx.amqp_url,
@@ -1651,7 +1651,7 @@ async fn rmq_subscriber_priority_orders_by_priority() {
         release.clone(),
     );
 
-    let module = QueueWorker::create(
+    let module = QueueWorker::for_test(
         engine.clone(),
         Some(rabbitmq_priority_topic_config(&ctx.amqp_url, "priority")),
     )

@@ -52,7 +52,7 @@ async fn handler_panic_does_not_crash_worker() {
     let success_count = Arc::new(AtomicU64::new(0));
     register_panicking_function(&engine, "test::panic_handler", success_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
@@ -64,7 +64,7 @@ async fn handler_panic_does_not_crash_worker() {
 
     // Enqueue a message that will cause a panic
     enqueue(
-        &engine,
+        &module,
         "default",
         "test::panic_handler",
         json!({"panic": true}),
@@ -77,7 +77,7 @@ async fn handler_panic_does_not_crash_worker() {
 
     // Enqueue a normal message to prove the consumer loop survived the panic
     enqueue(
-        &engine,
+        &module,
         "default",
         "test::panic_handler",
         json!({"panic": false, "id": "normal-msg"}),
@@ -101,7 +101,7 @@ async fn handler_panic_does_not_crash_worker() {
     // 3 seconds gives ample headroom.
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    let dlq = dlq_count(&engine, "default").await;
+    let dlq = dlq_count(&module, "default").await;
     assert!(
         dlq >= 1,
         "Panicked message should eventually land in DLQ after exhausting retries, got {} DLQ entries",

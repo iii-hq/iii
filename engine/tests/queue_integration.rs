@@ -24,19 +24,19 @@ use common::queue_helpers::{
 
 #[tokio::test]
 async fn enqueue_to_standard_queue_succeeds() {
-    let engine = create_engine_with_queue(builtin_queue_config()).await;
+    let (_engine, worker) = create_engine_with_queue(builtin_queue_config()).await;
 
-    let result = enqueue(&engine, "default", "test::handler", json!({"key": "value"})).await;
+    let result = enqueue(&worker, "default", "test::handler", json!({"key": "value"})).await;
 
     assert!(result.is_ok(), "Enqueue to 'default' should succeed");
 }
 
 #[tokio::test]
 async fn enqueue_to_unknown_queue_fails() {
-    let engine = create_engine_with_queue(builtin_queue_config()).await;
+    let (_engine, worker) = create_engine_with_queue(builtin_queue_config()).await;
 
     let result = enqueue(
-        &engine,
+        &worker,
         "nonexistent",
         "test::handler",
         json!({"key": "value"}),
@@ -53,11 +53,11 @@ async fn enqueue_to_unknown_queue_fails() {
 
 #[tokio::test]
 async fn enqueue_to_fifo_missing_group_field_fails() {
-    let engine = create_engine_with_queue(builtin_queue_config()).await;
+    let (_engine, worker) = create_engine_with_queue(builtin_queue_config()).await;
 
     // The "payment" queue is FIFO with message_group_field = "transaction_id".
     // Sending a payload without that field should be rejected.
-    let result = enqueue(&engine, "payment", "test::handler", json!({"amount": 100})).await;
+    let result = enqueue(&worker, "payment", "test::handler", json!({"amount": 100})).await;
 
     assert!(
         result.is_err(),
@@ -72,10 +72,10 @@ async fn enqueue_to_fifo_missing_group_field_fails() {
 
 #[tokio::test]
 async fn enqueue_to_fifo_null_group_field_fails() {
-    let engine = create_engine_with_queue(builtin_queue_config()).await;
+    let (_engine, worker) = create_engine_with_queue(builtin_queue_config()).await;
 
     let result = enqueue(
-        &engine,
+        &worker,
         "payment",
         "test::handler",
         json!({"transaction_id": null, "amount": 100}),
@@ -103,7 +103,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::handler", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -120,7 +120,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
 
     // Enqueue a single message to the standard queue.
     enqueue(
-        &engine,
+        &module,
         "default",
         "test::handler",
         json!({"task": "process_order", "order_id": 42}),
@@ -153,7 +153,7 @@ async fn full_roundtrip_fifo_preserves_order() {
         invocation_order.clone(),
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -172,7 +172,7 @@ async fn full_roundtrip_fifo_preserves_order() {
     let message_count: usize = 5;
     for i in 0..message_count {
         enqueue(
-            &engine,
+            &module,
             "payment",
             "test::fifo_handler",
             json!({
@@ -215,7 +215,7 @@ async fn retry_exhaustion_stops_redelivery() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::always_fails", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -230,7 +230,7 @@ async fn retry_exhaustion_stops_redelivery() {
         .expect("Module start_background_tasks should succeed");
 
     enqueue(
-        &engine,
+        &module,
         "default",
         "test::always_fails",
         json!({"key": "should_exhaust"}),
@@ -271,7 +271,7 @@ async fn exhausted_message_lands_in_dlq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::dlq_target", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -286,10 +286,10 @@ async fn exhausted_message_lands_in_dlq() {
         .expect("Module start_background_tasks should succeed");
 
     // DLQ should start empty
-    assert_eq!(dlq_count(&engine, "default").await, 0);
+    assert_eq!(dlq_count(&module, "default").await, 0);
 
     enqueue(
-        &engine,
+        &module,
         "default",
         "test::dlq_target",
         json!({"should_land_in": "dlq"}),
@@ -300,7 +300,7 @@ async fn exhausted_message_lands_in_dlq() {
     // Wait for retries to exhaust (max_retries=2, backoff_ms=100)
     tokio::time::sleep(Duration::from_millis(3000)).await;
 
-    let count = dlq_count(&engine, "default").await;
+    let count = dlq_count(&module, "default").await;
     assert_eq!(
         count, 1,
         "Exactly one message should be in the DLQ after retry exhaustion, got {count}"
@@ -325,7 +325,7 @@ async fn standard_queue_processes_concurrently() {
         timestamps.clone(),
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -342,7 +342,7 @@ async fn standard_queue_processes_concurrently() {
     let start = std::time::Instant::now();
 
     for i in 0..3 {
-        enqueue(&engine, "default", "test::slow_handler", json!({"idx": i}))
+        enqueue(&module, "default", "test::slow_handler", json!({"idx": i}))
             .await
             .expect("Enqueue should succeed");
     }
@@ -384,7 +384,7 @@ async fn nonexistent_function_nacks_without_blocking_queue() {
     register_counting_function(&engine, "test::real_handler", call_count.clone());
     // Note: "test::ghost" is NOT registered
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -399,13 +399,13 @@ async fn nonexistent_function_nacks_without_blocking_queue() {
         .expect("Module start_background_tasks should succeed");
 
     // Enqueue to a nonexistent function first
-    enqueue(&engine, "default", "test::ghost", json!({"should": "fail"}))
+    enqueue(&module, "default", "test::ghost", json!({"should": "fail"}))
         .await
         .expect("Enqueue should succeed (validation is at consume time)");
 
     // Then enqueue to a real function
     enqueue(
-        &engine,
+        &module,
         "default",
         "test::real_handler",
         json!({"should": "succeed"}),
@@ -438,7 +438,7 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::default_handler", default_count.clone());
     register_counting_function(&engine, "test::payment_handler", payment_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -455,7 +455,7 @@ async fn multiple_queues_operate_independently() {
     // Enqueue 3 messages to each queue
     for i in 0..3 {
         enqueue(
-            &engine,
+            &module,
             "default",
             "test::default_handler",
             json!({"idx": i}),
@@ -464,7 +464,7 @@ async fn multiple_queues_operate_independently() {
         .expect("Enqueue to default should succeed");
 
         enqueue(
-            &engine,
+            &module,
             "payment",
             "test::payment_handler",
             json!({"transaction_id": format!("txn-{i}"), "idx": i}),
