@@ -87,6 +87,12 @@ pub struct FunctionsListInput {
     /// Exact worker-name match (resolved via the engine's worker registry).
     #[serde(default)]
     pub worker: Option<String>,
+    /// Exact worker-name match against any of several workers (OR-combined
+    /// with `worker` when both are set). Lets a caller list functions owned
+    /// by several workers in one call instead of one `worker` filter per
+    /// call.
+    #[serde(default)]
+    pub workers: Option<Vec<String>>,
     /// Include internal engine functions (`engine::*` prefix). Defaults to
     /// false.
     #[serde(default)]
@@ -1224,8 +1230,14 @@ impl EngineFunctionsWorker {
             functions.retain(|f| f.function_id.starts_with(prefix));
         }
 
-        if let Some(worker) = input.worker.as_deref() {
-            functions.retain(|f| f.worker_name == worker);
+        if input.worker.is_some() || input.workers.as_ref().is_some_and(|w| !w.is_empty()) {
+            functions.retain(|f| {
+                input.worker.as_deref() == Some(f.worker_name.as_str())
+                    || input
+                        .workers
+                        .as_ref()
+                        .is_some_and(|workers| workers.iter().any(|w| w == &f.worker_name))
+            });
         }
 
         if let Some(search) = input.search.as_deref()
@@ -2559,6 +2571,48 @@ mod tests {
                 assert_eq!(result.functions.len(), 1);
                 assert_eq!(result.functions[0].function_id, "state::get");
                 assert_eq!(result.functions[0].worker_name, "iii-state");
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn functions_list_filters_by_multiple_worker_names() {
+        let (engine, module) = setup_engine_and_module();
+        for (worker, function_id) in [
+            ("iii-state", "state::get"),
+            ("iii-queue", "queue::push"),
+            ("iii-http", "http::fetch"),
+        ] {
+            engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+                id: worker.to_string(),
+                name: worker.to_string(),
+                description: None,
+                worker_type: worker.to_string(),
+                connected_at: chrono::Utc::now(),
+                function_ids: vec![function_id.to_string()],
+                internal: false,
+            });
+            register_simple_function(&engine, function_id, None);
+        }
+
+        let filtered = module
+            .functions_list(
+                FunctionsListInput {
+                    workers: Some(vec!["iii-state".to_string(), "iii-http".to_string()]),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+        match filtered {
+            FunctionResult::Success(result) => {
+                let ids: Vec<&str> = result
+                    .functions
+                    .iter()
+                    .map(|f| f.function_id.as_str())
+                    .collect();
+                assert_eq!(ids, vec!["http::fetch", "state::get"]);
             }
             _ => panic!("expected success"),
         }
