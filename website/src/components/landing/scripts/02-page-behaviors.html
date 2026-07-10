@@ -1,0 +1,996 @@
+
+
+<script>
+  // ============= Copy prompt (AI assistant on-ramp) =============
+  // One prompt, self-routing by reader. A chat assistant uses llms.txt to explain
+  // iii (the person wants to learn). A coding agent uses AGENTS.md to spin up a
+  // project (the person wants to build). Same paste, right behavior either place.
+  const COPY_PROMPT_TEXT = [
+    'Read https://iii.dev/llms.txt and https://iii.dev/AGENTS.md.',
+    "If you're a chat assistant, use llms.txt to explain iii to me —",
+    'the three primitives (Worker, Trigger, Function) and how it',
+    "compares to my stack. If you're a coding agent, use AGENTS.md to",
+    'install iii and build the Quickstart with me',
+    '(https://iii.dev/docs/quickstart), running it locally.'
+  ].join('\n');
+  const COPIED_TEXT = 'copied';
+  const COPIED_MS = 4000;
+  const copyPromptBtn = document.getElementById('copy-prompt-btn');
+  const copyPromptLabel = document.getElementById('copy-prompt-label');
+  const copyPromptStatus = document.getElementById('copy-prompt-status');
+  const copyPromptPreview = document.getElementById('copy-prompt-preview-text');
+  const COPY_PROMPT_DEFAULT = 'copy prompt';
+  // Keep the visible preview in sync with the copied text (single source of truth):
+  // show the first line as a one-liner so "what you see" matches "what you copy".
+  if (copyPromptPreview) {
+    copyPromptPreview.textContent = COPY_PROMPT_TEXT.split('\n')[0].replace(/\.$/, '') + '…';
+  }
+  let copyPromptTimer = null;
+  function flashPromptCopied(){
+    if (copyPromptBtn) copyPromptBtn.classList.add('copied');
+    if (copyPromptLabel) copyPromptLabel.textContent = COPIED_TEXT;
+    if (copyPromptStatus) copyPromptStatus.textContent = 'Prompt copied to clipboard';
+    clearTimeout(copyPromptTimer);
+    copyPromptTimer = setTimeout(() => {
+      if (copyPromptBtn) copyPromptBtn.classList.remove('copied');
+      if (copyPromptLabel) copyPromptLabel.textContent = COPY_PROMPT_DEFAULT;
+      if (copyPromptStatus) copyPromptStatus.textContent = '';
+    }, COPIED_MS);
+  }
+  function copyPrompt(){
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(COPY_PROMPT_TEXT).then(flashPromptCopied).catch(flashPromptCopied);
+    } else {
+      flashPromptCopied();
+    }
+  }
+  if (copyPromptBtn) copyPromptBtn.addEventListener('click', copyPrompt);
+
+  // Workers section: "View the Worker Registry"
+  const workerCta = document.querySelector('.nw-cta-row .nw-cta');
+  if (workerCta) {
+    workerCta.addEventListener('click', () => {
+      iiiTrack('cta_click', {
+        cta_id: 'worker_registry',
+        cta_location: 'workers_section',
+        cta_label: 'view the worker registry'
+      });
+    });
+  }
+
+  // Footer column links (not already covered by cta-* classes)
+  document.querySelectorAll('.foot-col ul a').forEach(a => {
+    a.addEventListener('click', () => {
+      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      iiiTrack('cta_click', {
+        cta_id: 'footer_link',
+        cta_location: 'footer',
+        cta_label: label,
+        cta_href: a.getAttribute('href') || ''
+      });
+    });
+  });
+
+  // ============= Hero rotating descriptor =============
+  const rotatingDescriptors = [
+    'simple','scalable','durable','extensible','fast',
+    'composable','observable','reliable','interoperable'
+  ];
+  const heroDesc = document.getElementById('hero-desc');
+  if (heroDesc){
+    let rotIdx = 0;
+    setInterval(() => {
+      heroDesc.classList.add('is-anim');
+      setTimeout(() => {
+        rotIdx = (rotIdx + 1) % rotatingDescriptors.length;
+        heroDesc.textContent = rotatingDescriptors[rotIdx];
+        heroDesc.classList.remove('is-anim');
+      }, 400);
+    }, 3000);
+  }
+
+  // ============= Email signup helpers =============
+  function getMailmodoFormUrl(){
+    const meta = document.querySelector('meta[name="iii:mailmodo-form-url"]');
+    return meta && meta.getAttribute('content') ? meta.getAttribute('content').trim() : '';
+  }
+  async function submitToMailmodo(email){
+    const url = getMailmodoFormUrl();
+    if (!url) return;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      // Mailmodo returns 409 for already-subscribed; treat as success.
+      if (!res.ok && res.status !== 409) throw new Error('mailmodo submission failed');
+      if (typeof window.iiiNotifyCommonRoomEmail === 'function') window.iiiNotifyCommonRoomEmail(email);
+    } catch (_) {
+      // Swallow — we still mark the form submitted so users aren't blocked.
+    }
+  }
+  function persistAccessRequest(email){
+    try {
+      window.localStorage.setItem('iii_access_requested', 'true');
+      window.localStorage.setItem('iii_access_email', email);
+    } catch(_) {}
+  }
+
+  // ============= Hero email signup =============
+  const emailForm = document.getElementById('cta-email');
+  const emailInput = document.getElementById('email-input');
+  if (emailForm){
+    try {
+      if (window.localStorage.getItem('iii_access_requested') === 'true'){
+        emailForm.classList.add('submitted');
+      }
+    } catch(_) {}
+    emailForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const v = (emailInput.value || '').trim();
+      if (!v) return;
+      iiiTrack('email_submit', { form_location: 'hero' });
+      persistAccessRequest(v);
+      emailForm.classList.add('submitted');
+      emailInput.value = '';
+      submitToMailmodo(v);
+    });
+  }
+
+  // (Mode toggle removed)
+
+  // ============= Hello-world code highlighting =============
+  // Prism-style tokenizer: comments, strings, numbers, keywords, types, fns, props.
+  // GitHub-light palette to match iii.dev's themes.github.
+  (function highlightHelloCode(){
+    const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    // Token grammars: ordered list of {pattern, cls, [inside]}.
+    // First match wins; matched text is consumed.
+    const PY_GRAMMAR = [
+      { pattern: /#[^\n]*/,                        cls: 'tok-com' },
+      { pattern: /"""[\s\S]*?"""|'''[\s\S]*?'''/,  cls: 'tok-str' },
+      { pattern: /f?"(?:\\.|[^"\\\n])*"/,          cls: 'tok-str' },
+      { pattern: /f?'(?:\\.|[^'\\\n])*'/,          cls: 'tok-str' },
+      { pattern: /\b(True|False|None)\b/,          cls: 'tok-bool' },
+      { pattern: /\b(from|import|as|def|return|if|else|elif|or|and|not|in|is|for|while|class|with|try|except|finally|raise|lambda|pass|yield|async|await|global|nonlocal)\b/, cls: 'tok-kw' },
+      { pattern: /\b\d+(?:\.\d+)?\b/,              cls: 'tok-num' },
+      { pattern: /\b([A-Z][A-Za-z0-9_]*)\b/,       cls: 'tok-cls' },
+      { pattern: /\b([a-z_][a-zA-Z0-9_]*)(?=\s*\()/, cls: 'tok-fn' },
+      { pattern: /[+\-*/%=<>!&|^~]+/,              cls: 'tok-op' },
+      { pattern: /[{}()\[\],.:;]/,                 cls: 'tok-punc' },
+    ];
+
+    const TS_GRAMMAR = [
+      { pattern: /\/\*[\s\S]*?\*\//,               cls: 'tok-com' },
+      { pattern: /\/\/[^\n]*/,                     cls: 'tok-com' },
+      { pattern: /`(?:\\.|[^`\\])*`/,              cls: 'tok-str' },
+      { pattern: /"(?:\\.|[^"\\\n])*"/,            cls: 'tok-str' },
+      { pattern: /'(?:\\.|[^'\\\n])*'/,            cls: 'tok-str' },
+      { pattern: /\b(true|false|null|undefined)\b/, cls: 'tok-bool' },
+      { pattern: /\b(import|from|export|const|let|var|async|await|return|if|else|new|function|class|interface|type|extends|implements|public|private|protected|of|in|as|typeof|instanceof|void|do|while|for|switch|case|break|continue|default|throw|try|catch|finally|delete|yield|static|readonly)\b/, cls: 'tok-kw' },
+      { pattern: /\b\d+(?:\.\d+)?\b/,              cls: 'tok-num' },
+      { pattern: /\b([A-Z][A-Za-z0-9_]*)\b/,       cls: 'tok-cls' },
+      { pattern: /\b([a-zA-Z_$][a-zA-Z0-9_$]*)(?=\s*\()/, cls: 'tok-fn' },
+      { pattern: /\b([a-zA-Z_$][a-zA-Z0-9_$]*)(?=\s*:)/, cls: 'tok-prop' },
+      { pattern: /=>|[+\-*/%=<>!&|^~?]+/,           cls: 'tok-op' },
+      { pattern: /[{}()\[\],.:;]/,                 cls: 'tok-punc' },
+    ];
+
+    const RS_GRAMMAR = [
+      { pattern: /\/\*[\s\S]*?\*\//,               cls: 'tok-com' },
+      { pattern: /\/\/[^\n]*/,                     cls: 'tok-com' },
+      { pattern: /b?"(?:\\.|[^"\\\n])*"/,          cls: 'tok-str' },
+      { pattern: /b?'(?:\\.|[^'\\\n])'/,           cls: 'tok-str' },
+      { pattern: /\b(true|false)\b/,               cls: 'tok-bool' },
+      { pattern: /#\!\[[\s\S]*?\]|#\[[\s\S]*?\]/,  cls: 'tok-attr' },
+      { pattern: /\b(use|fn|let|mut|pub|async|await|move|return|if|else|match|struct|enum|impl|trait|where|for|while|loop|break|continue|self|Self|as|in|ref|crate|mod|extern|unsafe|static|const|dyn|box)\b/, cls: 'tok-kw' },
+      { pattern: /\b\d+(?:\.\d+)?(?:f32|f64|i8|i16|i32|i64|u8|u16|u32|u64|usize|isize)?\b/, cls: 'tok-num' },
+      { pattern: /\b(Result|Ok|Err|Vec|Option|Some|None|String|str|bool|i\d+|u\d+|f\d+|usize|isize|Box|Rc|Arc|Mutex|HashMap|HashSet)\b/, cls: 'tok-cls' },
+      { pattern: /\b([A-Z][A-Za-z0-9_]*)\b/,       cls: 'tok-cls' },
+      { pattern: /\b([a-z_][a-zA-Z0-9_]*!?)(?=\s*[\(\!])/, cls: 'tok-fn' },
+      { pattern: /::|->|=>|[+\-*/%=<>!&|^~?]+/,    cls: 'tok-op' },
+      { pattern: /[{}()\[\],.:;]/,                 cls: 'tok-punc' },
+    ];
+
+    function tokenize(src, grammar){
+      // Output array of {text, cls?} fragments — text is raw, escape later
+      const out = [];
+      let i = 0;
+      while (i < src.length){
+        let matched = false;
+        for (const rule of grammar){
+          // Anchor pattern at current position
+          const re = new RegExp('^(?:' + rule.pattern.source + ')', rule.pattern.flags.replace('g',''));
+          const m = re.exec(src.slice(i));
+          if (m && m[0].length){
+            out.push({ text: m[0], cls: rule.cls });
+            i += m[0].length;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched){
+          // Plain char
+          const last = out[out.length - 1];
+          if (last && !last.cls){
+            last.text += src[i];
+          } else {
+            out.push({ text: src[i] });
+          }
+          i++;
+        }
+      }
+      return out;
+    }
+
+    function render(src, grammar){
+      const tokens = tokenize(src, grammar);
+      return tokens.map(t => {
+        const safe = escapeHtml(t.text);
+        return t.cls ? '<span class="' + t.cls + '">' + safe + '</span>' : safe;
+      }).join('');
+    }
+
+    const GRAMMARS = { python: PY_GRAMMAR, typescript: TS_GRAMMAR, ts: TS_GRAMMAR, rust: RS_GRAMMAR };
+
+    document.querySelectorAll('.hello-code').forEach(pre => {
+      const lang = pre.getAttribute('data-lang') || 'typescript';
+      const grammar = GRAMMARS[lang] || TS_GRAMMAR;
+      const code = pre.querySelector('code');
+      if (!code) return;
+
+      // Extract any pre-existing hl-cmt spans (inline result comments) and
+      // replace them with placeholder tokens that survive the highlighter.
+      // We'll re-inject them as real spans afterwards.
+      // The placeholder uses pure non-alphanumeric chars so no grammar rule
+      // (keywords, classes, numbers, etc.) will tokenize/wrap it.
+      const placeholders = [];
+      Array.from(code.querySelectorAll('.hl-cmt')).forEach(span => {
+        const key = span.getAttribute('data-cmt') || ('cmt' + placeholders.length);
+        const text = span.textContent;
+        // \u0001 is a literal STX char; the dashes are punctuation; the
+        // hash-like sequence won't match any keyword/class/number regex.
+        const tok = '\u0001\u0002\u0003' + placeholders.length + '\u0003\u0002\u0001';
+        placeholders.push({ tok, key, text });
+        const tn = document.createTextNode(tok);
+        span.parentNode.replaceChild(tn, span);
+      });
+
+      // Use textContent so HTML entities (e.g. &lt; from rust generics) decode to raw chars first
+      const raw = code.textContent;
+      let html = render(raw, grammar);
+
+      // Re-inject the comment spans (escape the original text first).
+      const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      placeholders.forEach(p => {
+        const span = '<span class="hl-cmt" data-cmt="' + p.key + '">' + esc(p.text) + '</span>';
+        // Tolerate the highlighter possibly wrapping the placeholder digits in a token span.
+        const re = new RegExp('\\u0001\\u0002\\u0003(?:<[^>]*>)?' + placeholders.indexOf(p) + '(?:<\\/[^>]*>)?\\u0003\\u0002\\u0001', 'g');
+        html = html.replace(re, span);
+      });
+
+      code.innerHTML = html;
+    });
+  })();
+
+  // ============= LiveSystem animation =============
+  // 6-step loop, 1500ms each, mirroring iii-hq/iii LiveSystemAnimation.tsx
+  (function liveSystem(){
+    const center = document.getElementById('live-center');
+    const shapes = [
+      document.getElementById('live-s0'),
+      document.getElementById('live-s1'),
+      document.getElementById('live-s2'),
+    ];
+    if (!center || shapes.some(s => !s)) return;
+
+    const colors = ['#42e7e7', '#f3943d', '#ef2e61'];
+    const STEPS = [
+      [],          // 0: rest
+      [0],         // 1
+      [0,1],       // 2
+      [0,1,2],     // 3: all merged
+      [0,1],       // 4
+      [0],         // 5
+    ];
+
+    function bgFor(connected){
+      const cs = connected.map(i => colors[i]);
+      if (cs.length === 0) return 'var(--accent)';
+      if (cs.length === 1) return cs[0];
+      if (cs.length === 2) return 'linear-gradient(90deg, ' + cs[0] + ' 50%, ' + cs[1] + ' 50%)';
+      return 'linear-gradient(90deg, ' + cs[0] + ' 33.33%, ' + cs[1] + ' 33.33% 66.66%, ' + cs[2] + ' 66.66%)';
+    }
+
+    let step = 0;
+    function tick(){
+      const connected = STEPS[step];
+      const bg = bgFor(connected);
+      center.style.background = bg;
+      shapes.forEach((el, id) => {
+        const isConn = connected.includes(id);
+        const baseX = +el.dataset.baseX, baseY = +el.dataset.baseY;
+        const nearX = +el.dataset.nearX, nearY = +el.dataset.nearY;
+        const x = isConn ? nearX : baseX;
+        const y = isConn ? nearY : baseY;
+        el.style.background = isConn ? bg : colors[id];
+        // diamond keeps its 45deg rotation
+        const rot = el.classList.contains('diamond') ? ' rotate(45deg)' : '';
+        el.style.transform = 'translate(' + x + 'px,' + y + 'px)' + rot;
+      });
+      step = (step + 1) % 6;
+    }
+    tick();
+    setInterval(tick, 1500);
+  })();
+
+  // ============= ExecutionModel animation =============
+  // Task dot orbits the three shapes via the central hub.
+  // Simplified port of iii-hq/iii ExecutionModelAnimation.tsx — 12s loop.
+  (function execModel(){
+    const stage = document.getElementById('anim-exec');
+    const task = document.getElementById('anim-task');
+    if (!stage || !task) return;
+
+    const POSITIONS = {
+      circle:  [-32, 0],
+      square:  [0, -32],
+      diamond: [32, 0],
+      center:  [0, 0],
+    };
+    // Sequence: circle -> center -> square -> center -> diamond -> center -> repeat
+    const SEQ = ['circle', 'center', 'square', 'center', 'diamond', 'center'];
+    const COLORS = { circle:'#42e7e7', square:'#f3943d', diamond:'#ef2e61', center:'var(--accent)' };
+    const HOP_MS = 800;     // travel time
+    const DWELL_MS = 1200;  // pause at each node
+
+    let i = 0;
+    function setPos(name, opacity){
+      const [x,y] = POSITIONS[name];
+      task.style.transition = 'transform ' + HOP_MS + 'ms cubic-bezier(.5,0,.3,1), opacity .25s ease, background .25s ease';
+      task.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+      task.style.opacity = opacity;
+      task.style.background = COLORS[name];
+    }
+    // Initial fade-in at first node
+    setPos(SEQ[0], 0);
+    requestAnimationFrame(() => { task.style.opacity = 1; });
+
+    function tick(){
+      const next = SEQ[(i+1) % SEQ.length];
+      setPos(next, 1);
+      i = (i+1) % SEQ.length;
+    }
+    setInterval(tick, HOP_MS + DWELL_MS);
+  })();
+
+  // ============= Footer email signup =============
+  (function footEmail(){
+    const form = document.getElementById('foot-email');
+    const input = document.getElementById('foot-email-input');
+    if (!form || !input) return;
+    try {
+      if (window.localStorage.getItem('iii_access_requested') === 'true'){
+        form.classList.add('submitted');
+      }
+    } catch(_) {}
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const v = (input.value || '').trim();
+      if (!v) return;
+      iiiTrack('email_submit', { form_location: 'footer' });
+      persistAccessRequest(v);
+      form.classList.add('submitted');
+      input.value = '';
+      submitToMailmodo(v);
+    });
+  })();
+
+  // ============= Footer Discord widget =============
+  (function footDiscord(){
+    const root = document.getElementById('foot-discord');
+    if (!root) return;
+    const countEl = root.querySelector('.dc-count');
+    const avatarsEl = root.querySelector('.dc-avatars');
+    const liveEl = root.querySelector('.dc-live');
+
+    const GUILD_ID = '1322278831184281721';
+    const URL = `https://discord.com/api/guilds/${GUILD_ID}/widget.json`;
+    // Public invite endpoint exposes approximate_member_count (total members),
+    // which the widget endpoint does not. Used for the navbar/mobile total.
+    const INVITE_URL = 'https://discord.com/api/v10/invites/iiidev?with_counts=true';
+
+    function formatCount(n){
+      if (n >= 1000) return (n/1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/,'') + 'k';
+      return String(n);
+    }
+    function initials(name){
+      if (!name) return '?';
+      const s = name.replace(/[^a-zA-Z0-9 ]/g,'').trim();
+      const parts = s.split(/\s+/);
+      if (parts.length >= 2) return (parts[0][0] + parts[1][0]);
+      return s.slice(0, 2);
+    }
+    const SIZE = 24;
+    const STEP = 17; // overlap
+    const VIS_MAX = 4;
+    let cycleTimer = null;
+
+    function makeNode(m){
+      const el = document.createElement('span');
+      el.className = 'dc-av';
+      el.title = m.username || '';
+      if (m.avatar_url){
+        el.style.backgroundImage = `url("${m.avatar_url}")`;
+      } else {
+        el.textContent = initials(m.username);
+      }
+      return el;
+    }
+
+    function renderAvatars(members){
+      if (cycleTimer){ clearInterval(cycleTimer); cycleTimer = null; }
+      avatarsEl.innerHTML = '';
+      const list = (members || []).filter(Boolean);
+      if (!list.length){ avatarsEl.style.width = '0px'; return; }
+
+      const VIS = Math.min(VIS_MAX, list.length);
+      avatarsEl.style.width = ((VIS - 1) * STEP + SIZE) + 'px';
+
+      // initial fill
+      let queue = []; // visible nodes left→right
+      for (let i = 0; i < VIS; i++){
+        const node = makeNode(list[i]);
+        node.style.setProperty('--x', (i * STEP) + 'px');
+        avatarsEl.appendChild(node);
+        queue.push(node);
+      }
+
+      if (list.length <= VIS) return; // no cycling needed
+
+      let pointer = VIS;
+
+      function tick(){
+        // exit leftmost
+        const exiting = queue.shift();
+        exiting.classList.add('is-exiting');
+        exiting.style.setProperty('--x', (-STEP) + 'px');
+        setTimeout(() => { exiting.remove(); }, 700);
+
+        // shift remaining left
+        queue.forEach((n, i) => {
+          n.style.setProperty('--x', (i * STEP) + 'px');
+        });
+
+        // create new at right edge, animate in
+        const newMember = list[pointer % list.length];
+        pointer++;
+        const newNode = makeNode(newMember);
+        newNode.classList.add('is-entering');
+        newNode.style.setProperty('--x', (VIS * STEP) + 'px');
+        avatarsEl.appendChild(newNode);
+        // force reflow
+        void newNode.offsetWidth;
+        newNode.classList.remove('is-entering');
+        newNode.style.setProperty('--x', ((VIS - 1) * STEP) + 'px');
+        queue.push(newNode);
+      }
+
+      cycleTimer = setInterval(tick, 2400);
+    }
+
+    async function fetchData(){
+      try {
+        const [widgetRes, inviteRes] = await Promise.all([
+          fetch(URL, { cache:'no-store' }),
+          fetch(INVITE_URL, { cache:'no-store' }).catch(() => null),
+        ]);
+        if (!widgetRes.ok) throw new Error('http ' + widgetRes.status);
+        const data = await widgetRes.json();
+        const presence = Number(data.presence_count || 0);
+        // Footer keeps the "online" presence count (label says "online").
+        countEl.textContent = formatCount(presence);
+        if (liveEl) liveEl.setAttribute('title', presence + ' online now');
+
+        // Navbar + mobile menu show total members (more representative).
+        // Fall back to presence count if the invite endpoint failed.
+        let total = presence;
+        if (inviteRes && inviteRes.ok){
+          const inviteData = await inviteRes.json();
+          total = Number(inviteData.approximate_member_count || presence);
+        }
+        const totalFormatted = formatCount(total);
+        const navCount = document.getElementById('dc-count');
+        if (navCount) navCount.textContent = totalFormatted;
+        const mCount = document.getElementById('dc-count-m');
+        if (mCount) mCount.textContent = totalFormatted;
+
+        renderAvatars(data.members || []);
+        root.classList.remove('is-loading');
+        root.classList.remove('is-error');
+      } catch(err){
+        root.classList.remove('is-loading');
+        root.classList.add('is-error');
+        const navCount = document.getElementById('dc-count');
+        if (navCount) navCount.textContent = '';
+      }
+    }
+    fetchData();
+    setInterval(fetchData, 5 * 60 * 1000);
+  })();
+
+  // ============= Hello execution flow =============
+  (function(){
+    const grid = document.querySelector('.hello-grid');
+    const cards = grid ? Array.from(grid.querySelectorAll('.hello-card')) : [];
+    const traceStages = Array.from(document.querySelectorAll('.hello-trace-stage'));
+    const flowIdxEl = document.getElementById('helloFlowIdx');
+    const flowDescEl = document.getElementById('helloFlowDesc');
+    const flowPlayBtn = document.getElementById('helloFlowPlay');
+    const flowPrevBtn = document.getElementById('helloFlowPrev');
+    const flowNextBtn = document.getElementById('helloFlowNext');
+    if (!grid || !cards.length) return;
+
+    /* --- Wrap each line of code in a <span class="ln" data-ln="N"> for line-level highlighting --- */
+    cards.forEach(card => {
+      const code = card.querySelector('.hello-code code');
+      if (!code || code.dataset.lined === '1') return;
+      const raw = code.innerHTML;
+      const lines = raw.split('\n');
+      code.innerHTML = lines.map((l, i) =>
+        '<span class="ln" data-ln="' + (i+1) + '">' + (l || '&nbsp;') + '</span>'
+      ).join('');
+      code.dataset.lined = '1';
+    });
+
+    /* Card heights are driven by the grid: align-items:stretch makes the
+       stack column as tall as the Node card; absolutely-positioned cards
+       fill via top:0; bottom:0. No JS sizing needed. */
+
+    /* --- Flow steps: 7-step orchestration matching the node code's execution order --- */
+    /* Lines (1-indexed) after Logger addition:
+       TS: 1=import, 3=registerWorker(, 4=ws://, 5=)
+           6=const logger = new Logger()
+           8=const nums = await iii.trigger({, 9=fn_id data::transform, 10=payload [1,2,3], 11=})  + cmt:nums
+           13=const pred = await iii.trigger({, 14=fn_id ml::predict, 15=payload {data:nums}, 16=})  + cmt:pred
+           18=logger.info(pred)  + cmt:final
+       RS: 7=async fn transform(, 8=input, 9=) -> Result, 10=let nums =, 11=from_value, 12=let result =, 13=map(*2), 14=Ok(json), 15=}
+       PY: 6=async def predict(input):, 7=t=tensor, 8=result=model, 9=return {, 10=predictions, 11=} */
+    const FLOW_STEPS = [
+      {
+        desc:'node triggers data::transform \u2014 awaiting',
+        active:'ts',
+        stage:'ts-trigger-rs',
+        pending:{ ts:[8,9,10,11] },
+        dwell:2400
+      },
+      {
+        desc:'rust transform() runs',
+        active:'rs',
+        stage:'rs-run',
+        running:{ rs:[7,8,9,10,11,12,13,14,15] },
+        pending:{ ts:[8,9,10,11] },
+        dwell:2400
+      },
+      {
+        desc:'node await resolves \u2014 nums = [2.0, 4.0, 6.0]',
+        active:'ts',
+        stage:'ts-resolve-rs',
+        running:{ ts:[8,11] },
+        comment:'nums',
+        // Rust's highlight is done; Python is up next \u2014 deal Python to the top now.
+        topHint:'py',
+        dwell:2400
+      },
+      {
+        desc:'node triggers ml::predict \u2014 awaiting',
+        active:'ts',
+        stage:'ts-trigger-py',
+        pending:{ ts:[13,14,15,16] },
+        comment:'nums',
+        topHint:'py',
+        dwell:2400
+      },
+      {
+        desc:'python predict() runs',
+        active:'py',
+        stage:'py-run',
+        running:{ py:[6,7,8,9,10,11] },
+        pending:{ ts:[13,14,15,16] },
+        comment:'nums',
+        dwell:2400
+      },
+      {
+        desc:'node await resolves \u2014 pred = { predictions: [\u2026] }',
+        active:'ts',
+        stage:'ts-resolve-py',
+        running:{ ts:[13,16] },
+        comment:'pred',
+        topHint:'py',
+        dwell:2400
+      },
+      {
+        desc:'logger.info(pred) \u2014 result printed',
+        active:'ts',
+        stage:'ts-print',
+        running:{ ts:[18] },
+        comment:'final',
+        topHint:'py',
+        // Final step lingers \u2014 give the viewer time to read the printed result.
+        dwell:5200
+      }
+    ];
+
+    let flowIdx = 0;
+    let flowTimer = null;
+    let flowPlaying = false;
+
+    // forward-declared so the assignments below can reference each other
+    let applyFlowStep, startFlow, stopFlow;
+
+    applyFlowStep = function(idx){
+      flowIdx = idx;
+      const step = FLOW_STEPS[idx];
+
+      cards.forEach(c => {
+        c.classList.toggle('is-active', c.dataset.card === step.active);
+      });
+
+      // Stack: by default the active worker is on top; a step may override
+      // with topHint when we want to pre-stage the next worker.
+      const stack = document.querySelector('.hello-stack');
+      if (stack){
+        const top = step.topHint || ((step.active === 'py') ? 'py' : 'rs');
+        const prev = stack.getAttribute('data-top');
+        stack.setAttribute('data-top', top);
+        // If the top card actually changed, play the deal animation on the
+        // incoming card so the swap reads loud-and-clear.
+        if (prev && prev !== top){
+          const incoming = stack.querySelector('.hello-card[data-card="' + top + '"]');
+          if (incoming){
+            incoming.classList.remove('is-dealing');
+            // Force reflow so re-adding the class restarts the animation.
+            void incoming.offsetWidth;
+            incoming.classList.add('is-dealing');
+            setTimeout(() => incoming.classList.remove('is-dealing'), 750);
+          }
+        }
+      }
+
+      traceStages.forEach((s, i) => {
+        s.classList.toggle('is-active', s.dataset.stage === step.stage);
+        s.classList.toggle('is-done', i < idx);
+      });
+
+      // Reset all line states first, then apply running + pending
+      cards.forEach(card => {
+        card.querySelectorAll('.ln').forEach(ln => {
+          ln.classList.remove('is-running');
+          ln.classList.remove('is-pending');
+          ln.classList.remove('is-fired');
+        });
+      });
+
+      const setLines = (map, cls) => {
+        if (!map) return;
+        Object.keys(map).forEach(k => {
+          const card = cards.find(c => c.dataset.card === k);
+          if (!card) return;
+          const want = new Set(map[k]);
+          card.querySelectorAll('.ln').forEach(ln => {
+            const n = parseInt(ln.dataset.ln, 10);
+            if (want.has(n)) ln.classList.add(cls);
+          });
+        });
+      };
+      setLines(step.pending, 'is-pending');
+      setLines(step.running, 'is-running');
+
+      // Cumulative: keep prior running lines as "fired" so the trace persists,
+      // but only for the active card's already-completed work.
+      // Skipping this to keep visuals focused on the current step per the request.
+
+      // Comment toggling: cumulative \u2014 once a comment is shown by a step,
+      // keep it visible through later steps that explicitly continue to show it.
+      const allCmts = document.querySelectorAll('.hello-card[data-card="ts"] .hl-cmt');
+      // Determine which comments should be visible at this step.
+      // A comment becomes visible at the step that introduces it, and
+      // stays visible while subsequent steps reference it via `comment`.
+      // We compute by walking forward: anything mentioned at or before idx
+      // whose key matches a "visible from now on" set.
+      // Simpler: define explicit visibility per step.
+      const visAt = [
+        new Set(),                   // step 0
+        new Set(),                   // step 1
+        new Set(['nums']),           // step 2 \u2014 nums resolved
+        new Set(['nums']),           // step 3
+        new Set(['nums']),           // step 4
+        new Set(['nums','pred']),    // step 5
+        new Set(['nums','pred','final']) // step 6
+      ];
+      const want = visAt[idx] || new Set();
+      allCmts.forEach(c => {
+        c.classList.toggle('is-shown', want.has(c.dataset.cmt));
+      });
+
+      if (flowIdxEl) flowIdxEl.textContent = String(idx+1);
+      if (flowDescEl) flowDescEl.textContent = step.desc;
+    };
+
+    // Mobile gets 3× slower autoplay so swipes/captions can be read.
+    const isMobile = () => window.matchMedia('(max-width: 880px)').matches;
+    const dwellFor = (i) => {
+      const base = (FLOW_STEPS[i] && FLOW_STEPS[i].dwell) || 2400;
+      return isMobile() ? base * 3 : base;
+    };
+
+    startFlow = function(){
+      stopFlow();
+      flowPlaying = true;
+      if (flowPlayBtn) flowPlayBtn.textContent = 'pause';
+      const tick = () => {
+        const next = (flowIdx + 1) % FLOW_STEPS.length;
+        applyFlowStep(next);
+        if (!flowPlaying) return;
+        flowTimer = setTimeout(tick, dwellFor(flowIdx));
+      };
+      flowTimer = setTimeout(tick, dwellFor(flowIdx));
+    };
+    stopFlow = function(){
+      if (flowTimer){ clearTimeout(flowTimer); clearInterval(flowTimer); flowTimer = null; }
+      flowPlaying = false;
+      if (flowPlayBtn) flowPlayBtn.textContent = 'play';
+    };
+
+    if (flowPrevBtn) flowPrevBtn.addEventListener('click', () => {
+      iiiTrack('flow_control', { control_group: 'hello_flow', action: 'prev' });
+      stopFlow();
+      const next = (flowIdx - 1 + FLOW_STEPS.length) % FLOW_STEPS.length;
+      applyFlowStep(next);
+    });
+    if (flowNextBtn) flowNextBtn.addEventListener('click', () => {
+      iiiTrack('flow_control', { control_group: 'hello_flow', action: 'next' });
+      stopFlow();
+      const next = (flowIdx + 1) % FLOW_STEPS.length;
+      applyFlowStep(next);
+    });
+    if (flowPlayBtn) flowPlayBtn.addEventListener('click', () => {
+      iiiTrack('flow_control', { control_group: 'hello_flow', action: flowPlaying ? 'pause' : 'play' });
+      if (flowPlaying) stopFlow();
+      else startFlow();
+    });
+
+    /* ============= MOBILE FLOW (swipe-the-flow) ============= */
+    const mTrack    = document.getElementById('helloMFlowTrack');
+    const mBody     = document.getElementById('helloMFlowBody');
+    const mTraceEl  = document.getElementById('helloMFlowTrace');
+    const mDotsEl   = document.getElementById('helloMFlowDots');
+    const mPrev     = document.getElementById('helloMFlowPrev');
+    const mNext     = document.getElementById('helloMFlowNext');
+    const mPlay     = document.getElementById('helloMFlowPlay');
+    const mIdx      = document.getElementById('helloMFlowIdx');
+
+    let mSlides = [];
+    let mTraceStages = [];
+    let mDots = [];
+    let mScrollSyncing = false; // suppress scroll handler when WE drive scroll
+
+    if (mTrack && mBody && mTraceEl && mDotsEl){
+      // Map step index -> which worker card to show on its slide.
+      const stepWorker = (step) => step.active; // 'ts' | 'rs' | 'py'
+
+      // Build trace
+      mTraceEl.innerHTML = FLOW_STEPS.map((s, i) => {
+        const stage = traceStages.find(t => t.dataset.stage === s.stage);
+        const label = stage ? stage.querySelector('span:nth-child(2)').textContent : ('step ' + (i+1));
+        return '<div class="hello-mflow-stage" data-i="' + i + '"><span class="pulse"></span><span>' + label + '</span></div>';
+      }).join('');
+      mTraceStages = Array.from(mTraceEl.querySelectorAll('.hello-mflow-stage'));
+
+      // Build slides — each slide owns its OWN clone of the relevant code card.
+      // We clone from the desktop cards (which have already had .ln spans wrapped),
+      // so line indices align across desktop ↔ mobile.
+      const cardByKey = { ts:null, rs:null, py:null };
+      cards.forEach(c => { cardByKey[c.dataset.card] = c; });
+
+      FLOW_STEPS.forEach((step, i) => {
+        const slide = document.createElement('div');
+        slide.className = 'hello-mflow-slide';
+        slide.dataset.i = i;
+
+        // caption
+        const cap = document.createElement('div');
+        cap.className = 'hello-mflow-caption';
+        cap.innerHTML = '<span class="step">step ' + (i+1) + '/' + FLOW_STEPS.length + '</span>' + step.desc;
+        slide.appendChild(cap);
+
+        // clone the active worker's card
+        const src = cardByKey[stepWorker(step)];
+        if (src){
+          const clone = src.cloneNode(true);
+          clone.classList.add('is-active');
+          slide.appendChild(clone);
+        }
+        mTrack.appendChild(slide);
+      });
+      mSlides = Array.from(mTrack.querySelectorAll('.hello-mflow-slide'));
+
+      // Build dots
+      mDotsEl.innerHTML = FLOW_STEPS.map((_, i) => '<span class="hello-mflow-dot" data-i="' + i + '"></span>').join('');
+      mDots = Array.from(mDotsEl.querySelectorAll('.hello-mflow-dot'));
+
+      // Trace tap → seek
+      mTraceStages.forEach(s => s.addEventListener('click', () => {
+        stopFlow();
+        applyFlowStep(parseInt(s.dataset.i, 10));
+      }));
+
+      // Buttons
+      if (mPrev) mPrev.addEventListener('click', () => {
+        iiiTrack('flow_control', { control_group: 'hello_flow_mobile', action: 'prev' });
+        stopFlow();
+        applyFlowStep((flowIdx - 1 + FLOW_STEPS.length) % FLOW_STEPS.length);
+      });
+      if (mNext) mNext.addEventListener('click', () => {
+        iiiTrack('flow_control', { control_group: 'hello_flow_mobile', action: 'next' });
+        stopFlow();
+        applyFlowStep((flowIdx + 1) % FLOW_STEPS.length);
+      });
+      if (mPlay) mPlay.addEventListener('click', () => {
+        iiiTrack('flow_control', { control_group: 'hello_flow_mobile', action: flowPlaying ? 'pause' : 'play' });
+        if (flowPlaying) stopFlow();
+        else startFlow();
+      });
+
+      mTraceEl.addEventListener('touchstart', () => { if (flowPlaying) stopFlow(); }, { passive:true });
+
+      const SWIPE_MIN = 48;
+      let mSwipe0 = null;
+      let mSwipeStartedOnTrack = false;
+      mBody.addEventListener('touchstart', (e) => {
+        if (flowPlaying) stopFlow();
+        if (e.touches.length !== 1) { mSwipe0 = null; return; }
+        const t = e.touches[0];
+        mSwipe0 = { x: t.clientX, y: t.clientY };
+        mSwipeStartedOnTrack = !!(e.target.closest && e.target.closest('.hello-mflow-track'));
+      }, { passive: true });
+      mBody.addEventListener('touchend', (e) => {
+        if (!mSwipe0 || !e.changedTouches[0]) { mSwipe0 = null; return; }
+        const t = e.changedTouches[0];
+        const dx = t.clientX - mSwipe0.x;
+        const dy = t.clientY - mSwipe0.y;
+        const ax = Math.abs(dx);
+        const ay = Math.abs(dy);
+        mSwipe0 = null;
+        if (ax < SWIPE_MIN && ay < SWIPE_MIN) return;
+        if (ax < ay) return;
+        if (mSwipeStartedOnTrack) return;
+
+        stopFlow();
+        const n = FLOW_STEPS.length;
+        const w = mTrack.clientWidth;
+        if (!w) return;
+        let nextIdx = dx < 0 ? (flowIdx + 1) % n : (flowIdx - 1 + n) % n;
+        mScrollSyncing = true;
+        mTrack.scrollTo({ left: nextIdx * w, behavior: 'smooth' });
+        setTimeout(() => { mScrollSyncing = false; }, 450);
+      }, { passive: true });
+
+      // Scroll → seek (debounced; ignore programmatic scrolls).
+      let mScrollTimer = null;
+      mTrack.addEventListener('scroll', () => {
+        if (mScrollSyncing) return;
+        clearTimeout(mScrollTimer);
+        mScrollTimer = setTimeout(() => {
+          const w = mTrack.clientWidth;
+          if (!w) return;
+          const i = Math.round(mTrack.scrollLeft / w);
+          if (i !== flowIdx && i >= 0 && i < FLOW_STEPS.length){
+            stopFlow();
+            applyFlowStep(i);
+          }
+        }, 120);
+      });
+
+      // Wrap applyFlowStep so it ALSO updates mobile flow.
+      const _origApplyFlowStep = applyFlowStep;
+      applyFlowStep = function(idx){
+        _origApplyFlowStep(idx);
+        // Mirror state on mobile:
+        const step = FLOW_STEPS[idx];
+        if (!step) return;
+
+        // Trace
+        mTraceStages.forEach((s, i) => {
+          s.classList.toggle('is-active', i === idx);
+          s.classList.toggle('is-done',   i <  idx);
+        });
+        // Scroll active stage into view inside the trace strip
+        const activeStage = mTraceStages[idx];
+        if (activeStage){
+          const traceL = mTraceEl.scrollLeft;
+          const traceR = traceL + mTraceEl.clientWidth;
+          const sL = activeStage.offsetLeft;
+          const sR = sL + activeStage.offsetWidth;
+          if (sL < traceL || sR > traceR){
+            mTraceEl.scrollTo({ left: sL - 14, behavior:'smooth' });
+          }
+        }
+
+        // Dots
+        mDots.forEach((d, i) => {
+          d.classList.toggle('is-active', i === idx);
+          d.classList.toggle('is-done',   i <  idx);
+        });
+
+        // Slide active state
+        mSlides.forEach((sl, i) => sl.classList.toggle('is-active', i === idx));
+
+        // Line highlights inside the active slide's clone
+        const slide = mSlides[idx];
+        if (slide){
+          // Reset all lines on this slide
+          slide.querySelectorAll('.ln').forEach(ln => {
+            ln.classList.remove('is-running','is-pending','is-fired');
+          });
+          const setLines = (map, cls) => {
+            if (!map) return;
+            const want = map[step.active];
+            if (!want) return;
+            const set = new Set(want);
+            slide.querySelectorAll('.ln').forEach(ln => {
+              const n = parseInt(ln.dataset.ln, 10);
+              if (set.has(n)) ln.classList.add(cls);
+            });
+          };
+          setLines(step.pending, 'is-pending');
+          setLines(step.running, 'is-running');
+
+          // Comments — match desktop's cumulative visibility
+          const visAt = [
+            new Set(),
+            new Set(),
+            new Set(['nums']),
+            new Set(['nums']),
+            new Set(['nums']),
+            new Set(['nums','pred']),
+            new Set(['nums','pred','final'])
+          ];
+          const want = visAt[idx] || new Set();
+          slide.querySelectorAll('.hl-cmt').forEach(c => {
+            c.classList.toggle('is-shown', want.has(c.dataset.cmt));
+          });
+        }
+
+        // Scroll the carousel to this slide (if not already there)
+        if (mTrack){
+          const w = mTrack.clientWidth;
+          const target = idx * w;
+          if (Math.abs(mTrack.scrollLeft - target) > 4){
+            mScrollSyncing = true;
+            mTrack.scrollTo({ left: target, behavior:'smooth' });
+            setTimeout(() => { mScrollSyncing = false; }, 500);
+          }
+        }
+
+        // Step label + play button text
+        if (mIdx) mIdx.textContent = String(idx+1);
+        if (mPlay) mPlay.textContent = flowPlaying ? 'pause' : 'play';
+      };
+
+      // Keep mPlay label in sync with the (existing) play state. The desktop
+      // play button updates its own label inside startFlow/stopFlow; mirror it.
+      const syncPlayLabel = () => { if (mPlay) mPlay.textContent = flowPlaying ? 'pause' : 'play'; };
+      // Patch startFlow/stopFlow to also flip mPlay
+      const _origStart = startFlow, _origStop = stopFlow;
+      startFlow = function(){ _origStart(); syncPlayLabel(); };
+      stopFlow  = function(){ _origStop();  syncPlayLabel(); };
+    }
+
+    // initial state
+    applyFlowStep(0);
+    startFlow();
+  })();
+</script>

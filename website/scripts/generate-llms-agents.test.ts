@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
@@ -10,8 +11,11 @@ import {
   overviewBodyWithoutLeadingH1,
 } from './generate-llms-agents'
 
-const INDEX_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../index.html')
+const INDEX_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.html')
 const APPENDIX_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'agents-appendix.md')
+
+// The homepage is generated now, so the extraction tests need a built page.
+const needsDist = { skip: existsSync(INDEX_PATH) ? false : 'dist/index.html missing — run `pnpm build` first' }
 
 test('overviewBodyWithoutLeadingH1 drops duplicate H1 for llms.txt', () => {
   const body = overviewBodyWithoutLeadingH1()
@@ -19,7 +23,7 @@ test('overviewBodyWithoutLeadingH1 drops duplicate H1 for llms.txt', () => {
   assert.ok(body.includes('Three primitives'))
 })
 
-test('buildLlmsTxt is an understanding-first explainer (no spin-up instructions)', async () => {
+test('buildLlmsTxt is an understanding-first explainer (no spin-up instructions)', needsDist, async () => {
   const html = await fs.readFile(INDEX_PATH, 'utf8')
   const text = buildLlmsTxt(html)
   assert.ok(text.startsWith('# iii\n'))
@@ -38,7 +42,7 @@ test('buildLlmsTxt is an understanding-first explainer (no spin-up instructions)
   assert.ok(text.includes('[AGENTS.md](https://iii.dev/AGENTS.md)'))
 })
 
-test('buildHomepageExtractFromHtml pulls hero prose but not hello code fences', async () => {
+test('buildHomepageExtractFromHtml pulls hero prose but not hello code fences', needsDist, async () => {
   const html = await fs.readFile(INDEX_PATH, 'utf8')
   const text = buildHomepageExtractFromHtml(html)
   assert.ok(text.includes('unreasonably simple'))
@@ -47,7 +51,7 @@ test('buildHomepageExtractFromHtml pulls hero prose but not hello code fences', 
   assert.ok(!text.includes('```'))
 })
 
-test('buildAgentsMd includes agents.md framing and appendix', async () => {
+test('buildAgentsMd includes agents.md framing and appendix', needsDist, async () => {
   const html = await fs.readFile(INDEX_PATH, 'utf8')
   const appendix = await fs.readFile(APPENDIX_PATH, 'utf8')
   const md = buildAgentsMd(html, appendix)

@@ -1,10 +1,13 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { readBlogPosts } from './blog-posts'
 import { INDEXABLE_ROUTES, SITE_ORIGIN } from './routes'
 import { readTechSpecs } from './tech-specs'
 
-const OUT_PATH = path.resolve(process.cwd(), 'sitemap.xml')
+// Emitted into dist/ as a build artifact (this runs last in the package build
+// script) — the sitemap is generated, never checked in.
+const OUT_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/sitemap.xml')
 
 const EXTRA_SITEMAP_PATHS: { path: string; priority: string }[] = [
   { path: '/llms.txt', priority: '0.6' },

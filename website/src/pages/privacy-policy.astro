@@ -1,0 +1,26 @@
+---
+// iii.dev/privacy-policy — body ported verbatim from the pre-Astro
+// privacy-policy.html (see src/components/privacy/), with the shared SiteNav
+// in place of the page's original one-off nav; the shared shell provides the
+// head, analytics, and cookie banner.
+import SiteNav from '../components/SiteNav.astro'
+import HtmlShell from '../layouts/HtmlShell.astro'
+import body from '../components/privacy/body.html?raw'
+import bodyOpen from '../components/privacy/body-open.html?raw'
+import '../styles/privacy.css'
+---
+
+<HtmlShell
+  title="iii / privacy policy"
+  description="Privacy policy for the iii.dev website, operated by Motia LLC. What we collect, how we use it, the analytics providers we use, and your choices."
+  canonicalPath="/privacy-policy"
+  keywords="iii, privacy policy, data protection, website analytics, cookies, data security, GDPR, developer privacy"
+  author="Motia LLC"
+  themeColor="#0a0a0a"
+  ogType="article"
+  ogTitle="iii / privacy policy"
+>
+  <Fragment set:html={bodyOpen} />
+  <SiteNav />
+  <Fragment set:html={body} />
+</HtmlShell>

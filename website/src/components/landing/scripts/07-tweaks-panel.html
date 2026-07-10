@@ -1,0 +1,175 @@
+
+
+<div class="tweaks-panel" id="tweaks-panel" aria-hidden="true">
+  <div class="tweaks-head">
+    <span>tweaks · navbar</span>
+    <button class="x" id="tweaks-close" aria-label="Close">×</button>
+  </div>
+  <div class="tweaks-body">
+    <div class="tweak-section">
+      <span class="tweak-label">accent</span>
+      <div class="tweak-color-row" id="tw-accent">
+        <button class="tweak-swatch on" data-v="#ff5a1f" style="background:#ff5a1f" aria-label="ember"></button>
+        <button class="tweak-swatch" data-v="#0a0a0a" style="background:#0a0a0a" aria-label="ink"></button>
+        <button class="tweak-swatch" data-v="#3ea8ff" style="background:#3ea8ff" aria-label="blue"></button>
+        <button class="tweak-swatch" data-v="#30d158" style="background:#30d158" aria-label="green"></button>
+      </div>
+    </div>
+    <div class="tweak-section">
+      <span class="tweak-label">link case</span>
+      <div class="tweak-radio" id="tw-case">
+        <button class="on" data-v="lower">lowercase</button>
+        <button data-v="upper">UPPERCASE</button>
+      </div>
+    </div>
+    <div class="tweak-section">
+      <span class="tweak-label">install pill</span>
+      <div class="tweak-radio" id="tw-pill">
+        <button class="on" data-v="outline">outline</button>
+        <button data-v="solid">solid</button>
+      </div>
+    </div>
+    <div class="tweak-section">
+      <span class="tweak-label">show mode toggle</span>
+      <div class="tweak-radio" id="tw-modetoggle">
+        <button class="on" data-v="show">show</button>
+        <button data-v="hide">hide</button>
+      </div>
+    </div>
+    <div class="tweak-section">
+      <span class="tweak-label">hero viz design</span>
+      <div class="tweak-radio" id="tw-vizdesign">
+        <button class="on" data-v="classic">cycle</button>
+        <button data-v="manual">manual</button>
+        <button data-v="focus">iii only</button>
+        <button data-v="triptych">triptych</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const TWEAKS = /*EDITMODE-BEGIN*/{
+    "accent": "#ff5a1f",
+    "linkCase": "lower",
+    "installPill": "outline",
+    "modeToggle": "show",
+    "vizDesign": "classic"
+  }/*EDITMODE-END*/;
+
+  // Seed accent from initial theme so we don't overwrite dark mode's blue with light mode's orange
+  if (window.__iiiThemeInit && window.__iiiThemeInit.accent) {
+    TWEAKS.accent = window.__iiiThemeInit.accent;
+  }
+
+  const panel = document.getElementById('tweaks-panel');
+  const closeBtn = document.getElementById('tweaks-close');
+  const root = document.documentElement;
+
+  function apply(){
+    root.style.setProperty('--accent', TWEAKS.accent);
+    // link case
+    document.querySelectorAll('.nav-link, .mobile-link').forEach(el => {
+      if (el.classList.contains('install')) return;
+      if (TWEAKS.linkCase === 'upper'){
+        el.style.textTransform = 'uppercase';
+        el.style.letterSpacing = '0.14em';
+        el.style.fontSize = '11px';
+      } else {
+        el.style.textTransform = 'none';
+        el.style.letterSpacing = '0';
+        el.style.fontSize = '';
+      }
+    });
+    // install pill
+    const ib = document.getElementById('cta-install');
+    if (ib){
+      if (TWEAKS.installPill === 'solid'){
+        ib.style.background = 'var(--ink)';
+        ib.style.color = 'var(--bg)';
+      } else {
+        ib.style.background = '';
+        ib.style.color = '';
+      }
+    }
+    // mode toggle
+    document.querySelectorAll('.mode-toggle').forEach(el => {
+      el.style.display = TWEAKS.modeToggle === 'hide' ? 'none' : '';
+    });
+    // hero viz design
+    if (typeof window.heroVizSetDesign === 'function') {
+      window.heroVizSetDesign(TWEAKS.vizDesign || 'classic');
+    }
+  }
+
+  function persist(edits){
+    Object.assign(TWEAKS, edits);
+    apply();
+    try {
+      window.parent.postMessage({type:'__edit_mode_set_keys', edits}, '*');
+    } catch(e){}
+  }
+
+  function bindRadio(id, key){
+    const wrap = document.getElementById(id);
+    if (!wrap) return;
+    wrap.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-v]');
+      if (!b) return;
+      wrap.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      persist({ [key]: b.dataset.v });
+    });
+    // sync initial
+    wrap.querySelectorAll('button').forEach(b => {
+      b.classList.toggle('on', b.dataset.v === TWEAKS[key]);
+    });
+  }
+
+  bindRadio('tw-case', 'linkCase');
+  bindRadio('tw-pill', 'installPill');
+  bindRadio('tw-modetoggle', 'modeToggle');
+  bindRadio('tw-vizdesign', 'vizDesign');
+
+  const acc = document.getElementById('tw-accent');
+  if (acc){
+    acc.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-v]');
+      if (!b) return;
+      acc.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      persist({ accent: b.dataset.v });
+    });
+    acc.querySelectorAll('button').forEach(b => {
+      b.classList.toggle('on', b.dataset.v === TWEAKS.accent);
+    });
+  }
+
+  // Theme toggle drives the accent swatch + persisted value
+  window.addEventListener('iii:theme-change', (e) => {
+    const newAccent = e.detail && e.detail.accent;
+    if (!newAccent) return;
+    persist({ accent: newAccent });
+    if (acc){
+      acc.querySelectorAll('button').forEach(b => {
+        b.classList.toggle('on', b.dataset.v === newAccent);
+      });
+    }
+  });
+
+  // Tweaks protocol
+  window.addEventListener('message', (e) => {
+    const t = e.data && e.data.type;
+    if (t === '__activate_edit_mode') panel.classList.add('open');
+    if (t === '__deactivate_edit_mode') panel.classList.remove('open');
+  });
+  closeBtn.addEventListener('click', () => {
+    panel.classList.remove('open');
+    try { window.parent.postMessage({type:'__edit_mode_dismissed'}, '*'); } catch(e){}
+  });
+  try { window.parent.postMessage({type:'__edit_mode_available'}, '*'); } catch(e){}
+
+  apply();
+})();
+</script>

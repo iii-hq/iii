@@ -1,0 +1,279 @@
+      :root {
+        --bg: #f5f3ee;
+        --panel: #e9e6e2;
+        --ink: #0a0a0a;
+        --ink-2: #1a1a1a;
+        --ink-soft: #1a1a1a;
+        --ink-faint: #6b6865;
+        --ink-ghost: #a3a09c;
+        --mute: #6b6865;
+        --mute-2: #a3a09c;
+        --rule: #d8d4cb;
+        --rule-2: #e6e3df;
+        --accent: #ff5a1f;
+        --accent-2: #1a5fbf;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 400;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      * {
+        font-variant-ligatures: none;
+        font-feature-settings:
+          "liga" 0,
+          "clig" 0,
+          "calt" 0,
+          "dlig" 0;
+      }
+      ::selection {
+        background: var(--ink);
+        color: var(--bg);
+      }
+
+      .page {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .sheet {
+        position: relative;
+        width: min(1200px, 100%);
+        background: var(--bg);
+        border-left: 1px solid var(--rule);
+        border-right: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+      }
+
+      /* ===== HERO ===== */
+      .hero {
+        padding: 96px 36px 88px;
+        border-bottom: 1px solid var(--rule);
+        position: relative;
+      }
+      .hero-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin-bottom: 32px;
+      }
+      .hero-eyebrow .ix {
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+        display: inline-block;
+      }
+      .hero-title {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        margin: 0;
+        font-weight: 500;
+        font-size: clamp(36px, 6.4vw, 80px);
+        line-height: 1.05;
+        letter-spacing: -0.035em;
+        text-transform: none;
+        color: var(--ink-2);
+        max-width: 1080px;
+        text-wrap: balance;
+      }
+      .hero-title .problem {
+        color: var(--ink-faint);
+      }
+      .hero-title .verb {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .hero-title .answer {
+        color: var(--accent);
+      }
+      .hero-title .punct {
+        color: var(--accent);
+      }
+
+      /* ===== MANIFESTO SECTIONS ===== */
+      .m {
+        padding: 0;
+      }
+
+      .m-sec {
+        padding: 64px 36px 64px;
+        border-bottom: 1px solid var(--rule);
+      }
+      .m-sec:last-child {
+        border-bottom: 0;
+      }
+
+      .m-title {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 500;
+        font-size: clamp(24px, 3.2vw, 34px);
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+        color: var(--ink-2);
+        margin: 0;
+        max-width: 920px;
+        text-transform: none;
+        text-wrap: pretty;
+      }
+      .m-title .accent {
+        color: var(--accent);
+      }
+      .m-title .accent.code {
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        padding: 0.05em 0.3em;
+        font-size: 0.88em;
+        border-radius: 3px;
+        vertical-align: 0.04em;
+      }
+      .m-title .heavy {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .m-title .ghost {
+        color: var(--accent-2);
+      }
+
+      .m-body {
+        font-family: "Chivo Mono", ui-monospace, monospace;
+        font-weight: 400;
+        font-size: 14px;
+        line-height: 1.75;
+        color: var(--ink-2);
+        margin: 28px 0 0;
+        max-width: 680px;
+        text-wrap: pretty;
+      }
+      .m-body i {
+        color: var(--ink);
+        font-style: italic;
+      }
+
+      /* ===== PAGE FOOT ===== */
+      .pfoot {
+        padding: 32px 36px;
+        border-top: 1px solid var(--rule);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .pfoot a {
+        color: var(--ink-faint);
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+      }
+      .pfoot a:hover {
+        color: var(--ink);
+      }
+      .pfoot a svg {
+        width: 11px;
+        height: 11px;
+      }
+
+      @media (max-width: 720px) {
+        .hero {
+          padding: 64px 18px 56px;
+        }
+        .m-sec {
+          padding: 48px 18px 48px;
+        }
+        .pfoot {
+          padding: 24px 18px;
+        }
+      }
+
+      .cookie-consent-wrap {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        z-index: 10050;
+        padding: 16px;
+        display: flex;
+        justify-content: center;
+        box-sizing: border-box;
+        pointer-events: none;
+      }
+      .cookie-consent-wrap:not([hidden]) {
+        pointer-events: auto;
+      }
+      .cookie-consent-panel {
+        pointer-events: auto;
+        max-width: 36rem;
+        width: 100%;
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        border-radius: 10px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+        padding: 18px 20px;
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--ink-faint);
+        font-family: "Chivo Mono", ui-monospace, monospace;
+      }
+      .cookie-consent-panel .cc-strong {
+        color: var(--ink-soft);
+      }
+      .cookie-consent-actions {
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      .cookie-consent-actions button {
+        font-family: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        border-radius: 6px;
+        padding: 8px 14px;
+      }
+      .cookie-consent-actions .cc-decline {
+        border: 1px solid var(--rule);
+        background: transparent;
+        color: var(--ink-soft);
+      }
+      .cookie-consent-actions .cc-decline:hover {
+        border-color: var(--ink-ghost);
+        color: var(--ink);
+      }
+      .cookie-consent-actions .cc-accept {
+        border: none;
+        background: var(--accent);
+        color: var(--bg);
+        font-weight: 600;
+      }
+      .cookie-consent-actions .cc-accept:hover {
+        filter: brightness(1.06);
+      }

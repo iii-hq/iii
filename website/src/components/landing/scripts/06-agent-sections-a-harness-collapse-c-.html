@@ -1,0 +1,678 @@
+
+<!-- ============= AGENT SECTIONS — A (harness collapse) + C (thin↔thick) ============= -->
+<script>
+(() => {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    if (attrs) for (const k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  };
+
+  // ───────────────────────── A · Harness Collapse (reuses hero-viz pattern) ─────────────────────────
+  const aFrame = document.getElementById('ag-frame-a');
+  if (!aFrame) return;
+
+  // 8 ring slots — slot 0 (top) is RESERVED for the agent in iii mode.
+  // Slots 1..7 are workers. queue moved to slot 7 (formerly cron's NW); the
+  // S-slot (index 4) carries 'cron' now since http is no longer a worker — the
+  // brittle http hop is what wires the agent to every service in today's world.
+  const SLOT_LABELS = [null, 'state', 'classify', 'sandbox', 'cron', 'observe', 'db', 'queue'];
+
+  // Curated 'actual' edges among workers (indices into slots, 1..7)
+  const actualEdges = [
+    [1,2],[2,3],[3,4],[4,5],[5,6],[6,7],   // ring-adjacency
+    [1,4],[2,6],[3,7],[1,5],[4,7],[2,5]    // a few cross-links
+  ];
+
+  // Brittle dashed http edges from today-agent to EVERY worker (1..7) — this
+  // is the point-to-point wiring tax of running the agent as a separate stack.
+  const agentTargets = [1, 2, 3, 4, 5, 6, 7];
+
+  // Layout — derived from viewport. Landscape docks the agent to the right of
+  // the ring; portrait stacks the harness above (so the http edges fan
+  // downward into the ring instead of crowding a narrow column).
+  const aSvg = aFrame.querySelector('svg.main');
+  function computeLayout(){
+    const portrait = window.matchMedia('(max-width: 880px)').matches;
+    if (portrait) {
+      // Portrait reflow:
+      //   today  → workers as a tall ladder on the LEFT, agent docked on the
+      //            RIGHT inside a harness, http edges fan horizontally L→R.
+      //   on iii → workers reflow into a circular ring, agent occupies slot 0
+      //            at the TOP of the ring; ephemeral edges crisscross.
+      const VBW = 400, VBH = 480;
+      const cx = 200, cy = 250, R = 150;
+      // today layout — ladder + harnessed agent
+      const ladderX = 96;
+      const ladderTop = 70;
+      const ladderBot = 430;
+      const agentToday = { x: 312, y: 240 };
+      return {
+        portrait,
+        VBW, VBH, cx, cy, R,
+        agentToday,
+        ladderX, ladderTop, ladderBot,
+      };
+    }
+    const VBW = 640, VBH = 400;
+    const cx = 280, cy = 200, R = 132;
+    const agentToday = { x: 540, y: 200 };
+    return { portrait, VBW, VBH, cx, cy, R, agentToday };
+  }
+  let layout = computeLayout();
+  let cx = layout.cx, cy = layout.cy, R = layout.R;
+  // ringSlots — circular layout used in `iii` (and in landscape `today` too,
+  //   where the agent just docks off to the right of the same ring).
+  // ladderSlots — vertical worker ladder used in PORTRAIT `today` only;
+  //   workers sit on the left, agent docks right at agentToday.
+  // `slots` is whichever one is currently live (drives nodes, edges, packets).
+  let ringSlots = [];
+  let ladderSlots = [];
+  let slots = [];
+  let workerIdx = [];
+  let agentToday = layout.agentToday;
+  let agentIii = null;
+  function rebuildSlots(){
+    cx = layout.cx; cy = layout.cy; R = layout.R;
+    agentToday = layout.agentToday;
+    ringSlots = SLOT_LABELS.map((label, i) => {
+      const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+      return {
+        label,
+        x: cx + R * Math.cos(a),
+        y: cy + R * Math.sin(a),
+        angle: a,
+        isWorker: !!label,
+      };
+    });
+    if (layout.portrait) {
+      // Slot 0 is the agent (sits at agentToday in ladder mode); slots 1..7
+      // are workers stacked vertically along x = ladderX.
+      const { ladderX, ladderTop, ladderBot } = layout;
+      const workers = SLOT_LABELS.slice(1);
+      ladderSlots = SLOT_LABELS.map((label, i) => {
+        if (i === 0) {
+          return { label, x: agentToday.x, y: agentToday.y, angle: 0, isWorker: false };
+        }
+        const t = (i - 1) / (workers.length - 1);
+        return {
+          label,
+          x: ladderX,
+          y: ladderTop + t * (ladderBot - ladderTop),
+          angle: Math.PI, // labels anchor to the LEFT of the node
+          isWorker: true,
+        };
+      });
+    } else {
+      ladderSlots = ringSlots;
+    }
+    workerIdx = ringSlots.map((s, i) => s.isWorker ? i : -1).filter(i => i >= 0);
+    agentIii = { x: ringSlots[0].x, y: ringSlots[0].y, angle: ringSlots[0].angle };
+    // Default `slots` to ring; setAStage will swap to ladder for portrait+today.
+    slots = ringSlots;
+  }
+  rebuildSlots();
+  if (aSvg) aSvg.setAttribute('viewBox', `0 0 ${layout.VBW} ${layout.VBH}`);
+
+  const $eA  = document.getElementById('ag-a-edges-actual');
+  const $eE  = document.getElementById('ag-a-edges-eph');
+  const $eH  = document.getElementById('ag-a-edges-http');
+  const $pkt = document.getElementById('ag-a-packets');
+  const $nds = document.getElementById('ag-a-nodes');
+  const $lbs = document.getElementById('ag-a-labels');
+
+  // HTTP brittle dashed edges from today-agent to every worker — each is its
+  // own bespoke integration ("rest", "grpc", "sdk", …) the agent has to
+  // implement separately. The variety is the point.
+  const HTTP_LABELS = {
+    1: 'rest integration',     // state
+    2: 'grpc integration',     // classify
+    3: 'sdk integration',      // sandbox
+    4: 'webhook integration',  // cron
+    5: 'otel integration',     // observe
+    6: 'sql integration',      // db
+    7: 'amqp integration',     // queue
+  };
+  // Portrait uses shorter labels — the line lengths can't carry the full text
+  // and the section already establishes the integration vocabulary.
+  const HTTP_LABELS_SHORT = {
+    1: 'rest', 2: 'grpc', 3: 'sdk', 4: 'webhook',
+    5: 'otel', 6: 'sql', 7: 'amqp',
+  };
+
+  let agentG = null, agentLabel = null;
+  // Hoisted so setAgentPos() can position the "agent" label relative to the
+  // harness frame in portrait without re-deriving the dimensions.
+  let harnessW = 0, harnessH = 0;
+
+  // Build the static SVG geometry for the given stage. In landscape this
+  // doesn't actually depend on stage (only the agent moves), but in portrait
+  // the WORKERS themselves move between a vertical ladder (today) and a
+  // circular ring (iii) — so we rebuild on every stage change.
+  function buildStaticGeometry(stage){
+    stage = stage || 'today';
+    // Pick the active slot layout:
+    //   portrait + today  → ladderSlots (workers vertical, agent right)
+    //   portrait + iii    → ringSlots   (workers around ring, agent slot 0)
+    //   landscape (any)   → ringSlots   (workers around ring, agent docks right in today)
+    const useLadder = layout.portrait && stage === 'today';
+    slots = useLadder ? ladderSlots : ringSlots;
+
+    // Wipe the static groups (packets are wiped separately by the engine).
+    [$eA, $eH, $nds, $lbs].forEach(g => { while (g.firstChild) g.removeChild(g.firstChild); });
+
+    // Build worker nodes + labels (slots 1..7).
+    for (const i of workerIdx) {
+      const s = slots[i];
+      const r = useLadder ? 7 : 8;
+      $nds.appendChild(mk('circle', { cx: s.x, cy: s.y, r, class: 'hv-node-ring' }));
+      $nds.appendChild(mk('circle', { cx: s.x, cy: s.y, r: 2, class: 'hv-node-dot' }));
+      let lx, ly, anchor;
+      if (useLadder) {
+        // Labels sit to the LEFT of each ladder node.
+        lx = s.x - 14; ly = s.y;
+        anchor = 'end';
+      } else {
+        const lr = R + 22;
+        lx = cx + lr * Math.cos(s.angle);
+        ly = cy + lr * Math.sin(s.angle);
+        anchor = Math.abs(Math.cos(s.angle)) < 0.2 ? 'middle' : (Math.cos(s.angle) > 0 ? 'start' : 'end');
+      }
+      const t = mk('text', {
+        x: lx, y: ly, class: 'hv-node-label',
+        'text-anchor': anchor,
+        'dominant-baseline': 'middle',
+      });
+      t.textContent = s.label;
+      $lbs.appendChild(t);
+    }
+
+    // Worker mesh ("actual" edges) — only meaningful when workers are arranged
+    // around a ring. In portrait+today the ladder has no mesh; the http fan is
+    // the entire visual.
+    if (!useLadder) {
+      for (const [i,j] of actualEdges) {
+        $eA.appendChild(mk('line', {
+          x1: slots[i].x, y1: slots[i].y,
+          x2: slots[j].x, y2: slots[j].y,
+          class: 'hv-edge-actual',
+        }));
+      }
+    }
+
+    // HTTP brittle dashed edges from the harnessed agent → every worker.
+    // In portrait+today, lines fan horizontally from agentToday.x → ladder.
+    // In landscape+today, they fan from agentToday (right side) → ring.
+    if (stage === 'today') {
+      const labelMap = layout.portrait ? HTTP_LABELS_SHORT : HTTP_LABELS;
+      for (const idx of agentTargets) {
+        const sx = agentToday.x, sy = agentToday.y;
+        const tx = slots[idx].x, ty = slots[idx].y;
+        $eH.appendChild(mk('line', {
+          x1: sx, y1: sy, x2: tx, y2: ty,
+          class: 'ag-edge-http',
+        }));
+        const mx = (sx + tx) / 2;
+        const my = (sy + ty) / 2;
+        const dx = tx - sx, dy = ty - sy;
+        let deg = Math.atan2(dy, dx) * 180 / Math.PI;
+        if (deg > 90 || deg < -90) deg += 180; // never upside-down
+        const t = mk('text', {
+          x: 0, y: -4,
+          class: 'ag-edge-http-label',
+          'text-anchor': 'middle',
+          transform: `translate(${mx}, ${my}) rotate(${deg})`,
+        });
+        t.textContent = labelMap[idx] || 'http';
+        $eH.appendChild(t);
+      }
+
+      // Minimal harness representation around the agent.
+      const harnessG = mk('g', { class: 'ag-harness' });
+      harnessW = useLadder ? 76 : 70;
+      harnessH = useLadder ? 64 : 56;
+      harnessG.appendChild(mk('rect', {
+        x: agentToday.x - harnessW/2, y: agentToday.y - harnessH/2,
+        width: harnessW, height: harnessH,
+        rx: 2, ry: 2,
+        class: 'ag-harness-frame',
+      }));
+      const hLbl = mk('text', {
+        x: agentToday.x, y: agentToday.y - harnessH/2 - 8,
+        class: 'ag-harness-tag',
+        'text-anchor': 'middle',
+      });
+      hLbl.textContent = 'agent harness';
+      harnessG.appendChild(hLbl);
+      $eH.appendChild(harnessG);
+    }
+
+    // Agent node — same SVG primitives in either stage; setAgentPos moves it.
+    agentG = mk('g', { class: 'ag-node-group is-agent' });
+    agentG.appendChild(mk('circle', { cx: 0, cy: 0, r: 16, class: 'agent-glow' }));
+    agentG.appendChild(mk('circle', { cx: 0, cy: 0, r: 11, class: 'hv-node-ring' }));
+    agentG.appendChild(mk('circle', { cx: 0, cy: 0, r: 3, class: 'hv-node-dot' }));
+    $nds.appendChild(agentG);
+
+    agentLabel = mk('text', {
+      x: 0, y: 0, class: 'hv-node-label',
+      'text-anchor': 'start',
+      'dominant-baseline': 'middle',
+    });
+    agentLabel.setAttribute('fill', 'var(--accent)');
+    agentLabel.setAttribute('font-weight', '500');
+    agentLabel.textContent = 'agent';
+    $lbs.appendChild(agentLabel);
+  }
+  buildStaticGeometry('today');
+
+  function setAgentPos(stage){
+    if (stage === 'today') {
+      agentG.setAttribute('transform', `translate(${agentToday.x}, ${agentToday.y})`);
+      // Place the "agent" label above the dot, just inside the harness top
+      // edge, so it never overlaps the node mark (portrait OR landscape).
+      agentLabel.setAttribute('x', agentToday.x);
+      agentLabel.setAttribute('y', agentToday.y - harnessH/2 + 10);
+      agentLabel.setAttribute('text-anchor', 'middle');
+    } else {
+      agentG.setAttribute('transform', `translate(${agentIii.x}, ${agentIii.y})`);
+      // Slot 0 in the ring is at the TOP — push the label above it.
+      const lr = R + 22;
+      const lx = cx + lr * Math.cos(agentIii.angle);
+      const ly = cy + lr * Math.sin(agentIii.angle);
+      agentLabel.setAttribute('x', lx);
+      agentLabel.setAttribute('y', ly - 4);
+      agentLabel.setAttribute('text-anchor', 'middle');
+    }
+  }
+  setAgentPos('today');
+
+  // Stage management
+  const aStageName = document.getElementById('ag-a-stage-name');
+  const A_STAGES = {
+    today: 'today — agent harness as a separate stack',
+    iii:   'on iii — agent is just another worker',
+  };
+  let aStage = 'today';
+
+  function setAStage(stage){
+    const wasStage = aStage;
+    aStage = stage;
+    aFrame.setAttribute('data-stage', stage);
+    // In portrait, the WORKERS themselves move (ladder ↔ ring) — rebuild
+    // geometry. In landscape, only the agent moves, so skip the rebuild.
+    if (layout.portrait && wasStage !== stage) {
+      // Tear down live packets/ephemeral lines so they don't render against
+      // stale slot positions for a frame.
+      while ($pkt.firstChild) $pkt.removeChild($pkt.firstChild);
+      while ($eE.firstChild) $eE.removeChild($eE.firstChild);
+      packets.length = 0;
+      buildStaticGeometry(stage);
+    }
+    setAgentPos(stage);
+    if (aStageName) aStageName.textContent = A_STAGES[stage] || A_STAGES.today;
+    document.querySelectorAll('#ag-frame-a .agent-frame-tabs button').forEach(b => {
+      const on = b.dataset.stage === stage;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+  }
+
+  // === Packet engine (modeled on hero viz) ===
+  const packets = [];
+  let lastSpawn = 0;
+  let raf = null;
+
+  document.querySelectorAll('#ag-frame-a .agent-frame-tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      iiiTrack('tab_switch', {
+        tab_group: 'agents',
+        tab_id: b.dataset.stage,
+        tab_label: b.textContent.trim().toLowerCase()
+      });
+      setAStage(b.dataset.stage);
+      stopAAuto();
+    });
+  });
+
+  // Reflow the agent diagram when the viewport crosses the portrait/landscape
+  // breakpoint. We tear down all packets/ephemeral edges, recompute layout
+  // (viewBox, ring center, agent dock), rebuild static geometry, and reposition
+  // the agent at the current stage.
+  let aLastPortrait = layout.portrait;
+  function aReflow(){
+    const wasPortrait = aLastPortrait;
+    layout = computeLayout();
+    if (layout.portrait === wasPortrait) return;
+    aLastPortrait = layout.portrait;
+    if (aSvg) aSvg.setAttribute('viewBox', `0 0 ${layout.VBW} ${layout.VBH}`);
+    // Tear down live packets + ephemeral edges
+    while ($pkt.firstChild) $pkt.removeChild($pkt.firstChild);
+    while ($eE.firstChild) $eE.removeChild($eE.firstChild);
+    packets.length = 0;
+    rebuildSlots();
+    buildStaticGeometry(aStage);
+    setAgentPos(aStage);
+  }
+  window.addEventListener('resize', aReflow);
+
+  function pickEdge(){
+    if (aStage === 'today') {
+      // 70% along actual ring edges, 30% along http brittle
+      if (Math.random() < 0.3) {
+        const t = agentTargets[Math.floor(Math.random() * agentTargets.length)];
+        const flip = Math.random() < 0.5;
+        return flip
+          ? { a: agentToday, b: slots[t], kind: 'http' }
+          : { a: slots[t], b: agentToday, kind: 'http' };
+      }
+      const e = actualEdges[Math.floor(Math.random() * actualEdges.length)];
+      const [i, j] = Math.random() < 0.5 ? e : [e[1], e[0]];
+      return { a: slots[i], b: slots[j], kind: 'actual' };
+    } else {
+      // iii: ephemeral edge between any two slots (slot 0 is now the agent)
+      const all = [0, ...workerIdx];
+      let i = all[Math.floor(Math.random() * all.length)];
+      let j = all[Math.floor(Math.random() * all.length)];
+      if (i === j) j = all[(all.indexOf(j) + 1) % all.length];
+      return { a: slots[i], b: slots[j], kind: 'eph' };
+    }
+  }
+
+  function spawnPacket(now){
+    const e = pickEdge();
+    let lineEl = null;
+    if (e.kind === 'eph') {
+      lineEl = mk('line', {
+        x1: e.a.x, y1: e.a.y, x2: e.b.x, y2: e.b.y,
+        class: 'hv-edge-ephemeral'
+      });
+      $eE.appendChild(lineEl);
+    }
+    const dotClass = e.kind === 'eph' ? 'hv-packet' : 'hv-packet dim';
+    const dot = mk('circle', {
+      cx: e.a.x, cy: e.a.y, r: e.kind === 'eph' ? 2.6 : 2.2,
+      class: dotClass,
+    });
+    $pkt.appendChild(dot);
+    packets.push({
+      a: e.a, b: e.b, dot, line: lineEl,
+      start: now,
+      duration: e.kind === 'http' ? 950 + Math.random() * 350 : 700 + Math.random() * 300,
+      kind: e.kind,
+    });
+  }
+
+  function tick(now){
+    const rate = aStage === 'today' ? 220 : 320;
+    const cap  = aStage === 'today' ? 14 : 10;
+    if (now - lastSpawn > rate && packets.length < cap) {
+      spawnPacket(now);
+      lastSpawn = now;
+    }
+    for (let k = packets.length - 1; k >= 0; k--) {
+      const p = packets[k];
+      const t = (now - p.start) / p.duration;
+      if (t >= 1) {
+        p.dot.remove();
+        if (p.line) {
+          p.line.style.transition = 'opacity .25s ease';
+          p.line.style.opacity = '0';
+          const ln = p.line;
+          setTimeout(() => ln.remove(), 280);
+        }
+        packets.splice(k, 1);
+        continue;
+      }
+      p.dot.setAttribute('cx', p.a.x + (p.b.x - p.a.x) * t);
+      p.dot.setAttribute('cy', p.a.y + (p.b.y - p.a.y) * t);
+      if (p.line) {
+        p.line.style.opacity = String(0.85 * Math.min(1, t * 6));
+      }
+    }
+    raf = requestAnimationFrame(tick);
+  }
+
+  // Auto-cycle today ↔ iii every ~5s until user interacts; pause off-screen
+  let aAutoTimer = null;
+  function tickAAuto(){
+    setAStage(aStage === 'today' ? 'iii' : 'today');
+  }
+  function startAAuto(){
+    if (aAutoTimer) return;
+    aAutoTimer = setInterval(tickAAuto, 5200);
+  }
+  function stopAAuto(){
+    if (aAutoTimer) { clearInterval(aAutoTimer); aAutoTimer = null; }
+  }
+  const aIo = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        if (!raf) raf = requestAnimationFrame(tick);
+        startAAuto();
+      } else {
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
+        stopAAuto();
+      }
+    }
+  }, { threshold: 0.4 });
+  aIo.observe(aFrame);
+
+  // ───────────────────────── C · Thin ↔ Thick harness ─────────────────────────
+  const cFrame = document.getElementById('ag-frame-c');
+  if (!cFrame) return;
+
+  const C_VBW = 640, C_VBH = 400;
+  const C_cx = 320, C_cy = 200;
+  const RING_INNER = 90, RING_OUTER = 158;
+
+  // Stops
+  const C_STOPS = [
+    {
+      key: 'autonomous',
+      name: 'autonomous — thin harness · model decides',
+      thumbPos: 0,
+      fns: 3, trigs: 1, gates: 0,
+    },
+    {
+      key: 'supervised',
+      name: 'supervised — approval gates + audit',
+      thumbPos: 50,
+      fns: 5, trigs: 2, gates: 1,
+    },
+    {
+      key: 'deterministic',
+      name: 'deterministic — explicit pre-decided paths',
+      thumbPos: 100,
+      fns: 8, trigs: 3, gates: 1,
+    },
+  ];
+
+  // Nodes around two rings:
+  // Inner ring = always (autonomous-tier functions/triggers)
+  // Outer ring = appears as harness thickens
+  // minStop: 0 = always, 1 = supervised+, 2 = deterministic only
+  const cNodes = [
+    // INNER RING — always (4 directions)
+    {id:'tools',   ring:'inner', angle: 0,             label:'tools::*',      kind:'fn',      minStop:0},
+    {id:'state',   ring:'inner', angle: Math.PI/2,     label:'state::get/set',kind:'fn',      minStop:0},
+    {id:'tcall',   ring:'inner', angle: Math.PI,       label:'on::message',   kind:'trigger', minStop:0},
+    {id:'memory',  ring:'inner', angle: -Math.PI/2,    label:'memory::recall',kind:'fn',      minStop:0},
+
+    // OUTER RING — supervised additions (4 nodes, between the inner cardinals)
+    {id:'gate',    ring:'outer', angle: -Math.PI/2 + Math.PI/8, label:'approval::gate',  kind:'gate',    minStop:1},
+    {id:'audit',   ring:'outer', angle: Math.PI/2 - Math.PI/8,  label:'audit::write',    kind:'fn',      minStop:1},
+    {id:'tstep',   ring:'outer', angle: Math.PI - Math.PI/8,    label:'on::step-done',   kind:'trigger', minStop:1},
+
+    // OUTER RING — deterministic additions (5 more)
+    {id:'classify',ring:'outer', angle: -Math.PI/2 - Math.PI/8, label:'route::classify', kind:'fn',      minStop:2},
+    {id:'validate',ring:'outer', angle: 0 - Math.PI/8,          label:'output::validate',kind:'fn',      minStop:2},
+    {id:'retry',   ring:'outer', angle: Math.PI + Math.PI/8,    label:'retry::policy',   kind:'fn',      minStop:2},
+    {id:'cron',    ring:'outer', angle: Math.PI/2 + Math.PI/8,  label:'on::cron(*/5)',   kind:'trigger', minStop:2},
+  ];
+
+  // Compute positions
+  for (const n of cNodes) {
+    const r = n.ring === 'inner' ? RING_INNER : RING_OUTER;
+    n.x = C_cx + r * Math.cos(n.angle);
+    n.y = C_cy + r * Math.sin(n.angle);
+  }
+
+  const $cRings  = document.getElementById('ag-c-rings');
+  const $cEdges  = document.getElementById('ag-c-edges');
+  const $cNodes  = document.getElementById('ag-c-nodes');
+  const $cLabels = document.getElementById('ag-c-labels');
+
+  // Guide rings (visual hierarchy: inner = thin, outer = thick)
+  $cRings.appendChild(mk('circle', {
+    cx: C_cx, cy: C_cy, r: RING_INNER, class: 'ring-guide'
+  }));
+  $cRings.appendChild(mk('circle', {
+    cx: C_cx, cy: C_cy, r: RING_OUTER, class: 'ring-guide'
+  }));
+
+  // Ring labels
+  const lblInner = mk('text', {
+    x: C_cx, y: C_cy - RING_INNER - 8,
+    class: 'ring-label',
+    'text-anchor': 'middle'
+  });
+  lblInner.textContent = 'thin · always';
+  $cRings.appendChild(lblInner);
+
+  const lblOuter = mk('text', {
+    x: C_cx, y: C_cy - RING_OUTER - 8,
+    class: 'ring-label',
+    'text-anchor': 'middle'
+  });
+  lblOuter.textContent = 'thick · added by composition';
+  $cRings.appendChild(lblOuter);
+
+  // Build the agent node at center
+  const agentG2 = mk('g', { class: 'ag-node-group is-agent' });
+  agentG2.appendChild(mk('circle', { cx: C_cx, cy: C_cy, r: 22, class: 'agent-glow' }));
+  agentG2.appendChild(mk('circle', { cx: C_cx, cy: C_cy, r: 14, class: 'ag-node-ring' }));
+  agentG2.appendChild(mk('circle', { cx: C_cx, cy: C_cy, r: 4, class: 'ag-node-dot' }));
+  $cNodes.appendChild(agentG2);
+
+  const agentLbl2 = mk('text', {
+    x: C_cx, y: C_cy + 28,
+    class: 'ag-node-label',
+    'text-anchor': 'middle',
+    'dominant-baseline': 'middle'
+  });
+  agentLbl2.setAttribute('fill', 'var(--accent)');
+  agentLbl2.setAttribute('font-weight', '500');
+  agentLbl2.textContent = 'agent::research';
+  $cLabels.appendChild(agentLbl2);
+
+  // Build outer nodes + edges from agent
+  const cNodeEls = [];
+  const cEdgeEls = [];
+  for (const n of cNodes) {
+    // Edge from agent to node
+    const ln = mk('line', {
+      x1: C_cx, y1: C_cy, x2: n.x, y2: n.y,
+      class: 'ag-edge',
+      'data-id': n.id
+    });
+    $cEdges.appendChild(ln);
+    cEdgeEls.push({ el: ln, node: n });
+
+    const g = mk('g', { class: 'ag-node-group' + (n.kind === 'trigger' ? ' is-trigger' : '') + (n.kind === 'gate' ? ' is-gate' : ''), 'data-id': n.id });
+    g.appendChild(mk('circle', { cx: n.x, cy: n.y, r: 8, class: 'ag-node-ring' }));
+    g.appendChild(mk('circle', { cx: n.x, cy: n.y, r: 2, class: 'ag-node-dot' }));
+    $cNodes.appendChild(g);
+    cNodeEls.push({ el: g, node: n });
+
+    // Label, positioned outward from center along the angle
+    const labelOffset = 18;
+    const lr = (n.ring === 'inner' ? RING_INNER : RING_OUTER) + labelOffset;
+    const lx = C_cx + lr * Math.cos(n.angle);
+    const ly = C_cy + lr * Math.sin(n.angle);
+    const t = mk('text', {
+      x: lx, y: ly,
+      class: 'ag-node-label',
+      'text-anchor': Math.abs(Math.cos(n.angle)) < 0.25 ? 'middle' : (Math.cos(n.angle) > 0 ? 'start' : 'end'),
+      'dominant-baseline': 'middle',
+      'data-id': n.id
+    });
+    t.textContent = n.label;
+    if (n.kind === 'gate') t.setAttribute('font-weight', '500');
+    $cLabels.appendChild(t);
+    cNodeEls[cNodeEls.length - 1].label = t;
+  }
+
+  const cStageName = document.getElementById('ag-c-stage-name');
+  const cThumb     = document.getElementById('ag-c-thumb');
+  const cFns       = document.getElementById('ag-c-fns');
+  const cTrigs     = document.getElementById('ag-c-trigs');
+  const cGates     = document.getElementById('ag-c-gates');
+  const cWorkers   = document.getElementById('ag-c-workers');
+
+  function setStop(idx){
+    const cfg = C_STOPS[idx];
+    if (!cfg) return;
+    cFrame.setAttribute('data-stop', String(idx));
+    if (cStageName) cStageName.textContent = cfg.name;
+    cThumb.style.left = cfg.thumbPos + '%';
+
+    // Toggle nodes / edges visibility
+    for (const ne of cNodeEls) {
+      const visible = idx >= ne.node.minStop;
+      ne.el.classList.toggle('is-hidden', !visible);
+      if (ne.label) ne.label.style.opacity = visible ? '1' : '0';
+    }
+    for (const ee of cEdgeEls) {
+      const visible = idx >= ee.node.minStop;
+      ee.el.style.opacity = visible ? '0.5' : '0';
+    }
+
+    // Ring-outer label: fade in once anything outer is visible
+    lblOuter.style.opacity = idx >= 1 ? '1' : '0.2';
+
+    // Stats
+    cFns.textContent = String(cfg.fns);
+    cTrigs.textContent = String(cfg.trigs);
+    cGates.textContent = String(cfg.gates);
+    cWorkers.innerHTML = `0<span class="delta" style="color:var(--ink-faint)">same engine, every shape</span>`;
+
+    // Stop pip state
+    document.querySelectorAll('#ag-c-stops .agent-c-stop').forEach(s => {
+      s.classList.toggle('on', Number(s.dataset.stop) === idx);
+    });
+  }
+
+  document.querySelectorAll('#ag-c-stops .agent-c-stop').forEach(s => {
+    s.addEventListener('click', () => {
+      setStop(Number(s.dataset.stop));
+      stopCAuto();
+    });
+  });
+
+  setStop(0);
+
+  // Auto-cycle through 0, 1, 2 every 4.5s until interacted with
+  let cAutoTimer = null;
+  let cAutoIdx = 0;
+  function tickCAuto(){
+    cAutoIdx = (cAutoIdx + 1) % C_STOPS.length;
+    setStop(cAutoIdx);
+  }
+  function startCAuto(){
+    if (cAutoTimer) return;
+    cAutoTimer = setInterval(tickCAuto, 4400);
+  }
+  function stopCAuto(){
+    if (cAutoTimer) { clearInterval(cAutoTimer); cAutoTimer = null; }
+  }
+  const cIo = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) startCAuto();
+      else stopCAuto();
+    }
+  }, { threshold: 0.4 });
+  cIo.observe(cFrame);
+})();
+</script>

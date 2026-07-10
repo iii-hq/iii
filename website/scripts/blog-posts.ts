@@ -10,10 +10,7 @@ export interface BlogPost {
   draft: boolean
 }
 
-const BLOG_CONTENT_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../blog/src/content/blog',
-)
+const BLOG_CONTENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/content/blog')
 
 // Minimal frontmatter reader sized to our schema (title, pubDate, updatedDate,
 // draft). We pull the YAML block between leading `---` fences and parse only
@@ -29,10 +26,7 @@ function parseFrontmatter(raw: string): Record<string, string> {
     const m = line.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*$/)
     if (!m) continue
     let value = m[2]
-    if (
-      (value.startsWith("'") && value.endsWith("'")) ||
-      (value.startsWith('"') && value.endsWith('"'))
-    ) {
+    if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) {
       value = value.slice(1, -1)
     }
     out[m[1]] = value

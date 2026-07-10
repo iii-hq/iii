@@ -86,9 +86,12 @@ description: 'd'
   assert.deepEqual(posts, [])
 })
 
-test('readBlogPosts reads the real blog content directory and finds hello-world', async () => {
+test('readBlogPosts reads the real blog content directory', async () => {
   const posts = await readBlogPosts()
-  const hello = posts.find((p) => p.slug === 'hello-world')
-  assert.ok(hello, 'expected the seeded hello-world post to be found')
-  assert.equal(hello?.draft, false)
+  assert.ok(posts.length > 0, 'expected at least one post in src/content/blog')
+  for (const post of posts) {
+    assert.ok(post.slug.length > 0, 'every post derives a slug from its filename')
+    assert.ok(post.title.length > 0, `${post.slug}: title missing`)
+    assert.ok(post.pubDate instanceof Date, `${post.slug}: pubDate missing or invalid`)
+  }
 })

@@ -1,0 +1,26 @@
+---
+// iii.dev/manifesto — body ported verbatim from the pre-Astro manifesto.html
+// (see src/components/manifesto/), with the shared SiteNav in place of the
+// page's original one-off nav; the shared shell provides the head, analytics,
+// and cookie banner it used to carry inline.
+import SiteNav from '../components/SiteNav.astro'
+import HtmlShell from '../layouts/HtmlShell.astro'
+import body from '../components/manifesto/body.html?raw'
+import bodyOpen from '../components/manifesto/body-open.html?raw'
+import '../styles/manifesto.css'
+---
+
+<HtmlShell
+  title="iii / manifesto"
+  description="The iii manifesto. How software can be collapsed into three primitives: Worker, Trigger, Function. Linear scaling, zero integration cost, agent-native."
+  canonicalPath="/manifesto"
+  keywords="iii, manifesto, three primitives, worker, trigger, function, distributed systems, paradigm shift, AI agents, polyglot, integration cost, durable execution, live discovery, ontology"
+  themeColor="#0a0a0a"
+  ogType="article"
+  ogTitle="iii / manifesto — collapse the categories"
+  twitterDescription="Worker, Trigger, Function is the whole interface. Add a worker — the system absorbs it: live, discoverable, observable."
+>
+  <Fragment set:html={bodyOpen} />
+  <SiteNav />
+  <Fragment set:html={body} />
+</HtmlShell>

@@ -26,7 +26,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** the presentations project root (this file lives in <root>/scripts/) */
+/** the roadmap project root (this file lives in <root>/scripts/) */
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /** the markdown-only spec tree, a sibling of website/ at the repo root */
 export const SPECS_DIR = resolve(ROOT, '..', '..', 'tech-specs')
