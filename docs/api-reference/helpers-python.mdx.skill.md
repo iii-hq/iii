@@ -388,15 +388,9 @@ async (name: str, fn: Any, kind: Any = None, traceparent: str | None = None)
 
 ### Types
 
-[`BaggageSpanProcessor`](#baggagespanprocessor) · [`DEFAULT_ALLOWLIST`](#default_allowlist) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
 
 ### BaggageSpanProcessor
-
-### DEFAULT_ALLOWLIST
-
-```python
-DEFAULT_ALLOWLIST = tuple[str, ...]
-```
 
 ### Logger
 

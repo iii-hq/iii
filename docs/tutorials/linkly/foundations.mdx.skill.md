@@ -105,8 +105,8 @@ directly and reloads the worker whenever you save a change.
     "start": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.20.0",
-    "@iii-dev/helpers": "0.20.0",
+    "iii-sdk": "0.21.4",
+    "@iii-dev/helpers": "0.21.4",
     "tsx": "^4.22.3"
   },
   "devDependencies": {
