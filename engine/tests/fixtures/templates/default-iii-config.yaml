@@ -13,8 +13,3 @@ workers:
       logs_exporter: memory
       logs_console_output: true
       sampling_ratio: 1.0
-
-  - name: iii-queue
-    config:
-      adapter:
-        name: builtin

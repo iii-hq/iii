@@ -32,7 +32,7 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
-    engine::{Engine, EngineTrait, Handler, QueueEnqueuer, RegisterFunctionRequest},
+    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     protocol::ErrorBody,
     telemetry::{SpanExt, inject_baggage_from_context, inject_traceparent_from_context},
@@ -597,41 +597,6 @@ impl QueueWorker {
     }
 }
 
-#[async_trait]
-impl QueueEnqueuer for QueueWorker {
-    async fn enqueue_to_function_queue(
-        &self,
-        queue_name: &str,
-        function_id: &str,
-        data: Value,
-        message_id: String,
-        traceparent: Option<String>,
-        baggage: Option<String>,
-    ) -> anyhow::Result<()> {
-        self.enqueue_to_function_queue(
-            queue_name,
-            function_id,
-            data,
-            &message_id,
-            traceparent,
-            baggage,
-        )
-        .await
-    }
-
-    async fn function_queue_dlq_count(&self, queue_name: &str) -> anyhow::Result<u64> {
-        self.function_queue_dlq_count(queue_name).await
-    }
-
-    async fn function_queue_dlq_messages(
-        &self,
-        queue_name: &str,
-        count: usize,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
-        self.function_queue_dlq_messages(queue_name, count).await
-    }
-}
-
 impl TriggerRegistrator for QueueWorker {
     fn register_trigger(
         &self,
@@ -1145,7 +1110,6 @@ impl Worker for QueueWorker {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing QueueModule");
         self.config_snapshot().validate()?;
-        self.engine.set_queue_module(Arc::new(self.clone())).await;
 
         let trigger_type = TriggerType::new(
             "durable:subscriber",
@@ -1329,13 +1293,6 @@ impl ConfigurableWorker for QueueWorker {
         config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
-
-crate::register_worker!(
-    "iii-queue",
-    QueueWorker,
-    description = "Async job processing with named queues, retries, and dead-letter support.",
-    enabled_by_default = true
-);
 
 #[cfg(test)]
 mod tests {
