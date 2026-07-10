@@ -58,7 +58,11 @@ fn status_to_json(status: &Status) -> serde_json::Value {
 }
 
 /// Serialize a batch of SpanData to OTLP JSON matching the III Engine format.
-fn serialize_spans(batch: &[SpanData], resource: &Resource) -> Vec<u8> {
+///
+/// `zero_end` emits `endTimeUnixNano: "0"` instead of the span's end time —
+/// the live start-snapshot sentinel the engine stores as a `pending` span
+/// (see `LiveSpanStartProcessor`). Never used on the final-span export path.
+fn serialize_spans_inner(batch: &[SpanData], resource: &Resource, zero_end: bool) -> Vec<u8> {
     // Group spans by instrumentation scope
     let mut scope_map: HashMap<(String, String), Vec<serde_json::Value>> = HashMap::new();
 
@@ -73,13 +77,19 @@ fn serialize_spans(batch: &[SpanData], resource: &Resource) -> Vec<u8> {
         let trace_id = bytes_to_hex(&span.span_context.trace_id().to_bytes());
         let span_id = bytes_to_hex(&span.span_context.span_id().to_bytes());
 
+        let end_time_unix_nano = if zero_end {
+            "0".to_string()
+        } else {
+            system_time_to_nanos_string(span.end_time)
+        };
+
         let mut span_json = json!({
             "traceId": trace_id,
             "spanId": span_id,
             "name": span.name.as_ref(),
             "kind": span_kind_to_int(span.span_kind.clone()),
             "startTimeUnixNano": system_time_to_nanos_string(span.start_time),
-            "endTimeUnixNano": system_time_to_nanos_string(span.end_time),
+            "endTimeUnixNano": end_time_unix_nano,
             "status": status_to_json(&span.status),
             "attributes": attrs_to_json(&span.attributes),
             "events": span.events.iter().map(|e| {
@@ -131,6 +141,18 @@ fn serialize_spans(batch: &[SpanData], resource: &Resource) -> Vec<u8> {
     });
 
     serde_json::to_vec(&result).unwrap_or_default()
+}
+
+/// Serialize a batch of SpanData to OTLP JSON matching the III Engine format.
+fn serialize_spans(batch: &[SpanData], resource: &Resource) -> Vec<u8> {
+    serialize_spans_inner(batch, resource, false)
+}
+
+/// Serialize ONE just-started span as a live start snapshot: identical OTLP
+/// JSON except `endTimeUnixNano: "0"`, the sentinel the engine ingests as a
+/// `pending` span and replaces in place when the final span closes.
+pub(crate) fn serialize_span_start_snapshot(span: &SpanData, resource: &Resource) -> Vec<u8> {
+    serialize_spans_inner(std::slice::from_ref(span), resource, true)
 }
 
 impl SpanExporter for EngineSpanExporter {
