@@ -2,6 +2,16 @@
 
 Asynchronous job processing with named queues, retries, and dead-letter support.
 
+> **Queueing is no longer built into the engine by default.** `iii-queue` is
+> retired from the default runtime — the engine routes `TriggerAction.Enqueue`
+> and `durable:subscriber` through the standalone **`queue`** worker instead. If
+> enqueue fails with `enqueue_error: … engine::queue::enqueue not found`, install
+> the worker:
+>
+> ```bash
+> iii worker add queue
+> ```
+
 Supports two modes:
 
 - **Topic-based queues** — register a consumer per topic, emit events via `iii::durable::publish`. Fan-out: every distinct function subscribed to a topic receives a copy of each message.

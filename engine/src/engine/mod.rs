@@ -1061,6 +1061,23 @@ impl Engine {
                                                 .await;
                                         }
                                         Err(err) => {
+                                            // DX: a `function_not_found` on the
+                                            // provider means no queue worker is
+                                            // installed. Turn the bare error into
+                                            // an actionable fix instead of leaking
+                                            // the internal provider id alone.
+                                            let message = if err.code == "function_not_found" {
+                                                format!(
+                                                    "No queue provider is installed. \
+                                                     `TriggerAction::Enqueue` routes through the \
+                                                     `{}` provider, which the standalone queue \
+                                                     worker registers. Add it with \
+                                                     `iii worker add queue`. (underlying: {})",
+                                                    ENQUEUE_PROVIDER_FUNCTION_ID, err.message
+                                                )
+                                            } else {
+                                                err.to_string()
+                                            };
                                             engine
                                                 .send_msg(
                                                     &worker,
@@ -1070,7 +1087,7 @@ impl Engine {
                                                         result: None,
                                                         error: Some(ErrorBody::new(
                                                             "enqueue_error",
-                                                            err.to_string(),
+                                                            message,
                                                         )),
                                                         traceparent: traceparent.clone(),
                                                         baggage: baggage.clone(),
@@ -2748,6 +2765,12 @@ mod tests {
                 let error = error.expect("enqueue should fail without a provider");
                 assert_eq!(error.code, "enqueue_error");
                 assert!(error.message.contains("engine::queue::enqueue"));
+                // DX: the fail-closed error must tell the user how to fix it.
+                assert!(
+                    error.message.contains("iii worker add queue"),
+                    "expected install guidance, got: {}",
+                    error.message
+                );
             }
             other => panic!("expected InvocationResult, got {other:?}"),
         }
