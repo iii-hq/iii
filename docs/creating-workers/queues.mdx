@@ -41,14 +41,14 @@ Queues are defined in the `iii-queue` worker's config under `queue_configs`:
 
 Each `queue_configs` entry accepts:
 
-| Field                 | Default    | Description                                                                   |
-| --------------------- | ---------- | ----------------------------------------------------------------------------- |
-| `max_retries`         | `3`        | Delivery attempts before the message moves to the DLQ.                        |
-| `concurrency`         | `10`       | Jobs processed in parallel. `fifo` queues force this to `1`.                  |
-| `type`                | `standard` | `standard` (concurrent) or `fifo` (ordered within a message group).           |
-| `message_group_field` | none       | Required for `fifo`: payload field whose value determines the ordering group. |
-| `backoff_ms`          | `1000`     | Base retry delay in milliseconds; exponential.                                |
-| `poll_interval_ms`    | `100`      | Worker poll interval in milliseconds.                                         |
+| Field                 | Default    | Description                                                                                                                                            |
+| --------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `max_retries`         | `3`        | Delivery attempts before the message moves to the DLQ.                                                                                                 |
+| `concurrency`         | `10`       | Jobs processed in parallel. Must be at least `1`; the schema rejects `0`, so a named queue cannot be paused this way. `fifo` queues force this to `1`. |
+| `type`                | `standard` | `standard` (concurrent) or `fifo` (ordered within a message group).                                                                                    |
+| `message_group_field` | none       | Required for `fifo`: payload field whose value determines the ordering group.                                                                          |
+| `backoff_ms`          | `1000`     | Base retry delay in milliseconds; exponential.                                                                                                         |
+| `poll_interval_ms`    | `100`      | Worker poll interval in milliseconds.                                                                                                                  |
 
 ### Enqueue functions
 
@@ -439,4 +439,8 @@ Or discard it, deleting it from the DLQ permanently:
 
 ```bash
 iii trigger iii::queue::discard_message topic=emails message_id=0b9c…
+```
+
+```json
+{ "queue": "emails", "message_id": "0b9c…", "redriven": 1 }
 ```

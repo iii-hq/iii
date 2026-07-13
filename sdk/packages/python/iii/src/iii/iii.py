@@ -1169,7 +1169,9 @@ class III:
                 and optional ``action`` / ``timeout_ms``.
 
         Returns:
-            The result of the function invocation, or ``None`` for void calls.
+            The function's return value for synchronous (no-action) calls,
+            a ``{"messageReceiptId": ...}`` dict for enqueue actions, or
+            ``None`` for void actions.
 
         Raises:
             InvocationError: For any engine rejection. Inspect ``code``:
