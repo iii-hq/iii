@@ -539,11 +539,14 @@ pub struct InMemorySpanStorage {
     max_spans: std::sync::atomic::AtomicUsize,
     /// Secondary index: trace_id -> set of span indices for O(1) trace lookups
     spans_by_trace_id: RwLock<HashMap<String, HashSet<usize>>>,
-    /// span_ids currently stored as pending (live snapshots awaiting their
-    /// final span). Gates the replace-scan in `add_spans` so the hot append
-    /// path (OTLP ingest, exporters) stays O(1) when no pending predecessor
-    /// exists. Lock order everywhere: `spans` → `spans_by_trace_id` → this.
-    pending_span_ids: RwLock<HashSet<String>>,
+    /// `(trace_id, span_id)` pairs currently stored as pending (live
+    /// snapshots awaiting their final span). Keyed by both ids — span ids
+    /// are only unique within a trace, so a colliding final from another
+    /// trace must not replace the wrong snapshot. Gates the replace-scan in
+    /// `add_spans` so the hot append path (OTLP ingest, exporters) stays
+    /// O(1) when no pending predecessor exists. Lock order everywhere:
+    /// `spans` → `spans_by_trace_id` → this.
+    pending_span_ids: RwLock<HashSet<(String, String)>>,
     /// Broadcast of every span as it lands, driving the `trace` trigger
     /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
@@ -555,14 +558,14 @@ pub struct InMemorySpanStorage {
 fn evict_to_capacity(
     spans: &mut VecDeque<StoredSpan>,
     index: &mut HashMap<String, HashSet<usize>>,
-    pending: &mut HashSet<String>,
+    pending: &mut HashSet<(String, String)>,
     max_spans: usize,
 ) {
     // Loop converges after a shrink
     while spans.len() >= max_spans
         && let Some(old) = spans.pop_front()
     {
-        pending.remove(&old.span_id);
+        pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
         // Remove from index and shift all indices down
         if let Some(set) = index.get_mut(&old.trace_id) {
             set.remove(&0);
@@ -618,7 +621,7 @@ impl InMemorySpanStorage {
             let mut pending = self.pending_span_ids.write().unwrap();
             let excess = spans.len() - max;
             for old in spans.drain(..excess) {
-                pending.remove(&old.span_id);
+                pending.remove(&(old.trace_id, old.span_id));
             }
             index.clear();
             for (idx, span) in spans.iter().enumerate() {
@@ -638,15 +641,22 @@ impl InMemorySpanStorage {
             .max(1);
         for span in new_spans {
             // A final span replacing its live (pending) snapshot overwrites in
-            // place: same idx, same trace_id, so neither index changes. The set
-            // gate keeps the scan off the hot append path, and pending spans
-            // are by construction recent, so scan from the back. The reverse
-            // never happens — a pending snapshot must not overwrite a final
-            // (`on_start` always precedes `on_end`, and a worker's start
-            // snapshot always ingests before its final: same FIFO telemetry
-            // connection, see `ingest_otlp_json`).
-            if pending.remove(&span.span_id)
-                && let Some(slot) = spans.iter_mut().rev().find(|s| s.span_id == span.span_id)
+            // place: same idx, same trace_id, so neither index changes. Keys
+            // are `(trace_id, span_id)` — span ids are only unique within a
+            // trace, so a colliding final from another trace must not steal
+            // the snapshot. The emptiness gate keeps the key clone + scan off
+            // the hot append path, and pending spans are by construction
+            // recent, so scan from the back. The reverse never happens — a
+            // pending snapshot must not overwrite a final (`on_start` always
+            // precedes `on_end`, and a worker's start snapshot always ingests
+            // before its final: same FIFO telemetry connection, see
+            // `ingest_otlp_json`).
+            if !pending.is_empty()
+                && pending.remove(&(span.trace_id.clone(), span.span_id.clone()))
+                && let Some(slot) = spans
+                    .iter_mut()
+                    .rev()
+                    .find(|s| s.span_id == span.span_id && s.trace_id == span.trace_id)
             {
                 let _ = self.tx.send(span.clone());
                 *slot = span;
@@ -672,10 +682,10 @@ impl InMemorySpanStorage {
     }
 
     /// Record an in-progress span snapshot (`LiveSpanProcessor::on_start`).
-    /// Appends + broadcasts exactly like `add_spans` and marks the id pending
-    /// so the final span replaces it in place when it closes. Pending spans
-    /// live ONLY in this store and the streams fed from it — the OTLP export
-    /// path never sees them.
+    /// Appends + broadcasts exactly like `add_spans` and marks the
+    /// `(trace_id, span_id)` pair pending so the final span replaces it in
+    /// place when it closes. Pending spans live ONLY in this store and the
+    /// streams fed from it — the OTLP export path never sees them.
     pub fn add_pending_span(&self, span: StoredSpan) {
         debug_assert!(span.pending && span.end_time_unix_nano == 0);
         let mut spans = self.spans.write().unwrap();
@@ -690,7 +700,7 @@ impl InMemorySpanStorage {
 
         let idx = spans.len();
         let trace_id = span.trace_id.clone();
-        pending.insert(span.span_id.clone());
+        pending.insert((trace_id.clone(), span.span_id.clone()));
         let _ = self.tx.send(span.clone());
         spans.push_back(span);
         index.entry(trace_id).or_default().insert(idx);
@@ -5045,6 +5055,33 @@ mod tests {
     }
 
     #[test]
+    fn pending_span_not_replaced_by_colliding_final_from_another_trace() {
+        let storage = InMemorySpanStorage::new(10);
+
+        storage.add_pending_span(make_pending_span("t1", "p", "op-p", 1_000));
+
+        // Same span id, different trace: span ids are only unique within a
+        // trace, so this final must append — not steal t1's snapshot.
+        storage.add_spans(vec![make_stored_span("t2", "p", "op-x", 2_000, 3_000)]);
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2, "append, not replace");
+        assert_eq!(spans[0].trace_id, "t1");
+        assert!(spans[0].pending, "t1's snapshot untouched");
+        assert_eq!(storage.get_spans_by_trace_id("t2").len(), 1);
+        assert_eq!(storage.pending_span_ids.read().unwrap().len(), 1);
+
+        // t1's own final still replaces its snapshot in place.
+        storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 1_000, 4_000)]);
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2, "replace, not append");
+        assert_eq!(spans[0].trace_id, "t1");
+        assert!(!spans[0].pending);
+        assert_eq!(spans[0].end_time_unix_nano, 4_000);
+        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+    }
+
+    #[test]
     fn pending_span_evicted_before_final_appends_fresh() {
         let storage = InMemorySpanStorage::new(2);
 
@@ -5074,14 +5111,14 @@ mod tests {
 
         storage.set_max_spans(1); // drains p1
         assert_eq!(storage.len(), 1);
-        let pending: Vec<String> = storage
+        let pending: Vec<(String, String)> = storage
             .pending_span_ids
             .read()
             .unwrap()
             .iter()
             .cloned()
             .collect();
-        assert_eq!(pending, vec!["p2".to_string()]);
+        assert_eq!(pending, vec![("t2".to_string(), "p2".to_string())]);
 
         storage.clear();
         assert!(storage.pending_span_ids.read().unwrap().is_empty());
