@@ -41,14 +41,13 @@ typed ``StreamRequest`` / ``StreamResponse`` pair that the callback expects.
 **Signature**
 
 ```python
-http(callback: Callable[Awaitable[HttpResponse[Any] | None]])
+http(callback: Callable[[StreamRequest, StreamResponse], Awaitable[HttpResponse[Any] | None]]) -> Callable[[Any], Awaitable[HttpResponse[Any] | None]]
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `callback` | Callable[Awaitable[[`HttpResponse`](#httpresponse)[Any] \| None]] | Yes | - |
+<ParamField body="callback" type="Callable[[StreamRequest, StreamResponse], Awaitable[HttpResponse[Any] | None]]" required>
+</ParamField>
 
 ### Types
 
@@ -60,9 +59,11 @@ API key sent via a custom header.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `header` | `str` | No | - |
+| `header` | `str` | Yes | - |
 | `type` | `Literal['api_key']` | No | - |
-| `value_key` | `str` | No | - |
+| `value_key` | `str` | Yes | - |
+
+---
 
 ### HttpAuthBearer
 
@@ -70,8 +71,10 @@ Bearer token authentication.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `token_key` | `str` | No | - |
+| `token_key` | `str` | Yes | - |
 | `type` | `Literal['bearer']` | No | - |
+
+---
 
 ### HttpAuthHmac
 
@@ -79,8 +82,10 @@ HMAC signature verification using a shared secret.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `secret_key` | `str` | No | - |
+| `secret_key` | `str` | Yes | - |
 | `type` | `Literal['hmac']` | No | - |
+
+---
 
 ### HttpInvocationConfig
 
@@ -92,7 +97,9 @@ Config for HTTP external function invocation.
 | `headers` | `dict[str, str] \| None` | No | Additional HTTP headers to include in the request. |
 | `method` | `HttpMethod` | No | HTTP method. Defaults to ``'POST'``. |
 | `timeout_ms` | `int \| None` | No | Request timeout in milliseconds. |
-| `url` | `str` | No | Target URL for the HTTP invocation. |
+| `url` | `str` | Yes | Target URL for the HTTP invocation. |
+
+---
 
 ### HttpRequest
 
@@ -106,6 +113,8 @@ Represents a buffered HTTP request.
 | `path_params` | `dict[str, str]` | No | - |
 | `query_params` | `dict[str, str \| list[str]]` | No | - |
 
+---
+
 ### HttpResponse
 
 Represents a buffered HTTP response.
@@ -114,8 +123,7 @@ Represents a buffered HTTP response.
 | --- | --- | --- | --- |
 | `body` | `Any \| None` | No | - |
 | `headers` | `dict[str, str]` | No | - |
-| `model_config` | `Any` | No | - |
-| `status_code` | `int` | No | - |
+| `status_code` | `int` | Yes | - |
 
 ## observability
 
@@ -136,8 +144,10 @@ Return current active span_id as 16-char hex, or None when unavailable.
 **Signature**
 
 ```python
-current_span_id()
+current_span_id() -> str | None
 ```
+
+---
 
 ### current_span_is_recording
 
@@ -146,8 +156,10 @@ Returns ``False`` when there is no active span or the sampler dropped it.
 **Signature**
 
 ```python
-current_span_is_recording()
+current_span_is_recording() -> bool
 ```
+
+---
 
 ### current_trace_id
 
@@ -156,8 +168,10 @@ Return current active trace_id as 32-char hex, or None when unavailable.
 **Signature**
 
 ```python
-current_trace_id()
+current_trace_id() -> str | None
 ```
+
+---
 
 ### execute_traced_request
 
@@ -176,10 +190,13 @@ async (client, request)
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `client` | `Any` | Yes | - |
-| `request` | `Any` | Yes | - |
+<ParamField body="client" type="Any" required>
+</ParamField>
+
+<ParamField body="request" type="Any" required>
+</ParamField>
+
+---
 
 ### extract_baggage
 
@@ -188,14 +205,15 @@ Extract baggage from a W3C baggage header string.
 **Signature**
 
 ```python
-extract_baggage(baggage: str)
+extract_baggage(baggage: str) -> Any
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `baggage` | `str` | Yes | - |
+<ParamField body="baggage" type="str" required>
+</ParamField>
+
+---
 
 ### extract_traceparent
 
@@ -204,14 +222,15 @@ Extract a trace context from a W3C traceparent header string.
 **Signature**
 
 ```python
-extract_traceparent(traceparent: str)
+extract_traceparent(traceparent: str) -> Any
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `traceparent` | `str` | Yes | - |
+<ParamField body="traceparent" type="str" required>
+</ParamField>
+
+---
 
 ### flush_otel
 
@@ -224,8 +243,10 @@ OTel afterwards.
 **Signature**
 
 ```python
-async ()
+async () -> None
 ```
+
+---
 
 ### init_otel
 
@@ -234,15 +255,18 @@ Initialize OpenTelemetry. Subsequent calls are no-ops.
 **Signature**
 
 ```python
-init_otel(config: OtelConfig | None = None, loop: None = None)
+init_otel(config: OtelConfig | None = None, loop: None = None) -> None
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | [`OtelConfig`](#otelconfig) \| None | No | - |
-| `loop` | `None` | No | - |
+<ParamField body="config" type="OtelConfig | None">
+</ParamField>
+
+<ParamField body="loop" type="None">
+</ParamField>
+
+---
 
 ### inject_baggage
 
@@ -251,8 +275,10 @@ Inject the current baggage into a W3C baggage header string.
 **Signature**
 
 ```python
-inject_baggage()
+inject_baggage() -> str | None
 ```
+
+---
 
 ### inject_traceparent
 
@@ -261,8 +287,10 @@ Inject the current trace context into a W3C traceparent header string.
 **Signature**
 
 ```python
-inject_traceparent()
+inject_traceparent() -> str | None
 ```
+
+---
 
 ### record_span_event
 
@@ -271,15 +299,18 @@ No-op when the current span is not recording.
 **Signature**
 
 ```python
-record_span_event(name: str, attrs: dict[str, Any] | None = None)
+record_span_event(name: str, attrs: dict[str, Any] | None = None) -> None
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | `str` | Yes | - |
-| `attrs` | `dict[str, Any] \| None` | No | - |
+<ParamField body="name" type="str" required>
+</ParamField>
+
+<ParamField body="attrs" type="dict[str, Any] | None">
+</ParamField>
+
+---
 
 ### redact
 
@@ -288,14 +319,15 @@ record_span_event(name: str, attrs: dict[str, Any] | None = None)
 **Signature**
 
 ```python
-redact(value: Any)
+redact(value: Any) -> Any
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `value` | `Any` | Yes | - |
+<ParamField body="value" type="Any" required>
+</ParamField>
+
+---
 
 ### redact_and_truncate
 
@@ -304,15 +336,18 @@ redact(value: Any)
 **Signature**
 
 ```python
-redact_and_truncate(value: Any, max_bytes: Optional[int] = None)
+redact_and_truncate(value: Any, max_bytes: Optional[int] = None) -> tuple[str, bool]
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `value` | `Any` | Yes | - |
-| `max_bytes` | `Optional[int]` | No | - |
+<ParamField body="value" type="Any" required>
+</ParamField>
+
+<ParamField body="max_bytes" type="Optional[int]">
+</ParamField>
+
+---
 
 ### resolve_max_bytes_from_env
 
@@ -321,8 +356,10 @@ redact_and_truncate(value: Any, max_bytes: Optional[int] = None)
 **Signature**
 
 ```python
-resolve_max_bytes_from_env()
+resolve_max_bytes_from_env() -> Optional[int]
 ```
+
+---
 
 ### set_current_span_attribute
 
@@ -331,15 +368,18 @@ No-op when the current span is not recording.
 **Signature**
 
 ```python
-set_current_span_attribute(key: str, value: Any)
+set_current_span_attribute(key: str, value: Any) -> None
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `key` | `str` | Yes | - |
-| `value` | `Any` | Yes | - |
+<ParamField body="key" type="str" required>
+</ParamField>
+
+<ParamField body="value" type="Any" required>
+</ParamField>
+
+---
 
 ### set_current_span_error
 
@@ -348,14 +388,15 @@ No-op when there is no active span.
 **Signature**
 
 ```python
-set_current_span_error(message: str)
+set_current_span_error(message: str) -> None
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `message` | `str` | Yes | - |
+<ParamField body="message" type="str" required>
+</ParamField>
+
+---
 
 ### shutdown_otel
 
@@ -364,8 +405,10 @@ Shut down OTel synchronously (best-effort; does not await WS flush).
 **Signature**
 
 ```python
-shutdown_otel()
+shutdown_otel() -> None
 ```
+
+---
 
 ### with_span
 
@@ -377,23 +420,37 @@ that silently ignores attribute/event calls.
 **Signature**
 
 ```python
-async (name: str, fn: Any, kind: Any = None, traceparent: str | None = None)
+async (name: str, fn: Any, *, kind: Any = None, traceparent: str | None = None) -> Any
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | `str` | Yes | - |
-| `fn` | `Any` | Yes | - |
-| `kind` | `Any` | No | - |
-| `traceparent` | `str \| None` | No | - |
+<ParamField body="name" type="str" required>
+</ParamField>
+
+<ParamField body="fn" type="Any" required>
+</ParamField>
+
+<ParamField body="kind" type="Any">
+</ParamField>
+
+<ParamField body="traceparent" type="str | None">
+</ParamField>
 
 ### Types
 
 [`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
 
 ### BaggageSpanProcessor
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `force_flush` | `(timeout_millis: int = 30000) -> bool` | Yes | - |
+| `on_end` | `(span: ReadableSpan) -> None` | Yes | - |
+| `on_start` | `(span: Span, parent_context: Context \| None = None) -> None` | Yes | - |
+| `shutdown` | `() -> None` | Yes | - |
+
+---
 
 ### Logger
 
@@ -407,6 +464,15 @@ When OTel is not initialized, Logger gracefully falls back to Python
 Pass structured data as the second argument to any log method. Using a
 dict of key-value pairs (instead of string interpolation) lets you
 filter, aggregate, and build dashboards in your observability backend.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `debug` | `(message: str, data: Any = None) -> None` | Yes | Log a debug-level message. |
+| `error` | `(message: str, data: Any = None) -> None` | Yes | Log an error-level message. |
+| `info` | `(message: str, data: Any = None) -> None` | Yes | Log an info-level message. |
+| `warn` | `(message: str, data: Any = None) -> None` | Yes | Log a warning-level message. |
+
+---
 
 ### OtelConfig
 
@@ -427,6 +493,8 @@ Configuration for OpenTelemetry initialization.
 | `service_namespace` | `str \| None` | No | Service namespace attribute. |
 | `service_version` | `str \| None` | No | Service version. Defaults to env SERVICE_VERSION or 'unknown'. |
 | `spans_flush_interval_ms` | `int \| None` | No | Span processor flush delay in milliseconds. Defaults to 100ms when not set.<br /><br />The OpenTelemetry default of 5000ms is what makes traces appear seconds<br />after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS. |
+
+---
 
 ### ReconnectionConfig
 
@@ -460,7 +528,7 @@ Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `messageReceiptId` | `str` | No | UUID assigned by the engine to the enqueued job. |
+| `messageReceiptId` | `str` | Yes | UUID assigned by the engine to the enqueued job. |
 
 ## stream
 
@@ -487,6 +555,8 @@ Input for stream authentication.
 | `path` | `str` | Yes | - |
 | `query_params` | `dict[str, list[str]]` | Yes | - |
 
+---
+
 ### StreamAuthResult
 
 Result of stream authentication.
@@ -494,6 +564,8 @@ Result of stream authentication.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `context` | `Any \| None` | No | - |
+
+---
 
 ### StreamChangeEvent
 
@@ -508,6 +580,8 @@ Handler input for ``stream`` triggers, fired when an item changes.
 | `timestamp` | `int` | Yes | - |
 | `type` | `Literal['stream']` | Yes | - |
 
+---
+
 ### StreamChangeEventDetail
 
 Detail of a stream change event containing the mutation type and data.
@@ -516,6 +590,8 @@ Detail of a stream change event containing the mutation type and data.
 | --- | --- | --- | --- |
 | `data` | `Any` | Yes | - |
 | `type` | `Literal['create', 'update', 'delete']` | Yes | - |
+
+---
 
 ### StreamDeleteInput
 
@@ -527,6 +603,8 @@ Input for stream delete operation.
 | `item_id` | `str` | Yes | - |
 | `stream_name` | `str` | Yes | - |
 
+---
+
 ### StreamDeleteResult
 
 Result of stream delete operation.
@@ -534,6 +612,8 @@ Result of stream delete operation.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `old_value` | `Any \| None` | No | - |
+
+---
 
 ### StreamGetInput
 
@@ -544,6 +624,8 @@ Input for stream get operation.
 | `group_id` | `str` | Yes | - |
 | `item_id` | `str` | Yes | - |
 | `stream_name` | `str` | Yes | - |
+
+---
 
 ### StreamJoinLeaveEvent
 
@@ -557,6 +639,8 @@ Event for stream join/leave.
 | `stream_name` | `str` | Yes | - |
 | `subscription_id` | `str` | Yes | - |
 
+---
+
 ### StreamJoinLeaveTriggerConfig
 
 Trigger config for ``stream:join`` and ``stream:leave`` triggers.
@@ -564,6 +648,8 @@ Trigger config for ``stream:join`` and ``stream:leave`` triggers.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `condition_function_id` | `str \| None` | No | - |
+
+---
 
 ### StreamJoinResult
 
@@ -573,6 +659,8 @@ Result of stream join.
 | --- | --- | --- | --- |
 | `unauthorized` | `bool` | Yes | - |
 
+---
+
 ### StreamListGroupsInput
 
 Input for stream list groups operation.
@@ -580,6 +668,8 @@ Input for stream list groups operation.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `stream_name` | `str` | Yes | - |
+
+---
 
 ### StreamListInput
 
@@ -589,6 +679,8 @@ Input for stream list operation.
 | --- | --- | --- | --- |
 | `group_id` | `str` | Yes | - |
 | `stream_name` | `str` | Yes | - |
+
+---
 
 ### StreamSetInput
 
@@ -601,6 +693,8 @@ Input for stream set operation.
 | `item_id` | `str` | Yes | - |
 | `stream_name` | `str` | Yes | - |
 
+---
+
 ### StreamSetResult
 
 Result of stream set operation.
@@ -609,6 +703,8 @@ Result of stream set operation.
 | --- | --- | --- | --- |
 | `new_value` | `TData` | Yes | - |
 | `old_value` | `TData \| None` | No | - |
+
+---
 
 ### StreamTriggerConfig
 
@@ -621,6 +717,8 @@ Trigger config for ``stream`` triggers. Filters which item changes fire the hand
 | `item_id` | `str \| None` | No | - |
 | `stream_name` | `str` | Yes | - |
 
+---
+
 ### StreamUpdateInput
 
 Input for stream update operation.
@@ -632,6 +730,8 @@ Input for stream update operation.
 | `ops` | `list['UpdateOp']` | Yes | - |
 | `stream_name` | `str` | Yes | - |
 
+---
+
 ### StreamUpdateResult
 
 Result of stream update operation.
@@ -641,6 +741,8 @@ Result of stream update operation.
 | `errors` | list[[`UpdateOpError`](#updateoperror)] | No | - |
 | `new_value` | `TData` | Yes | - |
 | `old_value` | `TData \| None` | No | - |
+
+---
 
 ### UpdateAppend
 
@@ -682,6 +784,8 @@ append does not apply when an error is returned for that op.
 | `type` | `str` | No | - |
 | `value` | `Any` | Yes | - |
 
+---
+
 ### UpdateDecrement
 
 Decrement operation for stream update.
@@ -692,6 +796,8 @@ Decrement operation for stream update.
 | `path` | `str` | Yes | - |
 | `type` | `str` | No | - |
 
+---
+
 ### UpdateIncrement
 
 Increment operation for stream update.
@@ -701,6 +807,8 @@ Increment operation for stream update.
 | `by` | `int \| float` | Yes | - |
 | `path` | `str` | Yes | - |
 | `type` | `str` | No | - |
+
+---
 
 ### UpdateMerge
 
@@ -736,6 +844,8 @@ response. The merge does not apply when an error is returned.
 | `type` | `str` | No | - |
 | `value` | `Any` | Yes | - |
 
+---
+
 ### UpdateOpError
 
 Per-op error returned by ``state::update`` / ``stream::update``.
@@ -751,6 +861,8 @@ reflected in the response's ``new_value``.
 | `message` | `str` | Yes | - |
 | `op_index` | `int` | Yes | - |
 
+---
+
 ### UpdateRemove
 
 Remove operation for stream update.
@@ -759,6 +871,8 @@ Remove operation for stream update.
 | --- | --- | --- | --- |
 | `path` | `str` | Yes | - |
 | `type` | `str` | No | - |
+
+---
 
 ### UpdateSet
 
@@ -793,9 +907,11 @@ connecting worker's upgrade request.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `headers` | `dict[str, str]` | No | HTTP headers from the WebSocket upgrade request. |
-| `ip_address` | `str` | No | IP address of the connecting client. |
-| `query_params` | `dict[str, list[str]]` | No | Query parameters from the upgrade URL. Each key maps to a list of values to support repeated keys. |
+| `headers` | `dict[str, str]` | Yes | HTTP headers from the WebSocket upgrade request. |
+| `ip_address` | `str` | Yes | IP address of the connecting client. |
+| `query_params` | `dict[str, list[str]]` | Yes | Query parameters from the upgrade URL. Each key maps to a list of values to support repeated keys. |
+
+---
 
 ### AuthResult
 
@@ -814,6 +930,8 @@ context is forwarded to the middleware.
 | `forbidden_functions` | `list[str]` | No | Function IDs to deny even if they match ``expose_functions``. |
 | `function_registration_prefix` | `str \| None` | No | Optional prefix applied to all function IDs registered by this worker. |
 
+---
+
 ### OnFunctionRegistrationInput
 
 Input passed to the ``on_function_registration_function_id`` hook
@@ -823,10 +941,12 @@ fields, or raise an exception to deny the registration.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `context` | `dict[str, Any]` | No | Auth context from ``AuthResult.context`` for this session. |
+| `context` | `dict[str, Any]` | Yes | Auth context from ``AuthResult.context`` for this session. |
 | `description` | `str \| None` | No | Human-readable description of the function. |
-| `function_id` | `str` | No | ID of the function being registered. |
+| `function_id` | `str` | Yes | ID of the function being registered. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
+
+---
 
 ### OnFunctionRegistrationResult
 
@@ -839,6 +959,8 @@ Omitted fields keep the original value from the registration request.
 | `function_id` | `str \| None` | No | Mapped function ID. |
 | `metadata` | `dict[str, Any] \| None` | No | Mapped metadata. |
 
+---
+
 ### OnTriggerRegistrationInput
 
 Input passed to the ``on_trigger_registration_function_id`` hook
@@ -849,11 +971,13 @@ fields, or raise an exception to deny the registration.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `config` | `Any` | No | Trigger-specific configuration. |
-| `context` | `dict[str, Any]` | No | Auth context from ``AuthResult.context`` for this session. |
-| `function_id` | `str` | No | ID of the function this trigger is bound to. |
+| `context` | `dict[str, Any]` | Yes | Auth context from ``AuthResult.context`` for this session. |
+| `function_id` | `str` | Yes | ID of the function this trigger is bound to. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
-| `trigger_id` | `str` | No | ID of the trigger being registered. |
-| `trigger_type` | `str` | No | Trigger type identifier. |
+| `trigger_id` | `str` | Yes | ID of the trigger being registered. |
+| `trigger_type` | `str` | Yes | Trigger type identifier. |
+
+---
 
 ### OnTriggerRegistrationResult
 
@@ -867,6 +991,8 @@ Omitted fields keep the original value from the registration request.
 | `trigger_id` | `str \| None` | No | Mapped trigger ID. |
 | `trigger_type` | `str \| None` | No | Mapped trigger type. |
 
+---
+
 ### OnTriggerTypeRegistrationInput
 
 Input passed to the ``on_trigger_type_registration_function_id`` hook
@@ -876,9 +1002,11 @@ fields, or raise an exception to deny the registration.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `context` | `dict[str, Any]` | No | Auth context from ``AuthResult.context`` for this session. |
-| `description` | `str` | No | Human-readable description of the trigger type. |
-| `trigger_type_id` | `str` | No | ID of the trigger type being registered. |
+| `context` | `dict[str, Any]` | Yes | Auth context from ``AuthResult.context`` for this session. |
+| `description` | `str` | Yes | Human-readable description of the trigger type. |
+| `trigger_type_id` | `str` | Yes | ID of the trigger type being registered. |
+
+---
 
 ### OnTriggerTypeRegistrationResult
 

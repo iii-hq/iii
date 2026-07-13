@@ -42,6 +42,8 @@ Authentication configuration for HTTP-invoked functions.
 | `Bearer` | `{ token_key: String }` | Yes | - |
 | `ApiKey` | `{ header: String, value_key: String }` | Yes | - |
 
+---
+
 ### HttpInvocationConfig
 
 Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
@@ -54,6 +56,8 @@ Workers, etc.) instead of a local handler.
 | `timeout_ms` | `Option<u64>` | No | - |
 | `headers` | `HashMap<String, String>` | Yes | - |
 | `auth` | Option&lt;[`HttpAuthConfig`](#httpauthconfig)&gt; | No | - |
+
+---
 
 ### HttpMethod
 
@@ -68,6 +72,8 @@ HTTP method accepted by `HttpInvocationConfig`. Distinct from the core
 | `Patch` | `unit` | Yes | - |
 | `Delete` | `unit` | Yes | - |
 
+---
+
 ### HttpRequest
 
 Buffered HTTP request received by a function handler.
@@ -80,6 +86,8 @@ Buffered HTTP request received by a function handler.
 | `path` | `String` | Yes | - |
 | `method` | `String` | Yes | - |
 | `body` | `T` | Yes | - |
+
+---
 
 ### HttpResponse
 
@@ -107,6 +115,12 @@ use iii_helpers::observability;
 
 ### BaggageSpanProcessor
 
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new` | `fn() -> Self` | Yes | - |
+
+---
+
 ### CapturedContext
 
 Snapshot of the current OTel context for use across `tokio::spawn`.
@@ -114,6 +128,12 @@ Snapshot of the current OTel context for use across `tokio::spawn`.
 `tokio::spawn` does NOT carry OTel context into the spawned task;
 without this, child spans become orphan roots. Capture before spawn,
 then call `.attach(future)` inside the spawned block.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `attach` | `async fn(future: F) -> T` | Yes | - |
+
+---
 
 ### ConnectionState
 
@@ -127,17 +147,31 @@ Connection state for the shared WebSocket
 | `Reconnecting` | `unit` | Yes | - |
 | `Failed` | `unit` | Yes | - |
 
+---
+
 ### EngineLogExporter
 
 Custom log exporter that sends OTLP JSON over a shared WebSocket connection.
 
 Uses a hand-built JSON serializer to match the III Engine's expected format.
 
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new` | fn(connection: Arc&lt;[`SharedEngineConnection`](#sharedengineconnection)&gt;) -&gt; Self | Yes | - |
+
+---
+
 ### EngineMetricsExporter
 
 Custom metrics exporter that sends OTLP JSON over a shared WebSocket connection.
 
 Uses a hand-built JSON serializer to match the III Engine's expected format.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new` | fn(connection: Arc&lt;[`SharedEngineConnection`](#sharedengineconnection)&gt;) -&gt; Self | Yes | - |
+
+---
 
 ### EngineSpanExporter
 
@@ -146,6 +180,12 @@ Custom span exporter that sends OTLP JSON over a shared WebSocket connection.
 Uses a hand-built JSON serializer (not opentelemetry-proto serde) to match
 the format the III Engine expects: camelCase field names, integer attribute
 values as JSON numbers, and hex-encoded trace/span IDs.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new` | fn(connection: Arc&lt;[`SharedEngineConnection`](#sharedengineconnection)&gt;) -&gt; Self | Yes | - |
+
+---
 
 ### Logger
 
@@ -160,6 +200,16 @@ Pass structured data as the second argument to any log method. Using a
 `serde_json::Value` object of key-value pairs (instead of string
 interpolation) lets you filter, aggregate, and build dashboards in your
 observability backend.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `debug` | `fn(message: &str, data: Option<Value>)` | Yes | Log a debug-level message. |
+| `error` | `fn(message: &str, data: Option<Value>)` | Yes | Log an error-level message. |
+| `info` | `fn(message: &str, data: Option<Value>)` | Yes | Log an info-level message. |
+| `new` | `fn() -> Self` | Yes | Create a new Logger instance. |
+| `warn` | `fn(message: &str, data: Option<Value>)` | Yes | Log a warning-level message. |
+
+---
 
 ### OtelConfig
 
@@ -184,6 +234,8 @@ Configuration for OpenTelemetry initialization
 | `logs_batch_size` | `Option<usize>` | No | Maximum number of log records exported per batch. Defaults to 1 when not set. |
 | `fetch_instrumentation_enabled` | `Option<bool>` | No | Whether to auto-instrument outgoing HTTP calls.<br />When `Some(true)` (default), `execute_traced_request()` can be used to<br />create CLIENT spans for reqwest requests. Set `Some(false)` to opt out.<br />`None` is treated as `true`. |
 
+---
+
 ### OtelMessage
 
 Message to send over the shared WebSocket connection
@@ -192,6 +244,8 @@ Message to send over the shared WebSocket connection
 | --- | --- | --- | --- |
 | `prefix` | `&'static [u8]` | Yes | - |
 | `data` | `Vec<u8>` | Yes | - |
+
+---
 
 ### ReconnectionConfig
 
@@ -205,14 +259,30 @@ Configuration for WebSocket reconnection behavior
 | `jitter_factor` | `f64` | Yes | - |
 | `max_retries` | `Option<u64>` | No | - |
 | `max_pending_messages` | `usize` | Yes | Maximum messages preserved across reconnects. Messages beyond this limit<br />are dropped to prevent delivering stale data after a long disconnect.<br />This is intentionally smaller than `OtelConfig::channel_capacity` (the<br />in-flight buffer between exporters and the WebSocket loop). |
+| `effective_initial_delay_ms` | `fn() -> u64` | Yes | Returns initial_delay_ms, clamped to a minimum of 1ms to prevent division by zero. |
+
+---
 
 ### SharedEngineConnection
 
 Shared WebSocket connection for all OTEL exporters
 
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `flush` | `async fn()` | Yes | Flush all pending messages through the WebSocket connection. |
+| `new` | fn(ws_url: String, config: [`ReconnectionConfig`](#reconnectionconfig)) -&gt; Self | Yes | Create a new shared connection and spawn the connection task |
+| `send` | `fn(prefix: &'static [u8], data: Vec<u8>) -> Result<(), String>` | Yes | Send a message with the given prefix |
+| `shutdown` | `async fn()` | Yes | Shutdown the connection gracefully |
+| `state` | async fn() -&gt; [`ConnectionState`](#connectionstate) | Yes | Get current connection state |
+| `with_channel_capacity` | fn(ws_url: String, config: [`ReconnectionConfig`](#reconnectionconfig), channel_capacity: usize) -&gt; Self | Yes | Create a new shared connection with a custom channel capacity |
+
+---
+
 ### WorkerGaugesHandle
 
 Handle that keeps the OTEL gauges alive. Drop to stop reporting.
+
+---
 
 ### WorkerGaugesOptions
 
@@ -222,6 +292,8 @@ Options for registering worker gauges
 | --- | --- | --- | --- |
 | `worker_id` | `String` | Yes | - |
 | `worker_name` | `Option<String>` | No | - |
+
+---
 
 ### WorkerMetrics
 
@@ -236,9 +308,17 @@ Collected worker metrics snapshot
 | `timestamp_ms` | `u64` | Yes | - |
 | `runtime` | `&'static str` | Yes | - |
 
+---
+
 ### WorkerMetricsCollector
 
 Collects system metrics for the current process
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `collect` | fn() -&gt; [`WorkerMetrics`](#workermetrics) | Yes | Collect a snapshot of current metrics |
+| `collect_cached` | fn() -&gt; [`WorkerMetrics`](#workermetrics) | Yes | Collect a snapshot using a 500ms cache to avoid redundant sysinfo refreshes. |
+| `new` | `fn() -> Self` | Yes | - |
 
 ## queue
 
@@ -299,6 +379,8 @@ failing the array match first.
 | `Single` | `(String)` | Yes | - |
 | `Segments` | `(Vec<String>)` | Yes | - |
 
+---
+
 ### StreamAuthInput
 
 Input for stream authentication.
@@ -310,6 +392,8 @@ Input for stream authentication.
 | `query_params` | `HashMap<String, Vec<String>>` | Yes | - |
 | `addr` | `String` | Yes | - |
 
+---
+
 ### StreamAuthResult
 
 Result of stream authentication.
@@ -317,6 +401,8 @@ Result of stream authentication.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `context` | `Option<Value>` | No | - |
+
+---
 
 ### StreamChangeEvent
 
@@ -332,6 +418,8 @@ via `stream::set`, `stream::update`, or `stream::delete`.
 | `id` | `Option<String>` | No | The item ID that changed. |
 | `event` | [`StreamChangeEventDetail`](#streamchangeeventdetail) | Yes | The event detail containing mutation type and data. |
 
+---
+
 ### StreamChangeEventDetail
 
 Detail of a stream change event containing the mutation type and data.
@@ -340,6 +428,8 @@ Detail of a stream change event containing the mutation type and data.
 | --- | --- | --- | --- |
 | `event_type` | [`StreamEventType`](#streameventtype) | Yes | The kind of mutation (create, update, or delete). |
 | `data` | `Value` | Yes | The data associated with the event. |
+
+---
 
 ### StreamDeleteInput
 
@@ -351,11 +441,15 @@ Input for deleting a stream item.
 | `group_id` | `String` | Yes | - |
 | `item_id` | `String` | Yes | - |
 
+---
+
 ### StreamDeleteResult
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
+
+---
 
 ### StreamEventType
 
@@ -367,6 +461,8 @@ The kind of mutation that occurred on a stream item.
 | `Update` | `unit` | Yes | - |
 | `Delete` | `unit` | Yes | - |
 
+---
+
 ### StreamGetInput
 
 Input for retrieving a single stream item.
@@ -376,6 +472,8 @@ Input for retrieving a single stream item.
 | `stream_name` | `String` | Yes | - |
 | `group_id` | `String` | Yes | - |
 | `item_id` | `String` | Yes | - |
+
+---
 
 ### StreamJoinLeaveEvent
 
@@ -389,6 +487,8 @@ Event payload for stream join/leave triggers.
 | `id` | `Option<String>` | No | - |
 | `context` | `Option<Value>` | No | - |
 
+---
+
 ### StreamJoinLeaveTriggerConfig
 
 Trigger config for `stream:join` and `stream:leave` triggers.
@@ -397,6 +497,11 @@ Trigger config for `stream:join` and `stream:leave` triggers.
 | --- | --- | --- | --- |
 | `stream_name` | `Option<String>` | No | Stream name to watch |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
+| `new` | `fn() -> Self` | Yes | - |
+| `stream_name` | `fn(name: impl Into<String>) -> Self` | Yes | - |
+
+---
 
 ### StreamJoinResult
 
@@ -406,6 +511,8 @@ Result of a stream join request.
 | --- | --- | --- | --- |
 | `unauthorized` | `bool` | Yes | - |
 
+---
+
 ### StreamListGroupsInput
 
 Input for listing all groups in a stream.
@@ -413,6 +520,8 @@ Input for listing all groups in a stream.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `stream_name` | `String` | Yes | - |
+
+---
 
 ### StreamListInput
 
@@ -422,6 +531,8 @@ Input for listing all items in a stream group.
 | --- | --- | --- | --- |
 | `stream_name` | `String` | Yes | - |
 | `group_id` | `String` | Yes | - |
+
+---
 
 ### StreamSetInput
 
@@ -434,12 +545,16 @@ Input for setting a stream item.
 | `item_id` | `String` | Yes | - |
 | `data` | `Value` | Yes | - |
 
+---
+
 ### StreamSetResult
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
 | `new_value` | `Value` | Yes | The value after the update |
+
+---
 
 ### StreamTriggerConfig
 
@@ -451,6 +566,13 @@ Trigger config for `stream` triggers. Filters which item changes fire the handle
 | `group_id` | `Option<String>` | No | Group ID filter |
 | `item_id` | `Option<String>` | No | Item ID filter |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
+| `group_id` | `fn(id: impl Into<String>) -> Self` | Yes | - |
+| `item_id` | `fn(id: impl Into<String>) -> Self` | Yes | - |
+| `new` | `fn() -> Self` | Yes | - |
+| `stream_name` | `fn(name: impl Into<String>) -> Self` | Yes | - |
+
+---
 
 ### StreamUpdateInput
 
@@ -463,6 +585,8 @@ Input for atomically updating a stream item.
 | `item_id` | `String` | Yes | - |
 | `ops` | Vec&lt;[`UpdateOp`](#updateop)&gt; | Yes | - |
 
+---
+
 ### StreamUpdateResult
 
 Result of an atomic update operation
@@ -472,6 +596,8 @@ Result of an atomic update operation
 | `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
 | `new_value` | `Value` | Yes | The value after the update |
 | `errors` | Vec&lt;[`UpdateOpError`](#updateoperror)&gt; | Yes | Errors encountered while applying ops. Successfully applied ops<br />are still reflected in `new_value`. Field is omitted from JSON<br />when empty for backward compatibility. |
+
+---
 
 ### UpdateOp
 
@@ -485,6 +611,18 @@ Operations that can be performed atomically on a stream value
 | `Decrement` | `{ path: String, by: i64 }` | Yes | Decrement numeric value |
 | `Append` | \{ path: Option&lt;[`MergePath`](#mergepath)&gt;, value: Value \} | Yes | Append an element to an array or concatenate a string at the<br />optional path. Path may be omitted (root append), a single<br />first-level key, or an array of literal segments for nested<br />append. See `MergePath` for the variant shape. |
 | `Remove` | `{ path: String }` | Yes | Remove a field |
+| `append` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create an Append operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
+| `append_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create an Append operation at a nested path of literal segments. Convenience wrapper for `append(vec!["a", "b"], v)`. |
+| `append_root` | `fn(value: impl Into<Value>) -> Self` | Yes | Create an Append operation at the root level (no path). |
+| `decrement` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create a Decrement operation |
+| `increment` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create an Increment operation |
+| `merge` | `fn(value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at root level |
+| `merge_at` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create a Merge operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
+| `merge_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at a nested path of literal segments. Convenience wrapper for `merge_at(vec!["a", "b"], v)`. |
+| `remove` | `fn(path: impl Into<String>) -> Self` | Yes | Create a Remove operation |
+| `set` | `fn(path: impl Into<String>, value: impl Into<Option<Value>>) -> Self` | Yes | Create a Set operation |
+
+---
 
 ### UpdateOpError
 
@@ -524,6 +662,8 @@ connecting worker's upgrade request.
 | `query_params` | `HashMap<String, Vec<String>>` | Yes | Query parameters from the upgrade URL. Each key maps to a vec of values<br />to support repeated keys (e.g. `?a=1&a=2`). |
 | `ip_address` | `String` | Yes | IP address of the connecting client. |
 
+---
+
 ### AuthResult
 
 Return value from the RBAC auth function.
@@ -541,6 +681,8 @@ context is forwarded to the middleware.
 | `context` | `Value` | Yes | Arbitrary context forwarded to the middleware function on every<br />invocation. |
 | `function_registration_prefix` | `Option<String>` | No | Optional prefix applied to all function IDs registered by this worker. |
 
+---
+
 ### OnFunctionRegistrationInput
 
 Input passed to the `on_function_registration_function_id` hook
@@ -555,6 +697,8 @@ fields, or return an error to deny the registration.
 | `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the function. |
 | `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
 
+---
+
 ### OnFunctionRegistrationResult
 
 Result returned from the `on_function_registration_function_id` hook.
@@ -565,6 +709,8 @@ Omitted fields keep the original value from the registration request.
 | `function_id` | `Option<String>` | No | Mapped function ID. |
 | `description` | `Option<String>` | No | Mapped description. |
 | `metadata` | `Option<Value>` | No | Mapped metadata. |
+
+---
 
 ### OnTriggerRegistrationInput
 
@@ -582,6 +728,8 @@ fields, or return an error to deny the registration.
 | `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the trigger. |
 | `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
 
+---
+
 ### OnTriggerRegistrationResult
 
 Result returned from the `on_trigger_registration_function_id` hook.
@@ -593,6 +741,8 @@ Omitted fields keep the original value from the registration request.
 | `trigger_type` | `Option<String>` | No | Mapped trigger type. |
 | `function_id` | `Option<String>` | No | Mapped function ID. |
 | `config` | `Option<Value>` | No | Mapped trigger configuration. |
+
+---
 
 ### OnTriggerTypeRegistrationInput
 
@@ -606,6 +756,8 @@ fields, or return an error to deny the registration.
 | `trigger_type_id` | `String` | Yes | ID of the trigger type being registered. |
 | `description` | `String` | Yes | Human-readable description of the trigger type. |
 | `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
+
+---
 
 ### OnTriggerTypeRegistrationResult
 

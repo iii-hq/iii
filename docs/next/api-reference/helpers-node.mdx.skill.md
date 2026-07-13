@@ -39,9 +39,9 @@ http(callback: (req: HttpStreamingRequest, res: HttpStreamingResponse) => Promis
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `callback` | (req: HttpStreamingRequest, res: HttpStreamingResponse) =&gt; Promise&lt;void \| [`HttpResponse`](#httpresponse)&lt;number, string \| Buffer&lt;ArrayBufferLike&gt; \| Record&lt;string, unknown&gt;&gt;&gt; | Yes | Async handler receiving a streaming request and response. |
+<ParamField body="callback" type="(req: HttpStreamingRequest, res: HttpStreamingResponse) => Promise<void | HttpResponse<number, string | Buffer<ArrayBufferLike> | Record<string, unknown>>>" required>
+  Async handler receiving a streaming request and response.
+</ParamField>
 
 #### Example
 
@@ -75,6 +75,8 @@ Authentication configuration for HTTP-invoked functions.
 type HttpAuthConfig = { secret_key: string; type: "hmac" } | { token_key: string; type: "bearer" } | { header: string; type: "api_key"; value_key: string }
 ```
 
+---
+
 ### HttpInvocationConfig
 
 Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
@@ -88,6 +90,8 @@ Workers, etc.) instead of a local handler.
 | `timeout_ms` | `number` | No | Timeout in milliseconds. |
 | `url` | `string` | Yes | URL to invoke. |
 
+---
+
 ### HttpMethod
 
 HTTP method accepted by HttpInvocationConfig. Distinct from the core
@@ -96,6 +100,8 @@ HTTP method accepted by HttpInvocationConfig. Distinct from the core
 ```typescript
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
 ```
+
+---
 
 ### HttpRequest
 
@@ -109,6 +115,8 @@ Incoming buffered HTTP request received by a function handler.
 | `path_params` | `Record<string, string>` | Yes | - |
 | `query_params` | `Record<string, string \| string[]>` | Yes | - |
 | `request_body` | `HttpStreamReader` | Yes | - |
+
+---
 
 ### HttpResponse
 
@@ -142,6 +150,8 @@ Extract the current span ID from the active span context.
 currentSpanId() => string | undefined
 ```
 
+---
+
 ### currentSpanIsRecording
 
 Returns `false` when there is no active span or the sampler dropped it.
@@ -152,6 +162,8 @@ Returns `false` when there is no active span or the sampler dropped it.
 currentSpanIsRecording() => boolean
 ```
 
+---
+
 ### currentTraceId
 
 Extract the current trace ID from the active span context.
@@ -161,6 +173,8 @@ Extract the current trace ID from the active span context.
 ```typescript
 currentTraceId() => string | undefined
 ```
+
+---
 
 ### executeTracedRequest
 
@@ -173,15 +187,18 @@ ERROR span status for HTTP responses with status >= 400 or network errors.
 **Signature**
 
 ```typescript
-executeTracedRequest(input: RequestInfo | URL, init: TracedFetchInit) => Promise<Response>
+executeTracedRequest(input: RequestInfo | URL, init?: TracedFetchInit) => Promise<Response>
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `input` | `RequestInfo \| URL` | Yes | - |
-| `init` | [`TracedFetchInit`](#tracedfetchinit) | Yes | - |
+<ParamField body="input" type="RequestInfo | URL" required>
+</ParamField>
+
+<ParamField body="init" type="TracedFetchInit">
+</ParamField>
+
+---
 
 ### extractBaggage
 
@@ -195,9 +212,10 @@ extractBaggage(baggage: string) => Context
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `baggage` | `string` | Yes | - |
+<ParamField body="baggage" type="string" required>
+</ParamField>
+
+---
 
 ### extractContext
 
@@ -206,15 +224,18 @@ Extract both trace context and baggage from their respective headers.
 **Signature**
 
 ```typescript
-extractContext(traceparent: string, baggage: string) => Context
+extractContext(traceparent?: string, baggage?: string) => Context
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `traceparent` | `string` | Yes | - |
-| `baggage` | `string` | Yes | - |
+<ParamField body="traceparent" type="string">
+</ParamField>
+
+<ParamField body="baggage" type="string">
+</ParamField>
+
+---
 
 ### extractTraceparent
 
@@ -228,9 +249,10 @@ extractTraceparent(traceparent: string) => Context
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `traceparent` | `string` | Yes | - |
+<ParamField body="traceparent" type="string" required>
+</ParamField>
+
+---
 
 ### flushOtel
 
@@ -246,6 +268,8 @@ OTel afterwards.
 flushOtel() => Promise<void>
 ```
 
+---
+
 ### getAllBaggage
 
 Get all baggage entries from the current context.
@@ -255,6 +279,8 @@ Get all baggage entries from the current context.
 ```typescript
 getAllBaggage() => Record<string, string>
 ```
+
+---
 
 ### getBaggageEntry
 
@@ -268,9 +294,10 @@ getBaggageEntry(key: string) => string | undefined
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `key` | `string` | Yes | - |
+<ParamField body="key" type="string" required>
+</ParamField>
+
+---
 
 ### getLogger
 
@@ -281,6 +308,8 @@ Get the OpenTelemetry logger instance.
 ```typescript
 getLogger() => Logger | null
 ```
+
+---
 
 ### initOtel
 
@@ -295,9 +324,10 @@ initOtel(config: OtelConfig) => void
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | [`OtelConfig`](#otelconfig) | Yes | - |
+<ParamField body="config" type="OtelConfig" required>
+</ParamField>
+
+---
 
 ### injectBaggage
 
@@ -309,6 +339,8 @@ Inject the current baggage into a W3C baggage header string.
 injectBaggage() => string | undefined
 ```
 
+---
+
 ### injectTraceparent
 
 Inject the current trace context into a W3C traceparent header string.
@@ -318,6 +350,8 @@ Inject the current trace context into a W3C traceparent header string.
 ```typescript
 injectTraceparent() => string | undefined
 ```
+
+---
 
 ### patchGlobalFetch
 
@@ -331,9 +365,10 @@ patchGlobalFetch(tracer: Tracer) => void
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `tracer` | `Tracer` | Yes | - |
+<ParamField body="tracer" type="Tracer" required>
+</ParamField>
+
+---
 
 ### recordSpanEvent
 
@@ -342,15 +377,18 @@ No-op when the current span is not recording.
 **Signature**
 
 ```typescript
-recordSpanEvent(name: string, attrs: Attributes) => void
+recordSpanEvent(name: string, attrs?: Attributes) => void
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | `string` | Yes | - |
-| `attrs` | `Attributes` | Yes | - |
+<ParamField body="name" type="string" required>
+</ParamField>
+
+<ParamField body="attrs" type="Attributes">
+</ParamField>
+
+---
 
 ### redact
 
@@ -364,9 +402,10 @@ redact(value: unknown) => unknown
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `value` | `unknown` | Yes | - |
+<ParamField body="value" type="unknown" required>
+</ParamField>
+
+---
 
 ### redactAndTruncate
 
@@ -380,10 +419,13 @@ redactAndTruncate(value: unknown, maxBytes: number | null) => { json: string; tr
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `value` | `unknown` | Yes | - |
-| `maxBytes` | `number \| null` | Yes | - |
+<ParamField body="value" type="unknown" required>
+</ParamField>
+
+<ParamField body="maxBytes" type="number | null" required>
+</ParamField>
+
+---
 
 ### registerWorkerGauges
 
@@ -397,10 +439,13 @@ registerWorkerGauges(meter: Meter, options: WorkerGaugesOptions) => void
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `meter` | `Meter` | Yes | - |
-| `options` | [`WorkerGaugesOptions`](#workergaugesoptions) | Yes | - |
+<ParamField body="meter" type="Meter" required>
+</ParamField>
+
+<ParamField body="options" type="WorkerGaugesOptions" required>
+</ParamField>
+
+---
 
 ### removeBaggageEntry
 
@@ -414,9 +459,10 @@ removeBaggageEntry(key: string) => Context
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `key` | `string` | Yes | - |
+<ParamField body="key" type="string" required>
+</ParamField>
+
+---
 
 ### resolveMaxBytesFromEnv
 
@@ -427,6 +473,8 @@ removeBaggageEntry(key: string) => Context
 ```typescript
 resolveMaxBytesFromEnv() => number | null
 ```
+
+---
 
 ### safeStringify
 
@@ -441,9 +489,10 @@ safeStringify(value: unknown) => string
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `value` | `unknown` | Yes | - |
+<ParamField body="value" type="unknown" required>
+</ParamField>
+
+---
 
 ### setBaggageEntry
 
@@ -457,10 +506,13 @@ setBaggageEntry(key: string, value: string) => Context
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `key` | `string` | Yes | - |
-| `value` | `string` | Yes | - |
+<ParamField body="key" type="string" required>
+</ParamField>
+
+<ParamField body="value" type="string" required>
+</ParamField>
+
+---
 
 ### setCurrentSpanAttribute
 
@@ -474,10 +526,13 @@ setCurrentSpanAttribute(key: string, value: AttributeValue) => void
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `key` | `string` | Yes | - |
-| `value` | `AttributeValue` | Yes | - |
+<ParamField body="key" type="string" required>
+</ParamField>
+
+<ParamField body="value" type="AttributeValue" required>
+</ParamField>
+
+---
 
 ### setCurrentSpanError
 
@@ -491,9 +546,10 @@ setCurrentSpanError(message: string) => void
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `message` | `string` | Yes | - |
+<ParamField body="message" type="string" required>
+</ParamField>
+
+---
 
 ### shutdownOtel
 
@@ -505,6 +561,8 @@ Shutdown OpenTelemetry, flushing any pending data.
 shutdownOtel() => Promise<void>
 ```
 
+---
+
 ### stopWorkerGauges
 
 
@@ -515,6 +573,8 @@ shutdownOtel() => Promise<void>
 stopWorkerGauges() => void
 ```
 
+---
+
 ### unpatchGlobalFetch
 
 Restore globalThis.fetch to its original implementation.
@@ -524,6 +584,8 @@ Restore globalThis.fetch to its original implementation.
 ```typescript
 unpatchGlobalFetch() => void
 ```
+
+---
 
 ### withSpan
 
@@ -537,17 +599,22 @@ withSpan(name: string, options: { kind?: SpanKind; traceparent?: string }, fn: (
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | `string` | Yes | - |
-| `options` | `{ kind?: SpanKind; traceparent?: string }` | Yes | - |
-| `fn` | `(span: Span) => Promise<T>` | Yes | - |
+<ParamField body="name" type="string" required>
+</ParamField>
+
+<ParamField body="options" type="{ kind?: SpanKind; traceparent?: string }" required>
+</ParamField>
+
+<ParamField body="fn" type="(span: Span) => Promise<T>" required>
+</ParamField>
 
 ### Types
 
 [`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`OtelLogEvent`](#otellogevent) · [`ReconnectionConfig`](#reconnectionconfig) · [`TracedFetchInit`](#tracedfetchinit) · [`WorkerGaugesOptions`](#workergaugesoptions) · [`WorkerMetrics`](#workermetrics) · [`WorkerMetricsCollector`](#workermetricscollector) · [`WorkerMetricsCollectorOptions`](#workermetricscollectoroptions)
 
 ### BaggageSpanProcessor
+
+---
 
 ### Logger
 
@@ -560,6 +627,8 @@ When OTel is not initialized, Logger gracefully falls back to `console.*`.
 Pass structured data as the second argument to any log method. Using an
 object of key-value pairs (instead of string interpolation) lets you
 filter, aggregate, and build dashboards in your observability backend.
+
+---
 
 ### OtelConfig
 
@@ -582,6 +651,8 @@ Configuration for OpenTelemetry initialization.
 | `serviceVersion` | `string` | No | The service version to report. Defaults to SERVICE_VERSION env var or "unknown". |
 | `spansFlushIntervalMs` | `number` | No | Span processor flush delay in milliseconds. Defaults to 100ms. This is how<br />long an ended span waits in the batch buffer before it is flushed to the<br />engine, the OpenTelemetry default of 5000ms is what makes traces appear<br />seconds after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS. |
 
+---
+
 ### OtelLogEvent
 
 OTEL Log Event from the engine
@@ -601,6 +672,8 @@ OTEL Log Event from the engine
 | `timestamp_unix_nano` | `number` | Yes | Timestamp in Unix nanoseconds |
 | `trace_id` | `string` | No | Trace ID for correlation (if available) |
 
+---
+
 ### ReconnectionConfig
 
 Configuration for WebSocket reconnection behavior
@@ -613,11 +686,15 @@ Configuration for WebSocket reconnection behavior
 | `maxDelayMs` | `number` | Yes | Maximum delay cap in milliseconds (default: 30000ms) |
 | `maxRetries` | `number` | Yes | Maximum retry attempts, -1 for infinite (default: -1) |
 
+---
+
 ### TracedFetchInit
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `tracer` | `Tracer` | No | - |
+
+---
 
 ### WorkerGaugesOptions
 
@@ -625,6 +702,8 @@ Configuration for WebSocket reconnection behavior
 | --- | --- | --- | --- |
 | `workerId` | `string` | Yes | - |
 | `workerName` | `string` | No | - |
+
+---
 
 ### WorkerMetrics
 
@@ -644,12 +723,16 @@ Worker metrics data structure used internally for OTEL metric collection.
 | `timestamp_ms` | `number` | Yes | - |
 | `uptime_seconds` | `number` | No | - |
 
+---
+
 ### WorkerMetricsCollector
 
 Collects worker resource metrics including CPU, memory, and event loop lag.
 
 Uses the Node.js `monitorEventLoopDelay` API for high-precision event loop
 delay measurements instead of manual `setImmediate` timing.
+
+---
 
 ### WorkerMetricsCollectorOptions
 
@@ -708,6 +791,8 @@ Omit `path`, pass `""`, or pass `[]` to target the root value.
 type MergePath = string | string[]
 ```
 
+---
+
 ### StreamAuthInput
 
 Input for stream authentication.
@@ -719,6 +804,8 @@ Input for stream authentication.
 | `path` | `string` | Yes | Request path. |
 | `query_params` | `Record<string, string[]>` | Yes | Query parameters. |
 
+---
+
 ### StreamAuthResult
 
 Result of stream authentication.
@@ -726,6 +813,8 @@ Result of stream authentication.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `context` | `any` | No | Arbitrary context passed to stream handlers after authentication. |
+
+---
 
 ### StreamChangeEvent
 
@@ -740,6 +829,8 @@ Handler input for `stream` triggers, fired when an item changes via `stream::set
 | `timestamp` | `number` | Yes | Unix timestamp of the event. |
 | `type` | `"stream"` | Yes | The event type. |
 
+---
+
 ### StreamChangeEventDetail
 
 Detail of a stream change event containing the mutation type and data.
@@ -749,6 +840,8 @@ Detail of a stream change event containing the mutation type and data.
 | `data` | `any` | Yes | The data associated with the event. |
 | `type` | `"create" \| "update" \| "delete"` | Yes | The kind of mutation (create, update, or delete). |
 
+---
+
 ### StreamContext
 
 Context type extracted from StreamAuthResult.
@@ -756,6 +849,8 @@ Context type extracted from StreamAuthResult.
 ```typescript
 type StreamContext = StreamAuthResult["context"]
 ```
+
+---
 
 ### StreamDeleteInput
 
@@ -767,6 +862,8 @@ Input for deleting a stream item.
 | `item_id` | `string` | Yes | Item identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
 
+---
+
 ### StreamDeleteResult
 
 Result of a stream delete operation.
@@ -774,6 +871,8 @@ Result of a stream delete operation.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `old_value` | `any` | No | Previous value (if it existed). |
+
+---
 
 ### StreamGetInput
 
@@ -784,6 +883,8 @@ Input for retrieving a single stream item.
 | `group_id` | `string` | Yes | Group identifier. |
 | `item_id` | `string` | Yes | Item identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
+
+---
 
 ### StreamJoinLeaveEvent
 
@@ -797,6 +898,8 @@ Event payload for stream join/leave events.
 | `stream_name` | `string` | Yes | Name of the stream. |
 | `subscription_id` | `string` | Yes | Unique subscription identifier. |
 
+---
+
 ### StreamJoinLeaveTriggerConfig
 
 Trigger config for `stream:join` and `stream:leave` triggers.
@@ -804,6 +907,8 @@ Trigger config for `stream:join` and `stream:leave` triggers.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `condition_function_id` | `string` | No | Function ID for conditional execution. If it returns `false`, the handler is skipped. |
+
+---
 
 ### StreamJoinResult
 
@@ -813,6 +918,8 @@ Result of a stream join request.
 | --- | --- | --- | --- |
 | `unauthorized` | `boolean` | Yes | Whether the join was unauthorized. |
 
+---
+
 ### StreamListGroupsInput
 
 Input for listing all groups in a stream.
@@ -820,6 +927,8 @@ Input for listing all groups in a stream.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `stream_name` | `string` | Yes | Name of the stream. |
+
+---
 
 ### StreamListInput
 
@@ -829,6 +938,8 @@ Input for listing all items in a stream group.
 | --- | --- | --- | --- |
 | `group_id` | `string` | Yes | Group identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
+
+---
 
 ### StreamSetInput
 
@@ -841,6 +952,8 @@ Input for setting a stream item.
 | `item_id` | `string` | Yes | Item identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
 
+---
+
 ### StreamSetResult
 
 Result of a stream set operation.
@@ -849,6 +962,8 @@ Result of a stream set operation.
 | --- | --- | --- | --- |
 | `new_value` | `TData` | Yes | New value that was stored. |
 | `old_value` | `TData` | No | Previous value (if it existed). |
+
+---
 
 ### StreamTriggerConfig
 
@@ -861,6 +976,8 @@ Trigger config for `stream` triggers. Filters which item changes fire the handle
 | `item_id` | `string` | No | If set, only changes to this specific item fire the handler. |
 | `stream_name` | `string` | Yes | Stream name to watch. Only changes on this stream fire the handler. |
 
+---
+
 ### StreamUpdateInput
 
 Input for atomically updating a stream item.
@@ -872,6 +989,8 @@ Input for atomically updating a stream item.
 | `ops` | [`UpdateOp`](#updateop)[] | Yes | Ordered list of update operations to apply atomically. |
 | `stream_name` | `string` | Yes | Name of the stream. |
 
+---
+
 ### StreamUpdateResult
 
 Result of a stream update operation.
@@ -881,6 +1000,8 @@ Result of a stream update operation.
 | `errors` | [`UpdateOpError`](#updateoperror)[] | No | Per-op errors. Emitted by `merge` and `append` for validation<br />rejections (path depth/size, value depth, or a<br />`__proto__`/`constructor`/`prototype` segment or top-level key)<br />and by `append` for the case-2 `append.type_mismatch` and<br />`append.target_not_object` surfaces. Successfully applied ops are<br />still reflected in `new_value`. The field is omitted from the<br />JSON wire when empty. |
 | `new_value` | `TData` | Yes | New value after the update. |
 | `old_value` | `TData` | No | Previous value (if it existed). |
+
+---
 
 ### UpdateAppend
 
@@ -916,6 +1037,8 @@ apply when an error is returned for that op.
 | `type` | `"append"` | Yes | - |
 | `value` | `any` | Yes | Value to append. String targets only accept string values. |
 
+---
+
 ### UpdateDecrement
 
 Decrement a numeric field by a given amount.
@@ -926,6 +1049,8 @@ Decrement a numeric field by a given amount.
 | `path` | `string` | Yes | First-level field path. |
 | `type` | `"decrement"` | Yes | - |
 
+---
+
 ### UpdateIncrement
 
 Increment a numeric field by a given amount.
@@ -935,6 +1060,8 @@ Increment a numeric field by a given amount.
 | `by` | `number` | Yes | Amount to increment by. |
 | `path` | `string` | Yes | First-level field path. |
 | `type` | `"increment"` | Yes | - |
+
+---
 
 ### UpdateMerge
 
@@ -964,6 +1091,8 @@ apply when an error is returned for that op.
 | `type` | `"merge"` | Yes | - |
 | `value` | `any` | Yes | Object to merge. Must be a JSON object. |
 
+---
+
 ### UpdateOp
 
 Union of all atomic update operations supported by streams.
@@ -971,6 +1100,8 @@ Union of all atomic update operations supported by streams.
 ```typescript
 type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
 ```
+
+---
 
 ### UpdateOpError
 
@@ -983,6 +1114,8 @@ Per-op error returned by `state::update` / `stream::update`.
 | `message` | `string` | Yes | Human-readable description with concrete numbers when applicable. |
 | `op_index` | `number` | Yes | Index of the offending op within the original `ops` array. |
 
+---
+
 ### UpdateRemove
 
 Remove a field at the given path.
@@ -991,6 +1124,8 @@ Remove a field at the given path.
 | --- | --- | --- | --- |
 | `path` | `string` | Yes | First-level field path. |
 | `type` | `"remove"` | Yes | - |
+
+---
 
 ### UpdateSet
 
@@ -1028,6 +1163,8 @@ connecting worker's upgrade request.
 | `ip_address` | `string` | Yes | IP address of the connecting client. |
 | `query_params` | `Record<string, string[]>` | Yes | Query parameters from the upgrade URL. Each key maps to an array of values to support repeated keys. |
 
+---
+
 ### AuthResult
 
 Return value from the RBAC auth function. Controls which functions the
@@ -1044,6 +1181,8 @@ middleware.
 | `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
 | `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
 
+---
+
 ### OnFunctionRegistrationInput
 
 Input passed to the `on_function_registration_function_id` hook
@@ -1058,6 +1197,8 @@ fields, or throw to deny the registration.
 | `function_id` | `string` | Yes | ID of the function being registered. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
 
+---
+
 ### OnFunctionRegistrationResult
 
 Result returned from the `on_function_registration_function_id` hook.
@@ -1069,6 +1210,8 @@ registration request.
 | `description` | `string` | No | Mapped description. |
 | `function_id` | `string` | No | Mapped function ID. |
 | `metadata` | `Record<string, unknown>` | No | Mapped metadata. |
+
+---
 
 ### OnTriggerRegistrationInput
 
@@ -1086,6 +1229,8 @@ fields, or throw to deny the registration.
 | `trigger_id` | `string` | Yes | ID of the trigger being registered. |
 | `trigger_type` | `string` | Yes | Trigger type identifier. |
 
+---
+
 ### OnTriggerRegistrationResult
 
 Result returned from the `on_trigger_registration_function_id` hook.
@@ -1099,6 +1244,8 @@ registration request.
 | `trigger_id` | `string` | No | Mapped trigger ID. |
 | `trigger_type` | `string` | No | Mapped trigger type. |
 
+---
+
 ### OnTriggerTypeRegistrationInput
 
 Input passed to the `on_trigger_type_registration_function_id` hook
@@ -1111,6 +1258,8 @@ fields, or throw to deny the registration.
 | `context` | `Record<string, unknown>` | Yes | Auth context from `AuthResult.context` for this session. |
 | `description` | `string` | Yes | Human-readable description of the trigger type. |
 | `trigger_type_id` | `string` | Yes | ID of the trigger type being registered. |
+
+---
 
 ### OnTriggerTypeRegistrationResult
 

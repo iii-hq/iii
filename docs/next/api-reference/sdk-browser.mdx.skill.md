@@ -22,15 +22,30 @@ established automatically -- there is no separate `connect()` call.
 **Signature**
 
 ```typescript
-registerWorker(address: string, options: InitOptions) => ISdk
+registerWorker(address: string, options?: InitOptions) => ISdk
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `address` | `string` | Yes | WebSocket URL of the III engine (e.g. `ws://localhost:49135`). |
-| `options` | [`InitOptions`](#initoptions) | Yes | Optional InitOptions for worker name, timeouts, and reconnection. |
+<ParamField body="address" type="string" required>
+  WebSocket URL of the III engine (e.g. `ws://localhost:49135`).
+</ParamField>
+
+<ParamField body="options" type="InitOptions">
+  Optional InitOptions for worker name, timeouts, and reconnection.
+
+  <Expandable title="`InitOptions` fields">
+    <ParamField body="headers" type="Record<string, string>">
+      Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth.
+    </ParamField>
+    <ParamField body="invocationTimeoutMs" type="number">
+      Default timeout for `trigger()` in milliseconds. Defaults to `30000`.
+    </ParamField>
+    <ParamField body="reconnectionConfig" type="Partial<IIIReconnectionConfig>">
+      WebSocket reconnection behavior.
+    </ParamField>
+  </Expandable>
+</ParamField>
 
 #### Example
 
@@ -54,9 +69,21 @@ registerTrigger(trigger: RegisterTriggerInput) => Trigger
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `trigger` | [`RegisterTriggerInput`](#registertriggerinput) | Yes | The trigger to register |
+<ParamField body="trigger" type="RegisterTriggerInput" required>
+  The trigger to register
+
+  <Expandable title="`RegisterTriggerInput` fields" defaultOpen>
+    <ParamField body="config" type="unknown" required>
+      Trigger-type-specific configuration.
+    </ParamField>
+    <ParamField body="function_id" type="string" required>
+      ID of the function this trigger invokes.
+    </ParamField>
+    <ParamField body="type" type="string" required>
+      Trigger type identifier (e.g. `http`, `queue`, `cron`).
+    </ParamField>
+  </Expandable>
+</ParamField>
 
 #### Example
 
@@ -71,23 +98,47 @@ const trigger = worker.registerTrigger({
 trigger.unregister()
 ```
 
+---
+
 ### registerFunction
 
-Registers a new function with a local handler or an HTTP invocation config.
+Registers a new function with a local handler. The handler runs in the
+browser session; HTTP invocation configs are a Node.js SDK feature and
+are not accepted here.
 
 **Signature**
 
 ```typescript
-registerFunction(functionId: string, handler: RemoteFunctionHandler, options: RegisterFunctionOptions) => FunctionRef
+registerFunction(functionId: string, handler: RemoteFunctionHandler, options?: RegisterFunctionOptions) => FunctionRef
 ```
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `functionId` | `string` | Yes | Unique function identifier |
-| `handler` | [`RemoteFunctionHandler`](#remotefunctionhandler) | Yes | Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.) |
-| `options` | [`RegisterFunctionOptions`](#registerfunctionoptions) | Yes | Optional function registration options (description, request/response formats, metadata) |
+<ParamField body="functionId" type="string" required>
+  Unique function identifier
+</ParamField>
+
+<ParamField body="handler" type="RemoteFunctionHandler" required>
+  Async handler executed when the function is invoked
+</ParamField>
+
+<ParamField body="options" type="RegisterFunctionOptions">
+  Optional function registration options (description, request/response formats, metadata)
+
+  <Expandable title="`RegisterFunctionOptions` fields">
+    <ParamField body="description" type="string">
+      The description of the function
+    </ParamField>
+    <ParamField body="metadata" type="Record<string, unknown>">
+    </ParamField>
+    <ParamField body="request_format" type="RegisterFunctionFormat">
+      The request format of the function
+    </ParamField>
+    <ParamField body="response_format" type="RegisterFunctionFormat">
+      The response format of the function
+    </ParamField>
+  </Expandable>
+</ParamField>
 
 #### Example
 
@@ -103,6 +154,8 @@ const ref = worker.registerFunction(
 ref.unregister()
 ```
 
+---
+
 ### trigger
 
 Invokes a function using a request object.
@@ -115,9 +168,24 @@ trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `request` | [`TriggerRequest`](#triggerrequest)&lt;TInput&gt; | Yes | The trigger request containing function_id, payload, and optional action/timeout |
+<ParamField body="request" type="TriggerRequest<TInput>" required>
+  The trigger request containing function_id, payload, and optional action/timeout
+
+  <Expandable title="`TriggerRequest` fields" defaultOpen>
+    <ParamField body="action" type="TriggerAction">
+      Routing action. Omit for synchronous request/response.
+    </ParamField>
+    <ParamField body="function_id" type="string" required>
+      ID of the function to invoke.
+    </ParamField>
+    <ParamField body="payload" type="TInput" required>
+      Payload to pass to the function.
+    </ParamField>
+    <ParamField body="timeoutMs" type="number">
+      Override the default invocation timeout in milliseconds.
+    </ParamField>
+  </Expandable>
+</ParamField>
 
 #### Example
 
@@ -145,6 +213,8 @@ const receipt = await worker.trigger({
 })
 ```
 
+---
+
 ### registerTriggerType
 
 Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
@@ -157,10 +227,29 @@ registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandl
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `triggerType` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) | Yes | The trigger type to register |
-| `handler` | [`TriggerHandler`](#triggerhandler)&lt;TConfig&gt; | Yes | The handler for the trigger type |
+<ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
+  The trigger type to register
+
+  <Expandable title="`RegisterTriggerTypeInput` fields">
+    <ParamField body="description" type="string" required>
+    </ParamField>
+    <ParamField body="id" type="string" required>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="handler" type="TriggerHandler<TConfig>" required>
+  The handler for the trigger type
+
+  <Expandable title="`TriggerHandler` fields">
+    <ParamField body="registerTrigger" type="(config: TriggerConfig<TConfig>) => Promise<void>" required>
+      Called when a trigger instance is registered.
+    </ParamField>
+    <ParamField body="unregisterTrigger" type="(config: TriggerConfig<TConfig>) => Promise<void>" required>
+      Called when a trigger instance is unregistered.
+    </ParamField>
+  </Expandable>
+</ParamField>
 
 #### Example
 
@@ -182,6 +271,8 @@ worker.registerTriggerType<CronConfig>(
 )
 ```
 
+---
+
 ### unregisterTriggerType
 
 Unregisters a trigger type.
@@ -194,15 +285,24 @@ unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `triggerType` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) | Yes | The trigger type to unregister |
+<ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
+  The trigger type to unregister
+
+  <Expandable title="`RegisterTriggerTypeInput` fields">
+    <ParamField body="description" type="string" required>
+    </ParamField>
+    <ParamField body="id" type="string" required>
+    </ParamField>
+  </Expandable>
+</ParamField>
 
 #### Example
 
 ```typescript
 worker.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
 ```
+
+---
 
 ### addConnectionStateListener
 
@@ -218,9 +318,8 @@ addConnectionStateListener(handler: (state: IIIConnectionState) => void) => () =
 
 #### Parameters
 
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `handler` | (state: [`IIIConnectionState`](#iiiconnectionstate)) =&gt; void | Yes | - |
+<ParamField body="handler" type="(state: IIIConnectionState) => void" required>
+</ParamField>
 
 #### Example
 
@@ -232,6 +331,8 @@ const unsub = worker.addConnectionStateListener((state) => {
 // Later, stop receiving updates
 unsub()
 ```
+
+---
 
 ### shutdown
 
@@ -255,15 +356,15 @@ The `iii-browser-sdk` package provides additional entry points:
 
 | Import path | Contents |
 |---|---|
-| `iii-browser-sdk` | `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, `ChannelReader`, `ChannelWriter`, `EngineFunctions`, `EngineTriggers`, `EnqueueResult`, etc. |
-| `iii-browser-sdk/state` | `DeleteResult`, `IState`, `StateDeleteInput`, `StateDeleteResult`, `StateEventData`, `StateEventType`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, etc. |
-| `iii-browser-sdk/stream` | `DeleteResult`, `IStream`, `MergePath`, `StreamAuthInput`, `StreamAuthResult`, `StreamChangeEvent`, `StreamContext`, `StreamDeleteInput`, `StreamGetInput`, `StreamJoinLeaveEvent`, etc. |
+| `iii-browser-sdk` | `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, `ChannelReader`, `ChannelWriter`, `EngineFunctions`, `EngineTriggers`, `EnqueueResult`, `FunctionRef`, `IIIConnectionState`, `IIIReconnectionConfig`, `ISdk`, `InitOptions`, `MessageType`, `MiddlewareFunctionInput`, `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`, `OnTriggerRegistrationInput`, `OnTriggerRegistrationResult`, `OnTriggerTypeRegistrationInput`, `OnTriggerTypeRegistrationResult`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerMessage`, `RegisterTriggerTypeInput`, `RegisterTriggerTypeMessage`, `RemoteFunctionHandler`, `StreamChannelRef`, `Trigger`, `TriggerAction`, `TriggerConfig`, `TriggerHandler`, `TriggerRequest`, `TriggerTypeRef`, `registerWorker` |
+| `iii-browser-sdk/state` | `DeleteResult`, `IState`, `StateDeleteInput`, `StateDeleteResult`, `StateEventData`, `StateEventType`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, `StateUpdateInput`, `StateUpdateResult` |
+| `iii-browser-sdk/stream` | `DeleteResult`, `IStream`, `MergePath`, `StreamAuthInput`, `StreamAuthResult`, `StreamChangeEvent`, `StreamContext`, `StreamDeleteInput`, `StreamGetInput`, `StreamJoinLeaveEvent`, `StreamJoinLeaveTriggerConfig`, `StreamJoinResult`, `StreamListGroupsInput`, `StreamListInput`, `StreamSetInput`, `StreamSetResult`, `StreamTriggerConfig`, `StreamUpdateInput`, `StreamUpdateResult`, `UpdateAppend`, `UpdateDecrement`, `UpdateIncrement`, `UpdateMerge`, `UpdateOp`, `UpdateOpError`, `UpdateRemove`, `UpdateSet` |
 
 ## Types
 
 ### iii-browser-sdk
 
-[`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`EnqueueResult`](#enqueueresult) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`InitOptions`](#initoptions) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerConfig`](#triggerconfig) · [`TriggerHandler`](#triggerhandler) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeRef`](#triggertyperef)
+[`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`EngineFunctions`](#enginefunctions) · [`EngineTriggers`](#enginetriggers) · [`EnqueueResult`](#enqueueresult) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`InitOptions`](#initoptions) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerAction`](#triggeraction) · [`TriggerConfig`](#triggerconfig) · [`TriggerHandler`](#triggerhandler) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeRef`](#triggertyperef)
 
 #### ApiRequest
 
@@ -277,6 +378,8 @@ Incoming HTTP request received by a function registered with an HTTP trigger.
 | `path_params` | `Record<string, string>` | Yes | - |
 | `query_params` | `Record<string, string \| string[]>` | Yes | - |
 
+---
+
 #### ApiResponse
 
 Structured API response returned from HTTP function handlers.
@@ -286,6 +389,8 @@ Structured API response returned from HTTP function handlers.
 | `body` | `TBody` | No | Response body. |
 | `headers` | `Record<string, string>` | No | Response headers. |
 | `status_code` | `TStatus` | Yes | HTTP status code. |
+
+---
 
 #### AuthInput
 
@@ -298,6 +403,8 @@ connecting worker's upgrade request.
 | `headers` | `Record<string, string>` | Yes | HTTP headers from the WebSocket upgrade request. |
 | `ip_address` | `string` | Yes | IP address of the connecting client. |
 | `query_params` | `Record<string, string[]>` | Yes | Query parameters from the upgrade URL. Each key maps to an array of values to support repeated keys. |
+
+---
 
 #### AuthResult
 
@@ -315,6 +422,8 @@ middleware.
 | `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
 | `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
 
+---
+
 #### Channel
 
 A streaming channel pair for worker-to-worker data transfer. Created via
@@ -327,13 +436,53 @@ the `createChannel` helper from `iii-browser-sdk/helpers`.
 | `writer` | [`ChannelWriter`](#channelwriter) | Yes | Writer end of the channel. |
 | `writerRef` | [`StreamChannelRef`](#streamchannelref) | Yes | Serializable reference to the writer (can be sent to other workers). |
 
+---
+
 #### ChannelReader
 
 Read end of a streaming channel. Uses native browser WebSocket.
 
+---
+
 #### ChannelWriter
 
 Write end of a streaming channel. Uses native browser WebSocket.
+
+---
+
+#### EngineFunctions
+
+Engine function paths for internal operations.
+
+Naming note: `LIST_TRIGGERS` / `INFO_TRIGGERS` cover trigger TYPES
+(templates). `LIST_REGISTERED_TRIGGERS` / `INFO_REGISTERED_TRIGGERS`
+cover trigger INSTANCES (subscriber rows). The old
+`engine::trigger-types::list` builtin has been removed and is now
+served by `engine::triggers::list`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `INFO_FUNCTIONS` | `"engine::functions::info"` | Yes | - |
+| `INFO_REGISTERED_TRIGGERS` | `"engine::registered-triggers::info"` | Yes | - |
+| `INFO_TRIGGERS` | `"engine::triggers::info"` | Yes | - |
+| `INFO_WORKERS` | `"engine::workers::info"` | Yes | - |
+| `LIST_FUNCTIONS` | `"engine::functions::list"` | Yes | - |
+| `LIST_REGISTERED_TRIGGERS` | `"engine::registered-triggers::list"` | Yes | - |
+| `LIST_TRIGGERS` | `"engine::triggers::list"` | Yes | - |
+| `LIST_WORKERS` | `"engine::workers::list"` | Yes | - |
+| `REGISTER_WORKER` | `"engine::workers::register"` | Yes | - |
+
+---
+
+#### EngineTriggers
+
+Engine trigger types
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `FUNCTIONS_AVAILABLE` | `"engine::functions-available"` | Yes | - |
+
+---
 
 #### EnqueueResult
 
@@ -342,6 +491,8 @@ Result returned when a function is invoked with `TriggerAction.Enqueue`.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `messageReceiptId` | `string` | Yes | Unique receipt ID for the enqueued message. |
+
+---
 
 #### FunctionRef
 
@@ -353,6 +504,8 @@ Handle returned by ISdk.registerFunction. Contains the function's
 | `id` | `string` | Yes | The unique function identifier. |
 | `unregister` | `() => void` | Yes | Removes this function from the engine. |
 
+---
+
 #### IIIConnectionState
 
 Connection state for the III WebSocket
@@ -360,6 +513,22 @@ Connection state for the III WebSocket
 ```typescript
 type IIIConnectionState = "disconnected" | "connecting" | "connected" | "reconnecting" | "failed"
 ```
+
+---
+
+#### IIIReconnectionConfig
+
+Configuration for WebSocket reconnection behavior
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `backoffMultiplier` | `number` | Yes | Exponential backoff multiplier (default: 2) |
+| `initialDelayMs` | `number` | Yes | Starting delay in milliseconds (default: 1000ms) |
+| `jitterFactor` | `number` | Yes | Random jitter factor 0-1 (default: 0.3) |
+| `maxDelayMs` | `number` | Yes | Maximum delay cap in milliseconds (default: 30000ms) |
+| `maxRetries` | `number` | Yes | Maximum retry attempts, -1 for infinite (default: -1) |
+
+---
 
 #### InitOptions
 
@@ -369,7 +538,9 @@ Configuration options passed to registerWorker.
 | --- | --- | --- | --- |
 | `headers` | `Record<string, string>` | No | Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
-| `reconnectionConfig` | `Partial<IIIReconnectionConfig>` | No | WebSocket reconnection behavior. |
+| `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
+
+---
 
 #### MessageType
 
@@ -386,6 +557,8 @@ Configuration options passed to registerWorker.
 | `UnregisterTriggerType` | `"unregistertriggertype"` | Yes | - |
 | `WorkerRegistered` | `"workerregistered"` | Yes | - |
 
+---
+
 #### MiddlewareFunctionInput
 
 Input passed to the RBAC middleware function on every function invocation
@@ -394,10 +567,12 @@ call before it reaches the target function.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `action` | `TriggerAction` | No | Routing action, if any. |
+| `action` | [`TriggerAction`](#triggeraction) | No | Routing action, if any. |
 | `context` | `Record<string, unknown>` | Yes | Auth context returned by the auth function for this session. |
 | `function_id` | `string` | Yes | ID of the function being invoked. |
 | `payload` | `Record<string, unknown>` | Yes | Payload sent by the caller. |
+
+---
 
 #### OnFunctionRegistrationInput
 
@@ -413,6 +588,8 @@ fields, or throw to deny the registration.
 | `function_id` | `string` | Yes | ID of the function being registered. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
 
+---
+
 #### OnFunctionRegistrationResult
 
 Result returned from the `on_function_registration_function_id` hook.
@@ -424,6 +601,8 @@ registration request.
 | `description` | `string` | No | Mapped description. |
 | `function_id` | `string` | No | Mapped function ID. |
 | `metadata` | `Record<string, unknown>` | No | Mapped metadata. |
+
+---
 
 #### OnTriggerRegistrationInput
 
@@ -440,6 +619,8 @@ fields, or throw to deny the registration.
 | `trigger_id` | `string` | Yes | ID of the trigger being registered. |
 | `trigger_type` | `string` | Yes | Trigger type identifier. |
 
+---
+
 #### OnTriggerRegistrationResult
 
 Result returned from the `on_trigger_registration_function_id` hook.
@@ -452,6 +633,8 @@ registration request.
 | `function_id` | `string` | No | Mapped function ID. |
 | `trigger_id` | `string` | No | Mapped trigger ID. |
 | `trigger_type` | `string` | No | Mapped trigger type. |
+
+---
 
 #### OnTriggerTypeRegistrationInput
 
@@ -466,6 +649,8 @@ fields, or throw to deny the registration.
 | `description` | `string` | Yes | Human-readable description of the trigger type. |
 | `trigger_type_id` | `string` | Yes | ID of the trigger type being registered. |
 
+---
+
 #### OnTriggerTypeRegistrationResult
 
 Result returned from the `on_trigger_type_registration_function_id` hook.
@@ -477,11 +662,37 @@ registration request.
 | `description` | `string` | No | Mapped description. |
 | `trigger_type_id` | `string` | No | Mapped trigger type ID. |
 
+---
+
+#### RegisterFunctionFormat
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `string` | No | The description of the parameter |
+| `items` | `unknown` | No | The items of the parameter (for arrays) |
+| `name` | `string` | No | The name of the parameter |
+| `properties` | `Record<string, unknown>` | No | The body of the parameter (for objects) |
+| `required` | `string[]` | No | Whether the parameter is required |
+| `type` | `"string" \| "number" \| "boolean" \| "object" \| "array" \| "null" \| "map" \| "integer"` | No | The type of the parameter |
+| `[key: string]` | `unknown` | No | - |
+
+---
+
 #### RegisterFunctionInput
 
 ```typescript
 type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 ```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `string` | No | The description of the function |
+| `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda) |
+| `metadata` | `Record<string, unknown>` | No | - |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
+
+---
 
 #### RegisterFunctionMessage
 
@@ -491,8 +702,10 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 | `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda) |
 | `message_type` | [`MessageType`](#messagetype).RegisterFunction | Yes | - |
 | `metadata` | `Record<string, unknown>` | No | - |
-| `request_format` | `RegisterFunctionFormat` | No | The request format of the function |
-| `response_format` | `RegisterFunctionFormat` | No | The response format of the function |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
+
+---
 
 #### RegisterFunctionOptions
 
@@ -500,27 +713,53 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "id">
 ```
 
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `string` | No | The description of the function |
+| `metadata` | `Record<string, unknown>` | No | - |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
+
+---
+
 #### RegisterTriggerInput
 
 ```typescript
 type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
 ```
 
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `unknown` | Yes | Trigger-type-specific configuration. |
+| `function_id` | `string` | Yes | ID of the function this trigger invokes. |
+| `type` | `string` | Yes | Trigger type identifier (e.g. `http`, `queue`, `cron`). |
+
+---
+
 #### RegisterTriggerMessage
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `config` | `unknown` | Yes | - |
-| `function_id` | `string` | Yes | - |
-| `id` | `string` | Yes | - |
-| `message_type` | [`MessageType`](#messagetype).RegisterTrigger | Yes | - |
-| `type` | `string` | Yes | - |
+| `config` | `unknown` | Yes | Trigger-type-specific configuration. |
+| `function_id` | `string` | Yes | ID of the function this trigger invokes. |
+| `id` | `string` | Yes | Unique trigger identifier, generated by the SDK during registration. |
+| `message_type` | [`MessageType`](#messagetype).RegisterTrigger | Yes | Wire discriminator; always `MessageType.RegisterTrigger`. |
+| `type` | `string` | Yes | Trigger type identifier (e.g. `http`, `queue`, `cron`). |
+
+---
 
 #### RegisterTriggerTypeInput
 
 ```typescript
 type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, "message_type">
 ```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `string` | Yes | - |
+| `id` | `string` | Yes | - |
+
+---
 
 #### RegisterTriggerTypeMessage
 
@@ -530,6 +769,8 @@ type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, "message_type">
 | `id` | `string` | Yes | - |
 | `message_type` | [`MessageType`](#messagetype).RegisterTriggerType | Yes | - |
 
+---
+
 #### RemoteFunctionHandler
 
 Async function handler for a registered function. Receives the invocation
@@ -538,6 +779,8 @@ payload and returns the result.
 ```typescript
 type RemoteFunctionHandler = (data: TInput) => Promise<TOutput>
 ```
+
+---
 
 #### StreamChannelRef
 
@@ -550,6 +793,8 @@ in invocation payloads to pass channel endpoints between workers.
 | `channel_id` | `string` | Yes | Unique channel identifier. |
 | `direction` | `"read" \| "write"` | Yes | Whether this ref is for reading or writing. |
 
+---
+
 #### Trigger
 
 Handle returned by ISdk.registerTrigger. Use `unregister()` to
@@ -557,7 +802,20 @@ remove the trigger from the engine.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `unregister` | `void` | Yes | Removes this trigger from the engine. |
+| `unregister` | `() => void` | Yes | Removes this trigger from the engine. |
+
+---
+
+#### TriggerAction
+
+Factory object that constructs routing actions for ISdk.trigger.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Enqueue` | `(opts: { queue: string }) => { queue: string; type: "enqueue" }` | Yes | Routes the invocation through a named queue. The engine enqueues the job,<br />acknowledges the caller with `{ messageReceiptId }`, and processes it<br />asynchronously. |
+| `Void` | `() => { type: "void" }` | Yes | Fire-and-forget routing. The engine forwards the invocation without<br />waiting for a response or queuing the job. |
+
+---
 
 #### TriggerConfig
 
@@ -570,6 +828,8 @@ registered or unregistered.
 | `function_id` | `string` | Yes | Function to invoke when the trigger fires. |
 | `id` | `string` | Yes | Trigger instance ID. |
 
+---
+
 #### TriggerHandler
 
 Handler interface for custom trigger types. Passed to
@@ -577,8 +837,10 @@ Handler interface for custom trigger types. Passed to
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `registerTrigger` | `Promise<void>` | Yes | Called when a trigger instance is registered. |
-| `unregisterTrigger` | `Promise<void>` | Yes | Called when a trigger instance is unregistered. |
+| `registerTrigger` | (config: [`TriggerConfig`](#triggerconfig)&lt;TConfig&gt;) =&gt; Promise&lt;void&gt; | Yes | Called when a trigger instance is registered. |
+| `unregisterTrigger` | (config: [`TriggerConfig`](#triggerconfig)&lt;TConfig&gt;) =&gt; Promise&lt;void&gt; | Yes | Called when a trigger instance is unregistered. |
+
+---
 
 #### TriggerRequest
 
@@ -586,10 +848,12 @@ Request object passed to ISdk.trigger.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `action` | `TriggerAction` | No | Routing action. Omit for synchronous request/response. |
+| `action` | [`TriggerAction`](#triggeraction) | No | Routing action. Omit for synchronous request/response. |
 | `function_id` | `string` | Yes | ID of the function to invoke. |
 | `payload` | `TInput` | Yes | Payload to pass to the function. |
 | `timeoutMs` | `number` | No | Override the default invocation timeout in milliseconds. |
+
+---
 
 #### TriggerTypeRef
 
@@ -601,9 +865,9 @@ to this trigger type, so callers don't need to repeat the `type` field.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `string` | Yes | The trigger type identifier. |
-| `registerFunction` | [`FunctionRef`](#functionref) | Yes | Register a function and immediately bind it to this trigger type. |
-| `registerTrigger` | [`Trigger`](#trigger) | Yes | Register a trigger bound to this trigger type. |
-| `unregister` | `void` | Yes | Unregister this trigger type from the engine. |
+| `registerFunction` | (functionId: string, handler: [`RemoteFunctionHandler`](#remotefunctionhandler), config: TConfig) =&gt; [`FunctionRef`](#functionref) | Yes | Register a function and immediately bind it to this trigger type. |
+| `registerTrigger` | (functionId: string, config: TConfig) =&gt; [`Trigger`](#trigger) | Yes | Register a trigger bound to this trigger type. |
+| `unregister` | `() => void` | Yes | Unregister this trigger type from the engine. |
 
 ### iii-browser-sdk/state
 
@@ -617,6 +881,8 @@ Result of a state delete operation.
 | --- | --- | --- | --- |
 | `old_value` | `any` | No | Previous value (if it existed). |
 
+---
+
 #### IState
 
 Interface for state management operations. Available via the `iii-sdk/state`
@@ -624,11 +890,13 @@ subpath export.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `delete` | Promise&lt;[`DeleteResult`](#deleteresult)&gt; | Yes | Delete a state value. |
-| `get` | `Promise<TData \| null>` | Yes | Retrieve a value by scope and key. |
-| `list` | `Promise<TData[]>` | Yes | List all values in a scope. |
-| `set` | Promise&lt;[`StateSetResult`](#statesetresult)&lt;TData&gt; \| null&gt; | Yes | Set (create or overwrite) a state value. |
-| `update` | Promise&lt;[`StateUpdateResult`](#stateupdateresult)&lt;TData&gt; \| null&gt; | Yes | Apply atomic update operations to a state value. |
+| `delete` | (input: [`StateDeleteInput`](#statedeleteinput)) =&gt; Promise&lt;[`DeleteResult`](#deleteresult)&gt; | Yes | Delete a state value. |
+| `get` | (input: [`StateGetInput`](#stategetinput)) =&gt; Promise&lt;TData \| null&gt; | Yes | Retrieve a value by scope and key. |
+| `list` | (input: [`StateListInput`](#statelistinput)) =&gt; Promise&lt;TData[]&gt; | Yes | List all values in a scope. |
+| `set` | (input: [`StateSetInput`](#statesetinput)) =&gt; Promise&lt;[`StateSetResult`](#statesetresult)&lt;TData&gt; \| null&gt; | Yes | Set (create or overwrite) a state value. |
+| `update` | (input: [`StateUpdateInput`](#stateupdateinput)) =&gt; Promise&lt;[`StateUpdateResult`](#stateupdateresult)&lt;TData&gt; \| null&gt; | Yes | Apply atomic update operations to a state value. |
+
+---
 
 #### StateDeleteInput
 
@@ -639,6 +907,8 @@ Input for deleting a state value.
 | `key` | `string` | Yes | Key within the scope. |
 | `scope` | `string` | Yes | State scope (namespace). |
 
+---
+
 #### StateDeleteResult
 
 Result of a state delete operation.
@@ -646,6 +916,8 @@ Result of a state delete operation.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `old_value` | `any` | No | Previous value (if it existed). |
+
+---
 
 #### StateEventData
 
@@ -660,6 +932,8 @@ Payload for state change events.
 | `scope` | `string` | Yes | State scope (namespace). |
 | `type` | `"state"` | Yes | - |
 
+---
+
 #### StateEventType
 
 Types of state change events.
@@ -670,6 +944,8 @@ Types of state change events.
 | `Deleted` | `"state:deleted"` | Yes | - |
 | `Updated` | `"state:updated"` | Yes | - |
 
+---
+
 #### StateGetInput
 
 Input for retrieving a state value.
@@ -679,6 +955,8 @@ Input for retrieving a state value.
 | `key` | `string` | Yes | Key within the scope. |
 | `scope` | `string` | Yes | State scope (namespace). |
 
+---
+
 #### StateListInput
 
 Input for listing all values in a state scope.
@@ -686,6 +964,8 @@ Input for listing all values in a state scope.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `scope` | `string` | Yes | State scope (namespace). |
+
+---
 
 #### StateSetInput
 
@@ -697,6 +977,8 @@ Input for setting a state value.
 | `scope` | `string` | Yes | State scope (namespace). |
 | `value` | `any` | Yes | Value to store. |
 
+---
+
 #### StateSetResult
 
 Result of a state set operation.
@@ -705,6 +987,8 @@ Result of a state set operation.
 | --- | --- | --- | --- |
 | `new_value` | `TData` | Yes | New value that was stored. |
 | `old_value` | `TData` | No | Previous value (if it existed). |
+
+---
 
 #### StateUpdateInput
 
@@ -715,6 +999,8 @@ Input for atomically updating a state value.
 | `key` | `string` | Yes | Key within the scope. |
 | `ops` | [`UpdateOp`](#updateop)[] | Yes | Ordered list of update operations to apply atomically. |
 | `scope` | `string` | Yes | State scope (namespace). |
+
+---
 
 #### StateUpdateResult
 
@@ -737,12 +1023,14 @@ to override the engine's built-in stream storage.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `delete` | Promise&lt;[`DeleteResult`](#deleteresult)&gt; | Yes | Delete a stream item. |
-| `get` | `Promise<TData \| null>` | Yes | Retrieve a single item by group and item ID. |
-| `list` | `Promise<TData[]>` | Yes | List all items in a group. |
-| `listGroups` | `Promise<string[]>` | Yes | List all group IDs in a stream. |
-| `set` | Promise&lt;[`StreamSetResult`](#streamsetresult)&lt;TData&gt; \| null&gt; | Yes | Set (create or overwrite) a stream item. |
-| `update` | Promise&lt;[`StreamUpdateResult`](#streamupdateresult)&lt;TData&gt; \| null&gt; | Yes | Apply atomic update operations to a stream item. |
+| `delete` | (input: [`StreamDeleteInput`](#streamdeleteinput)) =&gt; Promise&lt;[`DeleteResult`](#deleteresult)&gt; | Yes | Delete a stream item. |
+| `get` | (input: [`StreamGetInput`](#streamgetinput)) =&gt; Promise&lt;TData \| null&gt; | Yes | Retrieve a single item by group and item ID. |
+| `list` | (input: [`StreamListInput`](#streamlistinput)) =&gt; Promise&lt;TData[]&gt; | Yes | List all items in a group. |
+| `listGroups` | (input: [`StreamListGroupsInput`](#streamlistgroupsinput)) =&gt; Promise&lt;string[]&gt; | Yes | List all group IDs in a stream. |
+| `set` | (input: [`StreamSetInput`](#streamsetinput)) =&gt; Promise&lt;[`StreamSetResult`](#streamsetresult)&lt;TData&gt; \| null&gt; | Yes | Set (create or overwrite) a stream item. |
+| `update` | (input: [`StreamUpdateInput`](#streamupdateinput)) =&gt; Promise&lt;[`StreamUpdateResult`](#streamupdateresult)&lt;TData&gt; \| null&gt; | Yes | Apply atomic update operations to a stream item. |
+
+---
 
 #### MergePath
 
@@ -757,6 +1045,8 @@ Omit `path`, pass `""`, or pass `[]` to target the root value.
 type MergePath = string | string[]
 ```
 
+---
+
 #### StreamAuthInput
 
 Input for stream authentication.
@@ -768,6 +1058,8 @@ Input for stream authentication.
 | `path` | `string` | Yes | Request path. |
 | `query_params` | `Record<string, string[]>` | Yes | Query parameters. |
 
+---
+
 #### StreamAuthResult
 
 Result of stream authentication.
@@ -775,6 +1067,8 @@ Result of stream authentication.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `context` | `any` | No | Arbitrary context passed to stream handlers after authentication. |
+
+---
 
 #### StreamChangeEvent
 
@@ -789,6 +1083,8 @@ Handler input for `stream` triggers, fired when an item changes via `stream::set
 | `timestamp` | `number` | Yes | Unix timestamp of the event. |
 | `type` | `"stream"` | Yes | The event type. |
 
+---
+
 #### StreamContext
 
 Context type extracted from StreamAuthResult.
@@ -796,6 +1092,8 @@ Context type extracted from StreamAuthResult.
 ```typescript
 type StreamContext = StreamAuthResult["context"]
 ```
+
+---
 
 #### StreamDeleteInput
 
@@ -807,6 +1105,8 @@ Input for deleting a stream item.
 | `item_id` | `string` | Yes | Item identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
 
+---
+
 #### StreamGetInput
 
 Input for retrieving a single stream item.
@@ -816,6 +1116,8 @@ Input for retrieving a single stream item.
 | `group_id` | `string` | Yes | Group identifier. |
 | `item_id` | `string` | Yes | Item identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
+
+---
 
 #### StreamJoinLeaveEvent
 
@@ -829,6 +1131,8 @@ Event payload for stream join/leave events.
 | `stream_name` | `string` | Yes | Name of the stream. |
 | `subscription_id` | `string` | Yes | Unique subscription identifier. |
 
+---
+
 #### StreamJoinLeaveTriggerConfig
 
 Trigger config for `stream:join` and `stream:leave` triggers.
@@ -836,6 +1140,8 @@ Trigger config for `stream:join` and `stream:leave` triggers.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `condition_function_id` | `string` | No | Function ID for conditional execution. If it returns `false`, the handler is skipped. |
+
+---
 
 #### StreamJoinResult
 
@@ -845,6 +1151,8 @@ Result of a stream join request.
 | --- | --- | --- | --- |
 | `unauthorized` | `boolean` | Yes | Whether the join was unauthorized. |
 
+---
+
 #### StreamListGroupsInput
 
 Input for listing all groups in a stream.
@@ -852,6 +1160,8 @@ Input for listing all groups in a stream.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `stream_name` | `string` | Yes | Name of the stream. |
+
+---
 
 #### StreamListInput
 
@@ -861,6 +1171,8 @@ Input for listing all items in a stream group.
 | --- | --- | --- | --- |
 | `group_id` | `string` | Yes | Group identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
+
+---
 
 #### StreamSetInput
 
@@ -873,6 +1185,8 @@ Input for setting a stream item.
 | `item_id` | `string` | Yes | Item identifier. |
 | `stream_name` | `string` | Yes | Name of the stream. |
 
+---
+
 #### StreamSetResult
 
 Result of a stream set operation.
@@ -881,6 +1195,8 @@ Result of a stream set operation.
 | --- | --- | --- | --- |
 | `new_value` | `TData` | Yes | New value that was stored. |
 | `old_value` | `TData` | No | Previous value (if it existed). |
+
+---
 
 #### StreamTriggerConfig
 
@@ -893,6 +1209,8 @@ Trigger config for `stream` triggers. Filters which item changes fire the handle
 | `item_id` | `string` | No | If set, only changes to this specific item fire the handler. |
 | `stream_name` | `string` | Yes | Stream name to watch. Only changes on this stream fire the handler. |
 
+---
+
 #### StreamUpdateInput
 
 Input for atomically updating a stream item.
@@ -904,6 +1222,8 @@ Input for atomically updating a stream item.
 | `ops` | [`UpdateOp`](#updateop)[] | Yes | Ordered list of update operations to apply atomically. |
 | `stream_name` | `string` | Yes | Name of the stream. |
 
+---
+
 #### StreamUpdateResult
 
 Result of a stream update operation.
@@ -913,6 +1233,8 @@ Result of a stream update operation.
 | `errors` | [`UpdateOpError`](#updateoperror)[] | No | Per-op errors. Emitted by `merge` and `append` for validation<br />rejections (path/value bounds, proto-pollution segments) and by<br />`append` for the `append.type_mismatch` and<br />`append.target_not_object` surfaces. Field omitted when empty. |
 | `new_value` | `TData` | Yes | New value after the update. |
 | `old_value` | `TData` | No | Previous value (if it existed). |
+
+---
 
 #### UpdateAppend
 
@@ -934,6 +1256,8 @@ auto-created; missing leaves on a nested path always become arrays
 | `type` | `"append"` | Yes | - |
 | `value` | `any` | Yes | Value to append. String targets only accept string values. |
 
+---
+
 #### UpdateDecrement
 
 Decrement a numeric field by a given amount.
@@ -944,6 +1268,8 @@ Decrement a numeric field by a given amount.
 | `path` | `string` | Yes | First-level field path. |
 | `type` | `"decrement"` | Yes | - |
 
+---
+
 #### UpdateIncrement
 
 Increment a numeric field by a given amount.
@@ -953,6 +1279,8 @@ Increment a numeric field by a given amount.
 | `by` | `number` | Yes | Amount to increment by. |
 | `path` | `string` | Yes | First-level field path. |
 | `type` | `"increment"` | Yes | - |
+
+---
 
 #### UpdateMerge
 
@@ -971,6 +1299,8 @@ rejected with a structured error in the response's `errors` array.
 | `type` | `"merge"` | Yes | - |
 | `value` | `any` | Yes | Object to merge. Must be a JSON object. |
 
+---
+
 #### UpdateOp
 
 Union of all atomic update operations supported by streams.
@@ -978,6 +1308,8 @@ Union of all atomic update operations supported by streams.
 ```typescript
 type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
 ```
+
+---
 
 #### UpdateOpError
 
@@ -990,6 +1322,8 @@ Per-op error returned by `state::update` / `stream::update`.
 | `message` | `string` | Yes | Human-readable description with concrete numbers when applicable. |
 | `op_index` | `number` | Yes | Index of the offending op within the original `ops` array. |
 
+---
+
 #### UpdateRemove
 
 Remove a field at the given path.
@@ -998,6 +1332,8 @@ Remove a field at the given path.
 | --- | --- | --- | --- |
 | `path` | `string` | Yes | First-level field path. |
 | `type` | `"remove"` | Yes | - |
+
+---
 
 #### UpdateSet
 
