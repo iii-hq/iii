@@ -3809,7 +3809,17 @@ mod tests {
         assert!(is_internal_span(&builtin_in_turn));
 
         // Ordinary parentless user root: not internal, not machinery.
-        let user_root = make_span("t2", "s3", None, "execute harness::send", "harness", 1, 2, "OK", vec![]);
+        let user_root = make_span(
+            "t2",
+            "s3",
+            None,
+            "execute harness::send",
+            "harness",
+            1,
+            2,
+            "OK",
+            vec![],
+        );
         assert!(!is_context_free_internal_span(&user_root));
     }
 

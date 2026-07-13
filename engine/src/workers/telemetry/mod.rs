@@ -2246,31 +2246,79 @@ mod tests {
         // Worker-routed functions never get an engine `call` span — the
         // worker's own `execute <fn>` span is canonical — regardless of
         // caller context or the builtins override.
-        assert!(should_suppress_invocation_span("orders::process", false, false));
-        assert!(should_suppress_invocation_span("orders::process", true, false));
-        assert!(should_suppress_invocation_span("orders::process", false, true));
-        assert!(should_suppress_invocation_span("orders::process", true, true));
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            false,
+            false
+        ));
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            true,
+            false
+        ));
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            false,
+            true
+        ));
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            true,
+            true
+        ));
 
         // A built-in called WITH caller trace context nests inside that
         // trace: emit (a failed `configuration::list` inside an agent turn
         // must be visible in the trace).
-        assert!(!should_suppress_invocation_span("configuration::list", true, false));
+        assert!(!should_suppress_invocation_span(
+            "configuration::list",
+            true,
+            false
+        ));
         assert!(!should_suppress_invocation_span("state::get", true, false));
 
         // A context-free built-in call would root a new single-span trace
         // and flood the trace list: suppress unless the operator forces
         // builtins tracing.
-        assert!(should_suppress_invocation_span("configuration::list", false, false));
-        assert!(!should_suppress_invocation_span("configuration::list", false, true));
-        assert!(!should_suppress_invocation_span("configuration::list", true, true));
+        assert!(should_suppress_invocation_span(
+            "configuration::list",
+            false,
+            false
+        ));
+        assert!(!should_suppress_invocation_span(
+            "configuration::list",
+            false,
+            true
+        ));
+        assert!(!should_suppress_invocation_span(
+            "configuration::list",
+            true,
+            true
+        ));
 
         // Observability functions NEVER get a span — with context, without,
         // even force-enabled: the pipeline must not observe itself (endless
         // span → live-feed push → delivery span loop).
-        assert!(should_suppress_invocation_span("engine::traces::list", true, false));
-        assert!(should_suppress_invocation_span("engine::traces::tree", true, true));
-        assert!(should_suppress_invocation_span("engine::logs::list", true, true));
-        assert!(should_suppress_invocation_span("engine::log::info", true, true));
+        assert!(should_suppress_invocation_span(
+            "engine::traces::list",
+            true,
+            false
+        ));
+        assert!(should_suppress_invocation_span(
+            "engine::traces::tree",
+            true,
+            true
+        ));
+        assert!(should_suppress_invocation_span(
+            "engine::logs::list",
+            true,
+            true
+        ));
+        assert!(should_suppress_invocation_span(
+            "engine::log::info",
+            true,
+            true
+        ));
     }
 
     #[test]
@@ -2285,7 +2333,9 @@ mod tests {
         assert!(is_observability_function_id("engine::health::check"));
         assert!(is_observability_function_id("engine::alerts::evaluate"));
         assert!(is_observability_function_id("engine::rollups::list"));
-        assert!(is_observability_function_id("iii-observability::on-config-change"));
+        assert!(is_observability_function_id(
+            "iii-observability::on-config-change"
+        ));
         // Not observability: other engine surfaces and user functions.
         assert!(!is_observability_function_id("engine::functions::list"));
         assert!(!is_observability_function_id("engine::register_trigger"));

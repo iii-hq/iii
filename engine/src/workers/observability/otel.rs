@@ -5875,8 +5875,7 @@ mod tests {
 
         // 3. Start snapshots never reach the OTLP forward path — the proto
         //    requires end_time.
-        let parsed: OtlpExportTraceServiceRequest =
-            serde_json::from_str(start_snapshot).unwrap();
+        let parsed: OtlpExportTraceServiceRequest = serde_json::from_str(start_snapshot).unwrap();
         assert!(
             convert_otlp_to_span_data(&parsed).is_empty(),
             "zero-end spans must not convert for collector forwarding"

@@ -88,14 +88,13 @@ impl SpanProcessor for LiveSpanStartProcessor {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use opentelemetry::baggage::BaggageExt;
     use opentelemetry::trace::{Span as _, Tracer, TracerProvider};
     use opentelemetry::{Context, KeyValue};
-    use opentelemetry::baggage::BaggageExt;
     use opentelemetry_sdk::Resource;
     use opentelemetry_sdk::error::OTelSdkResult;
     use opentelemetry_sdk::trace::{
-        InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor, Span, SpanData,
-        SpanProcessor,
+        InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor, Span, SpanData, SpanProcessor,
     };
 
     use super::super::baggage_span_processor::BaggageSpanProcessor;
@@ -137,7 +136,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
 
         let span = &json["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
-        assert_eq!(span["endTimeUnixNano"], "0", "zero end is the pending sentinel");
+        assert_eq!(
+            span["endTimeUnixNano"], "0",
+            "zero end is the pending sentinel"
+        );
         assert_ne!(span["startTimeUnixNano"], "0");
         assert_eq!(span["name"], "harness::turn step");
         assert_eq!(span["traceId"].as_str().unwrap().len(), 32);
@@ -227,8 +229,7 @@ mod tests {
         assert!(
             attrs
                 .iter()
-                .any(|a| a["key"] == "iii.session.id"
-                    && a["value"]["stringValue"] == "S-live"),
+                .any(|a| a["key"] == "iii.session.id" && a["value"]["stringValue"] == "S-live"),
             "baggage must be on the start snapshot; attrs: {attrs:?}"
         );
     }
