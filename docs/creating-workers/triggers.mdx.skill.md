@@ -318,8 +318,8 @@ A trigger type can carry two optional JSON Schemas that describe its payloads:
   the trigger fires.
 
 Both feed the iii console, the agent-readable skills, and the
-[`engine::triggers::list`](../using-iii/functions#engine-functions-engine) output so consumers know
-what to send and what they'll receive.
+[`engine::trigger-types::list`](../using-iii/functions#engine-functions-engine) output so consumers
+know what to send and what they'll receive.
 
 <Note>
   Runtime validation is not yet supported. Attached schemas are informational only; the engine does

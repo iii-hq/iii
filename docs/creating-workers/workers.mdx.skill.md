@@ -102,8 +102,7 @@ process can be deployed anywhere reachable on the network.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::runtime::WorkerMetadata;
-    use iii_sdk::{InitOptions, register_worker};
+    use iii_sdk::{InitOptions, WorkerMetadata, register_worker};
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(
@@ -138,38 +137,38 @@ through its discovery functions, so the rest of the system can react.
 To see what's currently connected to the Engine, invoke one of the `engine::*::list` Functions to
 get the current state of the registry. Each returns a list:
 
-| Function                            | What it returns                                                      |
-| ----------------------------------- | -------------------------------------------------------------------- |
-| `engine::workers::list`             | Every connected Worker with metrics.                                 |
-| `engine::functions::list`           | Every registered Function. Filterable by `include_internal`.         |
-| `engine::triggers::list`            | Every advertised Trigger type with its config and call schemas.      |
-| `engine::registered-triggers::list` | Every registered Trigger instance. Filterable by `include_internal`. |
+| Function                      | What it returns                                                 |
+| ----------------------------- | --------------------------------------------------------------- |
+| `engine::workers::list`       | Every connected Worker with metrics.                            |
+| `engine::functions::list`     | Every registered Function. Filterable by `include_internal`.    |
+| `engine::triggers::list`      | Every registered Trigger. Filterable by `include_internal`.     |
+| `engine::trigger-types::list` | Every advertised Trigger type with its config and call schemas. |
 
 <Accordion title="Example: list registry contents">
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
       // engine::workers::list, pass { worker_id: "<uuid>" } to look up one worker
-      const { workers } = await worker.trigger<any, any>({
+      const { workers } = await worker.trigger({
         function_id: "engine::workers::list",
         payload: {},
       });
 
       // engine::functions::list
-      const { functions } = await worker.trigger<any, any>({
+      const { functions } = await worker.trigger({
         function_id: "engine::functions::list",
         payload: { include_internal: false },
       });
 
       // engine::triggers::list
-      const { triggers } = await worker.trigger<any, any>({
+      const { triggers } = await worker.trigger({
         function_id: "engine::triggers::list",
         payload: { include_internal: false },
       });
 
-      // engine::registered-triggers::list
-      const { registered_triggers } = await worker.trigger<any, any>({
-        function_id: "engine::registered-triggers::list",
+      // engine::trigger-types::list
+      const { trigger_types } = await worker.trigger({
+        function_id: "engine::trigger-types::list",
         payload: { include_internal: false },
       });
       ```
@@ -194,16 +193,16 @@ get the current state of the registry. Each returns a list:
           "payload": {"include_internal": False},
       })["triggers"]
 
-      # engine::registered-triggers::list
-      registered_triggers = worker.trigger({
-          "function_id": "engine::registered-triggers::list",
+      # engine::trigger-types::list
+      trigger_types = worker.trigger({
+          "function_id": "engine::trigger-types::list",
           "payload": {"include_internal": False},
-      })["registered_triggers"]
+      })["trigger_types"]
       ```
     </Tab>
     <Tab title="Rust">
       ```rust
-      use iii_sdk::protocol::TriggerRequest;
+      use iii_sdk::TriggerRequest;
       use serde_json::json;
 
       // engine::workers::list, pass json!({ "worker_id": "<uuid>" }) to look up one worker
@@ -236,10 +235,10 @@ get the current state of the registry. Each returns a list:
           })
           .await?;
 
-      // engine::registered-triggers::list
-      let registered_triggers = worker
+      // engine::trigger-types::list
+      let trigger_types = worker
           .trigger(TriggerRequest {
-              function_id: "engine::registered-triggers::list".into(),
+              function_id: "engine::trigger-types::list".into(),
               payload: json!({ "include_internal": false }),
               action: None,
               timeout_ms: None,
@@ -303,8 +302,7 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
     </Tab>
     <Tab title="Rust">
       ```rust
-      use iii_sdk::Error;
-      use iii_sdk::protocol::TriggerRequest;
+      use iii_sdk::{IIIError, TriggerRequest};
       use serde_json::json;
 
       let result = worker
@@ -317,7 +315,7 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
           .await;
 
       match result {
-          Err(Error::Remote { code, .. }) if code == "invocation_stopped" => {
+          Err(IIIError::Remote { code, .. }) if code == "invocation_stopped" => {
               // Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
               // (see "Subscribe to changes" below) to know when to retry.
           }
@@ -402,8 +400,7 @@ as they happen. This is particularly useful for continuing work when a Worker co
     </Tab>
     <Tab title="Rust">
       ```rust
-      use iii_sdk::RegisterFunction;
-      use iii_sdk::protocol::RegisterTriggerInput;
+      use iii_sdk::{RegisterFunction, RegisterTriggerInput};
       use schemars::JsonSchema;
       use serde::Deserialize;
       use serde_json::{Value, json};
@@ -414,15 +411,15 @@ as they happen. This is particularly useful for continuing work when a Worker co
       #[derive(Deserialize, JsonSchema)]
       struct FunctionsAvailable { event: String, functions: Vec<Value> }
 
-      worker.register_function(
+      worker.register_function(RegisterFunction::new_async(
           "discovery::on-workers",
-          RegisterFunction::new_async(|input: WorkersAvailable| async move {
+          |input: WorkersAvailable| async move {
               if input.event == "worker_connected" {
                   // A Worker joined the registry; its Functions are callable now.
               }
-              Ok::<_, iii_sdk::Error>(())
-          }),
-      );
+              Ok::<_, String>(())
+          },
+      ));
       worker.register_trigger(RegisterTriggerInput {
           trigger_type: "engine::workers-available".into(),
           function_id: "discovery::on-workers".into(),
@@ -430,14 +427,14 @@ as they happen. This is particularly useful for continuing work when a Worker co
           metadata: None,
       })?;
 
-      worker.register_function(
+      worker.register_function(RegisterFunction::new_async(
           "discovery::on-functions",
-          RegisterFunction::new_async(|input: FunctionsAvailable| async move {
+          |input: FunctionsAvailable| async move {
               // `functions` is the full snapshot after the change.
               let _count = input.functions.len();
-              Ok::<_, iii_sdk::Error>(())
-          }),
-      );
+              Ok::<_, String>(())
+          },
+      ));
       worker.register_trigger(RegisterTriggerInput {
           trigger_type: "engine::functions-available".into(),
           function_id: "discovery::on-functions".into(),

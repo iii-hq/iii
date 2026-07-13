@@ -89,8 +89,7 @@ iii worker init my-worker --language typescript
   <Tab title="Rust">
     ```rust
     use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
-    use iii_sdk::trigger::IIITrigger;
-    use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+    use iii_sdk::{IIITrigger, InitOptions, RegisterFunction, register_worker};
     use schemars::JsonSchema;
     use serde::Deserialize;
     use serde_json::json;

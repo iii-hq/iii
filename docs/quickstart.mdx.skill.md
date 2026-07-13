@@ -202,7 +202,7 @@ Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the b
 worker.registerFunction(
   "http::add_two_numbers",
   async (payload: { body: { a: number; b: number } }) => {
-    const result = await worker.trigger<{ a: number; b: number }, { c: number; running_total: number }>({
+    const result = await worker.trigger({
       function_id: "math::add_two_numbers",
       payload: payload.body,
     });

@@ -7,8 +7,8 @@
 
 <Note>
   This page documents the wire-level protocol the engine and SDK workers exchange. Most projects use
-  a language SDK ([Node](../api-reference/sdk-node), [Python](../api-reference/sdk-python),
-  [Rust](../api-reference/sdk-rust), [Browser](../api-reference/sdk-browser)) and never touch the
+  a language SDK ([Node](./node-sdk), [Python](./python-sdk),
+  [Rust](./rust-sdk), [Browser](./browser-sdk)) and never touch the
   protocol directly. The shapes below are the source of truth those SDKs serialize to.
 </Note>
 
@@ -43,8 +43,7 @@ worker, and the worker pushes `InvocationResult`, additional registrations, or u
 
 ## Message types
 
-Every frame is a JSON object discriminated by `type` (the lowercased variant name, e.g.
-`registerfunction`). The full set, defined on `Message` in
+Every frame is a JSON object discriminated by `message_type`. The full set, defined on `Message` in
 [`engine/src/protocol.rs`](https://github.com/iii-hq/iii/blob/main/engine/src/protocol.rs):
 
 | Frame                       | Direction        | Purpose                                                |
@@ -65,7 +64,7 @@ Every frame is a JSON object discriminated by `type` (the lowercased variant nam
 
 ```json
 {
-  "type": "registerfunction",
+  "message_type": "register_function",
   "id": "math::add",
   "description": "Add two numbers.",
   "request_format": {
@@ -86,7 +85,7 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
 
 ```json
 {
-  "type": "registertrigger",
+  "message_type": "register_trigger",
   "id": "math::add@http",
   "trigger_type": "http",
   "function_id": "math::add",
@@ -103,7 +102,7 @@ that `trigger_type` (e.g. `iii-http` for `http` triggers). The engine responds w
 
 ```json
 {
-  "type": "registertriggertype",
+  "message_type": "register_trigger_type",
   "id": "webhook",
   "description": "HTTP webhook trigger",
   "trigger_request_format": { "type": "object", ... },
@@ -119,7 +118,8 @@ trigger fires.
 
 ```json
 {
-  "type": "invokefunction",
+  "message_type": "invoke_function",
+  "invocation_id": "9f3c…",
   "function_id": "math::add",
   "data": { "a": 2, "b": 3 },
   "metadata": { "tenant": "acme" },
@@ -130,15 +130,11 @@ trigger fires.
 ```
 
 `invocation_id` is omitted on `Void` invocations (the worker has no result channel to reply on).
-The optional `metadata` field on a trigger registration (`null` / `None` in the examples above)
-is arbitrary JSON stored with the trigger and delivered to the receiving function as a
-distinct argument alongside the payload. It is useful for providing contextual information about
-the trigger or execution context to the receiving function. A target function shared by many
-triggers can use it to recover which registration fired and with what context.
-
-`metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations.
-
-`traceparent` and `baggage` contain W3C trace
+`metadata` is optional per-invocation metadata (arbitrary JSON) that travels as a distinct
+channel alongside `data`, never folded into the payload, and is surfaced to the target
+handler as a separate argument. It is set at fire time from a trigger's registered `metadata`
+or attached by an invocation-time caller, and omitted entirely when absent, so peers that
+neither send nor expect it are unaffected. `traceparent` and `baggage` carry W3C trace
 context. `action` is the routing flag (see [Trigger actions](#trigger-actions) below);
 absent / `null` means synchronous.
 
@@ -148,7 +144,7 @@ Success:
 
 ```json
 {
-  "type": "invocationresult",
+  "message_type": "invocation_result",
   "invocation_id": "9f3c…",
   "function_id": "math::add",
   "result": { "c": 5 },
@@ -162,7 +158,7 @@ Failure:
 
 ```json
 {
-  "type": "invocationresult",
+  "message_type": "invocation_result",
   "invocation_id": "9f3c…",
   "function_id": "math::add",
   "result": null,
@@ -208,8 +204,8 @@ and worker lifecycle. Defined in
 | `engine::channels::create`    | Create a streaming-channel reader / writer pair.                              |
 | `engine::functions::list`     | List every registered function (filterable by `include_internal`).            |
 | `engine::workers::list`       | List every connected worker with metrics.                                     |
-| `engine::triggers::list`      | List every registered trigger type (filterable by `include_internal`).        |
-| `engine::registered-triggers::list` | List every registered trigger instance (filterable by `include_internal`). |
+| `engine::triggers::list`      | List every registered trigger (filterable by `include_internal`).             |
+| `engine::trigger-types::list` | List every registered trigger type with its config and call request schemas.  |
 | `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `description`). |
 | `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. Returns the trigger id. |
 | `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. |

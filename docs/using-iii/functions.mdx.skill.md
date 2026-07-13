@@ -104,8 +104,7 @@ fire. Pass a different `TriggerAction` to change that.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerAction;
-    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::{TriggerAction, TriggerRequest};
     use serde_json::json;
 
     let result = worker
@@ -186,14 +185,13 @@ The engine itself registers a small set of introspection and lifecycle functions
 response schemas are in the
 [engine protocol reference](../sdk-reference/engine-sdk#engine-discovery-functions).
 
-| Function                            | What it does                                                                                                                                      |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::functions::list`           | List every registered function. Pass `{ include_internal: true }` to include engine internals.                                                    |
-| `engine::workers::list`             | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                                      |
-| `engine::triggers::list`            | List every advertised trigger type with its config and call schemas.                                                                              |
-| `engine::registered-triggers::list` | List every registered trigger instance (binding).                                                                                                 |
-| `engine::channels::create`          | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly. |
-| `engine::workers::register`         | Publish the calling worker's metadata (runtime, version, OS, PID, optional `description`). The SDK calls this automatically on connect.           |
+| Function                    | What it does                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::functions::list`   | List every registered function. Pass `{ include_internal: true }` to include engine internals.                                          |
+| `engine::workers::list`     | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                            |
+| `engine::triggers::list`    | List every registered trigger binding.                                                                                                  |
+| `engine::channels::create`  | Allocate a streaming channel reader / writer pair. The SDK wraps this as `worker.createChannel()`; rarely called directly.              |
+| `engine::workers::register` | Publish the calling worker's metadata (runtime, version, OS, PID, optional `description`). The SDK calls this automatically on connect. |
 
 The engine also publishes two subscription triggers in the same family. Bind a function to one of
 these to react to the registry changing:

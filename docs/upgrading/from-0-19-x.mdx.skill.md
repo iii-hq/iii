@@ -121,7 +121,7 @@ Shared types are grouped into four helpers submodules.
 | stream | `@iii-dev/helpers/stream` | `iii_helpers.stream` | `iii_helpers::stream` |
 | worker-connection-manager | `@iii-dev/helpers/worker-connection-manager` | `iii_helpers.worker_connection_manager` | `iii_helpers::worker_connection_manager` |
 
-`UpdateOp`, `UpdateOpError`, `MergePath`, `UpdateSet`, and `UpdateMerge` now live in the `stream` submodule; `MergePath` is a named export. In Rust, `UpdateSet` and `UpdateMerge` are the `UpdateOp::Set` and `UpdateOp::Merge` variants rather than standalone types.
+`UpdateOp`, `UpdateOpError`, `MergePath`, `UpdateSet`, and `UpdateMerge` now live in the `stream` submodule; `MergePath` is a named export.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -243,7 +243,7 @@ except IIIForbiddenError:
     ...
 # After
 except InvocationError as err:
-    if err.code == "FORBIDDEN":
+    if err.code == "forbidden":
         ...
 ```
 
@@ -325,7 +325,7 @@ The old root paths for these four groups are also removed in 0.20.0. Import each
 
 A few APIs were removed outright:
 
-- Rust `UpdateBuilder` → build `UpdateOp::Set` / `UpdateOp::Merge` values directly.
+- Rust `UpdateBuilder` → use `UpdateSet` / `UpdateMerge` directly.
 - Rust `FieldPath` → the retained `MergePath` is the merge/append path argument.
 - Rust `Value` re-export removed → depend on `serde_json` directly.
 - Node `TriggerActionType` alias removed → use the `TriggerAction` value.
@@ -349,7 +349,7 @@ A few APIs were removed outright:
     // Before
     use iii_sdk::{UpdateBuilder, FieldPath, Value};
     // After
-    use iii_helpers::stream::{MergePath, UpdateOp};
+    use iii_helpers::stream::{UpdateSet, UpdateMerge, MergePath};
     use serde_json::Value;
     ```
   </Tab>
