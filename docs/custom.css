@@ -416,3 +416,42 @@ details > *:not(summary),
 [data-component-part="accordion-group"] > * + * {
   border-top: 0 !important;
 }
+
+/* Navbar auto-hide (paired with navbar-autohide.js): the top row (h-16 =
+   4rem) slides away on scroll down and returns on scroll up; the tab row
+   (h-12) stays pinned at the top. The side rails ride up by the same 4rem so
+   they reclaim the freed space. Geometry mirrors the mint theme's header:
+   4rem top row + 3rem tabs = 7rem total, sidebar top 7rem, TOC sticky top
+   9.5rem. The `iii-navbar-hidden` class is toggled on <html> by the script. */
+#navbar {
+  transition: transform 200ms ease;
+}
+
+html.iii-navbar-hidden #navbar {
+  transform: translateY(-4rem);
+}
+
+#sidebar {
+  transition: top 200ms ease;
+}
+
+html.iii-navbar-hidden #sidebar {
+  top: calc(3rem + 0px) !important;
+}
+
+#content-side-layout {
+  transition: top 200ms ease, height 200ms ease;
+}
+
+html.iii-navbar-hidden #content-side-layout {
+  top: 5.5rem !important;
+  height: calc(100vh - 5.5rem) !important;
+}
+
+/* Consistent vertical rhythm for the h4 subsections inside a method or type
+   entry (Parameters / Example / Returns): the default prose margins leave
+   "Example" floating further from its section than everything else. */
+#content-area h4 {
+  margin-top: 1.75rem;
+  margin-bottom: 0.75rem;
+}
