@@ -224,7 +224,7 @@ class TriggerRequest(BaseModel):
             for queue, ``TriggerAction.Void()`` for fire-and-forget.
         timeout_ms: Override the default invocation timeout.
         metadata: Arbitrary per-invocation metadata delivered to the handler
-            as a separate channel (not folded into ``payload``).
+            as a separate channel alongside ``payload``.
     """
 
     function_id: str = Field(description="ID of the function to invoke.")

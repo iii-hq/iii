@@ -639,7 +639,7 @@ fn empty_message() -> RegisterFunctionMessage {
 /// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
 /// - [`RegisterFunction::new_async_with_bad_request`][]: typed async handler
 ///   that routes payload-deserialization failures through a caller-supplied
-///   mapper instead of the SDK's generic [`Error::Serde`].
+///   mapper, replacing the SDK's generic [`Error::Serde`].
 /// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
 ///
@@ -688,9 +688,10 @@ impl RegisterFunction {
         }
     }
 
-    /// Like [`RegisterFunction::new_async`], but payload-deserialization
-    /// failures are routed through `on_bad_request` instead of becoming the
-    /// SDK's generic [`Error::Serde`] (which the dispatch loop surfaces as
+    /// An async typed handler whose payload-deserialization failures are
+    /// routed through `on_bad_request`, producing a caller-controlled error
+    /// where [`RegisterFunction::new_async`] would surface the SDK's generic
+    /// [`Error::Serde`] (which the dispatch loop reports as
     /// `invocation_failed`). Lets a registration keep typed-handler schema
     /// extraction while owning its wire error contract for malformed
     /// payloads, e.g. a stable error code plus a recovery hint.
@@ -913,9 +914,9 @@ impl IIIClient {
     /// This stops the connection loop and sends a shutdown signal, but it
     /// does not join `connection_thread`.
     ///
-    /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
-    /// to wait for `run_connection()` to finish, making it safe to call from
-    /// an async context without stalling the executor.
+    /// This method returns without waiting for `run_connection()` to finish,
+    /// making it safe to call from an async context without stalling the
+    /// executor; [`shutdown`](Self::shutdown) blocks and joins the thread.
     /// The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
     /// after `run_connection()` returns, so it may not complete unless
     /// [`shutdown`](Self::shutdown) is used to join the thread.
@@ -1192,8 +1193,8 @@ impl IIIClient {
     /// <!-- docs:expand-params: TriggerRequest -->
     ///
     /// The routing behavior depends on the `action` field of the request:
-    /// - No action: synchronous -- waits for the function to return.
-    /// - [`TriggerAction::Enqueue`] - async via named queue.
+    /// - No action: synchronous, waits for the function to return.
+    /// - [`TriggerAction::Enqueue`]: async via named queue.
     /// - [`TriggerAction::Void`][]: fire-and-forget.
     ///
     /// # Examples

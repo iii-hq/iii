@@ -17,7 +17,7 @@ import type { TriggerHandler } from './triggers'
  *
  * `metadata` is arbitrary JSON travelling on a separate channel from the
  * payload. It is `undefined` when the caller did not attach any. Existing
- * single-argument handlers keep working -- they ignore the extra argument.
+ * single-argument handlers keep working; they ignore the extra argument.
  *
  * @typeParam TInput - Type of the invocation payload.
  * @typeParam TOutput - Type of the return value.

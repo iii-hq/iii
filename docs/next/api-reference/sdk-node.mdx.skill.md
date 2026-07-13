@@ -17,7 +17,7 @@ npm install iii-sdk
 ### registerWorker
 
 Creates and returns a connected SDK instance. The WebSocket connection is
-established automatically -- there is no separate `connect()` call.
+established automatically; there is no separate `connect()` call.
 
 **Signature**
 
@@ -25,7 +25,8 @@ established automatically -- there is no separate `connect()` call.
 registerWorker(address: string, options?: InitOptions) => IIIClient
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="address" type="string" required>
   WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
@@ -59,7 +60,9 @@ registerWorker(address: string, options?: InitOptions) => IIIClient
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 import { registerWorker } from 'iii-sdk'
@@ -68,6 +71,10 @@ const worker = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
   workerName: 'my-worker',
 })
 ```
+
+
+  </Tab>
+</Tabs>
 
 ## Methods
 
@@ -81,7 +88,8 @@ Registers a new trigger. A trigger is a way to invoke a function when a certain 
 registerTrigger(trigger: RegisterTriggerInput) => Trigger
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="trigger" type="RegisterTriggerInput" required>
   The trigger to register
@@ -102,7 +110,9 @@ registerTrigger(trigger: RegisterTriggerInput) => Trigger
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 const trigger = worker.registerTrigger({
@@ -114,6 +124,10 @@ const trigger = worker.registerTrigger({
 // Later, remove the trigger
 trigger.unregister()
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -127,7 +141,8 @@ Registers a new function with a local handler or an HTTP invocation config.
 registerFunction(functionId: string, handler: HttpInvocationConfig | RemoteFunctionHandler<any, any>, options?: RegisterFunctionOptions) => FunctionRef
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="functionId" type="string" required>
   Unique function identifier
@@ -158,7 +173,9 @@ registerFunction(functionId: string, handler: HttpInvocationConfig | RemoteFunct
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 // Local handler
@@ -184,6 +201,10 @@ const lambdaRef = worker.registerFunction(
 ref.unregister()
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### trigger
@@ -196,7 +217,8 @@ Invokes a function using a request object.
 trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="request" type="TriggerRequest<TInput>" required>
   The trigger request containing function_id, payload, and optional action/timeout
@@ -220,7 +242,9 @@ trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 // Synchronous invocation
@@ -247,6 +271,10 @@ const receipt = await worker.trigger({
 })
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### registerTriggerType
@@ -259,7 +287,8 @@ Registers a new trigger type. A trigger type is a way to invoke a function when 
 registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>) => TriggerTypeRef<TConfig>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
   The trigger type to register
@@ -285,7 +314,9 @@ registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandl
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 type CronConfig = { expression: string }
@@ -305,6 +336,10 @@ worker.registerTriggerType<CronConfig>(
 )
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### unregisterTriggerType
@@ -317,7 +352,8 @@ Unregisters a trigger type.
 unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
   The trigger type to unregister
@@ -330,11 +366,17 @@ unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 worker.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -356,6 +398,7 @@ process.on('SIGTERM', async () => {
   process.exit(0)
 })
 ```
+
 
 ## Subpath Exports
 
@@ -579,7 +622,7 @@ result.
 
 `metadata` is arbitrary JSON travelling on a separate channel from the
 payload. It is `undefined` when the caller did not attach any. Existing
-single-argument handlers keep working -- they ignore the extra argument.
+single-argument handlers keep working; they ignore the extra argument.
 
 ```typescript
 type RemoteFunctionHandler = (data: TInput, metadata?: JsonValue) => Promise<TOutput>

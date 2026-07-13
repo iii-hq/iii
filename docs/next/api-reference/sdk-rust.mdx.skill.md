@@ -31,7 +31,8 @@ called while `main` is still running.
 register_worker(address: &str, options: InitOptions) -> IIIClient
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="address" type="&str" required>
   WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
@@ -53,7 +54,9 @@ register_worker(address: &str, options: InitOptions) -> IIIClient
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```rust
 use iii_sdk::{register_worker, InitOptions};
@@ -62,6 +65,10 @@ let worker = register_worker("ws://localhost:49134", InitOptions::default());
 // register functions, handle events, etc.
 worker.shutdown(); // cleanly stops the connection thread
 ```
+
+
+  </Tab>
+</Tabs>
 
 ## Methods
 
@@ -75,7 +82,8 @@ Bind a trigger configuration to a registered function.
 register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="input" type="RegisterTriggerInput" required>
   Trigger registration input with trigger_type, function_id, and config.
@@ -92,7 +100,9 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```rust
 let trigger = worker.register_trigger(RegisterTriggerInput {
@@ -104,6 +114,10 @@ let trigger = worker.register_trigger(RegisterTriggerInput {
 // Later...
 trigger.unregister();
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -120,7 +134,8 @@ Argument order matches the Node and Python SDKs:
 register_function(id: impl Into<String>, registration: RegisterFunction) -> FunctionRef
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="id" type="impl Into<String>" required>
 </ParamField>
@@ -144,7 +159,7 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
       Create a registration for an **async** typed function.
     </ParamField>
     <ParamField body="new_async_with_bad_request" type="fn(f: F, on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + ?) -> Self" required>
-      Like `RegisterFunction::new_async`, but payload-deserialization failures are routed through `on_bad_request` instead of becoming the SDK's generic `Error::Serde` (which the dispatch loop surfaces as `invocation_failed`). Lets a registration keep typed-handler schema extraction while owning its wire error contract for malformed payloads, e.g. a stable error code plus a recovery hint.
+      An async typed handler whose payload-deserialization failures are routed through `on_bad_request`, producing a caller-controlled error where `RegisterFunction::new_async` would surface the SDK's generic `Error::Serde` (which the dispatch loop reports as `invocation_failed`). Lets a registration keep typed-handler schema extraction while owning its wire error contract for malformed payloads, e.g. a stable error code plus a recovery hint.
     </ParamField>
     <ParamField body="request_format" type="fn(schema: Value) -> Self" required>
       Set the request format schema. Overrides any auto-extracted schema.
@@ -155,7 +170,9 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```rust
 use iii_sdk::{register_worker, InitOptions, Error, RegisterFunction};
@@ -178,6 +195,10 @@ worker.register_function(
 );
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### trigger
@@ -186,8 +207,8 @@ Invoke a remote function.
 
 
 The routing behavior depends on the `action` field of the request:
-- No action: synchronous -- waits for the function to return.
-- `TriggerAction::Enqueue` - async via named queue.
+- No action: synchronous, waits for the function to return.
+- `TriggerAction::Enqueue`: async via named queue.
 - `TriggerAction::Void`: fire-and-forget.
 
 **Signature**
@@ -196,7 +217,8 @@ The routing behavior depends on the `action` field of the request:
 async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, Error>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="request" type="impl Into<TriggerRequestWithMetadata>" required>
 
@@ -215,7 +237,9 @@ async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, E
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```rust
 // Synchronous
@@ -255,6 +279,10 @@ worker.trigger(
 ).await?;
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### register_trigger_type
@@ -270,7 +298,8 @@ functions with compile-time validated types.
 register_trigger_type(trigger_type: RegisterTriggerType<H, C, R>) -> TriggerTypeRef<C, R>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="trigger_type" type="RegisterTriggerType<H, C, R>" required>
 
@@ -286,7 +315,9 @@ register_trigger_type(trigger_type: RegisterTriggerType<H, C, R>) -> TriggerType
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```rust
 let my_trigger = worker.register_trigger_type(
@@ -302,6 +333,10 @@ my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_jso
 my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### unregister_trigger_type
@@ -314,16 +349,23 @@ Unregister a previously registered trigger type.
 unregister_trigger_type(id: impl Into<String>)
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="id" type="impl Into<String>" required>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```rust
 worker.unregister_trigger_type("cron");
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -344,6 +386,7 @@ if worker.get_connection_state() != IIIConnectionState::Connected {
     eprintln!("engine not reachable yet");
 }
 ```
+
 
 ---
 
@@ -367,6 +410,7 @@ shutdown()
 worker.shutdown();
 ```
 
+
 ---
 
 ### shutdown_async
@@ -376,9 +420,9 @@ Shutdown the III client.
 This stops the connection loop and sends a shutdown signal, but it
 does not join `connection_thread`.
 
-Unlike `shutdown`, this method does **not** block
-to wait for `run_connection()` to finish, making it safe to call from
-an async context without stalling the executor.
+This method returns without waiting for `run_connection()` to finish,
+making it safe to call from an async context without stalling the
+executor; `shutdown` blocks and joins the thread.
 The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
 after `run_connection()` returns, so it may not complete unless
 `shutdown` is used to join the thread.
@@ -394,6 +438,7 @@ async shutdown_async()
 ```rust
 worker.shutdown_async().await;
 ```
+
 
 ## Types
 
@@ -439,7 +484,7 @@ Constructors:
 - `RegisterFunction::new_async`: async equivalent of `new`.
 - `RegisterFunction::new_async_with_bad_request`: typed async handler
   that routes payload-deserialization failures through a caller-supplied
-  mapper instead of the SDK's generic `Error::Serde`.
+  mapper, replacing the SDK's generic `Error::Serde`.
 - `RegisterFunction::http`: function invoked over HTTP (Lambda,
   Cloudflare Workers, etc.).
 
@@ -456,7 +501,7 @@ Builder methods (all consume `self`):
 | `metadata` | `fn(meta: Value) -> Self` | Yes | Set function metadata. |
 | `new` | `fn(f: F) -> Self` | Yes | Create a registration for a **sync** typed function. |
 | `new_async` | `fn(f: F) -> Self` | Yes | Create a registration for an **async** typed function. |
-| `new_async_with_bad_request` | fn(f: F, on_bad_request: impl Fn(serde_json::[`Error`](#error)) -&gt; [`Error`](#error) + Send + Sync + ?) -&gt; Self | Yes | Like `RegisterFunction::new_async`, but payload-deserialization failures are routed through `on_bad_request` instead of becoming the SDK's generic `Error::Serde` (which the dispatch loop surfaces as `invocation_failed`). Lets a registration keep typed-handler schema extraction while owning its wire error contract for malformed payloads, e.g. a stable error code plus a recovery hint. |
+| `new_async_with_bad_request` | fn(f: F, on_bad_request: impl Fn(serde_json::[`Error`](#error)) -&gt; [`Error`](#error) + Send + Sync + ?) -&gt; Self | Yes | An async typed handler whose payload-deserialization failures are routed through `on_bad_request`, producing a caller-controlled error where `RegisterFunction::new_async` would surface the SDK's generic `Error::Serde` (which the dispatch loop reports as `invocation_failed`). Lets a registration keep typed-handler schema extraction while owning its wire error contract for malformed payloads, e.g. a stable error code plus a recovery hint. |
 | `request_format` | `fn(schema: Value) -> Self` | Yes | Set the request format schema. Overrides any auto-extracted schema. |
 | `response_format` | `fn(schema: Value) -> Self` | Yes | Set the response format schema. Overrides any auto-extracted schema. |
 
@@ -887,8 +932,8 @@ The `id` is auto-generated internally.
 Routing action for `TriggerRequest`. Determines how the engine handles
 the invocation.
 
-- `Enqueue` -- Routes through a named queue for async processing.
-- `Void` -- Fire-and-forget, no response.
+- `Enqueue`: Routes through a named queue for async processing.
+- `Void`: Fire-and-forget, no response.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1202,8 +1247,8 @@ type RemoteFunctionHandler = Arc<dyn Fn(Value) -> futures_util::future::BoxFutur
 #### RemoteFunctionHandlerWithMetadata
 
 A dispatchable function handler that also receives the optional
-per-invocation `metadata` sidecar (delivered as a distinct argument rather
-than folded into the payload; `None` when the caller attached none).
+per-invocation `metadata` sidecar (delivered as a distinct argument
+alongside the payload; `None` when the caller attached none).
 
 This is the SDK's internal dispatch shape: handlers built from
 metadata-unaware functions ignore the second argument.

@@ -60,7 +60,7 @@ export type InitOptions = {
    * @see {@link IIIReconnectionConfig} for available fields and defaults.
    */
   reconnectionConfig?: Partial<IIIReconnectionConfig>
-  /** Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. */
+  /** Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. */
   headers?: Record<string, string>
 }
 
@@ -287,9 +287,9 @@ class Sdk implements ISdk {
    *
    * | `action`                      | Behavior                                           | Return type              |
    * |-------------------------------|----------------------------------------------------|-----------------------   |
-   * | _(none)_                      | Synchronous -- waits for the function to return     | `Promise<TOutput>`       |
-   * | `TriggerAction.Enqueue(...)` | Async via named queue -- engine acknowledges enqueue | `Promise<EnqueueResult>` |
-   * | `TriggerAction.Void()`       | Fire-and-forget -- no response                      | `Promise<undefined>`     |
+   * | _(none)_                      | Synchronous: waits for the function to return     | `Promise<TOutput>`       |
+   * | `TriggerAction.Enqueue(...)` | Async via named queue; engine acknowledges enqueue | `Promise<EnqueueResult>` |
+   * | `TriggerAction.Void()`       | Fire-and-forget, no response                      | `Promise<undefined>`     |
    *
    * @param request - The trigger request.
    * @param request.function_id - ID of the function to invoke.
@@ -796,7 +796,7 @@ export const TriggerAction = {
 
 /**
  * Creates and returns a connected SDK instance. The WebSocket connection is
- * established automatically -- there is no separate `connect()` call.
+ * established automatically; there is no separate `connect()` call.
  *
  * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49135`).
  * @param options - Optional {@link InitOptions} for worker name, timeouts, and reconnection.

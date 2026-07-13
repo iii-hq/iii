@@ -70,15 +70,15 @@ def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
 
     Only handlers that explicitly declare a parameter named ``metadata``
     receive the sidecar; every other signature keeps its exact pre-metadata
-    call shape (``handler(data)``), so existing handlers -- including ones
-    with unrelated optional parameters, ``*args``, or ``**kwargs`` -- keep
+    call shape (``handler(data)``), so existing handlers, including ones
+    with unrelated optional parameters, ``*args``, or ``**kwargs``, keep
     working unchanged. Returns one of:
 
     - ``"positional"``: ``metadata`` is the second positional parameter
       (e.g. ``def handler(data, metadata=None)``).
     - ``"keyword"``: ``metadata`` is keyword-only
       (e.g. ``def handler(data, *, metadata=None)``).
-    - ``"none"``: no ``metadata`` parameter -- omit metadata.
+    - ``"none"``: no ``metadata`` parameter; omit metadata.
 
     If the signature cannot be introspected (some builtins/C callables),
     falls back to ``"none"`` to preserve back-compat.
@@ -260,7 +260,7 @@ class III:
 
         Initializes OpenTelemetry (if configured), attaches the event loop,
         and establishes the WebSocket connection. This is called automatically
-        during construction -- use it only if you need to reconnect manually
+        during construction; use it only if you need to reconnect manually
         from an async context.
 
         Examples:
@@ -988,15 +988,15 @@ class III:
         ``def handler(data, metadata=None)`` or ``def handler(data, *,
         metadata=None)``).  Metadata is only forwarded to handlers that
         declare a parameter literally named ``metadata``, so existing
-        handlers -- including ones with unrelated extra parameters,
-        ``*args``, or ``**kwargs`` -- keep working unchanged.
+        handlers, including ones with unrelated extra parameters,
+        ``*args``, or ``**kwargs``, keep working unchanged.
 
         ``request_format`` and ``response_format`` are auto-extracted
         from the handler's type hints when omitted or passed as ``None``
         (the default).  To opt out of auto-extraction, pass an explicit
         schema (``RegisterFunctionFormat`` or ``dict``).  This behavior
-        is Python-specific -- the Node SDK does not auto-extract from TS
-        types, because TypeScript types are erased at runtime.
+        is Python-specific; the Node SDK relies on explicit schemas because
+        TypeScript types are erased at runtime.
 
         Args:
             function_id: Unique string identifier for the function.
@@ -1142,10 +1142,10 @@ class III:
 
         The routing behavior and return type depend on the ``action`` field:
 
-        - No action: synchronous -- waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns a dict
+        - No action: synchronous, waits for the function to return.
+        - ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
           with ``messageReceiptId``.
-        - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+        - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
         Args:
             request: A ``TriggerRequest`` or dict with ``function_id``,
@@ -1172,10 +1172,10 @@ class III:
 
         The routing behavior and return type depend on the ``action`` field:
 
-        - No action: synchronous -- waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns a dict
+        - No action: synchronous, waits for the function to return.
+        - ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
           with ``messageReceiptId``.
-        - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+        - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
         Args:
             request: A ``TriggerRequest`` or dict with ``function_id``, ``payload``,
@@ -1347,8 +1347,8 @@ class III:
 
         Public callers must use the free function from ``iii.helpers``.
         Registers 5 of the 6 ``IStream`` methods (``get``, ``set``, ``delete``,
-        ``list``, ``list_groups``). The ``update`` method is **not** registered
-        -- atomic updates are handled by the engine's built-in stream update
+        ``list``, ``list_groups``). The ``update`` method is **not** registered;
+        atomic updates are handled by the engine's built-in stream update
         logic.
         """
 

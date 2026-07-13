@@ -431,9 +431,9 @@ class Sdk implements IIIClient {
    *
    * | `action`                      | Behavior                                           | Return type              |
    * |-------------------------------|----------------------------------------------------|-----------------------   |
-   * | _(none)_                      | Synchronous -- waits for the function to return     | `Promise<TOutput>`       |
-   * | `TriggerAction.Enqueue(...)` | Async via named queue -- engine acknowledges enqueue | `Promise<EnqueueResult>` |
-   * | `TriggerAction.Void()`       | Fire-and-forget -- no response                      | `Promise<undefined>`     |
+   * | _(none)_                      | Synchronous: waits for the function to return     | `Promise<TOutput>`       |
+   * | `TriggerAction.Enqueue(...)` | Async via named queue; engine acknowledges enqueue | `Promise<EnqueueResult>` |
+   * | `TriggerAction.Void()`       | Fire-and-forget, no response                      | `Promise<undefined>`     |
    *
    * @param request - The trigger request.
    * @param request.function_id - ID of the function to invoke.
@@ -563,7 +563,7 @@ class Sdk implements IIIClient {
    * Registers a custom stream implementation, overriding the engine default
    * for the given stream name. Registers 5 of the 6 `IStream` methods
    * (`get`, `set`, `delete`, `list`, `listGroups`). The `update` method is
-   * not registered -- atomic updates are handled by the engine's built-in
+   * not registered; atomic updates are handled by the engine's built-in
    * stream update logic.
    */
   __helpers_create_stream = <TData>(streamName: string, stream: IStream<TData>): void => {
@@ -1087,7 +1087,7 @@ export const TriggerAction = {
 
 /**
  * Creates and returns a connected SDK instance. The WebSocket connection is
- * established automatically -- there is no separate `connect()` call.
+ * established automatically; there is no separate `connect()` call.
  *
  * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
  * @param options - Optional {@link InitOptions} for worker name, timeouts, reconnection, and OTel.

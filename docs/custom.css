@@ -455,3 +455,17 @@ html.iii-navbar-hidden #content-side-layout {
   margin-top: 1.75rem;
   margin-bottom: 0.75rem;
 }
+
+/* Tab switches (Parameters <-> Example) change the panel height. By default
+   the browser's scroll anchoring keeps a mid-viewport element pinned and
+   reflows around it, so the block appears to jump up or "middle out". Turning
+   scroll anchoring off holds the scroll position steady: the tab strip and
+   everything above it stay fixed, and the panel grows or shrinks downward
+   from there. Applied to every scroll container in play (window plus the
+   fixed-height content region the navbar-autohide CSS creates). */
+html,
+body,
+#content-side-layout,
+#content-area {
+  overflow-anchor: none;
+}

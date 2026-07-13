@@ -24,7 +24,8 @@ Blocks until the WebSocket connection is established and ready.
 register_worker(address: str, options: InitOptions | None = None) -> III
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="address" type="str" required>
 </ParamField>
@@ -58,12 +59,18 @@ register_worker(address: str, options: InitOptions | None = None) -> III
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```python
 from iii import register_worker, InitOptions
 worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
 ```
+
+
+  </Tab>
+</Tabs>
 
 ## Methods
 
@@ -77,7 +84,8 @@ Bind a trigger configuration to a registered function.
 register_trigger(trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="trigger" type="RegisterTriggerInput | dict[str, Any]" required>
 
@@ -97,7 +105,9 @@ register_trigger(trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```python
 trigger = worker.register_trigger({
@@ -111,6 +121,10 @@ trigger = worker.register_trigger(RegisterTriggerInput(
 ))
 trigger.unregister()
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -129,15 +143,15 @@ containing the trigger payload, and may optionally accept a second
 ``def handler(data, metadata=None)`` or ``def handler(data, *,
 metadata=None)``).  Metadata is only forwarded to handlers that
 declare a parameter literally named ``metadata``, so existing
-handlers -- including ones with unrelated extra parameters,
-``*args``, or ``**kwargs`` -- keep working unchanged.
+handlers, including ones with unrelated extra parameters,
+``*args``, or ``**kwargs``, keep working unchanged.
 
 ``request_format`` and ``response_format`` are auto-extracted
 from the handler's type hints when omitted or passed as ``None``
 (the default).  To opt out of auto-extraction, pass an explicit
 schema (``RegisterFunctionFormat`` or ``dict``).  This behavior
-is Python-specific -- the Node SDK does not auto-extract from TS
-types, because TypeScript types are erased at runtime.
+is Python-specific; the Node SDK relies on explicit schemas because
+TypeScript types are erased at runtime.
 
 **Signature**
 
@@ -145,7 +159,8 @@ types, because TypeScript types are erased at runtime.
 register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, *, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None) -> FunctionRef
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="function_id" type="str" required>
 </ParamField>
@@ -186,7 +201,9 @@ register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler
 <ParamField body="response_format" type="RegisterFunctionFormat | dict[str, Any] | None">
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```python
 def greet(data):
@@ -203,6 +220,10 @@ async def greet(data: GreetInput) -> GreetOutput:
 fn = worker.register_function("greet", greet, description="Greets a user")
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### trigger
@@ -213,10 +234,10 @@ Invoke a remote function.
 
 The routing behavior and return type depend on the ``action`` field:
 
-- No action: synchronous -- waits for the function to return.
-- ``TriggerAction.Enqueue(...)``: async via named queue -- returns a dict
+- No action: synchronous, waits for the function to return.
+- ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
   with ``messageReceiptId``.
-- ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+- ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
 **Signature**
 
@@ -224,7 +245,8 @@ The routing behavior and return type depend on the ``action`` field:
 trigger(request: dict[str, Any] | TriggerRequest) -> Any
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="request" type="dict[str, Any] | TriggerRequest" required>
 
@@ -236,7 +258,7 @@ trigger(request: dict[str, Any] | TriggerRequest) -> Any
       ID of the function to invoke.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary per-invocation metadata delivered to the handler as a separate channel (not folded into ``payload``).
+      Arbitrary per-invocation metadata delivered to the handler as a separate channel alongside ``payload``.
     </ParamField>
     <ParamField body="payload" type="Any">
       Data to pass to the function.
@@ -247,12 +269,18 @@ trigger(request: dict[str, Any] | TriggerRequest) -> Any
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```python
 result = worker.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
 worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -269,7 +297,8 @@ and ``register_function`` methods.
 register_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any], handler: TriggerHandler[Any]) -> TriggerTypeRef[Any, Any]
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="trigger_type" type="RegisterTriggerTypeInput | dict[str, Any]" required>
 
@@ -301,7 +330,9 @@ register_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any], h
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```python
 webhook = worker.register_trigger_type(
@@ -317,6 +348,10 @@ webhook.register_function("handler", handle_webhook)
 webhook.register_trigger("handler", WebhookConfig(url="/hook"))
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### unregister_trigger_type
@@ -329,7 +364,8 @@ Unregister a previously registered trigger type.
 unregister_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="trigger_type" type="RegisterTriggerTypeInput | dict[str, Any]" required>
 
@@ -349,12 +385,18 @@ unregister_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any])
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```python
 worker.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
 worker.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -364,7 +406,7 @@ Connect to the III Engine via WebSocket.
 
 Initializes OpenTelemetry (if configured), attaches the event loop,
 and establishes the WebSocket connection. This is called automatically
-during construction -- use it only if you need to reconnect manually
+during construction; use it only if you need to reconnect manually
 from an async context.
 
 **Signature**
@@ -379,6 +421,7 @@ async () -> None
 worker = register_worker("ws://localhost:49134")
 await worker.connect_async()
 ```
+
 
 ---
 
@@ -399,6 +442,7 @@ worker = register_worker("ws://localhost:49134")
 if worker.get_connection_state() != "connected":
     print("engine not reachable yet")
 ```
+
 
 ---
 
@@ -425,6 +469,7 @@ worker = register_worker('ws://localhost:49134')
 worker.shutdown()
 ```
 
+
 ---
 
 ### shutdown_async
@@ -450,6 +495,7 @@ worker = register_worker('ws://localhost:49134')
 await worker.shutdown_async()
 ```
 
+
 ---
 
 ### trigger_async
@@ -458,10 +504,10 @@ Invoke a remote function.
 
 The routing behavior and return type depend on the ``action`` field:
 
-- No action: synchronous -- waits for the function to return.
-- ``TriggerAction.Enqueue(...)``: async via named queue -- returns a dict
+- No action: synchronous, waits for the function to return.
+- ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
   with ``messageReceiptId``.
-- ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+- ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
 **Signature**
 
@@ -469,7 +515,8 @@ The routing behavior and return type depend on the ``action`` field:
 async (request: dict[str, Any] | TriggerRequest) -> Any
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="request" type="dict[str, Any] | TriggerRequest" required>
 
@@ -481,7 +528,7 @@ async (request: dict[str, Any] | TriggerRequest) -> Any
       ID of the function to invoke.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary per-invocation metadata delivered to the handler as a separate channel (not folded into ``payload``).
+      Arbitrary per-invocation metadata delivered to the handler as a separate channel alongside ``payload``.
     </ParamField>
     <ParamField body="payload" type="Any">
       Data to pass to the function.
@@ -492,12 +539,18 @@ async (request: dict[str, Any] | TriggerRequest) -> Any
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```python
 result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
 await iii.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
 ```
+
+
+  </Tab>
+</Tabs>
 
 ## Types
 
@@ -865,7 +918,7 @@ Request object for ``trigger()``.
 | --- | --- | --- | --- |
 | `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget. |
 | `function_id` | `str` | Yes | ID of the function to invoke. |
-| `metadata` | `Any \| None` | No | Arbitrary per-invocation metadata delivered to the handler as a separate channel (not folded into ``payload``). |
+| `metadata` | `Any \| None` | No | Arbitrary per-invocation metadata delivered to the handler as a separate channel alongside ``payload``. |
 | `payload` | `Any` | No | Data to pass to the function. |
 | `timeout_ms` | `int \| None` | No | Override the default invocation timeout. |
 

@@ -129,8 +129,8 @@ export type RegisterFunctionMessage = {
  * Routing action for {@link TriggerRequest}. Determines how the engine
  * handles the invocation.
  *
- * - `enqueue` -- Routes through a named queue for async processing.
- * - `void` -- Fire-and-forget, no response.
+ * - `enqueue`: Routes through a named queue for async processing.
+ * - `void`: Fire-and-forget, no response.
  */
 export type TriggerAction = { type: 'enqueue'; queue: string } | { type: 'void' }
 

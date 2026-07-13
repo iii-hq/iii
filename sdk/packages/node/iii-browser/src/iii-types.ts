@@ -103,8 +103,8 @@ export type RegisterFunctionMessage = {
  * Routing action for {@link TriggerRequest}. Determines how the engine
  * handles the invocation.
  *
- * - `enqueue` -- Routes through a named queue for async processing.
- * - `void` -- Fire-and-forget, no response.
+ * - `enqueue`: Routes through a named queue for async processing.
+ * - `void`: Fire-and-forget, no response.
  */
 export type TriggerAction = { type: 'enqueue'; queue: string } | { type: 'void' }
 
@@ -177,7 +177,7 @@ export type OnTriggerTypeRegistrationInput = {
 
 /**
  * Result returned from the `on_trigger_type_registration_function_id` hook.
- * All fields are optional -- omitted fields keep the original value from the
+ * All fields are optional; omitted fields keep the original value from the
  * registration request.
  */
 export type OnTriggerTypeRegistrationResult = {
@@ -208,7 +208,7 @@ export type OnTriggerRegistrationInput = {
 
 /**
  * Result returned from the `on_trigger_registration_function_id` hook.
- * All fields are optional -- omitted fields keep the original value from the
+ * All fields are optional; omitted fields keep the original value from the
  * registration request.
  */
 export type OnTriggerRegistrationResult = {
@@ -241,7 +241,7 @@ export type OnFunctionRegistrationInput = {
 
 /**
  * Result returned from the `on_function_registration_function_id` hook.
- * All fields are optional -- omitted fields keep the original value from the
+ * All fields are optional; omitted fields keep the original value from the
  * registration request.
  */
 export type OnFunctionRegistrationResult = {

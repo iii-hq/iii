@@ -106,26 +106,48 @@ function renderMethod(method: FunctionDoc, lang: string, knownTypes?: Set<string
   lines.push(codeBlock(codeLang, formatMethodSignature(method)))
   lines.push('')
 
+  // Parameters, Returns, and Example(s) share a tabbed panel so a method's
+  // reference detail stays in one compact block instead of stacking down the
+  // page. A lone section renders on its own without a single-tab group.
+  const sections: { title: string; body: string[] }[] = []
+
   if (method.params.length > 0) {
-    lines.push('#### Parameters')
-    lines.push('')
-    lines.push(...renderParamFields(method.params, knownTypes, typesByName, method.expandParams, method.expandTypes))
+    sections.push({
+      title: 'Parameters',
+      body: renderParamFields(method.params, knownTypes, typesByName, method.expandParams, method.expandTypes),
+    })
   }
 
   if (method.returns.description) {
-    lines.push('#### Returns')
-    lines.push('')
-    lines.push(renderReturnsTable(method.returns, knownTypes))
-    lines.push('')
+    sections.push({ title: 'Returns', body: [renderReturnsTable(method.returns, knownTypes)] })
   }
 
   if (method.examples.length > 0) {
-    lines.push(method.examples.length > 1 ? '#### Examples' : '#### Example')
-    lines.push('')
+    const body: string[] = []
     for (const example of method.examples) {
-      lines.push(codeBlock(codeLang, example))
-      lines.push('')
+      body.push(codeBlock(codeLang, example))
+      body.push('')
     }
+    sections.push({ title: method.examples.length > 1 ? 'Examples' : 'Example', body })
+  }
+
+  if (sections.length >= 2) {
+    lines.push('<Tabs>')
+    for (const section of sections) {
+      lines.push(`  <Tab title="${section.title}">`)
+      lines.push('')
+      lines.push(...section.body)
+      lines.push('')
+      lines.push('  </Tab>')
+    }
+    lines.push('</Tabs>')
+    lines.push('')
+  } else if (sections.length === 1) {
+    const section = sections[0]
+    lines.push(`#### ${section.title}`)
+    lines.push('')
+    lines.push(...section.body)
+    lines.push('')
   }
 
   return lines.join('\n')

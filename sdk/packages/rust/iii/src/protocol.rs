@@ -7,8 +7,8 @@ use uuid::Uuid;
 /// Routing action for [`TriggerRequest`]. Determines how the engine handles
 /// the invocation.
 ///
-/// - `Enqueue` -- Routes through a named queue for async processing.
-/// - `Void` -- Fire-and-forget, no response.
+/// - `Enqueue`: Routes through a named queue for async processing.
+/// - `Void`: Fire-and-forget, no response.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum TriggerAction {
@@ -146,7 +146,7 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         action: Option<TriggerAction>,
         /// Per-invocation metadata sidecar, surfaced to the handler as a
-        /// distinct argument (not folded into `data`). Optional and additive
+        /// distinct argument alongside `data`. Optional and additive
         /// for wire compatibility with engines that don't send it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,

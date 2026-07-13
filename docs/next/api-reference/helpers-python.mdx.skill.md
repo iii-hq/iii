@@ -46,6 +46,7 @@ http(callback: Callable[[StreamRequest, StreamResponse], Awaitable[HttpResponse[
 <ParamField body="callback" type="Callable[[StreamRequest, StreamResponse], Awaitable[HttpResponse[Any] | None]]" required>
 </ParamField>
 
+
 ### Types
 
 [`HttpAuthApiKey`](#httpauthapikey) · [`HttpAuthBearer`](#httpauthbearer) · [`HttpAuthHmac`](#httpauthhmac) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpRequest`](#httprequest) · [`HttpResponse`](#httpresponse)
@@ -193,6 +194,7 @@ async (client, request)
 <ParamField body="request" type="Any" required>
 </ParamField>
 
+
 ---
 
 ### extract_baggage
@@ -210,6 +212,7 @@ extract_baggage(baggage: str) -> Any
 <ParamField body="baggage" type="str" required>
 </ParamField>
 
+
 ---
 
 ### extract_traceparent
@@ -226,6 +229,7 @@ extract_traceparent(traceparent: str) -> Any
 
 <ParamField body="traceparent" type="str" required>
 </ParamField>
+
 
 ---
 
@@ -262,6 +266,7 @@ init_otel(config: OtelConfig | None = None, loop: None = None) -> None
 
 <ParamField body="loop" type="None">
 </ParamField>
+
 
 ---
 
@@ -307,6 +312,7 @@ record_span_event(name: str, attrs: dict[str, Any] | None = None) -> None
 <ParamField body="attrs" type="dict[str, Any] | None">
 </ParamField>
 
+
 ---
 
 ### redact
@@ -323,6 +329,7 @@ redact(value: Any) -> Any
 
 <ParamField body="value" type="Any" required>
 </ParamField>
+
 
 ---
 
@@ -343,6 +350,7 @@ redact_and_truncate(value: Any, max_bytes: Optional[int] = None) -> tuple[str, b
 
 <ParamField body="max_bytes" type="Optional[int]">
 </ParamField>
+
 
 ---
 
@@ -376,6 +384,7 @@ set_current_span_attribute(key: str, value: Any) -> None
 <ParamField body="value" type="Any" required>
 </ParamField>
 
+
 ---
 
 ### set_current_span_error
@@ -392,6 +401,7 @@ set_current_span_error(message: str) -> None
 
 <ParamField body="message" type="str" required>
 </ParamField>
+
 
 ---
 
@@ -433,6 +443,7 @@ async (name: str, fn: Any, *, kind: Any = None, traceparent: str | None = None) 
 
 <ParamField body="traceparent" type="str | None">
 </ParamField>
+
 
 ### Types
 

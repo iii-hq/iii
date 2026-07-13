@@ -83,9 +83,8 @@ export interface ISdk {
   registerTrigger(trigger: RegisterTriggerInput): Trigger
 
   /**
-   * Registers a new function with a local handler. The handler runs in the
-   * browser session; HTTP invocation configs are a Node.js SDK feature and
-   * are not accepted here.
+   * Registers a new function with a local async handler that runs in the
+   * browser session. HTTP invocation configs are a Node.js SDK feature.
    * @param functionId - Unique function identifier
    * @param handler - Async handler executed when the function is invoked
    * @param options - Optional function registration options (description, request/response formats, metadata)
@@ -247,7 +246,7 @@ export type FunctionRef = {
  *   cronHandler,
  * )
  *
- * // Register a trigger -- type is inferred as CronConfig
+ * // Register a trigger; type is inferred as CronConfig
  * cron.registerTrigger('my::fn', { expression: '0 *\/5 * * * * *' })
  *
  * // Register a function and bind a trigger in one call

@@ -37,13 +37,16 @@ into the function handler format expected by the SDK.
 http(callback: (req: HttpStreamingRequest, res: HttpStreamingResponse) => Promise<void | HttpResponse<number, string | Buffer<ArrayBufferLike> | Record<string, unknown>>>) => (req: HttpInternalRequest) => Promise<void | HttpResponse<number, string | Buffer<ArrayBufferLike> | Record<string, unknown>>>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="callback" type="(req: HttpStreamingRequest, res: HttpStreamingResponse) => Promise<void | HttpResponse<number, string | Buffer<ArrayBufferLike> | Record<string, unknown>>>" required>
   Async handler receiving a streaming request and response.
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 import { http } from '@iii-dev/helpers/http'
@@ -58,6 +61,10 @@ worker.registerFunction(
   }),
 )
 ```
+
+
+  </Tab>
+</Tabs>
 
 ### Types
 
@@ -198,6 +205,7 @@ executeTracedRequest(input: RequestInfo | URL, init?: TracedFetchInit) => Promis
 <ParamField body="init" type="TracedFetchInit">
 </ParamField>
 
+
 ---
 
 ### extractBaggage
@@ -214,6 +222,7 @@ extractBaggage(baggage: string) => Context
 
 <ParamField body="baggage" type="string" required>
 </ParamField>
+
 
 ---
 
@@ -235,6 +244,7 @@ extractContext(traceparent?: string, baggage?: string) => Context
 <ParamField body="baggage" type="string">
 </ParamField>
 
+
 ---
 
 ### extractTraceparent
@@ -251,6 +261,7 @@ extractTraceparent(traceparent: string) => Context
 
 <ParamField body="traceparent" type="string" required>
 </ParamField>
+
 
 ---
 
@@ -297,6 +308,7 @@ getBaggageEntry(key: string) => string | undefined
 <ParamField body="key" type="string" required>
 </ParamField>
 
+
 ---
 
 ### getLogger
@@ -326,6 +338,7 @@ initOtel(config: OtelConfig) => void
 
 <ParamField body="config" type="OtelConfig" required>
 </ParamField>
+
 
 ---
 
@@ -368,6 +381,7 @@ patchGlobalFetch(tracer: Tracer) => void
 <ParamField body="tracer" type="Tracer" required>
 </ParamField>
 
+
 ---
 
 ### recordSpanEvent
@@ -388,6 +402,7 @@ recordSpanEvent(name: string, attrs?: Attributes) => void
 <ParamField body="attrs" type="Attributes">
 </ParamField>
 
+
 ---
 
 ### redact
@@ -404,6 +419,7 @@ redact(value: unknown) => unknown
 
 <ParamField body="value" type="unknown" required>
 </ParamField>
+
 
 ---
 
@@ -425,6 +441,7 @@ redactAndTruncate(value: unknown, maxBytes: number | null) => { json: string; tr
 <ParamField body="maxBytes" type="number | null" required>
 </ParamField>
 
+
 ---
 
 ### registerWorkerGauges
@@ -445,6 +462,7 @@ registerWorkerGauges(meter: Meter, options: WorkerGaugesOptions) => void
 <ParamField body="options" type="WorkerGaugesOptions" required>
 </ParamField>
 
+
 ---
 
 ### removeBaggageEntry
@@ -461,6 +479,7 @@ removeBaggageEntry(key: string) => Context
 
 <ParamField body="key" type="string" required>
 </ParamField>
+
 
 ---
 
@@ -492,6 +511,7 @@ safeStringify(value: unknown) => string
 <ParamField body="value" type="unknown" required>
 </ParamField>
 
+
 ---
 
 ### setBaggageEntry
@@ -511,6 +531,7 @@ setBaggageEntry(key: string, value: string) => Context
 
 <ParamField body="value" type="string" required>
 </ParamField>
+
 
 ---
 
@@ -532,6 +553,7 @@ setCurrentSpanAttribute(key: string, value: AttributeValue) => void
 <ParamField body="value" type="AttributeValue" required>
 </ParamField>
 
+
 ---
 
 ### setCurrentSpanError
@@ -548,6 +570,7 @@ setCurrentSpanError(message: string) => void
 
 <ParamField body="message" type="string" required>
 </ParamField>
+
 
 ---
 
@@ -607,6 +630,7 @@ withSpan(name: string, options: { kind?: SpanKind; traceparent?: string }, fn: (
 
 <ParamField body="fn" type="(span: Span) => Promise<T>" required>
 </ParamField>
+
 
 ### Types
 

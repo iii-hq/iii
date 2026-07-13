@@ -17,7 +17,7 @@ npm install iii-browser-sdk
 ### registerWorker
 
 Creates and returns a connected SDK instance. The WebSocket connection is
-established automatically -- there is no separate `connect()` call.
+established automatically; there is no separate `connect()` call.
 
 **Signature**
 
@@ -25,7 +25,8 @@ established automatically -- there is no separate `connect()` call.
 registerWorker(address: string, options?: InitOptions) => ISdk
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="address" type="string" required>
   WebSocket URL of the III engine (e.g. `ws://localhost:49135`).
@@ -36,7 +37,7 @@ registerWorker(address: string, options?: InitOptions) => ISdk
 
   <Expandable title="`InitOptions` fields">
     <ParamField body="headers" type="Record<string, string>">
-      Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth.
+      Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored.
     </ParamField>
     <ParamField body="invocationTimeoutMs" type="number">
       Default timeout for `trigger()` in milliseconds. Defaults to `30000`.
@@ -47,13 +48,19 @@ registerWorker(address: string, options?: InitOptions) => ISdk
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 import { registerWorker } from 'iii-browser-sdk'
 
 const worker = registerWorker('ws://localhost:49135')
 ```
+
+
+  </Tab>
+</Tabs>
 
 ## Methods
 
@@ -67,7 +74,8 @@ Registers a new trigger. A trigger is a way to invoke a function when a certain 
 registerTrigger(trigger: RegisterTriggerInput) => Trigger
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="trigger" type="RegisterTriggerInput" required>
   The trigger to register
@@ -85,7 +93,9 @@ registerTrigger(trigger: RegisterTriggerInput) => Trigger
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 const trigger = worker.registerTrigger({
@@ -98,13 +108,16 @@ const trigger = worker.registerTrigger({
 trigger.unregister()
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### registerFunction
 
-Registers a new function with a local handler. The handler runs in the
-browser session; HTTP invocation configs are a Node.js SDK feature and
-are not accepted here.
+Registers a new function with a local async handler that runs in the
+browser session. HTTP invocation configs are a Node.js SDK feature.
 
 **Signature**
 
@@ -112,7 +125,8 @@ are not accepted here.
 registerFunction(functionId: string, handler: RemoteFunctionHandler, options?: RegisterFunctionOptions) => FunctionRef
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="functionId" type="string" required>
   Unique function identifier
@@ -140,7 +154,9 @@ registerFunction(functionId: string, handler: RemoteFunctionHandler, options?: R
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 // Local handler
@@ -154,6 +170,10 @@ const ref = worker.registerFunction(
 ref.unregister()
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### trigger
@@ -166,7 +186,8 @@ Invokes a function using a request object.
 trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="request" type="TriggerRequest<TInput>" required>
   The trigger request containing function_id, payload, and optional action/timeout
@@ -187,7 +208,9 @@ trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 // Synchronous invocation
@@ -214,6 +237,10 @@ const receipt = await worker.trigger({
 })
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### registerTriggerType
@@ -226,7 +253,8 @@ Registers a new trigger type. A trigger type is a way to invoke a function when 
 registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>) => TriggerTypeRef<TConfig>
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
   The trigger type to register
@@ -252,7 +280,9 @@ registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandl
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 type CronConfig = { expression: string }
@@ -272,6 +302,10 @@ worker.registerTriggerType<CronConfig>(
 )
 ```
 
+
+  </Tab>
+</Tabs>
+
 ---
 
 ### unregisterTriggerType
@@ -284,7 +318,8 @@ Unregisters a trigger type.
 unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
   The trigger type to unregister
@@ -297,11 +332,17 @@ unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
   </Expandable>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 worker.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -317,12 +358,15 @@ supported. Returns an unsubscribe function.
 addConnectionStateListener(handler: (state: IIIConnectionState) => void) => () => void
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
 <ParamField body="handler" type="(state: IIIConnectionState) => void" required>
 </ParamField>
 
-#### Example
+
+  </Tab>
+  <Tab title="Example">
 
 ```typescript
 const unsub = worker.addConnectionStateListener((state) => {
@@ -332,6 +376,10 @@ const unsub = worker.addConnectionStateListener((state) => {
 // Later, stop receiving updates
 unsub()
 ```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -350,6 +398,7 @@ shutdown() => Promise<void>
 ```typescript
 await worker.shutdown()
 ```
+
 
 ## Subpath Exports
 
@@ -537,7 +586,7 @@ Configuration options passed to registerWorker.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `headers` | `Record<string, string>` | No | Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. |
+| `headers` | `Record<string, string>` | No | Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
 
@@ -594,7 +643,7 @@ fields, or throw to deny the registration.
 #### OnFunctionRegistrationResult
 
 Result returned from the `on_function_registration_function_id` hook.
-All fields are optional -- omitted fields keep the original value from the
+All fields are optional; omitted fields keep the original value from the
 registration request.
 
 | Name | Type | Required | Description |
@@ -625,7 +674,7 @@ fields, or throw to deny the registration.
 #### OnTriggerRegistrationResult
 
 Result returned from the `on_trigger_registration_function_id` hook.
-All fields are optional -- omitted fields keep the original value from the
+All fields are optional; omitted fields keep the original value from the
 registration request.
 
 | Name | Type | Required | Description |
@@ -655,7 +704,7 @@ fields, or throw to deny the registration.
 #### OnTriggerTypeRegistrationResult
 
 Result returned from the `on_trigger_type_registration_function_id` hook.
-All fields are optional -- omitted fields keep the original value from the
+All fields are optional; omitted fields keep the original value from the
 registration request.
 
 | Name | Type | Required | Description |
@@ -886,7 +935,7 @@ Result of a state delete operation.
 
 #### IState
 
-Interface for state management operations. Available via the `iii-sdk/state`
+Interface for state management operations. Available via the `iii-browser-sdk/state`
 subpath export.
 
 | Name | Type | Required | Description |
