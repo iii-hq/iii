@@ -262,6 +262,10 @@ class III:
         and establishes the WebSocket connection. This is called automatically
         during construction -- use it only if you need to reconnect manually
         from an async context.
+
+        Examples:
+            >>> worker = register_worker("ws://localhost:49134")
+            >>> await worker.connect_async()
         """
         self._running = True
         from iii_helpers.observability.telemetry import attach_event_loop, init_otel
@@ -814,6 +818,11 @@ class III:
         Returns:
             One of ``"disconnected"``, ``"connecting"``, ``"connected"``,
             ``"reconnecting"``, or ``"failed"``.
+
+        Examples:
+            >>> worker = register_worker("ws://localhost:49134")
+            >>> if worker.get_connection_state() != "connected":
+            ...     print("engine not reachable yet")
         """
         return self._connection_state
 
@@ -1381,6 +1390,7 @@ class TriggerAction:
 
     Examples:
         >>> from iii import TriggerAction
+        >>> # The queue must be declared in the iii-queue worker's queue_configs.
         >>> worker.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
         >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
     """

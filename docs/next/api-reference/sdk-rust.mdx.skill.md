@@ -234,7 +234,8 @@ worker.trigger(TriggerRequest {
     timeout_ms: None,
 }).await?;
 
-// Enqueue
+// Enqueue (the queue must be declared in the iii-queue worker's
+// queue_configs)
 let receipt = worker.trigger(TriggerRequest {
     function_id: "iii::durable::publish".to_string(),
     payload: json!({"topic": "test"}),
@@ -318,6 +319,12 @@ unregister_trigger_type(id: impl Into<String>)
 <ParamField body="id" type="impl Into<String>" required>
 </ParamField>
 
+#### Example
+
+```rust
+worker.unregister_trigger_type("cron");
+```
+
 ---
 
 ### get_connection_state
@@ -328,6 +335,14 @@ Get the current connection state.
 
 ```rust
 get_connection_state() -> IIIConnectionState
+```
+
+#### Example
+
+```rust
+if worker.get_connection_state() != IIIConnectionState::Connected {
+    eprintln!("engine not reachable yet");
+}
 ```
 
 ---
@@ -344,6 +359,12 @@ connection thread before it exits.
 
 ```rust
 shutdown()
+```
+
+#### Example
+
+```rust
+worker.shutdown();
 ```
 
 ---
@@ -366,6 +387,12 @@ after `run_connection()` returns, so it may not complete unless
 
 ```rust
 async shutdown_async()
+```
+
+#### Example
+
+```rust
+worker.shutdown_async().await;
 ```
 
 ## Types

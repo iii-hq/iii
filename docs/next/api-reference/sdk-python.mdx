@@ -377,6 +377,13 @@ from an async context.
 async () -> None
 ```
 
+#### Example
+
+```python
+worker = register_worker("ws://localhost:49134")
+await worker.connect_async()
+```
+
 ---
 
 ### get_connection_state
@@ -387,6 +394,14 @@ Return the current WebSocket connection state.
 
 ```python
 get_connection_state() -> IIIConnectionState
+```
+
+#### Example
+
+```python
+worker = register_worker("ws://localhost:49134")
+if worker.get_connection_state() != "connected":
+    print("engine not reachable yet")
 ```
 
 ---

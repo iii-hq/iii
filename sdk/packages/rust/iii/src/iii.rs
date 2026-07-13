@@ -891,6 +891,13 @@ impl IIIClient {
     /// This stops the connection loop, sends a shutdown signal, and joins
     /// the background connection thread. OpenTelemetry is flushed inside the
     /// connection thread before it exits.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.shutdown();
+    /// ```
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
@@ -912,6 +919,15 @@ impl IIIClient {
     /// The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
     /// after `run_connection()` returns, so it may not complete unless
     /// [`shutdown`](Self::shutdown) is used to join the thread.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # async fn docs() {
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.shutdown_async().await;
+    /// # }
+    /// ```
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
@@ -1105,6 +1121,13 @@ impl IIIClient {
     }
 
     /// Unregister a previously registered trigger type.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.unregister_trigger_type("cron");
+    /// ```
     pub fn unregister_trigger_type(&self, id: impl Into<String>) {
         let id = id.into();
         self.inner.trigger_types.lock_or_recover().remove(&id);
@@ -1195,7 +1218,8 @@ impl IIIClient {
     ///     timeout_ms: None,
     /// }).await?;
     ///
-    /// // Enqueue
+    /// // Enqueue (the queue must be declared in the iii-queue worker's
+    /// // queue_configs)
     /// let receipt = worker.trigger(TriggerRequest {
     ///     function_id: "iii::durable::publish".to_string(),
     ///     payload: json!({"topic": "test"}),
@@ -1271,6 +1295,16 @@ impl IIIClient {
     }
 
     /// Get the current connection state.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # use iii_sdk::runtime::IIIConnectionState;
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// if worker.get_connection_state() != IIIConnectionState::Connected {
+    ///     eprintln!("engine not reachable yet");
+    /// }
+    /// ```
     pub fn get_connection_state(&self) -> IIIConnectionState {
         *self.inner.connection_state.lock_or_recover()
     }
