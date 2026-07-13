@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { EXPAND_PARAMS_RE, parseExpandMarker } from '../types.mjs'
 import type { FunctionDoc, ModuleDoc, ParamDoc, SdkDoc, TypeDoc, TypeGroup } from '../types.mjs'
 
 interface RustDocIndex {
@@ -38,6 +39,14 @@ const SIMPLIFY_PATHS: Record<string, string> = {
   'std::string::String': 'String',
 }
 
+/** `::core::pin::Pin`, `alloc::boxed::Box`, ... -> last path segment. */
+function simplifyPathName(name: string): string {
+  const mapped = SIMPLIFY_PATHS[name]
+  if (mapped) return mapped
+  if (/^(::)?(core|std|alloc)::/.test(name)) return name.split('::').pop() ?? name
+  return name
+}
+
 export function rustTypeToString(type: any): string {
   if (type == null) return '()'
   if (typeof type === 'string') return type
@@ -46,7 +55,7 @@ export function rustTypeToString(type: any): string {
     const rp = type.resolved_path
     let name = rp.path ?? rp.name ?? 'unknown'
     name = name.replace(/^crate::[\w:]+::/, '')
-    name = SIMPLIFY_PATHS[name] ?? name
+    name = simplifyPathName(name)
     if (rp.args?.angle_bracketed?.args?.length) {
       const args = rp.args.angle_bracketed.args
         .map((a: any) => (a.type ? rustTypeToString(a.type) : a.lifetime ?? '?'))
@@ -79,7 +88,13 @@ export function rustTypeToString(type: any): string {
         if (b.trait_bound) {
           const t = b.trait_bound.trait
           let name = t.path ?? t.name ?? '?'
-          name = name.replace(/^crate::[\w:]+::/, '')
+          name = simplifyPathName(name.replace(/^crate::[\w:]+::/, ''))
+          if (t.args?.parenthesized) {
+            const { inputs, output } = t.args.parenthesized
+            const params = (inputs ?? []).map(rustTypeToString).join(', ')
+            const ret = output ? ` -> ${rustTypeToString(output)}` : ''
+            return `${name}(${params})${ret}`
+          }
           if (t.args?.angle_bracketed?.args?.length) {
             const args = t.args.angle_bracketed.args.map((a: any) => (a.type ? rustTypeToString(a.type) : '?')).join(', ')
             return `${name}<${args}>`
@@ -97,7 +112,7 @@ export function rustTypeToString(type: any): string {
       ?.map((b: any) => {
         const t = b.trait
         let name = t?.path ?? t?.name ?? '?'
-        name = name.replace(/^crate::[\w:]+::/, '')
+        name = simplifyPathName(name.replace(/^crate::[\w:]+::/, ''))
         if (t?.args?.parenthesized) {
           const { inputs, output } = t.args.parenthesized
           const params = (inputs ?? []).map(rustTypeToString).join(', ')
@@ -124,16 +139,36 @@ export function rustTypeToString(type: any): string {
   return 'unknown'
 }
 
-function extractDocs(item: RustDocItem): string {
+/**
+ * The summary prose of a doc-comment: everything before the first `# Section`
+ * heading. Fence-aware, since a hidden doctest line (`# use ...` inside a
+ * fence) is not a heading. `# Examples` and friends are rendered separately.
+ * A fenced block inside the prose (e.g. the `for_function` example on
+ * `IIITrigger`) is kept on request, with hidden doctest lines stripped;
+ * otherwise the prose is cut at the first fence.
+ */
+function extractDocs(item: RustDocItem, opts?: { keepCodeBlocks?: boolean }): string {
   if (!item.docs) return ''
-  const text = item.docs
-  const sectionIdx = text.search(/\n# /)
-  const codeBlockIdx = text.search(/\n```/)
-  let endIdx = text.length
-  if (sectionIdx >= 0) endIdx = Math.min(endIdx, sectionIdx)
-  if (codeBlockIdx >= 0) endIdx = Math.min(endIdx, codeBlockIdx)
-  return text
-    .slice(0, endIdx)
+  const out: string[] = []
+  let inFence = false
+  for (const line of item.docs.split('\n')) {
+    if (line.startsWith('```')) {
+      if (!inFence && !opts?.keepCodeBlocks) break
+      inFence = !inFence
+      out.push(line)
+      continue
+    }
+    if (inFence) {
+      // Hidden doctest lines never render on docs.rs either.
+      if (!/^\s*# /.test(line)) out.push(line)
+      continue
+    }
+    if (/^# /.test(line)) break
+    out.push(line)
+  }
+  return out
+    .join('\n')
+    .replace(EXPAND_PARAMS_RE, '')
     // Strip rustdoc intra-doc link markup: [`Foo`](path) / [`Foo`][] / [`Foo`] -> `Foo`
     .replace(/\[(`[^`]+`)\]\([^)]*\)/g, '$1')
     .replace(/\[(`[^`]+`)\]\[[^\]]*\]/g, '$1')
@@ -186,6 +221,11 @@ function extractReturnDescription(docs: string | undefined): string {
     .join(' ')
     .replace(/`([^`]+)`/g, '$1')
     .trim()
+}
+
+/** First paragraph, unwrapped to one line, for table-cell descriptions. */
+function firstParagraph(text: string): string {
+  return (text.split(/\n\s*\n/)[0] ?? '').replace(/\s*\n\s*/g, ' ').trim()
 }
 
 function getItemKind(item: RustDocItem): string {
@@ -252,6 +292,7 @@ function buildMethodDoc(item: RustDocItem): FunctionDoc | null {
     params,
     returns: { type: outputType, description: extractReturnDescription(item.docs) },
     examples: extractExamples(item),
+    ...parseExpandMarker(item.docs),
   }
 }
 
@@ -277,6 +318,39 @@ function extractMethodsFromStruct(structId: number, index: Record<string, RustDo
   return methods
 }
 
+/** Public inherent-impl methods of a struct/enum, as callable-typed rows so
+ * handles like `FunctionRef::unregister` and `TriggerTypeRef::register_trigger`
+ * are documented with their parameters. */
+function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>): ParamDoc[] {
+  const rows: ParamDoc[] = []
+  const kind = getItemKind(item)
+  const implIds = kind === 'enum' ? getEnumImpls(item) : getStructImpls(item)
+  for (const implId of implIds) {
+    const implItem = index[implId]
+    if (!implItem || !isInherentImpl(implItem)) continue
+    for (const methodId of getImplItems(implItem)) {
+      const method = index[methodId]
+      if (!method || method.visibility !== 'public' || method.deprecation) continue
+      if (getItemKind(method) !== 'function') continue
+      const sig = getSig(method)
+      if (!sig) continue
+      const inputs = (sig.inputs ?? []).filter(
+        ([name, type]: [string, any]) => name !== 'self' && !(type?.borrowed_ref?.type?.generic === 'Self'),
+      )
+      const paramSig = inputs.map(([name, type]: [string, any]) => `${name}: ${rustTypeToString(type)}`).join(', ')
+      const outputType = rustTypeToString(sig.output)
+      const returnSuffix = outputType && outputType !== '()' ? ` -> ${outputType}` : ''
+      rows.push({
+        name: method.name ?? '',
+        type: `${isAsync(method) ? 'async ' : ''}fn(${paramSig})${returnSuffix}`,
+        description: firstParagraph(extractDocs(method)),
+        required: true,
+      })
+    }
+  }
+  return rows.sort((a, b) => a.name.localeCompare(b.name))
+}
+
 function extractStructType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc {
   const fields: ParamDoc[] = []
   for (const fid of getStructFields(item)) {
@@ -289,7 +363,8 @@ function extractStructType(item: RustDocItem, index: Record<string, RustDocItem>
       required: !isOptionType(field.inner.struct_field),
     })
   }
-  return { name: item.name ?? '', description: extractDocs(item), fields }
+  fields.push(...extractMethodRows(item, index))
+  return { name: item.name ?? '', description: extractDocs(item, { keepCodeBlocks: true }), fields }
 }
 
 function extractEnumType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc {
@@ -315,13 +390,38 @@ function extractEnumType(item: RustDocItem, index: Record<string, RustDocItem>):
     }
     fields.push({ name: variant.name ?? '', type: typeStr, description: extractDocs(variant), required: true })
   }
-  return { name: item.name ?? '', description: extractDocs(item), fields }
+  fields.push(...extractMethodRows(item, index))
+  return { name: item.name ?? '', description: extractDocs(item, { keepCodeBlocks: true }), fields }
+}
+
+/** A trait documents as one row per method; implementing the required ones is
+ * the contract (e.g. `TriggerHandler` for `register_trigger_type`). */
+function extractTraitType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc {
+  const fields: ParamDoc[] = []
+  for (const mid of item.inner.trait?.items ?? []) {
+    const method = index[mid]
+    if (!method || getItemKind(method) !== 'function') continue
+    const sig = getSig(method)
+    if (!sig) continue
+    const inputs = (sig.inputs ?? []).filter(([name]: [string, any]) => name !== 'self')
+    const paramSig = inputs.map(([name, type]: [string, any]) => `${name}: ${rustTypeToString(type)}`).join(', ')
+    const outputType = rustTypeToString(sig.output)
+    const returnSuffix = outputType && outputType !== '()' ? ` -> ${outputType}` : ''
+    fields.push({
+      name: method.name ?? '',
+      type: `${isAsync(method) ? 'async ' : ''}fn(${paramSig})${returnSuffix}`,
+      description: firstParagraph(extractDocs(method)),
+      required: !(method.inner.function ?? method.inner.method)?.has_body,
+    })
+  }
+  return { name: item.name ?? '', description: extractDocs(item, { keepCodeBlocks: true }), fields }
 }
 
 function itemToType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc | null {
   const kind = getItemKind(item)
   if (kind === 'struct') return extractStructType(item, index)
   if (kind === 'enum') return extractEnumType(item, index)
+  if (kind === 'trait') return extractTraitType(item, index)
   if (kind === 'type_alias') {
     const aliased = item.inner.type_alias?.type
     return {
@@ -334,7 +434,7 @@ function itemToType(item: RustDocItem, index: Record<string, RustDocItem>): Type
   return null
 }
 
-const TYPE_KINDS = new Set(['struct', 'enum', 'type_alias'])
+const TYPE_KINDS = new Set(['struct', 'enum', 'type_alias', 'trait'])
 
 /** All public, locally-defined, publicly-reachable types in the crate. */
 function collectCrateTypes(

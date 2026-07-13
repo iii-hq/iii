@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { EXPAND_PARAMS_RE, parseExpandMarker } from '../types.mjs'
 import type { FunctionDoc, ModuleDoc, ParamDoc, SdkDoc, TypeDoc as TypeDocType, TypeGroup, SubpathExport } from '../types.mjs'
 
 interface TypeDocReflection {
@@ -16,6 +17,7 @@ interface TypeDocReflection {
 }
 
 const KIND_ENUM = 8
+const KIND_VARIABLE = 32
 const KIND_FUNCTION = 64
 const KIND_CLASS = 128
 const KIND_INTERFACE = 256
@@ -25,7 +27,7 @@ const KIND_TYPE_ALIAS = 2097152
 
 function extractText(summary?: { kind: string; text: string }[]): string {
   if (!summary) return ''
-  return summary.map(s => s.text).join('').trim()
+  return summary.map(s => s.text).join('').replace(EXPAND_PARAMS_RE, '').trim()
 }
 
 /** A symbol re-exported only for back-compat (e.g. old 0.19 paths) carries a
@@ -104,7 +106,9 @@ function extractParams(sig: TypeDocReflection): ParamDoc[] {
     name: p.name,
     type: typeToString(p.type),
     description: extractText(p.comment?.summary),
-    required: !(p.type?.type === 'union' && p.type.types?.some((t: any) => t.type === 'intrinsic' && t.name === 'undefined')),
+    required:
+      !p.flags?.isOptional &&
+      !(p.type?.type === 'union' && p.type.types?.some((t: any) => t.type === 'intrinsic' && t.name === 'undefined')),
   }))
 }
 
@@ -116,23 +120,45 @@ function reflectionToFunction(ref: TypeDocReflection): FunctionDoc | null {
 
   return {
     name: ref.name,
-    signature: `(${params.map(p => `${p.name}: ${typeToString(p.type)}`).join(', ')}) => ${returnType}`,
+    signature: `(${params.map(p => `${p.name}${p.flags?.isOptional ? '?' : ''}: ${typeToString(p.type)}`).join(', ')}) => ${returnType}`,
     description: extractText(comment?.summary),
     params: extractParams(sig),
     returns: { type: returnType, description: '' },
     examples: extractExamples(comment),
+    ...parseExpandMarker(comment?.summary?.map(s => s.text).join('')),
   }
 }
 
-function extractFieldsFromChildren(children: any[]): ParamDoc[] {
+/** TypeDoc emits `indexSignatures` (0.25+) or a single `indexSignature` on older versions. */
+function indexSignaturesOf(ref: any): any[] | undefined {
+  if (!ref) return undefined
+  if (ref.indexSignatures?.length) return ref.indexSignatures
+  if (ref.indexSignature) return [ref.indexSignature]
+  return undefined
+}
+
+function extractFieldsFromChildren(children: any[], indexSignatures?: any[]): ParamDoc[] {
   return children
     .filter((f: any) => f.kind === KIND_PROPERTY || f.kind === KIND_METHOD)
     .map((f: any) => ({
       name: f.name,
-      type: typeToString(f.type ?? f.signatures?.[0]?.type),
+      // A method has no `type`, only call signatures; render the full callable
+      // shape so parameters survive (e.g. `(functionId: string, config: TConfig) => Trigger`).
+      type: f.type ? typeToString(f.type) : typeToString({ type: 'reflection', declaration: f }),
       description: extractText(f.comment?.summary ?? f.signatures?.[0]?.comment?.summary),
       required: !(f.flags?.isOptional),
     }))
+    .concat(
+      (indexSignatures ?? []).map((s: any) => {
+        const p = s.parameters?.[0]
+        return {
+          name: `[${p?.name ?? 'key'}: ${typeToString(p?.type)}]`,
+          type: typeToString(s.type),
+          description: extractText(s.comment?.summary),
+          required: false,
+        }
+      }),
+    )
 }
 
 function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>): TypeDocType[] {
@@ -146,15 +172,16 @@ function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>)
       types.push({
         name: child.name,
         description: extractText(child.comment?.summary),
-        fields: extractFieldsFromChildren(child.children ?? []),
+        fields: extractFieldsFromChildren(child.children ?? [], indexSignaturesOf(child)),
       })
     } else if (child.kind === KIND_TYPE_ALIAS) {
       const directChildren = child.children ?? child.type?.declaration?.children
-      if (directChildren?.length) {
+      const indexSigs = indexSignaturesOf(child) ?? indexSignaturesOf(child.type?.declaration)
+      if (directChildren?.length || indexSigs?.length) {
         types.push({
           name: child.name,
           description: extractText(child.comment?.summary),
-          fields: extractFieldsFromChildren(directChildren),
+          fields: extractFieldsFromChildren(directChildren ?? [], indexSigs),
         })
       } else if (child.type?.type) {
         types.push({
@@ -176,6 +203,15 @@ function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>)
         description: extractText(child.comment?.summary),
         fields,
       })
+    } else if (child.kind === KIND_VARIABLE && child.type?.type === 'reflection' && child.type.declaration?.children?.length) {
+      // A const factory object (e.g. `TriggerAction`) documents like an
+      // interface: one row per member, function-typed members keep their
+      // call signatures.
+      types.push({
+        name: child.name,
+        description: extractText(child.comment?.summary),
+        fields: extractFieldsFromChildren(child.type.declaration.children),
+      })
     } else if (child.kind === KIND_CLASS) {
       const props = (child.children ?? []).filter((f: any) => f.kind === KIND_PROPERTY)
       types.push({
@@ -187,6 +223,23 @@ function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>)
   }
 
   return types
+}
+
+/**
+ * A bare `type X = Omit<Y, "a" | "b">` code block forces the reader to find Y
+ * and mentally subtract keys. Resolve it: give X a concrete field table (Y's
+ * fields minus the omitted keys) alongside the alias definition.
+ */
+function resolveOmitAliases(types: TypeDocType[]): void {
+  const byName = new Map(types.map(t => [t.name, t]))
+  for (const t of types) {
+    const m = t.codeBlock?.match(/^type \w+ = Omit<(\w+), (.+)>$/)
+    if (!m) continue
+    const target = byName.get(m[1])
+    if (!target?.fields?.length) continue
+    const omitted = new Set([...m[2].matchAll(/"([^"]+)"/g)].map(x => x[1]))
+    t.fields = target.fields.filter(f => !omitted.has(f.name))
+  }
 }
 
 function dedupeTypes(types: TypeDocType[]): TypeDocType[] {
@@ -308,23 +361,18 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
 
   const skipTypes = new Set(['IIIClient', 'ISdk'])
   const types = dedupeTypes(modules.flatMap(m => extractTypesFrom(m.children ?? [], skipTypes)))
+  resolveOmitAliases(types)
   const typeGroups = buildTypeGroups(modules, new Map(types.map(t => [t.name, t])), metadata.packageName)
 
   const entryFn = registerWorker ? reflectionToFunction(registerWorker) : null
 
-  // Names owned by a dedicated submodule. The root barrel re-exports many of
-  // them for convenience, but (like buildTypeGroups) credit each to its
-  // submodule so the `iii-sdk` row stops advertising the moved 0.19 root paths.
-  const submoduleOwned = new Set<string>()
-  for (const m of modules) {
-    if (submoduleName(m.name) === 'index') continue
-    for (const c of m.children ?? []) if (!isDeprecated(c.comment)) submoduleOwned.add(c.name)
-  }
+  // The moved 0.19 root paths carry @deprecated and are dropped below, so the
+  // root row lists exactly what the barrel exports today, including names that
+  // are deliberately dual-exported from a submodule (e.g. InvocationError).
   const subpathExports: SubpathExport[] = []
   for (const m of modules) {
     const sub = submoduleName(m.name)
     let names = (m.children ?? []).filter(c => !isDeprecated(c.comment)).map(c => c.name)
-    if (sub === 'index') names = names.filter(n => !submoduleOwned.has(n))
     names = [...new Set(names)].sort() // dedup + stable order
     if (names.length === 0) continue
     subpathExports.push({

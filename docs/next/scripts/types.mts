@@ -1,3 +1,25 @@
+/**
+ * Doc-comment marker that flags a method for `expandParams` (see
+ * `FunctionDoc.expandParams`). An HTML comment renders as nothing in every
+ * language's native doc tooling; parsers detect it and strip it from prose.
+ * An optional type list (`<!-- docs:expand-params: TriggerRequest -->`) names
+ * additional types to expand when the signature type is a wrapper the reader
+ * would not construct directly.
+ */
+export const EXPAND_PARAMS_MARKER = '<!-- docs:expand-params -->'
+export const EXPAND_PARAMS_RE = /<!--\s*docs:expand-params(?::([^>]*?))?\s*-->/
+
+/** Parse the marker out of raw doc text: flag plus optional explicit types. */
+export function parseExpandMarker(text: string | undefined): { expandParams: boolean; expandTypes: string[] } {
+  const m = text?.match(EXPAND_PARAMS_RE)
+  if (!m) return { expandParams: false, expandTypes: [] }
+  const expandTypes = (m[1] ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  return { expandParams: true, expandTypes }
+}
+
 export interface ParamDoc {
   name: string
   type: string
@@ -13,6 +35,19 @@ export interface FunctionDoc {
   params: ParamDoc[]
   returns: { type: string; description: string }
   examples: string[]
+  /**
+   * Set by the `<!-- docs:expand-params -->` marker in the method's source
+   * doc-comment: nested type Expandables under this method's parameters render
+   * open by default. Declarative and per-language; never hardcode method names.
+   */
+  expandParams?: boolean
+  /**
+   * Extra documented type names to expand under this method's parameters, from
+   * the marker's optional type list. Covers wrapper signatures (e.g. Rust's
+   * `impl Into<TriggerRequestWithMetadata>`) where the type the reader
+   * actually constructs never appears in the parameter type.
+   */
+  expandTypes?: string[]
 }
 
 export interface TypeDoc {
