@@ -64,6 +64,7 @@ export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message
 export interface ISdk {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
+   * <!-- docs:expand-params -->
    * @param trigger - The trigger to register
    * @returns A trigger object that can be used to unregister the trigger
    *
@@ -82,9 +83,11 @@ export interface ISdk {
   registerTrigger(trigger: RegisterTriggerInput): Trigger
 
   /**
-   * Registers a new function with a local handler or an HTTP invocation config.
+   * Registers a new function with a local handler. The handler runs in the
+   * browser session; HTTP invocation configs are a Node.js SDK feature and
+   * are not accepted here.
    * @param functionId - Unique function identifier
-   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.)
+   * @param handler - Async handler executed when the function is invoked
    * @param options - Optional function registration options (description, request/response formats, metadata)
    * @returns A handle that can be used to unregister the function
    *
@@ -105,6 +108,7 @@ export interface ISdk {
 
   /**
    * Invokes a function using a request object.
+   * <!-- docs:expand-params -->
    *
    * @param request - The trigger request containing function_id, payload, and optional action/timeout
    * @returns The result of the function

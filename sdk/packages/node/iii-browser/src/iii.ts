@@ -204,11 +204,11 @@ class Sdk implements ISdk {
    * Registers a function with the engine. The `functionId` is the unique identifier
    * used by triggers and invocations.
    *
-   * Pass a handler for local execution, or an {@link HttpInvocationConfig}
-   * for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+   * The handler runs locally in the browser session; HTTP invocation configs
+   * are a Node.js SDK feature and are not accepted here.
    *
    * @param functionId - Unique function identifier.
-   * @param handlerOrInvocation - Async handler or HTTP invocation config.
+   * @param handlerOrInvocation - Async handler executed when the function is invoked.
    * @param options - Optional function registration options (description, request/response formats, metadata).
    * @returns A {@link FunctionRef} with `id` and `unregister()`.
    *

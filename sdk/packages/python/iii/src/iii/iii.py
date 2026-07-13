@@ -912,6 +912,8 @@ class III:
     ) -> Trigger:
         """Bind a trigger configuration to a registered function.
 
+        <!-- docs:expand-params -->
+
         Args:
             trigger: A ``RegisterTriggerInput`` or dict with ``type``,
                 ``function_id``, and optional ``config``.
@@ -1126,6 +1128,8 @@ class III:
 
     def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.
+
+        <!-- docs:expand-params -->
 
         The routing behavior and return type depend on the ``action`` field:
 

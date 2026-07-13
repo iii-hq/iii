@@ -1113,6 +1113,7 @@ impl IIIClient {
     }
 
     /// Bind a trigger configuration to a registered function.
+    /// <!-- docs:expand-params -->
     ///
     /// # Arguments
     /// * `input` - Trigger registration input with trigger_type, function_id, and config.
@@ -1165,6 +1166,7 @@ impl IIIClient {
     }
 
     /// Invoke a remote function.
+    /// <!-- docs:expand-params: TriggerRequest -->
     ///
     /// The routing behavior depends on the `action` field of the request:
     /// - No action: synchronous -- waits for the function to return.

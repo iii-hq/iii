@@ -85,6 +85,7 @@ export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message
 export interface IIIClient {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
+   * <!-- docs:expand-params -->
    * @param trigger - The trigger to register
    * @returns A trigger object that can be used to unregister the trigger
    *
@@ -142,6 +143,7 @@ export interface IIIClient {
 
   /**
    * Invokes a function using a request object.
+   * <!-- docs:expand-params -->
    *
    * @param request - The trigger request containing function_id, payload, and optional action/timeout
    * @returns The result of the function
