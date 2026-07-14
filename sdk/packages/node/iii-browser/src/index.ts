@@ -1,7 +1,7 @@
 export { ChannelReader, ChannelWriter } from './channels'
 
 export { EngineFunctions, EngineTriggers } from './iii-constants'
-export type { IIIConnectionState, IIIReconnectionConfig } from './iii-constants'
+export type { IIIConnectionState } from './iii-constants'
 
 export { type InitOptions, registerWorker, TriggerAction } from './iii'
 
@@ -17,7 +17,6 @@ export type {
   OnTriggerRegistrationResult,
   OnTriggerTypeRegistrationInput,
   OnTriggerTypeRegistrationResult,
-  RegisterFunctionFormat,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
