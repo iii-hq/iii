@@ -19,9 +19,9 @@ pub enum HttpMethod {
 
 /// Authentication configuration for HTTP-invoked functions.
 ///
-/// - `Hmac` -- HMAC signature verification using a shared secret.
-/// - `Bearer` -- Bearer token authentication.
-/// - `ApiKey` -- API key sent via a custom header.
+/// - `Hmac`: HMAC signature verification using a shared secret.
+/// - `Bearer`: Bearer token authentication.
+/// - `ApiKey`: API key sent via a custom header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HttpAuthConfig {

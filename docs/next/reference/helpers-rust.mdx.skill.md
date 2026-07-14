@@ -32,9 +32,9 @@ use iii_helpers::http;
 
 Authentication configuration for HTTP-invoked functions.
 
-- `Hmac` -- HMAC signature verification using a shared secret.
-- `Bearer` -- Bearer token authentication.
-- `ApiKey` -- API key sent via a custom header.
+- `Hmac`: HMAC signature verification using a shared secret.
+- `Bearer`: Bearer token authentication.
+- `ApiKey`: API key sent via a custom header.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |

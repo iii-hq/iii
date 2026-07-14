@@ -796,8 +796,7 @@ export const TriggerAction = {
 
 /**
  * Register the worker with a iii instance, returns a connected worker client.
- * The WebSocket connection is established automatically; there is no separate
- * `connect()` call.
+ * The WebSocket connection is established automatically.
  *
  * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49135`).
  * @param options - Optional {@link InitOptions} for worker name, timeouts, and reconnection.

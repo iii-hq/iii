@@ -17,8 +17,7 @@ npm install iii-sdk
 ### registerWorker
 
 Register the worker with a iii instance, returns a connected worker client.
-The WebSocket connection is established automatically; there is no separate
-`connect()` call.
+The WebSocket connection is established automatically.
 
 **Signature**
 

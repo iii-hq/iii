@@ -74,9 +74,9 @@ worker.registerFunction(
 
 Authentication configuration for HTTP-invoked functions.
 
-- `hmac` -- HMAC signature verification using a shared secret.
-- `bearer` -- Bearer token authentication.
-- `api_key` -- API key sent via a custom header.
+- `hmac`: HMAC signature verification using a shared secret.
+- `bearer`: Bearer token authentication.
+- `api_key`: API key sent via a custom header.
 
 ```typescript
 type HttpAuthConfig = { secret_key: string; type: "hmac" } | { token_key: string; type: "bearer" } | { header: string; type: "api_key"; value_key: string }
@@ -1226,7 +1226,7 @@ fields, or throw to deny the registration.
 ### OnFunctionRegistrationResult
 
 Result returned from the `on_function_registration_function_id` hook.
-All fields are optional -- omitted fields keep the original value from the
+All fields are optional; omitted fields keep the original value from the
 registration request.
 
 | Name | Type | Required | Description |
@@ -1258,7 +1258,7 @@ fields, or throw to deny the registration.
 ### OnTriggerRegistrationResult
 
 Result returned from the `on_trigger_registration_function_id` hook.
-All fields are optional -- omitted fields keep the original value from the
+All fields are optional; omitted fields keep the original value from the
 registration request.
 
 | Name | Type | Required | Description |
@@ -1288,7 +1288,7 @@ fields, or throw to deny the registration.
 ### OnTriggerTypeRegistrationResult
 
 Result returned from the `on_trigger_type_registration_function_id` hook.
-All fields are optional -- omitted fields keep the original value from the
+All fields are optional; omitted fields keep the original value from the
 registration request.
 
 | Name | Type | Required | Description |

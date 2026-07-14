@@ -51,7 +51,7 @@ export type OnTriggerTypeRegistrationInput = {
 
 /**
  * Result returned from the `on_trigger_type_registration_function_id` hook.
- * All fields are optional -- omitted fields keep the original value from the
+ * All fields are optional; omitted fields keep the original value from the
  * registration request.
  */
 export type OnTriggerTypeRegistrationResult = {
@@ -84,7 +84,7 @@ export type OnTriggerRegistrationInput = {
 
 /**
  * Result returned from the `on_trigger_registration_function_id` hook.
- * All fields are optional -- omitted fields keep the original value from the
+ * All fields are optional; omitted fields keep the original value from the
  * registration request.
  */
 export type OnTriggerRegistrationResult = {
@@ -117,7 +117,7 @@ export type OnFunctionRegistrationInput = {
 
 /**
  * Result returned from the `on_function_registration_function_id` hook.
- * All fields are optional -- omitted fields keep the original value from the
+ * All fields are optional; omitted fields keep the original value from the
  * registration request.
  */
 export type OnFunctionRegistrationResult = {

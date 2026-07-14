@@ -7,9 +7,9 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 /**
  * Authentication configuration for HTTP-invoked functions.
  *
- * - `hmac` -- HMAC signature verification using a shared secret.
- * - `bearer` -- Bearer token authentication.
- * - `api_key` -- API key sent via a custom header.
+ * - `hmac`: HMAC signature verification using a shared secret.
+ * - `bearer`: Bearer token authentication.
+ * - `api_key`: API key sent via a custom header.
  */
 export type HttpAuthConfig =
   | { type: 'hmac'; secret_key: string }

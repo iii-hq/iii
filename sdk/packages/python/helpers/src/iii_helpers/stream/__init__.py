@@ -310,7 +310,7 @@ class UpdateMerge(BaseModel):
 
     Path forms accepted:
       - ``None`` / ``""`` / ``[]``: merge at the root.
-      - ``"foo"``: equivalent to ``["foo"]`` -- single first-level key.
+      - ``"foo"``: equivalent to ``["foo"]``; single first-level key.
       - ``["a", "b", "c"]``: nested path. Each element is a *literal*
         key. ``["a.b"]`` writes a single key named ``"a.b"``, not
         ``a -> b``.
