@@ -110,7 +110,7 @@ use iii_helpers::observability;
 
 ### Types
 
-[`BaggageSpanProcessor`](#baggagespanprocessor) · [`ConnectionState`](#connectionstate) · [`LiveSpanStartProcessor`](#livespanstartprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`WorkerGaugesOptions`](#workergaugesoptions)
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`ConnectionState`](#connectionstate) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`WorkerGaugesOptions`](#workergaugesoptions)
 
 ### BaggageSpanProcessor
 
@@ -134,14 +134,6 @@ Connection state for the shared WebSocket
 | `Connected` | `unit` | Yes | - |
 | `Reconnecting` | `unit` | Yes | - |
 | `Failed` | `unit` | Yes | - |
-
----
-
-### LiveSpanStartProcessor
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `new` | `fn(connection: Arc<SharedEngineConnection>, resource: Resource) -> Self` | Yes | - |
 
 ---
 
