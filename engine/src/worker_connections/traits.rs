@@ -90,6 +90,40 @@ impl TriggerRegistrator for WorkerConnection {
         })
     }
 
+    /// Fire-and-forget re-delivery. Replay/recovery runs inline on THIS
+    /// worker's read loop (`router_msg` handling its `RegisterTriggerType`),
+    /// so awaiting the ack like `register_trigger` does for ownerless
+    /// triggers would stall the connection until the timeout — the ack can
+    /// only be read once the loop is free again. Failures are still handled:
+    /// the worker's `TriggerRegistrationResult` takes the late-unwind path in
+    /// `router_msg`, which removes the trigger from the registry.
+    fn replay_trigger(
+        &self,
+        trigger: Trigger,
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let sender = self.channel.clone();
+
+        Box::pin(async move {
+            sender
+                .send(Outbound::Protocol(Message::RegisterTrigger {
+                    id: trigger.id,
+                    trigger_type: trigger.trigger_type,
+                    function_id: trigger.function_id,
+                    config: trigger.config,
+                    metadata: trigger.metadata,
+                }))
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "failed to send register trigger message through worker channel: {}",
+                        err
+                    )
+                })?;
+
+            Ok(())
+        })
+    }
+
     fn unregister_trigger(
         &self,
         trigger: Trigger,
@@ -266,6 +300,25 @@ mod tests {
         // queued, never waits on (or creates) a pending ack.
         worker
             .register_trigger(trigger("t_owned", Some(Uuid::new_v4())))
+            .await
+            .unwrap();
+        assert!(worker.pending_trigger_acks.is_empty());
+        let msg = rx.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            Outbound::Protocol(Message::RegisterTrigger { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn replay_trigger_is_fire_and_forget_even_for_ownerless_triggers() {
+        let (worker, mut rx) = make_worker();
+        // Replay runs inline on this worker's read loop, so it must return as
+        // soon as the delivery is queued — no pending ack, no timeout — even
+        // for ownerless (durable) triggers that DO await an ack on the
+        // register_trigger path.
+        worker
+            .replay_trigger(trigger("t_replayed", None))
             .await
             .unwrap();
         assert!(worker.pending_trigger_acks.is_empty());

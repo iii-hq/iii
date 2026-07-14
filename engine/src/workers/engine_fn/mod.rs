@@ -3732,14 +3732,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_trigger_fn_unknown_type_fails_without_registering() {
+    async fn register_trigger_fn_unknown_type_defers_and_activates_later() {
         let (engine, module) = setup_engine_and_module();
         register_simple_function(&engine, "test::target", None);
 
         let result = module
             .register_trigger_fn(
                 RegisterTriggerInput {
-                    trigger_type: "no-such-type".to_string(),
+                    trigger_type: "test-type".to_string(),
                     function_id: "test::target".to_string(),
                     config: serde_json::json!({}),
                     metadata: None,
@@ -3748,9 +3748,18 @@ mod tests {
                 None,
             )
             .await;
-        assert!(matches!(result, FunctionResult::Failure(_)));
-
-        // A failed bind leaves no trigger behind.
+        // Registering ahead of the trigger type's provider succeeds and
+        // returns a usable id: the intent is parked, not live.
+        let id = match result {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected deferred register success"),
+        };
         assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(engine.trigger_registry.pending_triggers.contains_key(&id));
+
+        // Once the type registers, the parked intent goes live.
+        register_test_trigger_type(&engine, &module).await;
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(engine.trigger_registry.triggers.contains_key(&id));
     }
 }

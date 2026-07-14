@@ -828,25 +828,17 @@ impl Engine {
                     })
                     .await
                 {
-                    Ok(()) => {
+                    // A Deferred outcome is not an error: the intent is
+                    // parked engine-side and activates when the trigger type
+                    // registers, so no failure ack goes to the worker.
+                    Ok(_) => {
                         crate::workers::telemetry::collector::track_trigger_registered();
                     }
                     Err(err) => {
-                        let error_body = match &err {
-                            crate::trigger::RegisterTriggerError::UnknownBuiltin { .. }
-                            | crate::trigger::RegisterTriggerError::Unknown { .. } => {
-                                crate::protocol::ErrorBody::new(
-                                    "trigger_type_not_found",
-                                    err.to_string(),
-                                )
-                            }
-                            crate::trigger::RegisterTriggerError::Other(_) => {
-                                crate::protocol::ErrorBody::new(
-                                    "trigger_registration_failed",
-                                    err.to_string(),
-                                )
-                            }
-                        };
+                        let error_body = crate::protocol::ErrorBody::new(
+                            "trigger_registration_failed",
+                            err.to_string(),
+                        );
                         let result_msg = Message::TriggerRegistrationResult {
                             id: reg_trigger_id,
                             trigger_type: reg_trigger_type,
@@ -3687,7 +3679,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_trigger_unknown_builtin_sends_install_hint() {
+    async fn test_register_trigger_unknown_type_defers_without_error_ack() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
@@ -3695,7 +3687,7 @@ mod tests {
 
         let msg = Message::RegisterTrigger {
             id: "trig-1".to_string(),
-            trigger_type: "http".to_string(),
+            trigger_type: "totally-made-up".to_string(),
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
@@ -3706,67 +3698,73 @@ mod tests {
             .await
             .expect("RegisterTrigger should succeed at protocol level");
 
-        let outbound = rx
-            .try_recv()
-            .expect("engine should emit TriggerRegistrationResult on failure");
-        let Outbound::Protocol(Message::TriggerRegistrationResult {
-            id,
-            trigger_type,
-            function_id,
-            error,
-        }) = outbound
-        else {
-            panic!("expected TriggerRegistrationResult, got {:?}", outbound);
-        };
-        assert_eq!(id, "trig-1");
-        assert_eq!(trigger_type, "http");
-        assert_eq!(function_id, "fn-1");
-        let err = error.expect("error should be populated");
-        assert_eq!(err.code, "trigger_type_not_found");
-        assert!(err.message.contains("iii-http"), "msg: {}", err.message);
+        // Deferral is not a failure: no TriggerRegistrationResult goes back
+        // to the worker; the intent is parked engine-side instead.
         assert!(
-            err.message.contains("iii worker add"),
-            "msg: {}",
-            err.message
+            rx.try_recv().is_err(),
+            "no error ack should be sent for a deferred registration"
         );
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-1"),
+            "intent should be parked in pending_triggers"
+        );
+        assert!(!engine.trigger_registry.triggers.contains_key("trig-1"));
     }
 
     #[tokio::test]
-    async fn test_register_trigger_unknown_type_recommends_workers_directory() {
+    async fn test_deferred_trigger_activates_when_provider_registers_type() {
         ensure_default_meter();
         let engine = Engine::new();
-        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
 
+        // Bad sequencing: the trigger arrives before its type's provider.
         let msg = Message::RegisterTrigger {
-            id: "trig-2".to_string(),
-            trigger_type: "totally-made-up".to_string(),
-            function_id: "fn-2".to_string(),
+            id: "trig-early".to_string(),
+            trigger_type: "late_type".to_string(),
+            function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
         };
-
         engine
             .router_msg(&worker, &msg)
             .await
             .expect("RegisterTrigger should succeed at protocol level");
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-early")
+        );
 
-        let outbound = rx.try_recv().expect("engine should emit a result");
-        let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = outbound else {
-            panic!("expected TriggerRegistrationResult");
+        // The provider shows up and registers the type: the parked intent
+        // is activated and forwarded to the provider.
+        let (provider_tx, mut provider_rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(provider_tx);
+        let tt_msg = Message::RegisterTriggerType {
+            id: "late_type".to_string(),
+            description: "arrives after its triggers".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
-        let err = error.expect("error should be populated");
-        assert_eq!(err.code, "trigger_type_not_found");
-        assert!(
-            err.message.contains("totally-made-up"),
-            "msg should name the missing type: {}",
-            err.message
-        );
-        assert!(
-            err.message.contains("https://workers.iii.dev/"),
-            "msg should recommend the workers directory: {}",
-            err.message
-        );
+        engine
+            .router_msg(&provider, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(engine.trigger_registry.triggers.contains_key("trig-early"));
+
+        let outbound = provider_rx
+            .try_recv()
+            .expect("provider should receive the recovered trigger");
+        let Outbound::Protocol(Message::RegisterTrigger { id, .. }) = outbound else {
+            panic!("expected RegisterTrigger, got {:?}", outbound);
+        };
+        assert_eq!(id, "trig-early");
     }
 
     // =========================================================================
