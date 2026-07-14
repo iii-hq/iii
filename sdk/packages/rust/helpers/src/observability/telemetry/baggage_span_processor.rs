@@ -21,6 +21,8 @@ use opentelemetry::{Context, KeyValue};
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::trace::{Span, SpanData, SpanProcessor};
 
+/// OpenTelemetry span processor that copies OTel baggage entries onto each
+/// started span as attributes.
 #[derive(Debug, Clone, Default)]
 pub struct BaggageSpanProcessor;
 

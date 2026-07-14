@@ -48,6 +48,7 @@ class AuthResult(BaseModel):
         allowed_trigger_types: Trigger type IDs the worker may register triggers for.
             When ``None``, all types are allowed.
         allow_trigger_type_registration: Whether the worker may register new trigger types.
+        allow_function_registration: Whether the worker may register new functions. Defaults to ``True`` if omitted.
         function_registration_prefix: Optional prefix applied to all function IDs registered
             by this worker.
         context: Arbitrary context forwarded to the middleware function on every invocation.

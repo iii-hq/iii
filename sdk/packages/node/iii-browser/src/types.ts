@@ -64,6 +64,7 @@ export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message
 export interface ISdk {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
+   * <!-- docs:expand-params -->
    * @param trigger - The trigger to register
    * @returns A trigger object that can be used to unregister the trigger
    *
@@ -82,9 +83,10 @@ export interface ISdk {
   registerTrigger(trigger: RegisterTriggerInput): Trigger
 
   /**
-   * Registers a new function with a local handler or an HTTP invocation config.
+   * Registers a new function with a local async handler that runs in the
+   * browser session. HTTP invocation configs are a Node.js SDK feature.
    * @param functionId - Unique function identifier
-   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.)
+   * @param handler - Async handler executed when the function is invoked
    * @param options - Optional function registration options (description, request/response formats, metadata)
    * @returns A handle that can be used to unregister the function
    *
@@ -105,6 +107,7 @@ export interface ISdk {
 
   /**
    * Invokes a function using a request object.
+   * <!-- docs:expand-params -->
    *
    * @param request - The trigger request containing function_id, payload, and optional action/timeout
    * @returns The result of the function
@@ -126,7 +129,8 @@ export interface ISdk {
    *   action: TriggerAction.Void(),
    * })
    *
-   * // Enqueue for async processing
+   * // Enqueue for async processing (the queue must be declared in the
+   * // iii-queue worker's queue_configs)
    * const receipt = await worker.trigger({
    *   function_id: 'process-order',
    *   payload: { orderId: '123' },
@@ -192,6 +196,9 @@ export interface ISdk {
    * with the current state, then on every transition. Multiple listeners are
    * supported. Returns an unsubscribe function.
    *
+   * @param handler - Callback invoked with the new connection state whenever it changes.
+   * @returns An unsubscribe function that stops further callbacks.
+   *
    * @example
    * ```typescript
    * const unsub = worker.addConnectionStateListener((state) => {
@@ -242,7 +249,7 @@ export type FunctionRef = {
  *   cronHandler,
  * )
  *
- * // Register a trigger -- type is inferred as CronConfig
+ * // Register a trigger; type is inferred as CronConfig
  * cron.registerTrigger('my::fn', { expression: '0 *\/5 * * * * *' })
  *
  * // Register a function and bind a trigger in one call

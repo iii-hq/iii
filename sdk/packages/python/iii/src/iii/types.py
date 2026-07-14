@@ -126,7 +126,10 @@ class Channel:
 
 @dataclass
 class InternalHttpRequest:
-    """HTTP request with embedded channel references for streaming."""
+    """HTTP request with embedded channel references for streaming.
+
+    <!-- docs:internal -->
+    """
 
     path_params: dict[str, str]
     query_params: dict[str, str | list[str]]
@@ -163,7 +166,7 @@ class StreamResponse:
 
 @dataclass
 class StreamRequest:
-    """Streaming request without the response writer."""
+    """Incoming streaming request received by a function registered with a stream trigger."""
 
     path_params: dict[str, str]
     query_params: dict[str, str | list[str]]

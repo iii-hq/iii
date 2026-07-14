@@ -35,6 +35,8 @@ use super::connection::SharedEngineConnection;
 use super::span_exporter::serialize_span_start_snapshot;
 use super::types::PREFIX_TRACES;
 
+/// Span processor that announces span starts to the engine for live trace views.
+/// <!-- docs:internal -->
 pub struct LiveSpanStartProcessor {
     connection: Arc<SharedEngineConnection>,
     resource: Resource,

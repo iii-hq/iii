@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 /// Uses a hand-built JSON serializer (not opentelemetry-proto serde) to match
 /// the format the III Engine expects: camelCase field names, integer attribute
 /// values as JSON numbers, and hex-encoded trace/span IDs.
+/// <!-- docs:internal -->
 pub struct EngineSpanExporter {
     connection: Arc<SharedEngineConnection>,
     resource: Mutex<Option<Resource>>,

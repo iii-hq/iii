@@ -541,7 +541,11 @@ def inject_traceparent() -> str | None:
 
 
 def extract_traceparent(traceparent: str) -> Any:
-    """Extract a trace context from a W3C traceparent header string."""
+    """Extract a trace context from a W3C traceparent header string.
+
+    Args:
+        traceparent: W3C ``traceparent`` header value.
+    """
     from opentelemetry.propagate import extract as otel_extract
 
     return otel_extract({"traceparent": traceparent})
@@ -558,7 +562,11 @@ def inject_baggage() -> str | None:
 
 
 def extract_baggage(baggage: str) -> Any:
-    """Extract baggage from a W3C baggage header string."""
+    """Extract baggage from a W3C baggage header string.
+
+    Args:
+        baggage: W3C ``baggage`` header value.
+    """
     from opentelemetry.propagate import extract as otel_extract
 
     return otel_extract({"baggage": baggage})

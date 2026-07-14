@@ -219,15 +219,19 @@ where
     }
 }
 
-/// Worker metadata provided by the SDK to the engine.
+/// Worker metadata reported to the engine (language, framework, project).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TelemetryOptions {
+    /// Programming language of the worker.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Name of the project this worker belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_name: Option<String>,
+    /// Framework name, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub framework: Option<String>,
+    /// Amplitude API key for product analytics.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amplitude_api_key: Option<String>,
 }
@@ -644,9 +648,6 @@ fn empty_message() -> RegisterFunctionMessage {
 ///   closures. The second argument is the per-invocation metadata sidecar and
 ///   is `None` when absent.
 /// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
-/// - [`RegisterFunction::new_async_with_bad_request`][]: typed async handler
-///   that routes payload-deserialization failures through a caller-supplied
-///   mapper instead of the SDK's generic [`Error::Serde`].
 /// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
 ///
@@ -695,12 +696,17 @@ impl RegisterFunction {
         }
     }
 
-    /// Like [`RegisterFunction::new_async`], but payload-deserialization
-    /// failures are routed through `on_bad_request` instead of becoming the
-    /// SDK's generic [`Error::Serde`] (which the dispatch loop surfaces as
+    /// An async typed handler whose payload-deserialization failures are
+    /// routed through `on_bad_request`, producing a caller-controlled error
+    /// where [`RegisterFunction::new_async`] would surface the SDK's generic
+    /// [`Error::Serde`] (which the dispatch loop reports as
     /// `invocation_failed`). Lets a registration keep typed-handler schema
     /// extraction while owning its wire error contract for malformed
     /// payloads, e.g. a stable error code plus a recovery hint.
+    /// <!-- docs:internal -->
+    // TODO(docs): hidden from the generated reference for now (docs:internal).
+    // Revisit whether to document this typed bad-request constructor once its
+    // API has settled; it was added recently (PR #1780, 2026-06-09).
     pub fn new_async_with_bad_request<F, T, Fut, R>(
         f: F,
         on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
@@ -898,6 +904,13 @@ impl IIIClient {
     /// This stops the connection loop, sends a shutdown signal, and joins
     /// the background connection thread. OpenTelemetry is flushed inside the
     /// connection thread before it exits.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.shutdown();
+    /// ```
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
@@ -913,12 +926,21 @@ impl IIIClient {
     /// This stops the connection loop and sends a shutdown signal, but it
     /// does not join `connection_thread`.
     ///
-    /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
-    /// to wait for `run_connection()` to finish, making it safe to call from
-    /// an async context without stalling the executor.
+    /// This method returns without waiting for `run_connection()` to finish,
+    /// making it safe to call from an async context without stalling the
+    /// executor; [`shutdown`](Self::shutdown) blocks and joins the thread.
     /// The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
     /// after `run_connection()` returns, so it may not complete unless
     /// [`shutdown`](Self::shutdown) is used to join the thread.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # async fn docs() {
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.shutdown_async().await;
+    /// # }
+    /// ```
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
@@ -968,8 +990,8 @@ impl IIIClient {
     /// `(id, registration)`.
     ///
     /// # Arguments
-    /// * `id`: Function identifier.
-    /// * `registration`: Built via [`RegisterFunction::new`],
+    /// * `id` - Unique identifier for the function.
+    /// * `registration` - Built via [`RegisterFunction::new`],
     ///   [`RegisterFunction::new_async`], or [`RegisterFunction::http`].
     ///   Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`,
     ///   `.response_format(...)` as needed.
@@ -1112,6 +1134,13 @@ impl IIIClient {
     }
 
     /// Unregister a previously registered trigger type.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.unregister_trigger_type("cron");
+    /// ```
     pub fn unregister_trigger_type(&self, id: impl Into<String>) {
         let id = id.into();
         self.inner.trigger_types.lock_or_recover().remove(&id);
@@ -1120,6 +1149,7 @@ impl IIIClient {
     }
 
     /// Bind a trigger configuration to a registered function.
+    /// <!-- docs:expand-params -->
     ///
     /// # Arguments
     /// * `input` - Trigger registration input with trigger_type, function_id, and config.
@@ -1172,10 +1202,11 @@ impl IIIClient {
     }
 
     /// Invoke a remote function.
+    /// <!-- docs:expand-params: TriggerRequest -->
     ///
     /// The routing behavior depends on the `action` field of the request:
-    /// - No action: synchronous -- waits for the function to return.
-    /// - [`TriggerAction::Enqueue`] - async via named queue.
+    /// - No action: synchronous, waits for the function to return.
+    /// - [`TriggerAction::Enqueue`]: async via named queue.
     /// - [`TriggerAction::Void`][]: fire-and-forget.
     ///
     /// # Examples
@@ -1200,7 +1231,8 @@ impl IIIClient {
     ///     timeout_ms: None,
     /// }).await?;
     ///
-    /// // Enqueue
+    /// // Enqueue (the queue must be declared in the iii-queue worker's
+    /// // queue_configs)
     /// let receipt = worker.trigger(TriggerRequest {
     ///     function_id: "iii::durable::publish".to_string(),
     ///     payload: json!({"topic": "test"}),
@@ -1276,6 +1308,16 @@ impl IIIClient {
     }
 
     /// Get the current connection state.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # use iii_sdk::runtime::IIIConnectionState;
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// if worker.get_connection_state() != IIIConnectionState::Connected {
+    ///     eprintln!("engine not reachable yet");
+    /// }
+    /// ```
     pub fn get_connection_state(&self) -> IIIConnectionState {
         *self.inner.connection_state.lock_or_recover()
     }

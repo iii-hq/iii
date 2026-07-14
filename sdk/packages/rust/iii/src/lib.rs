@@ -72,9 +72,9 @@ pub struct InitOptions {
     pub otel: Option<iii_helpers::observability::OtelConfig>,
 }
 
-/// Create and return a connected SDK instance. The WebSocket connection is
-/// established automatically in a dedicated background thread with its own
-/// tokio runtime.
+/// Register the worker with a iii instance, returns a connected worker client.
+/// The WebSocket connection is established automatically in a dedicated
+/// background thread with its own tokio runtime.
 ///
 /// Call [`IIIClient::shutdown`] before the end of `main` to cleanly stop the
 /// connection and join the background thread. In Rust the process exits

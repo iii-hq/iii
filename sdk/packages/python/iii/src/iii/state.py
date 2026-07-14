@@ -16,14 +16,25 @@ TData = TypeVar("TData")
 
 
 class StateGetInput(BaseModel):
-    """Input for retrieving a state value."""
+    """Input for retrieving a state value.
+
+    Attributes:
+        scope: State scope (namespace).
+        key: Key within the scope.
+    """
 
     scope: str
     key: str
 
 
 class StateSetInput(BaseModel):
-    """Input for setting a state value."""
+    """Input for setting a state value.
+
+    Attributes:
+        scope: State scope (namespace).
+        key: Key within the scope.
+        value: Value to store.
+    """
 
     scope: str
     key: str
@@ -31,20 +42,35 @@ class StateSetInput(BaseModel):
 
 
 class StateDeleteInput(BaseModel):
-    """Input for deleting a state value."""
+    """Input for deleting a state value.
+
+    Attributes:
+        scope: State scope (namespace).
+        key: Key within the scope.
+    """
 
     scope: str
     key: str
 
 
 class StateListInput(BaseModel):
-    """Input for listing all values in a state scope."""
+    """Input for listing all values in a state scope.
+
+    Attributes:
+        scope: State scope (namespace).
+    """
 
     scope: str
 
 
 class StateUpdateInput(BaseModel):
-    """Input for atomically updating a state value."""
+    """Input for atomically updating a state value.
+
+    Attributes:
+        scope: State scope (namespace).
+        key: Key within the scope.
+        ops: Ordered list of update operations to apply atomically.
+    """
 
     scope: str
     key: str
@@ -52,21 +78,35 @@ class StateUpdateInput(BaseModel):
 
 
 class StateSetResult(BaseModel, Generic[TData]):
-    """Result of a state set operation."""
+    """Result of a state set operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+        new_value: New value that was stored.
+    """
 
     old_value: TData | None = None
     new_value: TData
 
 
 class StateUpdateResult(BaseModel, Generic[TData]):
-    """Result of a state update operation."""
+    """Result of a state update operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+        new_value: New value after the update.
+    """
 
     old_value: TData | None = None
     new_value: TData
 
 
 class StateDeleteResult(BaseModel):
-    """Result of a state delete operation."""
+    """Result of a state delete operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+    """
 
     old_value: Any | None = None
 
@@ -80,7 +120,16 @@ class StateEventType(str, Enum):
 
 
 class StateEventData(BaseModel, Generic[TData]):
-    """Payload for state change events."""
+    """Payload for state change events.
+
+    Attributes:
+        type: Event category (always ``state``).
+        event_type: Type of state change.
+        scope: State scope (namespace).
+        key: Key within the scope.
+        old_value: Previous value (for update/delete events).
+        new_value: New value (for create/update events).
+    """
 
     type: str = "state"
     event_type: StateEventType

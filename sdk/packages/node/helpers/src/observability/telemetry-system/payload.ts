@@ -3,6 +3,10 @@
 export const REDACTED_PLACEHOLDER = '[REDACTED]'
 const TRUNCATION_MARKER = '..."[TRUNCATED]"'
 
+/**
+ * Resolve the payload byte cap from the environment, returning undefined when
+ * unset.
+ */
 export function resolveMaxBytesFromEnv(): number | null {
   const raw = process.env.III_TRACE_PAYLOAD_MAX_BYTES
   if (raw === undefined) return null
@@ -39,7 +43,11 @@ function isSensitiveKey(key: string): boolean {
   return lower === 'token' || lower.endsWith('_token') || lower.endsWith('-token')
 }
 
-/** Recursively redact values of sensitive keys. Returns a new value. */
+/**
+ * Recursively redact values of sensitive keys. Returns a new value.
+ *
+ * @param value - The value to recursively redact.
+ */
 export function redact(value: unknown): unknown {
   if (value === null || value === undefined) return value
   if (Array.isArray(value)) return value.map(redact)
@@ -53,7 +61,12 @@ export function redact(value: unknown): unknown {
   return value
 }
 
-/** Redact then serialize to JSON, optionally capped at `maxBytes`. */
+/**
+ * Redact then serialize to JSON, optionally capped at `maxBytes`.
+ *
+ * @param value - The value to redact and serialize.
+ * @param maxBytes - Maximum serialized size in bytes; null leaves it uncapped.
+ */
 export function redactAndTruncate(
   value: unknown,
   maxBytes: number | null = null,

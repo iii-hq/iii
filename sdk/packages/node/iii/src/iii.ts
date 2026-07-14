@@ -78,11 +78,15 @@ function getDefaultWorkerName(): string {
   return `${os.hostname()}:${process.pid}`
 }
 
-/** Worker labels reported to the engine (language, framework, project). */
+/** Worker metadata reported to the engine (language, framework, project). */
 export type TelemetryOptions = {
+  /** Programming language of the worker. */
   language?: string
+  /** Name of the project this worker belongs to. */
   project_name?: string
+  /** Framework name, if applicable. */
   framework?: string
+  /** Amplitude API key for product analytics. */
   amplitude_api_key?: string
 }
 
@@ -108,7 +112,7 @@ export type InitOptions = {
   workerDescription?: string
   /** Enable worker metrics via OpenTelemetry. Defaults to `true`. */
   enableMetricsReporting?: boolean
-  /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
+  /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
    * WebSocket reconnection behavior.
@@ -439,9 +443,9 @@ class Sdk implements IIIClient {
    *
    * | `action`                      | Behavior                                           | Return type              |
    * |-------------------------------|----------------------------------------------------|-----------------------   |
-   * | _(none)_                      | Synchronous -- waits for the function to return     | `Promise<TOutput>`       |
-   * | `TriggerAction.Enqueue(...)` | Async via named queue -- engine acknowledges enqueue | `Promise<EnqueueResult>` |
-   * | `TriggerAction.Void()`       | Fire-and-forget -- no response                      | `Promise<undefined>`     |
+   * | _(none)_                      | Synchronous: waits for the function to return     | `Promise<TOutput>`       |
+   * | `TriggerAction.Enqueue(...)` | Async via named queue; engine acknowledges enqueue | `Promise<EnqueueResult>` |
+   * | `TriggerAction.Void()`       | Fire-and-forget, no response                      | `Promise<undefined>`     |
    *
    * @param request - The trigger request.
    * @param request.function_id - ID of the function to invoke.
@@ -571,7 +575,7 @@ class Sdk implements IIIClient {
    * Registers a custom stream implementation, overriding the engine default
    * for the given stream name. Registers 5 of the 6 `IStream` methods
    * (`get`, `set`, `delete`, `list`, `listGroups`). The `update` method is
-   * not registered -- atomic updates are handled by the engine's built-in
+   * not registered; atomic updates are handled by the engine's built-in
    * stream update logic.
    */
   __helpers_create_stream = <TData>(streamName: string, stream: IStream<TData>): void => {
@@ -1082,7 +1086,7 @@ export const TriggerAction = {
    * acknowledges the caller with `{ messageReceiptId }`, and processes it
    * asynchronously.
    *
-   * Requires a queue worker in the project — run `iii worker add queue`.
+   * Requires a queue worker in the project. Run `iii worker add queue`.
    * Without it the trigger rejects with `enqueue_error` (no queue provider).
    *
    * @param opts - Queue routing options.
@@ -1097,8 +1101,8 @@ export const TriggerAction = {
 } as const
 
 /**
- * Creates and returns a connected SDK instance. The WebSocket connection is
- * established automatically -- there is no separate `connect()` call.
+ * Register the worker with a iii instance, returns a connected worker client.
+ * The WebSocket connection is established automatically.
  *
  * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
  * @param options - Optional {@link InitOptions} for worker name, timeouts, reconnection, and OTel.

@@ -16,6 +16,7 @@ use std::time::SystemTime;
 /// Custom metrics exporter that sends OTLP JSON over a shared WebSocket connection.
 ///
 /// Uses a hand-built JSON serializer to match the III Engine's expected format.
+/// <!-- docs:internal -->
 pub struct EngineMetricsExporter {
     connection: Arc<SharedEngineConnection>,
 }
