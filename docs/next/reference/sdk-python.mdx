@@ -674,6 +674,9 @@ Factory for creating trigger actions used with ``trigger()``.
 
 Routes the invocation through a named queue for async processing.
 
+Requires a queue worker in the project — run ``iii worker add queue``.
+Without it the trigger rejects with ``enqueue_error`` (no queue provider).
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `queue` | `str` | Yes | Name of the target queue. |
@@ -790,24 +793,6 @@ intentionally never includes the stacktrace.
 | `invocation_id` | `Any` | No | - |
 | `message` | `Any` | No | - |
 | `stacktrace` | `Any` | No | - |
-
-### iii.internal
-
-[`InternalHttpRequest`](#internalhttprequest)
-
-#### InternalHttpRequest
-
-HTTP request with embedded channel references for streaming.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `body` | `Any` | Yes | - |
-| `headers` | `dict[str, str \| list[str]]` | Yes | - |
-| `method` | `str` | Yes | - |
-| `path_params` | `dict[str, str]` | Yes | - |
-| `query_params` | `dict[str, str \| list[str]]` | Yes | - |
-| `request_body` | [`ChannelReader`](#channelreader) | Yes | - |
-| `response` | [`ChannelWriter`](#channelwriter) | Yes | - |
 
 ### iii.protocol
 

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { EXPAND_PARAMS_RE, parseExpandMarker } from '../types.mjs'
+import { EXPAND_PARAMS_RE, INTERNAL_RE, isInternalDoc, parseExpandMarker } from '../types.mjs'
 import type { FunctionDoc, ModuleDoc, ParamDoc, SdkDoc, TypeDoc, TypeGroup } from '../types.mjs'
 
 interface GriffeObject {
@@ -54,12 +54,18 @@ export function annotationToString(ann: any): string {
   }
 }
 
+/** Whether a griffe object is flagged `<!-- docs:internal -->` (hidden from the reference). */
+function isInternalObj(obj: GriffeObject): boolean {
+  return isInternalDoc(obj.docstring?.value)
+}
+
 function extractDocstring(obj: GriffeObject): string {
   if (!obj.docstring?.parsed) {
     return (
       obj.docstring?.value
         ?.split(/\n\n(?:Args|Attributes|Returns|Raises|Examples?|Note|Yields|See Also):/)[0]
         ?.replace(EXPAND_PARAMS_RE, '')
+        .replace(INTERNAL_RE, '')
         .trim() ?? ''
     )
   }
@@ -68,6 +74,7 @@ function extractDocstring(obj: GriffeObject): string {
     .map(p => (typeof p.value === 'string' ? p.value : ''))
     .join('\n')
     .replace(EXPAND_PARAMS_RE, '')
+    .replace(INTERNAL_RE, '')
     .trim()
 }
 
@@ -409,6 +416,7 @@ export function parseGriffe(jsonPath: string): SdkDoc {
   const types: TypeDoc[] = []
   for (const [name, obj] of publicDefs) {
     if (name === 'IIIClient') continue
+    if (isInternalObj(obj)) continue
     if (obj.kind === 'class') types.push(griffeToType(obj))
     else if (obj.kind === 'attribute') {
       const t = griffeToType(obj)
@@ -493,6 +501,7 @@ export function parseHelpersGriffe(jsonPath: string): SdkDoc {
     const functions: FunctionDoc[] = []
     const types: TypeDoc[] = []
     for (const [name, obj] of resolved) {
+      if (isInternalObj(obj)) continue
       if (obj.kind === 'function') functions.push(griffeToFunction(obj))
       else if (obj.kind === 'class') types.push(griffeToType(obj))
       else if (obj.kind === 'attribute') {

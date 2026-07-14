@@ -527,7 +527,7 @@ Factory object that constructs routing actions for IIIClient.trigger.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `Enqueue` | `(opts: { queue: string }) => { queue: string; type: "enqueue" }` | Yes | Routes the invocation through a named queue. The engine enqueues the job,<br />acknowledges the caller with `{ messageReceiptId }`, and processes it<br />asynchronously. |
+| `Enqueue` | `(opts: { queue: string }) => { queue: string; type: "enqueue" }` | Yes | Routes the invocation through a named queue. The engine enqueues the job,<br />acknowledges the caller with `{ messageReceiptId }`, and processes it<br />asynchronously.<br /><br />Requires a queue worker in the project — run `iii worker add queue`.<br />Without it the trigger rejects with `enqueue_error` (no queue provider). |
 | `Void` | `() => { type: "void" }` | Yes | Fire-and-forget routing. The engine forwards the invocation without<br />waiting for a response or queuing the job. |
 
 ### iii-sdk/channel
