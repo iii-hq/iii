@@ -1192,8 +1192,8 @@ class III:
                 RBAC denied it.
 
         Examples:
-            >>> result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
-            >>> await iii.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+            >>> result = await worker.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
+            >>> await worker.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
         req = request if isinstance(request, dict) else request.model_dump()
         function_id = req["function_id"]

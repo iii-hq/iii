@@ -558,8 +558,8 @@ async (request: dict[str, Any] | TriggerRequest) -> Any
   <Tab title="Example">
 
 ```python
-result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
-await iii.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+result = await worker.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
+await worker.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
 ```
 
 
