@@ -3626,6 +3626,10 @@ async fn start_binary_worker(
     if let Some(cfg_path) = config {
         cmd.arg("--config").arg(cfg_path);
     }
+    // The config.yaml entry name, so SDKs self-report the managed identity;
+    // engine truth (`iii worker status`/`list`) matches connections by this
+    // name.
+    cmd.env("III_WORKER_NAME", worker_name);
     cmd.stdout(stdout_file).stderr(stderr_file);
 
     #[cfg(unix)]

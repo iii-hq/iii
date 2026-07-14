@@ -68,46 +68,6 @@ workers:
       logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}
       logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:false}
 
-  - name: iii-queue
-    config:
-      queue_configs:
-        default:
-          max_retries: 3
-          concurrency: 5
-          type: standard
-        payment:
-          max_retries: 5
-          concurrency: 2
-          type: fifo
-          message_group_field: transaction_id
-        test-orders:
-          max_retries: 3
-          concurrency: 5
-          type: standard
-        test-multi:
-          max_retries: 3
-          concurrency: 5
-          type: standard
-        test-chain:
-          max_retries: 3
-          concurrency: 5
-          type: standard
-        test-chain-entry:
-          max_retries: 3
-          concurrency: 5
-          type: standard
-        test-sequential:
-          max_retries: 3
-          concurrency: 1
-          type: standard
-        test-fifo-groups:
-          max_retries: 3
-          concurrency: 2
-          type: fifo
-          message_group_field: group_id
-      adapter:
-        name: builtin
-
   - name: iii-http-functions
     config:
       security:

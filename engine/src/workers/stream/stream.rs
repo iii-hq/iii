@@ -859,14 +859,33 @@ impl StreamWorker {
             return;
         }
 
-        // The engine attaches the writer's OTel context for the stream write
-        // (even for suppressed builtins — see invocation::handle_invocation), so
-        // parent the spawned trigger fan-out to it instead of orphaning
-        // `stream_triggers` into a brand-new, disconnected trace.
-        let parent_cx = opentelemetry::Context::current();
+        // The observability pipeline must never observe itself: deliveries of
+        // the devtools span/log feeds (`iii:devtools:*` — the console's live
+        // trace streams) get NO eval span and NO trace context. A traced
+        // delivery re-enters the very feed it delivers — span stored → next
+        // coalesce window pushes it → new delivery spans → stored → … — an
+        // endless loop that floods the span store (seen live: `stream_triggers`
+        // + `call iii::console::all_spans::*` dominating storage). With an
+        // empty ambient context, `Engine::call_with_metadata` injects no
+        // traceparent, so the consumer-callback invocations emit no spans
+        // either (`telemetry::should_suppress_invocation_span`).
+        let observability_feed = event_stream_name.starts_with("iii:devtools:");
+
+        // For every other stream, attach the writer's OTel context (the engine
+        // carries it even for suppressed builtins — see
+        // invocation::handle_invocation), so the spawned trigger fan-out
+        // parents to the writer instead of orphaning `stream_triggers` into a
+        // brand-new, disconnected trace.
+        let parent_cx = if observability_feed {
+            opentelemetry::Context::new()
+        } else {
+            opentelemetry::Context::current()
+        };
 
         if let Ok(event_data) = serde_json::to_value(event_data) {
-            let trigger_span = {
+            let trigger_span = if observability_feed {
+                tracing::Span::none()
+            } else {
                 let _guard = parent_cx.attach();
                 tracing::info_span!(
                     "stream_triggers",

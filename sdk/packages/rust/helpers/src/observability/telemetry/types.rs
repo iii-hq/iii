@@ -97,6 +97,13 @@ pub struct OtelConfig {
     /// create CLIENT spans for reqwest requests. Set `Some(false)` to opt out.
     /// `None` is treated as `true`.
     pub fetch_instrumentation_enabled: Option<bool>,
+    /// Announce span STARTS to the engine as zero-end OTLP snapshots so live
+    /// trace views render in-progress work (`LiveSpanStartProcessor`). One
+    /// extra frame per span; the engine stores it as `pending` (or drops it
+    /// when its live-span storage is off) and the final span replaces it in
+    /// place. Default: enabled. Env override: `OTEL_LIVE_SPANS` — the same
+    /// switch the engine uses for its own start mirroring.
+    pub live_spans: Option<bool>,
 }
 
 #[cfg(test)]

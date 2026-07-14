@@ -1325,6 +1325,20 @@ mod tests {
     }
 
     #[test]
+    fn test_default_config_excludes_retired_iii_queue_worker() {
+        let config = EngineConfig::default_config();
+
+        assert!(
+            config
+                .modules
+                .iter()
+                .chain(config.workers.iter())
+                .all(|entry| entry.name != "iii-queue"),
+            "the standalone queue worker owns queue runtime behavior"
+        );
+    }
+
+    #[test]
     fn test_default_config_auto_injects_iii_worker_ops() {
         // Injection is now gated on the iii-worker binary being resolvable
         // via `resolve_external_module`. Skip when the host doesn't ship

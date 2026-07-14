@@ -4,6 +4,7 @@ pub mod connection;
 pub mod context;
 pub mod http_instrumentation;
 pub mod json_serializer;
+pub mod live_span_processor;
 pub mod log_exporter;
 pub mod metrics_exporter;
 pub mod otel_worker_gauges;
@@ -312,14 +313,32 @@ pub async fn init_otel(config: OtelConfig) -> bool {
         .with_batch_config(span_batch_config)
         .build();
 
-    let tracer_provider = SdkTracerProvider::builder()
+    // Live span-start push: config > `OTEL_LIVE_SPANS` env (the engine's own
+    // live-mirror switch, shared so one env steers the whole stack) > ON.
+    // Registered between the baggage processor (so snapshots carry the
+    // baggage attributes) and the batch exporter (finals path, unchanged).
+    let live_spans = config
+        .live_spans
+        .or_else(|| {
+            std::env::var("OTEL_LIVE_SPANS")
+                .ok()
+                .map(|v| v == "true" || v == "1")
+        })
+        .unwrap_or(true);
+
+    let mut provider_builder = SdkTracerProvider::builder()
         .with_resource(resource.clone())
-        .with_span_processor(baggage_span_processor::BaggageSpanProcessor)
-        .with_span_processor(span_processor)
-        .build();
+        .with_span_processor(baggage_span_processor::BaggageSpanProcessor);
+    if live_spans {
+        provider_builder = provider_builder.with_span_processor(
+            live_span_processor::LiveSpanStartProcessor::new(connection.clone(), resource.clone()),
+        );
+    }
+    let tracer_provider = provider_builder.with_span_processor(span_processor).build();
 
     tracing::debug!(
         flush_interval_ms = spans_flush_ms,
+        live_spans,
         "Span provider configured"
     );
 

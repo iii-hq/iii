@@ -46,11 +46,13 @@ fn queue_config_with_fast_retries() -> Value {
 
 /// Creates an engine with the QueueWorker initialized AND the module's
 /// built-in functions (including `iii::queue::redrive`) registered on the engine.
-async fn create_engine_with_redrive(config: Value) -> Arc<Engine> {
+/// Returns the worker alongside the engine so callers can enqueue/inspect the
+/// DLQ directly on it (enqueue now routes through the worker, not the engine).
+async fn create_engine_with_redrive(config: Value) -> (Arc<Engine>, QueueWorker) {
     iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
@@ -71,30 +73,24 @@ async fn create_engine_with_redrive(config: Value) -> Arc<Engine> {
         .await
         .expect("Module start_background_tasks should succeed");
 
-    engine
+    (engine, module)
 }
 
 async fn enqueue(
-    engine: &Engine,
+    worker: &QueueWorker,
     queue_name: &str,
     function_id: &str,
     data: Value,
 ) -> anyhow::Result<()> {
-    let guard = engine.queue_module.read().await;
-    let qm = guard
-        .as_ref()
-        .expect("queue_module should be set after initialize");
     let message_id = uuid::Uuid::new_v4().to_string();
-    qm.enqueue_to_function_queue(queue_name, function_id, data, message_id, None, None)
+    worker
+        .enqueue_to_function_queue(queue_name, function_id, data, &message_id, None, None)
         .await
 }
 
-async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
-    let guard = engine.queue_module.read().await;
-    let qm = guard
-        .as_ref()
-        .expect("queue_module should be set after initialize");
-    qm.function_queue_dlq_count(queue_name)
+async fn dlq_count(worker: &QueueWorker, queue_name: &str) -> u64 {
+    worker
+        .function_queue_dlq_count(queue_name)
         .await
         .expect("dlq_count should not fail")
 }
@@ -213,7 +209,7 @@ async fn e2e_dlq_redrive_full_lifecycle() {
     // Register a failing function so it exhausts retries
     register_failing_function(&engine, "e2e::order_processor", fail_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::for_test(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
@@ -233,14 +229,14 @@ async fn e2e_dlq_redrive_full_lifecycle() {
 
     // Verify DLQ starts empty
     assert_eq!(
-        dlq_count(&engine, "orders").await,
+        dlq_count(&module, "orders").await,
         0,
         "DLQ should start empty"
     );
 
     // Enqueue a message that will fail
     enqueue(
-        &engine,
+        &module,
         "orders",
         "e2e::order_processor",
         json!({
@@ -261,7 +257,7 @@ async fn e2e_dlq_redrive_full_lifecycle() {
         "Expected 1-3 attempts (1 initial + up to 2 retries), got {total_failures}"
     );
 
-    let in_dlq = dlq_count(&engine, "orders").await;
+    let in_dlq = dlq_count(&module, "orders").await;
     assert_eq!(
         in_dlq, 1,
         "Message should be in DLQ after retry exhaustion, got {in_dlq}"
@@ -287,7 +283,7 @@ async fn e2e_dlq_redrive_full_lifecycle() {
     );
 
     // DLQ should be empty after redrive + successful processing
-    let remaining = dlq_count(&engine, "orders").await;
+    let remaining = dlq_count(&module, "orders").await;
     assert_eq!(
         remaining, 0,
         "DLQ should be empty after successful redrive, got {remaining}"
@@ -308,7 +304,7 @@ async fn e2e_redrive_multiple_dlq_messages() {
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::batch_handler", fail_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::for_test(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
@@ -327,7 +323,7 @@ async fn e2e_redrive_multiple_dlq_messages() {
     // Enqueue 3 messages that will all fail
     for i in 0..3 {
         enqueue(
-            &engine,
+            &module,
             "orders",
             "e2e::batch_handler",
             json!({ "batch_id": i, "type": "batch_item" }),
@@ -339,7 +335,7 @@ async fn e2e_redrive_multiple_dlq_messages() {
     // Wait for all retries to exhaust
     tokio::time::sleep(Duration::from_millis(4000)).await;
 
-    let in_dlq = dlq_count(&engine, "orders").await;
+    let in_dlq = dlq_count(&module, "orders").await;
     assert_eq!(in_dlq, 3, "All 3 messages should be in DLQ, got {in_dlq}");
 
     // Replace with a succeeding handler
@@ -364,7 +360,7 @@ async fn e2e_redrive_multiple_dlq_messages() {
     );
 
     assert_eq!(
-        dlq_count(&engine, "orders").await,
+        dlq_count(&module, "orders").await,
         0,
         "DLQ should be empty after full redrive"
     );
@@ -376,9 +372,9 @@ async fn e2e_redrive_multiple_dlq_messages() {
 
 #[tokio::test]
 async fn e2e_redrive_empty_dlq_is_noop() {
-    let engine = create_engine_with_redrive(queue_config_with_fast_retries()).await;
+    let (engine, worker) = create_engine_with_redrive(queue_config_with_fast_retries()).await;
 
-    assert_eq!(dlq_count(&engine, "orders").await, 0);
+    assert_eq!(dlq_count(&worker, "orders").await, 0);
 
     let result = invoke_redrive(&engine, "orders").await;
     match &result {
@@ -387,7 +383,7 @@ async fn e2e_redrive_empty_dlq_is_noop() {
         _ => panic!("Unexpected result variant"),
     }
 
-    assert_eq!(dlq_count(&engine, "orders").await, 0);
+    assert_eq!(dlq_count(&worker, "orders").await, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +392,7 @@ async fn e2e_redrive_empty_dlq_is_noop() {
 
 #[tokio::test]
 async fn e2e_redrive_empty_queue_name_returns_error() {
-    let engine = create_engine_with_redrive(queue_config_with_fast_retries()).await;
+    let (engine, _worker) = create_engine_with_redrive(queue_config_with_fast_retries()).await;
 
     let result = invoke_redrive(&engine, "").await;
     match result {
@@ -438,7 +434,7 @@ async fn e2e_flaky_function_recovers_after_redrive() {
         5,
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::for_test(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
@@ -455,7 +451,7 @@ async fn e2e_flaky_function_recovers_after_redrive() {
         .expect("start_background_tasks should succeed");
 
     enqueue(
-        &engine,
+        &module,
         "orders",
         "e2e::flaky_processor",
         json!({ "task": "flaky_operation" }),
@@ -467,7 +463,7 @@ async fn e2e_flaky_function_recovers_after_redrive() {
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
     assert_eq!(
-        dlq_count(&engine, "orders").await,
+        dlq_count(&module, "orders").await,
         1,
         "Message should land in DLQ after first round"
     );
@@ -506,7 +502,7 @@ async fn e2e_redrive_result_contains_metadata() {
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::meta_handler", fail_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let module = QueueWorker::for_test(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
@@ -524,13 +520,13 @@ async fn e2e_redrive_result_contains_metadata() {
 
     // Send 2 messages that will fail
     for i in 0..2 {
-        enqueue(&engine, "orders", "e2e::meta_handler", json!({ "item": i }))
+        enqueue(&module, "orders", "e2e::meta_handler", json!({ "item": i }))
             .await
             .expect("enqueue should succeed");
     }
 
     tokio::time::sleep(Duration::from_millis(3000)).await;
-    assert_eq!(dlq_count(&engine, "orders").await, 2);
+    assert_eq!(dlq_count(&module, "orders").await, 2);
 
     // Swap to success handler before redrive
     let success_count = Arc::new(AtomicU64::new(0));

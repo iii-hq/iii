@@ -58,13 +58,6 @@ workers:
       logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}
       logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}
 
-  - name: iii-queue
-    config:
-      adapter:
-        name: redis
-        config:
-          redis_url: redis://localhost:6379
-
   - name: iii-pubsub
     config:
       adapter:

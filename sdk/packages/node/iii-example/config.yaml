@@ -74,49 +74,6 @@ workers:
       adapter:
         name: kv
 
-  - name: iii-queue
-    config:
-      queue_configs:
-        default:
-          max_retries: 5
-          concurrency: 10
-          type: standard
-        payment:
-          max_retries: 10
-          concurrency: 2
-          type: fifo
-          message_group_field: orderId
-        email:
-          max_retries: 8
-          concurrency: 5
-          type: standard
-          backoff_ms: 2000
-        bulk-email:
-          max_retries: 5
-          concurrency: 3
-          type: standard
-          backoff_ms: 5000
-        ledger:
-          max_retries: 15
-          concurrency: 1
-          type: fifo
-          message_group_field: account_id
-          backoff_ms: 500
-        dlq-demo:
-          max_retries: 2
-          concurrency: 1
-          type: standard
-          backoff_ms: 500
-      # adapter:
-      #   name: builtin
-      #   config:
-      #     store_method: file_based
-      #     file_path: ./data/queue_store
-      adapter:
-        name: rabbitmq
-        config:
-          amqp_url: amqp://guest:guest@localhost:5672
-
   - name: iii-exec
     config:
       watch:

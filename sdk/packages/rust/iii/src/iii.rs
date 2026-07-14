@@ -279,7 +279,14 @@ impl Default for WorkerMetadata {
         Self {
             runtime: "rust".to_string(),
             version: SDK_VERSION.to_string(),
-            name: format!("{}:{}", hostname, pid),
+            // III_WORKER_NAME carries the config.yaml entry name for managed
+            // workers (set by iii-worker at spawn). Engine truth (`iii worker
+            // status`/`list`) matches connections by name, so the managed
+            // identity must win over the hostname:pid fallback.
+            name: std::env::var("III_WORKER_NAME")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("{}:{}", hostname, pid)),
             os: os_info,
             description: None,
             pid: Some(pid),
@@ -2523,6 +2530,35 @@ mod tests {
             match previous {
                 Some(val) => std::env::set_var("III_ISOLATION", val),
                 None => std::env::remove_var("III_ISOLATION"),
+            }
+        }
+    }
+
+    // Single test covers both branches so the env var mutation is serialized
+    // within one function (env vars are process-global and cargo runs tests in parallel).
+    #[test]
+    fn worker_metadata_default_reads_iii_worker_name_env_var() {
+        let previous = std::env::var("III_WORKER_NAME").ok();
+
+        // SAFETY: env mutations are serialized within this test and restored at the end.
+        unsafe {
+            std::env::remove_var("III_WORKER_NAME");
+        }
+        let fallback = WorkerMetadata::default().name;
+        assert!(
+            fallback.ends_with(&format!(":{}", std::process::id())),
+            "expected hostname:pid fallback, got {fallback}"
+        );
+
+        unsafe {
+            std::env::set_var("III_WORKER_NAME", "managed-worker");
+        }
+        assert_eq!(WorkerMetadata::default().name, "managed-worker");
+
+        unsafe {
+            match previous {
+                Some(val) => std::env::set_var("III_WORKER_NAME", val),
+                None => std::env::remove_var("III_WORKER_NAME"),
             }
         }
     }

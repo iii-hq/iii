@@ -224,7 +224,7 @@ async fn hot_add_queue_starts_a_live_consumer() {
 
     // A consumer for the new queue must be live: enqueue a job and watch the
     // target function fire.
-    enqueue(&harness.engine, "jobs", "e2e::jobs", json!({ "x": 1 }))
+    enqueue(&worker, "jobs", "e2e::jobs", json!({ "x": 1 }))
         .await
         .expect("enqueue to hot-added queue");
     wait_for(
@@ -262,7 +262,7 @@ async fn hot_change_concurrency_keeps_queue_live() {
 
     // The default queue's consumer was restarted with the new settings and is
     // still live.
-    enqueue(&harness.engine, "default", "e2e::smoke", json!({}))
+    enqueue(&worker, "default", "e2e::smoke", json!({}))
         .await
         .expect("enqueue after concurrency change");
     wait_for(
@@ -294,7 +294,7 @@ async fn adapter_hot_swap_rebinds_consumers() {
     let old_adapter = worker.adapter_snapshot();
 
     // Works on the original (builtin) transport.
-    enqueue(&harness.engine, "jobs", "e2e::swap", json!({}))
+    enqueue(&worker, "jobs", "e2e::swap", json!({}))
         .await
         .expect("enqueue on builtin");
     wait_for(
@@ -335,7 +335,7 @@ async fn adapter_hot_swap_rebinds_consumers() {
     // Consumers were rebound on the new transport: a job enqueued after the
     // swap is delivered.
     let before = counter.load(Ordering::SeqCst);
-    enqueue(&harness.engine, "jobs", "e2e::swap", json!({}))
+    enqueue(&worker, "jobs", "e2e::swap", json!({}))
         .await
         .expect("enqueue on the new transport");
     wait_for(
@@ -398,7 +398,7 @@ async fn unbuildable_adapter_keeps_previous_transport() {
     );
 
     // Consumers on the original transport are intact: a job is still delivered.
-    enqueue(&harness.engine, "jobs", "e2e::swap_fail", json!({}))
+    enqueue(&worker, "jobs", "e2e::swap_fail", json!({}))
         .await
         .expect("enqueue on the retained transport");
     wait_for(
@@ -449,7 +449,7 @@ async fn hot_remove_queue_drops_it_from_live_config() {
     .await;
 
     // The removal took effect: enqueueing to the gone queue now fails.
-    let result = enqueue(&harness.engine, "jobs", "e2e::gone", json!({})).await;
+    let result = enqueue(&worker, "jobs", "e2e::gone", json!({})).await;
     assert!(
         result.is_err(),
         "enqueue to a removed queue must fail (consumer stopped, queue absent)"

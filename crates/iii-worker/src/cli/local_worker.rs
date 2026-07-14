@@ -371,7 +371,7 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
 pub fn build_env_exports(env: &HashMap<String, String>) -> String {
     let mut parts: Vec<String> = Vec::new();
     for (k, v) in env {
-        if k == "III_ENGINE_URL" || k == "III_URL" {
+        if k == "III_ENGINE_URL" || k == "III_URL" || k == "III_WORKER_NAME" {
             continue;
         }
         if !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') || k.is_empty() {
@@ -392,13 +392,19 @@ pub fn shell_escape(s: &str) -> String {
 
 pub fn build_local_env(
     engine_url: &str,
+    worker_name: &str,
     project_env: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("III_ENGINE_URL".to_string(), engine_url.to_string());
     env.insert("III_URL".to_string(), engine_url.to_string());
+    // The config.yaml entry name, so SDKs can self-report the managed
+    // identity. Engine truth (`iii worker status`/`list`, MOT-3931) matches
+    // connections by this name; a worker that reports the SDK's
+    // `hostname:pid` fallback instead reads as "not registered" forever.
+    env.insert("III_WORKER_NAME".to_string(), worker_name.to_string());
     for (key, value) in project_env {
-        if key != "III_ENGINE_URL" && key != "III_URL" {
+        if key != "III_ENGINE_URL" && key != "III_URL" && key != "III_WORKER_NAME" {
             env.insert(key.clone(), value.clone());
         }
     }
@@ -1147,7 +1153,7 @@ async fn start_worker_impl(
         combined_project_env.insert(k.clone(), v.clone());
     }
 
-    let mut env = build_local_env(&engine_url, &combined_project_env);
+    let mut env = build_local_env(&engine_url, worker_name, &combined_project_env);
 
     let base_rootfs =
         match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref()).await
@@ -1682,35 +1688,46 @@ mod tests {
     }
 
     #[test]
-    fn build_local_env_sets_engine_urls() {
-        let env = build_local_env("ws://localhost:49134", &HashMap::new());
+    fn build_local_env_sets_engine_urls_and_worker_name() {
+        let env = build_local_env("ws://localhost:49134", "my-worker", &HashMap::new());
         assert_eq!(env.get("III_ENGINE_URL").unwrap(), "ws://localhost:49134");
         assert_eq!(env.get("III_URL").unwrap(), "ws://localhost:49134");
+        assert_eq!(env.get("III_WORKER_NAME").unwrap(), "my-worker");
     }
 
     #[test]
     fn build_local_env_preserves_custom_env() {
         let mut project_env = HashMap::new();
         project_env.insert("CUSTOM".to_string(), "value".to_string());
-        let env = build_local_env("ws://localhost:49134", &project_env);
+        let env = build_local_env("ws://localhost:49134", "my-worker", &project_env);
         assert_eq!(env.get("CUSTOM").unwrap(), "value");
         assert_eq!(env.get("III_ENGINE_URL").unwrap(), "ws://localhost:49134");
         assert_eq!(env.get("III_URL").unwrap(), "ws://localhost:49134");
     }
 
     #[test]
-    fn build_env_exports_excludes_engine_urls() {
+    fn build_local_env_worker_name_not_overridable_by_project_env() {
+        let mut project_env = HashMap::new();
+        project_env.insert("III_WORKER_NAME".to_string(), "impostor".to_string());
+        let env = build_local_env("ws://localhost:49134", "my-worker", &project_env);
+        assert_eq!(env.get("III_WORKER_NAME").unwrap(), "my-worker");
+    }
+
+    #[test]
+    fn build_env_exports_excludes_engine_urls_and_worker_name() {
         let mut env = HashMap::new();
         env.insert(
             "III_ENGINE_URL".to_string(),
             "ws://localhost:49134".to_string(),
         );
         env.insert("III_URL".to_string(), "ws://localhost:49134".to_string());
+        env.insert("III_WORKER_NAME".to_string(), "my-worker".to_string());
         env.insert("CUSTOM_VAR".to_string(), "custom-val".to_string());
 
         let exports = build_env_exports(&env);
         assert!(!exports.contains("III_ENGINE_URL"));
         assert!(!exports.contains("III_URL"));
+        assert!(!exports.contains("III_WORKER_NAME"));
         assert!(exports.contains("CUSTOM_VAR='custom-val'"));
     }
 

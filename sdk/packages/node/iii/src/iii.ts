@@ -67,6 +67,14 @@ function getOsInfo(): string {
 }
 
 function getDefaultWorkerName(): string {
+  // III_WORKER_NAME carries the config.yaml entry name for managed workers
+  // (set by iii-worker at spawn). Engine truth (`iii worker status`/`list`)
+  // matches connections by name, so the managed identity must win over the
+  // hostname:pid fallback.
+  const managedName = process.env.III_WORKER_NAME
+  if (managedName) {
+    return managedName
+  }
   return `${os.hostname()}:${process.pid}`
 }
 
@@ -1077,6 +1085,9 @@ export const TriggerAction = {
    * Routes the invocation through a named queue. The engine enqueues the job,
    * acknowledges the caller with `{ messageReceiptId }`, and processes it
    * asynchronously.
+   *
+   * Requires a queue worker in the project — run `iii worker add queue`.
+   * Without it the trigger rejects with `enqueue_error` (no queue provider).
    *
    * @param opts - Queue routing options.
    * @param opts.queue - Name of the target queue.
