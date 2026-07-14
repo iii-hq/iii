@@ -50,9 +50,14 @@ pub enum TriggerAction {
 /// ```
 #[derive(Debug, Clone)]
 pub struct TriggerRequest {
+    /// ID of the function to invoke.
     pub function_id: String,
+    /// Input data passed to the function.
     pub payload: Value,
+    /// Sets how the trigger is routed. `None` for a synchronous request/response.
+    /// Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`).
     pub action: Option<TriggerAction>,
+    /// Override the default invocation timeout, in milliseconds.
     pub timeout_ms: Option<u64>,
 }
 
@@ -172,7 +177,9 @@ pub enum Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterTriggerTypeMessage {
+    /// Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`).
     pub id: String,
+    /// Human-readable description of what this trigger type does.
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_request_format: Option<Value>,
@@ -195,9 +202,13 @@ impl RegisterTriggerTypeMessage {
 /// The `id` is auto-generated internally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterTriggerInput {
+    /// Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
     pub trigger_type: String,
+    /// ID of the function this trigger invokes when it fires.
     pub function_id: String,
+    /// Trigger-type-specific configuration, matching the shape the trigger type expects.
     pub config: Value,
+    /// Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }

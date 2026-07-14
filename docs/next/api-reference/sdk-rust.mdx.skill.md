@@ -90,12 +90,16 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
 
   <Expandable title="`RegisterTriggerInput` fields" defaultOpen>
     <ParamField body="trigger_type" type="String" required>
+      Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
     </ParamField>
     <ParamField body="function_id" type="String" required>
+      ID of the function this trigger invokes when it fires.
     </ParamField>
     <ParamField body="config" type="Value" required>
+      Trigger-type-specific configuration, matching the shape the trigger type expects.
     </ParamField>
     <ParamField body="metadata" type="Option<Value>">
+      Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -138,9 +142,11 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
   <Tab title="Parameters">
 
 <ParamField body="id" type="impl Into<String>" required>
+  Unique identifier for the function.
 </ParamField>
 
 <ParamField body="registration" type="RegisterFunction" required>
+  Built via [`RegisterFunction::new`], [`RegisterFunction::new_async`], or [`RegisterFunction::http`]. Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`, `.response_format(...)` as needed.
 
   <Expandable title="`RegisterFunction` fields">
     <ParamField body="description" type="fn(desc: impl Into<String>) -> Self" required>
@@ -224,12 +230,16 @@ async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, E
 
   <Expandable title="`TriggerRequest` fields" defaultOpen>
     <ParamField body="function_id" type="String" required>
+      ID of the function to invoke.
     </ParamField>
     <ParamField body="payload" type="Value" required>
+      Input data passed to the function.
     </ParamField>
     <ParamField body="action" type="Option<TriggerAction>">
+      Sets how the trigger is routed. `None` for a synchronous request/response. Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`).
     </ParamField>
     <ParamField body="timeout_ms" type="Option<u64>">
+      Override the default invocation timeout, in milliseconds.
     </ParamField>
     <ParamField body="metadata" type="fn(metadata: Value) -> TriggerRequestWithMetadata" required>
       Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals.
@@ -895,10 +905,10 @@ The `id` is auto-generated internally.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `trigger_type` | `String` | Yes | - |
-| `function_id` | `String` | Yes | - |
-| `config` | `Value` | Yes | - |
-| `metadata` | `Option<Value>` | No | - |
+| `trigger_type` | `String` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
+| `function_id` | `String` | Yes | ID of the function this trigger invokes when it fires. |
+| `config` | `Value` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
+| `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
 
 ---
 
@@ -919,8 +929,8 @@ The `id` is auto-generated internally.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | `String` | Yes | - |
-| `description` | `String` | Yes | - |
+| `id` | `String` | Yes | Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). |
+| `description` | `String` | Yes | Human-readable description of what this trigger type does. |
 | `trigger_request_format` | `Option<Value>` | No | - |
 | `call_request_format` | `Option<Value>` | No | - |
 | `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
@@ -975,10 +985,10 @@ TriggerRequest {
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `function_id` | `String` | Yes | - |
-| `payload` | `Value` | Yes | - |
-| `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | - |
-| `timeout_ms` | `Option<u64>` | No | - |
+| `function_id` | `String` | Yes | ID of the function to invoke. |
+| `payload` | `Value` | Yes | Input data passed to the function. |
+| `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | Sets how the trigger is routed. `None` for a synchronous request/response.<br />Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`). |
+| `timeout_ms` | `Option<u64>` | No | Override the default invocation timeout, in milliseconds. |
 | `metadata` | fn(metadata: Value) -&gt; [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals. |
 
 ---
@@ -1203,7 +1213,7 @@ registered or unregistered.
 | `id` | `String` | Yes | Trigger instance ID. |
 | `function_id` | `String` | Yes | Function to invoke when the trigger fires. |
 | `config` | `Value` | Yes | Trigger-specific configuration. |
-| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the trigger. |
+| `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
 
 ---
 

@@ -978,8 +978,8 @@ impl IIIClient {
     /// `(id, registration)`.
     ///
     /// # Arguments
-    /// * `id`: Function identifier.
-    /// * `registration`: Built via [`RegisterFunction::new`],
+    /// * `id` - Unique identifier for the function.
+    /// * `registration` - Built via [`RegisterFunction::new`],
     ///   [`RegisterFunction::new_async`], or [`RegisterFunction::http`].
     ///   Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`,
     ///   `.response_format(...)` as needed.

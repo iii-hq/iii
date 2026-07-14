@@ -18,7 +18,12 @@ DEFAULT_RECONNECTION_CONFIG = ReconnectionConfig()
 
 @dataclass
 class FunctionRef:
-    """Reference to a registered function, allowing programmatic unregistration."""
+    """Reference to a registered function, allowing programmatic unregistration.
+
+    Attributes:
+        id: The unique function identifier.
+        unregister: Removes this function from the engine.
+    """
 
     id: str
     unregister: Callable[[], None]

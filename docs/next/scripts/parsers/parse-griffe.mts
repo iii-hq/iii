@@ -71,6 +71,52 @@ function extractDocstring(obj: GriffeObject): string {
     .trim()
 }
 
+/**
+ * Parse a google-style docstring section (e.g. `Args:`, `Attributes:`) from the
+ * raw docstring text into a `name -> description` map. Griffe's `dump` output
+ * frequently omits the pre-parsed sections and gives us only the raw `value`,
+ * so we recover entries by indentation: the section header sets a base indent,
+ * entry lines (`name: text` or `name (type): text`) sit one level deeper, and
+ * more-indented lines continue the previous entry. A dedent back to the header
+ * level (or another section header) ends the section.
+ */
+function parseDocSection(docstring: string, section: string): Record<string, string> {
+  const lines = docstring.split('\n')
+  let headerIndent = -1
+  let i = 0
+  for (; i < lines.length; i++) {
+    const header = lines[i].match(/^(\s*)(\w[\w ]*):\s*$/)
+    if (header && header[2] === section) {
+      headerIndent = header[1].length
+      i++
+      break
+    }
+  }
+  if (headerIndent < 0) return {}
+
+  const result: Record<string, string> = {}
+  let currentName = ''
+  let currentDesc = ''
+  let entryIndent = -1
+  for (; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    const indent = line.match(/^(\s*)/)![1].length
+    if (indent <= headerIndent) break // dedent ends the section
+    const entry = line.match(/^\s*(\w+)\s*(?:\([^)]*\))?:\s*(.*)$/)
+    if (entryIndent < 0) entryIndent = indent
+    if (entry && indent === entryIndent) {
+      if (currentName) result[currentName] = currentDesc.trim()
+      currentName = entry[1]
+      currentDesc = entry[2]
+    } else if (currentName) {
+      currentDesc += ' ' + line.trim()
+    }
+  }
+  if (currentName) result[currentName] = currentDesc.trim()
+  return result
+}
+
 function extractParams(obj: GriffeObject): ParamDoc[] {
   const docParams: Record<string, string> = {}
   if (obj.docstring?.parsed) {
@@ -79,6 +125,18 @@ function extractParams(obj: GriffeObject): ParamDoc[] {
         for (const param of section.value as any[]) {
           if (param.name && param.description) docParams[param.name] = param.description
         }
+      }
+    }
+  }
+  // Griffe's `dump` output often omits parsed sections (only the raw docstring
+  // `value` is present), so fall back to parsing the google-style parameter
+  // block directly, the same recovery used for attribute descriptions.
+  if (Object.keys(docParams).length === 0 && obj.docstring?.value) {
+    for (const name of ['Args', 'Arguments', 'Parameters']) {
+      const parsed = parseDocSection(obj.docstring.value, name)
+      if (Object.keys(parsed).length) {
+        Object.assign(docParams, parsed)
+        break
       }
     }
   }

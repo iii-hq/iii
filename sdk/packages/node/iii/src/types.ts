@@ -86,8 +86,8 @@ export interface IIIClient {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
    * <!-- docs:expand-params -->
-   * @param trigger - The trigger to register
-   * @returns A trigger object that can be used to unregister the trigger
+   * @param trigger - The trigger to register.
+   * @returns A trigger object that can be used to unregister the trigger.
    *
    * @example
    * ```typescript
@@ -105,10 +105,10 @@ export interface IIIClient {
 
   /**
    * Registers a new function with a local handler or an HTTP invocation config.
-   * @param functionId - Unique function identifier
-   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.)
-   * @param options - Optional function registration options (description, request/response formats, metadata)
-   * @returns A handle that can be used to unregister the function
+   * @param functionId - Unique identifier for the function.
+   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.).
+   * @param options - Optional function registration options (description, request/response formats, metadata).
+   * @returns A handle that can be used to unregister the function.
    *
    * @example
    * ```typescript
@@ -145,8 +145,8 @@ export interface IIIClient {
    * Invokes a function using a request object.
    * <!-- docs:expand-params -->
    *
-   * @param request - The trigger request containing function_id, payload, and optional action/timeout
-   * @returns The result of the function
+   * @param request - The trigger request containing function_id, payload, and optional action/timeout.
+   * @returns The result of the function.
    *
    * @example
    * ```typescript
@@ -178,9 +178,9 @@ export interface IIIClient {
 
   /**
    * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
-   * @param triggerType - The trigger type to register
-   * @param handler - The handler for the trigger type
-   * @returns A trigger type object that can be used to unregister the trigger type
+   * @param triggerType - The trigger type to register.
+   * @param handler - The handler for the trigger type.
+   * @returns A trigger type object that can be used to unregister the trigger type.
    *
    * @example
    * ```typescript
@@ -208,7 +208,7 @@ export interface IIIClient {
 
   /**
    * Unregisters a trigger type.
-   * @param triggerType - The trigger type to unregister
+   * @param triggerType - The trigger type to unregister.
    *
    * @example
    * ```typescript

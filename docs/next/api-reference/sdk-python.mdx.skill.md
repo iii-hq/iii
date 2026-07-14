@@ -28,9 +28,11 @@ register_worker(address: str, options: InitOptions | None = None) -> III
   <Tab title="Parameters">
 
 <ParamField body="address" type="str" required>
+  WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
 </ParamField>
 
 <ParamField body="options" type="InitOptions | None">
+  Optional configuration for worker name, timeouts, reconnection, and OTel.
 
   <Expandable title="`InitOptions` fields">
     <ParamField body="enable_metrics_reporting" type="bool">
@@ -88,19 +90,20 @@ register_trigger(trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger
   <Tab title="Parameters">
 
 <ParamField body="trigger" type="RegisterTriggerInput | dict[str, Any]" required>
+  A ``RegisterTriggerInput`` or dict with ``type``, ``function_id``, and optional ``config``.
 
   <Expandable title="`RegisterTriggerInput` fields" defaultOpen>
     <ParamField body="config" type="Any">
-      Trigger-type-specific configuration.
+      Trigger-type-specific configuration, matching the shape the trigger type expects.
     </ParamField>
     <ParamField body="function_id" type="str" required>
-      ID of the function this trigger invokes.
+      ID of the function this trigger invokes when it fires.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary metadata attached to the trigger.
+      Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
     <ParamField body="type" type="str" required>
-      Trigger type identifier (e.g. ``http``, ``queue``, ``cron``).
+      Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -163,18 +166,23 @@ register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler
   <Tab title="Parameters">
 
 <ParamField body="function_id" type="str" required>
+  Unique string identifier for the function.
 </ParamField>
 
 <ParamField body="handler_or_invocation" type="RemoteFunctionHandler | HttpInvocationConfig" required>
+  A callable handler or ``HttpInvocationConfig``.  Callable handlers receive ``data`` (the trigger payload) as the first argument and may optionally accept ``metadata`` (per-invocation metadata) as a second argument; they may return a value.
 </ParamField>
 
 <ParamField body="description" type="str | None">
+  Human-readable description of what the function does.
 </ParamField>
 
 <ParamField body="metadata" type="dict[str, Any] | None">
+  Arbitrary metadata attached to the function.
 </ParamField>
 
 <ParamField body="request_format" type="RegisterFunctionFormat | dict[str, Any] | None">
+  Schema describing expected input.  When ``None`` (default), auto-extracted from the handler's first-parameter type hint.  Pass an explicit schema to override; there is no way to register with no schema when the handler is typed.
 
   <Expandable title="`RegisterFunctionFormat` fields">
     <ParamField body="body" type="list[RegisterFunctionFormat] | None">
@@ -199,6 +207,7 @@ register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler
 </ParamField>
 
 <ParamField body="response_format" type="RegisterFunctionFormat | dict[str, Any] | None">
+  Schema describing expected output.  Same auto-extraction semantics as ``request_format``.
 </ParamField>
 
 
@@ -249,22 +258,23 @@ trigger(request: dict[str, Any] | TriggerRequest) -> Any
   <Tab title="Parameters">
 
 <ParamField body="request" type="dict[str, Any] | TriggerRequest" required>
+  A ``TriggerRequest`` or dict with ``function_id``, ``payload``, and optional ``action`` / ``timeout_ms``.
 
   <Expandable title="`TriggerRequest` fields" defaultOpen>
     <ParamField body="action" type="TriggerActionEnqueue | TriggerActionVoid | None">
-      Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget.
+      Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. ``TriggerAction.Enqueue(...)``, ``TriggerAction.Void()``).
     </ParamField>
     <ParamField body="function_id" type="str" required>
       ID of the function to invoke.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary per-invocation metadata delivered to the handler as a separate channel alongside ``payload``.
+      Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
     <ParamField body="payload" type="Any">
-      Data to pass to the function.
+      Input data passed to the function.
     </ParamField>
     <ParamField body="timeout_ms" type="int | None">
-      Override the default invocation timeout.
+      Override the default invocation timeout, in milliseconds.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -301,16 +311,17 @@ register_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any], h
   <Tab title="Parameters">
 
 <ParamField body="trigger_type" type="RegisterTriggerTypeInput | dict[str, Any]" required>
+  A ``RegisterTriggerTypeInput`` or dict with ``id``, ``description``, and optional ``trigger_request_format`` / ``call_request_format`` (Pydantic class or dict).
 
   <Expandable title="`RegisterTriggerTypeInput` fields">
     <ParamField body="call_request_format" type="Any | None">
       JSON Schema describing the payload sent to functions.
     </ParamField>
     <ParamField body="description" type="str" required>
-      Human-readable description of the trigger type.
+      Human-readable description of what this trigger type does.
     </ParamField>
     <ParamField body="id" type="str" required>
-      Unique identifier for the trigger type.
+      Unique identifier for the trigger type (e.g. ``state``, ``durable:subscriber``).
     </ParamField>
     <ParamField body="trigger_request_format" type="Any | None">
       JSON Schema describing the expected trigger config.
@@ -319,6 +330,7 @@ register_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any], h
 </ParamField>
 
 <ParamField body="handler" type="TriggerHandler[Any]" required>
+  A ``TriggerHandler`` instance.
 
   <Expandable title="`TriggerHandler` fields">
     <ParamField body="register_trigger" type="async (config: TriggerConfig[TConfig]) -> None" required>
@@ -368,16 +380,17 @@ unregister_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any])
   <Tab title="Parameters">
 
 <ParamField body="trigger_type" type="RegisterTriggerTypeInput | dict[str, Any]" required>
+  A ``RegisterTriggerTypeInput`` or dict with ``id`` and optional ``description``.
 
   <Expandable title="`RegisterTriggerTypeInput` fields">
     <ParamField body="call_request_format" type="Any | None">
       JSON Schema describing the payload sent to functions.
     </ParamField>
     <ParamField body="description" type="str" required>
-      Human-readable description of the trigger type.
+      Human-readable description of what this trigger type does.
     </ParamField>
     <ParamField body="id" type="str" required>
-      Unique identifier for the trigger type.
+      Unique identifier for the trigger type (e.g. ``state``, ``durable:subscriber``).
     </ParamField>
     <ParamField body="trigger_request_format" type="Any | None">
       JSON Schema describing the expected trigger config.
@@ -519,22 +532,23 @@ async (request: dict[str, Any] | TriggerRequest) -> Any
   <Tab title="Parameters">
 
 <ParamField body="request" type="dict[str, Any] | TriggerRequest" required>
+  A ``TriggerRequest`` or dict with ``function_id``, ``payload``, and optional ``action`` / ``timeout_ms``.
 
   <Expandable title="`TriggerRequest` fields">
     <ParamField body="action" type="TriggerActionEnqueue | TriggerActionVoid | None">
-      Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget.
+      Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. ``TriggerAction.Enqueue(...)``, ``TriggerAction.Void()``).
     </ParamField>
     <ParamField body="function_id" type="str" required>
       ID of the function to invoke.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary per-invocation metadata delivered to the handler as a separate channel alongside ``payload``.
+      Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
     <ParamField body="payload" type="Any">
-      Data to pass to the function.
+      Input data passed to the function.
     </ParamField>
     <ParamField body="timeout_ms" type="int | None">
-      Override the default invocation timeout.
+      Override the default invocation timeout, in milliseconds.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -865,10 +879,10 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `config` | `Any` | No | Trigger-type-specific configuration. |
-| `function_id` | `str` | Yes | ID of the function this trigger invokes. |
-| `metadata` | `Any \| None` | No | Arbitrary metadata attached to the trigger. |
-| `type` | `str` | Yes | Trigger type identifier (e.g. ``http``, ``queue``, ``cron``). |
+| `config` | `Any` | No | Trigger-type-specific configuration, matching the shape the trigger type expects. |
+| `function_id` | `str` | Yes | ID of the function this trigger invokes when it fires. |
+| `metadata` | `Any \| None` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `type` | `str` | Yes | Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``). |
 
 ---
 
@@ -892,8 +906,8 @@ Input for registering a trigger type.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `call_request_format` | `Any \| None` | No | JSON Schema describing the payload sent to functions. |
-| `description` | `str` | Yes | Human-readable description of the trigger type. |
-| `id` | `str` | Yes | Unique identifier for the trigger type. |
+| `description` | `str` | Yes | Human-readable description of what this trigger type does. |
+| `id` | `str` | Yes | Unique identifier for the trigger type (e.g. ``state``, ``durable:subscriber``). |
 | `trigger_request_format` | `Any \| None` | No | JSON Schema describing the expected trigger config. |
 
 ---
@@ -916,11 +930,11 @@ Request object for ``trigger()``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget. |
+| `action` | [`TriggerActionEnqueue`](#triggeractionenqueue) \| [`TriggerActionVoid`](#triggeractionvoid) \| None | No | Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. ``TriggerAction.Enqueue(...)``, ``TriggerAction.Void()``). |
 | `function_id` | `str` | Yes | ID of the function to invoke. |
-| `metadata` | `Any \| None` | No | Arbitrary per-invocation metadata delivered to the handler as a separate channel alongside ``payload``. |
-| `payload` | `Any` | No | Data to pass to the function. |
-| `timeout_ms` | `int \| None` | No | Override the default invocation timeout. |
+| `metadata` | `Any \| None` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `payload` | `Any` | No | Input data passed to the function. |
+| `timeout_ms` | `int \| None` | No | Override the default invocation timeout, in milliseconds. |
 
 ### iii.runtime
 
@@ -932,8 +946,8 @@ Reference to a registered function, allowing programmatic unregistration.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | `str` | Yes | - |
-| `unregister` | `Callable[[], None]` | Yes | - |
+| `id` | `str` | Yes | The unique function identifier. |
+| `unregister` | `Callable[[], None]` | Yes | Removes this function from the engine. |
 
 ---
 
@@ -975,8 +989,8 @@ Input for deleting a state value.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `key` | `str` | Yes | - |
-| `scope` | `str` | Yes | - |
+| `key` | `str` | Yes | Key within the scope. |
+| `scope` | `str` | Yes | State scope (namespace). |
 
 ---
 
@@ -986,7 +1000,7 @@ Result of a state delete operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `old_value` | `Any \| None` | No | - |
+| `old_value` | `Any \| None` | No | Previous value (if it existed). |
 
 ---
 
@@ -996,12 +1010,12 @@ Payload for state change events.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `event_type` | [`StateEventType`](#stateeventtype) | Yes | - |
-| `key` | `str` | Yes | - |
-| `new_value` | `TData \| None` | No | - |
-| `old_value` | `TData \| None` | No | - |
-| `scope` | `str` | Yes | - |
-| `type` | `str` | No | - |
+| `event_type` | [`StateEventType`](#stateeventtype) | Yes | Type of state change. |
+| `key` | `str` | Yes | Key within the scope. |
+| `new_value` | `TData \| None` | No | New value (for create/update events). |
+| `old_value` | `TData \| None` | No | Previous value (for update/delete events). |
+| `scope` | `str` | Yes | State scope (namespace). |
+| `type` | `str` | No | Event category (always ``state``). |
 
 ---
 
@@ -1023,8 +1037,8 @@ Input for retrieving a state value.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `key` | `str` | Yes | - |
-| `scope` | `str` | Yes | - |
+| `key` | `str` | Yes | Key within the scope. |
+| `scope` | `str` | Yes | State scope (namespace). |
 
 ---
 
@@ -1034,7 +1048,7 @@ Input for listing all values in a state scope.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `scope` | `str` | Yes | - |
+| `scope` | `str` | Yes | State scope (namespace). |
 
 ---
 
@@ -1044,9 +1058,9 @@ Input for setting a state value.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `key` | `str` | Yes | - |
-| `scope` | `str` | Yes | - |
-| `value` | `Any` | Yes | - |
+| `key` | `str` | Yes | Key within the scope. |
+| `scope` | `str` | Yes | State scope (namespace). |
+| `value` | `Any` | Yes | Value to store. |
 
 ---
 
@@ -1056,8 +1070,8 @@ Result of a state set operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `new_value` | `TData` | Yes | - |
-| `old_value` | `TData \| None` | No | - |
+| `new_value` | `TData` | Yes | New value that was stored. |
+| `old_value` | `TData \| None` | No | Previous value (if it existed). |
 
 ---
 
@@ -1067,9 +1081,9 @@ Input for atomically updating a state value.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `key` | `str` | Yes | - |
-| `ops` | `list[UpdateOp]` | Yes | - |
-| `scope` | `str` | Yes | - |
+| `key` | `str` | Yes | Key within the scope. |
+| `ops` | `list[UpdateOp]` | Yes | Ordered list of update operations to apply atomically. |
+| `scope` | `str` | Yes | State scope (namespace). |
 
 ---
 
@@ -1079,8 +1093,8 @@ Result of a state update operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `new_value` | `TData` | Yes | - |
-| `old_value` | `TData \| None` | No | - |
+| `new_value` | `TData` | Yes | New value after the update. |
+| `old_value` | `TData \| None` | No | Previous value (if it existed). |
 
 ### iii.stream
 
@@ -1107,9 +1121,9 @@ Input for stream delete operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -1119,7 +1133,7 @@ Result of stream delete operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `old_value` | `Any \| None` | No | - |
+| `old_value` | `Any \| None` | No | Previous value (if it existed). |
 
 ---
 
@@ -1129,9 +1143,9 @@ Input for stream get operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -1141,7 +1155,7 @@ Input for stream list groups operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `str` | Yes | - |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -1151,8 +1165,8 @@ Input for stream list operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -1162,10 +1176,10 @@ Input for stream set operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `data` | `Any` | Yes | - |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `data` | `Any` | Yes | Data to store. |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -1175,8 +1189,8 @@ Result of stream set operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `new_value` | `TData` | Yes | - |
-| `old_value` | `TData \| None` | No | - |
+| `new_value` | `TData` | Yes | New value that was stored. |
+| `old_value` | `TData \| None` | No | Previous value (if it existed). |
 
 ---
 
@@ -1186,10 +1200,10 @@ Input for stream update operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `ops` | `list['UpdateOp']` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `ops` | `list['UpdateOp']` | Yes | Ordered list of update operations to apply atomically. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -1200,8 +1214,8 @@ Result of stream update operation.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `errors` | `list[UpdateOpError]` | No | - |
-| `new_value` | `TData` | Yes | - |
-| `old_value` | `TData \| None` | No | - |
+| `new_value` | `TData` | Yes | New value after the update. |
+| `old_value` | `TData \| None` | No | Previous value (if it existed). |
 
 ### iii.trigger
 
@@ -1229,14 +1243,15 @@ Fire-and-forget routing. No response is returned.
 
 #### TriggerConfig
 
-Configuration for a trigger.
+Configuration passed to a trigger handler when a trigger instance is
+registered or unregistered.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `config` | `Any` | Yes | - |
-| `function_id` | `str` | Yes | - |
-| `id` | `str` | Yes | - |
-| `metadata` | `dict[str, Any] \| None` | No | - |
+| `config` | `Any` | Yes | Trigger-specific configuration. |
+| `function_id` | `str` | Yes | Function to invoke when the trigger fires. |
+| `id` | `str` | Yes | Trigger instance ID. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
 
 ---
 

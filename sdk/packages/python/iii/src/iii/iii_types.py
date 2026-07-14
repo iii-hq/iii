@@ -63,14 +63,14 @@ class RegisterTriggerTypeInput(BaseModel):
     """Input for registering a trigger type.
 
     Attributes:
-        id: Unique identifier for the trigger type.
-        description: Human-readable description of the trigger type.
+        id: Unique identifier for the trigger type (e.g. ``state``, ``durable:subscriber``).
+        description: Human-readable description of what this trigger type does.
         trigger_request_format: JSON Schema describing the expected trigger config.
         call_request_format: JSON Schema describing the payload sent to functions.
     """
 
-    id: str = Field(description="Unique identifier for the trigger type.")
-    description: str = Field(description="Human-readable description of the trigger type.")
+    id: str = Field(description="Unique identifier for the trigger type (e.g. ``state``, ``durable:subscriber``).")
+    description: str = Field(description="Human-readable description of what this trigger type does.")
     trigger_request_format: Any | None = Field(
         default=None, description="JSON Schema for trigger configuration."
     )
@@ -83,17 +83,22 @@ class RegisterTriggerInput(BaseModel):
     """Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 
     Attributes:
-        type: Trigger type identifier (e.g. ``http``, ``queue``, ``cron``).
-        function_id: ID of the function this trigger invokes.
-        config: Trigger-type-specific configuration.
-        metadata: Arbitrary metadata attached to the trigger.
+        type: Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``).
+        function_id: ID of the function this trigger invokes when it fires.
+        config: Trigger-type-specific configuration, matching the shape the trigger type expects.
+        metadata: Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     """
 
-    type: str = Field(description="Trigger type identifier.")
-    function_id: str = Field(description="ID of the function this trigger invokes.")
-    config: Any = Field(default=None, description="Trigger-type-specific configuration.")
+    type: str = Field(
+        description="Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``)."
+    )
+    function_id: str = Field(description="ID of the function this trigger invokes when it fires.")
+    config: Any = Field(
+        default=None, description="Trigger-type-specific configuration, matching the shape the trigger type expects."
+    )
     metadata: Any | None = Field(
-        default=None, description="Arbitrary metadata attached to the trigger."
+        default=None,
+        description="Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.",
     )
 
 
@@ -219,28 +224,31 @@ class TriggerRequest(BaseModel):
 
     Attributes:
         function_id: ID of the function to invoke.
-        payload: Data to pass to the function.
-        action: Routing action, ``None`` for sync, ``TriggerAction.Enqueue(...)``
-            for queue, ``TriggerAction.Void()`` for fire-and-forget.
-        timeout_ms: Override the default invocation timeout.
-        metadata: Arbitrary per-invocation metadata delivered to the handler
-            as a separate channel alongside ``payload``.
+        payload: Input data passed to the function.
+        action: Sets how the trigger is routed. Omit for a synchronous
+            request/response. Specify for a specific routing scheme (e.g.
+            ``TriggerAction.Enqueue(...)``, ``TriggerAction.Void()``).
+        timeout_ms: Override the default invocation timeout, in milliseconds.
+        metadata: Arbitrary user-specifiable metadata supplied to the triggered
+            handler function on every invocation.
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
-    payload: Any = Field(default=None, description="Data to pass to the function.")
+    payload: Any = Field(default=None, description="Input data passed to the function.")
     action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
         default=None,
         description=(
-            "Routing action: ``None`` for sync, "
-            "``TriggerAction.Enqueue(...)`` for queue, "
-            "``TriggerAction.Void()`` for fire-and-forget."
+            "Sets how the trigger is routed. Omit for a synchronous request/response. "
+            "Specify for a specific routing scheme (e.g. ``TriggerAction.Enqueue(...)``, "
+            "``TriggerAction.Void()``)."
         ),
     )
-    timeout_ms: int | None = Field(default=None, description="Override the default invocation timeout.")
+    timeout_ms: int | None = Field(
+        default=None, description="Override the default invocation timeout, in milliseconds."
+    )
     metadata: Any | None = Field(
         default=None,
-        description="Arbitrary per-invocation metadata delivered to the handler.",
+        description="Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.",
     )
 
 

@@ -1005,8 +1005,8 @@ class III:
                 ``data`` (the trigger payload) as the first argument and
                 may optionally accept ``metadata`` (per-invocation
                 metadata) as a second argument; they may return a value.
-            description: Human-readable description.
-            metadata: Arbitrary metadata.
+            description: Human-readable description of what the function does.
+            metadata: Arbitrary metadata attached to the function.
             request_format: Schema describing expected input.  When
                 ``None`` (default), auto-extracted from the handler's
                 first-parameter type hint.  Pass an explicit schema to

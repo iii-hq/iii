@@ -92,20 +92,20 @@ registerTrigger(trigger: RegisterTriggerInput) => Trigger
   <Tab title="Parameters">
 
 <ParamField body="trigger" type="RegisterTriggerInput" required>
-  The trigger to register
+  The trigger to register.
 
   <Expandable title="`RegisterTriggerInput` fields" defaultOpen>
     <ParamField body="config" type="unknown" required>
-      Trigger-type-specific configuration.
+      Trigger-type-specific configuration, matching the shape the trigger type expects.
     </ParamField>
     <ParamField body="function_id" type="string" required>
-      ID of the function this trigger invokes.
+      ID of the function this trigger invokes when it fires.
     </ParamField>
     <ParamField body="metadata" type="Record<string, unknown>">
-      Arbitrary metadata attached to the trigger, delivered to the function on every fire.
+      Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
     <ParamField body="type" type="string" required>
-      Trigger type identifier (e.g. `http`, `queue`, `cron`).
+      Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -145,30 +145,31 @@ registerFunction(functionId: string, handler: HttpInvocationConfig | RemoteFunct
   <Tab title="Parameters">
 
 <ParamField body="functionId" type="string" required>
-  Unique function identifier
+  Unique identifier for the function.
 </ParamField>
 
 <ParamField body="handler" type="HttpInvocationConfig | RemoteFunctionHandler<any, any>" required>
-  Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.)
+  Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.).
 </ParamField>
 
 <ParamField body="options" type="RegisterFunctionOptions">
-  Optional function registration options (description, request/response formats, metadata)
+  Optional function registration options (description, request/response formats, metadata).
 
   <Expandable title="`RegisterFunctionOptions` fields">
     <ParamField body="description" type="string">
-      The description of the function
+      The description of the function.
     </ParamField>
     <ParamField body="invocation" type="HttpInvocationConfig">
-      HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.)
+      HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.).
     </ParamField>
     <ParamField body="metadata" type="Record<string, unknown>">
+      Arbitrary metadata attached to the function.
     </ParamField>
     <ParamField body="request_format" type="RegisterFunctionFormat">
-      The request format of the function
+      The request format of the function.
     </ParamField>
     <ParamField body="response_format" type="RegisterFunctionFormat">
-      The response format of the function
+      The response format of the function.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -221,23 +222,23 @@ trigger(request: TriggerRequest<TInput>) => Promise<TOutput>
   <Tab title="Parameters">
 
 <ParamField body="request" type="TriggerRequest<TInput>" required>
-  The trigger request containing function_id, payload, and optional action/timeout
+  The trigger request containing function_id, payload, and optional action/timeout.
 
   <Expandable title="`TriggerRequest` fields" defaultOpen>
     <ParamField body="action" type="TriggerAction">
-      Routing action. Omit for synchronous request/response.
+      Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `TriggerAction.Enqueue()`, `TriggerAction.Void()`).
     </ParamField>
     <ParamField body="function_id" type="string" required>
       ID of the function to invoke.
     </ParamField>
     <ParamField body="metadata" type="unknown">
-      Optional per-invocation metadata (arbitrary JSON). Travels as a separate channel from the payload and is surfaced to the target handler as a dedicated argument. Omitted from the wire message when undefined.
+      Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
     <ParamField body="payload" type="TInput" required>
-      Payload to pass to the function.
+      Input data passed to the function.
     </ParamField>
     <ParamField body="timeoutMs" type="number">
-      Override the default invocation timeout in milliseconds.
+      Override the default invocation timeout, in milliseconds.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -291,18 +292,20 @@ registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandl
   <Tab title="Parameters">
 
 <ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
-  The trigger type to register
+  The trigger type to register.
 
   <Expandable title="`RegisterTriggerTypeInput` fields">
     <ParamField body="description" type="string" required>
+      Human-readable description of what this trigger type does.
     </ParamField>
     <ParamField body="id" type="string" required>
+      Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`).
     </ParamField>
   </Expandable>
 </ParamField>
 
 <ParamField body="handler" type="TriggerHandler<TConfig>" required>
-  The handler for the trigger type
+  The handler for the trigger type.
 
   <Expandable title="`TriggerHandler` fields">
     <ParamField body="registerTrigger" type="(config: TriggerConfig<TConfig>) => Promise<void>" required>
@@ -356,12 +359,14 @@ unregisterTriggerType(triggerType: RegisterTriggerTypeInput) => void
   <Tab title="Parameters">
 
 <ParamField body="triggerType" type="RegisterTriggerTypeInput" required>
-  The trigger type to unregister
+  The trigger type to unregister.
 
   <Expandable title="`RegisterTriggerTypeInput` fields">
     <ParamField body="description" type="string" required>
+      Human-readable description of what this trigger type does.
     </ParamField>
     <ParamField body="id" type="string" required>
+      Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -741,12 +746,12 @@ type ChannelItem = { type: "text"; value: string } | { type: "binary"; value: Ui
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `description` | `string` | No | The description of the parameter |
-| `items` | `unknown` | No | The items of the parameter (for arrays) |
-| `name` | `string` | No | The name of the parameter |
-| `properties` | `Record<string, unknown>` | No | The body of the parameter (for objects) |
-| `required` | `string[]` | No | Whether the parameter is required |
-| `type` | `"string" \| "number" \| "boolean" \| "object" \| "array" \| "null" \| "map" \| "integer"` | No | The type of the parameter |
+| `description` | `string` | No | The description of the parameter. |
+| `items` | `unknown` | No | The items of the parameter (for arrays). |
+| `name` | `string` | No | The name of the parameter. |
+| `properties` | `Record<string, unknown>` | No | The body of the parameter (for objects). |
+| `required` | `string[]` | No | Whether the parameter is required. |
+| `type` | `"string" \| "number" \| "boolean" \| "object" \| "array" \| "null" \| "map" \| "integer"` | No | The type of the parameter. |
 | `[key: string]` | `unknown` | No | - |
 
 ---
@@ -759,12 +764,12 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `description` | `string` | No | The description of the function |
-| `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda) |
-| `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.) |
-| `metadata` | `Record<string, unknown>` | No | - |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
+| `description` | `string` | No | The description of the function. |
+| `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda). |
+| `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.). |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function. |
 
 ---
 
@@ -772,13 +777,13 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `description` | `string` | No | The description of the function |
-| `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda) |
-| `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.) |
+| `description` | `string` | No | The description of the function. |
+| `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda). |
+| `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.). |
 | `message_type` | [`MessageType`](#messagetype).RegisterFunction | Yes | - |
-| `metadata` | `Record<string, unknown>` | No | - |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function. |
 
 ---
 
@@ -790,11 +795,11 @@ type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "i
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `description` | `string` | No | The description of the function |
-| `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.) |
-| `metadata` | `Record<string, unknown>` | No | - |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
+| `description` | `string` | No | The description of the function. |
+| `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.). |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function. |
 
 ---
 
@@ -806,10 +811,10 @@ type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `config` | `unknown` | Yes | Trigger-type-specific configuration. |
-| `function_id` | `string` | Yes | ID of the function this trigger invokes. |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger, delivered to the function on every fire. |
-| `type` | `string` | Yes | Trigger type identifier (e.g. `http`, `queue`, `cron`). |
+| `config` | `unknown` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
+| `function_id` | `string` | Yes | ID of the function this trigger invokes when it fires. |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `type` | `string` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
 
 ---
 
@@ -817,12 +822,12 @@ type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `config` | `unknown` | Yes | Trigger-type-specific configuration. |
-| `function_id` | `string` | Yes | ID of the function this trigger invokes. |
+| `config` | `unknown` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
+| `function_id` | `string` | Yes | ID of the function this trigger invokes when it fires. |
 | `id` | `string` | Yes | Unique trigger identifier, generated by the SDK during registration. |
 | `message_type` | [`MessageType`](#messagetype).RegisterTrigger | Yes | Wire discriminator; always `MessageType.RegisterTrigger`. |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger, delivered to the function on every fire. |
-| `type` | `string` | Yes | Trigger type identifier (e.g. `http`, `queue`, `cron`). |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `type` | `string` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
 
 ---
 
@@ -834,8 +839,8 @@ type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, "message_type">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `description` | `string` | Yes | - |
-| `id` | `string` | Yes | - |
+| `description` | `string` | Yes | Human-readable description of what this trigger type does. |
+| `id` | `string` | Yes | Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). |
 
 ---
 
@@ -843,8 +848,8 @@ type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, "message_type">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `description` | `string` | Yes | - |
-| `id` | `string` | Yes | - |
+| `description` | `string` | Yes | Human-readable description of what this trigger type does. |
+| `id` | `string` | Yes | Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). |
 | `message_type` | [`MessageType`](#messagetype).RegisterTriggerType | Yes | - |
 
 ---
@@ -855,11 +860,11 @@ Request object passed to IIIClient.trigger.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `action` | [`TriggerAction`](#triggeraction) | No | Routing action. Omit for synchronous request/response. |
+| `action` | [`TriggerAction`](#triggeraction) | No | Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `TriggerAction.Enqueue()`, `TriggerAction.Void()`). |
 | `function_id` | `string` | Yes | ID of the function to invoke. |
-| `metadata` | `unknown` | No | Optional per-invocation metadata (arbitrary JSON). Travels as a separate<br />channel from the payload and is surfaced to the target handler as a<br />dedicated argument. Omitted from the wire message when undefined. |
-| `payload` | `TInput` | Yes | Payload to pass to the function. |
-| `timeoutMs` | `number` | No | Override the default invocation timeout in milliseconds. |
+| `metadata` | `unknown` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+| `payload` | `TInput` | Yes | Input data passed to the function. |
+| `timeoutMs` | `number` | No | Override the default invocation timeout, in milliseconds. |
 
 ### iii-sdk/runtime
 
@@ -1077,7 +1082,7 @@ registered or unregistered.
 | `config` | `TConfig` | Yes | Trigger-specific configuration. |
 | `function_id` | `string` | Yes | Function to invoke when the trigger fires. |
 | `id` | `string` | Yes | Trigger instance ID. |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger. |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
 
 ---
 

@@ -262,9 +262,11 @@ init_otel(config: OtelConfig | None = None, loop: None = None) -> None
 #### Parameters
 
 <ParamField body="config" type="OtelConfig | None">
+  OTel configuration.
 </ParamField>
 
 <ParamField body="loop" type="None">
+  Running asyncio event loop. When provided, SharedEngineConnection starts immediately. When None, the connection is started lazily on first use (pre-start buffer absorbs early frames).
 </ParamField>
 
 
@@ -433,15 +435,19 @@ async (name: str, fn: Any, *, kind: Any = None, traceparent: str | None = None) 
 #### Parameters
 
 <ParamField body="name" type="str" required>
+  Span name.
 </ParamField>
 
 <ParamField body="fn" type="Any" required>
+  Async callable ``(span) -> T``.
 </ParamField>
 
 <ParamField body="kind" type="Any">
+  Optional ``SpanKind``. Defaults to ``INTERNAL``.
 </ParamField>
 
 <ParamField body="traceparent" type="str | None">
+  Optional W3C traceparent to use as parent context.
 </ParamField>
 
 
@@ -607,9 +613,9 @@ Input for stream delete operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -619,7 +625,7 @@ Result of stream delete operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `old_value` | `Any \| None` | No | - |
+| `old_value` | `Any \| None` | No | Previous value (if it existed). |
 
 ---
 
@@ -629,9 +635,9 @@ Input for stream get operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -675,7 +681,7 @@ Input for stream list groups operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `str` | Yes | - |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -685,8 +691,8 @@ Input for stream list operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -696,10 +702,10 @@ Input for stream set operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `data` | `Any` | Yes | - |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `data` | `Any` | Yes | Data to store. |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -709,8 +715,8 @@ Result of stream set operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `new_value` | `TData` | Yes | - |
-| `old_value` | `TData \| None` | No | - |
+| `new_value` | `TData` | Yes | New value that was stored. |
+| `old_value` | `TData \| None` | No | Previous value (if it existed). |
 
 ---
 
@@ -733,10 +739,10 @@ Input for stream update operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `group_id` | `str` | Yes | - |
-| `item_id` | `str` | Yes | - |
-| `ops` | `list['UpdateOp']` | Yes | - |
-| `stream_name` | `str` | Yes | - |
+| `group_id` | `str` | Yes | Group identifier. |
+| `item_id` | `str` | Yes | Item identifier. |
+| `ops` | `list['UpdateOp']` | Yes | Ordered list of update operations to apply atomically. |
+| `stream_name` | `str` | Yes | Name of the stream. |
 
 ---
 
@@ -747,8 +753,8 @@ Result of stream update operation.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `errors` | list[[`UpdateOpError`](#updateoperror)] | No | - |
-| `new_value` | `TData` | Yes | - |
-| `old_value` | `TData \| None` | No | - |
+| `new_value` | `TData` | Yes | New value after the update. |
+| `old_value` | `TData \| None` | No | Previous value (if it existed). |
 
 ---
 

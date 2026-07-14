@@ -80,7 +80,13 @@ class StreamJoinResult(BaseModel):
 
 
 class StreamGetInput(BaseModel):
-    """Input for stream get operation."""
+    """Input for stream get operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+    """
 
     stream_name: str
     group_id: str
@@ -88,7 +94,14 @@ class StreamGetInput(BaseModel):
 
 
 class StreamSetInput(BaseModel):
-    """Input for stream set operation."""
+    """Input for stream set operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+        data: Data to store.
+    """
 
     stream_name: str
     group_id: str
@@ -97,7 +110,13 @@ class StreamSetInput(BaseModel):
 
 
 class StreamDeleteInput(BaseModel):
-    """Input for stream delete operation."""
+    """Input for stream delete operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+    """
 
     stream_name: str
     group_id: str
@@ -105,20 +124,36 @@ class StreamDeleteInput(BaseModel):
 
 
 class StreamListInput(BaseModel):
-    """Input for stream list operation."""
+    """Input for stream list operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+    """
 
     stream_name: str
     group_id: str
 
 
 class StreamListGroupsInput(BaseModel):
-    """Input for stream list groups operation."""
+    """Input for stream list groups operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+    """
 
     stream_name: str
 
 
 class StreamUpdateInput(BaseModel):
-    """Input for stream update operation."""
+    """Input for stream update operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+        ops: Ordered list of update operations to apply atomically.
+    """
 
     stream_name: str
     group_id: str
@@ -141,14 +176,24 @@ class UpdateOpError(BaseModel):
 
 
 class StreamSetResult(BaseModel, Generic[TData]):
-    """Result of stream set operation."""
+    """Result of stream set operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+        new_value: New value that was stored.
+    """
 
     old_value: TData | None = None
     new_value: TData
 
 
 class StreamUpdateResult(BaseModel, Generic[TData]):
-    """Result of stream update operation."""
+    """Result of stream update operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+        new_value: New value after the update.
+    """
 
     old_value: TData | None = None
     new_value: TData
@@ -163,7 +208,11 @@ class StreamUpdateResult(BaseModel, Generic[TData]):
 
 
 class StreamDeleteResult(BaseModel):
-    """Result of stream delete operation."""
+    """Result of stream delete operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+    """
 
     old_value: Any | None = None
 

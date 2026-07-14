@@ -198,7 +198,7 @@ function extractArgDescriptions(docs: string | undefined): Record<string, string
   let currentName = ''
   let currentDesc = ''
   for (const line of argSection[1].split('\n')) {
-    const match = line.match(/^\s*\*\s*`(\w+)`\s*[-–—]\s*(.*)/)
+    const match = line.match(/^\s*\*\s*`(\w+)`\s*[-–—:]\s*(.*)/)
     if (match) {
       if (currentName) result[currentName] = currentDesc.trim()
       currentName = match[1]
