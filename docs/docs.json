@@ -3,8 +3,8 @@
   "name": "iii",
   "redirects": [
     {
-      "source": "/next/api-reference/:slug",
-      "destination": "/next/reference/:slug"
+      "source": "/next/api-reference/:slug*",
+      "destination": "/next/reference/:slug*"
     },
     {
       "source": "/next/sdk-reference/engine-sdk",
