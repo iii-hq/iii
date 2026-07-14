@@ -71,7 +71,7 @@
   html{scroll-behavior:smooth;}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:'Chivo Mono', ui-monospace, monospace;font-weight:400;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;font-variant-ligatures:none;font-feature-settings:"liga" 0, "clig" 0, "calt" 0, "dlig" 0;text-rendering:geometricPrecision;overflow-x:hidden;overflow-x:clip;}
   /* Anchored sections land below the sticky navbar */
-  #experience, #nutshell, #workers, #hello, #footer, #install, #primitives{
+  #experience, #nutshell, #workers, #hello, #agents, #console, #footer, #install, #primitives{
     scroll-margin-top:90px;
   }
   *{font-variant-ligatures:none;font-feature-settings:"liga" 0, "clig" 0, "calt" 0, "dlig" 0;}

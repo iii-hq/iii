@@ -4,6 +4,7 @@
 // with set:html so Astro's template compiler never reinterprets their braces
 // or reorders their tags. The header is the shared SiteNav component. Edit
 // the fragments directly; this file only assembles them.
+import ScrollNav from '../components/ScrollNav.astro'
 import SiteNav from '../components/SiteNav.astro'
 import HtmlShell from '../layouts/HtmlShell.astro'
 import '../styles/landing.css'
@@ -60,5 +61,14 @@ const body = [
   <Fragment slot="head" set:html={headExtras} />
   <Fragment set:html={sheetOpen} />
   <SiteNav />
+  <ScrollNav
+    links={[
+      { id: 'experience', label: 'why iii' },
+      { id: 'workers', label: 'workers' },
+      { id: 'hello', label: 'languages' },
+      { id: 'agents', label: 'agents' },
+      { id: 'console', label: 'console' },
+    ]}
+  />
   <Fragment set:html={body} />
 </HtmlShell>
