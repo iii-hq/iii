@@ -21,10 +21,6 @@ def _unique_function_id(prefix: str) -> str:
     return f"{prefix}::{int(time.time())}::{random.random():.10f}".replace(".", "")
 
 
-def _unique_topic(prefix: str) -> str:
-    return f"{prefix}.{int(time.time())}.{random.random():.10f}".replace(".", "")
-
-
 class WebhookProbe:
     def __init__(self) -> None:
         self._received: list[dict[str, Any]] = []
@@ -191,6 +187,21 @@ def _make_integration_client() -> III:
     return client
 
 
+async def _invoke(client: III, function_id: str, payload: dict[str, Any]) -> Any:
+    """Directly invoke an HTTP external function without blocking the test loop.
+
+    ``client.trigger`` is synchronous and blocks the caller until the engine's
+    webhook POST round-trips. Since the WebhookProbe server runs on this same
+    event loop, calling it inline would deadlock -- so we run it on a worker
+    thread and let the loop keep serving the probe.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: client.trigger({"function_id": function_id, "payload": payload}),
+    )
+
+
 # ===========================================================================
 # Unit tests (FakeWs)
 # ===========================================================================
@@ -282,16 +293,14 @@ def test_unregister_removes_function_from_sent_messages(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_delivers_queue_events_to_external_http_function() -> None:
+async def test_delivers_events_to_external_http_function() -> None:
     client = _make_integration_client()
 
     probe = WebhookProbe()
     await probe.start()
 
     function_id = _unique_function_id("test::http_external::target")
-    topic = _unique_topic("test.http_external.topic")
     payload = {"hello": "world", "count": 1}
-    trigger = None
     http_fn = None
 
     try:
@@ -301,21 +310,16 @@ async def test_delivers_queue_events_to_external_http_function() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger(
-            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
-        )
-        time.sleep(0.5)
-
-        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
+        await _invoke(client, function_id, payload)
 
         webhook = await probe.wait_for_webhook(7.0)
 
         assert webhook["method"] == "POST"
         assert webhook["url"] == "/webhook"
-        assert webhook["body"] == payload
+        # Direct invocation injects caller metadata (e.g. _caller_worker_id) into
+        # the POSTed body, so assert the expected payload is a subset.
+        assert payload.items() <= webhook["body"].items()
     finally:
-        if trigger:
-            trigger.unregister()
         if http_fn:
             http_fn.unregister()
         await probe.close()
@@ -381,9 +385,7 @@ async def test_delivers_events_with_custom_headers() -> None:
     await probe.start()
 
     function_id = _unique_function_id("test::http_external::custom_headers")
-    topic = _unique_topic("test.http_external.headers")
     payload = {"event": "custom_header_test"}
-    trigger = None
     http_fn = None
 
     try:
@@ -398,17 +400,14 @@ async def test_delivers_events_with_custom_headers() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger(
-            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
-        )
-        time.sleep(0.5)
-
-        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
+        await _invoke(client, function_id, payload)
 
         webhook = await probe.wait_for_webhook(7.0)
 
         assert webhook["method"] == "POST"
-        assert webhook["body"] == payload
+        # Direct invocation injects caller metadata (e.g. _caller_worker_id) into
+        # the POSTed body, so assert the expected payload is a subset.
+        assert payload.items() <= webhook["body"].items()
 
         # Verify custom headers were forwarded by the engine.
         # Header keys may be lowercased by the HTTP client.
@@ -418,8 +417,6 @@ async def test_delivers_events_with_custom_headers() -> None:
         )
         assert received_headers.get("x-another") == "123", f"Expected x-another=123, got headers: {received_headers}"
     finally:
-        if trigger:
-            trigger.unregister()
         if http_fn:
             http_fn.unregister()
         await probe.close()
@@ -437,15 +434,11 @@ async def test_delivers_events_to_multiple_external_functions() -> None:
 
     fn_id_a = _unique_function_id("test::http_external::multi_a")
     fn_id_b = _unique_function_id("test::http_external::multi_b")
-    topic_a = _unique_topic("test.http_external.multi_a")
-    topic_b = _unique_topic("test.http_external.multi_b")
     payload_a = {"source": "topic_a", "value": 1}
     payload_b = {"source": "topic_b", "value": 2}
 
     http_fn_a = None
     http_fn_b = None
-    trigger_a = None
-    trigger_b = None
 
     try:
         http_fn_a = client.register_function(
@@ -458,31 +451,20 @@ async def test_delivers_events_to_multiple_external_functions() -> None:
         )
         time.sleep(0.5)
 
-        trigger_a = client.register_trigger(
-            {"type": "durable:subscriber", "function_id": fn_id_a, "config": {"topic": topic_a}}
-        )
-        trigger_b = client.register_trigger(
-            {"type": "durable:subscriber", "function_id": fn_id_b, "config": {"topic": topic_b}}
-        )
-        time.sleep(0.5)
-
-        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic_a, "data": payload_a}})
-        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic_b, "data": payload_b}})
+        await _invoke(client, fn_id_a, payload_a)
+        await _invoke(client, fn_id_b, payload_b)
 
         webhook_a = await probe_a.wait_for_webhook(7.0)
         webhook_b = await probe_b.wait_for_webhook(7.0)
 
-        # Each probe should receive only its own topic's event.
-        assert webhook_a["body"] == payload_a, f"probe_a got wrong body: {webhook_a['body']}"
+        # Each probe should receive only its own function's event. Direct
+        # invocation injects caller metadata into the body, so assert subset.
+        assert payload_a.items() <= webhook_a["body"].items(), f"probe_a got wrong body: {webhook_a['body']}"
         assert webhook_a["url"] == "/hook_a"
 
-        assert webhook_b["body"] == payload_b, f"probe_b got wrong body: {webhook_b['body']}"
+        assert payload_b.items() <= webhook_b["body"].items(), f"probe_b got wrong body: {webhook_b['body']}"
         assert webhook_b["url"] == "/hook_b"
     finally:
-        if trigger_a:
-            trigger_a.unregister()
-        if trigger_b:
-            trigger_b.unregister()
         if http_fn_a:
             http_fn_a.unregister()
         if http_fn_b:
@@ -500,10 +482,8 @@ async def test_stops_delivering_after_unregister() -> None:
     await probe.start()
 
     function_id = _unique_function_id("test::http_external::stop_deliver")
-    topic = _unique_topic("test.http_external.stop_deliver")
     payload_before = {"phase": "before_unregister"}
     payload_after = {"phase": "after_unregister"}
-    trigger = None
     http_fn = None
 
     try:
@@ -513,30 +493,27 @@ async def test_stops_delivering_after_unregister() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger(
-            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
-        )
-        time.sleep(0.5)
-
-        # First enqueue -- should be delivered.
-        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload_before}})
+        # First invocation -- should be delivered.
+        await _invoke(client, function_id, payload_before)
         webhook = await probe.wait_for_webhook(7.0)
-        assert webhook["body"] == payload_before
+        # Direct invocation injects caller metadata (e.g. _caller_worker_id) into
+        # the POSTed body, so assert the expected payload is a subset.
+        assert payload_before.items() <= webhook["body"].items()
 
-        # Unregister trigger and function.
-        trigger.unregister()
-        trigger = None
+        # Unregister the function.
         http_fn.unregister()
         http_fn = None
         time.sleep(0.5)
 
-        # Second enqueue -- should NOT be delivered (function is gone).
-        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload_after}})
+        # Second invocation -- the function is gone, so the trigger is rejected
+        # and nothing reaches the webhook.
+        try:
+            await _invoke(client, function_id, payload_after)
+        except Exception:
+            pass
         no_delivery = await probe.wait_for_webhook_or_none(timeout=2.0)
         assert no_delivery is None, f"Expected no delivery after unregister, but got: {no_delivery}"
     finally:
-        if trigger:
-            trigger.unregister()
         if http_fn:
             http_fn.unregister()
         await probe.close()
@@ -551,9 +528,7 @@ async def test_delivers_with_put_method() -> None:
     await probe.start()
 
     function_id = _unique_function_id("test::http_external::put_method")
-    topic = _unique_topic("test.http_external.put_method")
     payload = {"action": "update", "id": 42}
-    trigger = None
     http_fn = None
 
     try:
@@ -563,20 +538,15 @@ async def test_delivers_with_put_method() -> None:
         )
         time.sleep(0.5)
 
-        trigger = client.register_trigger(
-            {"type": "durable:subscriber", "function_id": function_id, "config": {"topic": topic}}
-        )
-        time.sleep(0.5)
-
-        client.trigger({"function_id": "iii::durable::publish", "payload": {"topic": topic, "data": payload}})
+        await _invoke(client, function_id, payload)
 
         webhook = await probe.wait_for_webhook(7.0)
 
         assert webhook["method"] == "PUT", f"Expected PUT, got {webhook['method']}"
-        assert webhook["body"] == payload
+        # Direct invocation injects caller metadata (e.g. _caller_worker_id) into
+        # the POSTed body, so assert the expected payload is a subset.
+        assert payload.items() <= webhook["body"].items()
     finally:
-        if trigger:
-            trigger.unregister()
         if http_fn:
             http_fn.unregister()
         await probe.close()

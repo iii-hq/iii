@@ -132,13 +132,6 @@ workers:
       #       type: webhook
       #       url: https://hooks.slack.com/services/xxx
 
-  - name: iii-queue
-    config:
-      adapter:
-        name: redis
-        config:
-          redis_url: redis://localhost:6379
-
   - name: iii-pubsub
     config:
       adapter:

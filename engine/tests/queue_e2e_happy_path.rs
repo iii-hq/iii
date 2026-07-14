@@ -31,7 +31,7 @@ async fn enqueue_process_ack_preserves_payload() {
     let captured_payloads: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_payload_capturing_function(&engine, "test::payload_check", captured_payloads.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
@@ -50,7 +50,7 @@ async fn enqueue_process_ack_preserves_payload() {
     });
 
     enqueue(
-        &engine,
+        &module,
         "default",
         "test::payload_check",
         sent_payload.clone(),
@@ -100,7 +100,7 @@ async fn condition_based_filtering_routes_matching_messages_only() {
         json!("important"),
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::for_test(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
     // register_functions must be called to make the "iii::durable::publish" service function

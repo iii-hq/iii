@@ -58,7 +58,7 @@ async fn retry_backoff_timing_is_exponential() {
         timestamps.clone(),
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
@@ -69,7 +69,7 @@ async fn retry_backoff_timing_is_exponential() {
         .expect("start_background_tasks should succeed");
 
     enqueue(
-        &engine,
+        &module,
         "backoff-test",
         "test::backoff_handler",
         json!({"task": "test_backoff"}),
@@ -164,7 +164,7 @@ async fn dlq_exhaustion_preserves_payload_and_metadata() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::dlq_handler", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
@@ -182,7 +182,7 @@ async fn dlq_exhaustion_preserves_payload_and_metadata() {
     });
 
     enqueue(
-        &engine,
+        &module,
         "dlq-test",
         "test::dlq_handler",
         sent_payload.clone(),
@@ -203,13 +203,13 @@ async fn dlq_exhaustion_preserves_payload_and_metadata() {
 
     // Verify DLQ count
     assert_eq!(
-        dlq_count(&engine, "dlq-test").await,
+        dlq_count(&module, "dlq-test").await,
         1,
         "Exactly one message should be in DLQ"
     );
 
     // Read DLQ content and verify structure
-    let messages = dlq_messages(&engine, "dlq-test", 10).await;
+    let messages = dlq_messages(&module, "dlq-test", 10).await;
     assert_eq!(messages.len(), 1, "Exactly one message should be in DLQ");
 
     let dlq_entry = &messages[0];
@@ -283,7 +283,7 @@ async fn max_retries_zero_sends_directly_to_dlq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::zero_retry_handler", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let module = QueueWorker::for_test(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
@@ -295,13 +295,13 @@ async fn max_retries_zero_sends_directly_to_dlq() {
 
     // Verify DLQ starts empty
     assert_eq!(
-        dlq_count(&engine, "zero-retry").await,
+        dlq_count(&module, "zero-retry").await,
         0,
         "DLQ should start empty"
     );
 
     enqueue(
-        &engine,
+        &module,
         "zero-retry",
         "test::zero_retry_handler",
         json!({"task": "should_dlq_immediately"}),
@@ -321,7 +321,7 @@ async fn max_retries_zero_sends_directly_to_dlq() {
 
     // Verify message in DLQ
     assert_eq!(
-        dlq_count(&engine, "zero-retry").await,
+        dlq_count(&module, "zero-retry").await,
         1,
         "Message should be in DLQ after single failed attempt"
     );
@@ -336,7 +336,7 @@ async fn max_retries_zero_sends_directly_to_dlq() {
     );
 
     // Verify DLQ content
-    let messages = dlq_messages(&engine, "zero-retry", 10).await;
+    let messages = dlq_messages(&module, "zero-retry", 10).await;
     assert_eq!(messages.len(), 1, "Exactly one message should be in DLQ");
     let job = &messages[0]["job"];
     assert_eq!(

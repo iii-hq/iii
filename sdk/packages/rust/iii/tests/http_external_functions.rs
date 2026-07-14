@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 
 use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
 use iii_sdk::RegisterFunction;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::FunctionInfo;
 
 fn unique_function_id(prefix: &str) -> String {
@@ -23,15 +23,6 @@ fn unique_function_id(prefix: &str) -> String {
         .unwrap()
         .as_millis();
     format!("{}::{}::{}", prefix, ts, uuid::Uuid::new_v4().simple())
-}
-
-fn unique_topic(prefix: &str) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    format!("{}.{}", prefix, ts)
 }
 
 #[derive(Debug, Clone)]
@@ -113,7 +104,7 @@ impl WebhookProbe {
             serde_json::from_slice(body_bytes).ok()
         };
 
-        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{\"ok\":true}";
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
         let _ = stream.write_all(response).await;
 
         CapturedWebhook {
@@ -130,12 +121,11 @@ impl WebhookProbe {
 }
 
 #[tokio::test]
-async fn delivers_queue_events_to_external_http_function() {
+async fn delivers_events_to_external_http_function() {
     let iii = common::shared_iii();
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::target::rs");
-    let topic = unique_topic("test::http_external::topic::rs");
     let payload = json!({"hello": "world", "count": 1});
 
     let http_fn = iii.register_function(
@@ -150,36 +140,23 @@ async fn delivers_queue_events_to_external_http_function() {
     );
     common::settle().await;
 
-    let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "durable:subscriber".to_string(),
+    let (trigger_result, webhook_result) = tokio::join!(
+        iii.trigger(TriggerRequest {
             function_id: function_id.clone(),
-            config: json!({"topic": topic}),
-            metadata: None,
-        })
-        .expect("register trigger");
-    common::settle().await;
-
-    iii.trigger(TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({"topic": topic, "data": payload}),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .expect("enqueue failed");
-
-    let webhook = probe
-        .wait_for_webhook(Duration::from_secs(7))
-        .await
-        .expect("no webhook received");
+            payload: payload.clone(),
+            action: None,
+            timeout_ms: None,
+        }),
+        probe.wait_for_webhook(Duration::from_secs(7)),
+    );
+    trigger_result.expect("invocation failed");
+    let webhook = webhook_result.expect("no webhook received");
 
     assert_eq!(webhook.method, "POST");
     assert_eq!(webhook.url, "/webhook");
     assert_eq!(webhook.body.as_ref().unwrap()["hello"], "world");
     assert_eq!(webhook.body.as_ref().unwrap()["count"], 1);
 
-    drop(_trigger);
     http_fn.unregister();
 }
 
@@ -254,7 +231,6 @@ async fn delivers_events_with_custom_headers() {
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::headers::rs");
-    let topic = unique_topic("test::http_external::headers::rs");
     let payload = json!({"msg": "with-headers"});
 
     let mut custom_headers = HashMap::new();
@@ -273,29 +249,17 @@ async fn delivers_events_with_custom_headers() {
     );
     common::settle().await;
 
-    let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "durable:subscriber".to_string(),
+    let (trigger_result, webhook_result) = tokio::join!(
+        iii.trigger(TriggerRequest {
             function_id: function_id.clone(),
-            config: json!({"topic": topic}),
-            metadata: None,
-        })
-        .expect("register trigger");
-    common::settle().await;
-
-    iii.trigger(TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({"topic": topic, "data": payload}),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .expect("enqueue failed");
-
-    let webhook = probe
-        .wait_for_webhook(Duration::from_secs(7))
-        .await
-        .expect("no webhook received");
+            payload: payload.clone(),
+            action: None,
+            timeout_ms: None,
+        }),
+        probe.wait_for_webhook(Duration::from_secs(7)),
+    );
+    trigger_result.expect("invocation failed");
+    let webhook = webhook_result.expect("no webhook received");
 
     assert_eq!(webhook.method, "POST");
     assert_eq!(
@@ -307,7 +271,6 @@ async fn delivers_events_with_custom_headers() {
         Some("123")
     );
 
-    drop(_trigger);
     http_fn.unregister();
 }
 
@@ -319,8 +282,6 @@ async fn delivers_events_to_multiple_external_functions() {
     let probe_b = WebhookProbe::start().await;
     let function_id_a = unique_function_id("test::http_external::multi_a::rs");
     let function_id_b = unique_function_id("test::http_external::multi_b::rs");
-    let topic_a = unique_topic("test::http_external::multi_a::rs");
-    let topic_b = unique_topic("test::http_external::multi_b::rs");
     let payload_a = json!({"source": "topic-a", "value": 1});
     let payload_b = json!({"source": "topic-b", "value": 2});
 
@@ -346,55 +307,30 @@ async fn delivers_events_to_multiple_external_functions() {
     );
     common::settle().await;
 
-    let _trigger_a = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "durable:subscriber".to_string(),
+    let (trigger_a_result, trigger_b_result, webhook_a_result, webhook_b_result) = tokio::join!(
+        iii.trigger(TriggerRequest {
             function_id: function_id_a.clone(),
-            config: json!({"topic": topic_a}),
-            metadata: None,
-        })
-        .expect("register trigger a");
-    let _trigger_b = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "durable:subscriber".to_string(),
+            payload: payload_a.clone(),
+            action: None,
+            timeout_ms: None,
+        }),
+        iii.trigger(TriggerRequest {
             function_id: function_id_b.clone(),
-            config: json!({"topic": topic_b}),
-            metadata: None,
-        })
-        .expect("register trigger b");
-    common::settle().await;
-
-    iii.trigger(TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({"topic": topic_a, "data": payload_a}),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .expect("enqueue a failed");
-    iii.trigger(TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({"topic": topic_b, "data": payload_b}),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .expect("enqueue b failed");
-
-    let webhook_a = probe_a
-        .wait_for_webhook(Duration::from_secs(7))
-        .await
-        .expect("no webhook received for a");
-    let webhook_b = probe_b
-        .wait_for_webhook(Duration::from_secs(7))
-        .await
-        .expect("no webhook received for b");
+            payload: payload_b.clone(),
+            action: None,
+            timeout_ms: None,
+        }),
+        probe_a.wait_for_webhook(Duration::from_secs(7)),
+        probe_b.wait_for_webhook(Duration::from_secs(7)),
+    );
+    trigger_a_result.expect("invocation a failed");
+    trigger_b_result.expect("invocation b failed");
+    let webhook_a = webhook_a_result.expect("no webhook received for a");
+    let webhook_b = webhook_b_result.expect("no webhook received for b");
 
     assert_eq!(webhook_a.body.as_ref().unwrap()["source"], "topic-a");
     assert_eq!(webhook_b.body.as_ref().unwrap()["source"], "topic-b");
 
-    drop(_trigger_a);
-    drop(_trigger_b);
     http_fn_a.unregister();
     http_fn_b.unregister();
 }
@@ -405,7 +341,6 @@ async fn stops_delivering_events_after_unregister() {
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::stop::rs");
-    let topic = unique_topic("test::http_external::stop::rs");
     let payload_before = json!({"phase": "before-unregister"});
     let payload_after = json!({"phase": "after-unregister"});
 
@@ -421,46 +356,33 @@ async fn stops_delivering_events_after_unregister() {
     );
     common::settle().await;
 
-    let trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "durable:subscriber".to_string(),
+    let (trigger_result, webhook_result) = tokio::join!(
+        iii.trigger(TriggerRequest {
             function_id: function_id.clone(),
-            config: json!({"topic": topic}),
-            metadata: None,
-        })
-        .expect("register trigger");
-    common::settle().await;
-
-    iii.trigger(TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({"topic": topic, "data": payload_before}),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .expect("enqueue before failed");
-
-    let webhook_before = probe
-        .wait_for_webhook(Duration::from_secs(7))
-        .await
-        .expect("no webhook before unregister");
+            payload: payload_before.clone(),
+            action: None,
+            timeout_ms: None,
+        }),
+        probe.wait_for_webhook(Duration::from_secs(7)),
+    );
+    trigger_result.expect("invocation before unregister failed");
+    let webhook_before = webhook_result.expect("no webhook before unregister");
     assert_eq!(
         webhook_before.body.as_ref().unwrap()["phase"],
         "before-unregister"
     );
 
-    drop(trigger);
     http_fn.unregister();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    iii.trigger(TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({"topic": topic, "data": payload_after}),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .expect("enqueue after failed");
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id,
+            payload: payload_after,
+            action: None,
+            timeout_ms: None,
+        })
+        .await;
 
     let received_after = probe
         .wait_for_webhook(Duration::from_secs(2))
@@ -478,7 +400,6 @@ async fn delivers_events_using_put_method() {
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::put_method::rs");
-    let topic = unique_topic("test::http_external::put::rs");
     let payload = json!({"method_test": "put", "value": 42});
 
     let http_fn = iii.register_function(
@@ -493,34 +414,21 @@ async fn delivers_events_using_put_method() {
     );
     common::settle().await;
 
-    let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "durable:subscriber".to_string(),
+    let (trigger_result, webhook_result) = tokio::join!(
+        iii.trigger(TriggerRequest {
             function_id: function_id.clone(),
-            config: json!({"topic": topic}),
-            metadata: None,
-        })
-        .expect("register trigger");
-    common::settle().await;
-
-    iii.trigger(TriggerRequest {
-        function_id: "iii::durable::publish".to_string(),
-        payload: json!({"topic": topic, "data": payload}),
-        action: None,
-        timeout_ms: None,
-    })
-    .await
-    .expect("enqueue failed");
-
-    let webhook = probe
-        .wait_for_webhook(Duration::from_secs(7))
-        .await
-        .expect("no webhook received");
+            payload: payload.clone(),
+            action: None,
+            timeout_ms: None,
+        }),
+        probe.wait_for_webhook(Duration::from_secs(7)),
+    );
+    trigger_result.expect("invocation failed");
+    let webhook = webhook_result.expect("no webhook received");
 
     assert_eq!(webhook.method, "PUT");
     assert_eq!(webhook.body.as_ref().unwrap()["method_test"], "put");
     assert_eq!(webhook.body.as_ref().unwrap()["value"], 42);
 
-    drop(_trigger);
     http_fn.unregister();
 }

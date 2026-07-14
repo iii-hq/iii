@@ -2,19 +2,10 @@ version: 2
 mode: docs
 docs:
   include:
-    - "docs/**/*.md"
-    - "docs/**/*.mdx"
+    - "docs/next/**/*.md"
+    - "docs/next/**/*.mdx"
   exclude:
-    - "docs/0-10-0/**"
-    - "docs/0-11-0/**"
-    - "docs/0-12-0/**"
-    - "docs/0-13-0/**"
-    - "docs/0-16-0/**"
-    - "docs/0-17-0/**"
-    - "docs/0-18-0/**"
-    - "docs/RELEASING.md"
-    - "docs/changelog/**"
-    - "docs/**/changelog/**"
+    - "docs/next/changelog/**"
     - "docs/next/tutorials/linkly/_workspace/**"
 ai_check:
   provider: anthropic

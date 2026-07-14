@@ -31,3 +31,9 @@ To refresh generated SDK API reference files before previewing docs:
 ```bash
 pnpm generate:api-docs
 ```
+
+## Releasing
+
+The docs are versioned with a Next / Latest / archive scheme. To author upcoming docs in `docs/next/`
+and understand how a release promotes them into the published Latest, see
+[RELEASING.md](./RELEASING.md).

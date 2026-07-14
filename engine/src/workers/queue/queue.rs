@@ -32,7 +32,7 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
-    engine::{Engine, EngineTrait, Handler, QueueEnqueuer, RegisterFunctionRequest},
+    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     protocol::ErrorBody,
     telemetry::{SpanExt, inject_baggage_from_context, inject_traceparent_from_context},
@@ -597,41 +597,6 @@ impl QueueWorker {
     }
 }
 
-#[async_trait]
-impl QueueEnqueuer for QueueWorker {
-    async fn enqueue_to_function_queue(
-        &self,
-        queue_name: &str,
-        function_id: &str,
-        data: Value,
-        message_id: String,
-        traceparent: Option<String>,
-        baggage: Option<String>,
-    ) -> anyhow::Result<()> {
-        self.enqueue_to_function_queue(
-            queue_name,
-            function_id,
-            data,
-            &message_id,
-            traceparent,
-            baggage,
-        )
-        .await
-    }
-
-    async fn function_queue_dlq_count(&self, queue_name: &str) -> anyhow::Result<u64> {
-        self.function_queue_dlq_count(queue_name).await
-    }
-
-    async fn function_queue_dlq_messages(
-        &self,
-        queue_name: &str,
-        count: usize,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
-        self.function_queue_dlq_messages(queue_name, count).await
-    }
-}
-
 impl TriggerRegistrator for QueueWorker {
     fn register_trigger(
         &self,
@@ -1094,19 +1059,23 @@ impl QueueWorker {
     }
 }
 
-/// Strip the timeline relevance tags (`iii.tag.kind`, `iii.tag.display_name`)
-/// from an incoming W3C baggage header before attaching it to a queue job's
-/// span context. The publisher's baggage necessarily carries its OWN scope's
-/// tags (a turn enqueuing its next step is inside `iii.tag.kind=harness.turn`),
-/// and a delivery starts a NEW logical scope: the `fn_queue` span stamps its
-/// own `queue.process` identity directly, and the consumed function re-stamps
-/// its own tags. Without the scrub, a baggage-materializing span processor
-/// copies the stale publisher tags onto this span (duplicate keys next to the
-/// direct ones) and onto every span under it. Identity/lineage keys
-/// (`iii.session.id`, `iii.message.id`, `iii.tag.message`, …) pass through
-/// untouched. Returns `None` when nothing is left.
+/// Strip the timeline relevance tags (`iii.tag.kind`, `iii.tag.display_name`,
+/// `iii.tag.hidden`) from an incoming W3C baggage header before attaching it
+/// to a queue job's span context. The publisher's baggage necessarily carries
+/// its OWN scope's tags (a turn enqueuing its next step is inside
+/// `iii.tag.kind=harness.turn`, and the enqueue call site itself may ride an
+/// `iii.tag.hidden` scope — harness `turn enqueue`), and a delivery starts a
+/// NEW logical scope: the `fn_queue` span stamps its own `queue.process`
+/// identity directly, and the consumed function re-stamps its own tags.
+/// Without the scrub, a baggage-materializing span processor copies the stale
+/// publisher tags onto this span (duplicate keys next to the direct ones) and
+/// onto every span under it — for `iii.tag.hidden` that would mark the entire
+/// next delivery subtree as internal and trace UIs would hide the whole step.
+/// Identity/lineage keys (`iii.session.id`, `iii.message.id`,
+/// `iii.tag.message`, …) pass through untouched. Returns `None` when nothing
+/// is left.
 fn scrub_relevance_tags(header: &str) -> Option<String> {
-    const SCRUBBED: [&str; 2] = ["iii.tag.kind", "iii.tag.display_name"];
+    const SCRUBBED: [&str; 3] = ["iii.tag.kind", "iii.tag.display_name", "iii.tag.hidden"];
     let kept: Vec<&str> = header
         .split(',')
         .filter(|entry| {
@@ -1145,7 +1114,6 @@ impl Worker for QueueWorker {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing QueueModule");
         self.config_snapshot().validate()?;
-        self.engine.set_queue_module(Arc::new(self.clone())).await;
 
         let trigger_type = TriggerType::new(
             "durable:subscriber",
@@ -1330,13 +1298,6 @@ impl ConfigurableWorker for QueueWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-queue",
-    QueueWorker,
-    description = "Async job processing with named queues, retries, and dead-letter support.",
-    enabled_by_default = true
-);
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1362,6 +1323,20 @@ mod tests {
         );
         // All entries scrubbed → no header at all.
         assert_eq!(scrub_relevance_tags("iii.tag.kind=queue.process"), None);
+    }
+
+    #[test]
+    fn scrub_relevance_tags_drops_the_hidden_tag() {
+        // The harness wraps its next-step enqueue in an `iii.tag.hidden`
+        // baggage scope ("turn enqueue"); replayed verbatim it would mark the
+        // ENTIRE next delivery subtree internal and trace UIs would hide the
+        // whole step.
+        let header = "iii.tag.hidden=turn%20enqueue,iii.session.id=S-1";
+        assert_eq!(
+            scrub_relevance_tags(header).as_deref(),
+            Some("iii.session.id=S-1"),
+        );
+        assert_eq!(scrub_relevance_tags("iii.tag.hidden=turn%20enqueue"), None);
     }
 
     // =========================================================================

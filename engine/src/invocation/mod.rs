@@ -89,22 +89,28 @@ impl InvocationHandler {
         // Using OTEL semantic conventions for FaaS (Function as a Service)
         let is_builtin = crate::workers::telemetry::is_iii_builtin_function_id(&function_id);
 
-        // Decide whether the ENGINE emits its own `call <fn>` span here:
+        // Decide whether the ENGINE emits its own `call <fn>` span here
+        // (policy in `telemetry::should_suppress_invocation_span`):
+        //   - Observability functions (`engine::traces::*`, `engine::logs::*`,
+        //     …) are NEVER traced — the pipeline must not observe itself.
         //   - Built-in functions (`state::*`, `stream::*`, `engine::*`,
-        //     `configuration::*`, `iii::*`, …) are executed in-process by the
-        //     engine and fire at high frequency — little trace value, high
-        //     volume. Suppressed by default; re-enable with
-        //     `III_OTEL_TRACE_BUILTINS=true`.
+        //     `configuration::*`, `iii::*`, …) execute in-process, so this
+        //     span is the only possible record of the call. Emitted when the
+        //     caller supplied a `traceparent` — the call then nests inside
+        //     the caller's trace (and carries error status when it fails).
+        //     Context-free built-in calls (console RPC polling, boot reads,
+        //     engine machinery) stay suppressed so they never root new
+        //     single-span traces; `III_OTEL_TRACE_BUILTINS=true` forces them.
         //   - Worker-routed (non-builtin) functions are executed by an external
         //     worker that emits its own handler span (`execute <fn>`, INTERNAL,
         //     service = that worker). An engine-side `call` span would wrap the
         //     same logical invocation as a cross-service duplicate, so suppress
         //     it and let the worker's span be the canonical one.
-        let suppress_span = if is_builtin {
-            !crate::workers::telemetry::trace_builtins_enabled()
-        } else {
-            true
-        };
+        let suppress_span = crate::workers::telemetry::should_suppress_invocation_span(
+            &function_id,
+            traceparent.is_some(),
+            crate::workers::telemetry::trace_builtins_enabled(),
+        );
 
         let span = if suppress_span {
             tracing::Span::none()

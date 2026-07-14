@@ -1130,7 +1130,8 @@ class III:
         The routing behavior and return type depend on the ``action`` field:
 
         - No action: synchronous -- waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns ``EnqueueResult``.
+        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns a dict
+          with ``messageReceiptId``.
         - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
 
         Args:
@@ -1139,8 +1140,8 @@ class III:
 
         Returns:
             The function's return value for synchronous (no-action) calls,
-            an ``EnqueueResult`` for enqueue actions, or ``None`` for void
-            actions.
+            a ``{"messageReceiptId": ...}`` dict for enqueue actions, or
+            ``None`` for void actions.
 
         Raises:
             InvocationError: For any engine rejection. Inspect ``code``:
@@ -1159,7 +1160,8 @@ class III:
         The routing behavior and return type depend on the ``action`` field:
 
         - No action: synchronous -- waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns ``EnqueueResult``.
+        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns a dict
+          with ``messageReceiptId``.
         - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
 
         Args:
@@ -1167,7 +1169,9 @@ class III:
                 and optional ``action`` / ``timeout_ms``.
 
         Returns:
-            The result of the function invocation, or ``None`` for void calls.
+            The function's return value for synchronous (no-action) calls,
+            a ``{"messageReceiptId": ...}`` dict for enqueue actions, or
+            ``None`` for void actions.
 
         Raises:
             InvocationError: For any engine rejection. Inspect ``code``:

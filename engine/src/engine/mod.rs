@@ -39,42 +39,17 @@ use crate::{
     },
 };
 
-/// Abstraction for enqueuing messages to named queues.
-///
-/// This trait decouples the Engine from the concrete QueueWorker
-/// so that dispatch routing can push work onto a named queue without
-/// creating a circular dependency.
-#[async_trait::async_trait]
-pub trait QueueEnqueuer: Send + Sync {
-    async fn enqueue_to_function_queue(
-        &self,
-        queue_name: &str,
-        function_id: &str,
-        data: serde_json::Value,
-        message_id: String,
-        traceparent: Option<String>,
-        baggage: Option<String>,
-    ) -> anyhow::Result<()>;
-
-    async fn function_queue_dlq_count(&self, _queue_name: &str) -> anyhow::Result<u64> {
-        Ok(0)
-    }
-
-    async fn function_queue_dlq_messages(
-        &self,
-        _queue_name: &str,
-        _count: usize,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
-        Ok(vec![])
-    }
-}
-
 /// Magic prefix for OTLP binary frames (used by SDKs for trace spans)
 const OTLP_WS_PREFIX: &[u8] = b"OTLP";
 /// Magic prefix for metrics binary frames (used by SDKs for OTEL metrics)
 const MTRC_WS_PREFIX: &[u8] = b"MTRC";
 /// Magic prefix for logs binary frames (used by SDKs for OTEL logs)
 const LOGS_WS_PREFIX: &[u8] = b"LOGS";
+
+/// Function provided by the standalone `queue` worker for named enqueue
+/// actions. The engine owns receipt generation and uses this function only as
+/// the durable transport boundary.
+const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
 
 /// Handles binary frames with OTEL telemetry prefixes.
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
@@ -243,7 +218,6 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
-    pub queue_module: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
     /// Records the current owning WS worker for each registered function id.
     /// Populated when a worker sends `Message::RegisterFunction`; used by
     /// `cleanup_worker` and `remove_worker_registrations` to atomically skip
@@ -292,16 +266,11 @@ impl Engine {
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
-            queue_module: Arc::new(tokio::sync::RwLock::new(None)),
             function_owners: Arc::new(DashMap::new()),
             external_function_owners: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
         }
-    }
-
-    pub async fn set_queue_module(&self, module: Arc<dyn QueueEnqueuer>) {
-        *self.queue_module.write().await = Some(module);
     }
 
     /// Returns the effective `iii-worker-manager` port. Resolved from config
@@ -1024,6 +993,10 @@ impl Engine {
                         let data = data.clone();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
+                        let queued_baggage = crate::telemetry::baggage_with_function_id(
+                            baggage.as_deref(),
+                            &function_id,
+                        );
 
                         let span = {
                             // Parent context must be on `Context::current()`
@@ -1053,25 +1026,24 @@ impl Engine {
 
                         tokio::spawn(
                             async move {
-                                let queue_module = engine.queue_module.read().await;
-                                let result = match queue_module.as_ref() {
-                                    Some(qm) => {
-                                        qm.enqueue_to_function_queue(
-                                            &queue,
-                                            &function_id,
-                                            data.clone(),
-                                            message_receipt_id.clone(),
-                                            traceparent.clone(),
-                                            baggage.clone(),
-                                        )
-                                        .await
-                                    }
-                                    None => Err(anyhow::anyhow!("QueueModule not loaded")),
-                                };
+                                let result = engine
+                                    .call_with_metadata(
+                                        ENQUEUE_PROVIDER_FUNCTION_ID,
+                                        serde_json::json!({
+                                            "queue": queue.clone(),
+                                            "function_id": function_id.clone(),
+                                            "data": data,
+                                            "messageReceiptId": message_receipt_id.clone(),
+                                            "traceparent": traceparent.clone(),
+                                            "baggage": queued_baggage,
+                                        }),
+                                        None,
+                                    )
+                                    .await;
 
                                 if let Some(invocation_id) = invocation_id {
                                     match result {
-                                        Ok(()) => {
+                                        Ok(_) => {
                                             engine
                                                 .send_msg(
                                                     &worker,
@@ -1089,6 +1061,23 @@ impl Engine {
                                                 .await;
                                         }
                                         Err(err) => {
+                                            // DX: a `function_not_found` on the
+                                            // provider means no queue worker is
+                                            // installed. Turn the bare error into
+                                            // an actionable fix instead of leaking
+                                            // the internal provider id alone.
+                                            let message = if err.code == "function_not_found" {
+                                                format!(
+                                                    "No queue provider is installed. \
+                                                     `TriggerAction::Enqueue` routes through the \
+                                                     `{}` provider, which the standalone queue \
+                                                     worker registers. Add it with \
+                                                     `iii worker add queue`. (underlying: {})",
+                                                    ENQUEUE_PROVIDER_FUNCTION_ID, err.message
+                                                )
+                                            } else {
+                                                err.to_string()
+                                            };
                                             engine
                                                 .send_msg(
                                                     &worker,
@@ -1098,7 +1087,7 @@ impl Engine {
                                                         result: None,
                                                         error: Some(ErrorBody::new(
                                                             "enqueue_error",
-                                                            err.to_string(),
+                                                            message,
                                                         )),
                                                         traceparent: traceparent.clone(),
                                                         baggage: baggage.clone(),
@@ -2000,7 +1989,7 @@ mod tests {
     use std::{
         collections::HashMap,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
@@ -2660,6 +2649,131 @@ mod tests {
         }
 
         assert_eq!(worker.invocation_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_routes_through_registered_queue_provider() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_for_handler = captured.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                let captured = captured_for_handler.clone();
+                async move {
+                    *captured.lock().unwrap() = Some(input);
+                    FunctionResult::Success(Some(json!({
+                        "messageReceiptId": "provider-must-not-own-the-receipt"
+                    })))
+                }
+            }),
+        );
+
+        let invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(invocation_id),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: Some(
+                        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".to_string(),
+                    ),
+                    baggage: Some("iii.session.id=s1,iii.function.id=harness::send".to_string()),
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        let result = match outbound {
+            Outbound::Protocol(Message::InvocationResult {
+                invocation_id: got_id,
+                result,
+                error,
+                ..
+            }) => {
+                assert_eq!(got_id, invocation_id);
+                assert!(error.is_none());
+                result.unwrap()
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        };
+        let receipt = result["messageReceiptId"]
+            .as_str()
+            .expect("engine should return a receipt");
+        assert_ne!(receipt, "provider-must-not-own-the-receipt");
+
+        let input = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(input["queue"], "harness-turn");
+        assert_eq!(input["function_id"], "harness::turn");
+        assert_eq!(input["data"], json!({"session_id": "s1"}));
+        assert_eq!(input["messageReceiptId"], receipt);
+        assert_eq!(
+            input["traceparent"],
+            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        );
+        let queued_baggage = input["baggage"].as_str().unwrap();
+        assert!(queued_baggage.contains("iii.session.id=s1"));
+        assert!(queued_baggage.contains("iii.function.id=harness::turn"));
+        assert!(!queued_baggage.contains("harness::send"));
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_fails_closed_without_queue_provider() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue failure")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                let error = error.expect("enqueue should fail without a provider");
+                assert_eq!(error.code, "enqueue_error");
+                assert!(error.message.contains("engine::queue::enqueue"));
+                // DX: the fail-closed error must tell the user how to fix it.
+                assert!(
+                    error.message.contains("iii worker add queue"),
+                    "expected install guidance, got: {}",
+                    error.message
+                );
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
     }
 
     #[tokio::test]

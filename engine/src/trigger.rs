@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
+pub const KNOWN_TRIGGER_TYPE_PROVIDERS: &[(&str, &str)] = &[
     ("http", "iii-http"),
     ("cron", "iii-cron"),
     ("subscribe", "iii-pubsub"),
     ("state", "iii-state"),
-    ("durable:subscriber", "iii-queue"),
+    ("durable:subscriber", "queue"),
     ("stream", "iii-stream"),
     ("stream:join", "iii-stream"),
     ("stream:leave", "iii-stream"),
@@ -27,15 +27,11 @@ pub const BUILTIN_TRIGGER_TYPES: &[(&str, &str)] = &[
     ("configuration", "configuration"),
 ];
 
-/// Maps a trigger-type id to the in-process worker that owns it. In-process
-/// workers register their `TriggerType` with `worker_id: None`, so the
-/// `worker_registry` Uuid lookup used for WebSocket workers cannot attribute
-/// them. The static table is the source of truth for both error reporting
-/// (`RegisterTriggerError::UnknownBuiltin`) and discovery (`engine_fn`
-/// rolls trigger types up into the owning runtime worker's `workers::info`
-/// envelope).
-pub fn builtin_trigger_type_owner(trigger_type_id: &str) -> Option<&'static str> {
-    BUILTIN_TRIGGER_TYPES
+/// Maps a known trigger type to the worker package that provides it. Connected
+/// workers are attributed by UUID first; this table supplies install guidance
+/// when the provider is absent and discovery fallback for in-process workers.
+pub fn known_trigger_type_provider(trigger_type_id: &str) -> Option<&'static str> {
+    KNOWN_TRIGGER_TYPE_PROVIDERS
         .iter()
         .find(|(id, _)| *id == trigger_type_id)
         .map(|(_, worker)| *worker)
@@ -288,7 +284,7 @@ impl TriggerRegistry {
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), RegisterTriggerError> {
         let trigger_type_id = trigger.trigger_type.clone();
         let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
-            if let Some(worker_name) = builtin_trigger_type_owner(&trigger_type_id) {
+            if let Some(worker_name) = known_trigger_type_provider(&trigger_type_id) {
                 tracing::error!(
                     "Trigger type {} requires the {} worker, which is not active in your project.\n\n  To fix this, run:\n\n    {}\n",
                     trigger_type_id.purple().bold(),
@@ -636,6 +632,21 @@ mod tests {
         assert!(
             err_msg.contains("iii worker add iii-http"),
             "Expected hint with 'iii worker add iii-http', got: {err_msg}"
+        );
+        assert!(registry.triggers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn missing_durable_subscriber_points_to_standalone_queue_worker() {
+        let registry = TriggerRegistry::new();
+        let result = registry
+            .register_trigger(make_trigger("t1", "durable:subscriber"))
+            .await;
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("iii worker add queue"),
+            "expected standalone queue installation hint, got: {err_msg}"
         );
         assert!(registry.triggers.is_empty());
     }

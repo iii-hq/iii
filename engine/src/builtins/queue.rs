@@ -209,6 +209,7 @@ pub struct BuiltinQueue {
     pubsub: Arc<BuiltInPubSubLite>,
     config: QueueConfig,
     subscriptions: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
+    subscription_configs: Arc<RwLock<HashMap<String, SubscriptionConfig>>>,
 }
 
 impl BuiltinQueue {
@@ -222,6 +223,7 @@ impl BuiltinQueue {
             pubsub,
             config,
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            subscription_configs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -491,6 +493,19 @@ impl BuiltinQueue {
         Ok(())
     }
 
+    /// Overlays per-subscriber retry tuning onto a job's publish-time
+    /// defaults. Jobs are stamped with the global config at push time; the
+    /// subscriber's own maxRetries/backoffDelayMs must win at retry time so
+    /// tuning also applies to jobs enqueued before the subscriber connected
+    /// or rebuilt from storage.
+    async fn apply_subscription_overrides(&self, job: &mut Job) {
+        let configs = self.subscription_configs.read().await;
+        if let Some(cfg) = configs.get(&job.queue) {
+            job.max_attempts = cfg.effective_max_attempts(job.max_attempts);
+            job.backoff_delay_ms = cfg.effective_backoff_ms(job.backoff_delay_ms);
+        }
+    }
+
     pub async fn nack(&self, queue: &str, job_id: &str, error: &str) -> anyhow::Result<()> {
         let job_key = self.job_key(queue, job_id);
         let job_value = self.kv_store.get_job(&job_key).await;
@@ -503,6 +518,7 @@ impl BuiltinQueue {
         };
 
         let mut job: Job = serde_json::from_value(job_value)?;
+        self.apply_subscription_overrides(&mut job).await;
         job.increment_attempts();
 
         if job.is_exhausted() {
@@ -601,6 +617,18 @@ impl BuiltinQueue {
             .and_then(|c| c.mode)
             .unwrap_or(self.config.mode);
 
+        if let Some(cfg) = &config {
+            // Recorded so nack/inline-retry can apply per-subscriber retry
+            // tuning to jobs stamped with global defaults at publish time.
+            // ponytail: keyed by queue, last subscriber wins; entries are kept
+            // on unsubscribe so a sibling subscription on the same queue
+            // keeps its tuning.
+            self.subscription_configs
+                .write()
+                .await
+                .insert(queue.to_string(), cfg.clone());
+        }
+
         let task_handle = match effective_mode {
             QueueMode::Fifo => {
                 let concurrency = config
@@ -636,7 +664,6 @@ impl BuiltinQueue {
                     Arc::new(self.clone()),
                     queue.to_string(),
                     handler,
-                    config,
                     effective_concurrency,
                 );
                 tokio::spawn(async move {
@@ -839,6 +866,7 @@ impl Clone for BuiltinQueue {
             pubsub: Arc::clone(&self.pubsub),
             config: self.config.clone(),
             subscriptions: Arc::clone(&self.subscriptions),
+            subscription_configs: Arc::clone(&self.subscription_configs),
         }
     }
 }
@@ -853,6 +881,8 @@ async fn process_job_with_inline_retry(
     mut job: Job,
     group_id_for_logging: Option<&str>,
 ) {
+    queue_impl.apply_subscription_overrides(&mut job).await;
+
     loop {
         match handler.handle(&job).await {
             Ok(()) => {
@@ -915,7 +945,6 @@ impl Worker {
         queue_impl: Arc<BuiltinQueue>,
         queue_name: String,
         handler: Arc<dyn JobHandler>,
-        _subscription_config: Option<SubscriptionConfig>,
         concurrency: u32,
     ) -> Self {
         Self {
@@ -2819,5 +2848,205 @@ mod tests {
         // Pop moves from waiting to active, depth should stay same
         let _job = queue.pop("test_queue").await;
         assert_eq!(queue.queue_depth("test_queue").await, 2);
+    }
+
+    // =========================================================================
+    // Per-subscriber retry tuning (MOT-3947)
+    // =========================================================================
+
+    struct FailCounter {
+        invocations: Arc<RwLock<u32>>,
+    }
+
+    #[async_trait]
+    impl JobHandler for FailCounter {
+        async fn handle(&self, _job: &Job) -> Result<(), String> {
+            *self.invocations.write().await += 1;
+            Err("intentional failure".to_string())
+        }
+    }
+
+    async fn wait_for_dlq(queue: &BuiltinQueue, name: &str) {
+        for _ in 0..200 {
+            if queue.dlq_count(name).await >= 1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for job to reach the DLQ on {name}");
+    }
+
+    #[tokio::test]
+    async fn test_subscription_max_attempts_applied_concurrent() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        // Global default: 3 attempts, 1s backoff.
+        let queue = BuiltinQueue::new(kv_store, pubsub, QueueConfig::default());
+
+        let invocations = Arc::new(RwLock::new(0));
+        let handler = Arc::new(FailCounter {
+            invocations: Arc::clone(&invocations),
+        });
+
+        queue
+            .subscribe(
+                "tuned_concurrent_q",
+                handler,
+                Some(SubscriptionConfig {
+                    concurrency: None,
+                    max_attempts: Some(1),
+                    backoff_ms: Some(1),
+                    mode: None,
+                }),
+            )
+            .await;
+
+        queue
+            .push("tuned_concurrent_q", serde_json::json!({}), None, None)
+            .await;
+
+        wait_for_dlq(&queue, "tuned_concurrent_q").await;
+        assert_eq!(
+            *invocations.read().await,
+            1,
+            "subscriber max_attempts=1 must yield exactly one invocation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_subscription_max_attempts_applied_fifo() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let queue = BuiltinQueue::new(kv_store, pubsub, QueueConfig::default());
+
+        let invocations = Arc::new(RwLock::new(0));
+        let handler = Arc::new(FailCounter {
+            invocations: Arc::clone(&invocations),
+        });
+
+        queue
+            .subscribe(
+                "tuned_fifo_q",
+                handler,
+                Some(SubscriptionConfig {
+                    concurrency: None,
+                    max_attempts: Some(2),
+                    backoff_ms: Some(1),
+                    mode: Some(QueueMode::Fifo),
+                }),
+            )
+            .await;
+
+        queue
+            .push("tuned_fifo_q", serde_json::json!({}), None, None)
+            .await;
+
+        wait_for_dlq(&queue, "tuned_fifo_q").await;
+        assert_eq!(
+            *invocations.read().await,
+            2,
+            "subscriber max_attempts=2 must yield exactly two invocations"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nack_honors_subscription_max_attempts() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let queue = BuiltinQueue::new(kv_store, pubsub, QueueConfig::default());
+
+        queue.subscription_configs.write().await.insert(
+            "nack_max_q".to_string(),
+            SubscriptionConfig {
+                concurrency: None,
+                max_attempts: Some(1),
+                backoff_ms: None,
+                mode: None,
+            },
+        );
+
+        queue
+            .push("nack_max_q", serde_json::json!({}), None, None)
+            .await;
+        let job = queue.pop("nack_max_q").await.unwrap();
+        // Publish time stamps the global default; the subscription must win.
+        assert_eq!(job.max_attempts, 3);
+
+        queue.nack("nack_max_q", &job.id, "err").await.unwrap();
+        assert_eq!(
+            queue.dlq_count("nack_max_q").await,
+            1,
+            "first failure must exhaust the job when subscription max_attempts=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nack_honors_subscription_backoff() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        // Global default backoff: 1000ms.
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, QueueConfig::default());
+
+        queue.subscription_configs.write().await.insert(
+            "nack_backoff_q".to_string(),
+            SubscriptionConfig {
+                concurrency: None,
+                max_attempts: Some(5),
+                backoff_ms: Some(5),
+                mode: None,
+            },
+        );
+
+        queue
+            .push("nack_backoff_q", serde_json::json!({}), None, None)
+            .await;
+        let job = queue.pop("nack_backoff_q").await.unwrap();
+
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        queue.nack("nack_backoff_q", &job.id, "err").await.unwrap();
+
+        let job_key = queue.job_key("nack_backoff_q", &job.id);
+        let stored: Job =
+            serde_json::from_value(kv_store.get_job(&job_key).await.unwrap()).unwrap();
+        let process_at = stored.process_at.unwrap();
+        assert!(
+            process_at < before + 500,
+            "retry must use the subscription backoff (5ms), not the 1000ms default; got +{}ms",
+            process_at.saturating_sub(before)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_registers_retry_config() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let queue = BuiltinQueue::new(kv_store, pubsub, QueueConfig::default());
+
+        let handle = queue
+            .subscribe(
+                "register_cfg_q",
+                Arc::new(TestHandler { should_fail: false }),
+                Some(SubscriptionConfig {
+                    concurrency: None,
+                    max_attempts: Some(7),
+                    backoff_ms: Some(9),
+                    mode: None,
+                }),
+            )
+            .await;
+
+        {
+            let configs = queue.subscription_configs.read().await;
+            let cfg = configs
+                .get("register_cfg_q")
+                .expect("subscribe must record the subscription config");
+            assert_eq!(cfg.max_attempts, Some(7));
+            assert_eq!(cfg.backoff_ms, Some(9));
+        }
+
+        queue.unsubscribe(handle).await;
     }
 }
