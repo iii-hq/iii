@@ -44,6 +44,7 @@ http(callback: Callable[[StreamRequest, StreamResponse], Awaitable[HttpResponse[
 #### Parameters
 
 <ParamField body="callback" type="Callable[[StreamRequest, StreamResponse], Awaitable[HttpResponse[Any] | None]]" required>
+  Async handler ``(req, res) -> HttpResponse | None`` invoked with the typed StreamRequest and StreamResponse.
 </ParamField>
 
 
@@ -57,9 +58,9 @@ API key sent via a custom header.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `header` | `str` | Yes | - |
+| `header` | `str` | Yes | HTTP header name for the API key. |
 | `type` | `Literal['api_key']` | No | - |
-| `value_key` | `str` | Yes | - |
+| `value_key` | `str` | Yes | Environment variable name containing the API key value. |
 
 ---
 
@@ -69,7 +70,7 @@ Bearer token authentication.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `token_key` | `str` | Yes | - |
+| `token_key` | `str` | Yes | Environment variable name containing the bearer token. |
 | `type` | `Literal['bearer']` | No | - |
 
 ---
@@ -80,14 +81,14 @@ HMAC signature verification using a shared secret.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `secret_key` | `str` | Yes | - |
+| `secret_key` | `str` | Yes | Environment variable name containing the HMAC shared secret. |
 | `type` | `Literal['hmac']` | No | - |
 
 ---
 
 ### HttpInvocationConfig
 
-Config for HTTP external function invocation.
+Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -101,27 +102,27 @@ Config for HTTP external function invocation.
 
 ### HttpRequest
 
-Represents a buffered HTTP request.
+Incoming buffered HTTP request received by a function handler.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `body` | `Any \| None` | No | - |
-| `headers` | `dict[str, str \| list[str]]` | No | - |
-| `method` | `str` | No | - |
-| `path_params` | `dict[str, str]` | No | - |
-| `query_params` | `dict[str, str \| list[str]]` | No | - |
+| `body` | `Any \| None` | No | Parsed request body. |
+| `headers` | `dict[str, str \| list[str]]` | No | Request headers. |
+| `method` | `str` | No | HTTP method of the request (e.g. ``GET``, ``POST``). |
+| `path_params` | `dict[str, str]` | No | Path parameters extracted from the matched route. |
+| `query_params` | `dict[str, str \| list[str]]` | No | Query-string parameters from the request URL. |
 
 ---
 
 ### HttpResponse
 
-Represents a buffered HTTP response.
+Structured buffered HTTP response returned from function handlers.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `body` | `Any \| None` | No | - |
-| `headers` | `dict[str, str]` | No | - |
-| `status_code` | `int` | Yes | - |
+| `body` | `Any \| None` | No | Response body. |
+| `headers` | `dict[str, str]` | No | Response headers. |
+| `status_code` | `int` | Yes | HTTP status code. |
 
 ## observability
 
@@ -189,9 +190,11 @@ async (client, request)
 #### Parameters
 
 <ParamField body="client" type="Any" required>
+  httpx async client used to send the request.
 </ParamField>
 
 <ParamField body="request" type="Any" required>
+  The httpx request to execute.
 </ParamField>
 
 
@@ -210,6 +213,7 @@ extract_baggage(baggage: str) -> Any
 #### Parameters
 
 <ParamField body="baggage" type="str" required>
+  W3C ``baggage`` header value.
 </ParamField>
 
 
@@ -228,6 +232,7 @@ extract_traceparent(traceparent: str) -> Any
 #### Parameters
 
 <ParamField body="traceparent" type="str" required>
+  W3C ``traceparent`` header value.
 </ParamField>
 
 
@@ -309,9 +314,11 @@ record_span_event(name: str, attrs: dict[str, Any] | None = None) -> None
 #### Parameters
 
 <ParamField body="name" type="str" required>
+  Name of the event to record on the current span.
 </ParamField>
 
 <ParamField body="attrs" type="dict[str, Any] | None">
+  Optional attributes attached to the event.
 </ParamField>
 
 
@@ -319,7 +326,7 @@ record_span_event(name: str, attrs: dict[str, Any] | None = None) -> None
 
 ### redact
 
-
+Recursively redact values of sensitive keys. Returns a new value.
 
 **Signature**
 
@@ -330,6 +337,7 @@ redact(value: Any) -> Any
 #### Parameters
 
 <ParamField body="value" type="Any" required>
+  Value to redact; dicts, lists, and tuples are traversed recursively.
 </ParamField>
 
 
@@ -337,7 +345,7 @@ redact(value: Any) -> Any
 
 ### redact_and_truncate
 
-
+Redact then serialize to JSON, optionally capped at ``max_bytes``.
 
 **Signature**
 
@@ -348,9 +356,11 @@ redact_and_truncate(value: Any, max_bytes: Optional[int] = None) -> tuple[str, b
 #### Parameters
 
 <ParamField body="value" type="Any" required>
+  Value to redact and serialize.
 </ParamField>
 
 <ParamField body="max_bytes" type="Optional[int]">
+  Optional cap on the serialized byte length; unset or <= 0 means no cap.
 </ParamField>
 
 
@@ -381,9 +391,11 @@ set_current_span_attribute(key: str, value: Any) -> None
 #### Parameters
 
 <ParamField body="key" type="str" required>
+  Attribute name to set on the current span.
 </ParamField>
 
 <ParamField body="value" type="Any" required>
+  Attribute value.
 </ParamField>
 
 
@@ -402,6 +414,7 @@ set_current_span_error(message: str) -> None
 #### Parameters
 
 <ParamField body="message" type="str" required>
+  Error message recorded on the current span's status.
 </ParamField>
 
 
@@ -456,6 +469,9 @@ async (name: str, fn: Any, *, kind: Any = None, traceparent: str | None = None) 
 [`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
 
 ### BaggageSpanProcessor
+
+OpenTelemetry span processor that copies OTel baggage entries onto each
+started span as attributes.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -564,10 +580,10 @@ Input for stream authentication.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `addr` | `str` | Yes | - |
-| `headers` | `dict[str, str]` | Yes | - |
-| `path` | `str` | Yes | - |
-| `query_params` | `dict[str, list[str]]` | Yes | - |
+| `addr` | `str` | Yes | Client address. |
+| `headers` | `dict[str, str]` | Yes | Request headers. |
+| `path` | `str` | Yes | Request path. |
+| `query_params` | `dict[str, list[str]]` | Yes | Query parameters. |
 
 ---
 
@@ -577,22 +593,22 @@ Result of stream authentication.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `context` | `Any \| None` | No | - |
+| `context` | `Any \| None` | No | Arbitrary context passed to stream handlers after authentication. |
 
 ---
 
 ### StreamChangeEvent
 
-Handler input for ``stream`` triggers, fired when an item changes.
+Handler input for ``stream`` triggers, fired when an item changes via ``stream::set``, ``stream::update``, or ``stream::delete``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `event` | [`StreamChangeEventDetail`](#streamchangeeventdetail) | Yes | - |
-| `groupId` | `str` | Yes | - |
-| `id` | `str \| None` | No | - |
-| `streamName` | `str` | Yes | - |
-| `timestamp` | `int` | Yes | - |
-| `type` | `Literal['stream']` | Yes | - |
+| `event` | [`StreamChangeEventDetail`](#streamchangeeventdetail) | Yes | The event detail containing mutation type and data. |
+| `groupId` | `str` | Yes | The group where the change occurred. |
+| `id` | `str \| None` | No | The item ID that changed. |
+| `streamName` | `str` | Yes | The stream where the change occurred. |
+| `timestamp` | `int` | Yes | Unix timestamp of the event. |
+| `type` | `Literal['stream']` | Yes | The event type. |
 
 ---
 
@@ -602,8 +618,8 @@ Detail of a stream change event containing the mutation type and data.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `data` | `Any` | Yes | - |
-| `type` | `Literal['create', 'update', 'delete']` | Yes | - |
+| `data` | `Any` | Yes | The data associated with the event. |
+| `type` | `Literal['create', 'update', 'delete']` | Yes | The kind of mutation (create, update, or delete). |
 
 ---
 
@@ -647,11 +663,11 @@ Event for stream join/leave.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `context` | `Any \| None` | No | - |
-| `group_id` | `str` | Yes | - |
-| `id` | `str \| None` | No | - |
-| `stream_name` | `str` | Yes | - |
-| `subscription_id` | `str` | Yes | - |
+| `context` | `Any \| None` | No | Auth context from :class:`StreamAuthResult`. |
+| `group_id` | `str` | Yes | Group identifier. |
+| `id` | `str \| None` | No | Item identifier (if applicable). |
+| `stream_name` | `str` | Yes | Name of the stream. |
+| `subscription_id` | `str` | Yes | Unique subscription identifier. |
 
 ---
 
@@ -661,7 +677,7 @@ Trigger config for ``stream:join`` and ``stream:leave`` triggers.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `condition_function_id` | `str \| None` | No | - |
+| `condition_function_id` | `str \| None` | No | Function ID for conditional execution. If it returns ``False``, the handler is skipped. |
 
 ---
 
@@ -671,7 +687,7 @@ Result of stream join.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `unauthorized` | `bool` | Yes | - |
+| `unauthorized` | `bool` | Yes | Whether the join was unauthorized. |
 
 ---
 
@@ -726,10 +742,10 @@ Trigger config for ``stream`` triggers. Filters which item changes fire the hand
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `condition_function_id` | `str \| None` | No | - |
-| `group_id` | `str \| None` | No | - |
-| `item_id` | `str \| None` | No | - |
-| `stream_name` | `str` | Yes | - |
+| `condition_function_id` | `str \| None` | No | Function ID for conditional execution. If it returns ``False``, the handler is skipped. |
+| `group_id` | `str \| None` | No | If set, only changes within this group fire the handler. |
+| `item_id` | `str \| None` | No | If set, only changes to this specific item fire the handler. |
+| `stream_name` | `str` | Yes | Stream name to watch. Only changes on this stream fire the handler. |
 
 ---
 
@@ -752,7 +768,7 @@ Result of stream update operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `errors` | list[[`UpdateOpError`](#updateoperror)] | No | - |
+| `errors` | list[[`UpdateOpError`](#updateoperror)] | No | Per-op errors. Emitted by ``merge`` and ``append`` for validation rejections (path depth/size, value depth, or a ``__proto__`` / ``constructor`` / ``prototype`` segment or top-level key) and by ``append`` for the ``append.type_mismatch`` and ``append.target_not_object`` surfaces. Successfully applied ops are still reflected in ``new_value``. The field is omitted from the JSON wire when empty. |
 | `new_value` | `TData` | Yes | New value after the update. |
 | `old_value` | `TData \| None` | No | Previous value (if it existed). |
 
@@ -794,32 +810,32 @@ append does not apply when an error is returned for that op.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `MergePath \| None` | No | - |
+| `path` | `MergePath \| None` | No | Optional path to the append target. Accepts a single first-level key (legacy string) or a list of literal segments for nested append. See :data:`MergePath`. |
 | `type` | `str` | No | - |
-| `value` | `Any` | Yes | - |
+| `value` | `Any` | Yes | Value to append. String targets only accept string values. |
 
 ---
 
 ### UpdateDecrement
 
-Decrement operation for stream update.
+Decrement a numeric field by a given amount.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `by` | `int \| float` | Yes | - |
-| `path` | `str` | Yes | - |
+| `by` | `int \| float` | Yes | Amount to decrement by. |
+| `path` | `str` | Yes | First-level field path. |
 | `type` | `str` | No | - |
 
 ---
 
 ### UpdateIncrement
 
-Increment operation for stream update.
+Increment a numeric field by a given amount.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `by` | `int \| float` | Yes | - |
-| `path` | `str` | Yes | - |
+| `by` | `int \| float` | Yes | Amount to increment by. |
+| `path` | `str` | Yes | First-level field path. |
 | `type` | `str` | No | - |
 
 ---
@@ -854,9 +870,9 @@ response. The merge does not apply when an error is returned.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `MergePath \| None` | No | - |
+| `path` | `MergePath \| None` | No | Optional path to the merge target. See :data:`MergePath`. |
 | `type` | `str` | No | - |
-| `value` | `Any` | Yes | - |
+| `value` | `Any` | Yes | Object to merge. Must be a JSON object. |
 
 ---
 
@@ -864,39 +880,40 @@ response. The merge does not apply when an error is returned.
 
 Per-op error returned by ``state::update`` / ``stream::update``.
 
-Currently emitted only by the ``merge`` op when input violates the
-new validation bounds. Successfully applied ops are still
+Emitted by the ``merge`` and ``append`` ops when input violates the
+validation bounds, and by ``append`` for its type-mismatch and
+target-not-object cases. Successfully applied ops are still
 reflected in the response's ``new_value``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `code` | `str` | Yes | - |
-| `doc_url` | `str \| None` | No | - |
-| `message` | `str` | Yes | - |
-| `op_index` | `int` | Yes | - |
+| `code` | `str` | Yes | Stable error code, e.g. ``"merge.path.too_deep"``. |
+| `doc_url` | `str \| None` | No | Optional documentation URL. |
+| `message` | `str` | Yes | Human-readable description with concrete numbers when applicable. |
+| `op_index` | `int` | Yes | Index of the offending op within the original ``ops`` array. |
 
 ---
 
 ### UpdateRemove
 
-Remove operation for stream update.
+Remove a field at the given path.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `str` | Yes | - |
+| `path` | `str` | Yes | First-level field path. |
 | `type` | `str` | No | - |
 
 ---
 
 ### UpdateSet
 
-Set operation for stream update.
+Set a field at the given path to a value.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `str` | Yes | - |
+| `path` | `str` | Yes | First-level field path. Use an empty string to target the root value. |
 | `type` | `str` | No | - |
-| `value` | `Any` | Yes | - |
+| `value` | `Any` | Yes | Value to set. |
 
 ## worker_connection_manager
 
@@ -936,7 +953,7 @@ context is forwarded to the middleware.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `allow_function_registration` | `bool` | No | - |
+| `allow_function_registration` | `bool` | No | Whether the worker may register new functions. Defaults to ``True`` if omitted. |
 | `allow_trigger_type_registration` | `bool` | No | Whether the worker may register new trigger types. |
 | `allowed_functions` | `list[str]` | No | Additional function IDs to allow beyond ``expose_functions``. |
 | `allowed_trigger_types` | `list[str] \| None` | No | Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed. |

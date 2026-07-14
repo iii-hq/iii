@@ -1,6 +1,8 @@
 /**
  * Safely stringify a value, handling circular references, BigInt, and other edge cases.
  * Returns "[unserializable]" if serialization fails for any reason.
+ *
+ * @param value - The value to serialize to JSON.
  */
 export function safeStringify(value: unknown): string {
   const seen = new WeakSet<object>()

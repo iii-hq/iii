@@ -43,6 +43,8 @@ export function injectTraceparent(): string | undefined {
 
 /**
  * Extract a trace context from a W3C traceparent header string.
+ *
+ * @param traceparent - W3C `traceparent` header value to parse.
  */
 export function extractTraceparent(traceparent: string): Context {
   const carrier: Record<string, string> = { traceparent }
@@ -60,6 +62,8 @@ export function injectBaggage(): string | undefined {
 
 /**
  * Extract baggage from a W3C baggage header string.
+ *
+ * @param baggage - W3C `baggage` header value to parse.
  */
 export function extractBaggage(baggage: string): Context {
   const carrier: Record<string, string> = { baggage }
@@ -68,6 +72,9 @@ export function extractBaggage(baggage: string): Context {
 
 /**
  * Extract both trace context and baggage from their respective headers.
+ *
+ * @param traceparent - W3C `traceparent` header value to parse.
+ * @param baggage - W3C `baggage` header value to parse.
  */
 export function extractContext(traceparent?: string, baggage?: string): Context {
   const carrier: Record<string, string> = {}
@@ -82,6 +89,8 @@ export function extractContext(traceparent?: string, baggage?: string): Context 
 
 /**
  * Get a baggage entry from the current context.
+ *
+ * @param key - Baggage entry key to read.
  */
 export function getBaggageEntry(key: string): string | undefined {
   const bag = propagation.getBaggage(context.active())
@@ -90,6 +99,9 @@ export function getBaggageEntry(key: string): string | undefined {
 
 /**
  * Set a baggage entry in the current context.
+ *
+ * @param key - Baggage entry key to set.
+ * @param value - Baggage entry value to set.
  */
 export function setBaggageEntry(key: string, value: string): Context {
   let bag = propagation.getBaggage(context.active()) ?? propagation.createBaggage()
@@ -99,6 +111,8 @@ export function setBaggageEntry(key: string, value: string): Context {
 
 /**
  * Remove a baggage entry from the current context.
+ *
+ * @param key - Baggage entry key to remove.
  */
 export function removeBaggageEntry(key: string): Context {
   const bag = propagation.getBaggage(context.active())

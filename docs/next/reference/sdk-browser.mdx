@@ -42,7 +42,7 @@ registerWorker(address: string, options?: InitOptions) => ISdk
       Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored.
     </ParamField>
     <ParamField body="invocationTimeoutMs" type="number">
-      Default timeout for `trigger()` in milliseconds. Defaults to `30000`.
+      Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`.
     </ParamField>
     <ParamField body="reconnectionConfig" type="Partial<IIIReconnectionConfig>">
       WebSocket reconnection behavior.
@@ -594,7 +594,7 @@ Configuration options passed to registerWorker.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `headers` | `Record<string, string>` | No | Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. |
-| `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
+| `invocationTimeoutMs` | `number` | No | Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. |
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
 
 ---

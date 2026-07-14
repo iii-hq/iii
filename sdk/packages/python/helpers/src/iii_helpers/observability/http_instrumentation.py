@@ -45,6 +45,10 @@ async def execute_traced_request(
     - Records HTTP semantic-convention attributes on the span.
     - Sets ERROR span status for responses with status >= 400.
     - Records exceptions for network-level errors.
+
+    Args:
+        client: httpx async client used to send the request.
+        request: The httpx request to execute.
     """
     url = request.url
     url_str = str(url)

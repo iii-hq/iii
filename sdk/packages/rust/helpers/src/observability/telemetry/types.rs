@@ -16,10 +16,15 @@ pub enum ConnectionState {
 /// Configuration for WebSocket reconnection behavior
 #[derive(Debug, Clone)]
 pub struct ReconnectionConfig {
+    /// Starting delay in milliseconds (default: 1000).
     pub initial_delay_ms: u64,
+    /// Maximum delay cap in milliseconds (default: 30000).
     pub max_delay_ms: u64,
+    /// Exponential backoff multiplier (default: 2).
     pub backoff_multiplier: f64,
+    /// Random jitter factor, 0-1 (default: 0.3).
     pub jitter_factor: f64,
+    /// Maximum retry attempts; `None` for infinite (default: `None`).
     pub max_retries: Option<u64>, // None for infinite
     /// Maximum messages preserved across reconnects. Messages beyond this limit
     /// are dropped to prevent delivering stale data after a long disconnect.
@@ -51,14 +56,23 @@ impl ReconnectionConfig {
 /// Configuration for OpenTelemetry initialization
 #[derive(Debug, Clone, Default)]
 pub struct OtelConfig {
+    /// Whether OpenTelemetry export is enabled. Defaults to true. Set to false or `OTEL_ENABLED=false/0/no/off` to disable.
     pub enabled: Option<bool>,
+    /// The service name to report. Defaults to the `OTEL_SERVICE_NAME` env var.
     pub service_name: Option<String>,
+    /// The service version to report. Defaults to the `SERVICE_VERSION` env var or "unknown".
     pub service_version: Option<String>,
+    /// The service namespace to report. Defaults to the `SERVICE_NAMESPACE` env var.
     pub service_namespace: Option<String>,
+    /// The service instance ID to report. Defaults to the `SERVICE_INSTANCE_ID` env var or an auto-generated UUID.
     pub service_instance_id: Option<String>,
+    /// III Engine WebSocket URL. Defaults to the `III_URL` env var or "ws://localhost:49134".
     pub engine_ws_url: Option<String>,
+    /// Whether metrics export is enabled. Defaults to true. Set to false or `OTEL_METRICS_ENABLED=false/0/no/off` to disable.
     pub metrics_enabled: Option<bool>,
+    /// Metrics export interval in milliseconds. Defaults to 60000 (60 seconds).
     pub metrics_export_interval_ms: Option<u64>,
+    /// Optional reconnection configuration for the WebSocket connection.
     pub reconnection_config: Option<ReconnectionConfig>,
     /// Timeout in milliseconds for the shutdown sequence (default: 10,000)
     pub shutdown_timeout_ms: Option<u64>,

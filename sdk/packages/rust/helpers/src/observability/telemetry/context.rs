@@ -205,6 +205,7 @@ where
 /// `tokio::spawn` does NOT carry OTel context into the spawned task;
 /// without this, child spans become orphan roots. Capture before spawn,
 /// then call `.attach(future)` inside the spawned block.
+/// <!-- docs:internal -->
 #[derive(Clone)]
 pub struct CapturedContext(OtelContext);
 

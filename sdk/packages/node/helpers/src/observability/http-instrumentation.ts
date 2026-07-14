@@ -4,6 +4,7 @@ const SAFE_REQUEST_HEADERS = ['content-type', 'accept'] as const
 const SAFE_RESPONSE_HEADERS = ['content-type'] as const
 
 export interface TracedFetchInit extends RequestInit {
+  /** Tracer used to create the client span for the outgoing request. */
   tracer?: Tracer
 }
 
@@ -13,6 +14,9 @@ export interface TracedFetchInit extends RequestInit {
  * Mirrors the Rust execute_traced_request shape: injects W3C traceparent into
  * outgoing headers, records HTTP semantic-convention attributes, and sets
  * ERROR span status for HTTP responses with status >= 400 or network errors.
+ *
+ * @param input - The resource to fetch: a URL string, `URL`, or `Request`.
+ * @param init - Fetch options, plus an optional `tracer` to create the span.
  */
 export async function executeTracedRequest(
   input: RequestInfo | URL,

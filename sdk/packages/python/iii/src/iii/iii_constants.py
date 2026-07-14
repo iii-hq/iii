@@ -55,7 +55,7 @@ class InitOptions:
         worker_description: One-line, human/LLM-readable summary of what this
             worker does. Surfaces in ``engine::workers::list`` / ``engine::workers::info``.
         enable_metrics_reporting: Enable worker metrics via OpenTelemetry. Default ``True``.
-        invocation_timeout_ms: Default timeout for ``trigger()`` in milliseconds. Default ``30000``.
+        invocation_timeout_ms: Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
         reconnection_config: WebSocket reconnection behavior.
         otel: OpenTelemetry configuration. Enabled by default.
             Set ``{'enabled': False}`` or env ``OTEL_ENABLED=false`` to disable.

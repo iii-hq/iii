@@ -353,20 +353,42 @@ function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>
   return rows.sort((a, b) => a.name.localeCompare(b.name))
 }
 
+/**
+ * Whether a method row is a fluent builder setter/constructor (returns `Self`
+ * or the owning type). On a type that also has data fields these duplicate or
+ * shadow the fields (e.g. a `stream_name(self) -> Self` setter next to the
+ * `stream_name` field), so they are dropped there; on a pure builder with no
+ * data fields (e.g. `RegisterFunction`) they are the real API and kept.
+ */
+function isBuilderRow(rowType: string, typeName: string): boolean {
+  return new RegExp(`->\\s*(Self|${typeName})$`).test(rowType)
+}
+
+function withMethodRows(item: RustDocItem, index: Record<string, RustDocItem>, dataFields: ParamDoc[]): ParamDoc[] {
+  const methodRows = extractMethodRows(item, index)
+  const kept = dataFields.length
+    ? methodRows.filter(m => !isBuilderRow(m.type, item.name ?? ''))
+    : methodRows
+  return [...dataFields, ...kept]
+}
+
 function extractStructType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc {
-  const fields: ParamDoc[] = []
+  const dataFields: ParamDoc[] = []
   for (const fid of getStructFields(item)) {
     const field = index[fid]
     if (!field || field.visibility !== 'public') continue
-    fields.push({
+    dataFields.push({
       name: field.name ?? '',
       type: rustTypeToString(field.inner.struct_field),
       description: extractDocs(field),
       required: !isOptionType(field.inner.struct_field),
     })
   }
-  fields.push(...extractMethodRows(item, index))
-  return { name: item.name ?? '', description: extractDocs(item, { keepCodeBlocks: true }), fields }
+  return {
+    name: item.name ?? '',
+    description: extractDocs(item, { keepCodeBlocks: true }),
+    fields: withMethodRows(item, index, dataFields),
+  }
 }
 
 function extractEnumType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc {
@@ -392,8 +414,11 @@ function extractEnumType(item: RustDocItem, index: Record<string, RustDocItem>):
     }
     fields.push({ name: variant.name ?? '', type: typeStr, description: extractDocs(variant), required: true })
   }
-  fields.push(...extractMethodRows(item, index))
-  return { name: item.name ?? '', description: extractDocs(item, { keepCodeBlocks: true }), fields }
+  return {
+    name: item.name ?? '',
+    description: extractDocs(item, { keepCodeBlocks: true }),
+    fields: withMethodRows(item, index, fields),
+  }
 }
 
 /** A trait documents as one row per method; implementing the required ones is

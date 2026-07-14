@@ -45,7 +45,7 @@ register_worker(address: str, options: InitOptions | None = None) -> III
     <ParamField body="headers" type="dict[str, str] | None">
     </ParamField>
     <ParamField body="invocation_timeout_ms" type="int">
-      Default timeout for ``trigger()`` in milliseconds. Default ``30000``.
+      Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
     </ParamField>
     <ParamField body="otel" type="OtelConfig | dict[str, Any] | None">
       OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable.
@@ -594,7 +594,7 @@ Configuration options passed to ``register_worker``.
 | --- | --- | --- | --- |
 | `enable_metrics_reporting` | `bool` | No | Enable worker metrics via OpenTelemetry. Default ``True``. |
 | `headers` | `dict[str, str] \| None` | No | - |
-| `invocation_timeout_ms` | `int` | No | Default timeout for ``trigger()`` in milliseconds. Default ``30000``. |
+| `invocation_timeout_ms` | `int` | No | Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``. |
 | `otel` | `OtelConfig \| dict[str, Any] \| None` | No | OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable. |
 | `reconnection_config` | `ReconnectionConfig \| None` | No | WebSocket reconnection behavior. |
 | `telemetry` | [`TelemetryOptions`](#telemetryoptions) \| None | No | Internal worker metadata reported to the engine. |
@@ -1217,7 +1217,7 @@ Result of stream update operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `errors` | `list[UpdateOpError]` | No | - |
+| `errors` | `list[UpdateOpError]` | No | Per-op errors. Emitted by ``merge`` and ``append`` for validation rejections (path depth/size, value depth, or a ``__proto__`` / ``constructor`` / ``prototype`` segment or top-level key) and by ``append`` for the ``append.type_mismatch`` and ``append.target_not_object`` surfaces. Successfully applied ops are still reflected in ``new_value``. The field is omitted from the JSON wire when empty. |
 | `new_value` | `TData` | Yes | New value after the update. |
 | `old_value` | `TData \| None` | No | Previous value (if it existed). |
 

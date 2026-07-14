@@ -43,7 +43,7 @@ registerWorker(address: string, options?: InitOptions) => IIIClient
       Custom HTTP headers sent during the WebSocket handshake.
     </ParamField>
     <ParamField body="invocationTimeoutMs" type="number">
-      Default timeout for `trigger()` in milliseconds. Defaults to `30000`.
+      Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`.
     </ParamField>
     <ParamField body="otel" type="Omit<OtelConfig, 'engineWsUrl'>">
       OpenTelemetry configuration. OTel is initialized automatically by default. Set `{ enabled: false }` or env `OTEL_ENABLED=false/0/no/off` to disable. The `engineWsUrl` is set automatically from the III address.
@@ -446,7 +446,7 @@ Configuration options passed to registerWorker.
 | --- | --- | --- | --- |
 | `enableMetricsReporting` | `boolean` | No | Enable worker metrics via OpenTelemetry. Defaults to `true`. |
 | `headers` | `Record<string, string>` | No | Custom HTTP headers sent during the WebSocket handshake. |
-| `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
+| `invocationTimeoutMs` | `number` | No | Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. |
 | `otel` | `Omit<OtelConfig, "engineWsUrl">` | No | OpenTelemetry configuration. OTel is initialized automatically by default.<br />Set `{ enabled: false }` or env `OTEL_ENABLED=false/0/no/off` to disable.<br />The `engineWsUrl` is set automatically from the III address. |
 | `reconnectionConfig` | `Partial<IIIReconnectionConfig>` | No | WebSocket reconnection behavior. |
 | `workerDescription` | `string` | No | One-line, human/LLM-readable summary of what this worker does.<br />Surfaces in `engine::workers::list` / `engine::workers::info`. |

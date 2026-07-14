@@ -49,16 +49,15 @@ Authentication configuration for HTTP-invoked functions.
 
 ### HttpInvocationConfig
 
-Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
-Workers, etc.) instead of a local handler.
+Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | `String` | Yes | - |
-| `method` | [`HttpMethod`](#httpmethod) | Yes | - |
-| `timeout_ms` | `Option<u64>` | No | - |
-| `headers` | `HashMap<String, String>` | Yes | - |
-| `auth` | Option&lt;[`HttpAuthConfig`](#httpauthconfig)&gt; | No | - |
+| `url` | `String` | Yes | URL to invoke. |
+| `method` | [`HttpMethod`](#httpmethod) | Yes | HTTP method. Defaults to `POST`. |
+| `timeout_ms` | `Option<u64>` | No | Timeout in milliseconds. |
+| `headers` | `HashMap<String, String>` | Yes | Custom headers to send with the request. |
+| `auth` | Option&lt;[`HttpAuthConfig`](#httpauthconfig)&gt; | No | Authentication configuration. |
 
 ---
 
@@ -83,12 +82,12 @@ Buffered HTTP request received by a function handler.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `query_params` | `HashMap<String, String>` | Yes | - |
-| `path_params` | `HashMap<String, String>` | Yes | - |
-| `headers` | `HashMap<String, String>` | Yes | - |
-| `path` | `String` | Yes | - |
-| `method` | `String` | Yes | - |
-| `body` | `T` | Yes | - |
+| `query_params` | `HashMap<String, String>` | Yes | Query-string parameters from the request URL. |
+| `path_params` | `HashMap<String, String>` | Yes | Path parameters extracted from the matched route. |
+| `headers` | `HashMap<String, String>` | Yes | Request headers. |
+| `path` | `String` | Yes | Request path. |
+| `method` | `String` | Yes | HTTP method of the request (e.g. `GET`, `POST`). |
+| `body` | `T` | Yes | Parsed request body. |
 
 ---
 
@@ -98,9 +97,9 @@ Buffered HTTP response returned from a function handler.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `status_code` | `u16` | Yes | - |
-| `headers` | `HashMap<String, String>` | Yes | - |
-| `body` | `T` | Yes | - |
+| `status_code` | `u16` | Yes | HTTP status code. |
+| `headers` | `HashMap<String, String>` | Yes | Response headers. |
+| `body` | `T` | Yes | Response body. |
 
 ## observability
 
@@ -114,27 +113,16 @@ use iii_helpers::observability;
 
 ### Types
 
-[`BaggageSpanProcessor`](#baggagespanprocessor) · [`CapturedContext`](#capturedcontext) · [`ConnectionState`](#connectionstate) · [`EngineLogExporter`](#enginelogexporter) · [`EngineMetricsExporter`](#enginemetricsexporter) · [`EngineSpanExporter`](#enginespanexporter) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`OtelMessage`](#otelmessage) · [`ReconnectionConfig`](#reconnectionconfig) · [`SharedEngineConnection`](#sharedengineconnection) · [`WorkerGaugesHandle`](#workergaugeshandle) · [`WorkerGaugesOptions`](#workergaugesoptions) · [`WorkerMetrics`](#workermetrics) · [`WorkerMetricsCollector`](#workermetricscollector)
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`ConnectionState`](#connectionstate) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`WorkerGaugesOptions`](#workergaugesoptions)
 
 ### BaggageSpanProcessor
+
+OpenTelemetry span processor that copies OTel baggage entries onto each
+started span as attributes.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `new` | `fn() -> Self` | Yes | - |
-
----
-
-### CapturedContext
-
-Snapshot of the current OTel context for use across `tokio::spawn`.
-
-`tokio::spawn` does NOT carry OTel context into the spawned task;
-without this, child spans become orphan roots. Capture before spawn,
-then call `.attach(future)` inside the spawned block.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `attach` | `async fn(future: F) -> T` | Yes | - |
 
 ---
 
@@ -149,44 +137,6 @@ Connection state for the shared WebSocket
 | `Connected` | `unit` | Yes | - |
 | `Reconnecting` | `unit` | Yes | - |
 | `Failed` | `unit` | Yes | - |
-
----
-
-### EngineLogExporter
-
-Custom log exporter that sends OTLP JSON over a shared WebSocket connection.
-
-Uses a hand-built JSON serializer to match the III Engine's expected format.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `new` | fn(connection: Arc&lt;[`SharedEngineConnection`](#sharedengineconnection)&gt;) -&gt; Self | Yes | - |
-
----
-
-### EngineMetricsExporter
-
-Custom metrics exporter that sends OTLP JSON over a shared WebSocket connection.
-
-Uses a hand-built JSON serializer to match the III Engine's expected format.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `new` | fn(connection: Arc&lt;[`SharedEngineConnection`](#sharedengineconnection)&gt;) -&gt; Self | Yes | - |
-
----
-
-### EngineSpanExporter
-
-Custom span exporter that sends OTLP JSON over a shared WebSocket connection.
-
-Uses a hand-built JSON serializer (not opentelemetry-proto serde) to match
-the format the III Engine expects: camelCase field names, integer attribute
-values as JSON numbers, and hex-encoded trace/span IDs.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `new` | fn(connection: Arc&lt;[`SharedEngineConnection`](#sharedengineconnection)&gt;) -&gt; Self | Yes | - |
 
 ---
 
@@ -220,15 +170,15 @@ Configuration for OpenTelemetry initialization
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `enabled` | `Option<bool>` | No | - |
-| `service_name` | `Option<String>` | No | - |
-| `service_version` | `Option<String>` | No | - |
-| `service_namespace` | `Option<String>` | No | - |
-| `service_instance_id` | `Option<String>` | No | - |
-| `engine_ws_url` | `Option<String>` | No | - |
-| `metrics_enabled` | `Option<bool>` | No | - |
-| `metrics_export_interval_ms` | `Option<u64>` | No | - |
-| `reconnection_config` | Option&lt;[`ReconnectionConfig`](#reconnectionconfig)&gt; | No | - |
+| `enabled` | `Option<bool>` | No | Whether OpenTelemetry export is enabled. Defaults to true. Set to false or `OTEL_ENABLED=false/0/no/off` to disable. |
+| `service_name` | `Option<String>` | No | The service name to report. Defaults to the `OTEL_SERVICE_NAME` env var. |
+| `service_version` | `Option<String>` | No | The service version to report. Defaults to the `SERVICE_VERSION` env var or "unknown". |
+| `service_namespace` | `Option<String>` | No | The service namespace to report. Defaults to the `SERVICE_NAMESPACE` env var. |
+| `service_instance_id` | `Option<String>` | No | The service instance ID to report. Defaults to the `SERVICE_INSTANCE_ID` env var or an auto-generated UUID. |
+| `engine_ws_url` | `Option<String>` | No | III Engine WebSocket URL. Defaults to the `III_URL` env var or "ws://localhost:49134". |
+| `metrics_enabled` | `Option<bool>` | No | Whether metrics export is enabled. Defaults to true. Set to false or `OTEL_METRICS_ENABLED=false/0/no/off` to disable. |
+| `metrics_export_interval_ms` | `Option<u64>` | No | Metrics export interval in milliseconds. Defaults to 60000 (60 seconds). |
+| `reconnection_config` | Option&lt;[`ReconnectionConfig`](#reconnectionconfig)&gt; | No | Optional reconnection configuration for the WebSocket connection. |
 | `shutdown_timeout_ms` | `Option<u64>` | No | Timeout in milliseconds for the shutdown sequence (default: 10,000) |
 | `channel_capacity` | `Option<usize>` | No | Capacity of the internal telemetry message channel (default: 10,000).<br />This controls the in-flight message buffer between exporters and the<br />WebSocket connection loop. Intentionally larger than<br />`ReconnectionConfig::max_pending_messages` to absorb bursts during<br />normal operation while limiting stale data across reconnects. |
 | `spans_flush_interval_ms` | `Option<u64>` | No | Span processor flush delay in milliseconds. Defaults to 100ms when not<br />set. The OpenTelemetry default of 5000ms is what makes traces appear<br />seconds after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS. |
@@ -239,89 +189,30 @@ Configuration for OpenTelemetry initialization
 
 ---
 
-### OtelMessage
-
-Message to send over the shared WebSocket connection
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `prefix` | `&'static [u8]` | Yes | - |
-| `data` | `Vec<u8>` | Yes | - |
-
----
-
 ### ReconnectionConfig
 
 Configuration for WebSocket reconnection behavior
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `initial_delay_ms` | `u64` | Yes | - |
-| `max_delay_ms` | `u64` | Yes | - |
-| `backoff_multiplier` | `f64` | Yes | - |
-| `jitter_factor` | `f64` | Yes | - |
-| `max_retries` | `Option<u64>` | No | - |
+| `initial_delay_ms` | `u64` | Yes | Starting delay in milliseconds (default: 1000). |
+| `max_delay_ms` | `u64` | Yes | Maximum delay cap in milliseconds (default: 30000). |
+| `backoff_multiplier` | `f64` | Yes | Exponential backoff multiplier (default: 2). |
+| `jitter_factor` | `f64` | Yes | Random jitter factor, 0-1 (default: 0.3). |
+| `max_retries` | `Option<u64>` | No | Maximum retry attempts; `None` for infinite (default: `None`). |
 | `max_pending_messages` | `usize` | Yes | Maximum messages preserved across reconnects. Messages beyond this limit<br />are dropped to prevent delivering stale data after a long disconnect.<br />This is intentionally smaller than `OtelConfig::channel_capacity` (the<br />in-flight buffer between exporters and the WebSocket loop). |
 | `effective_initial_delay_ms` | `fn() -> u64` | Yes | Returns initial_delay_ms, clamped to a minimum of 1ms to prevent division by zero. |
 
 ---
 
-### SharedEngineConnection
-
-Shared WebSocket connection for all OTEL exporters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `flush` | `async fn()` | Yes | Flush all pending messages through the WebSocket connection. |
-| `new` | fn(ws_url: String, config: [`ReconnectionConfig`](#reconnectionconfig)) -&gt; Self | Yes | Create a new shared connection and spawn the connection task |
-| `send` | `fn(prefix: &'static [u8], data: Vec<u8>) -> Result<(), String>` | Yes | Send a message with the given prefix |
-| `shutdown` | `async fn()` | Yes | Shutdown the connection gracefully |
-| `state` | async fn() -&gt; [`ConnectionState`](#connectionstate) | Yes | Get current connection state |
-| `with_channel_capacity` | fn(ws_url: String, config: [`ReconnectionConfig`](#reconnectionconfig), channel_capacity: usize) -&gt; Self | Yes | Create a new shared connection with a custom channel capacity |
-
----
-
-### WorkerGaugesHandle
-
-Handle that keeps the OTEL gauges alive. Drop to stop reporting.
-
----
-
 ### WorkerGaugesOptions
 
-Options for registering worker gauges
+Options for registering worker gauges.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `worker_id` | `String` | Yes | - |
-| `worker_name` | `Option<String>` | No | - |
-
----
-
-### WorkerMetrics
-
-Collected worker metrics snapshot
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `memory_rss` | `u64` | Yes | - |
-| `memory_virtual` | `u64` | Yes | - |
-| `cpu_percent` | `f32` | Yes | - |
-| `uptime_seconds` | `f64` | Yes | - |
-| `timestamp_ms` | `u64` | Yes | - |
-| `runtime` | `&'static str` | Yes | - |
-
----
-
-### WorkerMetricsCollector
-
-Collects system metrics for the current process
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `collect` | fn() -&gt; [`WorkerMetrics`](#workermetrics) | Yes | Collect a snapshot of current metrics |
-| `collect_cached` | fn() -&gt; [`WorkerMetrics`](#workermetrics) | Yes | Collect a snapshot using a 500ms cache to avoid redundant sysinfo refreshes. |
-| `new` | `fn() -> Self` | Yes | - |
+| `worker_id` | `String` | Yes | Stable identifier of the worker the gauges are reported for. |
+| `worker_name` | `Option<String>` | No | Human-readable name of the worker. |
 
 ## queue
 
@@ -390,10 +281,10 @@ Input for stream authentication.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `headers` | `HashMap<String, String>` | Yes | - |
-| `path` | `String` | Yes | - |
-| `query_params` | `HashMap<String, Vec<String>>` | Yes | - |
-| `addr` | `String` | Yes | - |
+| `headers` | `HashMap<String, String>` | Yes | Request headers. |
+| `path` | `String` | Yes | Request path. |
+| `query_params` | `HashMap<String, Vec<String>>` | Yes | Query parameters. |
+| `addr` | `String` | Yes | Client address. |
 
 ---
 
@@ -403,7 +294,7 @@ Result of stream authentication.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `context` | `Option<Value>` | No | - |
+| `context` | `Option<Value>` | No | Arbitrary context passed to stream handlers after authentication. |
 
 ---
 
@@ -440,13 +331,15 @@ Input for deleting a stream item.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | - |
-| `group_id` | `String` | Yes | - |
-| `item_id` | `String` | Yes | - |
+| `stream_name` | `String` | Yes | Name of the stream. |
+| `group_id` | `String` | Yes | Group identifier. |
+| `item_id` | `String` | Yes | Item identifier. |
 
 ---
 
 ### StreamDeleteResult
+
+Result of a stream delete operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -472,9 +365,9 @@ Input for retrieving a single stream item.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | - |
-| `group_id` | `String` | Yes | - |
-| `item_id` | `String` | Yes | - |
+| `stream_name` | `String` | Yes | Name of the stream. |
+| `group_id` | `String` | Yes | Group identifier. |
+| `item_id` | `String` | Yes | Item identifier. |
 
 ---
 
@@ -484,11 +377,11 @@ Event payload for stream join/leave triggers.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `subscription_id` | `String` | Yes | - |
-| `stream_name` | `String` | Yes | - |
-| `group_id` | `String` | Yes | - |
-| `id` | `Option<String>` | No | - |
-| `context` | `Option<Value>` | No | - |
+| `subscription_id` | `String` | Yes | Unique subscription identifier. |
+| `stream_name` | `String` | Yes | Name of the stream. |
+| `group_id` | `String` | Yes | Group identifier. |
+| `id` | `Option<String>` | No | Item identifier (if applicable). |
+| `context` | `Option<Value>` | No | Auth context from `StreamAuthResult`. |
 
 ---
 
@@ -500,9 +393,6 @@ Trigger config for `stream:join` and `stream:leave` triggers.
 | --- | --- | --- | --- |
 | `stream_name` | `Option<String>` | No | Stream name to watch |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
-| `new` | `fn() -> Self` | Yes | - |
-| `stream_name` | `fn(name: impl Into<String>) -> Self` | Yes | - |
 
 ---
 
@@ -512,7 +402,7 @@ Result of a stream join request.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `unauthorized` | `bool` | Yes | - |
+| `unauthorized` | `bool` | Yes | Whether the join was unauthorized. |
 
 ---
 
@@ -522,7 +412,7 @@ Input for listing all groups in a stream.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | - |
+| `stream_name` | `String` | Yes | Name of the stream. |
 
 ---
 
@@ -532,8 +422,8 @@ Input for listing all items in a stream group.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | - |
-| `group_id` | `String` | Yes | - |
+| `stream_name` | `String` | Yes | Name of the stream. |
+| `group_id` | `String` | Yes | Group identifier. |
 
 ---
 
@@ -543,14 +433,16 @@ Input for setting a stream item.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | - |
-| `group_id` | `String` | Yes | - |
-| `item_id` | `String` | Yes | - |
-| `data` | `Value` | Yes | - |
+| `stream_name` | `String` | Yes | Name of the stream. |
+| `group_id` | `String` | Yes | Group identifier. |
+| `item_id` | `String` | Yes | Item identifier. |
+| `data` | `Value` | Yes | Data to store. |
 
 ---
 
 ### StreamSetResult
+
+Result of a stream set operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -569,11 +461,6 @@ Trigger config for `stream` triggers. Filters which item changes fire the handle
 | `group_id` | `Option<String>` | No | Group ID filter |
 | `item_id` | `Option<String>` | No | Item ID filter |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
-| `group_id` | `fn(id: impl Into<String>) -> Self` | Yes | - |
-| `item_id` | `fn(id: impl Into<String>) -> Self` | Yes | - |
-| `new` | `fn() -> Self` | Yes | - |
-| `stream_name` | `fn(name: impl Into<String>) -> Self` | Yes | - |
 
 ---
 
@@ -583,10 +470,10 @@ Input for atomically updating a stream item.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | - |
-| `group_id` | `String` | Yes | - |
-| `item_id` | `String` | Yes | - |
-| `ops` | Vec&lt;[`UpdateOp`](#updateop)&gt; | Yes | - |
+| `stream_name` | `String` | Yes | Name of the stream. |
+| `group_id` | `String` | Yes | Group identifier. |
+| `item_id` | `String` | Yes | Item identifier. |
+| `ops` | Vec&lt;[`UpdateOp`](#updateop)&gt; | Yes | Ordered list of update operations to apply atomically. |
 
 ---
 
@@ -614,16 +501,6 @@ Operations that can be performed atomically on a stream value
 | `Decrement` | `{ path: String, by: i64 }` | Yes | Decrement numeric value |
 | `Append` | \{ path: Option&lt;[`MergePath`](#mergepath)&gt;, value: Value \} | Yes | Append an element to an array or concatenate a string at the<br />optional path. Path may be omitted (root append), a single<br />first-level key, or an array of literal segments for nested<br />append. See `MergePath` for the variant shape. |
 | `Remove` | `{ path: String }` | Yes | Remove a field |
-| `append` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create an Append operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
-| `append_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create an Append operation at a nested path of literal segments. Convenience wrapper for `append(vec!["a", "b"], v)`. |
-| `append_root` | `fn(value: impl Into<Value>) -> Self` | Yes | Create an Append operation at the root level (no path). |
-| `decrement` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create a Decrement operation |
-| `increment` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create an Increment operation |
-| `merge` | `fn(value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at root level |
-| `merge_at` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create a Merge operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
-| `merge_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at a nested path of literal segments. Convenience wrapper for `merge_at(vec!["a", "b"], v)`. |
-| `remove` | `fn(path: impl Into<String>) -> Self` | Yes | Create a Remove operation |
-| `set` | `fn(path: impl Into<String>, value: impl Into<Option<Value>>) -> Self` | Yes | Create a Set operation |
 
 ---
 

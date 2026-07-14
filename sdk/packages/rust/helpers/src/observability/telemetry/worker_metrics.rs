@@ -3,6 +3,7 @@ use std::time::Instant;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
 /// Collected worker metrics snapshot
+/// <!-- docs:internal -->
 #[derive(Debug, Clone)]
 pub struct WorkerMetrics {
     pub memory_rss: u64,
@@ -14,6 +15,7 @@ pub struct WorkerMetrics {
 }
 
 /// Collects system metrics for the current process
+/// <!-- docs:internal -->
 pub struct WorkerMetricsCollector {
     system: Mutex<System>,
     pid: Pid,

@@ -89,8 +89,7 @@ type HttpAuthConfig = { secret_key: string; type: "hmac" } | { token_key: string
 
 ### HttpInvocationConfig
 
-Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
-Workers, etc.) instead of a local handler.
+Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -119,12 +118,12 @@ Incoming buffered HTTP request received by a function handler.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `body` | `TBody` | Yes | - |
-| `headers` | `Record<string, string \| string[]>` | Yes | - |
-| `method` | `string` | Yes | - |
-| `path_params` | `Record<string, string>` | Yes | - |
-| `query_params` | `Record<string, string \| string[]>` | Yes | - |
-| `request_body` | `HttpStreamReader` | Yes | - |
+| `body` | `TBody` | Yes | Parsed request body. |
+| `headers` | `Record<string, string \| string[]>` | Yes | Request headers. |
+| `method` | `string` | Yes | HTTP method of the request (e.g. `GET`, `POST`). |
+| `path_params` | `Record<string, string>` | Yes | Path parameters extracted from the matched route. |
+| `query_params` | `Record<string, string \| string[]>` | Yes | Query-string parameters from the request URL. |
+| `request_body` | `HttpStreamReader` | Yes | Streaming reader for the raw request body. |
 
 ---
 
@@ -203,9 +202,11 @@ executeTracedRequest(input: RequestInfo | URL, init?: TracedFetchInit) => Promis
 #### Parameters
 
 <ParamField body="input" type="RequestInfo | URL" required>
+  The resource to fetch: a URL string, `URL`, or `Request`.
 </ParamField>
 
 <ParamField body="init" type="TracedFetchInit">
+  Fetch options, plus an optional `tracer` to create the span.
 </ParamField>
 
 
@@ -224,6 +225,7 @@ extractBaggage(baggage: string) => Context
 #### Parameters
 
 <ParamField body="baggage" type="string" required>
+  W3C `baggage` header value to parse.
 </ParamField>
 
 
@@ -242,9 +244,11 @@ extractContext(traceparent?: string, baggage?: string) => Context
 #### Parameters
 
 <ParamField body="traceparent" type="string">
+  W3C `traceparent` header value to parse.
 </ParamField>
 
 <ParamField body="baggage" type="string">
+  W3C `baggage` header value to parse.
 </ParamField>
 
 
@@ -263,6 +267,7 @@ extractTraceparent(traceparent: string) => Context
 #### Parameters
 
 <ParamField body="traceparent" type="string" required>
+  W3C `traceparent` header value to parse.
 </ParamField>
 
 
@@ -309,6 +314,7 @@ getBaggageEntry(key: string) => string | undefined
 #### Parameters
 
 <ParamField body="key" type="string" required>
+  Baggage entry key to read.
 </ParamField>
 
 
@@ -340,6 +346,7 @@ initOtel(config: OtelConfig) => void
 #### Parameters
 
 <ParamField body="config" type="OtelConfig" required>
+  OpenTelemetry configuration; env vars fill in unset fields.
 </ParamField>
 
 
@@ -382,6 +389,7 @@ patchGlobalFetch(tracer: Tracer) => void
 #### Parameters
 
 <ParamField body="tracer" type="Tracer" required>
+  Tracer used to create the client span for each request.
 </ParamField>
 
 
@@ -400,9 +408,11 @@ recordSpanEvent(name: string, attrs?: Attributes) => void
 #### Parameters
 
 <ParamField body="name" type="string" required>
+  Name of the event to add to the active span.
 </ParamField>
 
 <ParamField body="attrs" type="Attributes">
+  Optional attributes to attach to the event.
 </ParamField>
 
 
@@ -421,6 +431,7 @@ redact(value: unknown) => unknown
 #### Parameters
 
 <ParamField body="value" type="unknown" required>
+  The value to recursively redact.
 </ParamField>
 
 
@@ -439,9 +450,11 @@ redactAndTruncate(value: unknown, maxBytes: number | null) => { json: string; tr
 #### Parameters
 
 <ParamField body="value" type="unknown" required>
+  The value to redact and serialize.
 </ParamField>
 
 <ParamField body="maxBytes" type="number | null" required>
+  Maximum serialized size in bytes; null leaves it uncapped.
 </ParamField>
 
 
@@ -449,7 +462,8 @@ redactAndTruncate(value: unknown, maxBytes: number | null) => { json: string; tr
 
 ### registerWorkerGauges
 
-
+Register OpenTelemetry observable gauges that report worker resource metrics
+(CPU, memory, event-loop) on each collection cycle.
 
 **Signature**
 
@@ -481,6 +495,7 @@ removeBaggageEntry(key: string) => Context
 #### Parameters
 
 <ParamField body="key" type="string" required>
+  Baggage entry key to remove.
 </ParamField>
 
 
@@ -488,7 +503,8 @@ removeBaggageEntry(key: string) => Context
 
 ### resolveMaxBytesFromEnv
 
-
+Resolve the payload byte cap from the environment, returning undefined when
+unset.
 
 **Signature**
 
@@ -512,6 +528,7 @@ safeStringify(value: unknown) => string
 #### Parameters
 
 <ParamField body="value" type="unknown" required>
+  The value to serialize to JSON.
 </ParamField>
 
 
@@ -530,9 +547,11 @@ setBaggageEntry(key: string, value: string) => Context
 #### Parameters
 
 <ParamField body="key" type="string" required>
+  Baggage entry key to set.
 </ParamField>
 
 <ParamField body="value" type="string" required>
+  Baggage entry value to set.
 </ParamField>
 
 
@@ -551,9 +570,11 @@ setCurrentSpanAttribute(key: string, value: AttributeValue) => void
 #### Parameters
 
 <ParamField body="key" type="string" required>
+  Attribute key to set on the active span.
 </ParamField>
 
 <ParamField body="value" type="AttributeValue" required>
+  Attribute value to set.
 </ParamField>
 
 
@@ -572,6 +593,7 @@ setCurrentSpanError(message: string) => void
 #### Parameters
 
 <ParamField body="message" type="string" required>
+  Error message to set as the span's error status.
 </ParamField>
 
 
@@ -579,7 +601,8 @@ setCurrentSpanError(message: string) => void
 
 ### shutdownOtel
 
-Shutdown OpenTelemetry, flushing any pending data.
+Shut down OpenTelemetry, best-effort flushing any pending data before
+teardown.
 
 **Signature**
 
@@ -591,7 +614,7 @@ shutdownOtel() => Promise<void>
 
 ### stopWorkerGauges
 
-
+Stop and unregister the worker resource gauges.
 
 **Signature**
 
@@ -626,20 +649,26 @@ withSpan(name: string, options: { kind?: SpanKind; traceparent?: string }, fn: (
 #### Parameters
 
 <ParamField body="name" type="string" required>
+  Name of the span to create.
 </ParamField>
 
 <ParamField body="options" type="{ kind?: SpanKind; traceparent?: string }" required>
+  Span options: `kind` sets the span kind, `traceparent` sets the parent context from a W3C traceparent header.
 </ParamField>
 
 <ParamField body="fn" type="(span: Span) => Promise<T>" required>
+  Callback run inside the active span; its result is returned.
 </ParamField>
 
 
 ### Types
 
-[`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`OtelLogEvent`](#otellogevent) · [`ReconnectionConfig`](#reconnectionconfig) · [`TracedFetchInit`](#tracedfetchinit) · [`WorkerGaugesOptions`](#workergaugesoptions) · [`WorkerMetrics`](#workermetrics) · [`WorkerMetricsCollector`](#workermetricscollector) · [`WorkerMetricsCollectorOptions`](#workermetricscollectoroptions)
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`OtelLogEvent`](#otellogevent) · [`ReconnectionConfig`](#reconnectionconfig) · [`TracedFetchInit`](#tracedfetchinit) · [`WorkerGaugesOptions`](#workergaugesoptions) · [`WorkerMetricsCollector`](#workermetricscollector) · [`WorkerMetricsCollectorOptions`](#workermetricscollectoroptions)
 
 ### BaggageSpanProcessor
+
+OpenTelemetry span processor that copies OTel baggage entries onto each
+started span as attributes.
 
 ---
 
@@ -719,7 +748,7 @@ Configuration for WebSocket reconnection behavior
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `tracer` | `Tracer` | No | - |
+| `tracer` | `Tracer` | No | Tracer used to create the client span for the outgoing request. |
 
 ---
 
@@ -727,28 +756,8 @@ Configuration for WebSocket reconnection behavior
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `workerId` | `string` | Yes | - |
-| `workerName` | `string` | No | - |
-
----
-
-### WorkerMetrics
-
-Worker metrics data structure used internally for OTEL metric collection.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `cpu_percent` | `number` | No | - |
-| `cpu_system_micros` | `number` | No | - |
-| `cpu_user_micros` | `number` | No | - |
-| `event_loop_lag_ms` | `number` | No | - |
-| `memory_external` | `number` | No | - |
-| `memory_heap_total` | `number` | No | - |
-| `memory_heap_used` | `number` | No | - |
-| `memory_rss` | `number` | No | - |
-| `runtime` | `string` | Yes | - |
-| `timestamp_ms` | `number` | Yes | - |
-| `uptime_seconds` | `number` | No | - |
+| `workerId` | `string` | Yes | Stable identifier of the worker the gauges are reported for. |
+| `workerName` | `string` | No | Human-readable name of the worker. |
 
 ---
 

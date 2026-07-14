@@ -104,7 +104,7 @@ export type InitOptions = {
   workerDescription?: string
   /** Enable worker metrics via OpenTelemetry. Defaults to `true`. */
   enableMetricsReporting?: boolean
-  /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
+  /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
    * WebSocket reconnection behavior.

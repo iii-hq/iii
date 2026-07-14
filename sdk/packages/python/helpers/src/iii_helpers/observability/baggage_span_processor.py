@@ -19,6 +19,8 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 
 class BaggageSpanProcessor(SpanProcessor):
+    """OpenTelemetry span processor that copies OTel baggage entries onto each
+    started span as attributes."""
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         # NoOp guard: skip allocation when sampler drops the span.

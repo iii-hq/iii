@@ -52,7 +52,7 @@ export type TelemetryOptions = {
  * ```
  */
 export type InitOptions = {
-  /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
+  /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
    * WebSocket reconnection behavior.

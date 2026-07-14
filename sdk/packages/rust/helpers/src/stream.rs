@@ -221,6 +221,7 @@ pub struct StreamUpdateResult {
     pub errors: Vec<UpdateOpError>,
 }
 
+/// Result of a stream set operation.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamSetResult {
     /// The value before the update (None if key didn't exist)
@@ -229,6 +230,7 @@ pub struct StreamSetResult {
     pub new_value: Value,
 }
 
+/// Result of a stream delete operation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StreamDeleteResult {
     /// The value before the update (None if key didn't exist)
@@ -242,47 +244,64 @@ pub struct StreamDeleteResult {
 /// Input for retrieving a single stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamGetInput {
+    /// Name of the stream.
     pub stream_name: String,
+    /// Group identifier.
     pub group_id: String,
+    /// Item identifier.
     pub item_id: String,
 }
 
 /// Input for setting a stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamSetInput {
+    /// Name of the stream.
     pub stream_name: String,
+    /// Group identifier.
     pub group_id: String,
+    /// Item identifier.
     pub item_id: String,
+    /// Data to store.
     pub data: Value,
 }
 
 /// Input for deleting a stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamDeleteInput {
+    /// Name of the stream.
     pub stream_name: String,
+    /// Group identifier.
     pub group_id: String,
+    /// Item identifier.
     pub item_id: String,
 }
 
 /// Input for listing all items in a stream group.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamListInput {
+    /// Name of the stream.
     pub stream_name: String,
+    /// Group identifier.
     pub group_id: String,
 }
 
 /// Input for listing all groups in a stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamListGroupsInput {
+    /// Name of the stream.
     pub stream_name: String,
 }
 
 /// Input for atomically updating a stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamUpdateInput {
+    /// Name of the stream.
     pub stream_name: String,
+    /// Group identifier.
     pub group_id: String,
+    /// Item identifier.
     pub item_id: String,
+    /// Ordered list of update operations to apply atomically.
     pub ops: Vec<UpdateOp>,
 }
 
@@ -293,21 +312,27 @@ pub struct StreamUpdateInput {
 /// Input for stream authentication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamAuthInput {
+    /// Request headers.
     pub headers: HashMap<String, String>,
+    /// Request path.
     pub path: String,
+    /// Query parameters.
     pub query_params: HashMap<String, Vec<String>>,
+    /// Client address.
     pub addr: String,
 }
 
 /// Result of stream authentication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamAuthResult {
+    /// Arbitrary context passed to stream handlers after authentication.
     pub context: Option<Value>,
 }
 
 /// Result of a stream join request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamJoinResult {
+    /// Whether the join was unauthorized.
     pub unauthorized: bool,
 }
 
@@ -412,10 +437,15 @@ impl Default for StreamTriggerConfig {
 /// Event payload for stream join/leave triggers.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamJoinLeaveEvent {
+    /// Unique subscription identifier.
     pub subscription_id: String,
+    /// Name of the stream.
     pub stream_name: String,
+    /// Group identifier.
     pub group_id: String,
+    /// Item identifier (if applicable).
     pub id: Option<String>,
+    /// Auth context from `StreamAuthResult`.
     pub context: Option<Value>,
 }
 

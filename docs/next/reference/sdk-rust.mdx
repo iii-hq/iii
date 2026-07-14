@@ -565,8 +565,6 @@ Worker metadata reported to the engine (language, framework, project).
 | --- | --- | --- | --- |
 | `expression` | `String` | Yes | Cron expression (6-field format: sec min hour day month weekday) |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
-| `new` | `fn(expression: impl Into<String>) -> Self` | Yes | - |
 
 ---
 
@@ -604,9 +602,6 @@ Worker metadata reported to the engine (language, framework, project).
 | `api_path` | `String` | Yes | HTTP endpoint path (e.g. `/users/:id`) |
 | `http_method` | Option&lt;[`HttpMethod`](#httpmethod)&gt; | No | HTTP method (defaults to GET) |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
-| `method` | fn(method: [`HttpMethod`](#httpmethod)) -&gt; Self | Yes | - |
-| `new` | `fn(api_path: impl Into<String>) -> Self` | Yes | - |
 
 ---
 
@@ -646,8 +641,6 @@ Worker metadata reported to the engine (language, framework, project).
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `level` | Option&lt;[`LogLevel`](#loglevel)&gt; | No | Minimum log level to trigger on |
-| `level` | fn(level: [`LogLevel`](#loglevel)) -&gt; Self | Yes | - |
-| `new` | `fn() -> Self` | Yes | - |
 
 ---
 
@@ -658,8 +651,6 @@ Worker metadata reported to the engine (language, framework, project).
 | `topic` | `String` | Yes | Queue topic to subscribe to |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
 | `queue_config` | `Option<Value>` | No | Queue-specific subscriber configuration |
-| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
-| `new` | `fn(topic: impl Into<String>) -> Self` | Yes | - |
 | `queue_config` | fn(config: impl Serialize) -&gt; Result&lt;Self, serde_json::[`Error`](#error)&gt; | Yes | - |
 
 ---
@@ -694,10 +685,6 @@ Worker metadata reported to the engine (language, framework, project).
 | `scope` | `Option<String>` | No | State scope to watch (exact match filter) |
 | `key` | `Option<String>` | No | State key to watch (exact match filter) |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
-| `key` | `fn(key: impl Into<String>) -> Self` | Yes | - |
-| `new` | `fn() -> Self` | Yes | - |
-| `scope` | `fn(scope: impl Into<String>) -> Self` | Yes | - |
 
 ---
 
@@ -707,8 +694,6 @@ Worker metadata reported to the engine (language, framework, project).
 | --- | --- | --- | --- |
 | `topic` | `String` | Yes | Topic to subscribe to |
 | `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-| `condition` | `fn(function_id: impl Into<String>) -> Self` | Yes | - |
-| `new` | `fn(topic: impl Into<String>) -> Self` | Yes | - |
 
 ### iii_sdk::channel
 
@@ -888,8 +873,6 @@ does not carry it.
 | `metadata` | `Option<Value>` | No | - |
 | `invocation` | `Option<iii_helpers::http::HttpInvocationConfig>` | No | - |
 | `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
-| `with_description` | `fn(description: String) -> Self` | Yes | - |
-| `with_id` | `fn(name: String) -> Self` | Yes | - |
 
 ---
 

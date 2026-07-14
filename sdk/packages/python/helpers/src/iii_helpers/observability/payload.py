@@ -51,6 +51,11 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def redact(value: Any) -> Any:
+    """Recursively redact values of sensitive keys. Returns a new value.
+
+    Args:
+        value: Value to redact; dicts, lists, and tuples are traversed recursively.
+    """
     if isinstance(value, dict):
         return {
             k: REDACTED_PLACEHOLDER if _is_sensitive_key(k) else redact(v)
@@ -66,6 +71,12 @@ def redact(value: Any) -> Any:
 def redact_and_truncate(
     value: Any, max_bytes: Optional[int] = None
 ) -> tuple[str, bool]:
+    """Redact then serialize to JSON, optionally capped at ``max_bytes``.
+
+    Args:
+        value: Value to redact and serialize.
+        max_bytes: Optional cap on the serialized byte length; unset or <= 0 means no cap.
+    """
     redacted = redact(value)
     try:
         serialized = json.dumps(redacted, default=str, ensure_ascii=False)

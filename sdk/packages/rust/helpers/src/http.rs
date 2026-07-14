@@ -38,17 +38,21 @@ pub enum HttpAuthConfig {
     },
 }
 
-/// Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
-/// Workers, etc.) instead of a local handler.
+/// Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationConfig {
+    /// URL to invoke.
     pub url: String,
+    /// HTTP method. Defaults to `POST`.
     #[serde(default = "default_http_method")]
     pub method: HttpMethod,
+    /// Timeout in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Custom headers to send with the request.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Authentication configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<HttpAuthConfig>,
 }
@@ -60,16 +64,22 @@ fn default_http_method() -> HttpMethod {
 /// Buffered HTTP request received by a function handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpRequest<T = Value> {
+    /// Query-string parameters from the request URL.
     #[serde(default)]
     pub query_params: HashMap<String, String>,
+    /// Path parameters extracted from the matched route.
     #[serde(default)]
     pub path_params: HashMap<String, String>,
+    /// Request headers.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Request path.
     #[serde(default)]
     pub path: String,
+    /// HTTP method of the request (e.g. `GET`, `POST`).
     #[serde(default)]
     pub method: String,
+    /// Parsed request body.
     #[serde(default)]
     pub body: T,
 }
@@ -77,8 +87,11 @@ pub struct HttpRequest<T = Value> {
 /// Buffered HTTP response returned from a function handler.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpResponse<T = Value> {
+    /// HTTP status code.
     pub status_code: u16,
+    /// Response headers.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Response body.
     pub body: T,
 }
