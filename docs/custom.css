@@ -469,3 +469,30 @@ body,
 #content-area {
   overflow-anchor: none;
 }
+
+/* Mintlify syncs same-titled tab groups page-wide: clicking Example on one
+   method flips every Parameters/Example group on the page, so the groups
+   ABOVE the clicked one change height and the clicked tab strip flies up or
+   down even though the scroll position never moves. Scroll preservation
+   (tab-scroll-preserve.js) and overflow-anchor can't help with that; the
+   layout itself has to stop moving. Both panels of a group stay mounted (the
+   inactive one carries `hidden`), so stack them in a single grid cell: the
+   group is always as tall as its tallest panel, the hidden panel keeps its
+   layout slot but is invisible and unfocusable, and a tab switch changes no
+   geometry anywhere on the page. */
+.tab-container > [role="tablist"] + div {
+  display: grid !important;
+}
+
+.tab-container > [role="tablist"] + div > [role="tabpanel"] {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+/* The inactive panel carries the `hidden` attribute in server HTML and the
+   Tailwind `hidden` class once hydrated; cover both. */
+.tab-container > [role="tablist"] + div > [role="tabpanel"][hidden],
+.tab-container > [role="tablist"] + div > [role="tabpanel"].hidden {
+  display: block !important;
+  visibility: hidden;
+}
