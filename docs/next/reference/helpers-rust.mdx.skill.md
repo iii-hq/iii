@@ -341,7 +341,7 @@ Result of a stream delete operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
+| `old_value` | `Option<Value>` | No | Previous value (if it existed). |
 
 ---
 
@@ -444,7 +444,7 @@ Result of a stream set operation.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
+| `old_value` | `Option<Value>` | No | Previous value (if it existed). |
 | `new_value` | `Value` | Yes | The value after the update |
 
 ---
@@ -481,7 +481,7 @@ Result of an atomic update operation
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `old_value` | `Option<Value>` | No | The value before the update (None if key didn't exist) |
+| `old_value` | `Option<Value>` | No | Previous value (if it existed). |
 | `new_value` | `Value` | Yes | The value after the update |
 | `errors` | Vec&lt;[`UpdateOpError`](#updateoperror)&gt; | Yes | Errors encountered while applying ops. Successfully applied ops<br />are still reflected in `new_value`. Field is omitted from JSON<br />when empty for backward compatibility. |
 

@@ -428,6 +428,7 @@ function extractTraitType(item: RustDocItem, index: Record<string, RustDocItem>)
   for (const mid of item.inner.trait?.items ?? []) {
     const method = index[mid]
     if (!method || getItemKind(method) !== 'function') continue
+    if (isInternalDoc(method.docs)) continue
     const sig = getSig(method)
     if (!sig) continue
     const inputs = (sig.inputs ?? []).filter(([name]: [string, any]) => name !== 'self')

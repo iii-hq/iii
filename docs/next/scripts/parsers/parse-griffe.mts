@@ -247,8 +247,11 @@ function attributeRequired(member: GriffeObject): boolean {
   if (value === undefined || value === null) return true
   if (value?.cls === 'ExprCall' && annotationToString(value.function) === 'Field') {
     const args: any[] = value.arguments ?? []
+    // Optional only when an explicit default is given as a keyword argument.
+    // Positional args (including the `...` ellipsis, which means "required")
+    // and other keywords like `description` keep the field required.
     return !args.some(
-      a => a.cls !== 'ExprKeyword' || a.name === 'default' || a.name === 'default_factory',
+      a => a.cls === 'ExprKeyword' && (a.name === 'default' || a.name === 'default_factory'),
     )
   }
   return false
@@ -276,6 +279,7 @@ function griffeToType(obj: GriffeObject): TypeDoc {
   if (obj.members) {
     for (const [name, member] of Object.entries(obj.members)) {
       if (name.startsWith('_')) continue
+      if (isInternalObj(member)) continue
       if (member.kind === 'attribute') {
         if (isModelConfig(member)) continue
         fields.push({

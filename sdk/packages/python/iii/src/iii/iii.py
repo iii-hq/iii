@@ -262,10 +262,6 @@ class III:
         and establishes the WebSocket connection. This is called automatically
         during construction; use it only if you need to reconnect manually
         from an async context.
-
-        Examples:
-            >>> worker = register_worker("ws://localhost:49134")
-            >>> await worker.connect_async()
         """
         self._running = True
         from iii_helpers.observability.telemetry import attach_event_loop, init_otel

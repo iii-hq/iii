@@ -210,7 +210,7 @@ pub struct UpdateOpError {
 /// Result of an atomic update operation
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamUpdateResult {
-    /// The value before the update (None if key didn't exist)
+    /// Previous value (if it existed).
     pub old_value: Option<Value>,
     /// The value after the update
     pub new_value: Value,
@@ -224,7 +224,7 @@ pub struct StreamUpdateResult {
 /// Result of a stream set operation.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamSetResult {
-    /// The value before the update (None if key didn't exist)
+    /// Previous value (if it existed).
     pub old_value: Option<Value>,
     /// The value after the update
     pub new_value: Value,
@@ -233,7 +233,7 @@ pub struct StreamSetResult {
 /// Result of a stream delete operation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StreamDeleteResult {
-    /// The value before the update (None if key didn't exist)
+    /// Previous value (if it existed).
     pub old_value: Option<Value>,
 }
 
