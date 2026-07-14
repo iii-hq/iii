@@ -16,9 +16,9 @@ cargo add iii-sdk
 
 ### register_worker
 
-Create and return a connected SDK instance. The WebSocket connection is
-established automatically in a dedicated background thread with its own
-tokio runtime.
+Register the worker with a iii instance, returns a connected worker client.
+The WebSocket connection is established automatically in a dedicated
+background thread with its own tokio runtime.
 
 Call `IIIClient::shutdown` before the end of `main` to cleanly stop the
 connection and join the background thread. In Rust the process exits
@@ -458,11 +458,11 @@ worker.shutdown_async().await;
 
 #### EnqueueResult
 
-Result returned by the engine when a message is successfully enqueued.
+Result returned when a function is invoked with `TriggerAction.Enqueue`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `message_receipt_id` | `String` | Yes | - |
+| `message_receipt_id` | `String` | Yes | Unique receipt ID for the enqueued message. |
 
 ---
 
@@ -540,14 +540,14 @@ function input types.
 
 #### TelemetryOptions
 
-Worker metadata provided by the SDK to the engine.
+Worker metadata reported to the engine (language, framework, project).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `language` | `Option<String>` | No | - |
-| `project_name` | `Option<String>` | No | - |
-| `framework` | `Option<String>` | No | - |
-| `amplitude_api_key` | `Option<String>` | No | - |
+| `language` | `Option<String>` | No | Programming language of the worker. |
+| `project_name` | `Option<String>` | No | Name of the project this worker belongs to. |
+| `framework` | `Option<String>` | No | Framework name, if applicable. |
+| `amplitude_api_key` | `Option<String>` | No | Amplitude API key for product analytics. |
 
 ### iii_sdk::builtin_triggers
 
@@ -1280,9 +1280,9 @@ type RemoteFunctionHandlerWithMetadata = Arc<dyn Fn(Value, Option<Value>) -> fut
 
 #### StreamRequest
 
-Streaming request type, mirroring the Node and Python `StreamRequest`.
+Incoming streaming request received by a function registered with a stream trigger.
 
-Alias of `iii_helpers::http::HttpRequest`; added for cross-language parity.
+Alias of `iii_helpers::http::HttpRequest`.
 
 ```rust
 type StreamRequest = iii_helpers::http::HttpRequest<T>

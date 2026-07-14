@@ -1411,7 +1411,7 @@ class TriggerAction:
 
 
 def register_worker(address: str, options: InitOptions | None = None) -> III:
-    """Create an III client and connect to the engine.
+    """Register the worker with a iii instance, returns a connected worker client.
 
     Blocks until the WebSocket connection is established and ready.
 

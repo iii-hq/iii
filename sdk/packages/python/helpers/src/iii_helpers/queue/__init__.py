@@ -7,10 +7,10 @@ class EnqueueResult(BaseModel):
     """Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 
     Attributes:
-        messageReceiptId: UUID assigned by the engine to the enqueued job.
+        messageReceiptId: Unique receipt ID for the enqueued message.
     """
 
-    messageReceiptId: str = Field(description="UUID assigned by the engine to the enqueued job.")
+    messageReceiptId: str = Field(description="Unique receipt ID for the enqueued message.")
 
 
 __all__ = [

@@ -16,8 +16,9 @@ npm install iii-browser-sdk
 
 ### registerWorker
 
-Creates and returns a connected SDK instance. The WebSocket connection is
-established automatically; there is no separate `connect()` call.
+Register the worker with a iii instance, returns a connected worker client.
+The WebSocket connection is established automatically; there is no separate
+`connect()` call.
 
 **Signature**
 
@@ -366,6 +367,7 @@ addConnectionStateListener(handler: (state: IIIConnectionState) => void) => () =
   <Tab title="Parameters">
 
 <ParamField body="handler" type="(state: IIIConnectionState) => void" required>
+  Callback invoked with the new connection state whenever it changes.
 </ParamField>
 
 

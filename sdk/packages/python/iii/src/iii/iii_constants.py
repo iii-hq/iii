@@ -31,12 +31,12 @@ class FunctionRef:
 
 @dataclass
 class TelemetryOptions:
-    """Worker metadata reported to the engine.
+    """Worker metadata reported to the engine (language, framework, project).
 
     Attributes:
-        language: Programming language of the worker (e.g. ``python``).
+        language: Programming language of the worker.
         project_name: Name of the project this worker belongs to.
-        framework: Framework name (e.g. ``motia``) if applicable.
+        framework: Framework name, if applicable.
         amplitude_api_key: Amplitude API key for product analytics.
     """
 
@@ -48,7 +48,7 @@ class TelemetryOptions:
 
 @dataclass
 class InitOptions:
-    """Options for configuring the III SDK.
+    """Configuration options passed to ``register_worker``.
 
     Attributes:
         worker_name: Display name for this worker. Defaults to ``hostname:pid``.

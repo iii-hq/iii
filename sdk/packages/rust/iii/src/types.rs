@@ -39,9 +39,9 @@ pub struct RemoteTriggerTypeData {
     pub handler: Arc<dyn TriggerHandler>,
 }
 
-/// Streaming request type, mirroring the Node and Python `StreamRequest`.
+/// Incoming streaming request received by a function registered with a stream trigger.
 ///
-/// Alias of [`iii_helpers::http::HttpRequest`]; added for cross-language parity.
+/// Alias of [`iii_helpers::http::HttpRequest`].
 pub type StreamRequest<T = Value> = iii_helpers::http::HttpRequest<T>;
 
 /// Streaming response type, mirroring the Node and Python `StreamResponse`.

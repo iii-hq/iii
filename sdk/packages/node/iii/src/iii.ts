@@ -70,11 +70,15 @@ function getDefaultWorkerName(): string {
   return `${os.hostname()}:${process.pid}`
 }
 
-/** Worker labels reported to the engine (language, framework, project). */
+/** Worker metadata reported to the engine (language, framework, project). */
 export type TelemetryOptions = {
+  /** Programming language of the worker. */
   language?: string
+  /** Name of the project this worker belongs to. */
   project_name?: string
+  /** Framework name, if applicable. */
   framework?: string
+  /** Amplitude API key for product analytics. */
   amplitude_api_key?: string
 }
 
@@ -1086,8 +1090,9 @@ export const TriggerAction = {
 } as const
 
 /**
- * Creates and returns a connected SDK instance. The WebSocket connection is
- * established automatically; there is no separate `connect()` call.
+ * Register the worker with a iii instance, returns a connected worker client.
+ * The WebSocket connection is established automatically; there is no separate
+ * `connect()` call.
  *
  * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
  * @param options - Optional {@link InitOptions} for worker name, timeouts, reconnection, and OTel.

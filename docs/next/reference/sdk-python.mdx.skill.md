@@ -14,7 +14,7 @@ pip install iii-sdk
 
 ### register_worker
 
-Create an III client and connect to the engine.
+Register the worker with a iii instance, returns a connected worker client.
 
 Blocks until the WebSocket connection is established and ready.
 
@@ -578,13 +578,13 @@ Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `messageReceiptId` | `str` | Yes | UUID assigned by the engine to the enqueued job. |
+| `messageReceiptId` | `str` | Yes | Unique receipt ID for the enqueued message. |
 
 ---
 
 #### InitOptions
 
-Options for configuring the III SDK.
+Configuration options passed to ``register_worker``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -615,7 +615,7 @@ through the RBAC port.
 
 #### StreamRequest
 
-Streaming request without the response writer.
+Incoming streaming request received by a function registered with a stream trigger.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -644,13 +644,13 @@ Streaming response built on top of a ChannelWriter.
 
 #### TelemetryOptions
 
-Worker metadata reported to the engine.
+Worker metadata reported to the engine (language, framework, project).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `amplitude_api_key` | `str \| None` | No | Amplitude API key for product analytics. |
-| `framework` | `str \| None` | No | Framework name (e.g. ``motia``) if applicable. |
-| `language` | `str \| None` | No | Programming language of the worker (e.g. ``python``). |
+| `framework` | `str \| None` | No | Framework name, if applicable. |
+| `language` | `str \| None` | No | Programming language of the worker. |
 | `project_name` | `str \| None` | No | Name of the project this worker belongs to. |
 
 ---

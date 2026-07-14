@@ -219,15 +219,19 @@ where
     }
 }
 
-/// Worker metadata provided by the SDK to the engine.
+/// Worker metadata reported to the engine (language, framework, project).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TelemetryOptions {
+    /// Programming language of the worker.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Name of the project this worker belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_name: Option<String>,
+    /// Framework name, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub framework: Option<String>,
+    /// Amplitude API key for product analytics.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amplitude_api_key: Option<String>,
 }

@@ -196,6 +196,9 @@ export interface ISdk {
    * with the current state, then on every transition. Multiple listeners are
    * supported. Returns an unsubscribe function.
    *
+   * @param handler - Callback invoked with the new connection state whenever it changes.
+   * @returns An unsubscribe function that stops further callbacks.
+   *
    * @example
    * ```typescript
    * const unsub = worker.addConnectionStateListener((state) => {

@@ -542,7 +542,7 @@ Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `messageReceiptId` | `str` | Yes | UUID assigned by the engine to the enqueued job. |
+| `messageReceiptId` | `str` | Yes | Unique receipt ID for the enqueued message. |
 
 ## stream
 

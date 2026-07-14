@@ -339,11 +339,11 @@ use iii_helpers::queue;
 
 ### EnqueueResult
 
-Result returned by the engine when a message is successfully enqueued.
+Result returned when a function is invoked with `TriggerAction.Enqueue`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `message_receipt_id` | `String` | Yes | - |
+| `message_receipt_id` | `String` | Yes | Unique receipt ID for the enqueued message. |
 
 ## stream
 

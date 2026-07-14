@@ -16,8 +16,9 @@ npm install iii-sdk
 
 ### registerWorker
 
-Creates and returns a connected SDK instance. The WebSocket connection is
-established automatically; there is no separate `connect()` call.
+Register the worker with a iii instance, returns a connected worker client.
+The WebSocket connection is established automatically; there is no separate
+`connect()` call.
 
 **Signature**
 
@@ -509,14 +510,14 @@ responses, and call `close()` when done.
 
 #### TelemetryOptions
 
-Worker labels reported to the engine (language, framework, project).
+Worker metadata reported to the engine (language, framework, project).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `amplitude_api_key` | `string` | No | - |
-| `framework` | `string` | No | - |
-| `language` | `string` | No | - |
-| `project_name` | `string` | No | - |
+| `amplitude_api_key` | `string` | No | Amplitude API key for product analytics. |
+| `framework` | `string` | No | Framework name, if applicable. |
+| `language` | `string` | No | Programming language of the worker. |
+| `project_name` | `string` | No | Name of the project this worker belongs to. |
 
 ---
 
