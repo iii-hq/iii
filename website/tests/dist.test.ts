@@ -118,7 +118,7 @@ test('blog header renders the iii six-rect logo', async () => {
   assert.match(html, /class="accent"/, 'logo accent rects missing')
 })
 
-test('sitemap covers all three surfaces with the load-bearing URL shapes', async () => {
+test('sitemap covers the indexable surfaces with the load-bearing URL shapes', async () => {
   const xml = await read('sitemap.xml')
   assert.match(xml, /<loc>https:\/\/iii\.dev\/<\/loc>/)
   assert.match(
@@ -127,7 +127,17 @@ test('sitemap covers all three surfaces with the load-bearing URL shapes', async
     'marketing pages stay extensionless, no trailing slash',
   )
   assert.match(xml, /<loc>https:\/\/iii\.dev\/blog\/add-a-worker\/<\/loc>/, 'blog posts keep trailing-slash URLs')
-  assert.match(xml, /<loc>https:\/\/iii\.dev\/roadmap\/<\/loc>/, 'roadmap gallery listed')
+  assert.doesNotMatch(xml, /\/roadmap/, 'roadmap stays out of the sitemap (robots.txt disallows it)')
+})
+
+test('robots.txt keeps the roadmap out of every crawler block', async () => {
+  const robots = await read('robots.txt')
+  const blocks = robots.split(/\n(?=User-agent:)/).filter((b) => b.startsWith('User-agent:'))
+  assert.ok(blocks.length > 1, 'robots.txt should keep its per-crawler blocks')
+  for (const block of blocks) {
+    if (/^Disallow: \/$/m.test(block)) continue // blanket opt-out (training-only crawlers)
+    assert.match(block, /^Disallow: \/roadmap$/m, `crawler block missing roadmap disallow:\n${block}`)
+  }
 })
 
 test('llms.txt and AGENTS.md are generated from the built homepage', async () => {
@@ -138,20 +148,26 @@ test('llms.txt and AGENTS.md are generated from the built homepage', async () =>
   assert.ok(agents.startsWith('# iii for AI Agents'), 'AGENTS.md heading drifted')
 })
 
-test('roadmap gallery and deck pages emit under /roadmap/', async () => {
+test('roadmap gallery and deck pages emit under /roadmap/ with the shared header', async () => {
   const feed = JSON.parse(await read('roadmap/index.json')) as { specs: { slug: string; url: string }[] }
   assert.ok(feed.specs.length > 0, 'roadmap feed should list published specs')
   for (const spec of feed.specs) {
     assert.match(spec.url, /^\/roadmap\//, 'feed URLs must stay /roadmap/-prefixed')
-    assert.ok(existsSync(path.join(DIST, 'roadmap', spec.slug, 'index.html')), `missing roadmap page for ${spec.slug}`)
+    const page = path.join('roadmap', spec.slug, 'index.html')
+    assert.ok(existsSync(path.join(DIST, page)), `missing roadmap page for ${spec.slug}`)
+    const html = await read(page)
+    assert.match(html, /<nav class="nav" id="nav">/, `${page}: shared SiteNav missing`)
+    assert.match(html, /class="foot"/, `${page}: shared SiteFooter missing`)
   }
 })
 
-test('the shared site header is on every non-deck surface, roadmap gallery included', async () => {
+test('the shared site header and footer are on every surface, roadmap included', async () => {
   for (const page of ['index.html', 'manifesto.html', 'privacy-policy.html', 'blog/index.html', 'roadmap/index.html']) {
     const html = await read(page)
     assert.match(html, /<nav class="nav" id="nav">/, `${page}: shared SiteNav missing`)
     assert.match(html, /class="nav-link" href="\/roadmap\/"/, `${page}: roadmap link missing from header`)
     assert.doesNotMatch(html, /class="nav-link" href="#/, `${page}: scroll-only nav links should be gone`)
+    assert.match(html, /class="foot"/, `${page}: shared site footer missing`)
+    assert.match(html, /pronounced <span class="pron">/, `${page}: footer bottom line missing`)
   }
 })

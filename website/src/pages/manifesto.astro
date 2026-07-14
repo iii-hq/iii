@@ -3,11 +3,16 @@
 // (see src/components/manifesto/), with the shared SiteNav in place of the
 // page's original one-off nav; the shared shell provides the head, analytics,
 // and cookie banner it used to carry inline.
+import SiteFooter from '../components/SiteFooter.astro'
 import SiteNav from '../components/SiteNav.astro'
 import HtmlShell from '../layouts/HtmlShell.astro'
 import body from '../components/manifesto/body.html?raw'
 import bodyOpen from '../components/manifesto/body-open.html?raw'
 import '../styles/manifesto.css'
+
+// body.html ends at </article>; the shared footer slots in before these
+// closing tags of the .page/.sheet wrappers that body-open.html opens.
+const bodyClose = '\n      </main>\n    </div>\n'
 ---
 
 <HtmlShell
@@ -23,4 +28,6 @@ import '../styles/manifesto.css'
   <Fragment set:html={bodyOpen} />
   <SiteNav />
   <Fragment set:html={body} />
+  <SiteFooter />
+  <Fragment set:html={bodyClose} />
 </HtmlShell>

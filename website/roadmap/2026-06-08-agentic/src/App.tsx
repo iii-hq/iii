@@ -1,10 +1,9 @@
-import { Footer } from '@lib/components/Footer'
 import { Sheet } from '@lib/components/schematic/Sheet'
 import { TopNav } from '@lib/components/TopNav'
 import { useHashRoute } from '@lib/hooks/useHashRoute'
 import { SpecPage } from '@lib/pages/SpecPage'
 import type { ComponentType } from 'react'
-import { DECK_META, FOOTER, NAV } from './content/deck'
+import { NAV } from './content/deck'
 import { ConsolePage } from './pages/ConsolePage'
 import { LoopsPage } from './pages/LoopsPage'
 import { TelegramPage } from './pages/TelegramPage'
@@ -79,9 +78,8 @@ export default function App() {
   return (
     <div className="@container min-h-screen">
       <Sheet>
-        <TopNav route={route} meta={DECK_META} nav={NAV} />
+        <TopNav route={route} nav={NAV} />
         {route.kind === 'home' ? <Home /> : Page ? <Page /> : <NotFound />}
-        <Footer footer={FOOTER} />
       </Sheet>
     </div>
   )

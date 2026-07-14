@@ -58,6 +58,15 @@
   .nav.scrolled .logo-mark{ width:22px; height:22px; }
   /* all i's black per spec — accent rects render as ink */
   .logo-mark .accent{ fill:var(--ink); }
+  /* optional page label next to the logo (e.g. "Roadmap" on /roadmap) */
+  .logo-title{
+    font-family:"Chivo Mono", ui-monospace, monospace;
+    font-size:15px;
+    font-weight:600;
+    letter-spacing:-0.01em;
+    color:var(--ink);
+    white-space:nowrap;
+  }
   .logo-mark .bar{ fill:var(--ink); }
   .logo-word{
     font-family:'Chivo Mono', ui-monospace, monospace;

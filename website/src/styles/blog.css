@@ -289,67 +289,7 @@ article th code {
   overflow-wrap: break-word;
 }
 
-/* ============= FOOTER ============= */
-.foot {
-  border-top: 1px solid var(--rule);
-  padding: 40px 28px 8px;
-  margin-top: 40px;
-}
-.foot-cols {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr 1fr;
-  gap: 32px;
-}
-.foot-col h5 {
-  margin: 0 0 0.75rem;
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ink-faint);
-  font-weight: 600;
-}
-.foot-col ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.foot-col li {
-  margin: 0.35rem 0;
-  font-size: 0.9rem;
-}
-.foot-col a {
-  color: var(--ink-2);
-  text-decoration: none;
-}
-.foot-col a:hover {
-  color: var(--accent);
-}
-.fb svg {
-  width: 28px;
-  height: 28px;
-  display: block;
-  margin-bottom: 12px;
-  color: var(--ink);
-}
-.foot-col-brand p {
-  font-size: 0.9rem;
-  color: var(--ink-faint);
-  margin: 0;
-  max-width: 32ch;
-}
-.foot-bottom {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24px 0 0;
-  margin-top: 32px;
-  border-top: 1px solid var(--rule-2);
-  font-size: 0.8rem;
-  color: var(--ink-faint);
-}
-.foot-bottom .pron {
-  color: var(--ink-2);
-}
+/* Footer styles live in src/styles/site-footer.css (shared SiteFooter). */
 
 /* ============= TABLET ============= */
 @media (max-width: 1024px) {
@@ -358,9 +298,6 @@ article th code {
   }
   main {
     padding: 44px 24px 64px;
-  }
-  .foot {
-    padding: 36px 24px 8px;
   }
 }
 
@@ -399,18 +336,6 @@ article th code {
   article th,
   article td {
     padding: 0.55rem 0.65rem;
-  }
-  .foot {
-    padding: 32px 16px 8px;
-  }
-  .foot-cols {
-    grid-template-columns: 1fr;
-    gap: 24px;
-  }
-  .foot-bottom {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
   }
 }
 

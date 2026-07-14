@@ -2,7 +2,6 @@ import { SPECS } from 'virtual:spec-manifest'
 import { Prompt } from '@lib/components/schematic/Prompt'
 import { Sheet } from '@lib/components/schematic/Sheet'
 import { Gallery } from './Gallery'
-import { SiteFooter } from './SiteFooter'
 import { SITE } from './site'
 
 function Hero() {
@@ -54,7 +53,6 @@ export default function App() {
             <Gallery />
           </section>
         </main>
-        <SiteFooter />
       </Sheet>
     </div>
   )

@@ -3,6 +3,7 @@ User-agent: *
 Allow: /
 
 Disallow: /preview
+Disallow: /roadmap
 Disallow: /docs/_next/
 Disallow: /docs/_mintlify/
 Disallow: /docs/0-10-0/
@@ -13,46 +14,57 @@ Disallow: /*?dpl=
 User-agent: GPTBot
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: ChatGPT-User
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: OAI-SearchBot
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: ClaudeBot
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: anthropic-ai
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: PerplexityBot
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: Perplexity-User
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: Google-Extended
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: Applebot-Extended
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: Bingbot
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 User-agent: DuckAssistBot
 Allow: /
 Disallow: /preview
+Disallow: /roadmap
 
 # Training-only crawlers (no citation capability) — opt out
 User-agent: CCBot

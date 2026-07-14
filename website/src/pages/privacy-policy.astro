@@ -3,11 +3,16 @@
 // privacy-policy.html (see src/components/privacy/), with the shared SiteNav
 // in place of the page's original one-off nav; the shared shell provides the
 // head, analytics, and cookie banner.
+import SiteFooter from '../components/SiteFooter.astro'
 import SiteNav from '../components/SiteNav.astro'
 import HtmlShell from '../layouts/HtmlShell.astro'
 import body from '../components/privacy/body.html?raw'
 import bodyOpen from '../components/privacy/body-open.html?raw'
 import '../styles/privacy.css'
+
+// body.html ends at </article>; the shared footer slots in before these
+// closing tags of the .page/.sheet wrappers that body-open.html opens.
+const bodyClose = '\n      </main>\n    </div>\n'
 ---
 
 <HtmlShell
@@ -23,4 +28,6 @@ import '../styles/privacy.css'
   <Fragment set:html={bodyOpen} />
   <SiteNav />
   <Fragment set:html={body} />
+  <SiteFooter />
+  <Fragment set:html={bodyClose} />
 </HtmlShell>

@@ -8,6 +8,13 @@
 // the top of <body>: it also binds page-level .cta-* elements (hero/footer)
 // that parse after it.
 import '../styles/site-nav.css'
+
+interface Props {
+  /** optional page label rendered next to the logo, e.g. "Roadmap" */
+  pageTitle?: string
+}
+
+const { pageTitle } = Astro.props
 ---
 
 <nav class="nav" id="nav">
@@ -21,6 +28,7 @@ import '../styles/site-nav.css'
         <rect class="bar" x="806.81" y="0.05" width="268.94" height="268.94"></rect>
         <rect class="bar" x="806.81" y="403.45" width="268.94" height="672.24"></rect>
       </svg>
+      {pageTitle && <span class="logo-title">{pageTitle}</span>}
     </a>
   </div>
 

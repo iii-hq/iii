@@ -1,6 +1,4 @@
 import { Sheet } from '@lib/components/schematic/Sheet'
-import { TopNav } from '@lib/components/TopNav'
-import { useHashRoute } from '@lib/hooks/useHashRoute'
 import { SpecPage } from '@lib/pages/SpecPage'
 import { useEffect, useState } from 'react'
 
@@ -24,7 +22,6 @@ type LoadState =
   | { kind: 'ready'; manifest: SpecManifest; docs: Record<string, string> }
 
 export function ViewerApp() {
-  const route = useHashRoute()
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
 
   useEffect(() => {
@@ -57,14 +54,6 @@ export function ViewerApp() {
   return (
     <div className="@container min-h-screen">
       <Sheet>
-        <TopNav
-          route={route}
-          meta={{
-            wordmarkLabel: state.kind === 'ready' ? state.manifest.title : 'iii / tech-specs',
-          }}
-          nav={[]}
-          specHref={null}
-        />
         {state.kind === 'loading' ? (
           <main className="px-4 py-24 @3xl:px-9">
             <p className="font-mono text-[14px] lowercase text-ink-faint">loading spec…</p>

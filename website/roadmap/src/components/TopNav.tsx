@@ -1,24 +1,25 @@
-import { ModeToggle } from '@lib/components/schematic/ModeToggle'
-import { Wordmark } from '@lib/components/schematic/Wordmark'
 import type { Route } from '@lib/hooks/useHashRoute'
-import { useTheme } from '@lib/hooks/useTheme'
-import type { DeckMeta, NavItem } from '@lib/lib/deck-types'
+import type { NavItem } from '@lib/lib/deck-types'
 import { cn } from '@lib/lib/utils'
 import { useEffect, useState } from 'react'
 
+/**
+ * The deck's in-page section nav. Branding and theme switching live in the
+ * shared site header (src/components/SiteNav.astro), rendered by the Astro
+ * page above the deck island — this bar only carries the deck's own links:
+ * section scroll-spy on the home route, "back to the overview" on sub-pages,
+ * and the spec link.
+ */
 export function TopNav({
   route,
-  meta,
   nav,
   specHref = '#/spec',
 }: {
   route: Route
-  meta: DeckMeta
   nav: NavItem[]
   /** set to null to hide the spec link (e.g. in the md-only viewer) */
   specHref?: string | null
 }) {
-  const [theme, setTheme] = useTheme()
   const [active, setActive] = useState<string | null>(null)
 
   // scroll-spy: highlight the section currently in view (home page only)
@@ -39,17 +40,10 @@ export function TopNav({
   }, [route, nav])
 
   return (
-    <header className="sticky top-0 z-50 border-b border-rule bg-bg">
+    <header className="border-b border-rule bg-bg">
       <div className="flex items-center gap-x-5 px-4 py-2.5 @3xl:px-9">
-        <a href="#/" className="flex items-center gap-x-2.5 shrink-0" aria-label="iii — back to overview">
-          <Wordmark />
-          <span className="font-mono text-[13px] font-semibold lowercase text-ink hidden @lg:inline">
-            {meta.wordmarkLabel}
-          </span>
-        </a>
-
         {route.kind === 'home' ? (
-          <nav className="hidden @3xl:flex items-center gap-x-4 min-w-0 overflow-x-auto">
+          <nav className="flex items-center gap-x-4 min-w-0 overflow-x-auto">
             {nav.map((link) => (
               <a
                 key={link.id}
@@ -69,27 +63,17 @@ export function TopNav({
           </a>
         )}
 
-        <div className="ml-auto flex items-center gap-x-4 shrink-0">
-          {specHref ? (
-            <a
-              href={specHref}
-              className={cn(
-                'font-mono text-[12px] lowercase whitespace-nowrap transition-colors',
-                route.kind === 'page' && route.slug === 'spec' ? 'text-accent' : 'text-ink-faint hover:text-ink',
-              )}
-            >
-              spec
-            </a>
-          ) : null}
-          <ModeToggle
-            value={theme}
-            onChange={setTheme}
-            options={[
-              { value: 'light', label: 'light' },
-              { value: 'dark', label: 'dark' },
-            ]}
-          />
-        </div>
+        {specHref ? (
+          <a
+            href={specHref}
+            className={cn(
+              'ml-auto shrink-0 font-mono text-[12px] lowercase whitespace-nowrap transition-colors',
+              route.kind === 'page' && route.slug === 'spec' ? 'text-accent' : 'text-ink-faint hover:text-ink',
+            )}
+          >
+            spec
+          </a>
+        ) : null}
       </div>
     </header>
   )

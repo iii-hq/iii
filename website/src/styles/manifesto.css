@@ -169,37 +169,7 @@
         font-style: italic;
       }
 
-      /* ===== PAGE FOOT ===== */
-      .pfoot {
-        padding: 32px 36px;
-        border-top: 1px solid var(--rule);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 11px;
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        color: var(--ink-faint);
-        flex-wrap: wrap;
-        gap: 12px;
-      }
-      .pfoot a {
-        color: var(--ink-faint);
-        text-decoration: none;
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        text-transform: none;
-        letter-spacing: 0;
-        font-size: 13px;
-      }
-      .pfoot a:hover {
-        color: var(--ink);
-      }
-      .pfoot a svg {
-        width: 11px;
-        height: 11px;
-      }
+      /* Page footer is the shared SiteFooter (src/styles/site-footer.css). */
 
       @media (max-width: 720px) {
         .hero {
@@ -207,9 +177,6 @@
         }
         .m-sec {
           padding: 48px 18px 48px;
-        }
-        .pfoot {
-          padding: 24px 18px;
         }
       }
 
