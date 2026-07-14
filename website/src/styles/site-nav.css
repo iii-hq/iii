@@ -19,7 +19,9 @@
     gap:24px;
     transition: padding .25s ease;
   }
-  .nav.scrolled{ padding:10px 28px; }
+  /* id-anchored like #nav above — a bare .nav.scrolled loses to #nav's
+     specificity and the compaction never fires. */
+  #nav.scrolled{ padding:8px 28px; }
 
   .nav-left{
     display:flex; align-items:center; gap:24px;
@@ -55,7 +57,10 @@
     color:var(--ink);
     flex-shrink:0;
   }
-  .nav.scrolled .logo-mark{ width:22px; height:22px; }
+  #nav.scrolled .logo-mark{ width:22px; height:22px; }
+  @media (prefers-reduced-motion: reduce){
+    #nav, .logo-mark{ transition:none; }
+  }
   /* all i's black per spec — accent rects render as ink */
   .logo-mark .accent{ fill:var(--ink); }
   /* optional page label next to the logo (e.g. "Roadmap" on /roadmap) */
@@ -342,6 +347,7 @@
     .mode-toggle{ display:none; }
   }
   @media (max-width: 520px){
-    .nav{ padding:14px 18px; }
+    #nav{ padding:14px 18px; }
+    #nav.scrolled{ padding:8px 18px; }
     .cta-github{ padding:7px 10px; gap:6px; }
   }

@@ -128,10 +128,14 @@ document.addEventListener('DOMContentLoaded', function () {
   const track = window.iiiTrack || function () {};
 
   // ============= Scroll compaction =============
+  // Two thresholds, not one: the nav is sticky-in-flow, so compacting it
+  // shifts the page height and a single cutoff flutters when the user rests
+  // right on it.
   const nav = document.getElementById('nav');
   const onScroll = () => {
-    if (window.scrollY > 50) nav.classList.add('scrolled');
-    else nav.classList.remove('scrolled');
+    const y = window.scrollY;
+    if (y > 64) nav.classList.add('scrolled');
+    else if (y < 8) nav.classList.remove('scrolled');
   };
   window.addEventListener('scroll', onScroll, { passive:true });
   onScroll();
