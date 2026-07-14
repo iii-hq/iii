@@ -186,7 +186,7 @@ Configuration for OpenTelemetry initialization
 | `logs_flush_interval_ms` | `Option<u64>` | No | Log processor flush delay in milliseconds. Defaults to 100ms when not set. |
 | `logs_batch_size` | `Option<usize>` | No | Maximum number of log records exported per batch. Defaults to 1 when not set. |
 | `fetch_instrumentation_enabled` | `Option<bool>` | No | Whether to auto-instrument outgoing HTTP calls.<br />When `Some(true)` (default), `execute_traced_request()` can be used to<br />create CLIENT spans for reqwest requests. Set `Some(false)` to opt out.<br />`None` is treated as `true`. |
-| `live_spans` | `Option<bool>` | No | Announce span STARTS to the engine as zero-end OTLP snapshots so live<br />trace views render in-progress work (`LiveSpanStartProcessor`). One<br />extra frame per span; the engine stores it as `pending` (or drops it<br />when its live-span storage is off) and the final span replaces it in<br />place. Default: enabled. Env override: `OTEL_LIVE_SPANS` — the same<br />switch the engine uses for its own start mirroring. |
+| `live_spans` | `Option<bool>` | No | Announce span STARTS to the engine as zero-end OTLP snapshots so live<br />trace views render in-progress work (`LiveSpanStartProcessor`). One<br />extra frame per span; the engine stores it as `pending` (or drops it<br />when its live-span storage is off) and the final span replaces it in<br />place. Default: enabled. Env override: `OTEL_LIVE_SPANS`, the same<br />switch the engine uses for its own start mirroring. |
 
 ---
 

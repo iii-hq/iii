@@ -101,7 +101,7 @@ pub struct OtelConfig {
     /// trace views render in-progress work (`LiveSpanStartProcessor`). One
     /// extra frame per span; the engine stores it as `pending` (or drops it
     /// when its live-span storage is off) and the final span replaces it in
-    /// place. Default: enabled. Env override: `OTEL_LIVE_SPANS` — the same
+    /// place. Default: enabled. Env override: `OTEL_LIVE_SPANS`, the same
     /// switch the engine uses for its own start mirroring.
     pub live_spans: Option<bool>,
 }

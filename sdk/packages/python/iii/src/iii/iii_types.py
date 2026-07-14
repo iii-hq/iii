@@ -175,7 +175,7 @@ class RegisterFunctionMessage(BaseModel):
 class TriggerActionEnqueue(BaseModel):
     """Routes the invocation through a named queue for async processing.
 
-    Requires a queue worker in the project — run ``iii worker add queue``.
+    Requires a queue worker in the project. Run ``iii worker add queue``.
     Without it the trigger rejects with ``enqueue_error`` (no queue provider).
 
     Attributes:

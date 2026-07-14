@@ -1086,7 +1086,7 @@ export const TriggerAction = {
    * acknowledges the caller with `{ messageReceiptId }`, and processes it
    * asynchronously.
    *
-   * Requires a queue worker in the project — run `iii worker add queue`.
+   * Requires a queue worker in the project. Run `iii worker add queue`.
    * Without it the trigger rejects with `enqueue_error` (no queue provider).
    *
    * @param opts - Queue routing options.
