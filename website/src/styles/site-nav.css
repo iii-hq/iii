@@ -26,21 +26,21 @@
   .nav-left{
     display:flex; align-items:center; gap:24px;
     min-width:0;
-    flex:1 1 0;
+    flex:0 0 auto;
   }
   .nav-right{
     display:flex; align-items:center; gap:14px;
     flex-shrink:0;
-    flex:1 1 0;
+    flex:0 0 auto;
     justify-content:flex-end;
   }
-  /* Centered section links. In normal flex flow between nav-left (flex:1) and
-     nav-right (flex:1) so it stays centered and can never overlap either side. */
+  /* Section links, left-aligned next to the logo. Takes the remaining row
+     width (flex:1) so nav-right stays pinned to the far edge. */
   .nav-center{
-    flex:0 1 auto;
+    flex:1 1 auto;
     min-width:0;
     display:flex;
-    justify-content:center;
+    justify-content:flex-start;
     pointer-events:auto;
   }
   .nav-center .nav-links{ gap:16px; flex-wrap:nowrap; }
