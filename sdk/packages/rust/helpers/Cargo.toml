@@ -1,6 +1,6 @@
 [package]
 name = "iii-helpers"
-version = "0.21.6-next.1"
+version = "0.21.6"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
