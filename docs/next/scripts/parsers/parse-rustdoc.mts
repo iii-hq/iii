@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { EXPAND_PARAMS_RE, parseExpandMarker } from '../types.mjs'
+import { EXPAND_PARAMS_RE, INTERNAL_RE, isInternalDoc, parseExpandMarker } from '../types.mjs'
 import type { FunctionDoc, ModuleDoc, ParamDoc, SdkDoc, TypeDoc, TypeGroup } from '../types.mjs'
 
 interface RustDocIndex {
@@ -169,6 +169,7 @@ function extractDocs(item: RustDocItem, opts?: { keepCodeBlocks?: boolean }): st
   return out
     .join('\n')
     .replace(EXPAND_PARAMS_RE, '')
+    .replace(INTERNAL_RE, '')
     // Strip rustdoc intra-doc link markup: [`Foo`](path) / [`Foo`][] / [`Foo`] -> `Foo`
     .replace(/\[(`[^`]+`)\]\([^)]*\)/g, '$1')
     .replace(/\[(`[^`]+`)\]\[[^\]]*\]/g, '$1')
@@ -332,6 +333,7 @@ function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>
       const method = index[methodId]
       if (!method || method.visibility !== 'public' || method.deprecation) continue
       if (getItemKind(method) !== 'function') continue
+      if (isInternalDoc(method.docs)) continue
       const sig = getSig(method)
       if (!sig) continue
       const inputs = (sig.inputs ?? []).filter(
@@ -418,6 +420,7 @@ function extractTraitType(item: RustDocItem, index: Record<string, RustDocItem>)
 }
 
 function itemToType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc | null {
+  if (isInternalDoc(item.docs)) return null
   const kind = getItemKind(item)
   if (kind === 'struct') return extractStructType(item, index)
   if (kind === 'enum') return extractEnumType(item, index)

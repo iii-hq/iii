@@ -419,7 +419,6 @@ The `iii-sdk` package provides additional entry points:
 | `iii-sdk/errors` | `InvocationError`, `InvocationErrorInit`, `isErrorBody` |
 | `iii-sdk/helpers` | `ChannelDirection`, `ChannelItem`, `createChannel`, `createStream`, `extractChannelRefs`, `isChannelRef` |
 | `iii-sdk` | `EnqueueResult`, `IIIClient`, `InitOptions`, `InvocationError`, `InvocationErrorInit`, `JsonValue`, `MiddlewareFunctionInput`, `StreamRequest`, `StreamResponse`, `TelemetryOptions`, `TriggerAction`, `registerWorker` |
-| `iii-sdk/internal` | `InternalHttpRequest` |
 | `iii-sdk/protocol` | `ErrorBody`, `MessageType`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegisterTriggerInput`, `RegisterTriggerMessage`, `RegisterTriggerTypeInput`, `RegisterTriggerTypeMessage`, `TriggerRequest` |
 | `iii-sdk/runtime` | `FunctionRef`, `IIIConnectionState`, `TriggerTypeRef` |
 | `iii-sdk/state` | `IState`, `StateDeleteInput`, `StateDeleteResult`, `StateEventData`, `StateEventType`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, `StateUpdateInput`, `StateUpdateResult` |
@@ -697,22 +696,6 @@ channel items without depending on Rust-specific shape.
 ```typescript
 type ChannelItem = { type: "text"; value: string } | { type: "binary"; value: Uint8Array }
 ```
-
-### iii-sdk/internal
-
-[`InternalHttpRequest`](#internalhttprequest)
-
-#### InternalHttpRequest
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `body` | `TBody` | Yes | - |
-| `headers` | `Record<string, string \| string[]>` | Yes | - |
-| `method` | `string` | Yes | - |
-| `path_params` | `Record<string, string>` | Yes | - |
-| `query_params` | `Record<string, string \| string[]>` | Yes | - |
-| `request_body` | [`ChannelReader`](#channelreader) | Yes | - |
-| `response` | [`ChannelWriter`](#channelwriter) | Yes | - |
 
 ### iii-sdk/protocol
 

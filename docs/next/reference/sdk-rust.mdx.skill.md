@@ -164,9 +164,6 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
     <ParamField body="new_async" type="fn(f: F) -> Self" required>
       Create a registration for an **async** typed function.
     </ParamField>
-    <ParamField body="new_async_with_bad_request" type="fn(f: F, on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + ?) -> Self" required>
-      An async typed handler whose payload-deserialization failures are routed through `on_bad_request`, producing a caller-controlled error where `RegisterFunction::new_async` would surface the SDK's generic `Error::Serde` (which the dispatch loop reports as `invocation_failed`). Lets a registration keep typed-handler schema extraction while owning its wire error contract for malformed payloads, e.g. a stable error code plus a recovery hint.
-    </ParamField>
     <ParamField body="request_format" type="fn(schema: Value) -> Self" required>
       Set the request format schema. Overrides any auto-extracted schema.
     </ParamField>
@@ -492,9 +489,6 @@ Constructors:
   closures. The second argument is the per-invocation metadata sidecar and
   is `None` when absent.
 - `RegisterFunction::new_async`: async equivalent of `new`.
-- `RegisterFunction::new_async_with_bad_request`: typed async handler
-  that routes payload-deserialization failures through a caller-supplied
-  mapper, replacing the SDK's generic `Error::Serde`.
 - `RegisterFunction::http`: function invoked over HTTP (Lambda,
   Cloudflare Workers, etc.).
 
@@ -511,7 +505,6 @@ Builder methods (all consume `self`):
 | `metadata` | `fn(meta: Value) -> Self` | Yes | Set function metadata. |
 | `new` | `fn(f: F) -> Self` | Yes | Create a registration for a **sync** typed function. |
 | `new_async` | `fn(f: F) -> Self` | Yes | Create a registration for an **async** typed function. |
-| `new_async_with_bad_request` | fn(f: F, on_bad_request: impl Fn(serde_json::[`Error`](#error)) -&gt; [`Error`](#error) + Send + Sync + ?) -&gt; Self | Yes | An async typed handler whose payload-deserialization failures are routed through `on_bad_request`, producing a caller-controlled error where `RegisterFunction::new_async` would surface the SDK's generic `Error::Serde` (which the dispatch loop reports as `invocation_failed`). Lets a registration keep typed-handler schema extraction while owning its wire error contract for malformed payloads, e.g. a stable error code plus a recovery hint. |
 | `request_format` | `fn(schema: Value) -> Self` | Yes | Set the request format schema. Overrides any auto-extracted schema. |
 | `response_format` | `fn(schema: Value) -> Self` | Yes | Set the response format schema. Overrides any auto-extracted schema. |
 
@@ -1229,14 +1222,14 @@ Handler trait for custom trigger types. Implement this and pass to
 
 ### iii_sdk::types
 
-[`RemoteFunctionData`](#remotefunctiondata) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`RemoteFunctionHandlerWithMetadata`](#remotefunctionhandlerwithmetadata) · [`RemoteTriggerTypeData`](#remotetriggertypedata) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
+[`RemoteFunctionData`](#remotefunctiondata) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`RemoteTriggerTypeData`](#remotetriggertypedata) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
 
 #### RemoteFunctionData
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `message` | [`RegisterFunctionMessage`](#registerfunctionmessage) | Yes | - |
-| `handler` | Option&lt;[`RemoteFunctionHandlerWithMetadata`](#remotefunctionhandlerwithmetadata)&gt; | No | - |
+| `handler` | `Option<RemoteFunctionHandlerWithMetadata>` | No | - |
 
 ---
 
@@ -1250,21 +1243,6 @@ for backward compatibility.
 
 ```rust
 type RemoteFunctionHandler = Arc<dyn Fn(Value) -> futures_util::future::BoxFuture<'static, Result<Value, Error>> + Send + Sync>
-```
-
----
-
-#### RemoteFunctionHandlerWithMetadata
-
-A dispatchable function handler that also receives the optional
-per-invocation `metadata` sidecar (delivered as a distinct argument
-alongside the payload; `None` when the caller attached none).
-
-This is the SDK's internal dispatch shape: handlers built from
-metadata-unaware functions ignore the second argument.
-
-```rust
-type RemoteFunctionHandlerWithMetadata = Arc<dyn Fn(Value, Option<Value>) -> futures_util::future::BoxFuture<'static, Result<Value, Error>> + Send + Sync>
 ```
 
 ---

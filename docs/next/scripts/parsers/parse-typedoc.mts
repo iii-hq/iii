@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { EXPAND_PARAMS_RE, parseExpandMarker } from '../types.mjs'
+import { EXPAND_PARAMS_RE, INTERNAL_RE, isInternalDoc, parseExpandMarker } from '../types.mjs'
 import type { FunctionDoc, ModuleDoc, ParamDoc, SdkDoc, TypeDoc as TypeDocType, TypeGroup, SubpathExport } from '../types.mjs'
 
 interface TypeDocReflection {
@@ -27,7 +27,7 @@ const KIND_TYPE_ALIAS = 2097152
 
 function extractText(summary?: { kind: string; text: string }[]): string {
   if (!summary) return ''
-  return summary.map(s => s.text).join('').replace(EXPAND_PARAMS_RE, '').trim()
+  return summary.map(s => s.text).join('').replace(EXPAND_PARAMS_RE, '').replace(INTERNAL_RE, '').trim()
 }
 
 /** A symbol re-exported only for back-compat (e.g. old 0.19 paths) carries a
@@ -167,6 +167,7 @@ function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>)
   for (const child of children) {
     if (skipNames.has(child.name)) continue
     if (isDeprecated(child.comment)) continue
+    if (isInternalDoc(child.comment?.summary?.map(s => s.text).join(''))) continue
 
     if (child.kind === KIND_INTERFACE) {
       types.push({
@@ -359,7 +360,17 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
     }
   }
 
-  const skipTypes = new Set(['IIIClient', 'ISdk'])
+  // Names flagged `<!-- docs:internal -->` on their declaration are hidden
+  // everywhere, including where a subpath re-exports them without carrying the
+  // comment (so a name-based skip is more reliable than a per-child check).
+  const internalNames = new Set<string>()
+  for (const m of modules) {
+    for (const c of m.children ?? []) {
+      if (isInternalDoc(c.comment?.summary?.map(s => s.text).join(''))) internalNames.add(c.name)
+    }
+  }
+
+  const skipTypes = new Set(['IIIClient', 'ISdk', ...internalNames])
   const types = dedupeTypes(modules.flatMap(m => extractTypesFrom(m.children ?? [], skipTypes)))
   resolveOmitAliases(types)
   const typeGroups = buildTypeGroups(modules, new Map(types.map(t => [t.name, t])), metadata.packageName)
@@ -372,7 +383,14 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
   const subpathExports: SubpathExport[] = []
   for (const m of modules) {
     const sub = submoduleName(m.name)
-    let names = (m.children ?? []).filter(c => !isDeprecated(c.comment)).map(c => c.name)
+    let names = (m.children ?? [])
+      .filter(
+        c =>
+          !isDeprecated(c.comment) &&
+          !isInternalDoc(c.comment?.summary?.map(s => s.text).join('')) &&
+          !internalNames.has(c.name),
+      )
+      .map(c => c.name)
     names = [...new Set(names)].sort() // dedup + stable order
     if (names.length === 0) continue
     subpathExports.push({

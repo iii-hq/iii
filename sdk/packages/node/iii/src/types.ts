@@ -327,6 +327,10 @@ export type Channel = {
   readerRef: StreamChannelRef
 }
 
+/**
+ * Internal HTTP request shape that underlies `StreamRequest`.
+ * <!-- docs:internal -->
+ */
 export type InternalHttpRequest<TBody = unknown> = {
   path_params: Record<string, string>
   query_params: Record<string, string | string[]>

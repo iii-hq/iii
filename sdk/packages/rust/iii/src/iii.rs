@@ -641,9 +641,6 @@ fn empty_message() -> RegisterFunctionMessage {
 ///   closures. The second argument is the per-invocation metadata sidecar and
 ///   is `None` when absent.
 /// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
-/// - [`RegisterFunction::new_async_with_bad_request`][]: typed async handler
-///   that routes payload-deserialization failures through a caller-supplied
-///   mapper, replacing the SDK's generic [`Error::Serde`].
 /// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
 ///
@@ -699,6 +696,10 @@ impl RegisterFunction {
     /// `invocation_failed`). Lets a registration keep typed-handler schema
     /// extraction while owning its wire error contract for malformed
     /// payloads, e.g. a stable error code plus a recovery hint.
+    /// <!-- docs:internal -->
+    // TODO(docs): hidden from the generated reference for now (docs:internal).
+    // Revisit whether to document this typed bad-request constructor once its
+    // API has settled; it was added recently (PR #1780, 2026-06-09).
     pub fn new_async_with_bad_request<F, T, Fut, R>(
         f: F,
         on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,

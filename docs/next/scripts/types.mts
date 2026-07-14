@@ -20,6 +20,27 @@ export function parseExpandMarker(text: string | undefined): { expandParams: boo
   return { expandParams: true, expandTypes }
 }
 
+/**
+ * Doc-comment marker that hides an otherwise-public symbol (type, method, or
+ * subpath export) from the generated reference. Like `docs:expand-params`, it
+ * is an HTML comment that renders as nothing in native doc tooling; the parsers
+ * detect it, drop the carrying item, and strip the marker from any prose they
+ * do emit. Use for symbols that are exported for internal wiring but are not
+ * meant for the public reference.
+ */
+export const INTERNAL_MARKER = '<!-- docs:internal -->'
+export const INTERNAL_RE = /<!--\s*docs:internal\s*-->/
+
+/** Whether raw doc text flags its symbol as internal (hidden from the reference). */
+export function isInternalDoc(text: string | undefined): boolean {
+  return INTERNAL_RE.test(text ?? '')
+}
+
+/** Remove the internal marker from prose that is still rendered. */
+export function stripInternalMarker(text: string): string {
+  return text.replace(INTERNAL_RE, '')
+}
+
 export interface ParamDoc {
   name: string
   type: string
