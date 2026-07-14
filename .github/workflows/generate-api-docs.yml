@@ -1,10 +1,11 @@
 name: Generate API Docs
 
 # Regenerates the auto-generated SDK API reference under
-# docs/next/api-reference/ from the SDK sources (TypeDoc for Node/Browser/
+# docs/next/reference/ from the SDK sources (TypeDoc for Node/Browser/
 # Helpers, griffe for Python, nightly rustdoc JSON for Rust). These pages are a
 # second, source-derived set that sits alongside the hand-authored
-# docs/next/sdk-reference/ pages; do not edit the generated files by hand.
+# reference pages (e.g. docs/next/reference/engine-protocol); do not edit the
+# generated files by hand.
 #
 # Runs on pushes to main that touch SDK sources or the generator, and on manual
 # dispatch. The commit is tagged [skip ci] so the push-back does not re-trigger.
@@ -97,6 +98,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/next/api-reference/*.mdx
+          git add docs/next/reference/sdk-*.mdx docs/next/reference/helpers-*.mdx
           git diff --cached --quiet || git commit -m "docs: regenerate SDK API reference [skip ci]"
           git push

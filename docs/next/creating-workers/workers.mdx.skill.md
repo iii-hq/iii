@@ -15,8 +15,8 @@ Once connected, a worker exposes:
 
 <Note>
   For the full SDK surface each Worker can use when interacting with iii, see the complete SDK
-  reference by language: [Node](../api-reference/sdk-node), [Python](../api-reference/sdk-python),
-  [Rust](../api-reference/sdk-rust), or [Browser](../api-reference/sdk-browser).
+  reference by language: [Node](../reference/sdk-node), [Python](../reference/sdk-python),
+  [Rust](../reference/sdk-rust), or [Browser](../reference/sdk-browser).
 </Note>
 
 ## Scaffold a new worker

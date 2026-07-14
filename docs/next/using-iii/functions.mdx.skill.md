@@ -147,7 +147,7 @@ Some common actions are:
 <Note>
   In Python, every blocking method has an awaitable twin (`trigger_async`, `shutdown_async`,
   `create_channel_async`) for use inside `asyncio`. See the [Python SDK
-  reference](../api-reference/sdk-python).
+  reference](../reference/sdk-python).
 </Note>
 
 ## Trigger functions from the CLI
@@ -184,7 +184,7 @@ only thing special about them is that you didn't have to register them.
 
 The engine itself registers a small set of introspection and lifecycle functions. Full request and
 response schemas are in the
-[engine protocol reference](../sdk-reference/engine-sdk#engine-discovery-functions).
+[engine protocol reference](../reference/engine-protocol#engine-discovery-functions).
 
 | Function                            | What it does                                                                                                                                      |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |

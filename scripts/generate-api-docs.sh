@@ -33,7 +33,7 @@ else
   echo "  [SKIP] Rust nightly not installed. Run: rustup toolchain install nightly"
 fi
 
-# Step 4: Generate MDX under docs/next/api-reference/
+# Step 4: Generate MDX under docs/next/reference/
 echo "[4/4] Generating MDX files..."
 pnpm tsx docs/next/scripts/generate-api-docs.mts
 
