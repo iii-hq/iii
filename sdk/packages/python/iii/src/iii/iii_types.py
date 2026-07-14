@@ -90,7 +90,10 @@ class RegisterTriggerInput(BaseModel):
     """
 
     type: str = Field(
-        description="Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``)."
+        description=(
+            "Identifier of the registered trigger type this trigger uses "
+            "(e.g. ``storage::object-created``, ``http``)."
+        )
     )
     function_id: str = Field(description="ID of the function this trigger invokes when it fires.")
     config: Any = Field(
@@ -98,7 +101,9 @@ class RegisterTriggerInput(BaseModel):
     )
     metadata: Any | None = Field(
         default=None,
-        description="Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.",
+        description=(
+            "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
+        ),
     )
 
 
@@ -251,7 +256,9 @@ class TriggerRequest(BaseModel):
     )
     metadata: Any | None = Field(
         default=None,
-        description="Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.",
+        description=(
+            "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
+        ),
     )
 
 
