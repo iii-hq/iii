@@ -275,12 +275,13 @@ fn describe_op(rf: RegisterFunction, function_id: &str) -> RegisterFunction {
     rf
 }
 
-/// Typed async `worker::*` handler built on the SDK's plain `Value` closure
+/// Typed async `worker::*` handler built on the SDK's `Value`-input closure
 /// form: payload-deserialization failures surface as this op's W105
 /// BadRequest envelope instead of the SDK's generic `Error::Serde` (which
-/// the dispatch loop reports as `invocation_failed`). Wraps the result in
-/// [`describe_op`], which also attaches the real request/response schemas
-/// (the `Value` closure would otherwise advertise a permissive any-value
+/// the dispatch loop reports as `invocation_failed`). The handler returns
+/// `R` so the SDK performs the single response serialization. Wraps the
+/// result in [`describe_op`], which also attaches the real request schema
+/// (the `Value` input would otherwise advertise a permissive any-value
 /// schema).
 fn op_registration<T, Fut, R>(
     function_id: &'static str,
@@ -289,7 +290,7 @@ fn op_registration<T, Fut, R>(
 where
     T: serde::de::DeserializeOwned + Send + 'static,
     Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
-    R: serde::Serialize + Send + 'static,
+    R: serde::Serialize + JsonSchema + Send + 'static,
 {
     let f = Arc::new(f);
     let rf = RegisterFunction::new_async(move |input: Value| {
@@ -297,8 +298,7 @@ where
         async move {
             let opts: T =
                 serde_json::from_value(input).map_err(|e| bad_request_error(function_id, &e))?;
-            let out = f(opts).await?;
-            serde_json::to_value(out).map_err(|e| Error::Serde(e.to_string()))
+            f(opts).await
         }
     });
     describe_op(rf, function_id)

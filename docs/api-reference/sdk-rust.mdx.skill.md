@@ -315,6 +315,9 @@ Constructors:
   closures. The second argument is the per-invocation metadata sidecar and
   is `None` when absent.
 - `RegisterFunction::new_async`: async equivalent of `new`.
+- `RegisterFunction::new_async_with_bad_request`: typed async handler
+  that routes payload-deserialization failures through a caller-supplied
+  mapper instead of the SDK's generic `Error::Serde`.
 - `RegisterFunction::http`: function invoked over HTTP (Lambda,
   Cloudflare Workers, etc.).
 
