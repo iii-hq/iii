@@ -1298,6 +1298,17 @@ impl ConfigurableWorker for QueueWorker {
     }
 }
 
+// Opt-in only: the standalone `queue` worker owns queue runtime behavior by
+// default (see MOT-3944). This registration exists so an explicit `iii-queue`
+// entry in config.yaml (written by `iii worker add iii-queue`) still boots the
+// in-engine implementation instead of being silently ignored.
+crate::register_worker!(
+    "iii-queue",
+    QueueWorker,
+    description = "Async job processing with named queues, retries, and dead-letter support.",
+    enabled_by_default = false
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
