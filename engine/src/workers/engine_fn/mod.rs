@@ -592,6 +592,9 @@ impl EngineFunctionsWorker {
         {
             return name;
         }
+        if let Some(name) = tt.owner_name.as_deref() {
+            return name.to_string();
+        }
         if let Some(name) = known_trigger_type_provider(&tt.id) {
             return name.to_string();
         }
@@ -3265,6 +3268,73 @@ mod tests {
             }
             _ => panic!("expected success"),
         }
+    }
+
+    /// Both queue providers must attribute correctly: the opt-in `iii-queue`
+    /// builtin registers `durable:subscriber` in-process with an explicit
+    /// owner name, while the standalone `queue` worker registers it over a
+    /// WS connection (Uuid attribution). The static provider table remains
+    /// the fallback naming the standalone worker.
+    #[tokio::test]
+    async fn durable_subscriber_attribution_covers_both_queue_providers() {
+        let (engine, module) = setup_engine_and_module();
+
+        // In-process registration with owner_name (the iii-queue builtin).
+        let builtin_tt = crate::trigger::TriggerType::new(
+            "durable:subscriber",
+            "Queue core module",
+            Box::new(module.clone()),
+            None,
+        )
+        .with_owner_name("iii-queue");
+        assert_eq!(
+            module.owner_name_for_trigger_type(&builtin_tt),
+            "iii-queue",
+            "in-process owner_name must win over the static provider table"
+        );
+
+        // WS registration by a connected worker named `queue` (the standalone
+        // worker): Uuid attribution wins over both owner_name and the table.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let conn = crate::worker_connections::WorkerConnection::new(tx);
+        let conn_id = conn.id;
+        engine.worker_registry.register_worker(conn);
+        engine.worker_registry.update_worker_metadata(
+            &conn_id,
+            "rust".to_string(),
+            Some("1.0.0".to_string()),
+            Some("queue".to_string()),
+            None,
+            Some("linux".to_string()),
+            None,
+            None,
+            None,
+        );
+        let ws_tt = crate::trigger::TriggerType::new(
+            "durable:subscriber",
+            "Queue core module",
+            Box::new(module.clone()),
+            Some(conn_id),
+        );
+        assert_eq!(
+            module.owner_name_for_trigger_type(&ws_tt),
+            "queue",
+            "WS-registered trigger types attribute to the connected worker"
+        );
+
+        // No owner_name, no worker_id: the table names the standalone worker
+        // (install guidance for the default path).
+        let bare_tt = crate::trigger::TriggerType::new(
+            "durable:subscriber",
+            "Queue core module",
+            Box::new(module.clone()),
+            None,
+        );
+        assert_eq!(
+            module.owner_name_for_trigger_type(&bare_tt),
+            "queue",
+            "table fallback must keep naming the standalone queue worker"
+        );
     }
 
     #[test]

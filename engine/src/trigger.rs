@@ -62,6 +62,13 @@ pub struct TriggerType {
     pub call_response_format: Option<Value>,
     pub registrator: Box<dyn TriggerRegistrator>,
     pub worker_id: Option<Uuid>,
+    /// Worker name that owns this trigger type when it was registered
+    /// in-process (`worker_id: None`) by a worker whose name differs from the
+    /// `KNOWN_TRIGGER_TYPE_PROVIDERS` entry. `durable:subscriber` maps to the
+    /// standalone `queue` worker there (install guidance), but the opt-in
+    /// `iii-queue` builtin registers the same type and must attribute to
+    /// itself in `engine::workers::info`.
+    pub owner_name: Option<String>,
 }
 
 impl TriggerType {
@@ -83,7 +90,13 @@ impl TriggerType {
             call_response_format,
             registrator,
             worker_id,
+            owner_name: None,
         }
+    }
+
+    pub fn with_owner_name(mut self, owner_name: impl Into<String>) -> Self {
+        self.owner_name = Some(owner_name.into());
+        self
     }
 
     pub fn with_trigger_request_format<T: schemars::JsonSchema>(mut self) -> Self {

@@ -1115,12 +1115,17 @@ impl Worker for QueueWorker {
         tracing::info!("Initializing QueueModule");
         self.config_snapshot().validate()?;
 
+        // Attribute the in-process registration to this worker by name: the
+        // static provider table maps `durable:subscriber` to the standalone
+        // `queue` worker (install guidance), which is not this deployment's
+        // provider when the opt-in builtin is active.
         let trigger_type = TriggerType::new(
             "durable:subscriber",
             "Queue core module",
             Box::new(self.clone()),
             None,
-        );
+        )
+        .with_owner_name("iii-queue");
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
 
