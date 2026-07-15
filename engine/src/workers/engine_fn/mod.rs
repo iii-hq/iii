@@ -1576,7 +1576,19 @@ impl EngineFunctionsWorker {
         input: RegisterWorkerInput,
     ) -> FunctionResult<RegisterWorkerResult, ErrorBody> {
         let worker_id = input.worker_id.clone();
+        let namespace = crate::protocol::effective_namespace(&input.namespace).to_string();
         self.register_worker_metadata(input).await;
+
+        // This call is the only moment the connection's namespace becomes
+        // known. Registrations the worker sent ahead of it are queued on the
+        // connection; release them now, into `namespace`.
+        if let Ok(uuid) = uuid::Uuid::parse_str(&worker_id)
+            && let Some(worker) = self.engine.worker_registry.get_worker(&uuid)
+        {
+            self.engine
+                .resolve_connection_namespace(&worker, &namespace)
+                .await;
+        }
 
         let data = serde_json::json!({
             "event": "worker_metadata_updated",
@@ -2157,6 +2169,91 @@ mod tests {
             .await;
 
         assert_eq!(engine.worker_registry.get_namespace(&worker_uuid), "orders");
+    }
+
+    /// End-to-end: an SDK that flushes `RegisterFunction` before
+    /// `engine::workers::register` still lands its functions in the namespace
+    /// it declares.
+    #[tokio::test]
+    async fn register_worker_drains_buffered_registrations_into_its_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(
+                &worker,
+                &crate::protocol::Message::RegisterFunction {
+                    id: "orders::create".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("buffer register");
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+
+        module
+            .register_worker(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                Some("orders".to_string()),
+            ))
+            .await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+    }
+
+    /// A worker that sends `engine::workers::register` with no namespace
+    /// drains into `DEFAULT_NAMESPACE`.
+    #[tokio::test]
+    async fn register_worker_without_a_namespace_drains_into_default() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(
+                &worker,
+                &crate::protocol::Message::RegisterFunction {
+                    id: "legacy::ping".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("buffer register");
+
+        module
+            .register_worker(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                None,
+            ))
+            .await;
+
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "legacy::ping")
+                .is_some()
+        );
     }
 
     // ── TriggerRegistrator implementation tests ─────────────────────────

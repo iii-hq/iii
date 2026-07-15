@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket},
@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    protocol::{DEFAULT_NAMESPACE, ErrorBody, Message, effective_namespace},
+    protocol::{DEFAULT_NAMESPACE, ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
         ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
@@ -50,6 +50,72 @@ const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 /// actions. The engine owns receipt generation and uses this function only as
 /// the durable transport boundary.
 const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
+
+/// How long a freshly connected worker's registrations wait for the namespace
+/// to arrive before the engine gives up and files them under
+/// [`DEFAULT_NAMESPACE`].
+///
+/// A connection's namespace does not arrive as a protocol message: it rides on
+/// the `engine::workers::register` engine call. SDKs that predate the reorder
+/// flush their `RegisterFunction` queue *before* that call, so registrations
+/// routinely arrive while the namespace is still unknown. Every real SDK does
+/// send `engine::workers::register` eventually, so the buffer drains in
+/// microseconds; this grace only bounds a hand-rolled client that never sends
+/// it at all.
+pub const REGISTRATION_NAMESPACE_GRACE: Duration = Duration::from_secs(5);
+
+/// Per-connection namespace resolution state.
+///
+/// `Draining` is not just bookkeeping: the drain runs on the task handling
+/// `engine::workers::register` (or on the grace timer), concurrently with the
+/// connection's WS read loop. Flipping straight to `Resolved` before the queue
+/// empties would let a message arriving mid-drain register immediately and
+/// overtake the ones still queued ahead of it. Keeping the connection in
+/// `Draining` routes those arrivals to the back of the same queue, so the
+/// drainer applies everything in arrival order and only publishes `Resolved`
+/// once the queue is empty.
+enum NamespaceState {
+    /// Namespace unknown; registration messages queue in arrival order.
+    Pending(VecDeque<Message>),
+    /// Namespace known, queue not yet empty.
+    Draining(String, VecDeque<Message>),
+    /// Namespace known and queue drained; registrations take the direct path.
+    Resolved(String),
+    /// The connection is being torn down. Carries the namespace so
+    /// `cleanup_worker` still releases registrations from where the drain put
+    /// them. A drain observing this stops rather than registering functions
+    /// for a worker that is already gone.
+    Aborted(String),
+}
+
+/// Registration messages are the only ones whose effect depends on the
+/// connection's namespace, so they are the only ones worth buffering.
+///
+/// `UnregisterFunction` is included even though it is not itself a
+/// registration: leaving it unbuffered would let it run against an empty
+/// registry while the matching `RegisterFunction` still sits in the queue,
+/// inverting the pair and resurrecting a function the worker retired.
+///
+/// `RegisterTrigger` is deliberately excluded even though the same
+/// pair-inversion reasoning superficially applies (a trigger can be dispatched
+/// while the function it names is still queued). Triggers are not namespaced:
+/// `TriggerRegistry` is keyed by trigger id alone, and a trigger's target is
+/// resolved at fire time, not registration time — so a trigger registered
+/// "early" resolves correctly once the drain lands its function, and buffering
+/// it would change nothing except delaying the ack. The exposure is a trigger
+/// naming a not-yet-registered function for the length of the drain (sub-ms for
+/// real SDKs, up to the grace for a hand-rolled client that never sends
+/// `engine::workers::register`), which is the same exposure a trigger
+/// registered before its function has always had. Revisit if triggers ever gain
+/// a namespace dimension.
+fn is_namespaced_registration(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::RegisterFunction { .. }
+            | Message::RegisterService { .. }
+            | Message::UnregisterFunction { .. }
+    )
+}
 
 /// Handles binary frames with OTEL telemetry prefixes.
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
@@ -243,6 +309,11 @@ pub struct Engine {
     /// HTTP-invocation variant of `function_owners`, separate because external
     /// functions live in their own per-worker set on `WorkerConnection`.
     pub(crate) external_function_owners: Arc<DashMap<String, Uuid>>,
+    /// Namespace resolution state per WS connection, seeded by
+    /// `begin_namespace_resolution` when the connection is accepted and dropped
+    /// by `cleanup_worker`. A connection with no entry here (in-process
+    /// workers, direct `router_msg` callers) never buffers.
+    namespace_states: Arc<DashMap<Uuid, NamespaceState>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
     /// Effective `iii-worker-manager` port, resolved from config at build
     /// time. Set once by `EngineBuilder::build`; subsequent reads see the
@@ -289,6 +360,7 @@ impl Engine {
             channel_manager: Arc::new(ChannelManager::new()),
             function_owners: Arc::new(DashMap::new()),
             external_function_owners: Arc::new(DashMap::new()),
+            namespace_states: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
             config_path: Arc::new(std::sync::OnceLock::new()),
@@ -605,8 +677,181 @@ impl Engine {
         );
     }
 
+    /// Starts buffering `worker`'s registrations until its namespace is known,
+    /// and arms the [`REGISTRATION_NAMESPACE_GRACE`] fallback.
+    ///
+    /// Called once per accepted WS connection. Connections that never call this
+    /// (in-process workers, tests driving `router_msg` directly) keep
+    /// registering immediately.
+    #[doc(hidden)]
+    pub fn begin_namespace_resolution(&self, worker: &WorkerConnection) {
+        self.namespace_states
+            .insert(worker.id, NamespaceState::Pending(VecDeque::new()));
+
+        let engine = self.clone();
+        let worker = worker.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(REGISTRATION_NAMESPACE_GRACE).await;
+            // A no-op unless this connection is still `Pending` — i.e. unless
+            // `engine::workers::register` never arrived.
+            engine
+                .resolve_connection_namespace(&worker, DEFAULT_NAMESPACE)
+                .await;
+        });
+    }
+
+    /// The namespace `worker`'s registrations belong to.
+    ///
+    /// Deliberately ignores `worker.namespace`. The `WorkerConnection` handed
+    /// to `router_msg` and `cleanup_worker` is a snapshot taken at connect
+    /// time, and `engine::workers::register` writes the namespace into the
+    /// *registry's* copy, not that one — so reading the field would silently
+    /// yield `None` for the entire life of every WS connection. The resolution
+    /// state is the only source that reflects what the worker declared.
+    ///
+    /// No entry means a connection that never entered the state machine
+    /// (in-process workers, direct `router_msg` callers); those have no
+    /// declared namespace, so they belong in [`DEFAULT_NAMESPACE`].
+    fn connection_namespace(&self, worker: &WorkerConnection) -> String {
+        match self.namespace_states.get(&worker.id).as_deref() {
+            Some(
+                NamespaceState::Resolved(ns)
+                | NamespaceState::Draining(ns, _)
+                | NamespaceState::Aborted(ns),
+            ) => ns.clone(),
+            // `Pending` is unreachable: `router_msg` buffers those messages
+            // instead of dispatching them.
+            _ => DEFAULT_NAMESPACE.to_string(),
+        }
+    }
+
+    /// Queues `msg` when the connection's namespace is not known yet.
+    /// Returns `true` when the message was queued and must not be dispatched.
+    fn buffer_until_namespace_known(&self, worker: &WorkerConnection, msg: &Message) -> bool {
+        if !is_namespaced_registration(msg) {
+            return false;
+        }
+        let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+            return false;
+        };
+        match &mut *state {
+            NamespaceState::Pending(queue) | NamespaceState::Draining(_, queue) => {
+                queue.push_back(msg.clone());
+                true
+            }
+            NamespaceState::Resolved(_) => false,
+            // Teardown has started; swallow rather than dispatch, so a late
+            // message cannot register into a connection being cleaned up.
+            NamespaceState::Aborted(_) => true,
+        }
+    }
+
+    /// Marks the connection as torn down, so a drain racing `cleanup_worker`
+    /// stops instead of registering functions cleanup has already released.
+    ///
+    /// Returns without effect when the connection was never tracked.
+    fn abort_namespace_resolution(&self, worker: &WorkerConnection) {
+        let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+            return;
+        };
+        // A connection torn down before its namespace ever resolved has no
+        // declared namespace; nothing it queued will be registered, so the
+        // value only has to be consistent for the teardown that follows.
+        let namespace = match &*state {
+            NamespaceState::Resolved(ns)
+            | NamespaceState::Draining(ns, _)
+            | NamespaceState::Aborted(ns) => ns.clone(),
+            NamespaceState::Pending(_) => DEFAULT_NAMESPACE.to_string(),
+        };
+        *state = NamespaceState::Aborted(namespace);
+    }
+
+    /// Pins the connection to `namespace` and replays everything buffered for
+    /// it, in arrival order.
+    ///
+    /// Racing callers — `engine::workers::register` and the grace timer — are
+    /// serialized by the `Pending` -> `Draining` transition below: exactly one
+    /// observes `Pending`, and the loser returns without draining. First writer
+    /// wins, and a connection never leaves `Draining`/`Resolved` afterwards.
+    ///
+    /// Both the transition and the per-message pop re-read the state, so a
+    /// concurrent `abort_namespace_resolution` (i.e. `cleanup_worker`) stops
+    /// the drain at the next message rather than registering into a connection
+    /// that is being torn down.
+    #[doc(hidden)]
+    pub async fn resolve_connection_namespace(&self, worker: &WorkerConnection, namespace: &str) {
+        {
+            let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+                return;
+            };
+            let NamespaceState::Pending(queue) = &mut *state else {
+                return;
+            };
+            let queue = std::mem::take(queue);
+            *state = NamespaceState::Draining(namespace.to_string(), queue);
+        }
+
+        tracing::debug!(
+            worker_id = %worker.id,
+            namespace = %namespace,
+            "Connection namespace resolved; draining buffered registrations"
+        );
+
+        loop {
+            // The map guard is taken and dropped around each message, never
+            // held across the dispatch await: messages arriving mid-drain must
+            // be able to append to the queue we are consuming.
+            let next = {
+                let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+                    return;
+                };
+                let NamespaceState::Draining(ns, queue) = &mut *state else {
+                    return;
+                };
+                match queue.pop_front() {
+                    Some(msg) => msg,
+                    None => {
+                        // Publish `Resolved` only with an empty queue, so no
+                        // arrival can bypass the drain and overtake it.
+                        *state = NamespaceState::Resolved(ns.clone());
+                        return;
+                    }
+                }
+            };
+
+            // Behavior change worth naming: on the direct path a failing
+            // registration propagates out of `router_msg` via `?` and drops the
+            // connection. A buffered one cannot — the drain runs on the
+            // `engine::workers::register` task (or the grace timer), where
+            // there is no connection to drop and returning early would strand
+            // every message still queued behind this one. So the drain logs and
+            // continues, and one bad registration no longer kills a worker that
+            // happened to register before its namespace was known.
+            if let Err(err) = self.dispatch_msg(worker, &next).await {
+                tracing::warn!(
+                    worker_id = %worker.id,
+                    error = ?err,
+                    "Buffered registration failed to apply"
+                );
+            }
+        }
+    }
+
     #[doc(hidden)]
     pub async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
+        if self.buffer_until_namespace_known(worker, msg) {
+            tracing::debug!(
+                worker_id = %worker.id,
+                "Buffering registration until the connection namespace is known"
+            );
+            return Ok(());
+        }
+        self.dispatch_msg(worker, msg).await
+    }
+
+    /// Applies `msg` unconditionally. The drain calls this directly to bypass
+    /// the buffer check that `router_msg` performs.
+    async fn dispatch_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
                 id,
@@ -1262,12 +1507,12 @@ impl Engine {
                             }
                         }
                         self.service_registry.remove_function_from_services(
-                            effective_namespace(&worker.namespace),
+                            &self.connection_namespace(worker),
                             &resolved_id,
                         );
                     } else {
                         self.remove_function_from_engine(
-                            effective_namespace(&worker.namespace),
+                            &self.connection_namespace(worker),
                             &resolved_id,
                         );
                     }
@@ -1276,7 +1521,7 @@ impl Engine {
                     // Same ownership gate as the external branch above.
                     if !self.release_function_if_owner(
                         &worker.id,
-                        effective_namespace(&worker.namespace),
+                        &self.connection_namespace(worker),
                         &resolved_id,
                     ) {
                         tracing::debug!(
@@ -1369,10 +1614,8 @@ impl Engine {
                     self.claim_function(worker.id, &reg_id);
                 }
 
-                self.service_registry.register_service_from_function_id(
-                    effective_namespace(&worker.namespace),
-                    &reg_id,
-                );
+                self.service_registry
+                    .register_service_from_function_id(&self.connection_namespace(worker), &reg_id);
 
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self
@@ -1421,7 +1664,7 @@ impl Engine {
                 // Must match the namespace used for the service above, and the
                 // one the unregister/cleanup paths resolve from the connection.
                 self.register_function_ns(
-                    effective_namespace(&worker.namespace),
+                    &self.connection_namespace(worker),
                     RegisterFunctionRequest {
                         function_id: reg_id.clone(),
                         description: reg_description,
@@ -1458,7 +1701,7 @@ impl Engine {
                 tracing::debug!(services = ?services, "Current services");
 
                 self.service_registry.insert_service(
-                    effective_namespace(&worker.namespace),
+                    &self.connection_namespace(worker),
                     Service::with_parent(
                         effective_name.to_string(),
                         id.clone(),
@@ -1571,6 +1814,10 @@ impl Engine {
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
+        // Must precede the read loop: the connection's namespace arrives later,
+        // on `engine::workers::register`, and registrations sent before it must
+        // queue rather than land in `DEFAULT_NAMESPACE`.
+        self.begin_namespace_resolution(&worker);
 
         // Send worker ID back to the worker
         self.send_msg(
@@ -1714,6 +1961,14 @@ impl Engine {
     }
 
     async fn cleanup_worker(&self, worker: &WorkerConnection) {
+        // Before snapshotting anything: a drain can be running concurrently on
+        // the `engine::workers::register` task (worker disconnects right after
+        // sending it), and would otherwise keep registering functions for the
+        // rest of the teardown — after the snapshot below has decided what to
+        // release. Those would leak, with `function_owners` pointing at a dead
+        // worker. Aborting first stops the drain at its next message.
+        self.abort_namespace_resolution(worker);
+
         let regular_functions = worker.get_regular_function_ids().await;
         let external_functions = worker.get_external_function_ids().await;
 
@@ -1721,7 +1976,7 @@ impl Engine {
         for function_id in regular_functions.iter() {
             if !self.release_function_if_owner(
                 &worker.id,
-                effective_namespace(&worker.namespace),
+                &self.connection_namespace(worker),
                 function_id,
             ) {
                 tracing::debug!(
@@ -1765,10 +2020,7 @@ impl Engine {
                                 error = ?err,
                                 "Failed to unregister external function during worker cleanup"
                             );
-                            self.remove_function(
-                                effective_namespace(&worker.namespace),
-                                function_id,
-                            );
+                            self.remove_function(&self.connection_namespace(worker), function_id);
                         }
                         // Re-check before wiping service_registry: the
                         // `.await` above is a yield point a racing claim can
@@ -1781,13 +2033,13 @@ impl Engine {
                             .is_some_and(|r| *r == worker.id)
                         {
                             self.service_registry.remove_function_from_services(
-                                effective_namespace(&worker.namespace),
+                                &self.connection_namespace(worker),
                                 function_id,
                             );
                         }
                     }
                     None => self.remove_function_from_engine(
-                        effective_namespace(&worker.namespace),
+                        &self.connection_namespace(worker),
                         function_id,
                     ),
                 }
@@ -1809,6 +2061,11 @@ impl Engine {
         self.trigger_registry.unregister_worker(&worker.id).await;
         self.channel_manager.remove_channels_by_worker(&worker.id);
         self.worker_registry.unregister_worker(&worker.id);
+        // Dropped last: every teardown step above resolves the connection's
+        // namespace through `connection_namespace`, which reads this entry.
+        // Any registration still buffered here dies with the connection — its
+        // worker is gone, so there is nothing to register.
+        self.namespace_states.remove(&worker.id);
 
         let workers_data = serde_json::json!({
             "event": "worker_disconnected",
@@ -2092,7 +2349,7 @@ mod tests {
     use crate::{
         config::SecurityConfig,
         function::FunctionResult,
-        protocol::{HttpInvocationRef, Message},
+        protocol::{DEFAULT_NAMESPACE, HttpInvocationRef, Message},
         worker_connections::WorkerConnection,
         workers::{
             engine_fn::TRIGGER_WORKERS_AVAILABLE,
@@ -2102,7 +2359,7 @@ mod tests {
         },
     };
 
-    use super::{Engine, EngineTrait, Outbound};
+    use super::{Engine, EngineTrait, Outbound, REGISTRATION_NAMESPACE_GRACE};
 
     fn make_request(function_id: &str) -> crate::engine::RegisterFunctionRequest {
         crate::engine::RegisterFunctionRequest {
@@ -2279,8 +2536,12 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let mut worker = WorkerConnection::new(tx);
-        worker.namespace = Some("orders".to_string());
+        let worker = WorkerConnection::new(tx);
+        // Drive the real mechanism rather than doctoring `worker.namespace`:
+        // that field is never set on a connection the engine dispatches
+        // against, so writing it would prove nothing about production.
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
 
         let msg = Message::RegisterFunction {
             id: "svc::my_func".to_string(),
@@ -2320,8 +2581,11 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
-        let mut worker = WorkerConnection::new(tx);
-        worker.namespace = Some("orders".to_string());
+        let worker = WorkerConnection::new(tx);
+        // See `router_msg_register_function_uses_connection_namespace`: the
+        // namespace must reach the connection the way production delivers it.
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
 
         engine
             .router_msg(
@@ -5185,5 +5449,334 @@ mod tests {
         );
 
         while rx.try_recv().is_ok() {}
+    }
+
+    // ── namespace registration buffering ────────────────────────────────
+
+    fn register_function_msg(id: &str) -> Message {
+        Message::RegisterFunction {
+            id: id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        }
+    }
+
+    /// A worker that declares `namespace: "orders"` sends its
+    /// `RegisterFunction` messages before `engine::workers::register` on every
+    /// SDK that predates the reorder. The registration must wait for the
+    /// namespace rather than land in `default`.
+    #[tokio::test]
+    async fn registrations_before_the_namespace_is_known_land_in_the_resolved_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+
+        // Nothing is registered yet: the namespace is still unknown.
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+        assert!(engine.service_registry.get("orders", "orders").is_some());
+        assert!(
+            engine
+                .service_registry
+                .get(DEFAULT_NAMESPACE, "orders")
+                .is_none()
+        );
+    }
+
+    /// The buffer is a queue, not a set: replaying it out of order would
+    /// resurrect a function the worker already unregistered.
+    #[tokio::test]
+    async fn buffered_registrations_drain_in_arrival_order() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        for msg in [
+            register_function_msg("orders::create"),
+            register_function_msg("orders::cancel"),
+            Message::UnregisterFunction {
+                id: "orders::create".to_string(),
+            },
+        ] {
+            engine.router_msg(&worker, &msg).await.expect("buffer");
+        }
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        // `create` was registered and then unregistered; inverting the drain
+        // would leave it alive.
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+        assert!(engine.functions.get("orders", "orders::cancel").is_some());
+    }
+
+    /// Safety net for a hand-rolled client that never sends
+    /// `engine::workers::register`: the buffer must not hold registrations
+    /// forever.
+    #[tokio::test(start_paused = true)]
+    async fn registrations_fall_back_to_default_when_the_grace_expires() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("legacy::ping"))
+            .await
+            .expect("buffer register");
+
+        // Paused time auto-advances only once no task is runnable, so this
+        // sleep resumes strictly after the (earlier-deadline) grace timer has
+        // fired and its drain has run to completion. No wall-clock time passes.
+        tokio::time::sleep(REGISTRATION_NAMESPACE_GRACE + Duration::from_secs(1)).await;
+
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "legacy::ping")
+                .is_some()
+        );
+    }
+
+    /// Whichever resolver fires first wins; the loser must be a no-op rather
+    /// than a second drain.
+    #[tokio::test]
+    async fn a_second_resolution_neither_re_drains_nor_moves_the_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+        // The grace timer firing late must not move the function to `default`
+        // nor register it twice.
+        engine
+            .resolve_connection_namespace(&worker, DEFAULT_NAMESPACE)
+            .await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+    }
+
+    /// Once resolved, a connection stays resolved: later registrations take
+    /// the direct path with no buffering.
+    #[tokio::test]
+    async fn registrations_after_resolution_are_not_buffered() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("register");
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+    }
+
+    /// Connections that never enter the state machine (in-process workers,
+    /// direct `router_msg` callers) must keep registering immediately.
+    #[tokio::test]
+    async fn registrations_on_an_untracked_connection_are_not_buffered() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(&worker, &register_function_msg("plain::ping"))
+            .await
+            .expect("register");
+
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "plain::ping")
+                .is_some()
+        );
+    }
+
+    /// `cleanup_worker` must release from the namespace the drain registered
+    /// into, not from `default`.
+    #[tokio::test]
+    async fn cleanup_releases_functions_from_the_resolved_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+        engine.resolve_connection_namespace(&worker, "orders").await;
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+
+        engine.cleanup_worker(&worker).await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+    }
+
+    /// A worker can disconnect while its drain is still running (it dropped
+    /// right after sending `engine::workers::register`). `cleanup_worker`
+    /// snapshots the function ids it will release up front, so a drain that
+    /// keeps going registers functions nobody will ever release: they leak with
+    /// `function_owners` pointing at a dead worker. Cleanup aborts the
+    /// resolution first to stop that.
+    #[tokio::test]
+    async fn aborting_a_connection_stops_its_drain_from_registering() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+
+        // What `cleanup_worker` does before it snapshots anything.
+        engine.abort_namespace_resolution(&worker);
+
+        // The in-flight `engine::workers::register` lands after teardown began.
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        assert!(
+            engine.functions.get("orders", "orders::create").is_none(),
+            "a drain must not register into a connection being torn down"
+        );
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+    }
+
+    /// `aborting_a_connection_stops_its_drain_from_registering` proves the
+    /// mechanism; this proves `cleanup_worker` actually *uses* it, and uses it
+    /// early enough. Deleting `abort_namespace_resolution` from `cleanup_worker`
+    /// must fail a test — otherwise the call site is a no-op nobody notices.
+    ///
+    /// The naive "cleanup, then resolve" version passes either way, because
+    /// cleanup removes the state entry on its way out and an absent entry stops
+    /// the drain regardless. So instead this pins cleanup mid-flight, at the
+    /// only point where the ordering is observable.
+    #[tokio::test]
+    async fn cleanup_aborts_the_resolution_before_it_snapshots_functions() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        // Deliberately a service registration, not a function one: the drain's
+        // `RegisterService` arm writes only to `service_registry`, so it cannot
+        // contend for the `function_ids` guard held below. `RegisterFunction`
+        // would block in `include_function_id` and hang the test instead of
+        // failing it cleanly.
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterService {
+                    id: "svc".to_string(),
+                    name: "svc".to_string(),
+                    description: None,
+                    parent_service_id: None,
+                },
+            )
+            .await
+            .expect("buffer register service");
+
+        // Pin `cleanup_worker` at its first await: `get_regular_function_ids`
+        // takes a read guard on `function_ids`, so holding the write guard
+        // parks the task AFTER `abort_namespace_resolution` and BEFORE the
+        // snapshot that decides what to release — exactly the interleaving the
+        // abort exists to establish.
+        let snapshot_block = worker.function_ids.write().await;
+
+        let cleanup = {
+            let engine = engine.clone();
+            let worker = worker.clone();
+            tokio::spawn(async move { engine.cleanup_worker(&worker).await })
+        };
+
+        // Current-thread runtime: yielding hands control to the spawned task,
+        // which runs to its first pending await and parks on the guard above.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        // The worker's in-flight `engine::workers::register` lands mid-teardown.
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        assert!(
+            engine.service_registry.get("orders", "svc").is_none(),
+            "cleanup must abort the resolution before it snapshots, so a drain \
+             racing teardown registers nothing it will not release"
+        );
+
+        drop(snapshot_block);
+        cleanup.await.expect("cleanup should complete");
+    }
+
+    /// The abort must not cost `cleanup_worker` the namespace it needs to
+    /// release from — `Aborted` carries it.
+    #[tokio::test]
+    async fn aborting_preserves_the_resolved_namespace_for_teardown() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        engine.abort_namespace_resolution(&worker);
+
+        assert_eq!(engine.connection_namespace(&worker), "orders");
     }
 }
