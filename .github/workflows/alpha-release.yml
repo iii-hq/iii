@@ -400,6 +400,7 @@ jobs:
           - { worker: iii-http, worker_dir: engine/src/workers/rest_api }
           - { worker: iii-stream, worker_dir: engine/src/workers/stream }
           - { worker: iii-state, worker_dir: engine/src/workers/state }
+          - { worker: iii-queue, worker_dir: engine/src/workers/queue }
           - { worker: iii-pubsub, worker_dir: engine/src/workers/pubsub }
           - { worker: iii-cron, worker_dir: engine/src/workers/cron }
           - { worker: iii-observability, worker_dir: engine/src/workers/observability }
