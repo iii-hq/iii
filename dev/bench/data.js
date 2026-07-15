@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784058901031,
+  "lastUpdate": 1784126520105,
   "repoUrl": "https://github.com/iii-hq/iii",
   "entries": {
     "iii Engine Benchmarks": [
@@ -34743,6 +34743,118 @@ window.BENCHMARK_DATA = {
             "name": "http_concurrency_loopback/128",
             "value": 57018081,
             "range": "± 5080466",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "iii-ci[bot]@users.noreply.github.com",
+            "name": "iii-ci[bot]"
+          },
+          "committer": {
+            "email": "iii-ci[bot]@users.noreply.github.com",
+            "name": "iii-ci[bot]"
+          },
+          "distinct": true,
+          "id": "487b7ebae0ccc5ab10d483b29cf27be140b5002a",
+          "message": "chore: bump versions for release -- iii(iii/v0.21.7-next.1)",
+          "timestamp": "2026-07-15T14:18:11Z",
+          "tree_id": "7b24719aa297d3dfe5cf9350a2a517a44c84bc6b",
+          "url": "https://github.com/iii-hq/iii/commit/487b7ebae0ccc5ab10d483b29cf27be140b5002a"
+        },
+        "date": 1784126517803,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "concurrent_invocation/1",
+            "value": 2565,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_invocation/8",
+            "value": 17234,
+            "range": "± 373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_invocation/32",
+            "value": 75283,
+            "range": "± 633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_invocation/128",
+            "value": 308700,
+            "range": "± 1500",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/functions_register_remove/100",
+            "value": 46835,
+            "range": "± 1174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/workers_register_unregister/100",
+            "value": 185760,
+            "range": "± 1869",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/triggers_register_unregister/100",
+            "value": 90895,
+            "range": "± 1403",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/functions_register_remove/1000",
+            "value": 477372,
+            "range": "± 1096",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/workers_register_unregister/1000",
+            "value": 4579347,
+            "range": "± 127468",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/triggers_register_unregister/1000",
+            "value": 903929,
+            "range": "± 2647",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/functions_register_remove/5000",
+            "value": 2573621,
+            "range": "± 21343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/workers_register_unregister/5000",
+            "value": 17583678,
+            "range": "± 290014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/triggers_register_unregister/5000",
+            "value": 4759519,
+            "range": "± 32791",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "core_runtime/engine_call_registered_handler",
+            "value": 2030,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http_concurrency_loopback/1",
+            "value": 532652,
+            "range": "± 14282",
             "unit": "ns/iter"
           }
         ]
