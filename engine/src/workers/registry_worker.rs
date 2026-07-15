@@ -246,7 +246,17 @@ impl ExternalWorkerProcess {
     /// behavior; when it runs on a non-default port (e.g. SDK integration
     /// tests with multiple `iii-worker-manager` entries), the spawned worker
     /// no longer silently connects to the wrong port.
-    pub async fn spawn(name: &str, port: u16, config: Option<&Value>) -> Result<Self, String> {
+    ///
+    /// `engine_config_path` is the engine's absolute config file path when
+    /// file-backed; exported as `III_CONFIG_PATH` so the spawned
+    /// `iii-worker start` resolves worker type/config from the SAME file the
+    /// engine watches even when the file isn't `./config.yaml`.
+    pub async fn spawn(
+        name: &str,
+        port: u16,
+        config: Option<&Value>,
+        engine_config_path: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
         let worker_binary = resolve_iii_worker_binary()
             .ok_or_else(|| {
                 "iii-worker binary not found. Install with `iii update worker` or place in ~/.local/bin/".to_string()
@@ -310,6 +320,12 @@ impl ExternalWorkerProcess {
         // iii` left every managed worker running: this path — not
         // external.rs — is how production workers are spawned.
         cmd.env("III_ENGINE_PID", std::process::id().to_string());
+        // Same-file contract: the spawned `iii-worker start` (and everything
+        // it detaches — VM boot, source watcher restarts) must read the
+        // engine's actual config file, not assume ./config.yaml in its cwd.
+        if let Some(path) = engine_config_path {
+            cmd.env("III_CONFIG_PATH", path);
+        }
 
         let child = cmd
             .spawn()

@@ -89,7 +89,7 @@ impl EngineConfig {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow::anyhow!(
                     "Config file not found: '{}'.\n\
-                     Hint: create a config.yaml or pass --use-default-config to run with defaults.",
+                     Hint: create the file, or start `iii` again — it offers to create a missing config file for you.",
                     path
                 )
             } else {
@@ -113,6 +113,22 @@ impl EngineConfig {
         };
         cfg.ensure_builtin_daemons();
         cfg
+    }
+
+    /// YAML content written when `iii` starts in a directory that has no
+    /// config file yet. Deliberately minimal: an EMPTY `workers:` list.
+    /// Mandatory engine workers (configuration, iii-worker-manager, …) are
+    /// always injected by `build()` and never need an entry; everything
+    /// else is opt-in via `iii worker add <name>`, which appends entries
+    /// here. Written as `workers: []` (not a bare `workers:` key) because
+    /// the strict EngineConfig parser rejects a null list; the worker-add
+    /// append path normalizes the `[]` away before inserting entries.
+    pub fn starter_config_yaml() -> String {
+        "# iii engine configuration.\n\
+         # Add workers with `iii worker add <name>`; a running engine reloads on save.\n\
+         # Configure workers at runtime through the configuration worker (configuration::set).\n\
+         workers: []\n"
+            .to_string()
     }
 
     /// Inject KNOWN_EXTERNAL daemons (e.g. `iii-worker-ops` for the
@@ -339,7 +355,7 @@ impl WorkerRegistry {
 
         // 3. Legacy: external worker (iii.toml + iii_workers/)
         if image.is_none()
-            && let Some(info) = super::external::resolve_external_module(name)
+            && let Some(mut info) = super::external::resolve_external_module(name)
         {
             tracing::info!(
                 "Resolved '{}' as external worker '{}' ({})",
@@ -347,6 +363,15 @@ impl WorkerRegistry {
                 info.name,
                 info.binary_path.display()
             );
+            // Same-file contract: daemons that edit the project config file
+            // (worker-ops) must target the engine's ACTUAL config file —
+            // their built-in ./config.yaml default silently breaks custom
+            // config file names. The engine WS URL travels separately via
+            // III_ENGINE_URL, exported by ExternalWorker::spawn (MOT-3970).
+            if let Some(path) = engine.config_path() {
+                info.env
+                    .push(("III_CONFIG_PATH".to_string(), path.display().to_string()));
+            }
             let module =
                 super::external::ExternalWorker::new(info, config, engine.worker_manager_port());
             return Ok(Box::new(ExternalProcessWorker::new(Box::new(module))));
@@ -360,10 +385,14 @@ impl WorkerRegistry {
         //    back to DEFAULT_PORT via `worker_manager_port()`.
         let port = engine.worker_manager_port();
         tracing::info!(worker = %name, port = port, "Starting external worker via iii-worker");
-        let process =
-            super::registry_worker::ExternalWorkerProcess::spawn(name, port, config.as_ref())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
+        let process = super::registry_worker::ExternalWorkerProcess::spawn(
+            name,
+            port,
+            config.as_ref(),
+            engine.config_path(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;
         Ok(Box::new(
             super::registry_worker::ExternalWorkerWrapper::new(process),
         ))
@@ -595,8 +624,8 @@ impl EngineBuilder {
 
     /// Records the path of the config file this engine was built from so that
     /// reload-time code can re-read and re-apply it. When set, `serve()` watches
-    /// this file for changes and reloads automatically. When unset (e.g. running
-    /// with `--use-default-config`), file watching is disabled.
+    /// this file for changes and reloads automatically. When unset (programmatic
+    /// in-memory configs), file watching is disabled.
     pub fn with_config_path(mut self, path: impl Into<String>) -> Self {
         self.config_path = Some(path.into());
         self
@@ -686,6 +715,22 @@ impl EngineBuilder {
             .map(|c| c.port)
             .unwrap_or(super::worker::DEFAULT_PORT);
         self.engine.set_worker_manager_port(resolved_port);
+
+        // Publish the absolute config path so worker-spawning code can hand
+        // it to child processes (III_CONFIG_PATH). Absolutized because the
+        // CLI default is the bare relative name "config.yaml" and children
+        // may resolve it from a different cwd.
+        if let Some(ref path) = self.config_path {
+            let abs = std::path::Path::new(path);
+            let abs = if abs.is_absolute() {
+                abs.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(abs))
+                    .unwrap_or_else(|_| abs.to_path_buf())
+            };
+            self.engine.set_config_path(abs);
+        }
 
         for entry in workers {
             tracing::debug!("Creating worker: {}", entry.name);
@@ -892,7 +937,7 @@ impl EngineBuilder {
             tracing::info!("reload: watching {} for changes", path);
             Some(watcher)
         } else {
-            tracing::info!("reload: no config file to watch (--use-default-config)");
+            tracing::info!("reload: no config file to watch (running with in-memory config)");
             None
         };
 
@@ -2427,5 +2472,85 @@ workers:
             49199,
             "second set_worker_manager_port must be a no-op"
         );
+    }
+
+    #[tokio::test]
+    async fn engine_builder_publishes_absolute_config_path() {
+        // Spawned workers receive III_CONFIG_PATH from `Engine::config_path`;
+        // a relative path (the CLI default is the bare "config.yaml") would
+        // resolve against the CHILD's cwd and defeat the whole handshake.
+        let builder = EngineBuilder::new()
+            .with_config(EngineConfig {
+                modules: Vec::new(),
+                workers: Vec::new(),
+            })
+            .with_config_path("config.yaml")
+            .build()
+            .await
+            .expect("build with relative config path");
+
+        let path = builder
+            .engine()
+            .config_path()
+            .expect("config path must be published on the engine")
+            .to_path_buf();
+        assert!(
+            path.is_absolute(),
+            "published config path must be absolute, got {}",
+            path.display()
+        );
+        assert!(
+            path.ends_with("config.yaml"),
+            "published config path must keep the file name, got {}",
+            path.display()
+        );
+
+        builder.destroy().await.expect("destroy engine");
+    }
+
+    #[test]
+    fn engine_config_path_is_none_for_in_memory_configs() {
+        assert!(Engine::new().config_path().is_none());
+    }
+
+    #[test]
+    fn starter_config_yaml_has_an_empty_workers_list() {
+        let yaml = EngineConfig::starter_config_yaml();
+
+        // Must parse under the strict EngineConfig schema — this is why the
+        // file says `workers: []` and not a bare `workers:` key (serde
+        // rejects a null list).
+        let cfg: EngineConfig =
+            serde_yaml::from_str(&yaml).expect("starter config must parse as EngineConfig");
+
+        // Deliberately empty: mandatory engine workers are injected by
+        // build(), and everything else is opt-in via `iii worker add`.
+        assert!(
+            cfg.workers.is_empty(),
+            "starter file must not pre-list any workers, got {:?}",
+            cfg.workers
+        );
+        assert!(cfg.modules.is_empty());
+    }
+
+    #[tokio::test]
+    async fn starter_config_boots_and_accepts_appended_workers() {
+        // End-to-end shape check on the created file: it must build into a
+        // working engine as-is, and `iii worker add`'s append helper must be
+        // able to turn the empty `workers: []` marker into a real list (the
+        // normalize path in iii-worker's config_file.rs relies on this exact
+        // content shape; this pins the engine side of that contract).
+        let cfg: EngineConfig = serde_yaml::from_str(&EngineConfig::starter_config_yaml())
+            .expect("starter config must parse");
+        let builder = EngineBuilder::new()
+            .with_config(cfg)
+            .build()
+            .await
+            .expect("an empty starter config must boot (mandatory workers injected)");
+        assert_eq!(
+            builder.engine().worker_manager_port(),
+            super::super::worker::DEFAULT_PORT,
+        );
+        builder.destroy().await.expect("destroy engine");
     }
 }

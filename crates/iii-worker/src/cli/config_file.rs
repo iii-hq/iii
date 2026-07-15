@@ -4,14 +4,40 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Helpers to read/append/remove worker entries from `config.yaml` while
-//! preserving existing formatting and comments.
+//! Helpers to read/append/remove worker entries from the project config
+//! file (`config.yaml` by default) while preserving existing formatting and
+//! comments.
 
 use regex::Regex;
 use std::path::Path;
 use std::sync::LazyLock;
 
 pub(crate) const CONFIG_FILE: &str = "config.yaml";
+
+/// Project config file this process reads and edits.
+///
+/// Resolution order:
+/// 1. `III_CONFIG_PATH` — set by the engine on every process it spawns
+///    (worker-ops daemon, sandbox daemon, `iii worker start` children) so
+///    they target the engine's ACTUAL config file. Without it, an engine
+///    started with `--config config.yml` (or from a different directory)
+///    and this code silently operate on two different files.
+/// 2. `./config.yaml` — the historical default for direct CLI use.
+pub(crate) fn config_path() -> std::path::PathBuf {
+    match std::env::var_os("III_CONFIG_PATH") {
+        Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => std::path::PathBuf::from(CONFIG_FILE),
+    }
+}
+
+/// File name of [`config_path`] for user-facing messages ("config.yaml"
+/// unless the engine handed us a custom name).
+pub fn config_display_name() -> String {
+    config_path()
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| CONFIG_FILE.to_string())
+}
 
 /// Resolve the engine's effective `iii-worker-manager` port from config.yaml.
 ///
@@ -29,7 +55,7 @@ pub(crate) const CONFIG_FILE: &str = "config.yaml";
 ///   uses `DEFAULT_PORT` engine-side too)
 /// - the entry has no `config.port` field, or the port is not a u16
 pub fn manager_port() -> u16 {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     if !path.exists() {
         return super::app::DEFAULT_PORT;
     }
@@ -74,7 +100,7 @@ pub(crate) fn manager_port_from(content: &str) -> u16 {
 /// `upper_size_gib` knob — changing the size means regenerating the golden via
 /// `vendor/regen-golden.sh`.
 pub fn rootfs_mode() -> Option<String> {
-    let content = std::fs::read_to_string(Path::new(CONFIG_FILE)).ok()?;
+    let content = std::fs::read_to_string(config_path()).ok()?;
     rootfs_mode_from(&content)
 }
 
@@ -438,7 +464,7 @@ fn deep_merge(a: serde_json::Value, b: serde_json::Value) -> serde_json::Value {
 
 /// Returns `true` if `config.yaml` contains an entry for `name`.
 pub fn worker_exists(name: &str) -> bool {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     if !path.exists() {
         return false;
     }
@@ -473,11 +499,11 @@ pub fn append_worker_with_path(
     config_yaml: Option<&str>,
 ) -> Result<(), String> {
     super::registry::validate_worker_name(name)?;
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
 
     let mut content = if path.exists() {
-        std::fs::read_to_string(path)
-            .map_err(|e| format!("failed to read {}: {}", CONFIG_FILE, e))?
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {}", path.display(), e))?
     } else {
         String::new()
     };
@@ -491,7 +517,7 @@ pub fn append_worker_with_path(
                 let merged = merge_yaml_configs(incoming, &existing);
                 return append_to_content_with_fields(
                     &mut content,
-                    path,
+                    &path,
                     name,
                     None,
                     Some(worker_path),
@@ -500,7 +526,7 @@ pub fn append_worker_with_path(
             }
             return append_to_content_with_fields(
                 &mut content,
-                path,
+                &path,
                 name,
                 None,
                 Some(worker_path),
@@ -511,7 +537,7 @@ pub fn append_worker_with_path(
 
     append_to_content_with_fields(
         &mut content,
-        path,
+        &path,
         name,
         None,
         Some(worker_path),
@@ -521,7 +547,7 @@ pub fn append_worker_with_path(
 
 /// Returns the `worker_path:` value for a named worker in `config.yaml`, if present.
 pub fn get_worker_path(name: &str) -> Option<String> {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     let content = std::fs::read_to_string(path).ok()?;
     extract_worker_path(&content, name)
 }
@@ -532,12 +558,12 @@ fn append_worker_impl(
     config_yaml: Option<&str>,
 ) -> Result<(), String> {
     super::registry::validate_worker_name(name)?;
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
 
     // Read existing content or start from scratch.
     let mut content = if path.exists() {
-        std::fs::read_to_string(path)
-            .map_err(|e| format!("failed to read {}: {}", CONFIG_FILE, e))?
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {}", path.display(), e))?
     } else {
         String::new()
     };
@@ -553,15 +579,15 @@ fn append_worker_impl(
         if let Some(existing) = existing_config {
             if let Some(incoming) = config_yaml {
                 let merged = merge_yaml_configs(incoming, &existing);
-                return append_to_content(&mut content, path, name, image, Some(&merged));
+                return append_to_content(&mut content, &path, name, image, Some(&merged));
             }
             // No new config from registry — keep existing as-is.
-            return append_to_content(&mut content, path, name, image, Some(&existing));
+            return append_to_content(&mut content, &path, name, image, Some(&existing));
         }
         // Worker existed but had no config — use incoming.
     }
 
-    append_to_content(&mut content, path, name, image, config_yaml)
+    append_to_content(&mut content, &path, name, image, config_yaml)
 }
 
 /// Low-level: appends a worker entry to `content` and writes to `path`.
@@ -628,8 +654,8 @@ fn append_to_content_with_fields(
     new_content.push_str(&entry);
     new_content.push_str(suffix);
 
-    std::fs::write(path, &new_content)
-        .map_err(|e| format!("failed to write {}: {}", CONFIG_FILE, e))?;
+    std::fs::write(&path, &new_content)
+        .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
 
     *content = new_content;
 
@@ -638,7 +664,7 @@ fn append_to_content_with_fields(
 
 /// Returns the `image:` value for a named worker in `config.yaml`, if present.
 pub fn get_worker_image(name: &str) -> Option<String> {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     let content = std::fs::read_to_string(path).ok()?;
     extract_image(&content, name)
 }
@@ -677,7 +703,7 @@ fn resolve_worker_type_from_content(content: &str, name: &str) -> ResolvedWorker
 /// practice; if they do, the bundle install wins and a re-add replaces it
 /// in place (`atomic_install`).
 pub fn resolve_worker_type(name: &str) -> ResolvedWorkerType {
-    let path = std::path::Path::new(CONFIG_FILE);
+    let path = config_path();
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return check_install_fallback(name),
@@ -841,7 +867,7 @@ fn expand_env_vars(yaml_content: &str) -> Result<String, String> {
 /// on a top-level `${X}`, iii-worker is never invoked — so the
 /// scoping divergence is invisible.
 pub fn get_worker_config_as_env(name: &str) -> std::collections::HashMap<String, String> {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return std::collections::HashMap::new(),
@@ -909,7 +935,7 @@ fn flatten_value_to_env(
 pub fn get_worker_start_info(
     name: &str,
 ) -> Option<(String, std::collections::HashMap<String, String>)> {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     let content = std::fs::read_to_string(path).ok()?;
 
     // Extract image
@@ -959,29 +985,29 @@ pub fn get_worker_start_info(
 
 /// Removes the named worker entry from `config.yaml`.
 pub fn remove_worker(name: &str) -> Result<(), String> {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     if !path.exists() {
-        return Err(format!("{} not found", CONFIG_FILE));
+        return Err(format!("{} not found", path.display()));
     }
 
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read {}: {}", CONFIG_FILE, e))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
 
     if !worker_exists_in(&content, name) {
-        return Err(format!("Worker '{}' not found in {}", name, CONFIG_FILE));
+        return Err(format!("Worker '{}' not found in {}", name, path.display()));
     }
 
     let new_content = remove_worker_from(&content, name);
 
-    std::fs::write(path, &new_content)
-        .map_err(|e| format!("failed to write {}: {}", CONFIG_FILE, e))?;
+    std::fs::write(&path, &new_content)
+        .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
 
     Ok(())
 }
 
 /// Returns all worker names listed under `workers:` in `config.yaml`.
 pub fn list_worker_names() -> Vec<String> {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     if !path.exists() {
         return Vec::new();
     }
@@ -995,15 +1021,15 @@ pub fn list_worker_names() -> Vec<String> {
 
 /// Returns worker names from `config.yaml`, surfacing read/parse failures.
 pub fn list_worker_names_result() -> Result<Vec<String>, String> {
-    let path = Path::new(CONFIG_FILE);
+    let path = config_path();
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read {}: {}", CONFIG_FILE, e))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
     serde_yaml::from_str::<serde_yaml::Value>(&content)
-        .map_err(|e| format!("failed to parse {}: {}", CONFIG_FILE, e))?;
+        .map_err(|e| format!("failed to parse {}: {}", path.display(), e))?;
 
     Ok(list_worker_names_from_content(&content))
 }
@@ -1410,6 +1436,40 @@ mod tests {
     }
 
     #[test]
+    fn test_append_into_engine_starter_config_shape() {
+        // The engine's missing-file bootstrap (EngineConfig::starter_config_yaml)
+        // writes header comments + an empty `workers: []` list. The first
+        // `iii worker add` must turn that into a real list without breaking
+        // the YAML or dropping the comments.
+        let mut content = "\
+# iii engine configuration.
+# Add workers with `iii worker add <name>`; a running engine reloads on save.
+# Configure workers at runtime through the configuration worker (configuration::set).
+workers: []
+"
+        .to_string();
+        let path = std::path::Path::new("/tmp/test-starter-config-shape.yaml");
+
+        append_to_content_with_fields(&mut content, path, "iii-http", None, None, None).unwrap();
+
+        assert!(content.starts_with("# iii engine configuration."));
+        assert!(!content.contains("workers: []"));
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("output should be valid YAML");
+        let workers = parsed
+            .get("workers")
+            .and_then(|w| w.as_sequence())
+            .expect("`workers` should be a sequence");
+        assert_eq!(workers.len(), 1);
+        assert_eq!(
+            workers[0].get("name").and_then(|n| n.as_str()),
+            Some("iii-http")
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_normalize_empty_workers_list_strips_inline_marker() {
         assert_eq!(normalize_empty_workers_list("workers: []\n"), "workers:\n");
         assert_eq!(normalize_empty_workers_list("workers: []"), "workers:");
@@ -1748,6 +1808,82 @@ workers:
         let result = f();
         std::env::set_current_dir(&prior).expect("restore cwd");
         result
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // III_CONFIG_PATH — the engine exports it to spawned processes so this
+    // module targets the engine's actual config file, not ./config.yaml.
+    // These tests hold BOTH the crate-wide TEST_HOME_LOCK (other modules'
+    // config-reading tests serialize on it) and this module's ENV_LOCK,
+    // because the env override redirects every reader in the process.
+    // ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn config_path_defaults_to_config_yaml() {
+        let _home = crate::cli::test_support::lock_home();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset("III_CONFIG_PATH");
+        assert_eq!(config_path(), std::path::PathBuf::from("config.yaml"));
+        assert_eq!(config_display_name(), "config.yaml");
+    }
+
+    #[test]
+    fn config_path_honors_env_override() {
+        let _home = crate::cli::test_support::lock_home();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("III_CONFIG_PATH", "/srv/proj/config.yml");
+        assert_eq!(
+            config_path(),
+            std::path::PathBuf::from("/srv/proj/config.yml")
+        );
+        assert_eq!(config_display_name(), "config.yml");
+    }
+
+    #[test]
+    fn config_path_ignores_empty_env_override() {
+        let _home = crate::cli::test_support::lock_home();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set("III_CONFIG_PATH", "");
+        assert_eq!(config_path(), std::path::PathBuf::from("config.yaml"));
+    }
+
+    #[test]
+    fn worker_ops_follow_env_override_to_a_custom_file_name() {
+        let _cwd = CWD_LOCK.lock().unwrap();
+        let _home = crate::cli::test_support::lock_home();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let custom = dir.path().join("config.yml");
+        std::fs::write(
+            &custom,
+            "workers:\n  - name: iii-worker-manager\n    config:\n      port: 50123\n",
+        )
+        .expect("write config.yml");
+        let _g = EnvGuard::set("III_CONFIG_PATH", custom.to_str().unwrap());
+
+        // Reads resolve against the override…
+        assert!(worker_exists("iii-worker-manager"));
+        assert_eq!(manager_port(), 50123);
+        assert_eq!(list_worker_names(), vec!["iii-worker-manager".to_string()]);
+
+        // …and so do writes: append + remove mutate config.yml, and no
+        // config.yaml appears anywhere.
+        append_worker("added-via-env", None).expect("append");
+        let content = std::fs::read_to_string(&custom).expect("read config.yml");
+        assert!(content.contains("- name: added-via-env"));
+        remove_worker("added-via-env").expect("remove");
+        let content = std::fs::read_to_string(&custom).expect("read config.yml");
+        assert!(!content.contains("added-via-env"));
+        assert!(
+            !dir.path().join("config.yaml").exists(),
+            "no config.yaml must be created when III_CONFIG_PATH points elsewhere"
+        );
+
+        // ProjectCtx (op outcome reporting) follows the same override, so
+        // `worker::add` outcomes name the file that was actually edited.
+        let ctx = crate::core::ProjectCtx::open_unlocked(dir.path().to_path_buf());
+        assert_eq!(ctx.config_path(), custom);
     }
 
     #[test]

@@ -19,9 +19,8 @@ iii [OPTIONS] [COMMAND]
 
 | Option | Description |
 | ------ | ----------- |
-| `-c, --config <CONFIG>` | Path to the config file [default: config.yaml] |
+| `-c, --config <CONFIG>` | Path to the config file [default: config.yaml]. When the file does not exist, `iii` offers to create it with an empty workers list (and creates it without asking in non-interactive sessions) |
 | `-v, --version` | Print version and exit |
-| `--use-default-config` | Run with built-in defaults instead of a config file. Cannot be combined with `--config` |
 | `--no-update-check` | Disable background update and security advisory checks |
 
 **Subcommands:**
@@ -164,7 +163,8 @@ iii worker add [OPTIONS] <WORKER[@VERSION]|PATH>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block). Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134, ws:// URLs also accepted) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports |
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
 | `--no-wait` | Don't block waiting for the engine to finish booting the worker |
 
@@ -265,7 +265,8 @@ iii worker reinstall [OPTIONS] <WORKER[@VERSION]|PATH>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block). Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134, ws:// URLs also accepted) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports |
 
 ### `iii worker remove`
 

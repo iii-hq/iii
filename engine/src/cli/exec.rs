@@ -19,7 +19,11 @@ use super::error::ExecError;
 ///
 /// IMPORTANT: All iii output (progress bars, update notifications) MUST be
 /// flushed before calling this function.
-pub fn run_binary(binary_path: &Path, args: &[String]) -> Result<i32, ExecError> {
+pub fn run_binary(
+    binary_path: &Path,
+    args: &[String],
+    envs: &[(String, String)],
+) -> Result<i32, ExecError> {
     if !binary_path.exists() {
         return Err(ExecError::BinaryNotFound {
             path: binary_path.display().to_string(),
@@ -31,12 +35,12 @@ pub fn run_binary(binary_path: &Path, args: &[String]) -> Result<i32, ExecError>
 
     #[cfg(unix)]
     {
-        run_binary_unix(binary_path, args)
+        run_binary_unix(binary_path, args, envs)
     }
 
     #[cfg(windows)]
     {
-        run_binary_windows(binary_path, args)
+        run_binary_windows(binary_path, args, envs)
     }
 }
 
@@ -55,11 +59,18 @@ fn flush_output() {
 /// entirely. The child binary inherits the terminal, PID, and all file
 /// descriptors. This is NOT shell invocation -- no injection risk.
 #[cfg(unix)]
-fn run_binary_unix(binary_path: &Path, args: &[String]) -> Result<i32, ExecError> {
+fn run_binary_unix(
+    binary_path: &Path,
+    args: &[String],
+    envs: &[(String, String)],
+) -> Result<i32, ExecError> {
     use std::os::unix::process::CommandExt;
 
     // .exec() replaces the current process image (only returns on error)
-    let err = std::process::Command::new(binary_path).args(args).exec();
+    let err = std::process::Command::new(binary_path)
+        .args(args)
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .exec();
 
     Err(ExecError::SpawnFailed {
         binary: binary_path.display().to_string(),
@@ -69,9 +80,14 @@ fn run_binary_unix(binary_path: &Path, args: &[String]) -> Result<i32, ExecError
 
 /// Windows: Spawn the binary as a child process with inherited stdio.
 #[cfg(windows)]
-fn run_binary_windows(binary_path: &Path, args: &[String]) -> Result<i32, ExecError> {
+fn run_binary_windows(
+    binary_path: &Path,
+    args: &[String],
+    envs: &[(String, String)],
+) -> Result<i32, ExecError> {
     let status = std::process::Command::new(binary_path)
         .args(args)
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -91,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_binary_not_found() {
-        let result = run_binary(&PathBuf::from("/nonexistent/binary"), &[]);
+        let result = run_binary(&PathBuf::from("/nonexistent/binary"), &[], &[]);
         assert!(result.is_err());
         match result.unwrap_err() {
             ExecError::BinaryNotFound { path } => {

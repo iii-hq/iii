@@ -173,9 +173,11 @@ pub async fn handle_binary_add(
         }
     }
 
-    let config_yaml = binary_config_yaml(&response.config);
-
-    if let Err(e) = super::config_file::append_worker(worker_name, config_yaml.as_deref()) {
+    // Bare `- name:` entry — no `config:` block. Workers receive their
+    // configuration through the configuration worker (Rust/worker defaults
+    // seed the store on first boot); a copied registry default here would
+    // only be re-imported on the next engine restart and then stripped.
+    if let Err(e) = super::config_file::append_worker(worker_name, None) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
@@ -417,33 +419,6 @@ pub async fn handle_bundle_add(
         eprintln!("        {} {}", "✓".green(), worker_name.bold());
     }
     0
-}
-
-fn binary_config_yaml(config: &serde_json::Value) -> Option<String> {
-    let config = match config {
-        serde_json::Value::Null => return None,
-        serde_json::Value::Object(map) if map.is_empty() => return None,
-        serde_json::Value::Object(map) => map.get("config").unwrap_or(config),
-        _ => config,
-    };
-
-    match config {
-        serde_json::Value::Null => None,
-        serde_json::Value::Object(map) if map.is_empty() => None,
-        _ => {
-            let yaml = serde_yaml::to_string(config).unwrap_or_default();
-            let yaml = yaml
-                .strip_prefix("---\n")
-                .unwrap_or(&yaml)
-                .trim_end()
-                .to_string();
-            if yaml.is_empty() || yaml == "{}" || yaml == "null" {
-                None
-            } else {
-                Some(yaml)
-            }
-        }
-    }
 }
 
 pub async fn handle_managed_add_many(worker_names: &[String], wait: bool) -> i32 {
@@ -1255,27 +1230,31 @@ struct ConfigYamlSnapshot {
 
 impl ConfigYamlSnapshot {
     fn capture() -> Result<Self, String> {
-        let path = std::path::Path::new("config.yaml");
+        let path = super::config_file::config_path();
         if !path.exists() {
             return Ok(Self { content: None });
         }
 
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("failed to read config.yaml before graph install: {e}"))?;
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "failed to read {} before graph install: {e}",
+                path.display()
+            )
+        })?;
         Ok(Self {
             content: Some(content),
         })
     }
 
     fn restore(&self) -> Result<(), String> {
-        let path = std::path::Path::new("config.yaml");
+        let path = super::config_file::config_path();
         match &self.content {
-            Some(content) => std::fs::write(path, content)
-                .map_err(|e| format!("failed to restore config.yaml: {e}")),
-            None => match std::fs::remove_file(path) {
+            Some(content) => std::fs::write(&path, content)
+                .map_err(|e| format!("failed to restore {}: {e}", path.display())),
+            None => match std::fs::remove_file(&path) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(format!("failed to remove config.yaml: {e}")),
+                Err(e) => Err(format!("failed to remove {}: {e}", path.display())),
             },
         }
     }
@@ -1441,11 +1420,11 @@ async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> 
             "engine" => {
                 // Engine workers are baked into the iii binary — nothing to
                 // download. Telemetry still fires for them below, alongside
-                // every other resolved worker type.
-                let config_yaml = binary_config_yaml(&node.config);
-                if let Err(e) =
-                    super::config_file::append_worker(&node.name, config_yaml.as_deref())
-                {
+                // every other resolved worker type. Bare `- name:` entry:
+                // workers own their configuration through the configuration
+                // worker, so registry config defaults are not copied into
+                // the project config file.
+                if let Err(e) = super::config_file::append_worker(&node.name, None) {
                     eprintln!("{} {}", "error:".red(), e);
                     config_snapshot.restore_after_failure();
                     return 1;
@@ -1782,11 +1761,18 @@ pub async fn handle_managed_add(
     if let Some(default_yaml) = get_builtin_default(&name) {
         let builtin_version = resolve_builtin_version(version.as_deref());
         let already_exists = super::config_file::worker_exists(&name);
-        if let Err(e) = persist_engine_worker_config_and_lock(
-            &name,
-            builtin_version,
-            Some(default_yaml.as_str()),
-        ) {
+        // Bare `- name:` entry: builtins boot with their Rust defaults and
+        // own their configuration through the configuration worker, so the
+        // add must not copy a default `config:` block into the project
+        // config file (it would only be re-imported on the next engine
+        // restart). iii-sandbox is the exception — its daemon consumes
+        // `config:` directly at spawn and fails closed without it, and the
+        // image allowlist is an operator security surface that belongs in
+        // the file.
+        let config_yaml = (name == "iii-sandbox").then_some(default_yaml);
+        if let Err(e) =
+            persist_engine_worker_config_and_lock(&name, builtin_version, config_yaml.as_deref())
+        {
             eprintln!("{} {}", "error:".red(), e);
             return 1;
         }
@@ -1799,17 +1785,17 @@ pub async fn handle_managed_add(
         } else {
             if already_exists {
                 eprintln!(
-                    "\n  {} Worker {} updated in {} (merged with builtin defaults)",
+                    "\n  {} Worker {} updated in {}",
                     "✓".green(),
                     name.bold(),
-                    "config.yaml".dimmed(),
+                    super::config_file::config_display_name().dimmed(),
                 );
             } else {
                 eprintln!(
                     "\n  {} Worker {} added to {}",
                     "✓".green(),
                     name.bold(),
-                    "config.yaml".dimmed(),
+                    super::config_file::config_display_name().dimmed(),
                 );
             }
 
@@ -1989,42 +1975,12 @@ async fn handle_oci_pull_and_add(name: &str, image_ref: &str, brief: bool) -> i3
         }
     }
 
-    // Extract OCI env vars from the pulled image rootfs and write as config:
-    let rootfs_dir = image_cache_dir(image_ref);
-    let oci_env = super::worker_manager::oci::read_oci_env(&rootfs_dir);
-    let config_yaml = if oci_env.is_empty() {
-        None
-    } else {
-        // Filter out generic system env vars (PATH, HOME, etc.)
-        let filtered: Vec<_> = oci_env
-            .iter()
-            .filter(|(k, _)| !matches!(k.as_str(), "PATH" | "HOME" | "HOSTNAME" | "LANG" | "TERM"))
-            .collect();
-        if filtered.is_empty() {
-            None
-        } else {
-            let config_map: serde_json::Map<String, serde_json::Value> = filtered
-                .iter()
-                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                .collect();
-            let yaml_str =
-                serde_yaml::to_string(&serde_json::Value::Object(config_map)).unwrap_or_default();
-            // serde_yaml adds a leading `---\n`, strip it for embedding
-            let yaml_str = yaml_str
-                .strip_prefix("---\n")
-                .unwrap_or(&yaml_str)
-                .trim_end();
-            if yaml_str.is_empty() {
-                None
-            } else {
-                Some(yaml_str.to_string())
-            }
-        }
-    };
-
-    if let Err(e) =
-        super::config_file::append_worker_with_image(name, image_ref, config_yaml.as_deref())
-    {
+    // Bare `name:` + `image:` entry — no `config:` block. The image's own
+    // env vars are re-read from the cached OCI config at every boot
+    // (`worker_manager/libkrun.rs`), and user-supplied config flows through
+    // the configuration worker; copying the image env here only froze it
+    // into the project config file.
+    if let Err(e) = super::config_file::append_worker_with_image(name, image_ref, None) {
         eprintln!("{} Failed to update config.yaml: {}", "error:".red(), e);
         return 1;
     }
@@ -3260,11 +3216,14 @@ async fn wait_for_ready(worker_name: &str, port: u16) {
             eprintln!(
                 "  {} not ready after {:.0}s.\n  \
                  Keep watching: iii worker status {}\n  \
-                 Check logs:    iii worker logs {} -f",
+                 Check logs:    iii worker logs {} -f\n  \
+                 Engine running in a different directory or port? Target it \
+                 directly: iii worker add {} --host <host:port>",
                 "⚠".yellow(),
                 elapsed.as_secs_f64(),
                 worker_name,
-                worker_name
+                worker_name,
+                worker_name,
             );
         }
     }
@@ -3883,7 +3842,6 @@ pub async fn handle_managed_logs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::sync::Mutex;
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -3929,11 +3887,6 @@ mod tests {
         std::env::set_current_dir(&dir_path).unwrap();
         let _cwd_guard = CwdGuard(original);
         f(dir_path);
-    }
-
-    #[test]
-    fn binary_config_yaml_omits_empty_registry_config() {
-        assert_eq!(binary_config_yaml(&serde_json::json!({})), None);
     }
 
     #[test]
@@ -3990,17 +3943,6 @@ mod tests {
             restore.rollback();
             WorkerActivationLock::acquire(name).expect("acquire after rollback must succeed");
         });
-    }
-
-    #[test]
-    fn binary_config_yaml_returns_none_for_null_json() {
-        assert_eq!(binary_config_yaml(&serde_json::Value::Null), None);
-    }
-
-    #[test]
-    fn binary_config_yaml_returns_none_for_inner_null() {
-        let wrapped = serde_json::json!({ "config": null });
-        assert_eq!(binary_config_yaml(&wrapped), None);
     }
 
     use crate::cli::lockfile as cli_lockfile;
@@ -5748,58 +5690,6 @@ dependencies:
             assert_eq!(rc, 0);
         })
         .await;
-    }
-
-    #[test]
-    fn binary_config_yaml_extracts_wrapped_registry_config() {
-        let config = serde_json::json!({
-            "name": "image-resize",
-            "config": {
-                "width": 200,
-                "strategy": "scale-to-fit"
-            }
-        });
-
-        let yaml = binary_config_yaml(&config).expect("wrapped config should render");
-
-        assert!(yaml.contains("width: 200"));
-        assert!(yaml.contains("strategy: scale-to-fit"));
-        assert!(!yaml.contains("name: image-resize"));
-    }
-
-    #[test]
-    fn binary_config_yaml_accepts_plain_registry_config() {
-        let config = serde_json::json!({
-            "width": 200,
-            "strategy": "scale-to-fit"
-        });
-
-        let yaml = binary_config_yaml(&config).expect("plain config should render");
-
-        assert!(yaml.contains("width: 200"));
-        assert!(yaml.contains("strategy: scale-to-fit"));
-    }
-
-    #[tokio::test]
-    async fn read_new_bytes_picks_up_appended_content() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("test.log");
-        std::fs::write(&log, "line1\nline2\n").unwrap();
-
-        let initial_len = file_len(&log);
-        assert_eq!(initial_len, 12); // "line1\nline2\n"
-
-        // No new bytes → offset unchanged
-        let offset = read_new_bytes(&log, initial_len, false).await;
-        assert_eq!(offset, initial_len);
-
-        // Append new content
-        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
-        write!(f, "line3\nline4\n").unwrap();
-        drop(f);
-
-        let offset = read_new_bytes(&log, initial_len, false).await;
-        assert_eq!(offset, file_len(&log));
     }
 
     #[tokio::test]

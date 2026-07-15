@@ -113,6 +113,7 @@ pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<Extern
             name: binary_name_candidate,
             binary_path,
             extra_args: hit.args.iter().map(|s| (*s).to_string()).collect(),
+            env: Vec::new(),
         });
     }
 
@@ -157,6 +158,7 @@ pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<Extern
         name: binary_name,
         binary_path,
         extra_args: vec![],
+        env: Vec::new(),
     })
 }
 
@@ -167,6 +169,10 @@ pub struct ExternalWorkerInfo {
     /// Empty for conventional iii_workers/<binary> resolution; populated
     /// when the worker was matched via KNOWN_EXTERNAL.
     pub extra_args: Vec<String>,
+    /// Extra environment variables set on the child (e.g. `III_CONFIG_PATH`
+    /// so daemons that edit the project config file target the engine's
+    /// actual file, not a hardcoded ./config.yaml).
+    pub env: Vec<(String, String)>,
 }
 
 /// A worker implementation backed by an external binary from `iii_workers/`.
@@ -185,6 +191,7 @@ pub struct ExternalWorker {
     /// (sandbox-daemon, worker-manager-daemon) connect back to THIS engine
     /// instead of their hardcoded ws://127.0.0.1:49134 default (MOT-3970).
     worker_manager_port: u16,
+    env: Vec<(String, String)>,
     config: Option<Value>,
     child: Arc<Mutex<Option<Child>>>,
     config_file: Arc<Mutex<Option<PathBuf>>>,
@@ -207,6 +214,7 @@ impl ExternalWorker {
             binary_path: info.binary_path,
             extra_args: info.extra_args,
             worker_manager_port,
+            env: info.env,
             config,
             child: Arc::new(Mutex::new(None)),
             config_file: Arc::new(Mutex::new(None)),
@@ -317,6 +325,9 @@ impl Worker for ExternalWorker {
         }
         if let Some(ref path) = config_path {
             cmd.arg("--config").arg(path);
+        }
+        for (key, value) in &self.env {
+            cmd.env(key, value);
         }
         // Pipe stdio instead of inheriting the engine's TTY fds. External
         // workers (notably iii-sandbox) load libkrun, which raws the host
@@ -744,6 +755,7 @@ mod tests {
             name: "test-worker".to_string(),
             binary_path: PathBuf::from("/tmp/test-worker"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         assert_eq!(module.name, "test-worker");
@@ -758,6 +770,7 @@ mod tests {
             name: "configured-worker".to_string(),
             binary_path: PathBuf::from("/tmp/configured-worker"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(
             info,
@@ -773,6 +786,7 @@ mod tests {
             name: "my-worker".to_string(),
             binary_path: PathBuf::from("/tmp/my-worker"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         assert_eq!(module.name(), "ExternalWorker(my-worker)");
@@ -784,6 +798,7 @@ mod tests {
             name: "test-worker".to_string(),
             binary_path: PathBuf::from("/tmp/test-worker"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         let name1 = module.name();
@@ -800,6 +815,7 @@ mod tests {
             name: "clone-test".to_string(),
             binary_path: PathBuf::from("/tmp/clone-test"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         let cloned = module.clone();
@@ -816,6 +832,7 @@ mod tests {
             name: "init-test".to_string(),
             binary_path: PathBuf::from("/tmp/init-test"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         assert!(module.initialize().await.is_ok());
@@ -827,6 +844,7 @@ mod tests {
             name: "destroy-test".to_string(),
             binary_path: PathBuf::from("/tmp/destroy-test"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         // destroy on a fresh module (no spawned child) should succeed
@@ -839,6 +857,7 @@ mod tests {
             name: "cleanup-test".to_string(),
             binary_path: PathBuf::from("/tmp/cleanup-test"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
 
@@ -872,6 +891,7 @@ mod tests {
             name: "unit-test".into(),
             binary_path: PathBuf::from("/tmp/fake"),
             extra_args: vec![],
+            env: Vec::new(),
         };
         assert!(info.extra_args.is_empty());
     }
@@ -1018,6 +1038,7 @@ mod tests {
             name: "probe".into(),
             binary_path: fixture,
             extra_args: vec!["first-arg".into(), "second-arg".into()],
+            env: vec![("III_PROBE_EXTRA_ENV".into(), "probe-env-value".into())],
         };
 
         // Distinctive port: the assertion below proves the child received
@@ -1075,6 +1096,12 @@ mod tests {
             assert!(
                 env_line.contains("engine_url=ws://127.0.0.1:50123"),
                 "child must see this engine's actual WS URL, not a default; got: {env_line:?}"
+            );
+            // Info-declared env vars (e.g. III_CONFIG_PATH in production)
+            // must reach the child.
+            assert!(
+                env_line.contains("extra_env=probe-env-value"),
+                "child must see ExternalWorkerInfo.env vars; got: {env_line:?}"
             );
         }
     }

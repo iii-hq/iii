@@ -20,7 +20,12 @@ pub mod update;
 use colored::Colorize;
 
 /// Handle dispatching a command to a managed binary.
-pub async fn handle_dispatch(command: &str, args: &[String], no_update_check: bool) -> i32 {
+pub async fn handle_dispatch(
+    command: &str,
+    args: &[String],
+    no_update_check: bool,
+    envs: &[(String, String)],
+) -> i32 {
     // Resolve command to binary spec
     let (spec, binary_subcommand) = match registry::resolve_command(command) {
         Ok(result) => result,
@@ -164,7 +169,7 @@ pub async fn handle_dispatch(command: &str, args: &[String], no_update_check: bo
     child_args.extend_from_slice(args);
 
     // Execute the binary (replaces process on Unix)
-    match exec::run_binary(&binary_path, &child_args) {
+    match exec::run_binary(&binary_path, &child_args, envs) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);

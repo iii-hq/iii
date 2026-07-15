@@ -63,12 +63,14 @@ async fn handle_managed_add_builtin_creates_config() {
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));
-        assert!(content.contains("config:"));
-        assert!(content.contains("port: 3111"));
-        assert!(content.contains("host: 127.0.0.1"));
-        assert!(content.contains("default_timeout: 30000"));
-        assert!(content.contains("concurrency_request_limit: 1024"));
-        assert!(content.contains("allowed_origins"));
+        // Bare entry: builtins boot with Rust defaults and are configured
+        // through the configuration worker, so `add` must not copy a
+        // default config block into config.yaml anymore.
+        assert!(
+            !content.contains("config:"),
+            "builtin add must not write a config block, got:\n{content}"
+        );
+        assert!(!content.contains("port: 3111"));
         let lockfile = iii_worker::cli::lockfile::WorkerLockfile::read_from(
             iii_worker::cli::lockfile::lockfile_path(),
         )
@@ -103,7 +105,6 @@ async fn handle_managed_add_builtin_accepts_explicit_version() {
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));
-        assert!(content.contains("port: 3111"));
         let lockfile = iii_worker::cli::lockfile::WorkerLockfile::read_from(
             iii_worker::cli::lockfile::lockfile_path(),
         )
@@ -132,9 +133,13 @@ async fn handle_managed_add_builtin_merges_existing() {
         // User override preserved
         assert!(content.contains("9999"));
         assert!(content.contains("custom_key"));
-        // Builtin defaults filled in
-        assert!(content.contains("default_timeout"));
-        assert!(content.contains("concurrency_request_limit"));
+        // Re-adding must NOT inject builtin defaults into the file anymore —
+        // defaults live in Rust and flow through the configuration worker.
+        assert!(
+            !content.contains("default_timeout"),
+            "re-add must not inject builtin defaults, got:\n{content}"
+        );
+        assert!(!content.contains("concurrency_request_limit"));
     })
     .await;
 }
