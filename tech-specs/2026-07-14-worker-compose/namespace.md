@@ -12,10 +12,11 @@ separate dimension** carried alongside the function id.
   changes: `registerWorker()` picks it up from the environment.
 - Function ids stay exactly what the worker registered (`state::get` is
   `state::get` everywhere).
-- `trigger()` gains an optional namespace argument. With a namespace, the
-  call targets that worker instance precisely. Without one, and several
-  instances share the function id, **the engine picks the best fit** (same-
-  namespace caller first, then default).
+- `trigger()` gains an optional namespace argument, and routing is strict:
+  `trigger("state::set")` resolves **only in the default namespace**;
+  `trigger("state::set", namespace: "analytics")` resolves only in
+  `analytics`. No best-fit guessing — a miss is a clear FUNCTION_NOT_FOUND
+  that lists the namespaces where the id does exist.
 - Every SDK (node / rust / python) implements the same surface — the
   register/trigger protocol messages carry the namespace field.
 
@@ -58,6 +59,6 @@ Namespaces restore multi-instance without renaming anything.
 ## Cost (stated plainly)
 
 Protocol change (register + trigger messages), engine routing change
-(namespace-aware function table + best-fit selection + rejection path), and
+(namespace-aware function table + strict resolution + rejection path), and
 all three SDKs. This is the widest-surface piece of the pack and the reason
 it is specified here rather than folded silently into compose.
