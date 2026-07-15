@@ -102,7 +102,7 @@ async fn invoke_redrive(
 ) -> FunctionResult<Option<Value>, ErrorBody> {
     let function = engine
         .functions
-        .get("iii::queue::redrive")
+        .get(iii::protocol::DEFAULT_NAMESPACE, "iii::queue::redrive")
         .expect("iii::queue::redrive should be registered");
     function
         .call_handler(None, json!({ "queue": queue_name }), None)

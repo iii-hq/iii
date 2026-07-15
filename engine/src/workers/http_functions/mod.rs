@@ -123,7 +123,9 @@ impl HttpFunctionsWorker {
 
     pub async fn unregister_http_function(&self, function_path: &str) -> Result<(), ErrorBody> {
         self.http_functions.remove(function_path);
-        self.engine.functions.remove(function_path);
+        self.engine
+            .functions
+            .remove(crate::protocol::DEFAULT_NAMESPACE, function_path);
         Ok(())
     }
 
@@ -376,7 +378,12 @@ mod tests {
             .await
             .expect("register http function");
         assert!(module.http_functions.contains_key("remote.echo"));
-        assert!(engine.functions.get("remote.echo").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "remote.echo")
+                .is_some()
+        );
 
         let result = engine
             .call("remote.echo", json!({ "hello": "world" }))
@@ -401,7 +408,12 @@ mod tests {
             .await
             .expect("unregister http function");
         assert!(!module.http_functions.contains_key("remote.echo"));
-        assert!(engine.functions.get("remote.echo").is_none());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "remote.echo")
+                .is_none()
+        );
 
         server.abort();
     }

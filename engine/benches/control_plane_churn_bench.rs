@@ -68,7 +68,10 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
                             );
                         }
                         for idx in 0..size {
-                            registry.remove(&format!("bench.function.{idx}"));
+                            registry.remove(
+                                iii::protocol::DEFAULT_NAMESPACE,
+                                &format!("bench.function.{idx}"),
+                            );
                         }
                     },
                     BatchSize::LargeInput,

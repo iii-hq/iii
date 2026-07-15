@@ -427,15 +427,30 @@ mod tests {
         let engine = module.engine.clone();
 
         module.register_functions(engine.clone());
-        assert!(engine.functions.get("bridge.invoke").is_some());
-        assert!(engine.functions.get("bridge.invoke_async").is_some());
-        assert!(engine.functions.get("forward.echo").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "bridge.invoke")
+                .is_some()
+        );
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "bridge.invoke_async")
+                .is_some()
+        );
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "forward.echo")
+                .is_some()
+        );
 
         module.initialize().await.expect("initialize bridge client");
 
         let invoke = engine
             .functions
-            .get("bridge.invoke")
+            .get(crate::protocol::DEFAULT_NAMESPACE, "bridge.invoke")
             .expect("bridge.invoke handler");
         match invoke
             .clone()
@@ -466,7 +481,7 @@ mod tests {
 
         let invoke_async = engine
             .functions
-            .get("bridge.invoke_async")
+            .get(crate::protocol::DEFAULT_NAMESPACE, "bridge.invoke_async")
             .expect("bridge.invoke_async handler");
         match invoke_async
             .call_handler(
@@ -485,7 +500,7 @@ mod tests {
 
         let forward = engine
             .functions
-            .get("forward.echo")
+            .get(crate::protocol::DEFAULT_NAMESPACE, "forward.echo")
             .expect("forward handler");
         match forward
             .call_handler(None, json!({ "value": 1 }), None)
@@ -534,7 +549,7 @@ mod tests {
 
         let invoke_async = engine
             .functions
-            .get("bridge.invoke_async")
+            .get(crate::protocol::DEFAULT_NAMESPACE, "bridge.invoke_async")
             .expect("bridge.invoke_async handler");
         match invoke_async
             .call_handler(None, json!({ "bad": true }), None)

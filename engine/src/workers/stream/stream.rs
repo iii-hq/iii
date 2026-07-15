@@ -407,7 +407,10 @@ impl Worker for StreamWorker {
         if self
             .engine
             .functions
-            .get(super::configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                super::configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -989,7 +992,10 @@ impl StreamWorker {
         let data = input.data;
 
         let function_id = format!("stream::set({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<StreamSetResult> = match function {
@@ -1076,7 +1082,10 @@ impl StreamWorker {
         let item_id = input.item_id;
 
         let function_id = format!("stream::get({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         crate::workers::telemetry::collector::track_stream_get();
@@ -1126,7 +1135,10 @@ impl StreamWorker {
         let group_id = input.group_id;
         let item_id = input.item_id;
         let function_id = format!("stream::delete({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<StreamDeleteResult> = match function {
@@ -1202,7 +1214,10 @@ impl StreamWorker {
         let group_id = input.group_id;
 
         let function_id = format!("stream::list({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         crate::workers::telemetry::collector::track_stream_list();
@@ -1254,7 +1269,10 @@ impl StreamWorker {
         let stream_name = input.stream_name;
 
         let function_id = format!("stream::list_groups({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         match function {
@@ -1368,7 +1386,10 @@ impl StreamWorker {
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
         let function_id = format!("stream::update({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<StreamUpdateResult> = match function {

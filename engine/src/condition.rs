@@ -65,8 +65,9 @@ mod tests {
             self.result.lock().unwrap().clone()
         }
         async fn register_trigger_type(&self, _tt: crate::trigger::TriggerType) {}
-        fn register_function(
+        fn register_function_ns(
             &self,
+            _namespace: &str,
             _req: crate::engine::RegisterFunctionRequest,
             _handler: Box<dyn crate::function::FunctionHandler + Send + Sync>,
         ) {

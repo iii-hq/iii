@@ -339,7 +339,10 @@ impl Worker for CronWorker {
         if self
             .engine
             .functions
-            .get(super::configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                super::configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);

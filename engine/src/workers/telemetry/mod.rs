@@ -522,10 +522,12 @@ fn hashed_worker_names(worker_names: &[String]) -> Vec<String> {
 // }
 
 fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
+    // Keys are `(namespace, function_id)`; telemetry reports bare ids, and the
+    // same id in two namespaces is two distinct registrations.
     let functions: Vec<String> = engine
         .functions
         .iter()
-        .map(|entry| entry.key().clone())
+        .map(|entry| entry.key().1.clone())
         .filter(|id| !is_iii_builtin_function_id(id))
         .collect();
 
@@ -1155,12 +1157,15 @@ mod tests {
                 metadata: None,
             },
         );
-        engine
-            .service_registry
-            .insert_service(Service::new("svc".to_string(), "svc-1".to_string()));
-        engine
-            .service_registry
-            .insert_function_to_service(&"svc".to_string(), "worker");
+        engine.service_registry.insert_service(
+            crate::protocol::DEFAULT_NAMESPACE,
+            Service::new("svc".to_string(), "svc-1".to_string()),
+        );
+        engine.service_registry.insert_function_to_service(
+            crate::protocol::DEFAULT_NAMESPACE,
+            "svc",
+            "worker",
+        );
     }
 
     struct NoopRegistrator;

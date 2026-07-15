@@ -414,6 +414,11 @@ pub struct RegisterWorkerInput {
     /// Isolation backend used to run the worker (e.g. `vm`, `oci`).
     #[serde(default)]
     pub isolation: Option<String>,
+    /// Routing namespace this worker registers its functions into. Absent means
+    /// [`crate::protocol::DEFAULT_NAMESPACE`], so workers built against older
+    /// SDKs keep registering unchanged.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -758,7 +763,10 @@ impl EngineFunctionsWorker {
     /// The per-id RBAC visibility check `functions_info` applies for
     /// session-scoped callers (single and batch paths share it).
     fn session_allows_function(&self, session: &Arc<Session>, function_id: &str) -> bool {
-        let function = self.engine.functions.get(function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, function_id);
         crate::workers::worker::rbac_config::is_function_allowed(
             function_id,
             session.config.rbac.clone(),
@@ -781,7 +789,10 @@ impl EngineFunctionsWorker {
         index: &HashMap<String, String>,
         function_id: &str,
     ) -> Option<FunctionDetail> {
-        let function = self.engine.functions.get(function_id)?;
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, function_id)?;
         let worker_name = Self::worker_name_for_function_id(index, function_id);
 
         Some(FunctionDetail {
@@ -926,7 +937,10 @@ impl EngineFunctionsWorker {
         let mut functions: Vec<FunctionSummary> = function_ids
             .into_iter()
             .filter_map(|fn_id| {
-                let func = self.engine.functions.get(&fn_id)?;
+                let func = self
+                    .engine
+                    .functions
+                    .get(crate::protocol::DEFAULT_NAMESPACE, &fn_id)?;
                 Some(FunctionSummary {
                     function_id: fn_id.clone(),
                     worker_name: Self::worker_name_for_function_id(&index, &fn_id),
@@ -1027,6 +1041,7 @@ impl EngineFunctionsWorker {
             input.telemetry,
             input.pid,
             input.isolation,
+            input.namespace,
         );
         crate::workers::telemetry::collector::track_worker_registered();
     }
@@ -1255,7 +1270,10 @@ impl EngineFunctionsWorker {
 
         if let Some(session) = &session {
             functions.retain(|f| {
-                let function = self.engine.functions.get(&f.function_id);
+                let function = self
+                    .engine
+                    .functions
+                    .get(crate::protocol::DEFAULT_NAMESPACE, &f.function_id);
                 crate::workers::worker::rbac_config::is_function_allowed(
                     &f.function_id,
                     session.config.rbac.clone(),
@@ -1802,6 +1820,27 @@ mod tests {
         assert!(input.telemetry.is_none());
     }
 
+    /// Wire compatibility: a payload from an SDK that predates namespaces has
+    /// no `namespace` key and must still deserialize.
+    #[test]
+    fn register_worker_input_without_namespace_deserializes() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000"
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert!(input.namespace.is_none());
+    }
+
+    #[test]
+    fn register_worker_input_accepts_namespace() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+            "namespace": "orders"
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(input.namespace.as_deref(), Some("orders"));
+    }
+
     #[test]
     fn empty_input_deserializes() {
         let json = serde_json::json!({});
@@ -2021,6 +2060,7 @@ mod tests {
             telemetry: None,
             pid: None,
             isolation: None,
+            namespace: None,
         };
         module.register_worker_metadata(input).await;
     }
@@ -2043,6 +2083,7 @@ mod tests {
             telemetry: None,
             pid: None,
             isolation: Some("libkrun".to_string()),
+            namespace: None,
         };
 
         module.register_worker_metadata(input).await;
@@ -2054,6 +2095,68 @@ mod tests {
         assert_eq!(workers[0].name.as_deref(), Some("my-worker"));
         assert_eq!(workers[0].os.as_deref(), Some("darwin"));
         assert_eq!(workers[0].isolation.as_deref(), Some("libkrun"));
+    }
+
+    fn register_worker_input_with_namespace(
+        worker_id: &str,
+        namespace: Option<String>,
+    ) -> RegisterWorkerInput {
+        RegisterWorkerInput {
+            worker_id: worker_id.to_string(),
+            runtime: Some("node".to_string()),
+            version: None,
+            name: None,
+            description: None,
+            os: None,
+            telemetry: None,
+            pid: None,
+            isolation: None,
+            namespace,
+        }
+    }
+
+    /// End-to-end wire compatibility: a worker that sends no namespace over
+    /// `engine::workers::register` lands in `DEFAULT_NAMESPACE` on the
+    /// connection.
+    #[tokio::test]
+    async fn register_worker_metadata_without_namespace_lands_in_default() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker);
+
+        module
+            .register_worker_metadata(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                None,
+            ))
+            .await;
+
+        assert_eq!(
+            engine.worker_registry.get_namespace(&worker_uuid),
+            crate::protocol::DEFAULT_NAMESPACE
+        );
+    }
+
+    /// The namespace a worker declares reaches its connection, which is what
+    /// every registration and cleanup path resolves against.
+    #[tokio::test]
+    async fn register_worker_metadata_stores_declared_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker);
+
+        module
+            .register_worker_metadata(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                Some("orders".to_string()),
+            ))
+            .await;
+
+        assert_eq!(engine.worker_registry.get_namespace(&worker_uuid), "orders");
     }
 
     // ── TriggerRegistrator implementation tests ─────────────────────────
@@ -3235,6 +3338,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let tt = crate::trigger::TriggerType::new(
             "worker",
@@ -3323,6 +3427,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let tt = crate::trigger::TriggerType::new(
             "foreign",
@@ -3387,6 +3492,7 @@ mod tests {
             Some("linux".to_string()),
             None,
             Some(4242),
+            None,
             None,
         );
 
@@ -3499,6 +3605,7 @@ mod tests {
                 telemetry: None,
                 pid: None,
                 isolation: None,
+                namespace: None,
             })
             .await;
         assert!(matches!(
