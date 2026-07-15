@@ -288,8 +288,23 @@ pub trait EngineTrait: Send + Sync {
         request: RegisterFunctionRequest,
         handler: Box<dyn FunctionHandler + Send + Sync>,
     );
-    fn register_function_handler<H, F>(
+    /// Registers into [`DEFAULT_NAMESPACE`]. Convenience for builtin /
+    /// engine-internal workers that are not namespace-aware.
+    fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
+    where
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
+    {
+        self.register_function_handler_ns(DEFAULT_NAMESPACE, request, handler);
+    }
+    /// Registers into `namespace`. Callers acting on behalf of a WS connection
+    /// (today: `HttpFunctionsWorker`, for HTTP-invocation registrations) must
+    /// use this with the connection's effective namespace, so the function lands
+    /// where the service registry, the unregister path and `resolve_function`
+    /// all agree to look for it.
+    fn register_function_handler_ns<H, F>(
         &self,
+        namespace: &str,
         request: RegisterFunctionRequest,
         handler: Handler<H>,
     ) where
@@ -512,11 +527,53 @@ impl Engine {
             .remove_function_from_services(namespace, function_id);
     }
 
+    /// Resolves `function_id` in exactly one namespace.
+    ///
+    /// `Some(ns)` resolves only in `ns`; `None` resolves only in
+    /// [`DEFAULT_NAMESPACE`]. There is deliberately no best-fit and no
+    /// cross-namespace search, and the *caller's* namespace never participates:
+    /// a worker in `analytics` that invokes without naming a namespace gets the
+    /// `default` function, not its own. Namespaces are a routing dimension the
+    /// caller addresses explicitly, not an ambient scope — anything else makes
+    /// the target of an invoke depend on who is asking, which is exactly the
+    /// ambiguity namespaces exist to remove.
+    ///
+    /// A miss keeps the pre-existing `function_not_found` code (SDKs and the
+    /// `Enqueue` provider-missing DX branch both match on it) and only enriches
+    /// the message with the namespaces where the id *does* exist.
+    fn resolve_function(
+        &self,
+        requested_ns: Option<&str>,
+        function_id: &str,
+    ) -> Result<Function, ErrorBody> {
+        let namespace = requested_ns.unwrap_or(DEFAULT_NAMESPACE);
+        if let Some(function) = self.functions.get(namespace, function_id) {
+            return Ok(function);
+        }
+
+        let known = self.functions.namespaces_for(function_id);
+        let hint = if known.is_empty() {
+            String::new()
+        } else {
+            format!(" It is registered in namespace(s): {}.", known.join(", "))
+        };
+        Err(ErrorBody {
+            code: "function_not_found".into(),
+            message: format!(
+                "Function {} not found in namespace {}.{}",
+                function_id, namespace, hint
+            ),
+            stacktrace: None,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn remember_invocation(
         &self,
         worker: &WorkerConnection,
         invocation_id: Option<Uuid>,
         function_id: &str,
+        namespace: Option<&str>,
         body: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
@@ -526,45 +583,46 @@ impl Engine {
             worker_id = %worker.id,
             invocation_id = %crate::logging::display_option(&invocation_id),
             function_id = function_id,
+            namespace = %namespace.unwrap_or(DEFAULT_NAMESPACE),
             traceparent = %crate::logging::display_option(&traceparent),
             baggage = %crate::logging::display_option(&baggage),
             "Remembering invocation for worker"
         );
 
-        // TODO(namespace-routing): resolve against the caller's namespace once
-        // `Message::InvokeFunction.namespace` is threaded through routing.
-        if let Some(function) = self.functions.get(DEFAULT_NAMESPACE, function_id) {
-            if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
-                crate::workers::telemetry::collector::notify_user_function_invoked();
+        match self.resolve_function(namespace, function_id) {
+            Ok(function) => {
+                if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
+                    crate::workers::telemetry::collector::notify_user_function_invoked();
+                }
+
+                if let Some(invocation_id) = invocation_id {
+                    worker.add_invocation(invocation_id).await;
+                }
+
+                let session = worker.session.clone();
+
+                self.invocations
+                    .handle_invocation(
+                        invocation_id,
+                        Some(worker.id),
+                        function_id.to_string(),
+                        body,
+                        function,
+                        traceparent,
+                        baggage,
+                        session,
+                        metadata,
+                    )
+                    .await
             }
-
-            if let Some(invocation_id) = invocation_id {
-                worker.add_invocation(invocation_id).await;
+            Err(err) => {
+                tracing::error!(
+                    function_id = %function_id,
+                    namespace = %namespace.unwrap_or(DEFAULT_NAMESPACE),
+                    "Function not found"
+                );
+                Ok(Err(err))
             }
-
-            let session = worker.session.clone();
-
-            self.invocations
-                .handle_invocation(
-                    invocation_id,
-                    Some(worker.id),
-                    function_id.to_string(),
-                    body,
-                    function,
-                    traceparent,
-                    baggage,
-                    session,
-                    metadata,
-                )
-                .await
-        } else {
-            tracing::error!(function_id = %function_id, "Function not found");
-
-            Ok(Err(ErrorBody {
-                code: "function_not_found".into(),
-                message: format!("Function {} not found", function_id),
-                stacktrace: None,
-            }))
         }
     }
 
@@ -573,10 +631,15 @@ impl Engine {
     /// When `invocation_id` is `Some`, an `InvocationResult` is sent back
     /// to the caller once the function completes.  When `None`, the call
     /// is fire-and-forget (used by the `Void` action).
+    ///
+    /// `namespace` is the namespace the *invoke message* asked for, not the
+    /// caller connection's — see [`Self::resolve_function`].
+    #[allow(clippy::too_many_arguments)]
     fn spawn_invoke_function(
         &self,
         worker: &WorkerConnection,
         function_id: &str,
+        namespace: Option<&str>,
         data: &Value,
         traceparent: &Option<String>,
         baggage: &Option<String>,
@@ -595,6 +658,7 @@ impl Engine {
         let engine = self.clone();
         let worker = worker.clone();
         let function_id = function_id.to_string();
+        let namespace = namespace.map(str::to_string);
 
         // Add caller's worker_id to invocation data as standard metadata
         let data = {
@@ -622,6 +686,7 @@ impl Engine {
                         &worker,
                         invocation_id,
                         &function_id,
+                        namespace.as_deref(),
                         data,
                         downstream_traceparent.clone(),
                         downstream_baggage.clone(),
@@ -1193,12 +1258,13 @@ impl Engine {
                 baggage,
                 action,
                 metadata,
-                namespace: _,
+                namespace,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
                     invocation_id = %crate::logging::display_option(invocation_id),
                     function_id = %function_id,
+                    namespace = %crate::logging::display_option(namespace),
                     traceparent = %crate::logging::display_option(traceparent),
                     baggage = %crate::logging::display_option(baggage),
                     action = ?action,
@@ -1207,7 +1273,15 @@ impl Engine {
                 );
 
                 if let Some(session) = &worker.session {
-                    let function = self.functions.get(DEFAULT_NAMESPACE, function_id);
+                    // Resolve strictly in the requested namespace first: RBAC is
+                    // still keyed by function id, but the `Function` it inspects
+                    // must be the one this invoke would actually reach. A miss
+                    // hands RBAC `None` exactly as before, so a forbidden id that
+                    // does not exist still answers FORBIDDEN rather than leaking
+                    // its absence.
+                    let function = self
+                        .resolve_function(namespace.as_deref(), function_id)
+                        .ok();
                     if !crate::workers::worker::rbac_config::is_function_allowed(
                         function_id,
                         session.config.rbac.clone(),
@@ -1422,6 +1496,7 @@ impl Engine {
                         self.spawn_invoke_function(
                             worker,
                             function_id,
+                            namespace.as_deref(),
                             data,
                             traceparent,
                             baggage,
@@ -1436,6 +1511,7 @@ impl Engine {
                         self.spawn_invoke_function(
                             worker,
                             function_id,
+                            namespace.as_deref(),
                             data,
                             traceparent,
                             baggage,
@@ -1493,6 +1569,10 @@ impl Engine {
                 );
 
                 let resolved_id = resolve_registration_id(worker, id);
+                // Resolved once: every removal below must target the same
+                // namespace the registration was written to, and re-reading it
+                // per call site invites the two halves to drift apart.
+                let namespace = self.connection_namespace(worker);
                 if worker.has_external_function_id(&resolved_id).await {
                     worker.remove_external_function_id(&resolved_id).await;
                     // Only tear down the engine-global registration if this
@@ -1503,7 +1583,7 @@ impl Engine {
                     // same bug shape `cleanup_worker` guards against.
                     if !self.release_external_function_if_owner(
                         &worker.id,
-                        &self.connection_namespace(worker),
+                        &namespace,
                         &resolved_id,
                     ) {
                         tracing::debug!(
@@ -1517,7 +1597,10 @@ impl Engine {
                         .service_registry
                         .get_service::<HttpFunctionsWorker>("http_functions")
                     {
-                        match http_module.unregister_http_function(&resolved_id).await {
+                        match http_module
+                            .unregister_http_function(&namespace, &resolved_id)
+                            .await
+                        {
                             Ok(()) => {
                                 tracing::debug!(
                                     worker_id = %worker.id,
@@ -1534,24 +1617,15 @@ impl Engine {
                                 );
                             }
                         }
-                        self.service_registry.remove_function_from_services(
-                            &self.connection_namespace(worker),
-                            &resolved_id,
-                        );
+                        self.service_registry
+                            .remove_function_from_services(&namespace, &resolved_id);
                     } else {
-                        self.remove_function_from_engine(
-                            &self.connection_namespace(worker),
-                            &resolved_id,
-                        );
+                        self.remove_function_from_engine(&namespace, &resolved_id);
                     }
                 } else {
                     worker.remove_function_id(&resolved_id).await;
                     // Same ownership gate as the external branch above.
-                    if !self.release_function_if_owner(
-                        &worker.id,
-                        &self.connection_namespace(worker),
-                        &resolved_id,
-                    ) {
+                    if !self.release_function_if_owner(&worker.id, &namespace, &resolved_id) {
                         tracing::debug!(
                             worker_id = %worker.id,
                             function_id = %id,
@@ -1695,7 +1769,7 @@ impl Engine {
                         updated_at: None,
                     };
 
-                    if let Err(err) = http_module.register_http_function(config).await {
+                    if let Err(err) = http_module.register_http_function(&namespace, config).await {
                         tracing::error!(
                             worker_id = %worker.id,
                             function_id = %reg_id,
@@ -2064,7 +2138,10 @@ impl Engine {
                 }
                 match &http_module {
                     Some(module) => {
-                        if let Err(err) = module.unregister_http_function(function_id).await {
+                        if let Err(err) = module
+                            .unregister_http_function(&namespace, function_id)
+                            .await
+                        {
                             tracing::error!(
                                 worker_id = %worker.id,
                                 function_id = %function_id,
@@ -2374,8 +2451,12 @@ impl EngineTrait for Engine {
         crate::workers::telemetry::collector::track_function_registered();
     }
 
-    fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
-    where
+    fn register_function_handler_ns<H, F>(
+        &self,
+        namespace: &str,
+        request: RegisterFunctionRequest,
+        handler: Handler<H>,
+    ) where
         H: HandlerFn<F>,
         F: Future<Output = HandlerOutput> + Send + 'static,
     {
@@ -2394,7 +2475,7 @@ impl EngineTrait for Engine {
         };
 
         self.functions
-            .register_function(request.function_id, function);
+            .register_function_ns(namespace, request.function_id, function);
     }
 
     fn register_function_handler_with_session<H, F>(
@@ -2557,11 +2638,10 @@ mod tests {
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
 
-        assert!(
-            http_module
-                .http_functions()
-                .contains_key("external.my_lambda")
-        );
+        assert!(http_module.http_functions().contains_key(&(
+            DEFAULT_NAMESPACE.to_string(),
+            "external.my_lambda".to_string()
+        )));
 
         engine.cleanup_worker(&worker).await;
 
@@ -2572,11 +2652,10 @@ mod tests {
                 .is_none()
         );
 
-        assert!(
-            !http_module
-                .http_functions()
-                .contains_key("external.my_lambda")
-        );
+        assert!(!http_module.http_functions().contains_key(&(
+            DEFAULT_NAMESPACE.to_string(),
+            "external.my_lambda".to_string()
+        )));
     }
 
     // ---------------------------------------------------------------
@@ -2920,9 +2999,10 @@ mod tests {
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
         assert!(
-            http_module
-                .http_functions()
-                .contains_key("test-prefix::my_lambda"),
+            http_module.http_functions().contains_key(&(
+                DEFAULT_NAMESPACE.to_string(),
+                "test-prefix::my_lambda".to_string()
+            )),
             "http module should have the prefixed registration"
         );
 
@@ -2941,9 +3021,10 @@ mod tests {
             "worker must no longer track the prefixed external id"
         );
         assert!(
-            !http_module
-                .http_functions()
-                .contains_key("test-prefix::my_lambda"),
+            !http_module.http_functions().contains_key(&(
+                DEFAULT_NAMESPACE.to_string(),
+                "test-prefix::my_lambda".to_string()
+            )),
             "http module must drop the prefixed registration on unregister (iii-hq/iii#1508)"
         );
     }
@@ -3759,6 +3840,7 @@ mod tests {
                 &worker,
                 Some(uuid::Uuid::new_v4()),
                 "nonexistent_func",
+                None,
                 serde_json::json!({}),
                 None,
                 None,
@@ -4899,7 +4981,11 @@ mod tests {
             .service_registry
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
-        assert!(http_module.http_functions().contains_key("external.shared"));
+        assert!(
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "external.shared".to_string()))
+        );
 
         // As in the regular-function variant: the old connection is gone from
         // the registry but its cleanup has not fired yet, which is what makes
@@ -4924,7 +5010,9 @@ mod tests {
             "cleanup of old worker must not remove an external function still owned by a live new worker"
         );
         assert!(
-            http_module.http_functions().contains_key("external.shared"),
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "external.shared".to_string())),
             "http_functions module must still have the entry the new worker owns"
         );
         assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
@@ -5021,26 +5109,23 @@ mod tests {
                 .get(crate::protocol::DEFAULT_NAMESPACE, "ws_fn")
                 .is_some()
         );
-        assert!(
-            engine
-                .function_owners
-                .contains_key(&(crate::protocol::DEFAULT_NAMESPACE.to_string(), "ws_fn".to_string()))
-        );
+        assert!(engine.function_owners.contains_key(&(
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "ws_fn".to_string()
+        )));
 
         // Also seed an external-owned id directly — we don't run the
         // HTTP registration path here (it requires the http_functions
         // service), so we populate `external_function_owners` by hand
         // to exercise the `|| external_function_owners` leg of the
         // skip branch.
-        engine
-            .external_function_owners
-            .insert(
-                (
-                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
-                    "ext_fn".to_string(),
-                ),
-                ws_worker.id,
-            );
+        engine.external_function_owners.insert(
+            (
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "ext_fn".to_string(),
+            ),
+            ws_worker.id,
+        );
 
         // Simulate an in-process worker teardown whose scope captured
         // both ids. Before the ownership check was added, this loop
@@ -5059,9 +5144,10 @@ mod tests {
             "WS-owned non-invocation function must survive in-process teardown"
         );
         assert!(
-            engine
-                .function_owners
-                .contains_key(&(crate::protocol::DEFAULT_NAMESPACE.to_string(), "ws_fn".to_string())),
+            engine.function_owners.contains_key(&(
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "ws_fn".to_string()
+            )),
             "ownership entry for the WS worker must be intact"
         );
         assert!(
@@ -5345,7 +5431,11 @@ mod tests {
             .service_registry
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
-        assert!(http_module.http_functions().contains_key("ext_hijacked"));
+        assert!(
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "ext_hijacked".to_string()))
+        );
 
         // A's stale UnregisterFunction — A still has the id in its local
         // external_function_ids set. Before the gate, the teardown would
@@ -5369,7 +5459,9 @@ mod tests {
             "B's live engine.functions entry must survive A's stale UnregisterFunction"
         );
         assert!(
-            http_module.http_functions().contains_key("ext_hijacked"),
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "ext_hijacked".to_string())),
             "B's http_module entry must survive A's stale UnregisterFunction"
         );
         assert_eq!(

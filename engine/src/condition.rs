@@ -72,8 +72,9 @@ mod tests {
             _handler: Box<dyn crate::function::FunctionHandler + Send + Sync>,
         ) {
         }
-        fn register_function_handler<H, F>(
+        fn register_function_handler_ns<H, F>(
             &self,
+            _namespace: &str,
             _req: crate::engine::RegisterFunctionRequest,
             _handler: crate::engine::Handler<H>,
         ) where
