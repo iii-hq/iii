@@ -30,7 +30,7 @@ import type {
   Trigger,
   TriggerTypeRef,
 } from './types'
-import { isChannelRef } from './utils'
+import { isChannelRef, randomUUID } from './utils'
 
 /** @internal */
 export type TelemetryOptions = {
@@ -179,7 +179,7 @@ class Sdk implements ISdk {
    * ```
    */
   registerTrigger = (trigger: Omit<RegisterTriggerMessage, 'message_type' | 'id'>): Trigger => {
-    const id = crypto.randomUUID()
+    const id = randomUUID()
     const fullTrigger: RegisterTriggerMessage = {
       ...trigger,
       id,
@@ -333,7 +333,7 @@ class Sdk implements ISdk {
       return undefined as TOutput
     }
 
-    const invocation_id = crypto.randomUUID()
+    const invocation_id = randomUUID()
 
     return new Promise<TOutput>((resolve, reject) => {
       const timeout = setTimeout(() => {
