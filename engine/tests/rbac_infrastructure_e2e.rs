@@ -107,6 +107,7 @@ async fn expect_result(
         baggage: None,
         action: None,
         metadata: None,
+        namespace: None,
     };
     engine
         .router_msg(worker, &msg)

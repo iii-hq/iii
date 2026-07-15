@@ -13,6 +13,15 @@ use uuid::Uuid;
 
 use crate::invocation::{auth::HttpAuthConfig, method::HttpMethod};
 
+/// Namespace used when a message carries no explicit `namespace`.
+pub const DEFAULT_NAMESPACE: &str = "default";
+
+/// Returns the effective namespace for an optional wire-level namespace,
+/// falling back to [`DEFAULT_NAMESPACE`] when absent.
+pub fn effective_namespace(ns: &Option<String>) -> &str {
+    ns.as_deref().unwrap_or(DEFAULT_NAMESPACE)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationRef {
     pub url: String,
@@ -100,6 +109,11 @@ pub enum Message {
         /// wire-compatible.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Target namespace for routing. Optional and additive: absent means
+        /// [`DEFAULT_NAMESPACE`], so older peers that don't send it stay
+        /// wire-compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     InvocationResult {
         invocation_id: Uuid,
@@ -128,6 +142,12 @@ pub enum Message {
     Pong,
     WorkerRegistered {
         worker_id: String,
+    },
+    RegistrationRejected {
+        code: String,
+        namespace: String,
+        worker_name: String,
+        owner_worker_id: String,
     },
 }
 
@@ -218,7 +238,7 @@ pub struct StreamChannelRef {
 
 #[cfg(test)]
 mod tests {
-    use super::{Message, TriggerAction};
+    use super::{DEFAULT_NAMESPACE, Message, TriggerAction, effective_namespace};
     use crate::{
         invocation::{auth::HttpAuthConfig, method::HttpMethod},
         protocol::HttpInvocationRef,
@@ -392,6 +412,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
         let json = serde_json::to_string(&msg).expect("message should serialize");
 
@@ -424,6 +445,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: Some(serde_json::json!({ "session_id": "s_1" })),
+            namespace: None,
         };
         let json = serde_json::to_string(&msg).expect("serialize");
         assert!(json.contains("\"metadata\""));
@@ -444,5 +466,52 @@ mod tests {
             Message::InvokeFunction { metadata, .. } => assert_eq!(metadata, None),
             _ => panic!("expected InvokeFunction"),
         }
+    }
+
+    #[test]
+    fn effective_namespace_defaults_when_absent() {
+        assert_eq!(effective_namespace(&None), DEFAULT_NAMESPACE);
+        assert_eq!(effective_namespace(&Some("orders".to_string())), "orders");
+    }
+
+    #[test]
+    fn invoke_function_serializes_namespace_when_set() {
+        let msg = Message::InvokeFunction {
+            invocation_id: None,
+            function_id: "state::get".into(),
+            data: serde_json::json!({}),
+            traceparent: None,
+            baggage: None,
+            action: None,
+            metadata: None,
+            namespace: Some("orders".into()),
+        };
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains(r#""namespace":"orders""#));
+    }
+
+    #[test]
+    fn invoke_function_omits_namespace_when_absent_and_parses_legacy() {
+        // legacy wire (sem namespace) continua parseando
+        let json = r#"{"type":"invokefunction","invocation_id":null,"function_id":"state::get","data":{}}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        match msg {
+            Message::InvokeFunction { namespace, .. } => assert!(namespace.is_none()),
+            _ => panic!("expected InvokeFunction"),
+        }
+    }
+
+    #[test]
+    fn registration_rejected_roundtrip() {
+        let msg = Message::RegistrationRejected {
+            code: "WORKER_NAMESPACE_CONFLICT".into(),
+            namespace: "orders".into(),
+            worker_name: "state".into(),
+            owner_worker_id: "abc".into(),
+        };
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains(r#""code":"WORKER_NAMESPACE_CONFLICT""#));
+        let back: Message = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, Message::RegistrationRejected { .. }));
     }
 }

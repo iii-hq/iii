@@ -44,6 +44,7 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 baggage: Some("userId=alice".to_string()),
                 action: None,
                 metadata: None,
+                namespace: None,
             },
         ),
         (

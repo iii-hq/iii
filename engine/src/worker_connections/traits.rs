@@ -202,6 +202,7 @@ impl FunctionHandler for WorkerConnection {
                     baggage,
                     action: None,
                     metadata,
+                    namespace: None,
                 }))
                 .await;
 

@@ -906,6 +906,7 @@ impl Engine {
                 baggage,
                 action,
                 metadata,
+                namespace: _,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -1438,6 +1439,11 @@ impl Engine {
             }
             Message::Pong => Ok(()),
             Message::WorkerRegistered { .. } => {
+                // This message is sent from engine to worker, not the other way around
+                // If we receive it here, just ignore it
+                Ok(())
+            }
+            Message::RegistrationRejected { .. } => {
                 // This message is sent from engine to worker, not the other way around
                 // If we receive it here, just ignore it
                 Ok(())
@@ -2587,6 +2593,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -2636,6 +2643,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -2713,6 +2721,7 @@ mod tests {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,
+                    namespace: None,
                 },
             )
             .await
@@ -2775,6 +2784,7 @@ mod tests {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,
+                    namespace: None,
                 },
             )
             .await
@@ -2827,6 +2837,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -2876,6 +2887,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
