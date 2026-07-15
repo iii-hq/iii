@@ -9,13 +9,18 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use iii_network::{
-    ConnectionTracker, DnsInterceptor, PollLoopConfig, PollLoopState, SharedState, SmoltcpBackend,
-    SmoltcpDevice, UdpRelay, create_interface, poll_iteration,
+    ConnectionTracker, DnsInterceptor, FrameAction, NewConnection, PollLoopConfig, PollLoopState,
+    SharedState, SmoltcpBackend, SmoltcpDevice, UdpRelay, classify_frame, create_interface,
+    poll_iteration,
 };
 use msb_krun::backends::net::NetBackend;
-use smoltcp::iface::SocketSet;
-use smoltcp::phy::Device;
+use smoltcp::iface::{PollResult, SocketSet};
+use smoltcp::phy::{ChecksumCapabilities, Device};
 use smoltcp::time::Instant;
+use smoltcp::wire::{
+    ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
+    EthernetRepr, IpProtocol, Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr, TcpSeqNumber,
+};
 
 /// Test 3: Network connectivity — frame flow from backend through shared state to device.
 ///
@@ -295,6 +300,39 @@ async fn poll_iteration_multiple_syns() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// MOT-3966: wake-pipe reliability soak
+// ---------------------------------------------------------------------------
+
+/// The rx_wake pipe must never accumulate bytes across a long-lived VM's
+/// traffic: the msb_krun NetWorker epolls it EDGE_TRIGGERED and never reads
+/// it, so an ever-filling pipe eventually swallows every wake (16 KiB budget
+/// on macOS) and host→guest delivery dies permanently.
+#[test]
+fn soak_wake_pipe_survives_100k_frames() {
+    let shared = Arc::new(SharedState::new(64));
+    let mut backend = SmoltcpBackend::new(shared.clone());
+    let mut buf = vec![0u8; 256];
+    let mut delivered = 0u32;
+
+    for i in 0..100_000u32 {
+        shared.rx_ring.push(i.to_be_bytes().to_vec()).unwrap();
+        shared.rx_wake.wake();
+        // Mimic msb_krun's process_rx: loop read_frame until NothingRead.
+        while backend.read_frame(&mut buf).is_ok() {
+            delivered += 1;
+        }
+    }
+
+    assert_eq!(delivered, 100_000);
+
+    // The pipe must end drained, not accumulating toward saturation.
+    let mut b = [0u8; 512];
+    // SAFETY: valid nonblocking pipe read end, local buffer.
+    let n = unsafe { libc::read(shared.rx_wake.as_raw_fd(), b.as_mut_ptr().cast(), b.len()) };
+    assert!(n < 0, "wake pipe accumulated {n} bytes over the soak");
+}
+
 /// Cleanup runs when last_cleanup is old enough.
 #[tokio::test]
 async fn poll_iteration_cleanup_runs_after_interval() {
@@ -312,4 +350,586 @@ async fn poll_iteration_cleanup_runs_after_interval() {
         state.last_cleanup > old_cleanup,
         "last_cleanup should be updated after >= 1s elapsed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// MOT-3966: data-pump correctness tests with a seq-aware in-test TCP guest
+// ---------------------------------------------------------------------------
+
+/// Minimal TCP client living "inside the guest": builds checksummed
+/// Ethernet/IPv4/TCP frames, answers ARP, tracks seq/ack/window, and
+/// collects payload bytes the gateway sends back.
+struct TestGuest {
+    guest_mac: EthernetAddress,
+    gateway_mac: EthernetAddress,
+    guest_ip: Ipv4Addr,
+    gateway_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+    /// Next sequence number we send.
+    seq: u32,
+    /// Next byte we expect from the peer (valid once established).
+    ack: u32,
+    /// Peer's advertised receive window.
+    peer_window: u16,
+    /// Highest ack number the peer has sent (bytes of ours it has).
+    peer_acked: u32,
+    established: bool,
+    peer_fin: bool,
+    received: Vec<u8>,
+}
+
+impl TestGuest {
+    fn new(config: &PollLoopConfig, dst_ip: Ipv4Addr, src_port: u16, dst_port: u16) -> Self {
+        Self {
+            guest_mac: EthernetAddress(config.guest_mac),
+            gateway_mac: EthernetAddress(config.gateway_mac),
+            guest_ip: config.guest_ipv4,
+            gateway_ip: config.gateway_ipv4,
+            dst_ip,
+            src_port,
+            dst_port,
+            seq: 1000,
+            ack: 0,
+            peer_window: 0,
+            peer_acked: 1000,
+            established: false,
+            peer_fin: false,
+            received: Vec::new(),
+        }
+    }
+
+    /// Bytes in flight (sent but not yet acked by the peer).
+    fn in_flight(&self) -> u32 {
+        self.seq.wrapping_sub(self.peer_acked)
+    }
+
+    /// Gratuitous ARP request so smoltcp learns our MAC before replying —
+    /// avoids the SYN-ACK being parked on neighbor resolution.
+    fn arp_announce(&self) -> Vec<u8> {
+        let arp = ArpRepr::EthernetIpv4 {
+            operation: ArpOperation::Request,
+            source_hardware_addr: self.guest_mac,
+            source_protocol_addr: self.guest_ip,
+            target_hardware_addr: EthernetAddress::BROADCAST,
+            target_protocol_addr: self.gateway_ip,
+        };
+        let eth = EthernetRepr {
+            src_addr: self.guest_mac,
+            dst_addr: EthernetAddress::BROADCAST,
+            ethertype: EthernetProtocol::Arp,
+        };
+        let mut buf = vec![0u8; 14 + arp.buffer_len()];
+        eth.emit(&mut EthernetFrame::new_unchecked(&mut buf));
+        arp.emit(&mut ArpPacket::new_unchecked(&mut buf[14..]));
+        buf
+    }
+
+    fn tcp_frame(&mut self, control: TcpControl, payload: &[u8]) -> Vec<u8> {
+        let tcp = TcpRepr {
+            src_port: self.src_port,
+            dst_port: self.dst_port,
+            control,
+            seq_number: TcpSeqNumber(self.seq as i32),
+            ack_number: self.established.then_some(TcpSeqNumber(self.ack as i32)),
+            window_len: 65535,
+            window_scale: None,
+            max_seg_size: (control == TcpControl::Syn).then_some(1460),
+            sack_permitted: false,
+            sack_ranges: [None, None, None],
+            timestamp: None,
+            payload,
+        };
+        let ip = Ipv4Repr {
+            src_addr: self.guest_ip,
+            dst_addr: self.dst_ip,
+            next_header: IpProtocol::Tcp,
+            payload_len: tcp.buffer_len(),
+            hop_limit: 64,
+        };
+        let eth = EthernetRepr {
+            src_addr: self.guest_mac,
+            dst_addr: self.gateway_mac,
+            ethertype: EthernetProtocol::Ipv4,
+        };
+
+        let mut buf = vec![0u8; 14 + ip.buffer_len() + tcp.buffer_len()];
+        let caps = ChecksumCapabilities::default();
+        eth.emit(&mut EthernetFrame::new_unchecked(&mut buf));
+        ip.emit(&mut Ipv4Packet::new_unchecked(&mut buf[14..]), &caps);
+        tcp.emit(
+            &mut TcpPacket::new_unchecked(&mut buf[14 + ip.buffer_len()..]),
+            &self.guest_ip.into(),
+            &self.dst_ip.into(),
+            &caps,
+        );
+
+        self.seq = self
+            .seq
+            .wrapping_add(payload.len() as u32)
+            .wrapping_add(matches!(control, TcpControl::Syn | TcpControl::Fin) as u32);
+        buf
+    }
+
+    fn syn(&mut self) -> Vec<u8> {
+        self.tcp_frame(TcpControl::Syn, &[])
+    }
+
+    fn data(&mut self, payload: &[u8]) -> Vec<u8> {
+        self.tcp_frame(TcpControl::Psh, payload)
+    }
+
+    fn fin(&mut self) -> Vec<u8> {
+        self.tcp_frame(TcpControl::Fin, &[])
+    }
+
+    fn pure_ack(&mut self) -> Vec<u8> {
+        self.tcp_frame(TcpControl::None, &[])
+    }
+
+    /// Consume every frame the gateway emitted; update seq/ack/window state,
+    /// collect payloads, and queue ARP replies / pure ACKs back into tx_ring.
+    fn drain_egress(&mut self, shared: &SharedState) {
+        let mut ack_due = false;
+
+        while let Some(frame) = shared.rx_ring.pop() {
+            let Ok(eth) = EthernetFrame::new_checked(&frame[..]) else {
+                continue;
+            };
+            match eth.ethertype() {
+                EthernetProtocol::Arp => {
+                    let Ok(arp) = ArpPacket::new_checked(eth.payload()) else {
+                        continue;
+                    };
+                    if arp.operation() == ArpOperation::Request {
+                        let reply = ArpRepr::EthernetIpv4 {
+                            operation: ArpOperation::Reply,
+                            source_hardware_addr: self.guest_mac,
+                            source_protocol_addr: self.guest_ip,
+                            target_hardware_addr: self.gateway_mac,
+                            target_protocol_addr: self.gateway_ip,
+                        };
+                        let eth_out = EthernetRepr {
+                            src_addr: self.guest_mac,
+                            dst_addr: self.gateway_mac,
+                            ethertype: EthernetProtocol::Arp,
+                        };
+                        let mut buf = vec![0u8; 14 + reply.buffer_len()];
+                        eth_out.emit(&mut EthernetFrame::new_unchecked(&mut buf));
+                        reply.emit(&mut ArpPacket::new_unchecked(&mut buf[14..]));
+                        shared.tx_ring.push(buf).unwrap();
+                    }
+                }
+                EthernetProtocol::Ipv4 => {
+                    let Ok(ip) = Ipv4Packet::new_checked(eth.payload()) else {
+                        continue;
+                    };
+                    if ip.next_header() != IpProtocol::Tcp {
+                        continue;
+                    }
+                    let (src_addr, dst_addr) = (ip.src_addr(), ip.dst_addr());
+                    let Ok(tcp_pkt) = TcpPacket::new_checked(ip.payload()) else {
+                        continue;
+                    };
+                    let Ok(tcp) = TcpRepr::parse(
+                        &tcp_pkt,
+                        &src_addr.into(),
+                        &dst_addr.into(),
+                        &ChecksumCapabilities::default(),
+                    ) else {
+                        continue;
+                    };
+                    if tcp.dst_port != self.src_port {
+                        continue;
+                    }
+
+                    assert!(
+                        tcp.control != TcpControl::Rst,
+                        "gateway sent an unexpected RST"
+                    );
+
+                    if let Some(ack) = tcp.ack_number {
+                        self.peer_acked = ack.0 as u32;
+                    }
+                    self.peer_window = tcp.window_len;
+
+                    if tcp.control == TcpControl::Syn {
+                        // SYN-ACK: complete the handshake.
+                        self.ack = (tcp.seq_number.0 as u32).wrapping_add(1);
+                        self.established = true;
+                        ack_due = true;
+                    } else {
+                        if !tcp.payload.is_empty() {
+                            self.received.extend_from_slice(tcp.payload);
+                            self.ack = self.ack.wrapping_add(tcp.payload.len() as u32);
+                            ack_due = true;
+                        }
+                        if tcp.control == TcpControl::Fin {
+                            self.peer_fin = true;
+                            self.ack = self.ack.wrapping_add(1);
+                            ack_due = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if ack_due {
+            let ack = self.pure_ack();
+            shared.tx_ring.push(ack).unwrap();
+        }
+    }
+}
+
+/// Monotonic smoltcp clock for the proxy-less poll helper.
+fn test_now() -> Instant {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    Instant::from_millis(
+        EPOCH
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_millis() as i64,
+    )
+}
+
+/// One poll-loop pass that does everything `poll_iteration` does for TCP
+/// EXCEPT spawning real proxy tasks — new connections are returned to the
+/// caller, which acts as the proxy (deterministic backpressure control).
+fn poll_no_proxy(state: &mut PollLoopState) -> Vec<NewConnection> {
+    let now = test_now();
+
+    while let Some(frame) = state.device.stage_next_frame() {
+        if let FrameAction::TcpSyn { src, dst } = classify_frame(frame) {
+            if !state.conn_tracker.has_socket_for(&src, &dst) {
+                state
+                    .conn_tracker
+                    .create_tcp_socket(src, dst, &mut state.sockets);
+            }
+        }
+        state
+            .iface
+            .poll_ingress_single(now, &mut state.device, &mut state.sockets);
+    }
+
+    while !matches!(
+        state
+            .iface
+            .poll_egress(now, &mut state.device, &mut state.sockets),
+        PollResult::None
+    ) {}
+
+    state.conn_tracker.relay_data(&mut state.sockets);
+    let new = state.conn_tracker.take_new_connections(&mut state.sockets);
+
+    while !matches!(
+        state
+            .iface
+            .poll_egress(now, &mut state.device, &mut state.sockets),
+        PollResult::None
+    ) {}
+
+    new
+}
+
+/// S1 (MOT-3966): a full `to_proxy` channel must NOT lose bytes. Pre-fix,
+/// `relay_data` dequeued from the socket (already ACKed to the guest) and
+/// dropped the chunk when `try_send` failed — a permanent hole in the
+/// stream. Post-fix the bytes stay in the socket buffer and the window
+/// closes; everything is delivered once the channel drains.
+#[tokio::test]
+async fn relay_backpressure_loses_no_bytes() {
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+
+    let dst_ip = Ipv4Addr::new(93, 184, 216, 34);
+    let mut guest = TestGuest::new(&config, dst_ip, 41000, 9999);
+
+    // ARP + handshake.
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    poll_no_proxy(&mut state);
+    let syn = guest.syn();
+    shared.tx_ring.push(syn).unwrap();
+    let mut conn = None;
+    for _ in 0..20 {
+        let mut new = poll_no_proxy(&mut state);
+        guest.drain_egress(&shared);
+        if let Some(c) = new.pop() {
+            conn = Some(c);
+        }
+        if guest.established && conn.is_some() {
+            break;
+        }
+    }
+    let NewConnection {
+        mut from_smoltcp,
+        to_smoltcp: _to_smoltcp,
+        ..
+    } = conn.expect("connection should be established and handed to the proxy");
+
+    // Phase 1: pump data WITHOUT consuming the channel until the advertised
+    // window stays closed (socket buffer full ⇒ channel full: 32 slots).
+    let total: usize = 900 * 1024;
+    let pattern = |i: usize| (i % 251) as u8;
+    let mut sent = 0usize;
+    let mut zero_window_polls = 0u32;
+    let mut safety = 0u32;
+
+    while sent < total && zero_window_polls < 5 {
+        safety += 1;
+        assert!(safety < 20_000, "phase 1 did not converge");
+
+        let window = guest.peer_window as usize;
+        let in_flight = guest.in_flight() as usize;
+        let budget = window.saturating_sub(in_flight);
+        if budget == 0 {
+            poll_no_proxy(&mut state);
+            guest.drain_egress(&shared);
+            if guest.peer_window == 0 && guest.in_flight() == 0 {
+                zero_window_polls += 1;
+            }
+            continue;
+        }
+        zero_window_polls = 0;
+
+        let len = budget.min(1460).min(total - sent);
+        let payload: Vec<u8> = (sent..sent + len).map(pattern).collect();
+        let frame = guest.data(&payload);
+        shared.tx_ring.push(frame).unwrap();
+        sent += len;
+
+        poll_no_proxy(&mut state);
+        guest.drain_egress(&shared);
+    }
+
+    assert!(
+        zero_window_polls >= 5 || sent == total,
+        "expected either sustained zero-window backpressure or full send"
+    );
+
+    // Phase 2: act as the proxy — drain the channel while pumping the rest.
+    let mut delivered: Vec<u8> = Vec::with_capacity(total);
+    let mut idle = 0u32;
+    while delivered.len() < sent || sent < total {
+        while let Ok(chunk) = from_smoltcp.try_recv() {
+            delivered.extend_from_slice(&chunk);
+        }
+
+        if sent < total {
+            let window = guest.peer_window as usize;
+            let in_flight = guest.in_flight() as usize;
+            let budget = window.saturating_sub(in_flight);
+            if budget > 0 {
+                let len = budget.min(1460).min(total - sent);
+                let payload: Vec<u8> = (sent..sent + len).map(pattern).collect();
+                let frame = guest.data(&payload);
+                shared.tx_ring.push(frame).unwrap();
+                sent += len;
+                idle = 0;
+            }
+        }
+
+        poll_no_proxy(&mut state);
+        guest.drain_egress(&shared);
+
+        idle += 1;
+        assert!(
+            idle < 50_000,
+            "phase 2 stalled: {}/{} bytes",
+            delivered.len(),
+            sent
+        );
+    }
+
+    assert_eq!(sent, total);
+    assert_eq!(
+        delivered.len(),
+        total,
+        "bytes were lost in the relay under backpressure"
+    );
+    for (i, &b) in delivered.iter().enumerate() {
+        assert_eq!(b, pattern(i), "stream corrupted at offset {i}");
+    }
+}
+
+/// Poll + let proxy tasks run, until `done` or the deadline expires.
+async fn pump_until(
+    state: &mut PollLoopState,
+    shared: &Arc<SharedState>,
+    config: &PollLoopConfig,
+    handle: &tokio::runtime::Handle,
+    guest: &mut TestGuest,
+    mut done: impl FnMut(&TestGuest, &PollLoopState) -> bool,
+    what: &str,
+) {
+    for _ in 0..2000 {
+        poll_iteration(state, shared, config, handle);
+        guest.drain_egress(shared);
+        if done(guest, state) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    panic!("timed out waiting for: {what}");
+}
+
+/// S2+S3 (MOT-3966): a guest that sends ACK+request+FIN inside ONE poll
+/// batch is first observed past Established (CloseWait). The proxy must
+/// still spawn, deliver the request, propagate the FIN to the server (EOF),
+/// relay the response back, and the tracker entry must be reaped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fast_closing_connection_still_proxied_and_reaped() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut req = Vec::new();
+        // Returns only on EOF — requires the guest FIN to be propagated.
+        sock.read_to_end(&mut req).unwrap();
+        sock.write_all(b"pong").unwrap();
+        req
+    });
+
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+
+    // dst = gateway ⇒ the proxy rewrites to 127.0.0.1:port.
+    let mut guest = TestGuest::new(&config, config.gateway_ipv4, 42000, port);
+
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    poll_iteration(&mut state, &shared, &config, &handle);
+
+    // SYN → SYN-ACK.
+    let syn = guest.syn();
+    shared.tx_ring.push(syn).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.established,
+        "handshake",
+    )
+    .await;
+
+    // Drop the handshake ACK, request, and FIN into ONE batch: the tracker
+    // first sees this socket in CloseWait.
+    let ack = guest.pure_ack();
+    let data = guest.data(b"ping");
+    let fin = guest.fin();
+    shared.tx_ring.push(ack).unwrap();
+    shared.tx_ring.push(data).unwrap();
+    shared.tx_ring.push(fin).unwrap();
+
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.received == b"pong" && g.peer_fin,
+        "response + FIN from the gateway",
+    )
+    .await;
+
+    let req = server.join().unwrap();
+    assert_eq!(req, b"ping", "server must receive the request bytes");
+
+    // The connection must be fully reaped (socket Closed, key released).
+    let src: std::net::SocketAddr = format!("{}:42000", config.guest_ipv4).parse().unwrap();
+    let dst: std::net::SocketAddr = format!("{}:{}", config.gateway_ipv4, port).parse().unwrap();
+    state.last_cleanup = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |_, s| !s.conn_tracker.has_socket_for(&src, &dst),
+        "connection reaped after close",
+    )
+    .await;
+}
+
+/// S3 (MOT-3966): guest half-close on a long-lived connection reaches the
+/// server as EOF while the response path stays open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guest_fin_propagates_as_server_eof() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (eof_tx, eof_rx) = std::sync::mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 4];
+        sock.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping");
+        // Next read must observe EOF once the guest FINs.
+        let n = sock.read(&mut [0u8; 16]).unwrap();
+        assert_eq!(n, 0, "expected EOF from the propagated guest FIN");
+        eof_tx.send(()).unwrap();
+        sock.write_all(b"pong").unwrap();
+    });
+
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+    let mut guest = TestGuest::new(&config, config.gateway_ipv4, 43000, port);
+
+    shared.tx_ring.push(guest.arp_announce()).unwrap();
+    poll_iteration(&mut state, &shared, &config, &handle);
+
+    let syn = guest.syn();
+    shared.tx_ring.push(syn).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.established,
+        "handshake",
+    )
+    .await;
+
+    let data = guest.data(b"ping");
+    shared.tx_ring.push(data).unwrap();
+
+    // Let the request flow, then half-close from the guest.
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.in_flight() == 0,
+        "request acked",
+    )
+    .await;
+    let fin = guest.fin();
+    shared.tx_ring.push(fin).unwrap();
+
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest,
+        |g, _| g.received == b"pong",
+        "response after half-close",
+    )
+    .await;
+
+    eof_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("server never observed EOF — guest FIN was not propagated");
+    server.join().unwrap();
 }

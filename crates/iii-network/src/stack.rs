@@ -268,11 +268,17 @@ pub fn smoltcp_poll_loop(
         poll_iteration(&mut state, &shared, &config, &tokio_handle);
 
         let now = smoltcp_now();
+        // Clamp: `max(1)` — smoltcp reports `PollAt::Now` while the device is
+        // full (rx_ring backed up), which would busy-spin this thread at 100%
+        // CPU; `min(100)` — the relay tick must fire even when a distant timer
+        // (e.g. a TimeWait socket, 10s) is the only pending event, because
+        // nothing wakes this loop when a proxy task frees channel capacity.
         let timeout_ms = state
             .iface
             .poll_delay(now, &state.sockets)
             .map(|d| d.total_millis().min(i32::MAX as u64) as i32)
-            .unwrap_or(100);
+            .unwrap_or(100)
+            .clamp(1, 100);
 
         // SAFETY: poll_fds is a valid array of pollfd structs with valid fds.
         unsafe {

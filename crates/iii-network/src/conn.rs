@@ -39,10 +39,14 @@ pub struct ConnectionTracker {
 struct Connection {
     src: SocketAddr,
     dst: SocketAddr,
-    to_proxy: mpsc::Sender<Bytes>,
+    /// `None` once the guest's FIN has been drained — dropping the sender is
+    /// how EOF propagates to the proxy task (its `recv()` yields `None`).
+    to_proxy: Option<mpsc::Sender<Bytes>>,
     from_proxy: mpsc::Receiver<Bytes>,
     proxy_channels: Option<ProxyChannels>,
     proxy_spawned: bool,
+    /// Set when `from_proxy` disconnects — the proxy task has exited.
+    proxy_gone: bool,
     write_buf: Option<(Bytes, usize)>,
     close_attempts: u16,
 }
@@ -118,13 +122,14 @@ impl ConnectionTracker {
             Connection {
                 src,
                 dst,
-                to_proxy: to_proxy_tx,
+                to_proxy: Some(to_proxy_tx),
                 from_proxy: from_proxy_rx,
                 proxy_channels: Some(ProxyChannels {
                     from_smoltcp: to_proxy_rx,
                     to_smoltcp: from_proxy_tx,
                 }),
                 proxy_spawned: false,
+                proxy_gone: false,
                 write_buf: None,
                 close_attempts: 0,
             },
@@ -148,7 +153,14 @@ impl ConnectionTracker {
 
             let socket = sockets.get_mut::<tcp::Socket>(handle);
 
-            if conn.to_proxy.is_closed() {
+            // Proxy task gone: it died (host connect/IO failure) or finished
+            // after a propagated guest FIN. Flush remaining proxy→guest bytes,
+            // then close; abort if the guest never drains us.
+            let proxy_dead = conn
+                .to_proxy
+                .as_ref()
+                .map_or(conn.proxy_gone, |tx| tx.is_closed());
+            if proxy_dead {
                 write_proxy_data(socket, conn);
                 if conn.write_buf.is_none() {
                     socket.close();
@@ -161,15 +173,28 @@ impl ConnectionTracker {
                 continue;
             }
 
-            while socket.can_recv() {
-                match socket.recv_slice(&mut relay_buf) {
-                    Ok(n) if n > 0 => {
-                        let data = Bytes::copy_from_slice(&relay_buf[..n]);
-                        if conn.to_proxy.try_send(data).is_err() {
-                            break;
-                        }
+            if let Some(to_proxy) = &conn.to_proxy {
+                while socket.can_recv() {
+                    // Reserve channel capacity BEFORE consuming: recv_slice
+                    // dequeues bytes already ACKed to the guest, so dropping
+                    // them on a full channel puts a permanent hole in the
+                    // stream. On Full, leave them buffered — the shrinking
+                    // TCP window backpressures the guest instead.
+                    let Ok(permit) = to_proxy.try_reserve() else {
+                        break;
+                    };
+                    match socket.recv_slice(&mut relay_buf) {
+                        Ok(n) if n > 0 => permit.send(Bytes::copy_from_slice(&relay_buf[..n])),
+                        _ => break,
                     }
-                    _ => break,
+                }
+
+                // Guest FIN fully drained (`may_recv` stays true while data
+                // remains buffered): propagate EOF by dropping the sender —
+                // the proxy's `recv()` yields `None` after the queued data
+                // and it half-closes the host side.
+                if !socket.may_recv() {
+                    conn.to_proxy = None;
                 }
             }
 
@@ -187,7 +212,14 @@ impl ConnectionTracker {
             }
 
             let socket = sockets.get::<tcp::Socket>(handle);
-            if socket.state() == tcp::State::Established {
+            // CloseWait too: a guest that sends ACK+data+FIN within one poll
+            // batch is first observed here already past Established. Its
+            // request bytes are still retrievable (`can_recv` is buffer-only)
+            // and `may_send` holds in CloseWait, so the response path works.
+            if matches!(
+                socket.state(),
+                tcp::State::Established | tcp::State::CloseWait
+            ) {
                 conn.proxy_spawned = true;
 
                 if let Some(channels) = conn.proxy_channels.take() {
@@ -371,7 +403,11 @@ fn write_proxy_data(socket: &mut tcp::Socket<'_>, conn: &mut Connection) {
                     conn.write_buf = Some((data, 0));
                 }
             }
-            Err(_) => break,
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                conn.proxy_gone = true;
+                break;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => break,
         }
     }
 }
