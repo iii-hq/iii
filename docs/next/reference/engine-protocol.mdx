@@ -16,7 +16,7 @@ type: "reference"
 
 <Note>
   Observability introspection (traces, logs, metrics, sampling rules, alerts, rollups) is owned
-  end-to-end by the iii-observability worker.
+  end-to-end by the observability worker.
 </Note>
 
 ## Connection ports
@@ -28,7 +28,7 @@ The engine binds three ports of its own and runs alongside one more from the obs
 | `3111`  | engine             | REST API.                                                     |
 | `3112`  | engine             | Stream API (WebSocket; consumer-side stream subscriptions).   |
 | `49134` | engine             | SDK WebSocket; this is what `iii_sdk::register_worker` opens. |
-| `9464`  | `iii-observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |
+| `9464`  | `observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |
 
 The console UI runs on `3113` and is launched separately by `iii console`.
 
@@ -99,7 +99,7 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
 ```
 
 `config` is the per-trigger-type configuration; the shape is defined by whatever worker advertised
-that `trigger_type` (e.g. `iii-http` for `http` triggers). The engine responds with a
+that `trigger_type` (e.g. `http` for `http` triggers). The engine responds with a
 `TriggerRegistrationResult` carrying an optional `error: ErrorBody`.
 
 ## `RegisterTriggerType`
@@ -190,7 +190,7 @@ call and surfaces this code to the caller), `function_not_found`, `function_not_
 | ---------------------------------------- | -------------------------------------------------------- |
 | omitted / `null`                         | Synchronous; the worker replies with `InvocationResult`. |
 | `{ "type": "void" }`                     | Fire-and-forget; no `invocation_id`, no reply.           |
-| `{ "type": "enqueue", "queue": "math" }` | Route through the named queue (provided by `iii-queue`). |
+| `{ "type": "enqueue", "queue": "math" }` | Route through the named queue (provided by `queue`). |
 
 ## Invocation lifecycle
 

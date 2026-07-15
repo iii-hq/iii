@@ -1,12 +1,12 @@
 ---
 title: "Ch. 5: Stream live clicks"
 description:
-  "Push clicks to subscribers in real time with a dedicated click-streamer worker and iii-stream."
+  "Push clicks to subscribers in real time with a dedicated click-streamer worker and stream."
 owner: "devrel"
 type: "tutorial"
 ---
 
-`iii-stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
+`stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
 like a live feed of clicks for a dashboard. A stream is bidirectional (subscribers can send messages
 back as well as receive them), but here you only need to broadcast clicks outward. You'll move the
 live-broadcast concern into its own `click-streamer` worker so the `link` worker stays focused on
@@ -14,12 +14,12 @@ links.
 
 ## Add the workers
 
-`iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
+`stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
 worker to manage the streaming, so scaffold it the same way you scaffolded `link` in Chapter 1, and
 `analytics` in Chapter 4:
 
 ```bash
-iii worker add iii-stream
+iii worker add stream
 iii worker init click-streamer --language typescript
 ```
 
@@ -27,7 +27,7 @@ iii worker init click-streamer --language typescript
 
 We'll continue to keep `link` decoupled by having it announce that a click happened, and
 `click-streamer` reacts by pushing it onto the live feed. A live counter can tolerate the rare
-dropped event, so a regular `iii-pubsub` event is the right tool here.
+dropped event, so a regular `pubsub` event is the right tool here.
 
 ### Add a `link.clicked` event to the `link` worker
 

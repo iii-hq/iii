@@ -9,7 +9,7 @@ type: "how-to"
 
 <Note>
   The console is the visual UI for iii systems. It lists workers, functions, and triggers, and shows
-  traces, logs, and metrics from the iii-observability worker. For scripting or agent integration,
+  traces, logs, and metrics from the observability worker. For scripting or agent integration,
   call worker functions directly.
 </Note>
 
@@ -128,7 +128,7 @@ time, duration, or service. The selected span's detail panel includes its name, 
 status, IDs, tags, logs, errors, and baggage.
 
 <Info title="Observability worker required">
-  Trace collection requires the iii-observability worker with traces enabled. The Traces page reads
+  Trace collection requires the observability worker with traces enabled. The Traces page reads
   local in-memory trace storage, so configure traces with `exporter: memory` or `exporter: both`.
   Use `exporter: both` when you also export traces to an external OTLP collector.
 </Info>
@@ -145,7 +145,7 @@ trace ID on each row is clickable: it pivots the view to show only logs from tha
 lets you jump to the corresponding entry on the [Traces page](#traces-page).
 
 <Info title="Observability worker required">
-  Log collection requires the iii-observability worker with logs enabled. Use `logs_exporter:
+  Log collection requires the observability worker with logs enabled. Use `logs_exporter:
   memory` or `logs_exporter: both` when you want logs visible in the console; `both` also exports
   them to the configured OTLP collector.
 </Info>

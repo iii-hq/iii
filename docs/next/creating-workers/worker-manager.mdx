@@ -1,22 +1,22 @@
 ---
 title: "Access Control"
 description:
-  "Accept untrusted worker connections through RBAC-gated listeners served by the iii-worker-manager
+  "Accept untrusted worker connections through RBAC-gated listeners served by the worker-manager
   worker."
 owner: "devrel"
 type: "how-to"
 ---
 
-The `iii-worker-manager` worker owns the connections between workers and the engine. It always runs
+The `worker-manager` worker owns the connections between workers and the engine. It always runs
 a **trusted listener** (on `49134` by default) that your own workers connect to through `III_URL`.
 To let an **untrusted** client connect, a browser tab, a third-party process, anything you do not
 run yourself, you add an **RBAC-gated listener**: a second port where every connection is
 authenticated by a function you write and every call is checked against an allowlist.
 
 <Note>
-  `iii-worker-manager` is always running, so there is nothing to add; you configure it directly in
+  `worker-manager` is always running, so there is nothing to add; you configure it directly in
   `config.yaml`. This page is a quick tour of RBAC listeners. For the full configuration see the
-  [iii-worker-manager worker docs](https://workers.iii.dev/workers/iii-worker-manager).
+  [worker-manager worker docs](https://workers.iii.dev/workers/worker-manager).
 </Note>
 
 ## Trusted and RBAC listeners
@@ -27,7 +27,7 @@ worker. An RBAC listener runs on its own port, gates every connection through an
 and restricts each session to an allowlist of functions.
 
 <Warning>
-  Declaring **any** `iii-worker-manager` in `config.yaml` replaces the default `49134`
+  Declaring **any** `worker-manager` in `config.yaml` replaces the default `49134`
   trusted listener. You must also declare the trusted `49134` listener yourself alongside
   the RBAC one, otherwise your own workers lose the port they connect through.
 </Warning>
@@ -39,11 +39,11 @@ one on a separate port (here `3110`, for browsers and other untrusted connection
 workers:
   # ...
   # Trusted listener for your own workers. Replaces the default 49134.
-  - name: iii-worker-manager
+  - name: worker-manager
     config:
       port: 49134
   # Browser-facing, RBAC-gated listener on a separate port.
-  - name: iii-worker-manager
+  - name: worker-manager
     config:
       host: 127.0.0.1
       port: 3110
@@ -76,7 +76,7 @@ fields you choose, for example `{ public: true }`, `{ tier: "premium" }`, or `{ 
 <Warning>
   All access should be gated system-side. You should never rely on an untrusted worker to define
   what they can or can't have access to. For example `metadata.public = true` in the above example
-  is defined and managed by the trusted `iii-worker-manager` and is not part of a payload sent by
+  is defined and managed by the trusted `worker-manager` and is not part of a payload sent by
   the worker.
 </Warning>
 
@@ -89,8 +89,8 @@ to reject the connection.**
 <Note>
   The auth function can grant multiple authorizations so a single function can be used to authorize
   multiple types of workers. In practice this is a balance between authorizing similar workers and
-  separating dissimilar workers to separate `iii-worker-manager` definitions. You can define any
-  number of `iii-worker-manager`s in iii's configuration.
+  separating dissimilar workers to separate `worker-manager` definitions. You can define any
+  number of `worker-manager`s in iii's configuration.
 </Note>
 
 <Tabs>
@@ -216,7 +216,7 @@ through the RBAC port. It receives the call plus the session `context` from the 
 acts as a proxy: forward the (optionally rewritten) call and return its result, or throw to reject.
 
 ```yaml config.yaml
-- name: iii-worker-manager
+- name: worker-manager
   config:
     port: 3110
     middleware_function_id: auth::middleware

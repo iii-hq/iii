@@ -267,7 +267,7 @@ worker.trigger(TriggerRequest {
     timeout_ms: None,
 }).await?;
 
-// Enqueue (the queue must be declared in the iii-queue worker's
+// Enqueue (the queue must be declared in the queue worker's
 // queue_configs)
 let receipt = worker.trigger(TriggerRequest {
     function_id: "iii::durable::publish".to_string(),

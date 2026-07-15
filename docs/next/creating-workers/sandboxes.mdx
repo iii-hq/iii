@@ -6,15 +6,15 @@ type: "how-to"
 ---
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
-for agent tool-calls, REPLs, and one-off jobs. They are provided by the `iii-sandbox` worker:
+for agent tool-calls, REPLs, and one-off jobs. They are provided by the `sandbox` worker:
 
 ```bash
-iii worker add iii-sandbox
+iii worker add sandbox
 ```
 
 <Note>
   This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
-  [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
+  [sandbox worker docs](https://workers.iii.dev/workers/sandbox).
 </Note>
 
 You drive sandboxes by invoking the worker's `sandbox::*` triggers, the same way you call any

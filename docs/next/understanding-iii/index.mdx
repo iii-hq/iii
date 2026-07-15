@@ -53,7 +53,7 @@ The Quickstart tutorial produces a running system with two Workers connected to 
 1. `caller-worker` is a TypeScript Worker that registers `math::add_two_numbers`, which calls
    `math::add` through the Engine.
 
-By the end of the Quickstart, the system also includes the `iii-state` and `iii-http` Workers, an
+By the end of the Quickstart, the system also includes the `state` and `http` Workers, an
 HTTP Trigger that exposes `math::add_two_numbers` at `POST /math/add-two-numbers`, and a key-value
 scope named `math` holding a `running_total`.
 
@@ -66,8 +66,8 @@ graph TD
 
   Engine <--> Math["math-worker (Python) math::add"]
   Engine <--> Caller["caller-worker (TypeScript) math::add_two_numbers"]
-  Engine <--> State["iii-state"]
-  Engine <--> HttpWorker["iii-http"]
+  Engine <--> State["state"]
+  Engine <--> HttpWorker["http"]
 ```
 
 Every arrow is a WebSocket connection between a Worker and the Engine. There is no direct
@@ -139,8 +139,8 @@ invocations through Triggers.
 </Note>
 
 Trigger types come from connected Workers. A Worker that can source events declares one or more
-trigger types alongside their configuration schemas. The iii-http Worker provides the `http` trigger
-type. The iii-cron Worker provides the `cron` trigger type. The iii-state Worker provides the
+trigger types alongside their configuration schemas. The http Worker provides the `http` trigger
+type. The cron Worker provides the `cron` trigger type. The state Worker provides the
 `state` trigger type. A Trigger of a given type can only be registered while a Worker advertising
 that type is connected, because that Worker is what produces the events that fire it.
 
@@ -173,9 +173,9 @@ result. Synchronous invocations are appropriate when the caller needs the value 
 returns. Fire-and-forget is for side-effect work where the caller does not need to wait.
 
 <Note>
-  Workers can also define their own `TriggerAction`s. The iii-queue Worker provides
+  Workers can also define their own `TriggerAction`s. The queue Worker provides
   `TriggerAction.Enqueue({queue})`, which routes the invocation through a named queue with retries.
-  See iii-queue for the queue mechanics.
+  See queue for the queue mechanics.
 </Note>
 
 ### Trigger lifecycle
@@ -198,12 +198,12 @@ The Quickstart tutorial invokes Functions with Triggers in three different ways:
    Both paths work against any registered Function without registering an explicit Trigger; every
    `registerFunction()` inherently gets a Trigger that can be invoked with these two methods.
 
-1. The HTTP Trigger added by the `iii-http` Worker is done through `worker.registerTrigger()` and is
+1. The HTTP Trigger added by the `http` Worker is done through `worker.registerTrigger()` and is
    the common reactive way to implement Triggers.
 
-   In this example `iii-http` owns the HTTP socket; when a request arrives at
+   In this example `http` owns the HTTP socket; when a request arrives at
    `POST /math/add-two-numbers` the following happens:
-   1. `iii-http` looks up the matching Trigger and fires a request targeting the `math::add`
+   1. `http` looks up the matching Trigger and fires a request targeting the `math::add`
       Function.
    1. The Engine receives the request and routes the invocation to `caller-worker`.
    1. Finally the response flows back the same way. The `math::add` Function never sees an HTTP
