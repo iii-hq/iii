@@ -22,6 +22,21 @@ pub fn effective_namespace(ns: &Option<String>) -> &str {
     ns.as_deref().unwrap_or(DEFAULT_NAMESPACE)
 }
 
+/// [`Message::RegistrationRejected`] code: another live worker already runs
+/// under this name in this namespace.
+///
+/// Defined, but **not emitted yet** — deferred to Task 9.5, after the SDKs learn
+/// to handle `RegistrationRejected`. Rejecting a worker means closing its
+/// connection, and today's SDKs would simply reconnect and be rejected again,
+/// forever. See `.superpowers/sdd/task-4-report.md` for the `hostname:pid`
+/// naming problem this code has to solve before it can ship.
+pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
+
+/// [`Message::RegistrationRejected`] code: another live worker in this
+/// namespace already exports this function id. Only that one registration is
+/// refused; the connection stays open.
+pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationRef {
     pub url: String,
