@@ -34,7 +34,7 @@ msb_krun = { version = "0.1.16", features = ["net", "blk"] }
 oci-client = "0.16"
 oci-spec = "0.9"
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 # MDX CLI reference generation for the hidden `gen-cli-docs` subcommand.
 iii-clap-docs = { path = "../iii-clap-docs" }
 colored = "3.0.0"
