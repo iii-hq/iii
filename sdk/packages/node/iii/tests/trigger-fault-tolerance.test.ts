@@ -96,9 +96,9 @@ describe('Trigger fault tolerance (deferred registration)', () => {
   })
 
   it('parks a trigger registered before its type exists and activates it when the provider arrives', async () => {
-    const TRIGGER_TYPE_ID = `test.deferred.node.${RUN}`
-    const CONSUMER_FN = `test.deferred.node.${RUN}.consumer`
-    const FIRE_FN = `test.deferred.node.${RUN}.fire`
+    const TRIGGER_TYPE_ID = `test::deferred-node-${RUN}`
+    const CONSUMER_FN = `test::deferred-node-${RUN}::consumer`
+    const FIRE_FN = `test::deferred-node-${RUN}::fire`
 
     // The engine must not error-ack a deferred registration — the SDK would
     // log it as "[iii] Trigger registration failed".
@@ -134,9 +134,9 @@ describe('Trigger fault tolerance (deferred registration)', () => {
   })
 
   it('re-registers another worker’s trigger after the provider stops and starts again', async () => {
-    const TRIGGER_TYPE_ID = `test.provider-restart.node.${RUN}`
-    const CONSUMER_FN = `test.provider-restart.node.${RUN}.consumer`
-    const FIRE_FN = `test.provider-restart.node.${RUN}.fire`
+    const TRIGGER_TYPE_ID = `test::provider-restart-node-${RUN}`
+    const CONSUMER_FN = `test::provider-restart-node-${RUN}::consumer`
+    const FIRE_FN = `test::provider-restart-node-${RUN}::fire`
 
     let provider = createProvider(TRIGGER_TYPE_ID, FIRE_FN)
     await sleep(300)

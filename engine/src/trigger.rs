@@ -259,7 +259,22 @@ impl TriggerRegistry {
 
         for trigger_type_id in worker_trigger_type_ids {
             tracing::debug!(trigger_type_id = %trigger_type_id, "Removing trigger type");
-            self.trigger_types.remove(&trigger_type_id);
+            // The entry may have been replaced by a new provider between the
+            // snapshot above and now (worker restart: the replacement can
+            // register before the old connection's cleanup runs). Only remove
+            // it if it still belongs to the disconnecting worker — and only
+            // then are its bindings orphaned; a replaced type keeps firing.
+            let removed = self
+                .trigger_types
+                .remove_if(&trigger_type_id, |_, tt| tt.worker_id == Some(*worker_id))
+                .is_some();
+            if !removed {
+                tracing::debug!(
+                    trigger_type_id = %trigger_type_id,
+                    "Trigger type already replaced by another worker; leaving it"
+                );
+                continue;
+            }
             tracing::debug!(trigger_type_id = %trigger_type_id, "Trigger type removed");
 
             // Bindings from other owners that reference the departed type are
@@ -274,6 +289,13 @@ impl TriggerRegistry {
                 .map(|pair| pair.value().clone())
                 .collect();
             for trigger in orphaned {
+                // Park only when this call is the one that removed the
+                // binding: a concurrent owner-disconnect cleanup may have
+                // already reaped it, and parking it anyway would resurrect a
+                // dead worker's binding as a pending intent.
+                if self.triggers.remove(&trigger.id).is_none() {
+                    continue;
+                }
                 tracing::warn!(
                     "{} Trigger {} (type {}, function {}) is disabled: its trigger type was unregistered. It will be re-registered automatically when the trigger type returns.",
                     "[DISABLED]".yellow(),
@@ -281,7 +303,6 @@ impl TriggerRegistry {
                     trigger.trigger_type.purple(),
                     trigger.function_id.purple(),
                 );
-                self.triggers.remove(&trigger.id);
                 self.pending_triggers.insert(trigger.id.clone(), trigger);
             }
         }
@@ -299,6 +320,19 @@ impl TriggerRegistry {
             trigger_type_id.purple()
         );
 
+        // Publish the type BEFORE any replay so every concurrent path
+        // observes the new generation first:
+        //  * a concurrent `register_trigger` that misses the pending drain
+        //    finds the type on its post-park re-check, so an intent can never
+        //    be stranded in pending while the type is available (see
+        //    `register_trigger`);
+        //  * a stale disconnect cleanup of the previous provider now fails
+        //    its ownership check (see `unregister_worker`) instead of parking
+        //    bindings this registration is about to replay — which would
+        //    deliver them twice.
+        self.trigger_types
+            .insert(trigger_type_id.clone(), trigger_type);
+
         let matching_triggers: Vec<Trigger> = self
             .triggers
             .iter()
@@ -306,31 +340,27 @@ impl TriggerRegistry {
             .map(|pair| pair.value().clone())
             .collect();
 
-        for trigger in matching_triggers {
-            let result = trigger_type
-                .registrator
-                .replay_trigger(trigger.clone())
-                .await;
-            if let Err(err) = result {
-                tracing::error!(error = %err, "Error registering trigger");
-            }
-        }
-
-        // Insert the type BEFORE draining pending intents: a concurrent
-        // `register_trigger` that misses the drain then finds the type on its
-        // post-park re-check, so an intent can never be stranded in pending
-        // while the type is available (see `register_trigger`).
-        self.trigger_types
-            .insert(trigger_type_id.clone(), trigger_type);
-
-        let pending: Vec<String> = self
-            .pending_triggers
-            .iter()
-            .filter(|pair| pair.value().trigger_type == trigger_type_id)
-            .map(|pair| pair.key().clone())
-            .collect();
-
+        // Re-fetch instead of using the inserted value: if an even newer
+        // generation replaced the entry in the meantime, replay must route to
+        // that one.
         if let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) {
+            for trigger in matching_triggers {
+                let result = trigger_type
+                    .registrator
+                    .replay_trigger(trigger.clone())
+                    .await;
+                if let Err(err) = result {
+                    tracing::error!(error = %err, "Error registering trigger");
+                }
+            }
+
+            let pending: Vec<String> = self
+                .pending_triggers
+                .iter()
+                .filter(|pair| pair.value().trigger_type == trigger_type_id)
+                .map(|pair| pair.key().clone())
+                .collect();
+
             for trigger_id in pending {
                 // `remove` claims the intent, so a concurrent drain of the
                 // same type cannot activate it twice.
@@ -714,6 +744,79 @@ mod tests {
             .unwrap();
         assert!(removed);
         assert!(!registry.triggers.contains_key("t_durable"));
+    }
+
+    /// Provider restart where the replacement registers concurrently with the
+    /// old connection's cleanup. Whatever the interleave: the replacement
+    /// type entry must survive (ownership-checked removal), the binding must
+    /// never be lost (it ends live or parked, in exactly one bucket), and the
+    /// stale generation must receive nothing after replacement.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stale_cleanup_racing_a_replacement_never_clobbers_or_loses_bindings() {
+        for _ in 0..100 {
+            let registry = Arc::new(TriggerRegistry::new());
+            let old_worker = Uuid::new_v4();
+
+            let a = Arc::new(ControlledRegistrator::new(false, false));
+            registry
+                .register_trigger_type(TriggerType::new(
+                    "evt",
+                    "gen A",
+                    Box::new(a.clone()),
+                    Some(old_worker),
+                ))
+                .await
+                .unwrap();
+
+            let mut binding = make_trigger("t1", "evt");
+            binding.worker_id = Some(Uuid::new_v4());
+            registry.register_trigger(binding).await.unwrap();
+            assert_eq!(a.register_count.load(Ordering::SeqCst), 1);
+
+            let b = Arc::new(ControlledRegistrator::new(false, false));
+            let new_worker = Uuid::new_v4();
+            let replacement =
+                TriggerType::new("evt", "gen B", Box::new(b.clone()), Some(new_worker));
+
+            let cleanup = {
+                let registry = registry.clone();
+                tokio::spawn(async move { registry.unregister_worker(&old_worker).await })
+            };
+            let reregister = {
+                let registry = registry.clone();
+                tokio::spawn(
+                    async move { registry.register_trigger_type(replacement).await.unwrap() },
+                )
+            };
+            let (r1, r2) = tokio::join!(cleanup, reregister);
+            r1.unwrap();
+            r2.unwrap();
+
+            let tt = registry
+                .trigger_types
+                .get("evt")
+                .expect("replacement type survives the stale cleanup");
+            assert_eq!(tt.worker_id, Some(new_worker));
+            drop(tt);
+
+            let live = registry.triggers.contains_key("t1");
+            let parked = registry.pending_triggers.contains_key("t1");
+            assert!(
+                live ^ parked,
+                "binding must end in exactly one bucket (live: {live}, parked: {parked})"
+            );
+            if live {
+                assert!(
+                    b.register_count.load(Ordering::SeqCst) >= 1,
+                    "a live binding was delivered to the replacement generation"
+                );
+            }
+            assert_eq!(
+                a.register_count.load(Ordering::SeqCst),
+                1,
+                "stale generation receives nothing after replacement"
+            );
+        }
     }
 
     #[tokio::test]

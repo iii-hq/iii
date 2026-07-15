@@ -727,6 +727,18 @@ impl Engine {
                     trigger_type.call_request_format = Some(fmt.clone());
                 }
 
+                // Sweep intents whose owning worker is gone before the drain
+                // below can replay them. Concurrent disconnect cleanups can
+                // leak a dead worker's intent into `pending_triggers` (the
+                // provider's cleanup parks it after the owner's cleanup
+                // already purged its intents); this is the one moment such a
+                // leak becomes visible, so drop them here rather than deliver
+                // a binding nothing owns.
+                self.trigger_registry.pending_triggers.retain(|_, t| {
+                    t.worker_id
+                        .is_none_or(|id| self.worker_registry.get_worker(&id).is_some())
+                });
+
                 let _ = self
                     .trigger_registry
                     .register_trigger_type(trigger_type)
@@ -3720,6 +3732,9 @@ mod tests {
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
+        // The intent's owner must be a connected worker, or the dead-owner
+        // sweep at type registration reaps it before the drain.
+        engine.worker_registry.register_worker(worker.clone());
 
         // Bad sequencing: the trigger arrives before its type's provider.
         let msg = Message::RegisterTrigger {
@@ -3823,6 +3838,132 @@ mod tests {
         assert!(
             provider_rx.try_recv().is_err(),
             "provider must not receive a dead worker's trigger"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unregistering_a_parked_trigger_prevents_replay_on_type_return() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // Worker A provides trigger type X.
+        let (a_tx, _a_rx) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(a_tx);
+        engine.worker_registry.register_worker(worker_a.clone());
+        let tt_msg = Message::RegisterTriggerType {
+            id: "type_x".to_string(),
+            description: "provided by worker A".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&worker_a, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        // Worker B binds type_x -> b::echo.
+        let (b_tx, _b_rx) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(b_tx);
+        engine.worker_registry.register_worker(worker_b.clone());
+        let reg_msg = Message::RegisterTrigger {
+            id: "trig-b-echo".to_string(),
+            trigger_type: "type_x".to_string(),
+            function_id: "b::echo".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        };
+        engine
+            .router_msg(&worker_b, &reg_msg)
+            .await
+            .expect("RegisterTrigger should succeed at protocol level");
+        assert!(engine.trigger_registry.triggers.contains_key("trig-b-echo"));
+
+        // Worker A disconnects: B's binding is parked, not dropped.
+        engine.cleanup_worker(&worker_a).await;
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-b-echo"),
+            "binding should be parked while its type's provider is away"
+        );
+
+        // B explicitly unregisters the parked binding: dropping the intent
+        // is the whole unregister.
+        let unreg_msg = Message::UnregisterTrigger {
+            id: "trig-b-echo".to_string(),
+            trigger_type: Some("type_x".to_string()),
+        };
+        engine
+            .router_msg(&worker_b, &unreg_msg)
+            .await
+            .expect("UnregisterTrigger should succeed");
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+
+        // Worker A returns with the type: the unregistered binding must not
+        // be resurrected or delivered.
+        let (a2_tx, mut a2_rx) = mpsc::channel::<Outbound>(8);
+        let worker_a2 = WorkerConnection::new(a2_tx);
+        engine.worker_registry.register_worker(worker_a2.clone());
+        engine
+            .router_msg(&worker_a2, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(
+            a2_rx.try_recv().is_err(),
+            "returning provider must not receive an unregistered binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_leaked_dead_owner_pending_intent_is_swept_on_type_registration() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // Simulate the concurrent-disconnect leak: a provider's cleanup can
+        // park another worker's binding after that worker's own cleanup
+        // already purged its intents, leaving an intent owned by a worker
+        // that is no longer connected.
+        let dead_worker = uuid::Uuid::new_v4();
+        engine.trigger_registry.pending_triggers.insert(
+            "trig-leaked".to_string(),
+            crate::trigger::Trigger {
+                id: "trig-leaked".to_string(),
+                trigger_type: "type_x".to_string(),
+                function_id: "b::echo".to_string(),
+                config: serde_json::json!({}),
+                worker_id: Some(dead_worker),
+                metadata: None,
+            },
+        );
+
+        // A provider registers the type: the leaked intent must be swept at
+        // the drain, never delivered as a binding nothing owns.
+        let (provider_tx, mut provider_rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(provider_tx);
+        engine.worker_registry.register_worker(provider.clone());
+        let tt_msg = Message::RegisterTriggerType {
+            id: "type_x".to_string(),
+            description: "arrives after the leak".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&provider, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        assert!(
+            engine.trigger_registry.pending_triggers.is_empty(),
+            "leaked dead-owner intent should be swept"
+        );
+        assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(
+            provider_rx.try_recv().is_err(),
+            "provider must not receive a dead worker's leaked intent"
         );
     }
 
