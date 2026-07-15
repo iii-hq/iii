@@ -163,6 +163,12 @@ impl ConnectionTracker {
             if proxy_dead {
                 write_proxy_data(socket, conn);
                 if conn.write_buf.is_none() {
+                    if !matches!(
+                        socket.state(),
+                        tcp::State::Closed | tcp::State::TimeWait | tcp::State::FinWait2
+                    ) {
+                        tracing::debug!(src = %conn.src, dst = %conn.dst, state = ?socket.state(), "proxy gone; closing socket");
+                    }
                     socket.close();
                 } else {
                     conn.close_attempts += 1;
@@ -220,6 +226,7 @@ impl ConnectionTracker {
                 socket.state(),
                 tcp::State::Established | tcp::State::CloseWait
             ) {
+                tracing::debug!(src = %conn.src, dst = %conn.dst, state = ?socket.state(), "connection ready; spawning proxy");
                 conn.proxy_spawned = true;
 
                 if let Some(channels) = conn.proxy_channels.take() {
@@ -235,6 +242,26 @@ impl ConnectionTracker {
         new
     }
 
+    /// Log one line per tracked connection (state, relay eligibility,
+    /// buffered bytes). Debug-level; the poll loop calls this on its
+    /// cleanup cadence (~1s) so a wedged connection narrates itself.
+    pub fn debug_snapshot(&self, sockets: &mut SocketSet<'_>) {
+        for (&handle, conn) in &self.connections {
+            let socket = sockets.get::<tcp::Socket>(handle);
+            tracing::debug!(
+                src = %conn.src,
+                dst = %conn.dst,
+                state = ?socket.state(),
+                spawned = conn.proxy_spawned,
+                gone = conn.proxy_gone,
+                eof_sent = conn.to_proxy.is_none(),
+                rx_buffered = socket.recv_queue(),
+                tx_buffered = socket.send_queue(),
+                "conn snapshot"
+            );
+        }
+    }
+
     /// Remove closed connections and their sockets.
     ///
     /// Only removes sockets in the `Closed` state. Sockets in `TimeWait`
@@ -244,6 +271,7 @@ impl ConnectionTracker {
         self.connections.retain(|&handle, conn| {
             let socket = sockets.get::<tcp::Socket>(handle);
             if matches!(socket.state(), tcp::State::Closed) {
+                tracing::debug!(src = %conn.src, dst = %conn.dst, "connection reaped");
                 keys.remove(&(conn.src, conn.dst));
                 sockets.remove(handle);
                 false

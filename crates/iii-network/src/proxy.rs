@@ -65,6 +65,7 @@ async fn tcp_proxy_task(
 ) -> io::Result<()> {
     let host_dst = resolve_host_dst(dst, gateway_ipv4);
     let stream = TcpStream::connect(host_dst).await?;
+    tracing::debug!(%dst, %host_dst, "proxy connected");
     let (mut server_rx, mut server_tx) = stream.into_split();
 
     let mut server_buf = vec![0u8; SERVER_READ_BUF_SIZE];

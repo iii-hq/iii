@@ -346,17 +346,18 @@ class III:
             )
             log.info(f"Connected to {self._address}")
             await self._on_connected()
-        except (
-            ConnectionError,
-            OSError,
-            TimeoutError,
-            asyncio.TimeoutError,
-            # Not an OSError: raised when the peer accepts TCP but the WS
-            # upgrade fails/stalls (the MOT-3931 zombie-VM mode). Without it
-            # the connect/reconnect task dies and retrying stops silently.
-            websockets.InvalidHandshake,
-        ) as e:
-            log.warning(f"Connection failed: {e}")
+        except Exception as e:
+            # Catch everything: a connect-time failure must never kill the
+            # reconnect loop. Enumerating exception types here has failed
+            # twice — ConnectionError/OSError missed websockets'
+            # InvalidHandshake (MOT-3931), and that in turn missed
+            # InvalidMessage, raised when the engine-boot listener race
+            # surfaces through iii-network's accept-then-dial as an EOF
+            # between TCP connect and the WS 101 (MOT-3966): the exception
+            # escaped, the connect task died silently, and the worker stayed
+            # a zombie with zero retries. CancelledError is BaseException,
+            # so shutdown cancellation still propagates.
+            log.warning(f"Connection failed: {type(e).__name__}: {e}")
             if self._running:
                 self._schedule_reconnect()
 

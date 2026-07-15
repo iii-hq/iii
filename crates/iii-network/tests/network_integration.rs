@@ -476,6 +476,16 @@ impl TestGuest {
         self.tcp_frame(TcpControl::Syn, &[])
     }
 
+    /// Retransmit the initial SYN with the same ISN, like a kernel SYN
+    /// retry. Only valid before any data has been sent.
+    fn retransmit_syn(&mut self) -> Vec<u8> {
+        let after = self.seq;
+        self.seq = after.wrapping_sub(1);
+        let frame = self.tcp_frame(TcpControl::Syn, &[]);
+        debug_assert_eq!(self.seq, after);
+        frame
+    }
+
     fn data(&mut self, payload: &[u8]) -> Vec<u8> {
         self.tcp_frame(TcpControl::Psh, payload)
     }
@@ -932,4 +942,142 @@ async fn guest_fin_propagates_as_server_eof() {
         .recv_timeout(std::time::Duration::from_secs(1))
         .expect("server never observed EOF — guest FIN was not propagated");
     server.join().unwrap();
+}
+
+/// MOT-3966 first-boot wedge repro: the engine's listener isn't up yet when
+/// the guest first dials, so the proxy dial is REFUSED and the stack closes
+/// the guest connection. The guest then reconnects from the SAME source port
+/// (Linux reuses the ephemeral port for the same destination once the prior
+/// socket is closed). The stale tracker entry pins the (src,dst) key, the
+/// retry SYN is swallowed by the lingering smoltcp socket, and — the field
+/// wedge — once the connection finally establishes, its bytes must still
+/// reach the (now-listening) server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_dial_then_same_port_reconnect_delivers_data() {
+    // Reserve a port with no listener: bind, capture, drop. The first dial
+    // gets ECONNREFUSED, exactly like the engine's listener racing VM spawn.
+    let placeholder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = placeholder.local_addr().unwrap().port();
+    drop(placeholder);
+
+    let shared = Arc::new(SharedState::new(2048));
+    let config = test_config();
+    let handle = tokio::runtime::Handle::current();
+    let mut state = build_state(&shared, &config, &handle);
+
+    const SRC_PORT: u16 = 44100;
+
+    // --- Attempt A: establishes guest-side, proxy dial refused, stack
+    // closes toward the guest, guest completes the close handshake. ---
+    let mut guest_a = TestGuest::new(&config, config.gateway_ipv4, SRC_PORT, port);
+    shared.tx_ring.push(guest_a.arp_announce()).unwrap();
+    poll_iteration(&mut state, &shared, &config, &handle);
+
+    let syn = guest_a.syn();
+    shared.tx_ring.push(syn).unwrap();
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest_a,
+        |g, _| g.established,
+        "attempt A handshake",
+    )
+    .await;
+
+    // Guest ships its request immediately (the WS upgrade in the field).
+    let ack = guest_a.pure_ack();
+    let data = guest_a.data(b"attempt-a upgrade");
+    shared.tx_ring.push(ack).unwrap();
+    shared.tx_ring.push(data).unwrap();
+
+    // Refused dial → proxy dies → relay closes → guest sees FIN.
+    pump_until(
+        &mut state,
+        &shared,
+        &config,
+        &handle,
+        &mut guest_a,
+        |g, _| g.peer_fin,
+        "FIN from refused dial",
+    )
+    .await;
+    // Guest closes too (its FIN), mirroring the app closing on EOF.
+    let fin = guest_a.fin();
+    shared.tx_ring.push(fin).unwrap();
+    poll_iteration(&mut state, &shared, &config, &handle);
+    guest_a.drain_egress(&shared);
+
+    // --- Engine "comes up": bind the real listener now. ---
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let server = std::thread::spawn(move || {
+        use std::io::Read;
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut req = Vec::new();
+        sock.read_to_end(&mut req).unwrap();
+        req
+    });
+
+    // --- Attempt B: same (src,dst) tuple, like Linux port reuse. ---
+    let mut guest_b = TestGuest::new(&config, config.gateway_ipv4, SRC_PORT, port);
+    // Fresh kernel connection: a new (random) ISN, unrelated to attempt A's.
+    guest_b.seq = 900_000;
+    guest_b.peer_acked = 900_000;
+    let syn = guest_b.syn();
+    shared.tx_ring.push(syn).unwrap();
+
+    // Drive with SYN retransmits like a real kernel: the stale entry pins
+    // the tuple while the old socket lingers (TIME-WAIT is 10s in smoltcp),
+    // so keep retrying for up to ~15s of wall time.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut next_retransmit = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while !guest_b.established {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "attempt B never established: retry SYN swallowed forever"
+        );
+        // Force cleanup cadence like the real loop.
+        state.last_cleanup = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        poll_iteration(&mut state, &shared, &config, &handle);
+        guest_b.drain_egress(&shared);
+        if std::time::Instant::now() >= next_retransmit && !guest_b.established {
+            let rt = guest_b.retransmit_syn();
+            shared.tx_ring.push(rt).unwrap();
+            next_retransmit = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // The wedge: these bytes must reach the server.
+    let ack = guest_b.pure_ack();
+    let data = guest_b.data(b"attempt-b upgrade");
+    shared.tx_ring.push(ack).unwrap();
+    shared.tx_ring.push(data).unwrap();
+    let fin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut sent_fin = false;
+    loop {
+        assert!(
+            std::time::Instant::now() < fin_deadline,
+            "attempt B data was never delivered/acked (the MOT-3966 wedge)"
+        );
+        poll_iteration(&mut state, &shared, &config, &handle);
+        guest_b.drain_egress(&shared);
+        if guest_b.in_flight() == 0 && !sent_fin {
+            // Data acked — close so the server's read_to_end returns.
+            let fin = guest_b.fin();
+            shared.tx_ring.push(fin).unwrap();
+            sent_fin = true;
+        }
+        if sent_fin && guest_b.peer_fin {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let req = server.join().unwrap();
+    assert_eq!(
+        req, b"attempt-b upgrade",
+        "server must receive attempt B's bytes"
+    );
 }

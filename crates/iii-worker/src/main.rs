@@ -7,7 +7,7 @@
 use clap::{CommandFactory, FromArgMatches};
 use iii_worker::{Cli, Commands};
 
-/// A `stdout` tracing writer that never reports I/O errors back to the fmt
+/// A `stderr` tracing writer that never reports I/O errors back to the fmt
 /// layer. The fmt layer's sole error path is an `eprintln!`, which PANICS
 /// when stderr is *also* a broken pipe — precisely the engine-death case for
 /// the spawned daemons (`worker-manager-daemon`, `sandbox-daemon`): the engine
@@ -18,23 +18,23 @@ use iii_worker::{Cli, Commands};
 /// (`daemon_exit::redirect_stdio_to_exit_log`) and these same writes land there
 /// as forensics. For one-shot CLI use it just turns a `… | head` EPIPE into a
 /// silent drop instead of a panic — strictly better either way.
-struct ResilientStdout;
+struct ResilientStderr;
 
-impl std::io::Write for ResilientStdout {
+impl std::io::Write for ResilientStderr {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), buf);
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
         Ok(())
     }
 }
 
-impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStdout {
-    type Writer = ResilientStdout;
+impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStderr {
+    type Writer = ResilientStderr;
     fn make_writer(&self) -> Self::Writer {
-        ResilientStdout
+        ResilientStderr
     }
 }
 
@@ -68,7 +68,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_writer(ResilientStdout)
+        .with_writer(ResilientStderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
