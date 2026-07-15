@@ -160,10 +160,6 @@ async fn await_rejection(ws: &mut Client) -> Option<Value> {
     .flatten()
 }
 
-
-
-
-
 /// Two distinct, live workers in one namespace registering the same function
 /// id: the second registration is refused, but the worker keeps its connection
 /// and the incumbent's handler is untouched.
@@ -194,7 +190,9 @@ async fn duplicate_function_id_in_same_namespace_is_rejected_without_closing_the
     // The connection must survive: a refused function is not a fatal error.
     // Ping/Pong round-trips only if the read loop is still running.
     second
-        .send(WsMessage::Text(json!({ "type": "ping" }).to_string().into()))
+        .send(WsMessage::Text(
+            json!({ "type": "ping" }).to_string().into(),
+        ))
         .await
         .expect("connection must still accept frames");
     let pong = tokio::time::timeout(Duration::from_secs(5), async {

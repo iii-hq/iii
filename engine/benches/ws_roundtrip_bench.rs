@@ -4,7 +4,7 @@ use std::{net::TcpListener as StdTcpListener, time::Duration};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use iii::{EngineBuilder, protocol::Message};
+use iii::{EngineBuilder, protocol::Message, protocol::TriggerAction};
 use serde_json::json;
 use tokio::{runtime::Runtime, task::JoinHandle, time, time::sleep};
 use tokio_tungstenite::{
@@ -152,10 +152,14 @@ async fn wait_for_worker_ready(ws_url: &str) {
                 {
                     // Drain WorkerRegistered, then wait for InvocationResult
                     if let Some(Ok(WsMessage::Text(text))) = socket.next().await {
-                        if matches!(
-                            serde_json::from_str::<Message>(&text),
-                            Ok(Message::InvocationResult { .. })
-                        ) {
+                        // Readiness means the probe RESOLVED. A
+                        // `function_not_found` is also an InvocationResult, so
+                        // accepting any result here reports ready while the
+                        // registration is still buffered.
+                        if let Ok(Message::InvocationResult { error, .. }) =
+                            serde_json::from_str::<Message>(&text)
+                            && error.is_none()
+                        {
                             return;
                         }
                     }
@@ -176,6 +180,34 @@ async fn run_service_worker(ws_url: String) {
     let (mut socket, _) = connect_async(&ws_url)
         .await
         .expect("connect service worker websocket");
+
+    // Announce the worker before registering anything. The engine buffers
+    // registrations until a connection's namespace is known, and resolves it
+    // from `engine::workers::register` (or, failing that, only after a 5s
+    // grace). Every real SDK sends this; a bench that skips it spends the
+    // whole grace stuck in `default`.
+    socket
+        .send(WsMessage::Text(
+            serde_json::to_string(&Message::InvokeFunction {
+                invocation_id: None,
+                function_id: "engine::workers::register".to_string(),
+                data: serde_json::json!({
+                    "runtime": "rust",
+                    "version": "bench",
+                    "name": "ws-roundtrip-bench",
+                    "os": "bench",
+                }),
+                traceparent: None,
+                baggage: None,
+                action: Some(TriggerAction::Void),
+                metadata: None,
+                namespace: None,
+            })
+            .expect("serialize workers::register")
+            .into(),
+        ))
+        .await
+        .expect("send workers::register");
 
     // Register the echo function
     socket
