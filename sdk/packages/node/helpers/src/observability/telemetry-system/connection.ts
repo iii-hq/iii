@@ -38,7 +38,8 @@ export class SharedEngineConnection {
     this.state = 'connecting'
 
     try {
-      this.ws = new WebSocket(this.wsUrl)
+      // 10s handshake cap, parity with iii-sdk / Rust SDK (MOT-3857/MOT-3968)
+      this.ws = new WebSocket(this.wsUrl, { handshakeTimeout: 10000 })
 
       this.ws.on('open', () => {
         this.connecting = false
