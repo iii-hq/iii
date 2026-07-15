@@ -45,7 +45,9 @@ async fn handle_managed_add_force_reset_config_clears_overrides() {
         )
         .unwrap();
 
-        // Force with reset_config should clear user overrides and re-apply defaults
+        // Force with reset_config should clear user overrides, leaving a
+        // bare entry (defaults live in Rust and flow through the
+        // configuration worker — they are no longer written into the file)
         let exit_code =
             iii_worker::cli::managed::handle_managed_add("iii-http", false, true, true, false)
                 .await;
@@ -53,8 +55,11 @@ async fn handle_managed_add_force_reset_config_clears_overrides() {
 
         let content = std::fs::read_to_string("config.yaml").unwrap();
         assert!(content.contains("- name: iii-http"));
-        // Builtin defaults should be present
-        assert!(content.contains("default_timeout"));
+        // No config block re-created
+        assert!(
+            !content.contains("default_timeout"),
+            "reset must not re-write builtin defaults, got:\n{content}"
+        );
         // User override should NOT be preserved (reset_config wipes it)
         assert!(!content.contains("custom_key"));
     })

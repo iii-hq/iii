@@ -14,8 +14,8 @@ Think of the engine like a router, it receives requests, routes them to workers,
 ## Engine configuration
 
 The iii engine starts from a `config.yaml` file at your project root. Pass `--config <path>` to
-point at a different file, or `--use-default-config` to start with a default set of workers (handy
-for first-run and scratch work).
+point at a different file. When the file doesn't exist yet, `iii` offers to create it (handy for
+first-run and scratch work) — non-interactive sessions create it without asking.
 
 ```bash
 iii --config config.yaml
@@ -24,8 +24,9 @@ iii --config config.yaml
 ## Configuration file structure
 
 `config.yaml` has a single top-level key, `workers:`, that lists the workers the engine should load.
-Each entry has a `name` (a registry slug or local worker name) and a `config` block whose shape is
-defined by that worker and is read once, as a first-boot seed.
+Each entry has a `name` (a registry slug or local worker name) and, optionally, a `config` block
+whose shape is defined by that worker and is read once, as a first-boot seed. A bare `- name:`
+entry — what `iii worker add` writes — boots the worker with its built-in defaults.
 
 ```yaml
 workers:
@@ -86,6 +87,10 @@ workers:
 
 ## Default configuration
 
-Run `iii --use-default-config` to start the engine with a default set of workers without writing a
-`config.yaml`. Useful for first-run and scratch work. Once you need to customize ports, adapters, or
-the set of workers, switch to a real `config.yaml`.
+Run `iii` in a directory with no `config.yaml` and it offers to create one (in non-interactive
+sessions — containers, CI — it creates the file without asking). The created file starts with an
+**empty** `workers:` list: the engine boots with just its internal services (the WebSocket listener
+SDK workers connect to, the configuration worker, observability), and you opt into everything else
+with `iii worker add <name>` — the engine watches the file and picks new workers up live. Workers
+boot with their built-in defaults; customize ports, adapters, or credentials at runtime through the
+configuration worker, or by adding a `config:` block to an entry by hand.

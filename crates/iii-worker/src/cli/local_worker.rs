@@ -714,20 +714,13 @@ pub async fn handle_local_add(
         return 1;
     }
 
-    // 6. Extract default config from the single manifest doc read in step 3a
-    //     (no re-read — also closes the read-then-write window for `config:`).
-    let config_yaml = manifest_doc
-        .as_ref()
-        .and_then(|doc| doc.get("config").cloned())
-        .and_then(|v| serde_yaml::to_string(&v).ok());
-
-    // 7. Append to config.yaml with worker_path
+    // 6. Append to config.yaml with worker_path. Bare entry — no `config:`
+    //    block: workers own their configuration through the configuration
+    //    worker, so the manifest's `config:` defaults are not copied into
+    //    the project config file (a hand-written block there still wins via
+    //    the append merge).
     let abs_path_str = project_path.to_string_lossy();
-    if let Err(e) = super::config_file::append_worker_with_path(
-        &worker_name,
-        &abs_path_str,
-        config_yaml.as_deref(),
-    ) {
+    if let Err(e) = super::config_file::append_worker_with_path(&worker_name, &abs_path_str, None) {
         eprintln!(
             "{} Failed to update config.yaml: {}\n  \
              Fix: check that config.yaml is writable and valid YAML.",

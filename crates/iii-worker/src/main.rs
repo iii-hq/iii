@@ -118,6 +118,29 @@ async fn async_main() -> anyhow::Result<()> {
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
 
+            // --host: route the add through the target engine's worker::add
+            // trigger. The engine host edits ITS config file and installs
+            // artifacts there — nothing in the CLI's cwd is touched.
+            if let Some(host) = args.host.as_deref() {
+                let adds = args
+                    .worker_names
+                    .iter()
+                    .map(|name| {
+                        (
+                            name.clone(),
+                            AddOptions {
+                                source: remote_source_for_cli(name),
+                                force,
+                                reset_config: args.reset_config,
+                                wait: !no_wait,
+                            },
+                        )
+                    })
+                    .collect();
+                let rc = iii_worker::cli::remote_ops::handle_remote_add(host, adds).await;
+                std::process::exit(rc);
+            }
+
             let total = args.worker_names.len();
             let brief = total > 1;
             let mut fail_count = 0usize;
@@ -213,6 +236,27 @@ async fn async_main() -> anyhow::Result<()> {
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
+
+            // Reinstall is `add --force`; same --host routing as Add.
+            if let Some(host) = args.host.as_deref() {
+                let adds = args
+                    .worker_names
+                    .iter()
+                    .map(|name| {
+                        (
+                            name.clone(),
+                            AddOptions {
+                                source: remote_source_for_cli(name),
+                                force: true,
+                                reset_config: args.reset_config,
+                                wait: false,
+                            },
+                        )
+                    })
+                    .collect();
+                let rc = iii_worker::cli::remote_ops::handle_remote_add(host, adds).await;
+                std::process::exit(rc);
+            }
 
             let mut fail_count = 0usize;
             for name in &args.worker_names {
@@ -633,4 +677,18 @@ fn parse_source_for_cli(input: &str) -> iii_worker::core::WorkerSource {
         None => (input.to_string(), None),
     };
     iii_worker::core::WorkerSource::Registry { name, version }
+}
+
+/// Source for a `--host` add. Same parse as the local path, except relative
+/// local paths are resolved against the CLI's cwd before shipping: the
+/// engine-side daemon resolves paths in ITS working directory, which is the
+/// very mismatch `--host` exists to bridge.
+fn remote_source_for_cli(input: &str) -> iii_worker::core::WorkerSource {
+    let mut source = parse_source_for_cli(input);
+    if let iii_worker::core::WorkerSource::Local { path } = &mut source
+        && let Ok(abs) = std::path::absolute(&*path)
+    {
+        *path = abs;
+    }
+    source
 }

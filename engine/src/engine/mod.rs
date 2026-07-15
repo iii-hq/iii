@@ -235,6 +235,12 @@ pub struct Engine {
     /// ExternalWorkerProcess::spawn` so externally-spawned workers connect
     /// back to the actual configured port, not a hardcoded DEFAULT_PORT.
     worker_manager_port: Arc<std::sync::OnceLock<u16>>,
+    /// Absolute path of the config file this engine was built from, when
+    /// file-backed. Set once by `EngineBuilder::build`. Handed to spawned
+    /// worker processes as `III_CONFIG_PATH` so `iii-worker` reads/edits
+    /// the SAME file the engine watches (a non-default name like
+    /// `config.yml` otherwise silently splits the two).
+    config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
 }
 
 fn resolve_registration_id(worker: &WorkerConnection, id: &str) -> String {
@@ -270,6 +276,7 @@ impl Engine {
             external_function_owners: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
+            config_path: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -290,6 +297,19 @@ impl Engine {
     /// drift mid-lifetime.
     pub fn set_worker_manager_port(&self, port: u16) {
         let _ = self.worker_manager_port.set(port);
+    }
+
+    /// Absolute config file path when the engine is file-backed; `None` for
+    /// programmatic/in-memory configs. See the field doc for why spawned
+    /// workers need it.
+    pub fn config_path(&self) -> Option<&std::path::Path> {
+        self.config_path.get().map(|p| p.as_path())
+    }
+
+    /// Records the config file path. Called once by `EngineBuilder::build`;
+    /// later calls are ignored (OnceLock semantics).
+    pub fn set_config_path(&self, path: std::path::PathBuf) {
+        let _ = self.config_path.set(path);
     }
 
     pub fn upsert_runtime_worker(&self, worker: RuntimeWorkerInfo) {
