@@ -626,7 +626,10 @@ mod daemon_engine_arg_tests {
 
         assert_eq!(sandbox_env, "ws://127.0.0.1:55555");
         assert_eq!(manager_env, "ws://127.0.0.1:55555");
-        assert_eq!(sandbox_flag, "ws://flag:1", "explicit --engine must beat env");
+        assert_eq!(
+            sandbox_flag, "ws://flag:1",
+            "explicit --engine must beat env"
+        );
         assert_eq!(default, "ws://127.0.0.1:49134", "no env, no flag: default");
     }
 }

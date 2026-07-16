@@ -759,8 +759,11 @@ mod tests {
             binary_path: PathBuf::from("/tmp/configured-worker"),
             extra_args: vec![],
         };
-        let module =
-            ExternalWorker::new(info, Some(config.clone()), crate::workers::worker::DEFAULT_PORT);
+        let module = ExternalWorker::new(
+            info,
+            Some(config.clone()),
+            crate::workers::worker::DEFAULT_PORT,
+        );
         assert_eq!(module.config, Some(config));
     }
 
