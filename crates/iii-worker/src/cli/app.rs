@@ -327,7 +327,7 @@ pub struct WatchSourceArgs {
 #[derive(Args, Debug)]
 pub struct WorkerManagerDaemonArgs {
     /// Engine WebSocket URL to connect back to.
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_ENGINE_URL", default_value = "ws://127.0.0.1:49134")]
     pub engine: String,
 
     /// Project root the daemon mutates. Defaults to CWD at start.
@@ -344,7 +344,7 @@ pub struct SandboxDaemonArgs {
     pub config: String,
 
     /// Engine WebSocket URL to connect back to.
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_ENGINE_URL", default_value = "ws://127.0.0.1:49134")]
     pub engine: String,
 }
 
@@ -578,5 +578,58 @@ mod init_parse_tests {
             Commands::Init(args) => assert_eq!(args.template_dir.as_deref(), Some("/tmp/fix")),
             _ => panic!("expected Init variant"),
         }
+    }
+}
+
+#[cfg(test)]
+mod daemon_engine_arg_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn sandbox_engine(argv: &[&str]) -> String {
+        match Cli::try_parse_from(argv).expect("should parse").command {
+            Commands::SandboxDaemon(args) => args.engine,
+            _ => panic!("expected SandboxDaemon variant"),
+        }
+    }
+
+    fn worker_manager_engine(argv: &[&str]) -> String {
+        match Cli::try_parse_from(argv).expect("should parse").command {
+            Commands::WorkerManagerDaemon(args) => args.engine,
+            _ => panic!("expected WorkerManagerDaemon variant"),
+        }
+    }
+
+    /// The engine exports III_ENGINE_URL when spawning builtin daemons
+    /// (engine/src/workers/external.rs); both daemons must honor it so
+    /// they connect back to the spawning engine's actual worker-listener
+    /// port, not the hardcoded default (MOT-3970). Explicit --engine
+    /// still wins (clap precedence: flag > env > default).
+    #[test]
+    #[serial_test::serial]
+    fn daemon_engine_args_honor_env_and_flag_precedence() {
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::set_var("III_ENGINE_URL", "ws://127.0.0.1:55555");
+        }
+        // Capture first, assert after cleanup: a failing assert must not
+        // leak the var into later env-reading tests in this process.
+        let sandbox_env = sandbox_engine(&["iii-worker", "sandbox-daemon"]);
+        let manager_env = worker_manager_engine(&["iii-worker", "worker-manager-daemon"]);
+        let sandbox_flag =
+            sandbox_engine(&["iii-worker", "sandbox-daemon", "--engine", "ws://flag:1"]);
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::remove_var("III_ENGINE_URL");
+        }
+        let default = sandbox_engine(&["iii-worker", "sandbox-daemon"]);
+
+        assert_eq!(sandbox_env, "ws://127.0.0.1:55555");
+        assert_eq!(manager_env, "ws://127.0.0.1:55555");
+        assert_eq!(
+            sandbox_flag, "ws://flag:1",
+            "explicit --engine must beat env"
+        );
+        assert_eq!(default, "ws://127.0.0.1:49134", "no env, no flag: default");
     }
 }

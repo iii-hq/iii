@@ -10,6 +10,9 @@ import {
   EngineFunctions,
   type IIIConnectionState,
   type IIIReconnectionConfig,
+  WS_HANDSHAKE_TIMEOUT_MS,
+  WS_IDLE_TIMEOUT_MS,
+  WS_PING_INTERVAL_MS,
 } from './iii-constants'
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import {
@@ -143,6 +146,8 @@ class Sdk implements IIIClient {
   private workerDescription?: string
   private workerId?: string
   private reconnectTimeout?: NodeJS.Timeout
+  private heartbeatInterval?: NodeJS.Timeout
+  private idleTimeout?: NodeJS.Timeout
   private metricsReportingEnabled: boolean
   private invocationTimeoutMs: number
   private reconnectionConfig: IIIReconnectionConfig
@@ -597,8 +602,10 @@ class Sdk implements IIIClient {
     // Shutdown OpenTelemetry
     await shutdownOtel()
 
-    // Clear reconnection timeout
+    // Clear reconnection timeout and keepalive heartbeat (shutdown never
+    // reaches onSocketClose: listeners are removed before close() below)
     this.clearReconnectTimeout()
+    this.stopHeartbeat()
 
     // Reject all pending invocations
     for (const [_id, invocation] of this.invocations) {
@@ -643,7 +650,10 @@ class Sdk implements IIIClient {
     }
 
     this.setConnectionState('connecting')
-    this.ws = new WebSocket(this.address, { headers: this.options?.headers })
+    this.ws = new WebSocket(this.address, {
+      headers: this.options?.headers,
+      handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS,
+    })
     this.ws.on('open', this.onSocketOpen.bind(this))
     this.ws.on('close', this.onSocketClose.bind(this))
     this.ws.on('error', this.onSocketError.bind(this))
@@ -653,6 +663,33 @@ class Sdk implements IIIClient {
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = undefined
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat()
+    // Dedicated deadline, refresh()ed on every inbound frame, so it fires
+    // exactly WS_IDLE_TIMEOUT_MS after the last frame instead of on the next
+    // ping tick (which could add up to a full WS_PING_INTERVAL_MS of delay).
+    this.idleTimeout = setTimeout(() => {
+      this.logError(`No inbound data for ${WS_IDLE_TIMEOUT_MS}ms, terminating connection to force reconnect`)
+      this.ws?.terminate() // 'close' fires -> onSocketClose stops the heartbeat and schedules reconnect
+    }, WS_IDLE_TIMEOUT_MS)
+    this.heartbeatInterval = setInterval(() => {
+      if (this.ws && this.isOpen()) {
+        this.ws.ping()
+      }
+    }, WS_PING_INTERVAL_MS)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval)
+      this.heartbeatInterval = undefined
+    }
+    if (this.idleTimeout) {
+      clearTimeout(this.idleTimeout)
+      this.idleTimeout = undefined
     }
   }
 
@@ -716,6 +753,7 @@ class Sdk implements IIIClient {
   }
 
   private onSocketClose(): void {
+    this.stopHeartbeat()
     this.ws?.removeAllListeners()
     this.ws?.terminate()
     this.ws = undefined
@@ -731,6 +769,15 @@ class Sdk implements IIIClient {
     this.setConnectionState('connected')
 
     this.ws?.on('message', this.onMessage.bind(this))
+
+    // Reset the idle deadline on any inbound frame (message/ping/pong), Rust SDK parity
+    const touch = () => {
+      this.idleTimeout?.refresh()
+    }
+    this.ws?.on('message', touch)
+    this.ws?.on('ping', touch)
+    this.ws?.on('pong', touch)
+    this.startHeartbeat()
 
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)

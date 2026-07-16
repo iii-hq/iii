@@ -347,7 +347,8 @@ impl WorkerRegistry {
                 info.name,
                 info.binary_path.display()
             );
-            let module = super::external::ExternalWorker::new(info, config);
+            let module =
+                super::external::ExternalWorker::new(info, config, engine.worker_manager_port());
             return Ok(Box::new(ExternalProcessWorker::new(Box::new(module))));
         }
 
