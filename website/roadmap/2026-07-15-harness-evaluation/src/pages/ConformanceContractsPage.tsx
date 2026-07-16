@@ -1,0 +1,144 @@
+import { PageShell } from '@lib/components/PageShell'
+import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
+import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
+import { FnChip } from '@lib/components/schematic/FnChip'
+import { CASSETTE_FIELDS, RECORDER_FUNCTIONS, SUPERVISOR_STEPS } from '../content/protocols'
+import { EXPANSION } from '../content/contract'
+
+/**
+ * A14 — deep dive on the conformance test-support contracts: the script
+ * schema, cassettes, the recorder, and the supervisor. All of it is proposed
+ * test-support api; production ids stay fixed.
+ */
+export function ConformanceContractsPage() {
+  return (
+    <PageShell
+      eyebrow="deep dive · conformance"
+      title="the test-support contracts"
+      description="the scripted router, cassette, recorder, and supervisor are test support outside the subject path. they mirror existing wire contracts (cited file:line in the spec), but everything on this page is proposed api, versioned and strict: schemas deny unknown fields, and script problems are runner errors before the stack even starts."
+      related={[{ slug: 'agent-quality-protocol', label: 'agent-quality protocol' }]}
+    >
+      <div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+          the script, sketched
+        </div>
+        <CodeBlock title="RouterScriptV1 · one strict script per scenario">
+          <M>interface</M> <K>RouterScriptV1</K> <M>{'{'}</M>
+          {'\n  '}schema_version: <S>&quot;1&quot;</S>
+          {'\n  '}scenario_id: <K>string</K>
+          {'\n  '}model: <K>ModelFixtureV1</K>
+          {'      '}
+          <C>{'// pinned fixture; models::* are projections of it'}</C>
+          {'\n  '}generations: <K>ScriptedGenerationV1</K>[]
+          {'\n'}
+          <M>{'}'}</M>
+          {'\n\n'}
+          <M>interface</M> <K>ScriptedGenerationV1</K> <M>{'{'}</M>
+          {'\n  '}ordinal: <K>number</K>
+          {'            '}
+          <C>{'// consumed strictly in order'}</C>
+          {'\n  '}match: <M>{'{ '}</M>writer_ref, request_id, model, provider, system_prompt,
+          {'\n          '}messages, tools, response_format, thinking_level,
+          {'\n          '}max_output_tokens, provider_options, metadata <M>{'}'}</M>
+          {'  '}
+          <C>{'// all twelve, each an explicit JsonMatcherV1'}</C>
+          {'\n  '}frames: <K>AssistantMessageEvent</K>[]
+          {'   '}
+          <C>{'// exactly one terminal frame'}</C>
+          {'\n  '}response: <K>RouterChatResponse</K>
+          {'\n  '}barriers?: <M>{'{ '}</M>before_frame, id, timeout_ms <M>{'}'}</M>[]
+          {'\n'}
+          <M>{'}'}</M>
+        </CodeBlock>
+        <p className="mt-3 font-mono text-[12px] leading-[1.7] text-ink-faint lowercase max-w-[72ch]">
+          an unexpected subject call, a matcher failure, or an unused expectation is a{' '}
+          <span className="text-ink">contract_failure</span>. duplicate ordinals, an invalid matcher, extra
+          generations, or response/frame disagreement reject the script as <span className="text-ink">runner_error</span>{' '}
+          before boot. normalizers apply to copies, never to stored evidence; delays are relative and barriers are
+          named; fixtures never depend on wall-clock time.
+        </p>
+      </div>
+
+      <SpecSheet title="RouterCassetteV1 · recorded fixtures with provenance" meta="capture is manual, non-gating" defaultOpen>
+        <div className="flex flex-col">
+          {CASSETTE_FIELDS.map((f) => (
+            <SpecRow key={f.name} name={f.name} type={f.type}>
+              {f.desc}
+            </SpecRow>
+          ))}
+        </div>
+      </SpecSheet>
+
+      <div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+          the recorder · five fixed control functions
+        </div>
+        <div className="border border-rule bg-bg flex flex-col">
+          {RECORDER_FUNCTIONS.map((row) => (
+            <div key={row.fn} className="px-4 py-3 border-b border-rule-2 last:border-b-0">
+              <FnChip>{row.fn}</FnChip>
+              <p className="mt-1.5 font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{row.does}</p>
+            </div>
+          ))}
+          <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
+            every accepted call is durably appended with a strictly increasing sequence before the handler responds.
+            a run-scoped target may only use an id prefixed by its own run; production ids stay fixed.
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4">
+        <div>
+          <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+            the supervisor cli
+          </div>
+          <CodeBlock title="explicit binaries · the runner never downloads">
+            harness-conformance <M>\</M>
+            {'\n  '}--engine-bin <S>&lt;path&gt;</S> <M>\</M>
+            {'   '}
+            <C>{'// or III_BIN'}</C>
+            {'\n  '}--harness-bin <S>&lt;path&gt;</S> <M>\</M>
+            {'\n  '}--worker-bin <S>&lt;name=path&gt;</S>... <M>\</M>
+            {'\n  '}--scenario <S>&lt;id|all&gt;</S> <M>\</M>
+            {'\n  '}--artifacts-dir <S>&lt;path&gt;</S>
+            {'\n\n'}
+            <C>{'// absolute paths, sha-256 digests, and versions'}</C>
+            {'\n'}
+            <C>{'// are recorded before boot.'}</C>
+          </CodeBlock>
+        </div>
+        <div>
+          <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+            per scenario, in order
+          </div>
+          <div className="border border-rule bg-bg flex flex-col">
+            {SUPERVISOR_STEPS.map((step, i) => (
+              <div key={step} className="flex items-baseline gap-x-3 px-4 py-2.5 border-b border-rule-2 last:border-b-0">
+                <span className="font-mono text-[11px] text-ink-ghost tabular-nums shrink-0">{i + 1}</span>
+                <span className="font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{step}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+          the expansion order after the first slice
+        </div>
+        <div className="border border-rule bg-bg flex flex-col">
+          {EXPANSION.map((row) => (
+            <div key={row.phase} className="grid grid-cols-[64px_minmax(0,1fr)] gap-x-4 px-4 py-3 border-b border-rule-2 last:border-b-0">
+              <span className="font-mono text-[12px] text-ink">phase {row.phase}</span>
+              <span className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase">{row.items}</span>
+            </div>
+          ))}
+          <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
+            promotion to a required pull-request check needs 100 consecutive clean runs across 14 days, zero skips,
+            zero unexplained flakes. stack reuse is not a condition, and never happens in v1.
+          </div>
+        </div>
+      </div>
+    </PageShell>
+  )
+}
