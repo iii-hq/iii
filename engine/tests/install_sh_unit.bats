@@ -146,6 +146,15 @@ EOF
   [[ "$output" == *"x86_64-apple-darwin"* ]]
 }
 
+@test "install.sh --help passes environment overrides to sh" {
+  run sh "$INSTALL_SH" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"curl -fsSL https://iii.dev/install.sh | VERSION=0.11.0 sh"* ]]
+  [[ "$output" == *"curl -fsSL https://iii.dev/install.sh | BIN_DIR=/usr/local/bin sh"* ]]
+  [[ "$output" != *"VERSION=0.11.0 curl"* ]]
+  [[ "$output" != *"BIN_DIR=/usr/local/bin curl"* ]]
+}
+
 # ─────────────────────────────────────────────────────────────
 # Argument parsing: unknown flags
 # ─────────────────────────────────────────────────────────────

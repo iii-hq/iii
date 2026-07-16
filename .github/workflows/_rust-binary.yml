@@ -206,6 +206,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ steps.generate_token.outputs.token }}
+          ref: refs/tags/${{ inputs.tag_name }}
 
       - name: Download pre-built artifact
         if: inputs.artifact_name != ''
@@ -277,6 +278,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ inputs.bin_name }}-${{ matrix.target }}
+
+      - name: Validate release version
+        shell: bash
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          MANIFEST_PATH: ${{ inputs.manifest_path }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: bash .github/scripts/validate_rust_release_version.sh "$MANIFEST_PATH" "$TAG_NAME" "$BIN_NAME"
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@v1
