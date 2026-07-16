@@ -207,6 +207,7 @@ jobs:
         with:
           token: ${{ steps.generate_token.outputs.token }}
           ref: refs/tags/${{ inputs.tag_name }}
+          persist-credentials: false
 
       - name: Download pre-built artifact
         if: inputs.artifact_name != ''

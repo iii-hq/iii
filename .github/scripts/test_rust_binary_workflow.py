@@ -18,6 +18,7 @@ def test_build_checks_out_release_tag():
     checkout = job.split("- uses: actions/checkout@v4", 1)[1].split("\n\n", 1)[0]
 
     assert "ref: refs/tags/${{ inputs.tag_name }}" in checkout
+    assert "persist-credentials: false" in checkout
 
 
 def test_build_validates_manifest_version_before_upload():
