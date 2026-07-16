@@ -618,6 +618,25 @@ pub async fn handle_worker_sync(frozen: bool) -> i32 {
         return handle_worker_verify(false).await;
     }
 
+    // Acquire the operation lock BEFORE reading iii.lock. Reading first
+    // left a TOCTOU window: sync snapshots the lockfile, a concurrent
+    // update commits a new one, then sync acquires the lock and installs
+    // artifacts from the stale snapshot while iii.lock on disk says
+    // otherwise. (The --frozen path above stays outside the lock: it is
+    // read-only and lockfile writes are atomic renames, so its reads are
+    // always self-consistent.)
+    let _operation_lock =
+        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!(
+                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
+                    "error:".red()
+                );
+                return 1;
+            }
+        };
+
     let lock_path = super::lockfile::lockfile_path();
     let lockfile = match super::lockfile::WorkerLockfile::read_from(lock_path) {
         Ok(lockfile) => lockfile,
@@ -642,18 +661,6 @@ pub async fn handle_worker_sync(frozen: bool) -> i32 {
         return 1;
     }
     let skipped_unmanaged = skipped_unmanaged_config_workers(&lockfile, &config_names);
-
-    let _operation_lock =
-        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
-            Ok(lock) => lock,
-            Err(e) => {
-                eprintln!(
-                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
-                    "error:".red()
-                );
-                return 1;
-            }
-        };
 
     match replay_lockfile(&lockfile).await {
         Ok(mut summary) => {
@@ -2173,6 +2180,21 @@ pub async fn handle_managed_remove(worker_name: &str, brief: bool) -> i32 {
         );
         return 1;
     }
+    // Same mutual exclusion as sync/update: remove edits config.yaml AND
+    // iii.lock, so racing an update's lockfile read-modify-write could
+    // silently write the removed worker's pin back, and the snapshot
+    // rollback below could wipe a concurrent add's config.yaml append.
+    let _operation_lock =
+        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!(
+                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
+                    "error:".red()
+                );
+                return 1;
+            }
+        };
     // Snapshot config.yaml so the config and lockfile edits commit together:
     // a worker left in iii.lock after leaving config.yaml gets resurrected by
     // `iii worker update` and replayed by `iii worker sync`.
@@ -2286,7 +2308,9 @@ fn clear_single_worker(worker_name: &str) -> i32 {
 /// Prompts the user for confirmation before clearing all artifacts.
 /// Returns `true` if the user confirms with "y".
 fn confirm_clear() -> bool {
-    confirm_prompt("  This will remove all downloaded workers and images. Continue? [y/N] ")
+    confirm_prompt(
+        "  This will remove all downloaded workers, images, and managed VM state. Continue? [y/N] ",
+    )
 }
 
 fn clear_all_workers(skip_confirm: bool) -> i32 {
@@ -2337,8 +2361,25 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
             }
             return None;
         }
-        total_freed += dir_size(&entry.path());
-        let _ = std::fs::remove_dir_all(entry.path());
+        // Legacy binary workers can be a bare FILE at ~/.iii/workers/{name}
+        // (see delete_worker_artifacts); remove_dir_all fails on those with
+        // NotADirectory. Branch on the entry's own (non-following) file
+        // type, and count the entry as cleared — and its bytes as freed —
+        // only when the deletion actually succeeded.
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let (bytes, removed) = if is_dir {
+            (dir_size(&path), std::fs::remove_dir_all(&path))
+        } else {
+            let len = std::fs::symlink_metadata(&path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            (len, std::fs::remove_file(&path))
+        };
+        if removed.is_err() {
+            return None;
+        }
+        total_freed += bytes;
         Some(name)
     };
 
@@ -6427,6 +6468,35 @@ dependencies:
         });
     }
 
+    #[test]
+    fn clear_all_workers_removes_legacy_single_file_binary() {
+        // Legacy binary workers are a bare FILE at ~/.iii/workers/{name}.
+        // remove_dir_all fails on those with NotADirectory, so the old code
+        // left the file on disk while still reporting it cleared and its
+        // bytes freed. The wipe-all path must branch on file type.
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let workers = home.join(".iii/workers");
+            std::fs::create_dir_all(&workers).unwrap();
+            let legacy_file = workers.join("legacy-file-worker");
+            std::fs::write(&legacy_file, "fake binary bytes").unwrap();
+
+            let rc = clear_all_workers(true);
+
+            assert_eq!(rc, 0);
+            assert!(
+                !legacy_file.exists(),
+                "legacy single-file binary artifact must be removed"
+            );
+        });
+    }
+
     #[tokio::test]
     async fn handle_worker_update_without_lockfile_says_nothing_to_update() {
         in_temp_dir_async(|_| async move {
@@ -6436,6 +6506,41 @@ dependencies:
             // A named update without a lockfile is the same failure as
             // "name not pinned".
             assert_eq!(handle_worker_update(Some("ghost")).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_fails_when_operation_lock_is_held() {
+        in_temp_dir_async(|dir| async move {
+            // The lock must be acquired BEFORE sync reads its iii.lock
+            // snapshot — reading first left a TOCTOU window where sync could
+            // replay a snapshot a concurrent update had already replaced. A
+            // held lock therefore has to fail sync even when iii.lock is
+            // perfectly readable.
+            cli_lockfile::WorkerLockfile::default()
+                .write_to(cli_lockfile::lockfile_path())
+                .unwrap();
+            let _held = crate::core::ProjectOperationLock::acquire(&dir).unwrap();
+
+            assert_eq!(handle_worker_sync(false).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_remove_fails_when_operation_lock_is_held() {
+        in_temp_dir_async(|dir| async move {
+            // Remove edits config.yaml + iii.lock, so it must respect the
+            // same operation mutex as sync/update — otherwise a concurrent
+            // update's lockfile read-modify-write can resurrect the removed
+            // worker's pin.
+            let config = "workers:\n  - name: pdfkit\n";
+            std::fs::write("config.yaml", config).unwrap();
+            let _held = crate::core::ProjectOperationLock::acquire(&dir).unwrap();
+
+            assert_eq!(handle_managed_remove("pdfkit", false).await, 1);
+            assert_eq!(std::fs::read_to_string("config.yaml").unwrap(), config);
         })
         .await;
     }
