@@ -1467,6 +1467,11 @@ impl Engine {
         tracing::debug!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
 
+        let ping_interval = config
+            .ping_interval_secs
+            .filter(|secs| *secs > 0)
+            .map(std::time::Duration::from_secs);
+
         let session =
             match rbac_session::handle_session(peer, Arc::new(self.clone()), config, uri, headers)
                 .await
@@ -1527,9 +1532,31 @@ impl Engine {
         self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
             .await;
 
+        let mut last_inbound = tokio::time::Instant::now();
+        let mut ping_timer = tokio::time::interval(
+            ping_interval.unwrap_or(std::time::Duration::from_secs(3600)),
+        );
+        ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ping_timer.tick().await;
+
         loop {
             tokio::select! {
+                _ = ping_timer.tick(), if ping_interval.is_some() => {
+                    let interval = ping_interval.expect("guarded by is_some");
+                    if last_inbound.elapsed() >= interval * 2 {
+                        tracing::info!(
+                            peer = %peer,
+                            worker_id = %worker.id,
+                            "No inbound frames for two ping intervals — closing unresponsive worker connection"
+                        );
+                        break;
+                    }
+                    if tx.send(Outbound::Raw(WsMessage::Ping(Vec::new().into()))).await.is_err() {
+                        break;
+                    }
+                }
                 frame = ws_rx.next() => {
+                    last_inbound = tokio::time::Instant::now();
                     match frame {
                         Some(Ok(WsMessage::Text(text))) => {
                             if text.trim().is_empty() {

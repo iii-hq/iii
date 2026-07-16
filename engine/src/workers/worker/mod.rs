@@ -59,6 +59,8 @@ pub struct WorkerManagerConfig {
     #[serde(default)]
     pub middleware_function_id: Option<String>,
     pub rbac: Option<rbac_config::RbacConfig>,
+    #[serde(default)]
+    pub ping_interval_secs: Option<u64>,
 }
 
 fn default_port() -> u16 {
@@ -76,6 +78,7 @@ impl Default for WorkerManagerConfig {
             host: default_host(),
             middleware_function_id: None,
             rbac: None,
+            ping_interval_secs: None,
         }
     }
 }
