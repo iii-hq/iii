@@ -61,9 +61,9 @@ pub enum Commands {
         no_wait: bool,
     },
 
-    /// Remove one or more workers from config.yaml. The engine's file watcher
-    /// tears down any running sandbox. Artifacts under ~/.iii/managed/{name}/
-    /// remain; use `iii worker clear {name}` to delete them.
+    /// Remove one or more workers from config.yaml and iii.lock. The engine's
+    /// file watcher tears down any running sandbox. Artifacts under
+    /// ~/.iii/managed/{name}/ remain; use `iii worker clear {name}` to delete them.
     Remove {
         /// Worker names to remove (e.g., "pdfkit")
         #[arg(value_name = "WORKER", required = true, num_args = 1..)]

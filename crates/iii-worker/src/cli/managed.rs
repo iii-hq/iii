@@ -1297,6 +1297,25 @@ fn read_lockfile_or_default(
     }
 }
 
+/// Delete `worker_name` from `iii.lock`. Returns `Ok(true)` when an entry
+/// was removed and the lockfile rewritten, `Ok(false)` when there was
+/// nothing to do (no lockfile, or the worker wasn't pinned — local and
+/// builtin workers never are). Without this, `iii worker sync` keeps
+/// replaying the removed worker's artifacts and a bare `iii worker update`
+/// re-resolves it as a lock root, reinstalling it into config.yaml.
+fn remove_lock_entry(worker_name: &str) -> Result<bool, String> {
+    let lock_path = super::lockfile::lockfile_path();
+    if !lock_path.exists() {
+        return Ok(false);
+    }
+    let mut lockfile = super::lockfile::WorkerLockfile::read_from(lock_path)?;
+    if lockfile.workers.remove(worker_name).is_none() {
+        return Ok(false);
+    }
+    lockfile.write_to(lock_path)?;
+    Ok(true)
+}
+
 fn write_engine_lock_entry(worker_name: &str, version: &str) -> Result<(), String> {
     let lock_path = super::lockfile::lockfile_path();
     let mut lockfile = read_lockfile_or_default(lock_path)?;
@@ -2124,12 +2143,38 @@ pub async fn handle_managed_remove(worker_name: &str, brief: bool) -> i32 {
         );
         return 1;
     }
+    // Snapshot config.yaml so the config and lockfile edits commit together:
+    // a worker left in iii.lock after leaving config.yaml gets resurrected by
+    // `iii worker update` and replayed by `iii worker sync`.
+    let config_snapshot = match ConfigYamlSnapshot::capture() {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
     if let Err(e) = super::config_file::remove_worker(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
+    let removed_from_lock = match remove_lock_entry(worker_name) {
+        Ok(removed) => removed,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            config_snapshot.restore_after_failure();
+            return 1;
+        }
+    };
     if brief {
         eprintln!("        {} {}", "✓".green(), worker_name.bold());
+    } else if removed_from_lock {
+        eprintln!(
+            "  {} {} removed from {} and {}",
+            "✓".green(),
+            worker_name.bold(),
+            "config.yaml".dimmed(),
+            "iii.lock".dimmed(),
+        );
     } else {
         eprintln!(
             "  {} {} removed from {}",
@@ -5746,6 +5791,93 @@ dependencies:
             let rc = handle_worker_update(None).await;
 
             assert_eq!(rc, 0);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_remove_removes_worker_from_lockfile() {
+        in_temp_dir_async(|_| async move {
+            std::fs::write(
+                "config.yaml",
+                "workers:\n  - name: pdfkit\n  - name: keeper\n",
+            )
+            .unwrap();
+            let mut lock = cli_lockfile::WorkerLockfile::default();
+            for name in ["pdfkit", "keeper"] {
+                lock.workers.insert(
+                    name.to_string(),
+                    cli_lockfile::LockedWorker {
+                        version: "1.0.0".to_string(),
+                        worker_type: cli_lockfile::LockedWorkerType::Binary,
+                        dependencies: Default::default(),
+                        source: locked_binary_source(
+                            binary_download::current_target(),
+                            &format!("https://workers.iii.dev/{name}.tar.gz"),
+                            "a".repeat(64),
+                        ),
+                    },
+                );
+            }
+            lock.write_to(cli_lockfile::lockfile_path()).unwrap();
+
+            let rc = handle_managed_remove("pdfkit", false).await;
+
+            assert_eq!(rc, 0);
+            let config = std::fs::read_to_string("config.yaml").unwrap();
+            assert!(!config.contains("pdfkit"));
+            let lock =
+                cli_lockfile::WorkerLockfile::read_from(cli_lockfile::lockfile_path()).unwrap();
+            assert!(!lock.workers.contains_key("pdfkit"));
+            assert!(lock.workers.contains_key("keeper"));
+            // Regression: before the lockfile prune, `iii worker update pdfkit`
+            // still resolved the removed worker and reinstalled it.
+            assert_eq!(handle_worker_update(Some("pdfkit")).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_remove_leaves_lockfile_alone_for_unpinned_worker() {
+        in_temp_dir_async(|_| async move {
+            // Local/builtin workers live in config.yaml but are never pinned
+            // in iii.lock; removing one must not disturb other pins.
+            std::fs::write("config.yaml", "workers:\n  - name: local-w\n").unwrap();
+            let mut lock = cli_lockfile::WorkerLockfile::default();
+            lock.workers.insert(
+                "keeper".to_string(),
+                cli_lockfile::LockedWorker {
+                    version: "1.0.0".to_string(),
+                    worker_type: cli_lockfile::LockedWorkerType::Engine,
+                    dependencies: Default::default(),
+                    source: None,
+                },
+            );
+            lock.write_to(cli_lockfile::lockfile_path()).unwrap();
+
+            let rc = handle_managed_remove("local-w", false).await;
+
+            assert_eq!(rc, 0);
+            let lock =
+                cli_lockfile::WorkerLockfile::read_from(cli_lockfile::lockfile_path()).unwrap();
+            assert!(lock.workers.contains_key("keeper"));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_remove_restores_config_when_lockfile_is_malformed() {
+        in_temp_dir_async(|_| async move {
+            let config = "workers:\n  - name: pdfkit\n";
+            std::fs::write("config.yaml", config).unwrap();
+            std::fs::write("iii.lock", "not: [valid").unwrap();
+
+            let rc = handle_managed_remove("pdfkit", false).await;
+
+            // The lockfile edit failed, so the config removal must roll back
+            // rather than leave config.yaml and iii.lock disagreeing.
+            assert_eq!(rc, 1);
+            assert_eq!(std::fs::read_to_string("config.yaml").unwrap(), config);
         })
         .await;
     }
