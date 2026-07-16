@@ -1747,6 +1747,23 @@ impl EngineFunctionsWorker {
     ) -> FunctionResult<RegisterWorkerResult, ErrorBody> {
         let worker_id = input.worker_id.clone();
         let namespace = crate::protocol::effective_namespace(&input.namespace).to_string();
+
+        // One live worker name per namespace. Sanitize the name the same way
+        // `register_worker_metadata` will store it, so the lease key matches what
+        // `cleanup_worker` later releases. A worker that sends no usable name
+        // cannot collide, so it skips the claim.
+        let worker_name = input.name.clone().and_then(sanitize_worker_text);
+        if let Some(worker_name) = &worker_name
+            && let Ok(uuid) = uuid::Uuid::parse_str(&worker_id)
+            && let Err(conflict) = self.engine.claim_worker_name(&namespace, uuid, worker_name)
+        {
+            // Fatal, unlike a function-id conflict: reject and close. Return
+            // before writing any metadata or draining buffered registrations —
+            // the loser leaves no trace.
+            self.engine.reject_worker_registration(uuid, conflict).await;
+            return FunctionResult::Success(RegisterWorkerResult { success: false });
+        }
+
         self.register_worker_metadata(input).await;
 
         // This call is the only moment the connection's namespace becomes

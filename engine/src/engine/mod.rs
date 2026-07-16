@@ -23,7 +23,10 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    protocol::{DEFAULT_NAMESPACE, ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message},
+    protocol::{
+        DEFAULT_NAMESPACE, ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message,
+        WORKER_NAMESPACE_CONFLICT,
+    },
     services::{Service, ServicesRegistry},
     telemetry::{
         ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
@@ -360,6 +363,14 @@ pub struct Engine {
     /// HTTP-invocation variant of `function_owners`, separate because external
     /// functions live in their own per-worker set on `WorkerConnection`.
     pub(crate) external_function_owners: Arc<DashMap<(String, String), Uuid>>,
+    /// Records the current owning WS connection for each live worker name,
+    /// keyed by `(namespace, worker_name)`. Populated when a worker sends
+    /// `engine::workers::register` (see `claim_worker_name`) and CAS-released by
+    /// `cleanup_worker`. One live name per namespace: a second live connection
+    /// claiming a name already held is rejected and closed. A lease held by a
+    /// worker that has gone away — or whose connection is tearing down — is
+    /// taken over, so a worker restart reclaims its own name.
+    pub(crate) worker_name_owners: Arc<DashMap<(String, String), Uuid>>,
     /// Namespace resolution state per WS connection, seeded by
     /// `begin_namespace_resolution` when the connection is accepted and dropped
     /// by `cleanup_worker`. A connection with no entry here (in-process
@@ -411,6 +422,7 @@ impl Engine {
             channel_manager: Arc::new(ChannelManager::new()),
             function_owners: Arc::new(DashMap::new()),
             external_function_owners: Arc::new(DashMap::new()),
+            worker_name_owners: Arc::new(DashMap::new()),
             namespace_states: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
@@ -855,7 +867,8 @@ impl Engine {
     /// stops instead of registering functions cleanup has already released.
     ///
     /// Returns without effect when the connection was never tracked.
-    fn abort_namespace_resolution(&self, worker: &WorkerConnection) {
+    #[doc(hidden)]
+    pub fn abort_namespace_resolution(&self, worker: &WorkerConnection) {
         let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
             return;
         };
@@ -2209,6 +2222,15 @@ impl Engine {
 
         self.trigger_registry.unregister_worker(&worker.id).await;
         self.channel_manager.remove_channels_by_worker(&worker.id);
+        // Release the worker-name lease before the registry entry (its source of
+        // truth for the name) is gone. Read the name back through the registry:
+        // the `worker` snapshot handed to `cleanup_worker` never carries it —
+        // `engine::workers::register` writes into the registry's copy. CAS so a
+        // restart that already reclaimed the name is not clobbered.
+        if let Some(worker_name) = self.worker_registry.get_worker_name(&worker.id) {
+            let namespace = self.connection_namespace(worker);
+            self.release_worker_name_if_owner(&worker.id, &namespace, &worker_name);
+        }
         self.worker_registry.unregister_worker(&worker.id);
         // Dropped last: every teardown step above resolves the connection's
         // namespace through `connection_namespace`, which reads this entry.
@@ -2250,6 +2272,110 @@ impl Engine {
             function_id,
             "Function",
         )
+    }
+
+    /// True when `worker_id`'s connection has entered teardown — its namespace
+    /// resolution has been `Aborted` (the first step of `cleanup_worker`). Such
+    /// a connection is on its way out even if `worker_registry` has not swept it
+    /// yet, so it must not block a fresh claim on the name it held.
+    fn is_connection_tearing_down(&self, worker_id: &Uuid) -> bool {
+        matches!(
+            self.namespace_states.get(worker_id).as_deref(),
+            Some(NamespaceState::Aborted(_))
+        )
+    }
+
+    /// Takes the ownership lease on `(namespace, worker_name)` for `worker_id`.
+    ///
+    /// Fails when a *different* worker that is still live in this namespace holds
+    /// the name: one live worker name per namespace, period (this includes the
+    /// SDK's default `hostname:pid`). The loser is rejected and its connection
+    /// closed by the caller.
+    ///
+    /// "Live" is deliberately narrower than "present in `worker_registry`": an
+    /// owner whose connection is tearing down (`is_connection_tearing_down`) is
+    /// treated as gone, so a worker that reconnects during its own teardown
+    /// window reclaims its name instead of being rejected. A lease held by a
+    /// worker already removed from the registry is likewise taken over, and a
+    /// re-claim by the same worker is idempotent.
+    ///
+    /// The check and the write share one `DashMap` entry lock, so two concurrent
+    /// claims cannot both observe a free lease.
+    pub(crate) fn claim_worker_name(
+        &self,
+        namespace: &str,
+        worker_id: Uuid,
+        worker_name: &str,
+    ) -> Result<(), NamespaceConflict> {
+        let key = (namespace.to_string(), worker_name.to_string());
+        match self.worker_name_owners.entry(key) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                let previous = *occupied.get();
+                if previous != worker_id
+                    && self.worker_registry.workers.contains_key(&previous)
+                    && !self.is_connection_tearing_down(&previous)
+                {
+                    tracing::warn!(
+                        rejected_worker = %worker_id,
+                        owner = %previous,
+                        namespace = %namespace,
+                        worker_name = %worker_name,
+                        "Worker name already held by a live worker in this namespace — registration rejected"
+                    );
+                    return Err(NamespaceConflict {
+                        namespace: namespace.to_string(),
+                        worker_name: worker_name.to_string(),
+                        owner_worker_id: previous.to_string(),
+                    });
+                }
+                occupied.insert(worker_id);
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                vacant.insert(worker_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// CAS-releases a worker-name lease held by `worker_id`. A racing restart
+    /// that already took the name over will have overwritten the owner, so the
+    /// predicate fails and its claim is left intact.
+    fn release_worker_name_if_owner(&self, worker_id: &Uuid, namespace: &str, worker_name: &str) {
+        self.worker_name_owners.remove_if(
+            &(namespace.to_string(), worker_name.to_string()),
+            |_, owner| owner == worker_id,
+        );
+    }
+
+    /// Rejects a worker registration that lost a `(namespace, worker_name)`
+    /// conflict: tells the loser why, then closes its connection. Unlike a
+    /// function-id conflict (one refused id, connection kept), a duplicate live
+    /// worker name is fatal — the SDKs treat `RegistrationRejected` as a
+    /// no-reconnect error.
+    pub(crate) async fn reject_worker_registration(
+        &self,
+        worker_id: Uuid,
+        conflict: NamespaceConflict,
+    ) {
+        let Some(worker) = self.worker_registry.get_worker(&worker_id) else {
+            return;
+        };
+        self.send_msg(
+            &worker,
+            Message::RegistrationRejected {
+                code: WORKER_NAMESPACE_CONFLICT.to_string(),
+                namespace: conflict.namespace,
+                worker_name: conflict.worker_name,
+                owner_worker_id: conflict.owner_worker_id,
+            },
+        )
+        .await;
+        // Close the connection: the writer task forwards this Close frame, the
+        // read loop then ends and `cleanup_worker` runs.
+        let _ = worker
+            .channel
+            .send(Outbound::Raw(WsMessage::Close(None)))
+            .await;
     }
 
     /// HTTP-invocation variant of `claim_function`.
@@ -2778,6 +2904,126 @@ mod tests {
         assert!(
             engine.service_registry.get("orders", "svc").is_some(),
             "service must be registered in the same namespace as its function"
+        );
+    }
+
+    /// `claim_worker_name` enforces one live name per namespace: a second live
+    /// worker is refused, a re-claim by the incumbent is idempotent, and a name
+    /// keyed to a worker no longer in the registry is taken over (restart).
+    #[test]
+    fn claim_worker_name_rejects_live_duplicate_and_takes_over_dead_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+
+        engine
+            .claim_worker_name("orders", owner.id, "state")
+            .expect("first claim must succeed");
+
+        // A different live worker cannot take a held name.
+        let other = uuid::Uuid::new_v4();
+        let conflict = engine
+            .claim_worker_name("orders", other, "state")
+            .expect_err("a second live worker must be rejected");
+        assert_eq!(conflict.namespace, "orders");
+        assert_eq!(conflict.worker_name, "state");
+        assert_eq!(conflict.owner_worker_id, owner.id.to_string());
+
+        // The incumbent re-claiming its own name is idempotent.
+        engine
+            .claim_worker_name("orders", owner.id, "state")
+            .expect("re-claim by the same worker must succeed");
+
+        // A lease pointing at a worker that is not in the registry is taken over.
+        let dead = uuid::Uuid::new_v4();
+        engine
+            .worker_name_owners
+            .insert(("analytics".to_string(), "state".to_string()), dead);
+        engine
+            .claim_worker_name("analytics", uuid::Uuid::new_v4(), "state")
+            .expect("a dead owner's name must be claimable (worker restart)");
+    }
+
+    /// A held name whose owner's connection is tearing down
+    /// (`abort_namespace_resolution` ran) must not block a fresh claim, even
+    /// though the owner is still present in the registry — the fast-restart
+    /// window.
+    #[tokio::test]
+    async fn claim_worker_name_takes_over_a_tearing_down_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+        engine.begin_namespace_resolution(&owner);
+        engine.resolve_connection_namespace(&owner, "orders").await;
+        engine
+            .claim_worker_name("orders", owner.id, "state")
+            .expect("owner claims the name");
+
+        // While still live, the owner blocks a fresh claim.
+        let restart = uuid::Uuid::new_v4();
+        engine
+            .claim_worker_name("orders", restart, "state")
+            .expect_err("a live owner must block the claim");
+
+        // Once its connection begins teardown, it must not block anymore.
+        engine.abort_namespace_resolution(&owner);
+        assert!(
+            engine.worker_registry.workers.contains_key(&owner.id),
+            "precondition: the owner is still in the registry, only tearing down"
+        );
+        engine
+            .claim_worker_name("orders", restart, "state")
+            .expect("a tearing-down owner must not block a restart");
+    }
+
+    /// `cleanup_worker` releases the worker-name lease, reading the name back
+    /// from the registry (the connection snapshot never carries it).
+    #[tokio::test]
+    async fn cleanup_worker_releases_the_name_lease() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.worker_registry.update_worker_metadata(
+            &worker.id,
+            "node".to_string(),
+            None,
+            Some("state".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("orders".to_string()),
+        );
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+        engine
+            .claim_worker_name("orders", worker.id, "state")
+            .expect("claim the name");
+
+        assert!(
+            engine
+                .worker_name_owners
+                .contains_key(&("orders".to_string(), "state".to_string())),
+            "precondition: the name lease is held"
+        );
+
+        engine.cleanup_worker(&worker).await;
+
+        assert!(
+            !engine
+                .worker_name_owners
+                .contains_key(&("orders".to_string(), "state".to_string())),
+            "cleanup_worker must release the name lease"
         );
     }
 

@@ -288,168 +288,202 @@ async fn dropping_one_of_two_cross_namespace_owners_orphans_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// PARKED FOR TASK 9.5 — worker-name collisions (`WORKER_NAMESPACE_CONFLICT`)
+// WORKER-NAME collisions (`WORKER_NAMESPACE_CONFLICT`) — Task 9.5
 // ---------------------------------------------------------------------------
 //
-// These three tests passed against a working implementation of worker-name
-// rejection. They are parked, not deleted, so 9.5 does not rewrite them from
-// scratch: un-comment, re-add `claim_worker_name` + the close, and they should
-// go green as-is (modulo whichever naming fix 9.5 lands).
-//
-// WHY THIS WAS DEFERRED — read before re-enabling. Rejecting a worker means
-// closing its connection, and no SDK understands `RegistrationRejected` yet
-// (Tasks 7-9). A closed client just reconnects and is rejected again: a live
-// run showed 20+ reject/reconnect cycles in 60s. Rejection cannot ship before
-// something exists that knows how to receive it.
-//
-// AND THE REJECTION RULE ITSELF IS NOT YET SOUND. Both SDKs name a worker
-// `III_WORKER_NAME ?? hostname:pid` (rust: `sdk/packages/rust/iii/src/iii.rs`
-// :286-289; node: `sdk/packages/node/iii/src/iii.ts:78`) — scoped to the
-// PROCESS, not the connection. Two SDK clients in one process therefore share
-// a name and are indistinguishable, to the engine, from a real collision.
-// `engine/tests/worker_trigger_e2e.rs` is exactly this shape (two
-// `InitOptions::default()` clients at :318 and :328) and the worker-name
-// rejection killed it. Task 9.5 must first pick one:
-//
-//   (a) Only enforce for EXPLICIT names. Needs a new wire signal (e.g.
-//       `RegisterWorkerInput.name_is_explicit`) — the engine cannot tell
-//       `state` from a `hostname:pid` on its own.
-//   (b) Make the SDK default unique per connection. Note the III_WORKER_NAME
-//       comment in iii.rs:282-285: engine truth (`iii worker status`/`list`)
-//       matches connections BY NAME, so changing the default affects that
-//       matching.
-//
-// Related, same root cause: a worker that reconnects before the engine reaps
-// its old connection is now rejected rather than taking over its lease
-// (liveness == presence in `worker_registry.workers`). Whatever 9.5 picks
-// should account for that window too.
-//
-// /// Drains until the server closes the stream. `true` means the engine hung up.
-// async fn closed_by_engine(ws: &mut Client) -> bool {
-//     tokio::time::timeout(Duration::from_secs(5), async {
-//         loop {
-//             match ws.next().await {
-//                 Some(Ok(WsMessage::Close(_))) | None => return true,
-//                 Some(Err(_)) => return true,
-//                 Some(Ok(_)) => continue,
-//             }
-//         }
-//     })
-//     .await
-//     .unwrap_or(false)
-// }
-//
-// /// Two live workers claiming the same name in the same namespace: the second
-// /// one is told why and hung up on.
-// #[tokio::test]
-// async fn second_worker_with_same_name_in_same_namespace_is_rejected_and_closed() {
-//     let (port, engine) = spawn_engine().await;
-//
-//     let (mut winner, winner_id) = connect(port).await;
-//     send_register_worker(&mut winner, "state", Some("orders")).await;
-//     assert!(
-//         eventually(|| engine
-//             .worker_registry
-//             .list_workers()
-//             .iter()
-//             .any(|w| w.name.as_deref() == Some("state")))
-//         .await,
-//         "first worker must register"
-//     );
-//
-//     let (mut loser, _) = connect(port).await;
-//     send_register_worker(&mut loser, "state", Some("orders")).await;
-//
-//     let rejection = await_rejection(&mut loser)
-//         .await
-//         .expect("loser must receive RegistrationRejected");
-//     assert_eq!(rejection["code"], "WORKER_NAMESPACE_CONFLICT");
-//     assert_eq!(rejection["namespace"], "orders");
-//     assert_eq!(rejection["worker_name"], "state");
-//     assert_eq!(rejection["owner_worker_id"], winner_id);
-//
-//     assert!(
-//         closed_by_engine(&mut loser).await,
-//         "the engine must close the rejected worker's connection"
-//     );
-//
-//     let _ = winner.close(None).await;
-// }
-//
-// /// The same worker name in a different namespace is a legitimate deployment,
-// /// not a collision.
-// #[tokio::test]
-// async fn same_worker_name_in_a_different_namespace_coexists() {
-//     let (port, engine) = spawn_engine().await;
-//
-//     let (mut orders, _) = connect(port).await;
-//     send_register_worker(&mut orders, "state", Some("orders")).await;
-//     assert!(
-//         eventually(|| engine
-//             .worker_registry
-//             .list_workers()
-//             .iter()
-//             .any(|w| w.namespace.as_deref() == Some("orders")))
-//         .await,
-//         "orders worker must register"
-//     );
-//
-//     let (mut analytics, _) = connect(port).await;
-//     send_register_worker(&mut analytics, "state", Some("analytics")).await;
-//
-//     assert!(
-//         eventually(|| engine
-//             .worker_registry
-//             .list_workers()
-//             .iter()
-//             .any(|w| w.namespace.as_deref() == Some("analytics")
-//                 && w.name.as_deref() == Some("state")))
-//         .await,
-//         "the same name in another namespace must be accepted"
-//     );
-//
-//     let _ = orders.close(None).await;
-//     let _ = analytics.close(None).await;
-// }
-//
-// /// The name lease is held by the connection, not the namespace: once the owner
-// /// disconnects, the name is claimable again.
-// #[tokio::test]
-// async fn worker_name_is_claimable_again_after_the_owner_disconnects() {
-//     let (port, engine) = spawn_engine().await;
-//
-//     let (mut first, first_id) = connect(port).await;
-//     send_register_worker(&mut first, "state", Some("orders")).await;
-//     assert!(
-//         eventually(|| engine
-//             .worker_registry
-//             .list_workers()
-//             .iter()
-//             .any(|w| w.name.as_deref() == Some("state")))
-//         .await,
-//         "first worker must register"
-//     );
-//
-//     first.close(None).await.expect("close first worker");
-//     let first_uuid = uuid::Uuid::parse_str(&first_id).expect("uuid");
-//     assert!(
-//         eventually(|| engine.worker_registry.get_worker(&first_uuid).is_none()).await,
-//         "engine must reap the disconnected worker"
-//     );
-//
-//     let (mut second, second_id) = connect(port).await;
-//     send_register_worker(&mut second, "state", Some("orders")).await;
-//
-//     let second_uuid = uuid::Uuid::parse_str(&second_id).expect("uuid");
-//     assert!(
-//         eventually(|| engine
-//             .worker_registry
-//             .get_worker(&second_uuid)
-//             .is_some_and(|w| w.name.as_deref() == Some("state")))
-//         .await,
-//         "the freed name must be claimable by a new connection"
-//     );
-//
-//     let _ = second.close(None).await;
-// }
-//
+// Unlike a function-id conflict (refuse the one id, keep the connection), a
+// duplicate live `(namespace, worker_name)` is fatal: the loser is told why and
+// hung up on. The rule is "one live name per namespace, period" — it applies to
+// any name, including the SDK default `hostname:pid`.
+
+/// Drains until the server closes the stream. `true` means the engine hung up.
+async fn closed_by_engine(ws: &mut Client) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(WsMessage::Close(_))) | None => return true,
+                Some(Err(_)) => return true,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Two live workers claiming the same name in the same namespace: the second
+/// one is told why and hung up on.
+#[tokio::test]
+async fn second_worker_with_same_name_in_same_namespace_is_rejected_and_closed() {
+    let (port, engine) = spawn_engine().await;
+
+    let (mut winner, winner_id) = connect(port).await;
+    send_register_worker(&mut winner, "state", Some("orders")).await;
+    assert!(
+        eventually(|| engine
+            .worker_registry
+            .list_workers()
+            .iter()
+            .any(|w| w.name.as_deref() == Some("state")))
+        .await,
+        "first worker must register"
+    );
+
+    let (mut loser, _) = connect(port).await;
+    send_register_worker(&mut loser, "state", Some("orders")).await;
+
+    let rejection = await_rejection(&mut loser)
+        .await
+        .expect("loser must receive RegistrationRejected");
+    assert_eq!(rejection["code"], "WORKER_NAMESPACE_CONFLICT");
+    assert_eq!(rejection["namespace"], "orders");
+    assert_eq!(rejection["worker_name"], "state");
+    assert_eq!(rejection["owner_worker_id"], winner_id);
+
+    assert!(
+        closed_by_engine(&mut loser).await,
+        "the engine must close the rejected worker's connection"
+    );
+
+    let _ = winner.close(None).await;
+}
+
+/// The same worker name in a different namespace is a legitimate deployment,
+/// not a collision.
+#[tokio::test]
+async fn same_worker_name_in_a_different_namespace_coexists() {
+    let (port, engine) = spawn_engine().await;
+
+    let (mut orders, _) = connect(port).await;
+    send_register_worker(&mut orders, "state", Some("orders")).await;
+    assert!(
+        eventually(|| engine
+            .worker_registry
+            .list_workers()
+            .iter()
+            .any(|w| w.namespace.as_deref() == Some("orders")))
+        .await,
+        "orders worker must register"
+    );
+
+    let (mut analytics, _) = connect(port).await;
+    send_register_worker(&mut analytics, "state", Some("analytics")).await;
+
+    assert!(
+        eventually(|| engine
+            .worker_registry
+            .list_workers()
+            .iter()
+            .any(|w| w.namespace.as_deref() == Some("analytics")
+                && w.name.as_deref() == Some("state")))
+        .await,
+        "the same name in another namespace must be accepted"
+    );
+    // And the incumbent must still be there: a different-namespace registration
+    // must not have been mistaken for a collision and hung up on.
+    assert!(
+        engine
+            .worker_registry
+            .list_workers()
+            .iter()
+            .any(|w| w.namespace.as_deref() == Some("orders")
+                && w.name.as_deref() == Some("state")),
+        "the same name in another namespace must not disturb the incumbent"
+    );
+
+    let _ = orders.close(None).await;
+    let _ = analytics.close(None).await;
+}
+
+/// The name lease is held by the connection, not the namespace: once the owner
+/// disconnects and is reaped, the name is claimable again (worker restart).
+#[tokio::test]
+async fn worker_name_is_claimable_again_after_the_owner_disconnects() {
+    let (port, engine) = spawn_engine().await;
+
+    let (mut first, first_id) = connect(port).await;
+    send_register_worker(&mut first, "state", Some("orders")).await;
+    assert!(
+        eventually(|| engine
+            .worker_registry
+            .list_workers()
+            .iter()
+            .any(|w| w.name.as_deref() == Some("state")))
+        .await,
+        "first worker must register"
+    );
+
+    first.close(None).await.expect("close first worker");
+    let first_uuid = uuid::Uuid::parse_str(&first_id).expect("uuid");
+    assert!(
+        eventually(|| engine.worker_registry.get_worker(&first_uuid).is_none()).await,
+        "engine must reap the disconnected worker"
+    );
+
+    let (mut second, second_id) = connect(port).await;
+    send_register_worker(&mut second, "state", Some("orders")).await;
+
+    let second_uuid = uuid::Uuid::parse_str(&second_id).expect("uuid");
+    assert!(
+        eventually(|| engine
+            .worker_registry
+            .get_worker(&second_uuid)
+            .is_some_and(|w| w.name.as_deref() == Some("state")))
+        .await,
+        "the freed name must be claimable by a new connection"
+    );
+
+    let _ = second.close(None).await;
+}
+
+/// The fast-restart window: a worker reconnects with the same name while its OLD
+/// connection has begun teardown (`abort_namespace_resolution` ran) but has not
+/// yet been swept from `worker_registry`. A dead-but-uncleaned owner must NOT
+/// block the restart — otherwise a normal worker restart is rejected and hung
+/// up on. Deterministic: the tearing-down state is forced directly, no sleep.
+#[tokio::test]
+async fn worker_reconnecting_while_its_old_connection_tears_down_is_accepted() {
+    let (port, engine) = spawn_engine().await;
+
+    let (mut first, first_id) = connect(port).await;
+    send_register_worker(&mut first, "state", Some("orders")).await;
+    assert!(
+        eventually(|| engine
+            .worker_registry
+            .list_workers()
+            .iter()
+            .any(|w| w.name.as_deref() == Some("state")))
+        .await,
+        "first worker must register and take the name lease"
+    );
+
+    // Force the exact cleanup window: teardown has STARTED for the old
+    // connection (its namespace resolution is aborted, as `cleanup_worker`'s
+    // first step does), but it has NOT been removed from `worker_registry` yet.
+    let first_uuid = uuid::Uuid::parse_str(&first_id).expect("uuid");
+    let old_conn = engine
+        .worker_registry
+        .get_worker(&first_uuid)
+        .expect("old connection must still be present");
+    engine.abort_namespace_resolution(&old_conn);
+    assert!(
+        engine.worker_registry.get_worker(&first_uuid).is_some(),
+        "precondition: the old owner is still present, only tearing down"
+    );
+
+    // The restart reconnects with the same name — it must be ACCEPTED.
+    let (mut second, second_id) = connect(port).await;
+    send_register_worker(&mut second, "state", Some("orders")).await;
+    let second_uuid = uuid::Uuid::parse_str(&second_id).expect("uuid");
+    assert!(
+        eventually(|| engine
+            .worker_registry
+            .get_worker(&second_uuid)
+            .is_some_and(|w| w.name.as_deref() == Some("state")))
+        .await,
+        "a worker reconnecting while its old connection tears down must be accepted"
+    );
+
+    let _ = first.close(None).await;
+    let _ = second.close(None).await;
+}

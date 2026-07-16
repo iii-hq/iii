@@ -344,6 +344,7 @@ mod tests {
                                 baggage: None,
                                 action: None,
                                 metadata: None,
+                                namespace: None,
                             };
                             websocket
                                 .send(WsMessage::Text(
