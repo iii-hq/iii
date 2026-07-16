@@ -92,5 +92,6 @@ sessions — containers, CI — it creates the file without asking). The created
 **empty** `workers:` list: the engine boots with just its internal services (the WebSocket listener
 SDK workers connect to, the configuration worker, observability), and you opt into everything else
 with `iii worker add <name>` — the engine watches the file and picks new workers up live. Workers
-boot with their built-in defaults; customize ports, adapters, or credentials at runtime through the
-configuration worker, or by adding a `config:` block to an entry by hand.
+boot with their built-in defaults. Customize ports, adapters, or credentials at runtime through the
+configuration worker or the persisted per-worker config file under `./config/`. To seed the initial
+configuration instead, add a `config:` block to an entry before the worker's first boot.
