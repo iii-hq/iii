@@ -591,3 +591,78 @@ async fn functions_info_reports_an_ambiguous_bare_id_with_its_candidate_namespac
         _ => panic!("an ambiguous bare id must not resolve to an arbitrary namespace"),
     }
 }
+
+/// BUG 2: an id duplicated across non-default namespaces (none in `default`) is
+/// unaddressable without a namespace input. With an explicit `namespace`,
+/// `engine::functions::info` resolves strictly in that namespace — the same
+/// strict semantics as `Engine::resolve_function`'s explicit-ns path.
+#[tokio::test]
+async fn functions_info_addresses_an_ambiguous_id_with_an_explicit_namespace() {
+    let (port, engine) = spawn_engine().await;
+
+    let _orders = connect_worker(port, "orders-worker", Some("orders"), "state::get", 4209).await;
+    let _billing =
+        connect_worker(port, "billing-worker", Some("billing"), "state::get", 4210).await;
+
+    let landed = eventually(|| {
+        engine.functions.get("orders", "state::get").is_some()
+            && engine.functions.get("billing", "state::get").is_some()
+    })
+    .await;
+    assert!(landed, "both workers' functions must register");
+
+    // Explicit `orders` resolves the `orders` copy, not `billing`, not NOT_FOUND.
+    let result = call_engine_fn(
+        &engine,
+        "engine::functions::info",
+        json!({ "function_id": "state::get", "namespace": "orders" }),
+    )
+    .await;
+    assert_eq!(result["function_id"], json!("state::get"));
+    assert_eq!(
+        result["namespace"],
+        json!("orders"),
+        "an explicit namespace must pin the detail to that namespace; got: {result}"
+    );
+
+    // The sibling namespace is equally addressable.
+    let billing = call_engine_fn(
+        &engine,
+        "engine::functions::info",
+        json!({ "function_id": "state::get", "namespace": "billing" }),
+    )
+    .await;
+    assert_eq!(billing["namespace"], json!("billing"));
+}
+
+/// An explicit `namespace` that the id does not live in is a miss, reported as
+/// NOT_FOUND that names where the id actually exists — never a resolution in
+/// some other namespace.
+#[tokio::test]
+async fn functions_info_explicit_namespace_miss_reports_not_found_naming_where_it_exists() {
+    let (port, engine) = spawn_engine().await;
+
+    let _orders = connect_worker(port, "orders-worker", Some("orders"), "state::get", 4211).await;
+
+    let landed = eventually(|| engine.functions.get("orders", "state::get").is_some()).await;
+    assert!(landed, "the worker's function must register");
+
+    match call_engine_fn_raw(
+        &engine,
+        "engine::functions::info",
+        json!({ "function_id": "state::get", "namespace": "billing" }),
+        None,
+    )
+    .await
+    {
+        FunctionResult::Failure(err) => {
+            assert_eq!(err.code, "NOT_FOUND");
+            assert!(
+                err.message.contains("orders"),
+                "a miss in the requested namespace must name where the id does exist; got: {}",
+                err.message
+            );
+        }
+        _ => panic!("an explicit-namespace miss must not resolve elsewhere"),
+    }
+}

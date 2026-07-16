@@ -241,6 +241,7 @@ mod tests {
             config: json!({}),
             worker_id,
             metadata: None,
+            namespace: "default".to_string(),
         }
     }
 
@@ -340,6 +341,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         worker.unregister_trigger(trigger).await.unwrap();
         let msg = rx.recv().await.unwrap();

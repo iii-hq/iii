@@ -22,6 +22,13 @@ pub fn effective_namespace(ns: &Option<String>) -> &str {
     ns.as_deref().unwrap_or(DEFAULT_NAMESPACE)
 }
 
+/// [`DEFAULT_NAMESPACE`] as an owned `String`. Used as a `#[serde(default)]`
+/// for owned namespace fields so payloads that predate the field decode to
+/// `default` rather than failing.
+pub fn default_namespace() -> String {
+    DEFAULT_NAMESPACE.to_string()
+}
+
 /// [`Message::RegistrationRejected`] code: another live worker already runs
 /// under this name in this namespace.
 ///

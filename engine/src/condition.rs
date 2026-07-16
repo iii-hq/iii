@@ -10,16 +10,25 @@ use crate::{engine::EngineTrait, protocol::ErrorBody};
 
 /// Evaluates a condition function against the provided data.
 ///
+/// `namespace` is the namespace the condition function is resolved in — it must
+/// be the SAME namespace as the trigger's target function, so a namespaced
+/// worker's condition check hits its own condition function rather than a
+/// same-named one in `default`.
+///
 /// Returns:
 /// - `Ok(true)` — proceed with the handler (condition passed or returned no value)
 /// - `Ok(false)` — skip the handler (condition explicitly returned `false`)
 /// - `Err(ErrorBody)` — condition function invocation failed
 pub async fn check_condition<E: EngineTrait>(
     engine: &E,
+    namespace: &str,
     condition_function_id: &str,
     data: Value,
 ) -> Result<bool, ErrorBody> {
-    match engine.call(condition_function_id, data).await {
+    match engine
+        .call_with_metadata_ns(namespace, condition_function_id, data, None)
+        .await
+    {
         Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
         Ok(None) => {
             tracing::warn!(
@@ -56,8 +65,9 @@ mod tests {
     }
 
     impl crate::engine::EngineTrait for MockEngine {
-        async fn call_with_metadata(
+        async fn call_with_metadata_ns(
             &self,
+            _namespace: &str,
             _function_id: &str,
             _input: impl serde::Serialize + Send,
             _metadata: Option<Value>,
@@ -96,21 +106,27 @@ mod tests {
     #[tokio::test]
     async fn check_condition_returns_true_when_result_is_true() {
         let engine = MockEngine::returning_ok(Some(json!(true)));
-        let result = check_condition(&engine, "cond", json!({})).await.unwrap();
+        let result = check_condition(&engine, "default", "cond", json!({}))
+            .await
+            .unwrap();
         assert!(result);
     }
 
     #[tokio::test]
     async fn check_condition_returns_false_when_result_is_false() {
         let engine = MockEngine::returning_ok(Some(json!(false)));
-        let result = check_condition(&engine, "cond", json!({})).await.unwrap();
+        let result = check_condition(&engine, "default", "cond", json!({}))
+            .await
+            .unwrap();
         assert!(!result);
     }
 
     #[tokio::test]
     async fn check_condition_returns_true_for_none() {
         let engine = MockEngine::returning_ok(None);
-        let result = check_condition(&engine, "cond", json!({})).await.unwrap();
+        let result = check_condition(&engine, "default", "cond", json!({}))
+            .await
+            .unwrap();
         assert!(result);
     }
 
@@ -121,7 +137,7 @@ mod tests {
             message: "boom".into(),
             stacktrace: None,
         });
-        let result = check_condition(&engine, "cond", json!({})).await;
+        let result = check_condition(&engine, "default", "cond", json!({})).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().code, "fail");
     }
@@ -129,7 +145,9 @@ mod tests {
     #[tokio::test]
     async fn check_condition_returns_true_for_non_bool_value() {
         let engine = MockEngine::returning_ok(Some(json!("hello")));
-        let result = check_condition(&engine, "cond", json!({})).await.unwrap();
+        let result = check_condition(&engine, "default", "cond", json!({}))
+            .await
+            .unwrap();
         assert!(result);
     }
 }

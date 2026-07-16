@@ -444,6 +444,7 @@ async fn register_log_recorder(harness: &Harness, fn_id: &str, level: &str) -> A
             config: json!({ "level": level }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register log trigger");

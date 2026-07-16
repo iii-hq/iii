@@ -197,6 +197,13 @@ pub struct Trigger {
     pub worker_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the target `function_id` resolves in when this trigger fires.
+    /// Captured from the registering connection (via `connection_namespace`) at
+    /// the point the trigger is actually applied — see `Engine::fire_triggers`.
+    /// Defaults to [`crate::protocol::DEFAULT_NAMESPACE`] for engine-internal /
+    /// durable registrations and for wire payloads that predate the field.
+    #[serde(default = "crate::protocol::default_namespace")]
+    pub namespace: String,
 }
 
 // Only `id` is considered for Hash and Eq/PartialEq
@@ -231,6 +238,26 @@ impl TriggerRegistry {
             triggers: Arc::new(DashMap::new()),
             pending_triggers: Arc::new(DashMap::new()),
         }
+    }
+
+    /// The namespace a fired trigger's target/condition function resolves in,
+    /// looked up LIVE by trigger id at fire time.
+    ///
+    /// Message-broker triggers (queue `durable:subscriber`, `subscribe`) invoke
+    /// their target inside an adapter task that holds only the trigger id — the
+    /// enqueued/published message carries no namespace. Resolving against the
+    /// registry here uses the trigger's CURRENT binding, exactly as the
+    /// in-process workers (state/stream/cron/...) read the live `Trigger`. A
+    /// message that sits in a durable queue while its trigger is re-registered
+    /// therefore resolves against the new namespace, and one whose trigger has
+    /// been unregistered falls back to [`DEFAULT_NAMESPACE`] (there is no binding
+    /// left to consult). This is the intended semantic for this plan, not an
+    /// accident of lookup.
+    pub fn namespace_of(&self, trigger_id: &str) -> String {
+        self.triggers
+            .get(trigger_id)
+            .map(|t| t.namespace.clone())
+            .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string())
     }
 
     pub async fn unregister_worker(&self, worker_id: &Uuid) {
@@ -629,6 +656,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         }
     }
 
@@ -1400,6 +1428,7 @@ mod tests {
             config: serde_json::json!({"interval": 5}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let t2 = Trigger {
             id: "trigger-1".to_string(),
@@ -1408,6 +1437,7 @@ mod tests {
             config: serde_json::json!({"url": "https://example.com"}),
             worker_id: Some(Uuid::new_v4()),
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         // Same id means equal, even though other fields differ.
@@ -1429,6 +1459,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let t2 = Trigger {
             id: "trigger-2".to_string(),
@@ -1437,6 +1468,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         assert_ne!(t1, t2);
@@ -1466,6 +1498,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: Some(serde_json::json!({"team": "platform", "priority": "high"})),
+            namespace: "default".to_string(),
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();
@@ -1484,6 +1517,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();

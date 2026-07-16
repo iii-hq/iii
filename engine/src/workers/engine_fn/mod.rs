@@ -30,14 +30,6 @@ pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 /// `engine::registered-triggers::list`.
 const CONFIG_SUMMARY_MAX_LEN: usize = 80;
 
-/// The namespace a registered trigger's target function resolves in.
-///
-/// Not a fallback — it is where the trigger genuinely lands. Triggers have no
-/// namespace dimension: `TriggerRegistry` is keyed by trigger id alone, and
-/// `Engine::fire_triggers` dispatches through `Engine::call_with_metadata`,
-/// which resolves in [`crate::protocol::DEFAULT_NAMESPACE`] unconditionally.
-/// Revisit together with the trigger registry if triggers ever gain one.
-const TRIGGER_TARGET_NAMESPACE: &str = crate::protocol::DEFAULT_NAMESPACE;
 /// Self-reported worker descriptions are untrusted free text rendered by
 /// consoles, CLIs, and LLM agents — cap the length and strip control
 /// characters at the ingest boundary.
@@ -122,6 +114,16 @@ pub struct FunctionInfoInput {
     /// single-id round-trips.
     #[serde(default)]
     pub function_ids: Option<Vec<String>>,
+    /// Optional target namespace, applied to every requested id. When set, each
+    /// id resolves *strictly* in this namespace — the same semantics as
+    /// `Engine::resolve_function`'s explicit-namespace path — so an id
+    /// duplicated across several non-default namespaces becomes addressable. A
+    /// miss in this namespace is NOT_FOUND naming where the id does exist, never
+    /// a resolution elsewhere. When absent, resolution mirrors invoke routing's
+    /// bare-id behavior (`default` wins; a unique non-default id resolves; an id
+    /// in several non-default namespaces is ambiguous).
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 /// Hard cap on `function_ids` per call — a batch exists to save round-trips,
@@ -516,11 +518,12 @@ impl EngineFunctionsWorker {
         for trigger in triggers_to_fire {
             let engine = self.engine.clone();
             let function_id = trigger.function_id.clone();
+            let namespace = trigger.namespace.clone();
             let metadata = trigger.metadata.clone();
             let data = data.clone();
             tokio::spawn(async move {
                 let _ = engine
-                    .call_with_metadata(&function_id, data, metadata)
+                    .call_with_metadata_ns(&namespace, &function_id, data, metadata)
                     .await;
             });
         }
@@ -669,6 +672,25 @@ impl EngineFunctionsWorker {
         }
     }
 
+    /// The namespace an `engine::functions::info` lookup resolves in, given the
+    /// caller's optional explicit `namespace`.
+    ///
+    /// An explicit namespace resolves *strictly* there (mirroring
+    /// `Engine::resolve_function`): the id is looked up in that namespace alone,
+    /// and a miss returns `None` so the caller reports NOT_FOUND naming where the
+    /// id actually exists — never a resolution in some other namespace. Absent an
+    /// explicit namespace, this defers to [`Self::introspection_namespace`].
+    fn info_namespace(&self, explicit: Option<&str>, function_id: &str) -> Option<String> {
+        match explicit {
+            Some(ns) => self
+                .engine
+                .functions
+                .get(ns, function_id)
+                .map(|_| ns.to_string()),
+            None => self.introspection_namespace(function_id),
+        }
+    }
+
     /// Resolves the worker name that owns a trigger type from an
     /// already-fetched `TriggerType`. Tries, in order: the `worker_id` Uuid
     /// (populated only by WebSocket-connected workers), the known provider
@@ -776,7 +798,7 @@ impl EngineFunctionsWorker {
                     function_id: t.function_id.clone(),
                     worker_name: Self::worker_name_for_function_id(
                         &index,
-                        TRIGGER_TARGET_NAMESPACE,
+                        &t.namespace,
                         &t.function_id,
                     ),
                     config: t.config.clone(),
@@ -947,15 +969,12 @@ impl EngineFunctionsWorker {
             .map(|entry| entry.value().clone())?;
 
         let index = self.function_owner_index().await;
-        let worker_name = Self::worker_name_for_function_id(
-            &index,
-            TRIGGER_TARGET_NAMESPACE,
-            &trigger.function_id,
-        );
+        let worker_name =
+            Self::worker_name_for_function_id(&index, &trigger.namespace, &trigger.function_id);
 
         let trigger_detail = self.build_trigger_type_detail(&trigger.trigger_type);
         let function_detail = self
-            .build_function_detail(TRIGGER_TARGET_NAMESPACE, &trigger.function_id)
+            .build_function_detail(&trigger.namespace, &trigger.function_id)
             .await;
 
         Some(RegisteredTriggerDetail {
@@ -1142,7 +1161,7 @@ impl EngineFunctionsWorker {
                     function_id: t.function_id.clone(),
                     worker_name: Self::worker_name_for_function_id(
                         &index,
-                        TRIGGER_TARGET_NAMESPACE,
+                        &t.namespace,
                         &t.function_id,
                     ),
                     config: t.config.clone(),
@@ -1297,11 +1316,18 @@ impl Worker for EngineFunctionsWorker {
                             for trigger in triggers_to_fire {
                                 let engine = engine.clone();
                                 let function_id = trigger.function_id.clone();
+                                let namespace = trigger.namespace.clone();
                                 let metadata = trigger.metadata.clone();
                                 let data = functions_data.clone();
                                 tokio::spawn(async move {
-                                    let _ =
-                                        engine.call_with_metadata(&function_id, data, metadata).await;
+                                    let _ = engine
+                                        .call_with_metadata_ns(
+                                            &namespace,
+                                            &function_id,
+                                            data,
+                                            metadata,
+                                        )
+                                        .await;
                                 });
                             }
                         }
@@ -1445,6 +1471,7 @@ impl EngineFunctionsWorker {
         input: FunctionInfoInput,
         session: Option<Arc<Session>>,
     ) -> FunctionResult<FunctionInfoOutput, ErrorBody> {
+        let explicit_ns = input.namespace.clone();
         let function_ids = match (input.function_id, input.function_ids) {
             (Some(_), Some(_)) => {
                 return FunctionResult::Failure(ErrorBody {
@@ -1465,7 +1492,8 @@ impl EngineFunctionsWorker {
                 // Resolve once, then use the same namespace for the RBAC check
                 // and the detail — otherwise the two could disagree about which
                 // function they are talking about.
-                let Some(namespace) = self.introspection_namespace(&function_id) else {
+                let Some(namespace) = self.info_namespace(explicit_ns.as_deref(), &function_id)
+                else {
                     return FunctionResult::Failure(self.function_not_found(&function_id));
                 };
                 if let Some(session) = &session
@@ -1518,7 +1546,8 @@ impl EngineFunctionsWorker {
             .map(|function_id| {
                 // Unresolvable (absent, or ambiguous across several non-default
                 // namespaces) is reported per-id, exactly like the single path.
-                let Some(namespace) = self.introspection_namespace(&function_id) else {
+                let Some(namespace) = self.info_namespace(explicit_ns.as_deref(), &function_id)
+                else {
                     return FunctionInfoEntry::Unavailable {
                         function_id,
                         error: "not_found".into(),
@@ -1802,6 +1831,10 @@ impl EngineFunctionsWorker {
             config: input.config,
             worker_id: None,
             metadata: input.metadata,
+            // Function-path (durable) registrations are engine orchestration and
+            // resolve their target in the default namespace, matching the
+            // `fire_triggers` behavior they predate.
+            namespace: crate::protocol::default_namespace(),
         };
 
         if let Err(err) = self.engine.trigger_registry.register_trigger(trigger).await {
@@ -1899,6 +1932,7 @@ mod tests {
                 config,
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
     }
@@ -2410,6 +2444,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let result = module.register_trigger(trigger.clone()).await;
@@ -2434,6 +2469,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             };
             module.register_trigger(trigger).await.unwrap();
         }
@@ -2453,6 +2489,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -2498,6 +2535,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -2512,6 +2550,72 @@ mod tests {
             .expect("channel closed");
 
         assert_eq!(received, data);
+    }
+
+    /// BUG 1 on the third fire path: `EngineFunctionsWorker::fire_triggers`
+    /// keeps its own trigger map and dispatches the target. It must resolve in
+    /// the trigger's namespace, not `default` — otherwise a namespaced worker's
+    /// `on_functions_available` callback silently never runs. `test::on_fns`
+    /// exists in both `orders` ("from-orders") and `default` ("from-default");
+    /// the trigger bound in `orders` must fire "from-orders". Reverting either
+    /// dispatch site to `DEFAULT_NAMESPACE` turns this RED.
+    #[tokio::test]
+    async fn engine_functions_worker_fires_trigger_in_its_namespace() {
+        use std::sync::Mutex as StdMutex;
+
+        let (engine, module) = setup_engine_and_module();
+
+        let fired: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
+            let fired = fired.clone();
+            engine.register_function_handler_ns(
+                ns,
+                crate::engine::RegisterFunctionRequest {
+                    function_id: "test::on_fns".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                crate::engine::Handler::new(move |_input: Value| {
+                    let fired = fired.clone();
+                    async move {
+                        fired.lock().unwrap().push(tag.to_string());
+                        FunctionResult::Success(None)
+                    }
+                }),
+            );
+        }
+
+        module
+            .register_trigger(crate::trigger::Trigger {
+                id: "trig-fns-orders".to_string(),
+                trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
+                function_id: "test::on_fns".to_string(),
+                config: serde_json::json!({}),
+                worker_id: None,
+                metadata: None,
+                namespace: "orders".to_string(),
+            })
+            .await
+            .unwrap();
+
+        module
+            .fire_triggers(
+                TRIGGER_FUNCTIONS_AVAILABLE,
+                serde_json::json!({"event": "fns"}),
+            )
+            .await;
+
+        // fire_triggers spawns the dispatch; give it a moment to run.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let fired = fired.lock().unwrap().clone();
+        assert_eq!(
+            fired,
+            vec!["from-orders".to_string()],
+            "the orders-bound functions-available trigger must fire the orders target; got: {fired:?}"
+        );
     }
 
     // ── Serialization tests ─────────────────────────────────────────────
@@ -2994,6 +3098,7 @@ mod tests {
                 FunctionInfoInput {
                     function_id: Some("test::detailed".to_string()),
                     function_ids: None,
+                    namespace: None,
                 },
                 None,
             )
@@ -3028,6 +3133,7 @@ mod tests {
                 FunctionInfoInput {
                     function_id: Some("does::not::exist".to_string()),
                     function_ids: None,
+                    namespace: None,
                 },
                 None,
             )
@@ -3066,6 +3172,7 @@ mod tests {
                         "does::not::exist".to_string(),
                         "test::batched".to_string(),
                     ]),
+                    namespace: None,
                 },
                 None,
             )
@@ -3095,18 +3202,22 @@ mod tests {
             FunctionInfoInput {
                 function_id: Some("a::b".to_string()),
                 function_ids: Some(vec!["a::b".to_string()]),
+                namespace: None,
             },
             FunctionInfoInput {
                 function_id: None,
                 function_ids: None,
+                namespace: None,
             },
             FunctionInfoInput {
                 function_id: None,
                 function_ids: Some(vec![]),
+                namespace: None,
             },
             FunctionInfoInput {
                 function_id: None,
                 function_ids: Some((0..33).map(|i| format!("f::{i}")).collect()),
+                namespace: None,
             },
         ] {
             match module.functions_info(input, None).await {
@@ -3893,6 +4004,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 

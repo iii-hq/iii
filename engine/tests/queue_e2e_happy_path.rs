@@ -134,6 +134,7 @@ async fn condition_based_filtering_routes_matching_messages_only() {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register conditional trigger should succeed");

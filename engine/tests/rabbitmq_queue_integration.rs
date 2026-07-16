@@ -1265,6 +1265,7 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register trigger A");
@@ -1278,6 +1279,7 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register trigger B");
@@ -1330,6 +1332,7 @@ async fn rmq_fanout_replicas_compete_within_function() {
                 config: json!({ "topic": &topic }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger");
@@ -1384,6 +1387,7 @@ async fn rmq_fanout_dlq_per_function() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register success trigger");
@@ -1397,6 +1401,7 @@ async fn rmq_fanout_dlq_per_function() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register fail trigger");
@@ -1678,6 +1683,7 @@ async fn rmq_subscriber_priority_orders_by_priority() {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register trigger should succeed");
@@ -1708,5 +1714,98 @@ async fn rmq_subscriber_priority_orders_by_priority() {
         *recorded,
         vec![0, 5, 4, 3, 2, 1],
         "subscriber priority queue should drain highest-priority-first"
+    );
+}
+
+/// BUG 1 over the RabbitMQ transport: a `durable:subscriber` trigger registered
+/// by a namespaced worker must invoke its target in that worker's namespace,
+/// resolved LIVE by trigger id at the rabbitmq fire point
+/// (`queue/adapters/rabbitmq/worker.rs`, `process_job` → `namespace_of`).
+/// `queue::react` exists in both `orders` ("from-orders") and `default`
+/// ("from-default"); the trigger bound in `orders` must fire "from-orders".
+/// Reverting the fire-point lookup to DEFAULT_NAMESPACE turns this RED with
+/// "from-default". Drives the real transport: enqueue over RabbitMQ.
+#[tokio::test]
+async fn rmq_subscriber_invokes_target_in_registering_namespace() {
+    fn register_tagged_ns(
+        engine: &Arc<Engine>,
+        ns: &str,
+        function_id: &str,
+        tag: &str,
+    ) -> Arc<Mutex<Vec<String>>> {
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = fired.clone();
+        let tag = tag.to_string();
+        let function = Function {
+            handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
+                let sink = sink.clone();
+                let tag = tag.clone();
+                Box::pin(async move {
+                    sink.lock().await.push(tag);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: function_id.to_string(),
+            _description: Some("rmq namespaced handler".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function_ns(ns, function_id.to_string(), function);
+        fired
+    }
+
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let topic = format!("{prefix}-ns-subscriber");
+
+    let engine = {
+        iii::workers::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    // Same function id in two namespaces; each records which one actually fired.
+    let fired_orders = register_tagged_ns(&engine, "orders", "queue::react", "from-orders");
+    let _fired_default = register_tagged_ns(&engine, "default", "queue::react", "from-default");
+
+    let module = QueueWorker::for_test(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueWorker::create should succeed");
+    module.register_functions(engine.clone());
+    module.initialize().await.expect("init should succeed");
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("trig-{}", Uuid::new_v4()),
+            trigger_type: "durable:subscriber".to_string(),
+            function_id: "queue::react".to_string(),
+            config: json!({ "topic": &topic }),
+            worker_id: None,
+            metadata: None,
+            namespace: "orders".to_string(),
+        })
+        .await
+        .expect("register orders trigger");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    enqueue_to_topic(&engine, &topic, json!({ "msg": "hello" }))
+        .await
+        .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    let fired = fired_orders.lock().await.clone();
+    assert_eq!(
+        fired,
+        vec!["from-orders".to_string()],
+        "the orders-bound rabbitmq subscriber must invoke the orders target, resolved live by \
+         trigger id at the fire point; got: {fired:?}"
     );
 }

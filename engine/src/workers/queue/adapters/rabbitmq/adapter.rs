@@ -357,6 +357,7 @@ impl QueueAdapter for RabbitMQAdapter {
         let function_id_clone = function_id.clone();
         let consumer_tag_clone = consumer_tag.clone();
         let queue_name_clone = per_function_queue.clone();
+        let trigger_id_clone = id.to_string();
 
         let task_handle = tokio::spawn(async move {
             worker
@@ -366,6 +367,7 @@ impl QueueAdapter for RabbitMQAdapter {
                     condition_function_id,
                     consumer_tag_clone,
                     queue_name_clone,
+                    trigger_id_clone,
                 )
                 .await;
         });

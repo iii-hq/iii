@@ -258,6 +258,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                                             config: serde_json::json!({}),
                                             worker_id: Some(worker.id),
                                             metadata: None,
+                                            namespace: "default".to_string(),
                                         })
                                         .await
                                         .expect("register trigger");

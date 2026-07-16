@@ -382,6 +382,7 @@ pub async fn dynamic_handler(
                 condition_function_id,
                 middleware_function_ids,
                 metadata,
+                namespace,
             } = router_match;
 
             let function_kind = if function_id.starts_with("engine::") {
@@ -517,7 +518,9 @@ pub async fn dynamic_handler(
                     obj.remove("response");
                 }
 
-                match check_condition(engine.as_ref(), condition_id, condition_input).await {
+                match check_condition(engine.as_ref(), &namespace, condition_id, condition_input)
+                    .await
+                {
                     Ok(true) => {}
                     Ok(false) => {
                         tracing::debug!(
@@ -587,7 +590,7 @@ pub async fn dynamic_handler(
             let call_span = tracing::Span::current();
             let mut call_handle = tokio::spawn(async move {
                 engine_clone
-                    .call_with_metadata(&function_id, api_request_value, metadata)
+                    .call_with_metadata_ns(&namespace, &function_id, api_request_value, metadata)
                     .await
             }.instrument(call_span));
 

@@ -53,14 +53,18 @@ impl PubSubAdapter for LocalAdapter {
         let subs = subscriptions.read().await;
 
         if let Some(sub_info) = subs.get(&topic) {
-            for (_id, function_id) in sub_info.iter() {
+            for (id, function_id) in sub_info.iter() {
                 tracing::debug!(function_id = %function_id, topic = %topic, "Event: Invoking function");
                 let function_id = function_id.clone();
                 let event_data = event_data.clone();
                 let engine = Arc::clone(&self.engine);
+                // Resolve the subscribing trigger's namespace LIVE by id.
+                let namespace = engine.trigger_registry.namespace_of(id);
 
                 tokio::spawn(async move {
-                    let _ = engine.call(&function_id, event_data).await;
+                    let _ = engine
+                        .call_with_metadata_ns(&namespace, &function_id, event_data, None)
+                        .await;
                 });
             }
         } else {
@@ -136,6 +140,72 @@ mod tests {
                     FunctionResult::Success(None)
                 }
             }),
+        );
+    }
+
+    /// BUG 1 (real-user path): a pubsub `subscribe` trigger registered by a
+    /// namespaced worker must fire its target in that worker's namespace,
+    /// resolved LIVE by trigger id at fire time. `pubsub::react` exists in both
+    /// `orders` ("from-orders") and `default` ("from-default"); the trigger bound
+    /// in `orders` must fire "from-orders". Drives the real mechanism:
+    /// `adapter.publish`.
+    #[tokio::test]
+    async fn publish_invokes_target_in_registering_namespace() {
+        use crate::engine::EngineTrait;
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        // The registry is the source of truth for the trigger's namespace (in
+        // production the RegisterTrigger handler writes it); insert the binding.
+        engine.trigger_registry.triggers.insert(
+            "sub-orders".to_string(),
+            crate::trigger::Trigger {
+                id: "sub-orders".to_string(),
+                trigger_type: "subscribe".to_string(),
+                function_id: "pubsub::react".to_string(),
+                config: json!({ "topic": "orders" }),
+                worker_id: None,
+                metadata: None,
+                namespace: "orders".to_string(),
+            },
+        );
+
+        let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
+            let fired = fired.clone();
+            engine.register_function_handler_ns(
+                ns,
+                RegisterFunctionRequest {
+                    function_id: "pubsub::react".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                Handler::new(move |_input: Value| {
+                    let fired = fired.clone();
+                    async move {
+                        fired.lock().unwrap().push(tag.to_string());
+                        FunctionResult::Success(None)
+                    }
+                }),
+            );
+        }
+
+        let adapter = LocalAdapter::new(engine.clone())
+            .await
+            .expect("new local adapter");
+        adapter
+            .subscribe("orders", "sub-orders", "pubsub::react")
+            .await;
+        adapter.publish("orders", json!({ "id": 1 })).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let fired = fired.lock().unwrap().clone();
+        assert_eq!(
+            fired,
+            vec!["from-orders".to_string()],
+            "the orders pubsub trigger must fire the orders target; got: {fired:?}"
         );
     }
 

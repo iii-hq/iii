@@ -95,6 +95,7 @@ async fn build_fanout_engine(fanout: usize) -> (Engine, Arc<AtomicUsize>, Arc<No
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger");

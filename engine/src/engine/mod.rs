@@ -96,24 +96,23 @@ enum NamespaceState {
 /// registry while the matching `RegisterFunction` still sits in the queue,
 /// inverting the pair and resurrecting a function the worker retired.
 ///
-/// `RegisterTrigger` is deliberately excluded even though the same
-/// pair-inversion reasoning superficially applies (a trigger can be dispatched
-/// while the function it names is still queued). Triggers are not namespaced:
-/// `TriggerRegistry` is keyed by trigger id alone, and a trigger's target is
-/// resolved at fire time, not registration time — so a trigger registered
-/// "early" resolves correctly once the drain lands its function, and buffering
-/// it would change nothing except delaying the ack. The exposure is a trigger
-/// naming a not-yet-registered function for the length of the drain (sub-ms for
-/// real SDKs, up to the grace for a hand-rolled client that never sends
-/// `engine::workers::register`), which is the same exposure a trigger
-/// registered before its function has always had. Revisit if triggers ever gain
-/// a namespace dimension.
+/// `RegisterTrigger` is buffered too, and this is load-bearing. A trigger now
+/// carries the namespace of the worker that registered it (`Trigger::namespace`,
+/// captured via `connection_namespace` in the `RegisterTrigger` handler) so
+/// `Engine::fire_triggers` can run the trigger's target in that namespace rather
+/// than unconditionally in `default`. That capture is only correct once the
+/// connection's namespace is known: a `RegisterTrigger` that arrives before
+/// `engine::workers::register` (the order the SDKs flush in) would otherwise
+/// capture the transient `default` and silently pin the trigger to the wrong
+/// namespace. Buffering it until the namespace resolves makes the capture read
+/// the real namespace — the same reason `RegisterFunction` is buffered.
 fn is_namespaced_registration(msg: &Message) -> bool {
     matches!(
         msg,
         Message::RegisterFunction { .. }
             | Message::RegisterService { .. }
             | Message::UnregisterFunction { .. }
+            | Message::RegisterTrigger { .. }
     )
 }
 
@@ -261,8 +260,25 @@ pub trait EngineTrait: Send + Sync {
         self.call_with_metadata(function_id, input, None).await
     }
 
+    /// Engine-orchestration call in the default namespace. Hooks and middleware
+    /// use this: they are engine-internal and not namespace-aware.
     async fn call_with_metadata(
         &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+        metadata: Option<Value>,
+    ) -> Result<Option<Value>, ErrorBody> {
+        self.call_with_metadata_ns(DEFAULT_NAMESPACE, function_id, input, metadata)
+            .await
+    }
+
+    /// Like [`Self::call_with_metadata`] but resolves the target function in an
+    /// explicit `namespace`. `fire_triggers` uses this to run a trigger's target
+    /// in the namespace of the worker that registered the trigger, rather than
+    /// unconditionally in `default`.
+    async fn call_with_metadata_ns(
+        &self,
+        namespace: &str,
         function_id: &str,
         input: impl Serialize + Send,
         metadata: Option<Value>,
@@ -1209,6 +1225,12 @@ impl Engine {
                         config: reg_config,
                         worker_id: Some(worker.id),
                         metadata: metadata.clone(),
+                        // Capture the connection's namespace at the point the
+                        // trigger is actually applied. Because `RegisterTrigger`
+                        // is buffered until the namespace is known (see
+                        // `is_namespaced_registration`), this reads the resolved
+                        // namespace, never the transient `default`.
+                        namespace: self.connection_namespace(worker),
                     })
                     .await
                 {
@@ -1866,13 +1888,17 @@ impl Engine {
         for trigger in triggers {
             let engine = self.clone();
             let function_id = trigger.function_id.clone();
+            let namespace = trigger.namespace.clone();
             let metadata = trigger.metadata.clone();
             let data = data.clone();
             let parent = current_span.clone();
             let span_function_id = function_id.clone();
             tokio::spawn(
                 async move {
-                    match engine.call_with_metadata(&function_id, data, metadata).await {
+                    match engine
+                        .call_with_metadata_ns(&namespace, &function_id, data, metadata)
+                        .await
+                    {
                         Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
                         Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
                     }
@@ -2330,8 +2356,15 @@ impl EngineTrait for Engine {
     /// orchestration; the boot-heartbeat wakeup should only fire for actual
     /// user-initiated invocations arriving via `remember_invocation` and not
     /// things the engine can fire itself without user involvement, such as cron.
-    async fn call_with_metadata(
+    ///
+    /// `namespace` is the namespace the target function is resolved in. Hooks
+    /// and middleware pass [`DEFAULT_NAMESPACE`] (via `call_with_metadata`);
+    /// `fire_triggers` passes the trigger's own namespace so a trigger runs the
+    /// function of the worker that registered it, not a same-named function in
+    /// `default`.
+    async fn call_with_metadata_ns(
         &self,
+        namespace: &str,
         function_id: &str,
         input: impl Serialize + Send,
         metadata: Option<Value>,
@@ -2341,9 +2374,7 @@ impl EngineTrait for Engine {
             message: e.to_string(),
             stacktrace: None,
         })?;
-        // Engine orchestration path (hooks, middleware, fire_triggers) — always
-        // resolves in the default namespace.
-        let function_opt = self.functions.get(DEFAULT_NAMESPACE, function_id);
+        let function_opt = self.functions.get(namespace, function_id);
 
         if let Some(function) = function_opt {
             // Inject current trace context and baggage to link spans as parent-child
@@ -2378,7 +2409,10 @@ impl EngineTrait for Engine {
         } else {
             Err(ErrorBody {
                 code: "function_not_found".into(),
-                message: format!("Function {} not found", function_id),
+                message: format!(
+                    "Function {} not found in namespace {}",
+                    function_id, namespace
+                ),
                 stacktrace: None,
             })
         }
@@ -3709,6 +3743,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
         engine.trigger_registry.triggers.insert(
@@ -3720,6 +3755,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -4232,6 +4268,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(user.id),
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -4298,6 +4335,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(user.id),
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -4368,6 +4406,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(user.id),
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 

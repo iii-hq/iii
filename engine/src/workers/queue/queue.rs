@@ -1991,6 +1991,7 @@ mod tests {
             config: json!({"topic": "my-topic"}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2007,6 +2008,7 @@ mod tests {
             config: json!({"topic": ""}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2023,6 +2025,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2043,6 +2046,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2069,6 +2073,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2085,6 +2090,7 @@ mod tests {
             config: json!({"topic": "unsub-topic"}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2101,6 +2107,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());

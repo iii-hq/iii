@@ -234,13 +234,18 @@ impl QueueAdapter for RedisAdapter {
                 let engine = Arc::clone(&engine);
                 let function_id = function_id_for_task.clone();
                 let topic_for_span = topic_for_task.clone();
+                // Resolve the subscribing trigger's namespace LIVE by id, used
+                // for both the condition and the target.
+                let namespace = engine.trigger_registry.namespace_of(&id_for_task);
 
                 if let Some(ref condition_id) = condition_function_id_for_task {
                     tracing::debug!(
                         condition_function_id = %condition_id,
                         "Checking trigger conditions"
                     );
-                    match check_condition(engine.as_ref(), condition_id, data.clone()).await {
+                    match check_condition(engine.as_ref(), &namespace, condition_id, data.clone())
+                        .await
+                    {
                         Ok(true) => {}
                         Ok(false) => {
                             tracing::debug!(
@@ -275,7 +280,10 @@ impl QueueAdapter for RedisAdapter {
 
                 tokio::spawn(
                     async move {
-                        match engine.call(&function_id, data).await {
+                        match engine
+                            .call_with_metadata_ns(&namespace, &function_id, data, None)
+                            .await
+                        {
                             Ok(_) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                             }

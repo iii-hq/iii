@@ -136,6 +136,7 @@ async fn register_http_trigger(
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register_trigger should succeed");
@@ -223,6 +224,86 @@ async fn test_per_route_middleware_continue() {
         body.get("message").and_then(|v| v.as_str()),
         Some("hello from handler"),
         "handler response body should be returned"
+    );
+}
+
+/// BUG 1 (real-user path): an HTTP route registered by a namespaced worker must
+/// invoke its target — and evaluate its condition — in that worker's namespace,
+/// not `default`. `http::react` exists in both `orders` ("from-orders") and
+/// `default` ("from-default"); the `orders` route must invoke "from-orders".
+/// `http::cond` exists ONLY in `orders`, so a condition resolved in `default`
+/// is not-found → the handler is skipped (also RED). Drives the real mechanism:
+/// a live HTTP request through the axum router.
+#[tokio::test]
+async fn http_route_invokes_target_and_condition_in_registering_namespace() {
+    let port = reserve_local_port();
+    let (engine, base_url) = start_api_server(port).await;
+
+    let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
+        let fired = fired.clone();
+        engine.register_function_handler_ns(
+            ns,
+            RegisterFunctionRequest {
+                function_id: "http::react".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let fired = fired.clone();
+                async move {
+                    fired.lock().unwrap().push(tag.to_string());
+                    FunctionResult::Success(Some(json!({ "status_code": 200, "body": {} })))
+                }
+            }),
+        );
+    }
+    // Condition lives ONLY in `orders`; returns true (proceed).
+    engine.register_function_handler_ns(
+        "orders",
+        RegisterFunctionRequest {
+            function_id: "http::cond".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(|_input: Value| async move { FunctionResult::Success(Some(json!(true))) }),
+    );
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("http-ns-{}", Uuid::new_v4()),
+            trigger_type: "http".to_string(),
+            function_id: "http::react".to_string(),
+            config: json!({
+                "api_path": "/ns-route",
+                "http_method": "GET",
+                "condition_function_id": "http::cond",
+            }),
+            worker_id: None,
+            metadata: None,
+            namespace: "orders".to_string(),
+        })
+        .await
+        .expect("register_trigger should succeed");
+
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/ns-route");
+    wait_for_route(&client, &url).await;
+    let _ = client.get(&url).send().await;
+
+    sleep(Duration::from_millis(300)).await;
+    let fired = fired.lock().unwrap().clone();
+    // `wait_for_route` also hits the route, so more than one invocation is
+    // expected; every one must resolve in `orders`, never `default`.
+    assert!(
+        !fired.is_empty() && fired.iter().all(|t| t == "from-orders"),
+        "the orders HTTP route must invoke the orders target via its orders condition; \
+         got: {fired:?}"
     );
 }
 

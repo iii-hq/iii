@@ -230,6 +230,7 @@ impl CronWorker {
                     &spec.function_id,
                     spec.condition_function_id.clone(),
                     spec.metadata.clone(),
+                    spec.namespace.clone(),
                 )
                 .await
             {
@@ -432,6 +433,7 @@ impl TriggerRegistrator for CronWorker {
                     &trigger.function_id,
                     condition_function_id,
                     trigger.metadata.clone(),
+                    trigger.namespace.clone(),
                 )
                 .await
         })
@@ -604,6 +606,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -621,6 +624,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_err());
@@ -642,6 +646,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_err());
@@ -660,6 +665,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -679,6 +685,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let _ = module.register_trigger(trigger.clone()).await;
 
@@ -697,6 +704,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_err());
@@ -798,6 +806,7 @@ mod tests {
             config: json!({"expression": "0 0 * * * *"}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         // Register
@@ -828,6 +837,7 @@ mod tests {
             config: json!({"expression": "0 0 * * * *"}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let result = module.register_trigger(trigger.clone()).await;
@@ -915,6 +925,7 @@ mod tests {
                 config: json!({ "expression": "0 0 * * * *" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             };
             module
                 .register_trigger(trigger)

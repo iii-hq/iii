@@ -3657,6 +3657,7 @@ mod tests {
                 config: serde_json::json!({ "level": "all" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
             guard.insert(Trigger {
                 id: "t-error".to_string(),
@@ -3665,6 +3666,7 @@ mod tests {
                 config: serde_json::json!({ "level": "error" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
         }
 

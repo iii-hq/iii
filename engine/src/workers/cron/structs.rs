@@ -41,6 +41,9 @@ pub(crate) struct CronJobSpec {
     pub function_id: String,
     pub condition_function_id: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    /// Namespace the target (and condition) function resolves in when the job
+    /// fires — the namespace of the worker that registered the trigger.
+    pub namespace: String,
 }
 
 pub(crate) struct CronJobInfo {
@@ -57,6 +60,8 @@ pub(crate) struct CronJobInfo {
     /// Per-trigger metadata, delivered to the handler as a distinct argument
     /// when the job fires (not folded into the cron event payload).
     pub metadata: Option<serde_json::Value>,
+    /// Namespace the target/condition function resolves in when the job fires.
+    pub namespace: String,
     pub task_handle: JoinHandle<()>,
 }
 
@@ -97,6 +102,7 @@ impl CronAdapter {
         function_id: String,
         condition_function_id: Option<String>,
         metadata: Option<serde_json::Value>,
+        namespace: String,
     ) -> JoinHandle<()> {
         let scheduler = Arc::clone(&self.adapter);
         let engine = Arc::clone(&self.engine);
@@ -178,8 +184,13 @@ impl CronAdapter {
                                 condition_function_id = %condition_id,
                                 "Checking trigger conditions"
                             );
-                            match check_condition(engine.as_ref(), condition_id, event_data.clone())
-                                .await
+                            match check_condition(
+                                engine.as_ref(),
+                                &namespace,
+                                condition_id,
+                                event_data.clone(),
+                            )
+                            .await
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
@@ -205,7 +216,12 @@ impl CronAdapter {
                         }
 
                         match engine
-                            .call_with_metadata(&function_id, event_data, metadata.clone())
+                            .call_with_metadata_ns(
+                                &namespace,
+                                &function_id,
+                                event_data,
+                                metadata.clone(),
+                            )
                             .await
                         {
                             Ok(_) => {
@@ -247,8 +263,15 @@ impl CronAdapter {
         cron_expression: &str,
         function_id: &str,
     ) -> anyhow::Result<()> {
-        self.register_with_metadata(id, cron_expression, function_id, None, None)
-            .await
+        self.register_with_metadata(
+            id,
+            cron_expression,
+            function_id,
+            None,
+            None,
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+        )
+        .await
     }
 
     pub async fn register_with_condition(
@@ -264,6 +287,7 @@ impl CronAdapter {
             function_id,
             Some(condition_function_id),
             None,
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
         )
         .await
     }
@@ -275,6 +299,7 @@ impl CronAdapter {
         function_id: &str,
         condition_function_id: Option<String>,
         metadata: Option<serde_json::Value>,
+        namespace: String,
     ) -> anyhow::Result<()> {
         // Refuse to register on a scheduler that is shutting down (e.g. the old
         // adapter mid lock-backend hot-swap). The spawned task would otherwise
@@ -315,6 +340,7 @@ impl CronAdapter {
                 function_id.to_string(),
                 condition_function_id.clone(),
                 metadata.clone(),
+                namespace.clone(),
             )
             .await;
 
@@ -329,6 +355,7 @@ impl CronAdapter {
                 function_id: function_id.to_string(),
                 condition_function_id,
                 metadata,
+                namespace,
                 task_handle,
             },
         );
@@ -391,6 +418,7 @@ impl CronAdapter {
                 function_id: info.function_id.clone(),
                 condition_function_id: info.condition_function_id.clone(),
                 metadata: info.metadata.clone(),
+                namespace: info.namespace.clone(),
             })
             .collect()
     }
@@ -508,6 +536,102 @@ mod tests {
         // Verify all tasks are finished and map is drained
         let jobs = adapter.jobs.read().await;
         assert!(jobs.is_empty(), "All jobs should be drained after shutdown");
+    }
+
+    fn register_recording_handler(
+        engine: &Arc<Engine>,
+        namespace: &str,
+        function_id: &str,
+        tag: &'static str,
+        recorder: Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        engine.register_function_handler_ns(
+            namespace,
+            RegisterFunctionRequest {
+                function_id: function_id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let recorder = recorder.clone();
+                async move {
+                    recorder.lock().unwrap().push(tag.to_string());
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+    }
+
+    /// BUG 1 (real-user path, threaded plumbing): a cron trigger registered by a
+    /// namespaced worker must fire the target — and evaluate its condition — in
+    /// that worker's namespace. The namespace is threaded through `CronJobSpec`/
+    /// `CronJobInfo`, not carried on a `Trigger` in hand. `cron::react` exists in
+    /// both `orders` ("from-orders") and `default` ("from-default"); the
+    /// `orders`-registered job must fire "from-orders". `cron::cond` exists ONLY
+    /// in `orders`, so a condition resolved in `default` is not-found → the job
+    /// is skipped (also RED). Drives the real mechanism: an every-second schedule.
+    #[tokio::test]
+    async fn cron_job_fires_target_and_condition_in_registering_namespace() {
+        let engine = test_engine();
+        let scheduler = Arc::new(CountingSchedulerAdapter {
+            acquire_calls: Arc::new(AtomicUsize::new(0)),
+            release_calls: Arc::new(AtomicUsize::new(0)),
+            allow_lock: true,
+        });
+        let adapter = CronAdapter::new(scheduler, engine.clone());
+
+        let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        register_recording_handler(
+            &engine,
+            "orders",
+            "cron::react",
+            "from-orders",
+            fired.clone(),
+        );
+        register_recording_handler(
+            &engine,
+            crate::protocol::DEFAULT_NAMESPACE,
+            "cron::react",
+            "from-default",
+            fired.clone(),
+        );
+        engine.register_function_handler_ns(
+            "orders",
+            RegisterFunctionRequest {
+                function_id: "cron::cond".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input: Value| async move {
+                FunctionResult::Success(Some(serde_json::json!(true)))
+            }),
+        );
+
+        adapter
+            .register_with_metadata(
+                "cron-ns-job",
+                "* * * * * *",
+                "cron::react",
+                Some("cron::cond".to_string()),
+                None,
+                "orders".to_string(),
+            )
+            .await
+            .expect("register cron job");
+
+        // Wait for at least one tick of the every-second schedule.
+        tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+        adapter.shutdown().await;
+
+        let fired = fired.lock().unwrap().clone();
+        assert!(
+            fired.iter().all(|t| t == "from-orders") && !fired.is_empty(),
+            "cron must fire the orders target via its orders condition; got: {fired:?}"
+        );
     }
 
     struct CountingSchedulerAdapter {

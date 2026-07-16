@@ -57,6 +57,10 @@ struct FunctionHandler {
     engine: Arc<Engine>,
     function_id: String,
     condition_function_id: Option<String>,
+    /// Trigger id of the subscribing `durable:subscriber`, used to resolve the
+    /// target/condition namespace LIVE at fire time (see
+    /// `TriggerRegistry::namespace_of`).
+    trigger_id: String,
 }
 
 #[async_trait]
@@ -87,6 +91,9 @@ impl JobHandler for FunctionHandler {
         let function_id = self.function_id.clone();
         let condition_function_id = self.condition_function_id.clone();
         let data = job.data.clone();
+        // Resolve the subscribing trigger's namespace LIVE by id, so target and
+        // condition both run in the registering worker's namespace.
+        let namespace = engine.trigger_registry.namespace_of(&self.trigger_id);
 
         async move {
             if let Some(ref condition_id) = condition_function_id {
@@ -94,7 +101,8 @@ impl JobHandler for FunctionHandler {
                     condition_function_id = %condition_id,
                     "Checking trigger conditions"
                 );
-                match check_condition(engine.as_ref(), condition_id, data.clone()).await {
+                match check_condition(engine.as_ref(), &namespace, condition_id, data.clone()).await
+                {
                     Ok(true) => {}
                     Ok(false) => {
                         tracing::debug!(
@@ -116,7 +124,9 @@ impl JobHandler for FunctionHandler {
                 }
             }
 
-            let result = engine.call(&function_id, data).await;
+            let result = engine
+                .call_with_metadata_ns(&namespace, &function_id, data, None)
+                .await;
             match &result {
                 Ok(_) => {
                     tracing::Span::current().record("otel.status_code", "OK");
@@ -247,6 +257,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
             engine: Arc::clone(&self.engine),
             function_id: function_id.to_string(),
             condition_function_id,
+            trigger_id: id.to_string(),
         });
 
         let subscription_config = queue_config.map(to_subscription_config);
@@ -803,6 +814,7 @@ mod tests {
             engine: Arc::clone(&engine),
             function_id: "queue.success".to_string(),
             condition_function_id: None,
+            trigger_id: String::new(),
         };
         success
             .handle(&job)
@@ -813,6 +825,7 @@ mod tests {
             engine,
             function_id: "queue.failure".to_string(),
             condition_function_id: None,
+            trigger_id: String::new(),
         };
         let err = failure
             .handle(&job)

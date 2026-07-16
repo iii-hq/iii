@@ -130,6 +130,7 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
                                     config: serde_json::json!({}),
                                     worker_id: None,
                                     metadata: None,
+                                    namespace: "default".to_string(),
                                 })
                                 .await
                                 .expect("register trigger");

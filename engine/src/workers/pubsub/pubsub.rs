@@ -690,6 +690,7 @@ mod tests {
             config: json!({ "topic": "orders" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         module
@@ -729,6 +730,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger without topic");
@@ -854,6 +856,7 @@ mod tests {
                 config: json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register subscribe trigger");
@@ -883,6 +886,7 @@ mod tests {
                 config: json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register subscribe trigger");

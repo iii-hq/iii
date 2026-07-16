@@ -178,6 +178,7 @@ impl QueueAdapter for BridgeAdapter {
         let function_id_owned = function_id.to_string();
         let condition_function_id_owned = condition_function_id.clone();
         let topic_owned = topic.to_string();
+        let trigger_id_owned = id.to_string();
         self.bridge.register_function(
             handler_path.clone(),
             iii_sdk::RegisterFunction::new_async(move |data: Value| {
@@ -185,6 +186,7 @@ impl QueueAdapter for BridgeAdapter {
                 let function_id = function_id_owned.clone();
                 let condition_function_id = condition_function_id_owned.clone();
                 let topic_name = topic_owned.clone();
+                let trigger_id = trigger_id_owned.clone();
                 async move {
                     // Extract trace context embedded by the sender
                     let traceparent = data["__traceparent"].as_str().map(|s| s.to_string());
@@ -206,13 +208,20 @@ impl QueueAdapter for BridgeAdapter {
                     );
 
                     async move {
+                        // Resolve the subscribing trigger's namespace LIVE by id.
+                        let namespace = engine.trigger_registry.namespace_of(&trigger_id);
                         if let Some(condition_path) = condition_function_id {
                             tracing::debug!(
                                 condition_function_id = %condition_path,
                                 "Checking trigger conditions"
                             );
-                            match check_condition(engine.as_ref(), &condition_path, data.clone())
-                                .await
+                            match check_condition(
+                                engine.as_ref(),
+                                &namespace,
+                                &condition_path,
+                                data.clone(),
+                            )
+                            .await
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
@@ -240,7 +249,10 @@ impl QueueAdapter for BridgeAdapter {
                         }
 
                         // Invoke the actual handler
-                        match engine.call(&function_id, data).await {
+                        match engine
+                            .call_with_metadata_ns(&namespace, &function_id, data, None)
+                            .await
+                        {
                             Ok(result) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                                 Ok::<Value, Error>(result.unwrap_or(Value::Null))

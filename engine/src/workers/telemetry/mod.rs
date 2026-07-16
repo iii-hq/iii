@@ -2007,6 +2007,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -2019,6 +2020,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -2654,6 +2656,7 @@ mod tests {
                 config: serde_json::json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger");
