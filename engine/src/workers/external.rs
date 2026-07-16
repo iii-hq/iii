@@ -14,7 +14,10 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde::Deserialize;
@@ -172,8 +175,11 @@ pub struct ExternalWorkerInfo {
 /// A worker implementation backed by an external binary from `iii_workers/`.
 ///
 /// The binary is spawned as a child process during `start_background_tasks`
-/// and killed during `destroy`. The worker config is serialized to a temporary
-/// YAML file and passed via `--config <path>`.
+/// and killed during `destroy`. A supervisor task respawns it (with backoff)
+/// if it exits unexpectedly — a dead worker-manager daemon must not take the
+/// `worker::*` surface down until an engine restart (MOT-3857). The worker
+/// config is serialized to a temporary YAML file and passed via
+/// `--config <path>`.
 #[derive(Clone)]
 pub struct ExternalWorker {
     display_name: &'static str,
@@ -195,7 +201,20 @@ pub struct ExternalWorker {
     /// so graceful teardown signals the child the same way.
     #[cfg(unix)]
     lifeline: Arc<Mutex<Option<std::os::fd::OwnedFd>>>,
+    /// Terminal state: set by `destroy()` before it kills the child. The
+    /// supervisor re-checks it under the child lock before every spawn so a
+    /// destroy with no prior shutdown signal can never race a respawn into
+    /// resurrecting a destroyed worker.
+    stopped: Arc<AtomicBool>,
 }
+
+/// How often the supervisor polls the spawned child for unexpected exit.
+const SUPERVISOR_POLL: Duration = Duration::from_millis(500);
+/// Backoff between respawn attempts (exponential, capped).
+const RESPAWN_BACKOFF_MIN: Duration = Duration::from_secs(1);
+const RESPAWN_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// A child that stayed up this long resets the respawn backoff.
+const BACKOFF_RESET_UPTIME: Duration = Duration::from_secs(60);
 
 impl ExternalWorker {
     pub fn new(info: ExternalWorkerInfo, config: Option<Value>, worker_manager_port: u16) -> Self {
@@ -212,7 +231,168 @@ impl ExternalWorker {
             config_file: Arc::new(Mutex::new(None)),
             #[cfg(unix)]
             lifeline: Arc::new(Mutex::new(None)),
+            stopped: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Build the `Command` fresh — including a NEW lifeline pipe and
+    /// `pre_exec` closure (a reused closure would capture a dead lifeline fd
+    /// number) — spawn the child, wire the stdio forwarders, and store the
+    /// child into `slot`.
+    ///
+    /// `slot` must be the contents of the `self.child` lock, held by the
+    /// caller across this call: spawning under the lock means a concurrent
+    /// `destroy()`/`kill_child` either blocks until the fresh child is
+    /// stored (and then kills it) or completes first — it can never miss
+    /// the new child.
+    async fn spawn_child_into(
+        &self,
+        slot: &mut Option<Child>,
+        config_path: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        let mut cmd = tokio::process::Command::new(&self.binary_path);
+        for arg in &self.extra_args {
+            cmd.arg(arg);
+        }
+        if let Some(path) = config_path {
+            cmd.arg("--config").arg(path);
+        }
+        // Pipe stdio instead of inheriting the engine's TTY fds. External
+        // workers (notably iii-sandbox) load libkrun, which raws the host
+        // terminal when attaching the guest serial console — termios is per
+        // tty, so any tcsetattr by the child mutates the engine's terminal
+        // and scrambles tracing output until the VM exits. Piping isolates
+        // libkrun's tcsetattr to non-tty fds (calls become no-ops with
+        // ENOTTY) and forwarders below copy bytes line-atomic to the
+        // engine's stdout/stderr. stdin is /dev/null because workers don't
+        // read host stdin during normal operation.
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Declare this engine's pid so daemons can watch ENGINE liveness
+        // directly and self-exit when we die without running kill_child
+        // (SIGKILL/OOM/crash). getppid() alone can't prove the parent is the
+        // engine — wrappers and debugger reparenting break it — so iii-worker's
+        // daemon_exit module prefers this handshake when present.
+        cmd.env("III_ENGINE_PID", std::process::id().to_string());
+
+        // Engine WS URL for the child. Builtin daemons' --engine args fall
+        // back to this env (clap `env =`), so they connect to THIS engine's
+        // actual worker-listener port rather than their hardcoded default —
+        // two engines on one host each get their own daemon (MOT-3970).
+        // Re-exported on every respawn (MOT-3857 supervisor) so a respawned
+        // daemon keeps the same contract.
+        let engine_url = format!("ws://127.0.0.1:{}", self.worker_manager_port);
+        cmd.env("III_ENGINE_URL", &engine_url);
+        cmd.env("III_URL", &engine_url);
+
+        // Lifeline pipe: we hold the write end (never written) for the
+        // child's lifetime; the kernel closes it the instant this engine
+        // dies — ANY death, SIGKILL included — and the daemon's lifeline
+        // watch sees EOF immediately. Env name + protocol live in
+        // iii-worker's daemon_exit module (III_LIFELINE_FD); keep in sync.
+        // Storing the new write end drops the previous child's — harmless,
+        // that child is already dead by the time we respawn.
+        #[cfg(unix)]
+        let lifeline_read = match new_cloexec_pipe() {
+            Ok((read, write)) => {
+                use std::os::fd::AsRawFd;
+                cmd.env("III_LIFELINE_FD", read.as_raw_fd().to_string());
+                *self.lifeline.lock().await = Some(write);
+                Some(read)
+            }
+            Err(e) => {
+                // Non-fatal: the daemon's PID handshake still covers engine
+                // death, just with poll latency instead of instant EOF.
+                tracing::warn!("lifeline pipe for '{}' failed: {e}", self.name);
+                None
+            }
+        };
+
+        // Detach process group on Unix for clean termination
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let lifeline_raw = lifeline_read.as_ref().map(|fd| fd.as_raw_fd());
+            // Captured pre-fork: in the child, "my parent is still the
+            // engine" must compare against the ENGINE's pid, not against 1 —
+            // in the standard container deployment the engine IS PID 1
+            // (engine/Dockerfile has no init shim), so a `getppid()==1 →
+            // exit` check would deterministically kill every worker spawn.
+            let engine_pid = std::process::id() as i32;
+            // SAFETY: everything in this hook is async-signal-safe per POSIX
+            // (setsid, fcntl, prctl, getppid, _exit) and runs in the
+            // forked-but-not-yet-execed child. setsid() gives the child its
+            // own session so kill_child() can killpg() the whole group.
+            unsafe {
+                cmd.pre_exec(move || {
+                    nix::unistd::setsid()
+                        .map_err(|e| std::io::Error::other(format!("setsid failed: {e}")))?;
+                    // Un-CLOEXEC the lifeline read end for THIS child only
+                    // (the parent-side fds stay CLOEXEC so no other spawn
+                    // inherits them).
+                    if let Some(fd) = lifeline_raw {
+                        let flags = libc::fcntl(fd, libc::F_GETFD);
+                        if flags < 0
+                            || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    // Linux belt-and-suspenders: kernel-delivered SIGKILL on
+                    // parent death, covering even a wedged child that never
+                    // polls its watches. Tied to the spawning THREAD — a
+                    // tokio core worker thread, which lives as long as the
+                    // runtime ≈ the engine process. If the engine died
+                    // between fork and prctl, we were already reparented
+                    // (getppid no longer the engine); exit now instead of
+                    // leaking unprotected.
+                    #[cfg(target_os = "linux")]
+                    {
+                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                        if libc::getppid() != engine_pid {
+                            libc::_exit(125);
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = engine_pid;
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = cmd.spawn().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to spawn external worker '{}' ({}): {}",
+                self.name,
+                self.binary_path.display(),
+                e
+            )
+        })?;
+
+        // Forward child stdout/stderr to engine stdout/stderr line-atomically.
+        // BufReader::read_until('\n') hands us complete lines (or trailing EOF
+        // bytes). Each forwarded line is one Stdout::write_all / Stderr::write_all
+        // call, which holds the global StdoutLock/StderrLock for the duration —
+        // so worker lines never interleave mid-line with engine tracing output.
+        // The forwarder tasks self-terminate on pipe EOF when the child dies,
+        // so respawns don't leak them.
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(forward_pipe(stdout, false));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(forward_pipe(stderr, true));
+        }
+
+        tracing::info!(
+            "Spawned external worker '{}' (pid: {:?})",
+            self.name,
+            child.id()
+        );
+        *slot = Some(child);
+
+        Ok(())
     }
 }
 
@@ -296,8 +476,6 @@ impl Worker for ExternalWorker {
             None
         };
 
-        let child_handle = self.child.clone();
-
         // Wait for the engine to finish binding its listener, but bail early
         // if shutdown fires during the delay.
         tokio::select! {
@@ -311,164 +489,128 @@ impl Worker for ExternalWorker {
             }
         }
 
-        let mut cmd = tokio::process::Command::new(&self.binary_path);
-        for arg in &self.extra_args {
-            cmd.arg(arg);
-        }
-        if let Some(ref path) = config_path {
-            cmd.arg("--config").arg(path);
-        }
-        // Pipe stdio instead of inheriting the engine's TTY fds. External
-        // workers (notably iii-sandbox) load libkrun, which raws the host
-        // terminal when attaching the guest serial console — termios is per
-        // tty, so any tcsetattr by the child mutates the engine's terminal
-        // and scrambles tracing output until the VM exits. Piping isolates
-        // libkrun's tcsetattr to non-tty fds (calls become no-ops with
-        // ENOTTY) and forwarders below copy bytes line-atomic to the
-        // engine's stdout/stderr. stdin is /dev/null because workers don't
-        // read host stdin during normal operation.
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Declare this engine's pid so daemons can watch ENGINE liveness
-        // directly and self-exit when we die without running kill_child
-        // (SIGKILL/OOM/crash). getppid() alone can't prove the parent is the
-        // engine — wrappers and debugger reparenting break it — so iii-worker's
-        // daemon_exit module prefers this handshake when present.
-        cmd.env("III_ENGINE_PID", std::process::id().to_string());
-
-        // Engine WS URL for the child. Builtin daemons' --engine args fall
-        // back to this env (clap `env =`), so they connect to THIS engine's
-        // actual worker-listener port rather than their hardcoded default —
-        // two engines on one host each get their own daemon (MOT-3970).
-        // Also the documented contract for conventional externals: the
-        // manifest promises III_URL/III_ENGINE_URL are engine-set.
-        let engine_url = format!("ws://127.0.0.1:{}", self.worker_manager_port);
-        cmd.env("III_ENGINE_URL", &engine_url);
-        cmd.env("III_URL", &engine_url);
-
-        // Lifeline pipe: we hold the write end (never written) for the
-        // child's lifetime; the kernel closes it the instant this engine
-        // dies — ANY death, SIGKILL included — and the daemon's lifeline
-        // watch sees EOF immediately. Env name + protocol live in
-        // iii-worker's daemon_exit module (III_LIFELINE_FD); keep in sync.
-        #[cfg(unix)]
-        let lifeline_read = match new_cloexec_pipe() {
-            Ok((read, write)) => {
-                use std::os::fd::AsRawFd;
-                cmd.env("III_LIFELINE_FD", read.as_raw_fd().to_string());
-                *self.lifeline.lock().await = Some(write);
-                Some(read)
-            }
-            Err(e) => {
-                // Non-fatal: the daemon's PID handshake still covers engine
-                // death, just with poll latency instead of instant EOF.
-                tracing::warn!("lifeline pipe for '{}' failed: {e}", self.name);
-                None
-            }
-        };
-
-        // Detach process group on Unix for clean termination
-        #[cfg(unix)]
+        // First spawn is synchronous so a missing/unspawnable binary still
+        // hard-fails ReloadManager::start_worker instead of warning from a
+        // background task.
         {
-            use std::os::fd::AsRawFd;
-            let lifeline_raw = lifeline_read.as_ref().map(|fd| fd.as_raw_fd());
-            // Captured pre-fork: in the child, "my parent is still the
-            // engine" must compare against the ENGINE's pid, not against 1 —
-            // in the standard container deployment the engine IS PID 1
-            // (engine/Dockerfile has no init shim), so a `getppid()==1 →
-            // exit` check would deterministically kill every worker spawn.
-            let engine_pid = std::process::id() as i32;
-            // SAFETY: everything in this hook is async-signal-safe per POSIX
-            // (setsid, fcntl, prctl, getppid, _exit) and runs in the
-            // forked-but-not-yet-execed child. setsid() gives the child its
-            // own session so kill_child() can killpg() the whole group.
-            unsafe {
-                cmd.pre_exec(move || {
-                    nix::unistd::setsid()
-                        .map_err(|e| std::io::Error::other(format!("setsid failed: {e}")))?;
-                    // Un-CLOEXEC the lifeline read end for THIS child only
-                    // (the parent-side fds stay CLOEXEC so no other spawn
-                    // inherits them).
-                    if let Some(fd) = lifeline_raw {
-                        let flags = libc::fcntl(fd, libc::F_GETFD);
-                        if flags < 0
-                            || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
-                        {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                    }
-                    // Linux belt-and-suspenders: kernel-delivered SIGKILL on
-                    // parent death, covering even a wedged child that never
-                    // polls its watches. Tied to the spawning THREAD — a
-                    // tokio core worker thread, which lives as long as the
-                    // runtime ≈ the engine process. If the engine died
-                    // between fork and prctl, we were already reparented
-                    // (getppid no longer the engine); exit now instead of
-                    // leaking unprotected.
-                    #[cfg(target_os = "linux")]
-                    {
-                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                        if libc::getppid() != engine_pid {
-                            libc::_exit(125);
-                        }
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    let _ = engine_pid;
-                    Ok(())
-                });
+            let mut slot = self.child.lock().await;
+            if self.stopped.load(Ordering::SeqCst) {
+                return Ok(());
             }
+            self.spawn_child_into(&mut slot, config_path.as_deref())
+                .await?;
         }
 
-        let mut child = cmd.spawn().map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to spawn external worker '{}' ({}): {}",
-                self.name,
-                self.binary_path.display(),
-                e
-            )
-        })?;
-
-        // Forward child stdout/stderr to engine stdout/stderr line-atomically.
-        // BufReader::read_until('\n') hands us complete lines (or trailing EOF
-        // bytes). Each forwarded line is one Stdout::write_all / Stderr::write_all
-        // call, which holds the global StdoutLock/StderrLock for the duration —
-        // so worker lines never interleave mid-line with engine tracing output.
-        if let Some(stdout) = child.stdout.take() {
-            tokio::spawn(forward_pipe(stdout, false));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(forward_pipe(stderr, true));
-        }
-
-        tracing::info!(
-            "Spawned external worker '{}' (pid: {:?})",
-            self.name,
-            child.id()
-        );
-        *child_handle.lock().await = Some(child);
-
-        // Watch for shutdown signal
-        let child_for_shutdown = self.child.clone();
-        let name_for_shutdown = self.name.clone();
-        #[cfg(unix)]
-        let lifeline_for_shutdown = self.lifeline.clone();
+        // Supervisor: kill the child on shutdown, respawn it on unexpected
+        // exit. Without the respawn, a dead worker-manager daemon takes the
+        // whole worker::* surface down until a full engine restart
+        // (MOT-3857).
+        let worker = self.clone();
         tokio::spawn(async move {
-            let _ = shutdown_rx.changed().await;
-            tracing::info!(
-                "External worker '{}' received shutdown signal",
-                name_for_shutdown
-            );
-            // SIGTERM first, lifeline-drop after: the daemon races its exit
-            // arms, and an already-pending EOF beats the signal — which
-            // would make every GRACEFUL shutdown take the "engine-gone"
-            // path and write the abnormal-death breadcrumb. Dropping after
-            // kill_child keeps EOF as a true engine-death signal (and is a
-            // no-op for the already-dead child).
-            kill_child(&child_for_shutdown).await;
-            #[cfg(unix)]
-            drop(lifeline_for_shutdown.lock().await.take());
+            let mut backoff = RESPAWN_BACKOFF_MIN;
+            let mut spawned_at = tokio::time::Instant::now();
+            loop {
+                tokio::select! {
+                    // Ok or Err (sender dropped) — both mean shutdown.
+                    _ = shutdown_rx.changed() => {
+                        tracing::info!(
+                            "External worker '{}' received shutdown signal",
+                            worker.name
+                        );
+                        // SIGTERM first, lifeline-drop after: the daemon races
+                        // its exit arms, and an already-pending EOF beats the
+                        // signal — which would make every GRACEFUL shutdown
+                        // take the "engine-gone" path and write the
+                        // abnormal-death breadcrumb. Dropping after kill_child
+                        // keeps EOF as a true engine-death signal (and is a
+                        // no-op for the already-dead child).
+                        kill_child(&worker.child).await;
+                        #[cfg(unix)]
+                        drop(worker.lifeline.lock().await.take());
+                        return;
+                    }
+                    _ = tokio::time::sleep(SUPERVISOR_POLL) => {}
+                }
+
+                let status = {
+                    let mut slot = worker.child.lock().await;
+                    match slot.as_mut().map(|c| c.try_wait()) {
+                        // Slot emptied by destroy()/kill_child — someone else
+                        // owns the lifecycle now; stop supervising.
+                        None => return,
+                        // Still running.
+                        Some(Ok(None)) => continue,
+                        // Reap the corpse NOW: kill_child must never killpg a
+                        // recycled pid, and the slot must be free to respawn
+                        // into.
+                        Some(Ok(Some(status))) => {
+                            slot.take();
+                            Some(status)
+                        }
+                        Some(Err(err)) => {
+                            tracing::warn!(
+                                "try_wait for external worker '{}' failed: {err}; treating as dead",
+                                worker.name
+                            );
+                            slot.take();
+                            None
+                        }
+                    }
+                };
+
+                if spawned_at.elapsed() >= BACKOFF_RESET_UPTIME {
+                    backoff = RESPAWN_BACKOFF_MIN;
+                }
+                tracing::warn!(
+                    "External worker '{}' exited unexpectedly ({}); respawning in {:?}",
+                    worker.name,
+                    status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "unknown status".to_string()),
+                    backoff
+                );
+
+                // Respawn with backoff. Inner loop on purpose: the slot is
+                // empty by OUR doing here, and the outer loop reads an empty
+                // slot as "destroy ran".
+                loop {
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => {
+                            #[cfg(unix)]
+                            drop(worker.lifeline.lock().await.take());
+                            return;
+                        }
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(RESPAWN_BACKOFF_MAX);
+                    // borrow(), not changed(): the signal may already have
+                    // been consumed by an earlier select arm.
+                    if *shutdown_rx.borrow() {
+                        return;
+                    }
+                    let mut slot = worker.child.lock().await;
+                    // Terminal-state check under the child lock: a destroy()
+                    // with no prior shutdown signal (e.g. final engine
+                    // teardown of reload-added workers) that lands during our
+                    // backoff must not be raced by a respawn that resurrects
+                    // the worker.
+                    if worker.stopped.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    match worker
+                        .spawn_child_into(&mut slot, config_path.as_deref())
+                        .await
+                    {
+                        Ok(()) => {
+                            spawned_at = tokio::time::Instant::now();
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::warn!("{err}; backing off");
+                        }
+                    }
+                }
+            }
         });
 
         Ok(())
@@ -476,6 +618,10 @@ impl Worker for ExternalWorker {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying external worker '{}'", self.name);
+        // Terminal state BEFORE killing: the supervisor re-checks this under
+        // the child lock, so once we flip it no respawn can resurrect the
+        // worker even if destroy lands mid-backoff with no shutdown signal.
+        self.stopped.store(true, Ordering::SeqCst);
         kill_child(&self.child).await;
         // After kill_child for breadcrumb accuracy — see the shutdown task.
         #[cfg(unix)]
@@ -1076,6 +1222,150 @@ mod tests {
                 env_line.contains("engine_url=ws://127.0.0.1:50123"),
                 "child must see this engine's actual WS URL, not a default; got: {env_line:?}"
             );
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_pids(path: &std::path::Path) -> Vec<i32> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pids(path: &std::path::Path, want: usize) -> Vec<i32> {
+        // 10s ceiling: first spawn hides behind the 2s bind delay, a
+        // respawn behind SUPERVISOR_POLL + 1s backoff.
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let pids = read_pids(path);
+            if pids.len() >= want {
+                return pids;
+            }
+        }
+        read_pids(path)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn external_worker_respawns_killed_child_and_stops_on_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("pids.txt");
+
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/respawn_probe.sh");
+
+        let info = ExternalWorkerInfo {
+            name: "respawn-probe".into(),
+            binary_path: fixture,
+            extra_args: vec![],
+        };
+        // config: None — the builtin daemon path MOT-3857 is about.
+        let worker = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
+
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::set_var("RESPAWN_LOG", &log);
+        }
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        worker.start_background_tasks(rx, tx.clone()).await.unwrap();
+
+        let pids = wait_for_pids(&log, 1).await;
+        let pid1 = *pids.first().expect("probe never spawned");
+
+        // SIGKILL = unexpected death, not engine shutdown.
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid1),
+            nix::sys::signal::Signal::SIGKILL,
+        )
+        .unwrap();
+
+        let pids = wait_for_pids(&log, 2).await;
+        assert!(
+            pids.len() >= 2,
+            "supervisor never respawned the killed child (pids: {pids:?})"
+        );
+        let pid2 = pids[1];
+        assert_ne!(pid1, pid2, "respawn must be a fresh process");
+
+        // Shutdown stops supervision: the fresh child is killed and no
+        // further respawn happens.
+        let spawns_before_shutdown = pids.len();
+        let _ = tx.send(true);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert_eq!(
+            read_pids(&log).len(),
+            spawns_before_shutdown,
+            "no respawn may happen after shutdown"
+        );
+        assert!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid2), None).is_err(),
+            "child must be dead after shutdown"
+        );
+
+        worker.destroy().await.unwrap();
+        // SAFETY: test is #[serial].
+        unsafe {
+            std::env::remove_var("RESPAWN_LOG");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn external_worker_destroy_during_backoff_prevents_respawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("pids.txt");
+
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/respawn_probe.sh");
+
+        let info = ExternalWorkerInfo {
+            name: "destroy-probe".into(),
+            binary_path: fixture,
+            extra_args: vec![],
+        };
+        let worker = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
+
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::set_var("RESPAWN_LOG", &log);
+        }
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        worker.start_background_tasks(rx, tx.clone()).await.unwrap();
+
+        let pids = wait_for_pids(&log, 1).await;
+        let pid1 = *pids.first().expect("probe never spawned");
+
+        // Unexpected death: supervisor detects within SUPERVISOR_POLL
+        // (500ms), then waits RESPAWN_BACKOFF_MIN (1s) — earliest respawn is
+        // ~1s after the kill.
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid1),
+            nix::sys::signal::Signal::SIGKILL,
+        )
+        .unwrap();
+
+        // destroy() with NO shutdown signal, landing inside the backoff
+        // window — the terminal `stopped` state must win over the respawn.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        worker.destroy().await.unwrap();
+
+        // Well past the 1s backoff: no second spawn may exist.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert_eq!(
+            read_pids(&log).len(),
+            1,
+            "destroy() during backoff must not be raced by a respawn"
+        );
+        // SAFETY: test is #[serial].
+        unsafe {
+            std::env::remove_var("RESPAWN_LOG");
         }
     }
 }
