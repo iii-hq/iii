@@ -87,6 +87,34 @@ fn probe_authority(url: &str) -> Option<String> {
     (has_port && !auth.is_empty()).then(|| auth.to_string())
 }
 
+/// True when the `--host` value targets this machine (localhost / 127.x /
+/// ::1). Gates the client-side cwd-absolutization of local worker paths:
+/// `WorkerSource::Local` paths resolve on the ENGINE host by contract (see
+/// the schema on `core::types::WorkerSource`), so rewriting them against
+/// the CLI's cwd is only correct when both are the same machine — the
+/// engine-in-another-directory case `--host` primarily exists for.
+/// Unparseable values return false (`handle_remote_add` rejects them with
+/// a real error before any path matters).
+pub fn host_is_loopback(host: &str) -> bool {
+    let Ok(url) = host_to_ws_url(host) else {
+        return false;
+    };
+    let Some(rest) = url.split_once("://").map(|(_, r)| r) else {
+        return false;
+    };
+    let auth = rest.split(['/', '?']).next().unwrap_or(rest);
+    // Strip the port: bracketed IPv6 keeps everything inside `[...]`,
+    // otherwise drop the last `:segment`.
+    let host_part = if let Some(inner) = auth.strip_prefix('[') {
+        inner.split_once(']').map(|(h, _)| h).unwrap_or(inner)
+    } else {
+        auth.rsplit_once(':').map(|(h, _)| h).unwrap_or(auth)
+    };
+    host_part.eq_ignore_ascii_case("localhost")
+        || host_part.starts_with("127.")
+        || host_part == "::1"
+}
+
 /// Fail fast when nothing listens at the target: without this, a wrong
 /// `--host` sits silent until the trigger timeout while the SDK retries the
 /// connection in the background — exactly the hang this flag exists to fix.
@@ -301,6 +329,30 @@ mod tests {
         assert!(host_to_ws_url(":49134").is_err());
         assert!(host_to_ws_url("http://engine:49134").is_err());
         assert!(host_to_ws_url("[::1").is_err());
+    }
+
+    #[test]
+    fn host_is_loopback_matches_local_targets() {
+        assert!(host_is_loopback("localhost"));
+        assert!(host_is_loopback("LOCALHOST:49134"));
+        assert!(host_is_loopback("127.0.0.1"));
+        assert!(host_is_loopback("127.1.2.3:5000"));
+        assert!(host_is_loopback("[::1]"));
+        assert!(host_is_loopback("[::1]:49134"));
+        assert!(host_is_loopback("ws://localhost:49134"));
+        assert!(host_is_loopback("ws://127.0.0.1"));
+    }
+
+    #[test]
+    fn host_is_loopback_rejects_remote_and_invalid_targets() {
+        assert!(!host_is_loopback("engine.internal"));
+        assert!(!host_is_loopback("10.0.0.7:49134"));
+        assert!(!host_is_loopback("wss://engine.example.com"));
+        assert!(!host_is_loopback("ws://[2001:db8::1]:49134"));
+        // Unparseable values are not loopback; handle_remote_add rejects
+        // them with a real error before any path handling matters.
+        assert!(!host_is_loopback(""));
+        assert!(!host_is_loopback("localhost:notaport"));
     }
 
     #[test]

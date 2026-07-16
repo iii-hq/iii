@@ -50,9 +50,18 @@ fn help_flag_shows_all_subcommands() {
     assert!(stdout.contains("worker"), "help should list worker");
     assert!(stdout.contains("project"), "help should list project");
     assert!(stdout.contains("update"), "help should list update");
+    // "create" was replaced by `iii project init --template` — it must not
+    // come back as a SUBCOMMAND. The word may legitimately appear in option
+    // descriptions (the --config help says `iii` offers to create the file),
+    // so check the subcommand-line pattern rather than a raw substring.
+    let create_subcommand_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.trim_start().starts_with("create ") || l.trim() == "create")
+        .collect();
     assert!(
-        !stdout.contains(" create "),
-        "help should NOT list create (replaced by `iii project init --template`)"
+        create_subcommand_lines.is_empty(),
+        "help should NOT list create as a subcommand (replaced by `iii project init --template`), found: {:?}",
+        create_subcommand_lines
     );
 }
 
