@@ -55,33 +55,39 @@ impl WakePipe {
 
     /// Signal the reader. Safe to call from any thread, multiple times.
     ///
-    /// Writes a single byte. A full pipe is NOT safe to ignore: msb_krun's
+    /// Writes a single byte. A dropped write is NOT safe to ignore: msb_krun's
     /// NetWorker registers the read end EDGE_TRIGGERED (kqueue `EV_CLEAR`) and
-    /// never reads it, so a dropped write means no event is ever delivered
-    /// again — the MOT-3966 permanent host→guest stall. On a failed write we
-    /// self-heal: drain our own read end (both ends live in this process;
-    /// concurrent drainers are harmless — only edges matter, not bytes) and
-    /// retry once so the write lands and raises a fresh edge.
+    /// never reads it, so a lost write means no event is ever delivered
+    /// again — the MOT-3966 permanent host→guest stall. On failure we
+    /// self-heal and retry, bounded so a persistent error can't spin:
+    /// - full pipe (EAGAIN): drain our own read end (both ends live in this
+    ///   process; concurrent drainers are harmless — only edges matter, not
+    ///   bytes) so the next write lands and raises a fresh edge;
+    /// - interrupted (EINTR): just write again.
     pub fn wake(&self) {
-        // SAFETY: write_fd is a valid, non-blocking file descriptor.
-        // Writing 1 byte to a pipe is atomic on all POSIX systems.
-        let n = unsafe { libc::write(self.write_fd.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
-        if n == 1 {
-            return;
-        }
+        for attempt in 0..3 {
+            // SAFETY: write_fd is a valid, non-blocking file descriptor.
+            // Writing 1 byte to a pipe is atomic on all POSIX systems.
+            let n = unsafe { libc::write(self.write_fd.as_raw_fd(), [1u8].as_ptr().cast(), 1) };
+            if n == 1 {
+                return;
+            }
 
-        let failed = FAILED_WAKES.fetch_add(1, Ordering::Relaxed) + 1;
-        if failed == 1 || failed.is_multiple_of(1000) {
-            tracing::warn!(
-                failed,
-                "wake pipe full; draining and retrying (consumer not draining its pipe?)"
-            );
-        }
+            if attempt == 0 {
+                let failed = FAILED_WAKES.fetch_add(1, Ordering::Relaxed) + 1;
+                if failed == 1 || failed.is_multiple_of(1000) {
+                    tracing::warn!(
+                        failed,
+                        "wake pipe write failed; self-healing (consumer not draining its pipe?)"
+                    );
+                }
+            }
 
-        self.drain();
-        // SAFETY: as above.
-        unsafe {
-            libc::write(self.write_fd.as_raw_fd(), [1u8].as_ptr().cast(), 1);
+            let interrupted =
+                n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+            if !interrupted {
+                self.drain();
+            }
         }
     }
 
