@@ -14,7 +14,7 @@ runs on iii without ever needing a full cutover.
 ## Prerequisites
 
 - A running iii engine ([install](../../install), then run `iii` in a scratch directory and let it
-  create a `config.yaml` — add the workers each step needs with `iii worker add`; see
+  create a `config.yaml`, then add the workers each step needs with `iii worker add`; see
   [Default configuration](../../using-iii/engine#default-configuration)).
 - An existing service you want to migrate, reachable over HTTP.
 - The SDK for the language your service is written in (TypeScript, Python, or Rust).
