@@ -4683,6 +4683,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(dead_worker),
                 metadata: None,
+                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             },
         );
 

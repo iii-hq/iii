@@ -1047,6 +1047,45 @@ mod tests {
         assert!(registry.triggers.contains_key("t_other"));
     }
 
+    /// Recovery must preserve the namespace. A trigger registered in `orders`
+    /// while its type is unavailable is parked in `pending_triggers`; when the
+    /// type is (re)registered it is activated into the live `triggers` map. The
+    /// recovered binding must still resolve in `orders` — every dispatch path
+    /// reads `namespace_of`, so if recovery dropped the namespace the trigger
+    /// would silently fire in `default` (BUG 1 via the recovery path).
+    #[tokio::test]
+    async fn a_recovered_pending_trigger_keeps_its_namespace() {
+        let registry = TriggerRegistry::new();
+
+        // Arrives before its type exists → parked pending.
+        let mut trig = make_trigger("t_ns", "evt");
+        trig.namespace = "orders".to_string();
+        registry.register_trigger(trig).await.unwrap();
+        assert!(registry.pending_triggers.contains_key("t_ns"));
+        assert!(!registry.triggers.contains_key("t_ns"));
+
+        // The type registers: the parked intent is activated (recovered).
+        let healthy = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "gen A",
+                Box::new(Arc::clone(&healthy)),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert!(registry.triggers.contains_key("t_ns"), "trigger recovered");
+        assert!(registry.pending_triggers.is_empty());
+        assert_eq!(
+            registry.namespace_of("t_ns"),
+            "orders",
+            "a recovered trigger must still resolve in the namespace it was registered in, \
+             not fall back to default"
+        );
+    }
+
     #[tokio::test]
     async fn unregister_worker_drops_its_own_pending_intents() {
         let registry = TriggerRegistry::new();
