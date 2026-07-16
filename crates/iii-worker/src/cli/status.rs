@@ -388,6 +388,16 @@ impl WorkerStatus {
         )
     }
 
+    /// Terminal condition for the untimed `iii worker status` watch: wait
+    /// terminality plus `EngineDown`. With no engine, the phase cannot
+    /// progress on its own, so an untimed watch would spin forever. The
+    /// timed `--wait` loops keep polling through `EngineDown` instead — an
+    /// engine restarting mid-`add` is expected to come back before the
+    /// timeout.
+    pub fn is_terminal_for_watch(&self) -> bool {
+        self.is_terminal_for_wait() || matches!(self.phase, Phase::EngineDown)
+    }
+
     /// Same as [`Self::headline`] but appends a live spinner glyph and an
     /// elapsed-seconds counter. The plain `headline` is used for one-shot
     /// snapshots; this variant is what live `--watch` and `--wait` print so
@@ -480,19 +490,27 @@ impl WorkerStatus {
         // download), suppress the hint — the worker is plainly making
         // progress and a "may have failed" warning would directly
         // contradict the `tail:` row right above it.
-        if matches!(self.phase, Phase::Queued)
+        if matches!(self.phase, Phase::Queued | Phase::Booting)
             && p.elapsed >= Duration::from_secs(30)
             && !self.log_recently_updated(Duration::from_secs(10))
         {
+            // Booting covers the "prepared but VM not running" window, which
+            // is also what a deliberately stopped worker looks like (stop
+            // removes the pidfile but keeps the prepared marker). After 30s
+            // of silence that's the likelier story — say so instead of
+            // spinning on "booting VM" indefinitely.
+            let hint = if matches!(self.phase, Phase::Booting) {
+                "VM not running — if this worker was stopped, start it with `iii worker start {name}`"
+            } else {
+                "still queued, no log activity — check `iii worker logs {name} -f` (engine may have failed to spawn it)"
+            };
             let insert_at = out.len().saturating_sub(1);
             out.insert(
                 insert_at,
                 format!(
                     "{:>12}  {}",
                     "hint:".yellow(),
-                    "still queued, no log activity — check `iii worker logs {name} -f` (engine may have failed to spawn it)"
-                        .replace("{name}", &self.name)
-                        .dimmed()
+                    hint.replace("{name}", &self.name).dimmed()
                 ),
             );
         }
@@ -790,18 +808,23 @@ pub async fn handle_worker_status(worker_name: &str, watch: bool) -> i32 {
         for line in status.render() {
             eprintln!("{}", line);
         }
-        return match status.phase {
-            Phase::Ready => 0,
-            Phase::NotInConfig => 1,
-            _ => 0,
-        };
+        return status_exit_code(&status.phase);
     }
 
-    // --watch: live-redraw with no timeout (Ctrl-C to abort).
+    // --watch: live-redraw until a watch-terminal phase (Ready /
+    // NotInConfig / Failed / EngineDown) or Ctrl-C.
     let final_status = watch_until_ready(worker_name, None, port).await;
-    match final_status.phase {
+    status_exit_code(&final_status.phase)
+}
+
+/// Exit code for `iii worker status`: 0 only when the worker is Ready or
+/// still progressing; 1 when it can't be Ready without user action (not in
+/// config, failed, or no engine to run it). Keeps `iii worker status -- ...`
+/// usable in scripts as a readiness probe.
+fn status_exit_code(phase: &Phase) -> i32 {
+    match phase {
         Phase::Ready => 0,
-        Phase::NotInConfig => 1,
+        Phase::NotInConfig | Phase::Failed | Phase::EngineDown => 1,
         _ => 0,
     }
 }
@@ -810,8 +833,10 @@ pub async fn handle_worker_status(worker_name: &str, watch: bool) -> i32 {
 /// terminal wait phase (Ready / NotInConfig / Failed), `timeout` elapses, or
 /// the process is killed.
 ///
-/// `timeout = None` means "wait forever" (used by `--watch`); `Some(d)` is
-/// used by `--wait` so the CLI doesn't hang on a stuck VM. `port` is the
+/// `timeout = None` means "watch until a watch-terminal phase, including
+/// EngineDown" (used by `iii worker status`); `Some(d)` is used by `--wait`
+/// so the CLI doesn't hang on a stuck VM while still polling through an
+/// engine restart. `port` is the
 /// engine's `iii-worker-manager` port — each probe re-checks it so the
 /// "engine: running/stopped" line reflects the correct engine even when
 /// the user runs on a non-default port.
@@ -890,7 +915,14 @@ pub async fn watch_until_ready(
             eprintln!("{}", line);
         }
 
-        if status.is_terminal_for_wait() {
+        let terminal = match timeout {
+            // Untimed watch (`iii worker status`): also stop on EngineDown —
+            // nothing progresses without an engine, and the help text
+            // promises the watch ends.
+            None => status.is_terminal_for_watch(),
+            Some(_) => status.is_terminal_for_wait(),
+        };
+        if terminal {
             break status;
         }
         if let Some(t) = timeout
@@ -1035,6 +1067,50 @@ mod tests {
 
         not_in.phase = Phase::Failed;
         assert!(not_in.is_terminal_for_wait());
+    }
+
+    /// Regression: the untimed `iii worker status` watch spun forever with
+    /// the engine down, because EngineDown was not wait-terminal and the
+    /// watch used the wait predicate. The watch predicate must include
+    /// EngineDown while leaving the wait predicate untouched (an engine
+    /// restart mid-`add --wait` is expected to come back).
+    #[test]
+    fn engine_down_is_terminal_for_watch_but_not_for_wait() {
+        let mut status = WorkerStatus {
+            name: "t".into(),
+            phase: Phase::EngineDown,
+            engine_running: false,
+            worker_type: Some("local"),
+            worker_path: None,
+            managed_dir_exists: true,
+            prepared: true,
+            pid: None,
+            alive: false,
+            engine_registered: None,
+            logs_dir: None,
+            logs_last_modified: None,
+        };
+        assert!(status.is_terminal_for_watch());
+        assert!(!status.is_terminal_for_wait());
+
+        // Non-terminal boot phases stay non-terminal for both.
+        for phase in [Phase::Queued, Phase::Preparing, Phase::Booting] {
+            status.phase = phase;
+            assert!(!status.is_terminal_for_watch());
+        }
+    }
+
+    /// `iii worker status` exit codes: 0 only for Ready or a phase that can
+    /// still progress on its own; 1 when readiness needs user action.
+    #[test]
+    fn status_exit_code_flags_unready_terminal_states() {
+        assert_eq!(status_exit_code(&Phase::Ready), 0);
+        assert_eq!(status_exit_code(&Phase::Queued), 0);
+        assert_eq!(status_exit_code(&Phase::Preparing), 0);
+        assert_eq!(status_exit_code(&Phase::Booting), 0);
+        assert_eq!(status_exit_code(&Phase::NotInConfig), 1);
+        assert_eq!(status_exit_code(&Phase::Failed), 1);
+        assert_eq!(status_exit_code(&Phase::EngineDown), 1);
     }
 
     /// Regression: `truncate_visible` must count VISIBLE columns and

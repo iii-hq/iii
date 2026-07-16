@@ -1074,6 +1074,36 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
     }
 
     let lock_path = super::lockfile::lockfile_path();
+    if !lock_path.exists() {
+        // No lockfile: for a named update this is the same failure as
+        // "name not pinned" below; for a bare update it's the same outcome
+        // as an empty lockfile — nothing pinned, nothing to do. Surfacing
+        // the raw ENOENT here made a fresh project look broken.
+        if let Some(name) = worker_name {
+            eprintln!("{} Worker '{}' is not in iii.lock", "error:".red(), name);
+            return 1;
+        }
+        eprintln!(
+            "  No iii.lock here; nothing to update. Install a worker first with `iii worker add <name>`."
+        );
+        return 0;
+    }
+
+    // Same mutual exclusion as sync: update rewrites config.yaml and
+    // iii.lock per resolved root, and a concurrent update/sync would race
+    // the read-modify-write (last writer silently wins).
+    let _operation_lock =
+        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!(
+                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
+                    "error:".red()
+                );
+                return 1;
+            }
+        };
+
     let lockfile = match super::lockfile::WorkerLockfile::read_from(lock_path) {
         Ok(lockfile) => lockfile,
         Err(e) => {
@@ -2263,8 +2293,9 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
     let home = dirs::home_dir().unwrap_or_default();
     let workers_dir = home.join(".iii/workers");
     let images_dir = home.join(".iii/images");
+    let managed_dir = home.join(".iii/managed");
 
-    if !workers_dir.exists() && !images_dir.exists() {
+    if !workers_dir.exists() && !images_dir.exists() && !managed_dir.exists() {
         eprintln!("  Nothing to clear.");
         return 0;
     }
@@ -2276,33 +2307,64 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
 
     let mut skipped: Vec<String> = Vec::new();
     let mut total_freed: u64 = 0;
-    let mut worker_count: u32 = 0;
+    // Unique worker names cleared across ~/.iii/workers and ~/.iii/managed —
+    // a binary worker can have artifacts in both, and counting it twice
+    // would inflate the tally.
+    let mut cleared_workers: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut image_count: u32 = 0;
+
+    // Deletes one artifact dir entry after the shared guards: valid worker
+    // name, resolved path stays under `base`, worker not currently running.
+    let mut clear_entry = |entry: &std::fs::DirEntry,
+                           base: &std::path::Path,
+                           skipped: &mut Vec<String>|
+     -> Option<String> {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip entries with invalid names (e.g. symlinks with path traversal)
+        if super::registry::validate_worker_name(&name).is_err() {
+            return None;
+        }
+        // Verify resolved path stays under the artifact base dir
+        if let Ok(resolved) = entry.path().canonicalize()
+            && let Ok(base) = base.canonicalize()
+            && !resolved.starts_with(&base)
+        {
+            return None;
+        }
+        if is_worker_running(&name) {
+            if !skipped.contains(&name) {
+                skipped.push(name);
+            }
+            return None;
+        }
+        total_freed += dir_size(&entry.path());
+        let _ = std::fs::remove_dir_all(entry.path());
+        Some(name)
+    };
 
     // Clear binary workers
     if workers_dir.exists()
         && let Ok(entries) = std::fs::read_dir(&workers_dir)
     {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            // Skip entries with invalid names (e.g. symlinks with path traversal)
-            if super::registry::validate_worker_name(&name).is_err() {
-                continue;
+            if let Some(name) = clear_entry(&entry, &workers_dir, &mut skipped) {
+                cleared_workers.insert(name);
             }
-            // Verify resolved path stays under workers_dir
-            if let Ok(resolved) = entry.path().canonicalize()
-                && let Ok(base) = workers_dir.canonicalize()
-                && !resolved.starts_with(&base)
-            {
-                continue;
+        }
+    }
+
+    // Clear managed VM state (~/.iii/managed/{name}): rootfs clones, dep
+    // caches, and the `.iii-prepared` marker. The per-worker path
+    // (`delete_worker_artifacts`) already removes this dir — a stale
+    // prepared marker silently skips the in-VM dependency reinstall on the
+    // next boot (MOT-3585) — so the wipe-all path must cover it too.
+    if managed_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&managed_dir)
+    {
+        for entry in entries.flatten() {
+            if let Some(name) = clear_entry(&entry, &managed_dir, &mut skipped) {
+                cleared_workers.insert(name);
             }
-            if is_worker_running(&name) {
-                skipped.push(name);
-                continue;
-            }
-            total_freed += dir_size(&entry.path());
-            let _ = std::fs::remove_dir_all(entry.path());
-            worker_count += 1;
         }
     }
 
@@ -2350,7 +2412,7 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
     eprintln!(
         "  {} Cleared {} worker(s) and {} image(s) ({:.1} MB freed)",
         "✓".green(),
-        worker_count,
+        cleared_workers.len(),
         image_count,
         total_freed as f64 / 1_048_576.0,
     );
@@ -3820,12 +3882,7 @@ async fn follow_single_log(path: &std::path::Path) -> i32 {
     0
 }
 
-pub async fn handle_managed_logs(
-    worker_name: &str,
-    follow: bool,
-    _address: &str,
-    _port: u16,
-) -> i32 {
+pub async fn handle_managed_logs(worker_name: &str, follow: bool) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -3919,8 +3976,24 @@ pub async fn handle_managed_logs(
             0
         }
         Err(_) => {
-            eprintln!("{} No logs found for '{}'", "error:".red(), worker_name);
-            1
+            // No log files anywhere. A known worker that simply hasn't
+            // produced logs yet is informational (exit 0, matching the
+            // "No logs available" branches above); a name with no config
+            // entry and no artifacts is a probable typo (exit 1).
+            let known = super::config_file::worker_exists(worker_name)
+                || home.join(".iii/managed").join(worker_name).is_dir()
+                || home.join(".iii/workers").join(worker_name).exists();
+            if known {
+                eprintln!("  No logs available for {} yet", worker_name.bold());
+                0
+            } else {
+                eprintln!(
+                    "{} No logs found for '{}'. Run `iii worker list` to see known workers.",
+                    "error:".red(),
+                    worker_name,
+                );
+                1
+            }
         }
     }
 }
@@ -6314,6 +6387,92 @@ dependencies:
     fn delete_worker_artifacts_nothing_to_delete() {
         let freed = delete_worker_artifacts("__iii_test_no_artifacts_exist__");
         assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn clear_all_workers_removes_managed_vm_state() {
+        // Regression: `iii worker clear` (no name) only wiped ~/.iii/workers
+        // and ~/.iii/images, leaving every ~/.iii/managed/{name} dir — and
+        // with it the `.iii-prepared` marker whose staleness silently skips
+        // the in-VM dependency reinstall (MOT-3585). The wipe-all path must
+        // cover the same dirs as `clear <name>`.
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            // A binary worker with artifacts in BOTH dirs (must count once)
+            // and a local-path worker with managed state only.
+            let binary_dir = home.join(".iii/workers/clear-all-bin");
+            std::fs::create_dir_all(&binary_dir).unwrap();
+            std::fs::write(binary_dir.join("blob"), "bytes").unwrap();
+            let managed_bin = home.join(".iii/managed/clear-all-bin");
+            std::fs::create_dir_all(managed_bin.join("var")).unwrap();
+            std::fs::write(managed_bin.join("var/.iii-prepared"), "").unwrap();
+            let managed_local = home.join(".iii/managed/clear-all-local");
+            std::fs::create_dir_all(managed_local.join("var")).unwrap();
+            std::fs::write(managed_local.join("var/.iii-prepared"), "").unwrap();
+
+            let rc = clear_all_workers(true);
+
+            assert_eq!(rc, 0);
+            assert!(!binary_dir.exists(), "binary artifacts must be cleared");
+            assert!(
+                !managed_bin.exists() && !managed_local.exists(),
+                "managed VM state must be cleared by the wipe-all path too"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn handle_worker_update_without_lockfile_says_nothing_to_update() {
+        in_temp_dir_async(|_| async move {
+            // Bare update on a fresh project is not an error — there is
+            // nothing pinned. It used to surface a raw ENOENT and exit 1.
+            assert_eq!(handle_worker_update(None).await, 0);
+            // A named update without a lockfile is the same failure as
+            // "name not pinned".
+            assert_eq!(handle_worker_update(Some("ghost")).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_update_fails_when_operation_lock_is_held() {
+        in_temp_dir_async(|dir| async move {
+            cli_lockfile::WorkerLockfile::default()
+                .write_to(cli_lockfile::lockfile_path())
+                .unwrap();
+            let _held = crate::core::ProjectOperationLock::acquire(&dir).unwrap();
+
+            // Update mutates config.yaml + iii.lock per root; racing another
+            // update/sync must be excluded like sync already is.
+            assert_eq!(handle_worker_update(None).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_logs_no_logs_exit_code_depends_on_worker_being_known() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+            std::fs::write("config.yaml", "workers:\n  - name: quiet-w\n").unwrap();
+
+            // Known worker with no logs yet: informational, exit 0 (matches
+            // the "No logs available" branches for empty log files).
+            assert_eq!(handle_managed_logs("quiet-w", false).await, 0);
+            // Unknown name with no artifacts: probable typo, exit 1.
+            assert_eq!(handle_managed_logs("ghost-w", false).await, 1);
+        })
+        .await;
     }
 
     #[test]

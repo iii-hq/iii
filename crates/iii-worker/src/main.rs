@@ -476,12 +476,7 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::Logs {
             worker_name,
             follow,
-            address,
-            port,
-        } => {
-            iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
-                .await
-        }
+        } => iii_worker::cli::managed::handle_managed_logs(&worker_name, follow).await,
         Commands::Init(args) => iii_worker::cli::init::run(args).await,
         Commands::Exec(args) => {
             let handler = iii_worker::cli::shell_client::handle_managed_exec;

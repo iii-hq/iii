@@ -74,14 +74,16 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset
-    /// its config.yaml entry to registry defaults)
+    /// Re-download a worker (like `add --force`, but returns immediately instead of waiting
+    /// for the worker to report ready; pass `--reset-config` to also reset its config.yaml
+    /// entry to registry defaults)
     Reinstall {
         #[command(flatten)]
         args: AddArgs,
     },
 
-    /// Update workers in iii.lock to their latest allowed version
+    /// Update workers pinned in iii.lock to the latest version published in the registry,
+    /// rewriting config.yaml and iii.lock
     Update {
         /// Optional worker name to update. If omitted, updates every worker in iii.lock.
         #[arg(value_name = "WORKER")]
@@ -100,7 +102,9 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Start a previously stopped managed worker container.
+    /// Start a previously stopped managed worker container. If the worker has no
+    /// local artifacts (e.g. after `iii worker clear`), it is fetched from the
+    /// registry first.
     /// By default waits up to 120s for the worker to report ready before returning.
     /// Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for
     /// tracking workers.
@@ -139,7 +143,8 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Restart a managed worker: stop if running, then start.
+    /// Restart a managed worker: stop if running, then start (same start path as
+    /// `iii worker start`, including the registry fetch for missing local artifacts).
     /// By default waits up to 120s for the worker to report ready (same as start).
     Restart {
         /// Worker name to restart
@@ -171,7 +176,8 @@ pub enum Commands {
         frozen: bool,
     },
 
-    /// Verify the worker's manifest (iii.worker.yaml) is valid.
+    /// Verify config.yaml and iii.lock agree: every managed worker in config.yaml
+    /// must be pinned in iii.lock for this platform.
     Verify {
         /// Also check dependency declarations against locked versions.
         #[arg(long)]
@@ -180,7 +186,7 @@ pub enum Commands {
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
     /// By default refreshes live in place until the worker reaches a success
-    /// or failure state.
+    /// or failure state; exits immediately when the engine is not running.
     Status {
         /// Worker name
         #[arg(value_name = "WORKER")]
@@ -191,7 +197,8 @@ pub enum Commands {
         no_watch: bool,
     },
 
-    /// Show logs from a managed worker container
+    /// Show logs from a managed worker container. Logs are read from the
+    /// local log files under ~/.iii/logs/{name}/.
     Logs {
         /// Worker name
         #[arg(value_name = "WORKER")]
@@ -200,14 +207,6 @@ pub enum Commands {
         /// Follow log output
         #[arg(long, short)]
         follow: bool,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
     },
 
     /// Scaffold a NEW standalone worker repo from scratch.
@@ -404,8 +403,7 @@ pub enum SandboxCmd {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
 
-        /// Enable guest network access. Default follows the engine's
-        /// sandbox policy (typically disabled).
+        /// Enable guest network access (disabled unless this flag is passed).
         #[arg(long)]
         network: bool,
 
