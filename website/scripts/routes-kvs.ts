@@ -1,15 +1,17 @@
 // Generates the pretty-URL → .html route map that deploy-website.yml syncs into
 // the CloudFront KeyValueStore. The map is derived from the set of top-level
-// *.html files in website/ (index.html excluded — it's the apex default root
-// object, served without a rewrite). Adding a page is therefore a content-only
-// change: drop foo.html, link to /foo, and the next deploy makes the clean URL
-// resolve — no `terraform apply` (MOT-3669). See infra/terraform/website/README.md.
+// *.html files in the built dist/ (index.html excluded — it's the apex default
+// root object, served without a rewrite). Adding a page is therefore a
+// content-only change: add a src/pages/foo.astro, link to /foo, and the next
+// deploy makes the clean URL resolve — no `terraform apply` (MOT-3669). See
+// infra/terraform/website/README.md.
 //
-// Usage (run from the website/ package dir):
+// Usage (after `pnpm build`):
 //   tsx scripts/routes-kvs.ts                    # print desired map: [{Key,Value}]
 //   tsx scripts/routes-kvs.ts --current cur.json # print {Puts,Deletes} vs current
 import { readdirSync, readFileSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export interface KvsEntry {
   Key: string
@@ -50,7 +52,8 @@ function listFiles(dir: string): string[] {
 }
 
 function main(): void {
-  const desired = desiredRoutes(listFiles(process.cwd()))
+  const distDir = resolve(dirname(fileURLToPath(import.meta.url)), '../dist')
+  const desired = desiredRoutes(listFiles(distDir))
 
   const currentFlagIdx = process.argv.indexOf('--current')
   if (currentFlagIdx === -1) {

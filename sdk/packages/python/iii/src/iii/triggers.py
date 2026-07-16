@@ -16,7 +16,16 @@ R = TypeVar("R")
 
 
 class TriggerConfig(BaseModel, Generic[TConfig]):
-    """Configuration for a trigger."""
+    """Configuration passed to a trigger handler when a trigger instance is
+    registered or unregistered.
+
+    Attributes:
+        id: Trigger instance ID.
+        function_id: Function to invoke when the trigger fires.
+        config: Trigger-specific configuration.
+        metadata: Arbitrary user-specifiable metadata supplied to the triggered
+            handler function on every invocation.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

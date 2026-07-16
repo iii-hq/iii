@@ -10,6 +10,7 @@ import { type IntervalHistogram, monitorEventLoopDelay, performance } from 'node
 
 /**
  * Worker metrics data structure used internally for OTEL metric collection.
+ * <!-- docs:internal -->
  */
 export type WorkerMetrics = {
   memory_heap_used?: number

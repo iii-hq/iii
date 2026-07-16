@@ -1,0 +1,67 @@
+---
+import type { CollectionEntry } from 'astro:content'
+import FormattedDate from '../components/blog/FormattedDate.astro'
+import BlogLayout from './BlogLayout.astro'
+
+type Props = CollectionEntry<'blog'>['data'] & { slug: string }
+
+const { title, description, pubDate, updatedDate, author, slug } = Astro.props
+const canonicalPath = `/blog/${slug}/`
+const canonical = new URL(canonicalPath, Astro.site).toString()
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BlogPosting',
+  headline: title,
+  description,
+  datePublished: pubDate.toISOString(),
+  ...(updatedDate ? { dateModified: updatedDate.toISOString() } : {}),
+  ...(author ? { author: { '@type': 'Person', name: author } } : {}),
+  publisher: {
+    '@type': 'Organization',
+    name: 'III, Inc.',
+    url: 'https://iii.dev/',
+    logo: { '@type': 'ImageObject', url: 'https://iii.dev/favicon.svg' },
+  },
+  image: 'https://iii.dev/og-image.png',
+  url: canonical,
+  mainEntityOfPage: canonical,
+}
+---
+
+<BlogLayout
+  title={title}
+  description={description}
+  canonicalPath={canonicalPath}
+  ogType="article"
+  publishedTime={pubDate}
+  modifiedTime={updatedDate}
+>
+  <script is:inline type="application/ld+json" slot="head" set:html={JSON.stringify(jsonLd)} />
+  <article>
+    <header>
+      <h1>{title}</h1>
+      <p class="meta">
+        <FormattedDate date={pubDate} />
+        {
+          author && (
+            <>
+              {' · '}
+              {author}
+            </>
+          )
+        }
+        {
+          updatedDate && (
+            <>
+              {' · updated '}
+              <FormattedDate date={updatedDate} />
+            </>
+          )
+        }
+      </p>
+    </header>
+    <hr />
+    <slot />
+  </article>
+</BlogLayout>

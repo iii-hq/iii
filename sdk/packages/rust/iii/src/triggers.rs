@@ -15,7 +15,7 @@ pub struct TriggerConfig {
     pub function_id: String,
     /// Trigger-specific configuration.
     pub config: Value,
-    /// Arbitrary metadata attached to the trigger.
+    /// Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     pub metadata: Option<Value>,
 }
 

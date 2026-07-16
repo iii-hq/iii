@@ -58,6 +58,36 @@ impl Drop for HomeGuard {
     }
 }
 
+/// True once `pid`'s own argv is visible to the OS and contains `needle`.
+/// `spawn()` returns pre-exec, and around the exec transition the kernel can
+/// report no cmdline at all; the identity cross-check reads the same source
+/// and treats an unreadable cmdline as unjudgeable (`None`), which falls
+/// through to the kill path. Tests that need the check to judge the REAL
+/// process must wait for this before poking `kill_stale_worker`.
+fn cmdline_contains(pid: u32, needle: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+            .unwrap_or(false)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "args="])
+            .output()
+            .map(|out| {
+                out.status.success() && String::from_utf8_lossy(&out.stdout).contains(needle)
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (pid, needle);
+        true
+    }
+}
+
 /// Empty `~/.iii` tree → discovery returns nothing. Guards against any latent
 /// assumption that the dirs always exist.
 #[test]
@@ -159,6 +189,21 @@ async fn kill_stale_worker_spares_recycled_pid() {
     std::fs::create_dir_all(&pids_dir).unwrap();
     let pidfile = pids_dir.join("recycled-worker.pid");
     std::fs::write(&pidfile, decoy.id().to_string()).unwrap();
+
+    // Wait for the decoy's own argv to become visible (see
+    // `cmdline_contains`): during the exec transition the identity check
+    // can't read a cmdline and falls through to the kill path, which is
+    // exactly the judgment this test must not race.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !cmdline_contains(decoy.id(), "decoy-sleep") && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let visible = cmdline_contains(decoy.id(), "decoy-sleep");
+    if !visible {
+        let _ = decoy.kill();
+        let _ = decoy.wait();
+        panic!("fixture: decoy argv never became visible to the identity check");
+    }
 
     kill_stale_worker("recycled-worker").await;
 

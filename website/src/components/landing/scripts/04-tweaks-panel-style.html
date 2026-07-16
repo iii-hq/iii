@@ -1,0 +1,51 @@
+
+<!-- ============================================
+     TWEAKS PANEL — navbar / theme controls
+     ============================================ -->
+<style>
+  .tweaks-panel{
+    position:fixed; right:24px; bottom:24px;
+    width:280px; z-index:200;
+    background:var(--bg);
+    border:1px solid var(--ink);
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-size:12px; color:var(--ink);
+    box-shadow: 6px 6px 0 var(--ink);
+    display:none;
+  }
+  .tweaks-panel.open{ display:block; }
+  .tweaks-head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 14px;
+    border-bottom:1px solid var(--rule);
+    background:var(--panel);
+    font-size:12px; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--ink);
+  }
+  .tweaks-head .x{
+    appearance:none; border:0; background:transparent; cursor:pointer;
+    font-size:14px; line-height:1; color:var(--ink);
+  }
+  .tweaks-body{ padding:12px 14px 16px; display:flex; flex-direction:column; gap:14px; }
+  .tweak-section{ display:flex; flex-direction:column; gap:8px; }
+  .tweak-label{
+    font-size:12px; letter-spacing:0.2em; text-transform:uppercase;
+    color:var(--mute);
+  }
+  .tweak-radio{ display:flex; gap:0; border:1px solid var(--rule); }
+  .tweak-radio button{
+    flex:1; appearance:none; border:0; background:transparent; cursor:pointer;
+    padding:6px 8px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-size:12px; letter-spacing:0; color:var(--mute);
+    border-right:1px solid var(--rule);
+  }
+  .tweak-radio button:last-child{ border-right:0; }
+  .tweak-radio button.on{ background:var(--ink); color:var(--bg); }
+  .tweak-color-row{ display:flex; gap:6px; }
+  .tweak-swatch{
+    width:24px; height:24px; border:1px solid var(--rule); cursor:pointer;
+    padding:0; appearance:none;
+  }
+  .tweak-swatch.on{ outline:1px solid var(--ink); outline-offset:2px; }
+</style>

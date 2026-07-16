@@ -1,0 +1,346 @@
+---
+// THE site header — one markup, one stylesheet (src/styles/site-nav.css), one
+// behavior script on every page (landing, manifesto, privacy, blog). Ported
+// from the landing page's navbar; the in-page scroll links are gone and the
+// destinations (docs / blog / roadmap / registry) wear the nav-link look.
+// Colors ride each page's design tokens, so the header follows the surface
+// theme. The script runs on DOMContentLoaded because the component renders at
+// the top of <body>: it also binds page-level .cta-* elements (hero/footer)
+// that parse after it.
+import '../styles/site-nav.css'
+
+interface Props {
+  /** optional page label rendered next to the logo, e.g. "Roadmap" */
+  pageTitle?: string
+}
+
+const { pageTitle } = Astro.props
+---
+
+<nav class="nav" id="nav">
+  <div class="nav-left">
+    <a class="logo-link" href="/" aria-label="iii home">
+      <svg class="logo-mark" viewBox="0 0 1075.74 1075.74" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect class="bar" x="0" y="0.05" width="268.94" height="268.94"></rect>
+        <rect class="bar" x="0" y="403.45" width="268.94" height="672.24"></rect>
+        <rect class="accent" x="403.4" y="0.05" width="268.94" height="268.94"></rect>
+        <rect class="accent" x="403.4" y="403.45" width="268.94" height="672.24"></rect>
+        <rect class="bar" x="806.81" y="0.05" width="268.94" height="268.94"></rect>
+        <rect class="bar" x="806.81" y="403.45" width="268.94" height="672.24"></rect>
+      </svg>
+      {pageTitle && <span class="logo-title">{pageTitle}</span>}
+    </a>
+  </div>
+
+  <div class="nav-center">
+    <div class="nav-links">
+      <a class="nav-link" href="/manifesto">manifesto</a>
+      <a class="nav-link" href="/docs">docs</a>
+      <a class="nav-link" href="/blog/">blog</a>
+      <a class="nav-link" href="/roadmap/">roadmap</a>
+      <a class="nav-link" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer" aria-label="registry, opens in a new tab">registry<span class="nav-tab-ext" aria-hidden="true">&#x2197;</span></a>
+    </div>
+  </div>
+
+  <div class="nav-right">
+    <button id="cta-install" class="cta-install" data-cta-location="nav" aria-label="Copy install command">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2" y="3" width="12" height="10" rx="0"></rect>
+        <path d="M5 7 L7 9 L5 11"></path>
+        <path d="M9 11 L11 11"></path>
+      </svg>
+      <span id="install-label">install.sh</span>
+    </button>
+
+    <a class="cta-discord" id="cta-discord" data-cta-location="nav" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer" aria-label="Join Discord">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.245.197.372.292a.077.077 0 0 1-.006.128 12.299 12.299 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+      <span class="count" id="dc-count">—</span>
+    </a>
+
+    <a class="cta-github" id="gh-btn" data-cta-location="nav" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
+      <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+      <span class="stars" id="gh-stars">—</span>
+    </a>
+
+    <button id="theme-btn" class="theme-btn" aria-label="Toggle theme">
+      <svg id="theme-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <!-- moon (default = light/cream theme, hint at dark) -->
+        <path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"></path>
+      </svg>
+    </button>
+
+    <button id="menu-btn" class="menu-btn" aria-label="Open menu">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+        <path d="M2 4 H14 M2 8 H14 M2 12 H14"></path>
+      </svg>
+    </button>
+  </div>
+</nav>
+
+<div class="mobile-menu" id="mobile-menu" aria-hidden="true">
+  <div class="scrim" id="mobile-scrim"></div>
+  <div class="panel" role="dialog" aria-label="Menu">
+    <div class="panel-head">
+      <span class="label">Menu</span>
+      <button class="x" id="mobile-close" aria-label="Close menu">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+          <path d="M3 3 L13 13 M13 3 L3 13"></path>
+        </svg>
+      </button>
+    </div>
+    <a class="mobile-link" href="/manifesto">manifesto</a>
+    <a class="mobile-link" href="/docs">docs</a>
+    <a class="mobile-link" href="/blog/">blog</a>
+    <a class="mobile-link" href="/roadmap/">roadmap</a>
+    <a class="mobile-link" href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">registry</a>
+    <a class="mobile-link cta-github" id="gh-btn-m" data-cta-location="mobile_menu" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">
+      <span style="display:inline-flex;align-items:center;gap:8px;">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="width:14px;height:14px;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </span>
+      <span id="gh-stars-m">—</span>
+    </a>
+    <a class="mobile-link cta-discord" id="dc-btn-m" data-cta-location="mobile_menu" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer">
+      <span style="display:inline-flex;align-items:center;gap:8px;">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width:14px;height:14px;"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+        Discord
+      </span>
+      <span id="dc-count-m">—</span>
+    </a>
+    <hr class="mobile-divider"/>
+    <button id="cta-install-m" class="mobile-link cta-install" data-cta-location="mobile_menu">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2" y="3" width="12" height="10"></rect>
+        <path d="M5 7 L7 9 L5 11"></path>
+        <path d="M9 11 L11 11"></path>
+      </svg>
+      <span id="install-label-m">install.sh</span>
+    </button>
+  </div>
+</div>
+
+<script is:inline>
+document.addEventListener('DOMContentLoaded', function () {
+  // iiiTrack comes from AnalyticsHead; surfaces without analytics (the
+  // roadmap) still get a working header — tracking just no-ops.
+  const track = window.iiiTrack || function () {};
+
+  // ============= Scroll compaction =============
+  // Two thresholds, not one: the nav is sticky-in-flow, so compacting it
+  // shifts the page height and a single cutoff flutters when the user rests
+  // right on it.
+  const nav = document.getElementById('nav');
+  const onScroll = () => {
+    const y = window.scrollY;
+    if (y > 64) nav.classList.add('scrolled');
+    else if (y < 8) nav.classList.remove('scrolled');
+  };
+  window.addEventListener('scroll', onScroll, { passive:true });
+  onScroll();
+
+  // ============= Install copy =============
+  const INSTALL_CMD = 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh';
+  const installBtn = document.getElementById('cta-install');
+  const installLabel = document.getElementById('install-label');
+  const installBtnM = document.getElementById('cta-install-m');
+  const installLabelM = document.getElementById('install-label-m');
+  const footInstallBtn = document.getElementById('foot-install');
+  const footInstallCmd = footInstallBtn ? footInstallBtn.querySelector('.cmd') : null;
+  const FOOT_INSTALL_DEFAULT = footInstallCmd ? footInstallCmd.textContent : '';
+  const COPIED_TEXT = 'copied';
+  const COPIED_MS = 4000;
+
+  let copyTimer = null;
+  function flashCopied(){
+    if (installBtn) installBtn.classList.add('copied');
+    if (installLabel) installLabel.textContent = COPIED_TEXT;
+    if (installBtnM) installBtnM.classList.add('copied');
+    if (installLabelM) installLabelM.textContent = COPIED_TEXT;
+    if (footInstallBtn) footInstallBtn.classList.add('copied');
+    if (footInstallCmd) footInstallCmd.textContent = COPIED_TEXT;
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      if (installBtn) installBtn.classList.remove('copied');
+      if (installLabel) installLabel.textContent = 'install.sh';
+      if (installBtnM) installBtnM.classList.remove('copied');
+      if (installLabelM) installLabelM.textContent = 'install.sh';
+      if (footInstallBtn) footInstallBtn.classList.remove('copied');
+      if (footInstallCmd) footInstallCmd.textContent = FOOT_INSTALL_DEFAULT;
+    }, COPIED_MS);
+  }
+  function copyInstall(){
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(INSTALL_CMD).then(flashCopied).catch(flashCopied);
+    } else {
+      flashCopied();
+    }
+  }
+
+  // ============= CTA click tracking =============
+  // Unified tracking for all cta-* elements using data-cta-location attributes.
+  // Runs on DOMContentLoaded, so it also picks up the landing page's hero and
+  // footer CTAs.
+  [
+    ['cta-install', 'install', 'install.sh'],
+    ['cta-discord', 'discord', 'discord'],
+    ['cta-github', 'github', 'github'],
+    ['cta-get-started', 'get_started', 'get started'],
+    ['cta-copy-prompt', 'copy_prompt', 'copy prompt'],
+  ].forEach(([cls, ctaId, ctaLabel]) => {
+    document.querySelectorAll('.' + cls).forEach(el => {
+      el.addEventListener('click', () => {
+        track('cta_click', {
+          cta_id: ctaId,
+          cta_location: el.dataset.ctaLocation || 'unknown',
+          cta_label: ctaLabel
+        });
+      });
+    });
+  });
+
+  // Install buttons also need copyInstall() behavior
+  document.querySelectorAll('.cta-install').forEach(el => {
+    el.addEventListener('click', copyInstall);
+  });
+
+  // Desktop nav links
+  document.querySelectorAll('.nav-links .nav-link').forEach(a => {
+    a.addEventListener('click', () => {
+      const label = (a.textContent || '').replace(/↗/g, '').trim().toLowerCase().replace(/\s+/g, '_');
+      track('cta_click', {
+        cta_id: 'nav_link',
+        cta_location: 'nav',
+        cta_label: label,
+        cta_href: a.getAttribute('href') || ''
+      });
+    });
+  });
+
+  // ============= Theme toggle (light/dark hint via accent + bg swap) =============
+  const themeBtn = document.getElementById('theme-btn');
+  const themeIcon = document.getElementById('theme-icon');
+  const THEME_KEY = 'iii_theme';
+  let isDark = (window.__iiiThemeInit && window.__iiiThemeInit.dark) || false;
+  // theme-default accents — swap with light/dark unless user pinned one in Tweaks
+  const THEME_ACCENT = { light: '#ff5a1f', dark: '#3ea8ff' };
+  // Sync icon if loaded in dark mode
+  if (isDark) {
+    themeIcon.innerHTML = '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
+  }
+  themeBtn.addEventListener('click', () => {
+    isDark = !isDark;
+    try { localStorage.setItem(THEME_KEY, isDark ? 'dark' : 'light'); } catch(e){}
+    document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+    const r = document.documentElement.style;
+    if (isDark){
+      r.setProperty('--bg',        '#111110');
+      r.setProperty('--panel',     '#1a1916');
+      r.setProperty('--paper',     '#111110');
+      r.setProperty('--paper-2',   '#222220');
+      r.setProperty('--ink',       '#f2f0ed');
+      r.setProperty('--ink-2',     '#e2dfd9');
+      r.setProperty('--ink-soft',  '#e2dfd9');
+      r.setProperty('--ink-faint', '#9c9893');
+      r.setProperty('--ink-ghost', '#5d5a55');
+      r.setProperty('--mute',      '#9c9893');
+      r.setProperty('--mute-2',    '#5d5a55');
+      r.setProperty('--rule',      '#2a2926');
+      r.setProperty('--rule-2',    '#1f1e1c');
+      r.setProperty('--accent',    THEME_ACCENT.dark);
+      themeIcon.innerHTML = '<circle cx="8" cy="8" r="3"/><path d="M8 1 L8 3 M8 13 L8 15 M1 8 L3 8 M13 8 L15 8 M3 3 L4.5 4.5 M11.5 11.5 L13 13 M3 13 L4.5 11.5 M11.5 4.5 L13 3"/>';
+    } else {
+      r.setProperty('--bg',        '#f5f3ee');
+      r.setProperty('--panel',     '#e9e6e2');
+      r.setProperty('--paper',     '#f5f3ee');
+      r.setProperty('--paper-2',   '#ebe8e3');
+      r.setProperty('--ink',       '#0a0a0a');
+      r.setProperty('--ink-2',     '#1a1a1a');
+      r.setProperty('--ink-soft',  '#1a1a1a');
+      r.setProperty('--ink-faint', '#6b6865');
+      r.setProperty('--ink-ghost', '#a3a09c');
+      r.setProperty('--mute',      '#6b6865');
+      r.setProperty('--mute-2',    '#a3a09c');
+      r.setProperty('--rule',      '#d8d4cb');
+      r.setProperty('--rule-2',    '#e6e3df');
+      r.setProperty('--accent',    THEME_ACCENT.light);
+      themeIcon.innerHTML = '<path d="M12.5 9.5 A 5 5 0 1 1 6.5 3.5 A 4 4 0 0 0 12.5 9.5 Z"/>';
+    }
+    // Update meta theme-color
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = isDark ? '#111110' : '#f5f3ee';
+    // Notify the Tweaks panel so its swatch state and persisted value stay in sync
+    window.dispatchEvent(new CustomEvent('iii:theme-change', {
+      detail: { theme: isDark ? 'dark' : 'light', accent: isDark ? THEME_ACCENT.dark : THEME_ACCENT.light }
+    }));
+  });
+
+  // ============= Mobile menu =============
+  const menuBtn   = document.getElementById('menu-btn');
+  const mobileMenu = document.getElementById('mobile-menu');
+  const mobileScrim = document.getElementById('mobile-scrim');
+  const mobileClose = document.getElementById('mobile-close');
+  function openMenu(){ mobileMenu.classList.add('open'); mobileMenu.setAttribute('aria-hidden','false'); document.body.style.overflow='hidden'; }
+  function closeMenu(){ mobileMenu.classList.remove('open'); mobileMenu.setAttribute('aria-hidden','true'); document.body.style.overflow=''; }
+  menuBtn.addEventListener('click', openMenu);
+  mobileScrim.addEventListener('click', closeMenu);
+  mobileClose.addEventListener('click', closeMenu);
+  document.querySelectorAll('.mobile-link').forEach(a => {
+    if (a.tagName !== 'A') return;
+    a.addEventListener('click', closeMenu);
+    // Skip elements already tracked by cta-* classes
+    if (a.matches('.cta-discord, .cta-github, .cta-install')) return;
+    a.addEventListener('click', () => {
+      const label = (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      track('cta_click', {
+        cta_id: 'mobile_menu_link',
+        cta_location: 'mobile_menu',
+        cta_label: label,
+        cta_href: a.getAttribute('href') || ''
+      });
+    });
+  });
+
+  // ============= GitHub stars =============
+  const ghStars = document.getElementById('gh-stars');
+  const ghStarsM = document.getElementById('gh-stars-m');
+  fetch('https://api.github.com/repos/iii-hq/iii')
+    .then(r => r.json())
+    .then(d => {
+      if (d && typeof d.stargazers_count === 'number'){
+        const n = d.stargazers_count.toLocaleString();
+        ghStars.textContent = n;
+        ghStarsM.textContent = n;
+      } else {
+        ghStars.textContent = '—';
+        ghStarsM.textContent = '';
+      }
+    })
+    .catch(() => {
+      ghStars.textContent = '—';
+      ghStarsM.textContent = '';
+    });
+
+  // ============= Discord member count =============
+  // The invite endpoint exposes approximate_member_count (total members) for
+  // the navbar + mobile menu. On the landing page the footer Discord widget
+  // refreshes these too; here they get filled on every page.
+  function formatCount(n){
+    if (n >= 1000) return (n/1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/,'') + 'k';
+    return String(n);
+  }
+  fetch('https://discord.com/api/v10/invites/iiidev?with_counts=true', { cache:'no-store' })
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => {
+      const total = d ? Number(d.approximate_member_count || 0) : 0;
+      if (!total) return;
+      const s = formatCount(total);
+      const navCount = document.getElementById('dc-count');
+      if (navCount) navCount.textContent = s;
+      const mCount = document.getElementById('dc-count-m');
+      if (mCount) mCount.textContent = s;
+    })
+    .catch(() => {});
+});
+</script>

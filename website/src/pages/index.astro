@@ -1,0 +1,74 @@
+---
+// iii.dev — the landing page. The markup and scripts are byte-faithful slices
+// of the original hand-written page (see src/components/landing/), injected
+// with set:html so Astro's template compiler never reinterprets their braces
+// or reorders their tags. The header is the shared SiteNav component. Edit
+// the fragments directly; this file only assembles them.
+import ScrollNav from '../components/ScrollNav.astro'
+import SiteNav from '../components/SiteNav.astro'
+import HtmlShell from '../layouts/HtmlShell.astro'
+import '../styles/landing.css'
+
+import headExtras from '../components/landing/head-extras.html?raw'
+
+import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
+import hero from '../components/landing/sections/03-hero.html?raw'
+import experience from '../components/landing/sections/04-experience.html?raw'
+import workers from '../components/landing/sections/05-workers.html?raw'
+import helloWorld from '../components/landing/sections/06-hello-world.html?raw'
+import agents from '../components/landing/sections/07-agents.html?raw'
+import consoleSection from '../components/landing/sections/08-console.html?raw'
+import nutshell from '../components/landing/sections/09-nutshell.html?raw'
+import techSpecs from '../components/landing/sections/10-tech-specs.html?raw'
+import footer from '../components/landing/sections/11-footer.html?raw'
+
+import homepageFlow from '../components/landing/scripts/01-iii-experience-homepage-flow.html?raw'
+import pageBehaviors from '../components/landing/scripts/02-page-behaviors.html?raw'
+import workersTicker from '../components/landing/scripts/03-workers-ticker-nested-in-nutshell.html?raw'
+import tweaksPanelStyle from '../components/landing/scripts/04-tweaks-panel-style.html?raw'
+import heroViz from '../components/landing/scripts/05-hero-viz-engine.html?raw'
+import agentSections from '../components/landing/scripts/06-agent-sections-a-harness-collapse-c-.html?raw'
+import tweaksPanel from '../components/landing/scripts/07-tweaks-panel.html?raw'
+
+// Fragments are consecutive line ranges of the original page; each ends with
+// a newline, so plain concatenation reproduces the source region exactly.
+const body = [
+  hero,
+  experience,
+  workers,
+  helloWorld,
+  agents,
+  consoleSection,
+  nutshell,
+  techSpecs,
+  footer,
+  homepageFlow,
+  pageBehaviors,
+  workersTicker,
+  tweaksPanelStyle,
+  heroViz,
+  agentSections,
+  tweaksPanel,
+].join('')
+---
+
+<HtmlShell
+  title="iii — Three primitives. Zero integration cost."
+  description="The latest docs on how to use iii, a new paradigm to effortlessly compose, extend, and observe every service in any system in real-time for the first time ever."
+  canonicalPath="/"
+  keywords="iii, worker, trigger, function, three primitives, distributed systems, durable execution, polyglot runtime, AI agents, agent runtime, TypeScript, Python, Rust, WebSocket, interoperability, live discovery, live observability, queues, cron, http, state, streams, sandbox"
+>
+  <Fragment slot="head" set:html={headExtras} />
+  <Fragment set:html={sheetOpen} />
+  <SiteNav />
+  <ScrollNav
+    links={[
+      { id: 'experience', label: 'why iii' },
+      { id: 'workers', label: 'workers' },
+      { id: 'hello', label: 'languages' },
+      { id: 'agents', label: 'agents' },
+      { id: 'console', label: 'console' },
+    ]}
+  />
+  <Fragment set:html={body} />
+</HtmlShell>

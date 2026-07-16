@@ -347,7 +347,8 @@ impl WorkerRegistry {
                 info.name,
                 info.binary_path.display()
             );
-            let module = super::external::ExternalWorker::new(info, config);
+            let module =
+                super::external::ExternalWorker::new(info, config, engine.worker_manager_port());
             return Ok(Box::new(ExternalProcessWorker::new(Box::new(module))));
         }
 
@@ -1321,6 +1322,20 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "iii-observability"),
             "default config should include ObservabilityWorker (registered as mandatory)"
+        );
+    }
+
+    #[test]
+    fn test_default_config_excludes_retired_iii_queue_worker() {
+        let config = EngineConfig::default_config();
+
+        assert!(
+            config
+                .modules
+                .iter()
+                .chain(config.workers.iter())
+                .all(|entry| entry.name != "iii-queue"),
+            "the standalone queue worker owns queue runtime behavior"
         );
     }
 

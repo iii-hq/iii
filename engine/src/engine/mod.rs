@@ -39,42 +39,17 @@ use crate::{
     },
 };
 
-/// Abstraction for enqueuing messages to named queues.
-///
-/// This trait decouples the Engine from the concrete QueueWorker
-/// so that dispatch routing can push work onto a named queue without
-/// creating a circular dependency.
-#[async_trait::async_trait]
-pub trait QueueEnqueuer: Send + Sync {
-    async fn enqueue_to_function_queue(
-        &self,
-        queue_name: &str,
-        function_id: &str,
-        data: serde_json::Value,
-        message_id: String,
-        traceparent: Option<String>,
-        baggage: Option<String>,
-    ) -> anyhow::Result<()>;
-
-    async fn function_queue_dlq_count(&self, _queue_name: &str) -> anyhow::Result<u64> {
-        Ok(0)
-    }
-
-    async fn function_queue_dlq_messages(
-        &self,
-        _queue_name: &str,
-        _count: usize,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
-        Ok(vec![])
-    }
-}
-
 /// Magic prefix for OTLP binary frames (used by SDKs for trace spans)
 const OTLP_WS_PREFIX: &[u8] = b"OTLP";
 /// Magic prefix for metrics binary frames (used by SDKs for OTEL metrics)
 const MTRC_WS_PREFIX: &[u8] = b"MTRC";
 /// Magic prefix for logs binary frames (used by SDKs for OTEL logs)
 const LOGS_WS_PREFIX: &[u8] = b"LOGS";
+
+/// Function provided by the standalone `queue` worker for named enqueue
+/// actions. The engine owns receipt generation and uses this function only as
+/// the durable transport boundary.
+const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
 
 /// Handles binary frames with OTEL telemetry prefixes.
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
@@ -243,7 +218,6 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
-    pub queue_module: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
     /// Records the current owning WS worker for each registered function id.
     /// Populated when a worker sends `Message::RegisterFunction`; used by
     /// `cleanup_worker` and `remove_worker_registrations` to atomically skip
@@ -292,16 +266,11 @@ impl Engine {
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
-            queue_module: Arc::new(tokio::sync::RwLock::new(None)),
             function_owners: Arc::new(DashMap::new()),
             external_function_owners: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
         }
-    }
-
-    pub async fn set_queue_module(&self, module: Arc<dyn QueueEnqueuer>) {
-        *self.queue_module.write().await = Some(module);
     }
 
     /// Returns the effective `iii-worker-manager` port. Resolved from config
@@ -758,6 +727,18 @@ impl Engine {
                     trigger_type.call_request_format = Some(fmt.clone());
                 }
 
+                // Sweep intents whose owning worker is gone before the drain
+                // below can replay them. Concurrent disconnect cleanups can
+                // leak a dead worker's intent into `pending_triggers` (the
+                // provider's cleanup parks it after the owner's cleanup
+                // already purged its intents); this is the one moment such a
+                // leak becomes visible, so drop them here rather than deliver
+                // a binding nothing owns.
+                self.trigger_registry.pending_triggers.retain(|_, t| {
+                    t.worker_id
+                        .is_none_or(|id| self.worker_registry.get_worker(&id).is_some())
+                });
+
                 let _ = self
                     .trigger_registry
                     .register_trigger_type(trigger_type)
@@ -859,25 +840,17 @@ impl Engine {
                     })
                     .await
                 {
-                    Ok(()) => {
+                    // A Deferred outcome is not an error: the intent is
+                    // parked engine-side and activates when the trigger type
+                    // registers, so no failure ack goes to the worker.
+                    Ok(_) => {
                         crate::workers::telemetry::collector::track_trigger_registered();
                     }
                     Err(err) => {
-                        let error_body = match &err {
-                            crate::trigger::RegisterTriggerError::UnknownBuiltin { .. }
-                            | crate::trigger::RegisterTriggerError::Unknown { .. } => {
-                                crate::protocol::ErrorBody::new(
-                                    "trigger_type_not_found",
-                                    err.to_string(),
-                                )
-                            }
-                            crate::trigger::RegisterTriggerError::Other(_) => {
-                                crate::protocol::ErrorBody::new(
-                                    "trigger_registration_failed",
-                                    err.to_string(),
-                                )
-                            }
-                        };
+                        let error_body = crate::protocol::ErrorBody::new(
+                            "trigger_registration_failed",
+                            err.to_string(),
+                        );
                         let result_msg = Message::TriggerRegistrationResult {
                             id: reg_trigger_id,
                             trigger_type: reg_trigger_type,
@@ -1024,6 +997,10 @@ impl Engine {
                         let data = data.clone();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
+                        let queued_baggage = crate::telemetry::baggage_with_function_id(
+                            baggage.as_deref(),
+                            &function_id,
+                        );
 
                         let span = {
                             // Parent context must be on `Context::current()`
@@ -1053,25 +1030,24 @@ impl Engine {
 
                         tokio::spawn(
                             async move {
-                                let queue_module = engine.queue_module.read().await;
-                                let result = match queue_module.as_ref() {
-                                    Some(qm) => {
-                                        qm.enqueue_to_function_queue(
-                                            &queue,
-                                            &function_id,
-                                            data.clone(),
-                                            message_receipt_id.clone(),
-                                            traceparent.clone(),
-                                            baggage.clone(),
-                                        )
-                                        .await
-                                    }
-                                    None => Err(anyhow::anyhow!("QueueModule not loaded")),
-                                };
+                                let result = engine
+                                    .call_with_metadata(
+                                        ENQUEUE_PROVIDER_FUNCTION_ID,
+                                        serde_json::json!({
+                                            "queue": queue.clone(),
+                                            "function_id": function_id.clone(),
+                                            "data": data,
+                                            "messageReceiptId": message_receipt_id.clone(),
+                                            "traceparent": traceparent.clone(),
+                                            "baggage": queued_baggage,
+                                        }),
+                                        None,
+                                    )
+                                    .await;
 
                                 if let Some(invocation_id) = invocation_id {
                                     match result {
-                                        Ok(()) => {
+                                        Ok(_) => {
                                             engine
                                                 .send_msg(
                                                     &worker,
@@ -1089,6 +1065,23 @@ impl Engine {
                                                 .await;
                                         }
                                         Err(err) => {
+                                            // DX: a `function_not_found` on the
+                                            // provider means no queue worker is
+                                            // installed. Turn the bare error into
+                                            // an actionable fix instead of leaking
+                                            // the internal provider id alone.
+                                            let message = if err.code == "function_not_found" {
+                                                format!(
+                                                    "No queue provider is installed. \
+                                                     `TriggerAction::Enqueue` routes through the \
+                                                     `{}` provider, which the standalone queue \
+                                                     worker registers. Add it with \
+                                                     `iii worker add queue`. (underlying: {})",
+                                                    ENQUEUE_PROVIDER_FUNCTION_ID, err.message
+                                                )
+                                            } else {
+                                                err.to_string()
+                                            };
                                             engine
                                                 .send_msg(
                                                     &worker,
@@ -1098,7 +1091,7 @@ impl Engine {
                                                         result: None,
                                                         error: Some(ErrorBody::new(
                                                             "enqueue_error",
-                                                            err.to_string(),
+                                                            message,
                                                         )),
                                                         traceparent: traceparent.clone(),
                                                         baggage: baggage.clone(),
@@ -2000,7 +1993,7 @@ mod tests {
     use std::{
         collections::HashMap,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
@@ -2660,6 +2653,131 @@ mod tests {
         }
 
         assert_eq!(worker.invocation_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_routes_through_registered_queue_provider() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_for_handler = captured.clone();
+
+        engine.register_function_handler(
+            make_request(super::ENQUEUE_PROVIDER_FUNCTION_ID),
+            super::Handler::new(move |input| {
+                let captured = captured_for_handler.clone();
+                async move {
+                    *captured.lock().unwrap() = Some(input);
+                    FunctionResult::Success(Some(json!({
+                        "messageReceiptId": "provider-must-not-own-the-receipt"
+                    })))
+                }
+            }),
+        );
+
+        let invocation_id = uuid::Uuid::new_v4();
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(invocation_id),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: Some(
+                        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".to_string(),
+                    ),
+                    baggage: Some("iii.session.id=s1,iii.function.id=harness::send".to_string()),
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue acknowledgement")
+            .expect("channel should produce an invocation result");
+        let result = match outbound {
+            Outbound::Protocol(Message::InvocationResult {
+                invocation_id: got_id,
+                result,
+                error,
+                ..
+            }) => {
+                assert_eq!(got_id, invocation_id);
+                assert!(error.is_none());
+                result.unwrap()
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        };
+        let receipt = result["messageReceiptId"]
+            .as_str()
+            .expect("engine should return a receipt");
+        assert_ne!(receipt, "provider-must-not-own-the-receipt");
+
+        let input = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(input["queue"], "harness-turn");
+        assert_eq!(input["function_id"], "harness::turn");
+        assert_eq!(input["data"], json!({"session_id": "s1"}));
+        assert_eq!(input["messageReceiptId"], receipt);
+        assert_eq!(
+            input["traceparent"],
+            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        );
+        let queued_baggage = input["baggage"].as_str().unwrap();
+        assert!(queued_baggage.contains("iii.session.id=s1"));
+        assert!(queued_baggage.contains("iii.function.id=harness::turn"));
+        assert!(!queued_baggage.contains("harness::send"));
+    }
+
+    #[tokio::test]
+    async fn enqueue_action_fails_closed_without_queue_provider() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "harness::turn".to_string(),
+                    data: json!({"session_id": "s1"}),
+                    traceparent: None,
+                    baggage: None,
+                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                        queue: "harness-turn".to_string(),
+                    }),
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for enqueue failure")
+            .expect("channel should produce an invocation result");
+        match outbound {
+            Outbound::Protocol(Message::InvocationResult { error, .. }) => {
+                let error = error.expect("enqueue should fail without a provider");
+                assert_eq!(error.code, "enqueue_error");
+                assert!(error.message.contains("engine::queue::enqueue"));
+                // DX: the fail-closed error must tell the user how to fix it.
+                assert!(
+                    error.message.contains("iii worker add queue"),
+                    "expected install guidance, got: {}",
+                    error.message
+                );
+            }
+            other => panic!("expected InvocationResult, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -3573,7 +3691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_register_trigger_unknown_builtin_sends_install_hint() {
+    async fn test_register_trigger_unknown_type_defers_without_error_ack() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
@@ -3581,7 +3699,7 @@ mod tests {
 
         let msg = Message::RegisterTrigger {
             id: "trig-1".to_string(),
-            trigger_type: "http".to_string(),
+            trigger_type: "totally-made-up".to_string(),
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
@@ -3592,66 +3710,260 @@ mod tests {
             .await
             .expect("RegisterTrigger should succeed at protocol level");
 
-        let outbound = rx
-            .try_recv()
-            .expect("engine should emit TriggerRegistrationResult on failure");
-        let Outbound::Protocol(Message::TriggerRegistrationResult {
-            id,
-            trigger_type,
-            function_id,
-            error,
-        }) = outbound
-        else {
-            panic!("expected TriggerRegistrationResult, got {:?}", outbound);
-        };
-        assert_eq!(id, "trig-1");
-        assert_eq!(trigger_type, "http");
-        assert_eq!(function_id, "fn-1");
-        let err = error.expect("error should be populated");
-        assert_eq!(err.code, "trigger_type_not_found");
-        assert!(err.message.contains("iii-http"), "msg: {}", err.message);
+        // Deferral is not a failure: no TriggerRegistrationResult goes back
+        // to the worker; the intent is parked engine-side instead.
         assert!(
-            err.message.contains("iii worker add"),
-            "msg: {}",
-            err.message
+            rx.try_recv().is_err(),
+            "no error ack should be sent for a deferred registration"
         );
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-1"),
+            "intent should be parked in pending_triggers"
+        );
+        assert!(!engine.trigger_registry.triggers.contains_key("trig-1"));
     }
 
     #[tokio::test]
-    async fn test_register_trigger_unknown_type_recommends_workers_directory() {
+    async fn test_deferred_trigger_activates_when_provider_registers_type() {
         ensure_default_meter();
         let engine = Engine::new();
-        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
+        // The intent's owner must be a connected worker, or the dead-owner
+        // sweep at type registration reaps it before the drain.
+        engine.worker_registry.register_worker(worker.clone());
 
+        // Bad sequencing: the trigger arrives before its type's provider.
         let msg = Message::RegisterTrigger {
-            id: "trig-2".to_string(),
-            trigger_type: "totally-made-up".to_string(),
-            function_id: "fn-2".to_string(),
+            id: "trig-early".to_string(),
+            trigger_type: "late_type".to_string(),
+            function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
         };
-
         engine
             .router_msg(&worker, &msg)
             .await
             .expect("RegisterTrigger should succeed at protocol level");
-
-        let outbound = rx.try_recv().expect("engine should emit a result");
-        let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = outbound else {
-            panic!("expected TriggerRegistrationResult");
-        };
-        let err = error.expect("error should be populated");
-        assert_eq!(err.code, "trigger_type_not_found");
         assert!(
-            err.message.contains("totally-made-up"),
-            "msg should name the missing type: {}",
-            err.message
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-early")
         );
+
+        // The provider shows up and registers the type: the parked intent
+        // is activated and forwarded to the provider.
+        let (provider_tx, mut provider_rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(provider_tx);
+        let tt_msg = Message::RegisterTriggerType {
+            id: "late_type".to_string(),
+            description: "arrives after its triggers".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&provider, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(engine.trigger_registry.triggers.contains_key("trig-early"));
+
+        let outbound = provider_rx
+            .try_recv()
+            .expect("provider should receive the recovered trigger");
+        let Outbound::Protocol(Message::RegisterTrigger { id, .. }) = outbound else {
+            panic!("expected RegisterTrigger, got {:?}", outbound);
+        };
+        assert_eq!(id, "trig-early");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_worker_drops_its_pending_trigger_intents() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        // The message path stamps the trigger with the origin connection as
+        // owner, so the parked intent is connection-owned.
+        let msg = Message::RegisterTrigger {
+            id: "trig-orphan".to_string(),
+            trigger_type: "never_registered".to_string(),
+            function_id: "fn-1".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        };
+        engine
+            .router_msg(&worker, &msg)
+            .await
+            .expect("RegisterTrigger should succeed at protocol level");
         assert!(
-            err.message.contains("https://workers.iii.dev/"),
-            "msg should recommend the workers directory: {}",
-            err.message
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-orphan")
+        );
+
+        // The worker disconnects while its registration is still parked: the
+        // intent must be reaped with the connection, exactly like a live
+        // connection-owned binding would be.
+        engine.cleanup_worker(&worker).await;
+        assert!(
+            engine.trigger_registry.pending_triggers.is_empty(),
+            "pending intent should be reaped with its worker"
+        );
+
+        // A provider for the type arriving later must find nothing to
+        // deliver — the dead worker's intent must not be resurrected.
+        let (provider_tx, mut provider_rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(provider_tx);
+        let tt_msg = Message::RegisterTriggerType {
+            id: "never_registered".to_string(),
+            description: "arrives after the owner died".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&provider, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(
+            provider_rx.try_recv().is_err(),
+            "provider must not receive a dead worker's trigger"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unregistering_a_parked_trigger_prevents_replay_on_type_return() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // Worker A provides trigger type X.
+        let (a_tx, _a_rx) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(a_tx);
+        engine.worker_registry.register_worker(worker_a.clone());
+        let tt_msg = Message::RegisterTriggerType {
+            id: "type_x".to_string(),
+            description: "provided by worker A".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&worker_a, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        // Worker B binds type_x -> b::echo.
+        let (b_tx, _b_rx) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(b_tx);
+        engine.worker_registry.register_worker(worker_b.clone());
+        let reg_msg = Message::RegisterTrigger {
+            id: "trig-b-echo".to_string(),
+            trigger_type: "type_x".to_string(),
+            function_id: "b::echo".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        };
+        engine
+            .router_msg(&worker_b, &reg_msg)
+            .await
+            .expect("RegisterTrigger should succeed at protocol level");
+        assert!(engine.trigger_registry.triggers.contains_key("trig-b-echo"));
+
+        // Worker A disconnects: B's binding is parked, not dropped.
+        engine.cleanup_worker(&worker_a).await;
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-b-echo"),
+            "binding should be parked while its type's provider is away"
+        );
+
+        // B explicitly unregisters the parked binding: dropping the intent
+        // is the whole unregister.
+        let unreg_msg = Message::UnregisterTrigger {
+            id: "trig-b-echo".to_string(),
+            trigger_type: Some("type_x".to_string()),
+        };
+        engine
+            .router_msg(&worker_b, &unreg_msg)
+            .await
+            .expect("UnregisterTrigger should succeed");
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+
+        // Worker A returns with the type: the unregistered binding must not
+        // be resurrected or delivered.
+        let (a2_tx, mut a2_rx) = mpsc::channel::<Outbound>(8);
+        let worker_a2 = WorkerConnection::new(a2_tx);
+        engine.worker_registry.register_worker(worker_a2.clone());
+        engine
+            .router_msg(&worker_a2, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(
+            a2_rx.try_recv().is_err(),
+            "returning provider must not receive an unregistered binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_leaked_dead_owner_pending_intent_is_swept_on_type_registration() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // Simulate the concurrent-disconnect leak: a provider's cleanup can
+        // park another worker's binding after that worker's own cleanup
+        // already purged its intents, leaving an intent owned by a worker
+        // that is no longer connected.
+        let dead_worker = uuid::Uuid::new_v4();
+        engine.trigger_registry.pending_triggers.insert(
+            "trig-leaked".to_string(),
+            crate::trigger::Trigger {
+                id: "trig-leaked".to_string(),
+                trigger_type: "type_x".to_string(),
+                function_id: "b::echo".to_string(),
+                config: serde_json::json!({}),
+                worker_id: Some(dead_worker),
+                metadata: None,
+            },
+        );
+
+        // A provider registers the type: the leaked intent must be swept at
+        // the drain, never delivered as a binding nothing owns.
+        let (provider_tx, mut provider_rx) = mpsc::channel::<Outbound>(8);
+        let provider = WorkerConnection::new(provider_tx);
+        engine.worker_registry.register_worker(provider.clone());
+        let tt_msg = Message::RegisterTriggerType {
+            id: "type_x".to_string(),
+            description: "arrives after the leak".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&provider, &tt_msg)
+            .await
+            .expect("RegisterTriggerType should succeed");
+
+        assert!(
+            engine.trigger_registry.pending_triggers.is_empty(),
+            "leaked dead-owner intent should be swept"
+        );
+        assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(
+            provider_rx.try_recv().is_err(),
+            "provider must not receive a dead worker's leaked intent"
         );
     }
 

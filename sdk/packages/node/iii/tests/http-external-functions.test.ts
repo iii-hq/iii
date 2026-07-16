@@ -127,12 +127,8 @@ function uniqueFunctionId(prefix: string): string {
   return `${prefix}::${Date.now()}::${Math.random().toString(36).slice(2, 10)}`
 }
 
-function uniqueTopic(prefix: string): string {
-  return `${prefix}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`
-}
-
 describe('HTTP external functions', () => {
-  it('delivers queue events to an externally registered HTTP function', async () => {
+  it('delivers events to an externally registered HTTP function', async () => {
     await execute(async () =>
       iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
@@ -144,9 +140,7 @@ describe('HTTP external functions', () => {
     await webhookProbe.start()
 
     const functionId = uniqueFunctionId('test::http_external::target')
-    const topic = uniqueTopic('test.http_external.topic')
     const payload = { hello: 'world', count: 1 }
-    let trigger: { unregister(): void } | undefined
     let httpFn: { unregister(): void } | undefined
 
     try {
@@ -160,14 +154,7 @@ describe('HTTP external functions', () => {
       )
       await sleep(300)
 
-      trigger = iii.registerTrigger({
-        type: 'durable:subscriber',
-        function_id: functionId,
-        config: { topic },
-      })
-      await sleep(300)
-
-      await execute(async () => iii.trigger({ function_id: 'iii::durable::publish', payload: { topic, data: payload } }))
+      await execute(async () => iii.trigger({ function_id: functionId, payload }))
 
       const webhook = await webhookProbe.waitForWebhook(7000)
 
@@ -175,12 +162,8 @@ describe('HTTP external functions', () => {
       expect(webhook.url).toBe('/webhook')
       expect(webhook.body).toMatchObject(payload)
     } finally {
-      try {
-        trigger?.unregister()
-      } finally {
-        httpFn?.unregister()
-        await webhookProbe.close()
-      }
+      httpFn?.unregister()
+      await webhookProbe.close()
     }
   })
 
@@ -248,9 +231,7 @@ describe('HTTP external functions', () => {
     await webhookProbe.start()
 
     const functionId = uniqueFunctionId('test::http_external::custom_headers')
-    const topic = uniqueTopic('test.http_external.headers')
     const payload = { msg: 'with-headers' }
-    let trigger: { unregister(): void } | undefined
     let httpFn: { unregister(): void } | undefined
 
     try {
@@ -268,14 +249,7 @@ describe('HTTP external functions', () => {
       )
       await sleep(300)
 
-      trigger = iii.registerTrigger({
-        type: 'durable:subscriber',
-        function_id: functionId,
-        config: { topic },
-      })
-      await sleep(300)
-
-      await execute(async () => iii.trigger({ function_id: 'iii::durable::publish', payload: { topic, data: payload } }))
+      await execute(async () => iii.trigger({ function_id: functionId, payload }))
 
       const webhook = await webhookProbe.waitForWebhook(7000)
 
@@ -284,16 +258,12 @@ describe('HTTP external functions', () => {
       expect(webhook.headers['x-custom-header']).toBe('test-value')
       expect(webhook.headers['x-another']).toBe('123')
     } finally {
-      try {
-        trigger?.unregister()
-      } finally {
-        httpFn?.unregister()
-        await webhookProbe.close()
-      }
+      httpFn?.unregister()
+      await webhookProbe.close()
     }
   })
 
-  it('delivers events to multiple external functions on different topics', async () => {
+  it('delivers events to multiple external functions', async () => {
     await execute(async () =>
       iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
@@ -308,13 +278,9 @@ describe('HTTP external functions', () => {
 
     const functionIdA = uniqueFunctionId('test::http_external::multi_a')
     const functionIdB = uniqueFunctionId('test::http_external::multi_b')
-    const topicA = uniqueTopic('test.http_external.multi_a')
-    const topicB = uniqueTopic('test.http_external.multi_b')
     const payloadA = { source: 'topic-a', value: 1 }
     const payloadB = { source: 'topic-b', value: 2 }
 
-    let triggerA: { unregister(): void } | undefined
-    let triggerB: { unregister(): void } | undefined
     let httpFnA: { unregister(): void } | undefined
     let httpFnB: { unregister(): void } | undefined
 
@@ -338,21 +304,8 @@ describe('HTTP external functions', () => {
       )
       await sleep(300)
 
-      triggerA = iii.registerTrigger({
-        type: 'durable:subscriber',
-        function_id: functionIdA,
-        config: { topic: topicA },
-      })
-
-      triggerB = iii.registerTrigger({
-        type: 'durable:subscriber',
-        function_id: functionIdB,
-        config: { topic: topicB },
-      })
-      await sleep(300)
-
-      await execute(async () => iii.trigger({ function_id: 'iii::durable::publish', payload: { topic: topicA, data: payloadA } }))
-      await execute(async () => iii.trigger({ function_id: 'iii::durable::publish', payload: { topic: topicB, data: payloadB } }))
+      await execute(async () => iii.trigger({ function_id: functionIdA, payload: payloadA }))
+      await execute(async () => iii.trigger({ function_id: functionIdB, payload: payloadB }))
 
       const webhookA = await webhookProbeA.waitForWebhook(7000)
       const webhookB = await webhookProbeB.waitForWebhook(7000)
@@ -363,15 +316,10 @@ describe('HTTP external functions', () => {
       expect(webhookB.method).toBe('POST')
       expect(webhookB.body).toMatchObject(payloadB)
     } finally {
-      try {
-        triggerA?.unregister()
-        triggerB?.unregister()
-      } finally {
-        httpFnA?.unregister()
-        httpFnB?.unregister()
-        await webhookProbeA.close()
-        await webhookProbeB.close()
-      }
+      httpFnA?.unregister()
+      httpFnB?.unregister()
+      await webhookProbeA.close()
+      await webhookProbeB.close()
     }
   })
 
@@ -387,10 +335,8 @@ describe('HTTP external functions', () => {
     await webhookProbe.start()
 
     const functionId = uniqueFunctionId('test::http_external::stop_after_unregister')
-    const topic = uniqueTopic('test.http_external.stop')
     const payloadBefore = { phase: 'before-unregister' }
     const payloadAfter = { phase: 'after-unregister' }
-    let trigger: { unregister(): void } | undefined
     let httpFn: { unregister(): void } | undefined
 
     try {
@@ -404,25 +350,22 @@ describe('HTTP external functions', () => {
       )
       await sleep(300)
 
-      trigger = iii.registerTrigger({
-        type: 'durable:subscriber',
-        function_id: functionId,
-        config: { topic },
-      })
-      await sleep(300)
-
-      await execute(async () => iii.trigger({ function_id: 'iii::durable::publish', payload: { topic, data: payloadBefore } }))
+      await execute(async () => iii.trigger({ function_id: functionId, payload: payloadBefore }))
 
       const webhookBefore = await webhookProbe.waitForWebhook(7000)
       expect(webhookBefore.body).toMatchObject(payloadBefore)
 
-      trigger.unregister()
-      trigger = undefined
       httpFn.unregister()
       httpFn = undefined
       await sleep(500)
 
-      await execute(async () => iii.trigger({ function_id: 'iii::durable::publish', payload: { topic, data: payloadAfter } }))
+      // The function is gone, so a direct trigger rejects. Don't use `execute`
+      // here — it would retry the rejection until the retry limit.
+      try {
+        await iii.trigger({ function_id: functionId, payload: payloadAfter })
+      } catch {
+        // Expected: triggering an unregistered function is rejected.
+      }
 
       let receivedAfterUnregister = false
       try {
@@ -434,12 +377,8 @@ describe('HTTP external functions', () => {
 
       expect(receivedAfterUnregister).toBe(false)
     } finally {
-      try {
-        trigger?.unregister()
-      } finally {
-        httpFn?.unregister()
-        await webhookProbe.close()
-      }
+      httpFn?.unregister()
+      await webhookProbe.close()
     }
   })
 
@@ -455,9 +394,7 @@ describe('HTTP external functions', () => {
     await webhookProbe.start()
 
     const functionId = uniqueFunctionId('test::http_external::put_method')
-    const topic = uniqueTopic('test.http_external.put')
     const payload = { method_test: 'put', value: 42 }
-    let trigger: { unregister(): void } | undefined
     let httpFn: { unregister(): void } | undefined
 
     try {
@@ -471,14 +408,7 @@ describe('HTTP external functions', () => {
       )
       await sleep(300)
 
-      trigger = iii.registerTrigger({
-        type: 'durable:subscriber',
-        function_id: functionId,
-        config: { topic },
-      })
-      await sleep(300)
-
-      await execute(async () => iii.trigger({ function_id: 'iii::durable::publish', payload: { topic, data: payload } }))
+      await execute(async () => iii.trigger({ function_id: functionId, payload }))
 
       const webhook = await webhookProbe.waitForWebhook(7000)
 
@@ -486,12 +416,8 @@ describe('HTTP external functions', () => {
       expect(webhook.url).toBe('/webhook')
       expect(webhook.body).toMatchObject(payload)
     } finally {
-      try {
-        trigger?.unregister()
-      } finally {
-        httpFn?.unregister()
-        await webhookProbe.close()
-      }
+      httpFn?.unregister()
+      await webhookProbe.close()
     }
   })
 })

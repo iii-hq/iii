@@ -1,0 +1,793 @@
+<script>
+  // ============= III EXPERIENCE — homepage flow =============
+  // Ported wholesale from iii-hq/iii — website/components/demo/homepage-script.ts
+  const ALEX = { name: 'Alex', role: 'Product Lead' };
+  const HOMEPAGE_FLOW = [
+    { id:'msg-1', type:'slack-message', sender:ALEX,
+      content:"We need to classify user-submitted content for toxicity before it goes live. Can you set something up?",
+      action:{ label:"See what it's like to work with iii", title:"Classify user content for toxicity", count:1 }, delay:500 },
+    { id:'reply-1', type:'reply',
+      content:"Sure, I'll write a Python classifier as a iii worker.",
+      sendLabel:'Send', delay:250 },
+    { id:'code-1', type:'code-editor', filename:'content_classifier.py', language:'python',
+      lines:[
+        "from iii import register_worker, InitOptions, Logger",
+        "",
+        "iii = register_worker(os.environ['III_ENGINE_URL'], InitOptions(",
+        "    worker_name='content-classifier',",
+        "))",
+        "logger = Logger()",
+        "",
+        "def classify(payload: dict) -> dict:",
+        "    text = payload.get('text', '')",
+        "    logger.info(f'Classifying content: {text[:50]}...')",
+        "    score = toxicity_model.predict(text)",
+        "    return { 'label': 'toxic' if score > 0.7 else 'safe', 'score': score }",
+        "",
+        "iii.register_function('content::classify', classify)"
+      ], doneLabel:'Deploy', delay:300 },
+    { id:'status-1', type:'status', variant:'info', icon:'connect',
+      headline:'Classifier worker connected',
+      detail:'content::classify registered with the engine',
+      autoAdvance:1400, delay:200 },
+
+    { id:'msg-2', type:'slack-message', sender:ALEX,
+      content:"Great. Now we need to auto-approve clean content and flag toxic content for human review.",
+      autoAdvance:1500, delay:500 },
+    { id:'reply-2', type:'reply',
+      content:"I'll create a TypeScript router that calls the classifier.",
+      sendLabel:'Send', delay:250 },
+    { id:'msg-2b', type:'slack-message', sender:ALEX,
+      content:"How long is that going to take? Do we need an API for the Python worker?",
+      autoAdvance:1500, delay:500 },
+    { id:'reply-2b', type:'reply',
+      content:"No, it's already connected since we're using iii.",
+      sendLabel:'Send', delay:250 },
+    { id:'code-2', type:'code-editor', filename:'content-router.ts', language:'typescript',
+      lines:[
+        "import { registerWorker } from 'iii-sdk'",
+        "",
+        "const iii = registerWorker(process.env.III_ENGINE_URL, {",
+        "  workerName: 'content-router',",
+        "})",
+        "",
+        "iii.registerFunction('content::route', async ({ text, author_id }) => {",
+        "  const { label, score } = await iii.trigger({",
+        "    function_id: 'content::classify',",
+        "    payload: { text },",
+        "  })",
+        "  const topic = label === 'safe' ? 'comment.publish' : 'comment.review'",
+        "  iii.trigger({",
+        "    function_id: 'iii::durable::publish',",
+        "    payload: { topic, data: { text, author_id, label, score } },",
+        "  })",
+        "})"
+      ], doneLabel:'Deploy', delay:300 },
+    { id:'status-2', type:'status', variant:'info', icon:'connect',
+      headline:'Content router live',
+      detail:'Classifying cross-language, publishing to comment.publish and comment.review',
+      autoAdvance:1400, delay:200 },
+
+    { id:'msg-3', type:'slack-message', sender:ALEX,
+      content:"Can we track how many times each author gets flagged? We need moderation history.",
+      autoAdvance:1500, delay:500 },
+    { id:'reply-3', type:'reply', content:"I'll add state.",
+      sendLabel:'Send', delay:250 },
+    { id:'terminal-3a', type:'terminal-command',
+      command:'iii worker add iii-state',
+      output:'\u2713 Worker iii-state installed', delay:400 },
+    { id:'msg-3b', type:'slack-message', sender:ALEX,
+      content:"How long to roll that out?",
+      autoAdvance:1500, delay:500 },
+    { id:'reply-3b', type:'reply', content:"It's done, adding the author history tracking now.",
+      sendLabel:'Send', delay:250 },
+    { id:'code-3', type:'code-editor', filename:'content_classifier.py', language:'python',
+      lines:[
+        "def on_flagged(event: dict) -> None:",
+        "    author_id = event.get('author_id')",
+        "    flags = iii.trigger({ 'function_id': 'state::get',",
+        "        'payload': { 'scope': 'moderation', 'key': f'flags:{author_id}' } })",
+        "    iii.trigger({ 'function_id': 'state::set',",
+        "        'payload': { 'scope': 'moderation', 'key': f'flags:{author_id}',",
+        "                     'value': (flags or 0) + 1 } })",
+        "",
+        "iii.register_function('content::on-flagged', on_flagged)",
+        "",
+        "iii.register_trigger({",
+        "    'type': 'durable:subscriber',",
+        "    'function_id': 'content::on-flagged',",
+        "    'config': { 'topic': 'comment.review' },",
+        "})"
+      ], doneLabel:'Deploy', delay:300 },
+    { id:'status-3', type:'status', variant:'info', icon:'connect',
+      headline:'State active',
+      detail:'Per-author flag counts persisted on every comment.review event',
+      autoAdvance:1400, delay:200 },
+
+    { id:'msg-4', type:'slack-message', sender:ALEX,
+      content:"The frontend team needs a REST endpoint to submit content for moderation.",
+      autoAdvance:1500, delay:500 },
+    { id:'reply-4', type:'reply', content:"No problem, we can add HTTP.",
+      sendLabel:'Send', delay:250 },
+    { id:'terminal-4a', type:'terminal-command',
+      command:'iii worker add iii-http',
+      output:'\u2713 Worker iii-http installed', delay:400 },
+    { id:'code-4', type:'code-editor', filename:'content-router.ts', language:'typescript',
+      lines:[
+        "iii.registerFunction(",
+        "  'http::submit-content',",
+        "  async (payload: { body: { text: string; author_id: string } }) => {",
+        "    const result = await iii.trigger({",
+        "      function_id: 'content::route',",
+        "      payload: payload.body,",
+        "    })",
+        "    return {",
+        "      status_code: 200,",
+        "      body: result,",
+        "      headers: { 'Content-Type': 'application/json' },",
+        "    }",
+        "  },",
+        ")",
+        "",
+        "iii.registerTrigger({",
+        "  type: 'http',",
+        "  function_id: 'http::submit-content',",
+        "  config: { api_path: '/content/submit', http_method: 'POST' },",
+        "})"
+      ], doneLabel:'Deploy', delay:300 },
+    { id:'status-4', type:'status', variant:'info', icon:'connect',
+      headline:'POST /content/submit', detail:'HTTP endpoint live',
+      autoAdvance:1400, delay:200 },
+
+    { id:'msg-5', type:'slack-message', sender:ALEX,
+      content:"Let me guess, it's already done?",
+      autoAdvance:1500, delay:600 },
+    { id:'reply-5', type:'reply',
+      content:"Yup! It's a single system. Everything is already connected.",
+      sendLabel:'Send', delay:250 },
+    { id:'status-5', type:'status', variant:'success', icon:'check',
+      headline:'All services connected',
+      detail:'Every worker shares the same event bus and state',
+      autoAdvance:1600, delay:200 },
+
+    { id:'msg-6', type:'slack-message', sender:ALEX,
+      content:"We're seeing some classification requests fail intermittently. Can you investigate?",
+      autoAdvance:1500, delay:500 },
+    { id:'reply-6', type:'reply',
+      content:"Checking the traces now, should only take a moment.",
+      sendLabel:'Send', delay:250 },
+    { id:'console-1', type:'console-trace',
+      traces:[
+        { operation:'content::route', duration:'2.4ms', status:'ok' },
+        { operation:'content::classify', duration:'1.1ms', status:'ok' },
+        { operation:'content::classify', status:'error' }
+      ],
+      activeTraceIndex:2,
+      spans:[
+        { label:'content::route', duration:'6.22ms', widthPercent:100, depth:0, status:'ok' },
+        { label:'content::classify', duration:'4.99ms', widthPercent:80, depth:1, status:'ok' },
+        { label:'detoxify.predict', duration:'0.3ms', widthPercent:8, depth:2, status:'error' }
+      ],
+      errorSpanIndex:2,
+      detail:{ status:'ERROR', service:'content-classifier',
+        error:'detoxify 0.5.2 \u2014 RuntimeError: index out of range in self' },
+      delay:400 },
+    { id:'reply-7', type:'reply',
+      content:"Found it \u2014 known bug in detoxify 0.5.2. Bumping to 0.5.3 and restarting the worker.",
+      sendLabel:'Send', delay:250 },
+    { id:'status-6a', type:'status', variant:'info', icon:'deploy',
+      headline:'detoxify==0.5.2 \u2192 detoxify==0.5.3',
+      detail:'requirements.txt updated',
+      autoAdvance:1000, delay:400 },
+    { id:'terminal-6b', type:'terminal-command',
+      command:'iii worker stop content-classifier',
+      output:'\u2713 Worker content-classifier stopped', delay:300 },
+    { id:'terminal-6c', type:'terminal-command',
+      command:'iii worker start content-classifier',
+      output:'\u2713 Worker content-classifier started', delay:300 },
+    { id:'status-6', type:'status', variant:'success', icon:'observe',
+      headline:'Issue resolved',
+      detail:'Classifier restarted with detoxify==0.5.3',
+      autoAdvance:1600, delay:200 }
+  ];
+
+  // ============= Sequencer engine =============
+  const seqScroll = document.getElementById('seq-scroll');
+  const seqRestart = document.getElementById('seq-restart');
+
+  const STATUS_ICONS = { check:'\u2713', connect:'\u29C7', deploy:'\u25B2', observe:'\u25C9', bolt:'\u26A1' };
+
+  let sessionKey = 0;
+  let currentIndex = 0;
+  let visibleUpTo = -1;
+  let isDelaying = false;
+  let isFinished = false;
+  let delayTimer = null;
+  let stepEls = []; // dom nodes per step (sparse)
+  let stepStates = []; // per-step transient state
+
+  // Analytics helper: emit one event per user-driven step advance (button click).
+  // Step reveals are tracked centrally in revealStep().
+  function trackStepAdvance(step, label){
+    iiiTrack('experience_step_advance', {
+      step_id: step.id,
+      step_index: HOMEPAGE_FLOW.indexOf(step),
+      step_type: step.type,
+      advance_method: 'button',
+      button_label: (label || '').trim().toLowerCase()
+    });
+  }
+
+  const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  // -------- syntax highlighting (light, regex-based) --------
+  const PY_KW = /\b(from|import|as|def|return|if|else|elif|or|and|not|None|True|False|in|is|for|while|class|with|try|except|finally|raise|lambda|pass|yield)\b/g;
+  const TS_KW = /\b(import|from|export|const|let|var|async|await|return|if|else|new|function|class|interface|type|extends|implements|public|private|of|in|as|true|false|null|undefined)\b/g;
+
+  // Token-based highlighter: tokenize on RAW source first using sentinel chars
+  // (so it doesn't shred HTML entities), then escape, then expand sentinels into spans.
+  function highlight(line, lang){
+    if (!line) return '&nbsp;';
+    const STX = '\u0001', ETX = '\u0002', SEP = '\u001E';
+    const stash = [];
+    const wrap = (cls, text) => { stash.push({cls, text}); return STX + (stash.length-1) + ETX; };
+
+    let s = line;
+    // 1. Comments first (consume the rest of the line)
+    if (lang === 'python'){
+      s = s.replace(/#[^\n]*$/g, m => wrap('tok-com', m));
+    } else {
+      s = s.replace(/\/\/[^\n]*$/g, m => wrap('tok-com', m));
+    }
+    // 2. Strings (single + double, no escapes for this sketch)
+    s = s.replace(/'[^'\n]*'|"[^"\n]*"/g, m => wrap('tok-str', m));
+    // 3. Keywords
+    const kw = lang === 'python' ? PY_KW : TS_KW;
+    s = s.replace(kw, m => wrap('tok-kw', m));
+    // (numbers intentionally not highlighted — keeps sentinel-token expansion simple)
+
+    // Now escape everything (sentinel chars are safe — not HTML)
+    s = escapeHtml(s);
+    // Expand sentinels — stashed text needs escaping too
+    s = s.replace(/\u0001(\d+)\u0002/g, (_, idx) => {
+      const t = stash[+idx];
+      return '<span class="' + t.cls + '">' + escapeHtml(t.text) + '</span>';
+    });
+    return s || '&nbsp;';
+  }
+
+  // Real language logos sourced from iii-hq/iii website components
+  const SVG_TS = '<svg viewBox="0 0 24 24" class="lang-svg ts" fill="currentColor" aria-hidden="true"><path d="M1.125 0C.502 0 0 .502 0 1.125v21.75C0 23.498.502 24 1.125 24h21.75c.623 0 1.125-.502 1.125-1.125V1.125C24 .502 23.498 0 22.875 0zm17.363 9.75c.612 0 1.154.037 1.627.111a6.38 6.38 0 0 1 1.306.34v2.458a3.95 3.95 0 0 0-.643-.361 5.093 5.093 0 0 0-.717-.26 5.453 5.453 0 0 0-1.426-.2c-.3 0-.573.028-.819.086a2.1 2.1 0 0 0-.623.242c-.17.104-.3.229-.393.374a.888.888 0 0 0-.14.49c0 .196.053.373.156.529.104.156.252.304.443.444s.423.276.696.41c.273.135.582.274.926.416.47.197.892.407 1.266.628.374.222.695.473.963.753.268.279.472.598.614.957.142.359.214.776.214 1.253 0 .657-.125 1.21-.373 1.656a3.033 3.033 0 0 1-1.012 1.085 4.38 4.38 0 0 1-1.487.596c-.566.12-1.163.18-1.79.18a9.916 9.916 0 0 1-1.84-.164 5.544 5.544 0 0 1-1.512-.493v-2.63a5.033 5.033 0 0 0 3.237 1.2c.333 0 .624-.03.872-.09.249-.06.456-.144.623-.25.166-.108.29-.234.373-.38a1.023 1.023 0 0 0-.074-1.089 2.12 2.12 0 0 0-.537-.5 5.597 5.597 0 0 0-.807-.444 27.72 27.72 0 0 0-1.007-.436c-.918-.383-1.602-.852-2.053-1.405-.45-.553-.676-1.222-.676-2.005 0-.614.123-1.141.369-1.582.246-.441.58-.804 1.004-1.089a4.494 4.494 0 0 1 1.47-.629 7.536 7.536 0 0 1 1.77-.201zm-15.113.188h9.563v2.166H9.506v9.646H6.789v-9.646H3.375z"/></svg>';
+  const SVG_PY = '<svg viewBox="0 0 256 255" class="lang-svg py" aria-hidden="true"><path fill="#3776AB" d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072ZM92.802 19.66a11.12 11.12 0 1 1 0 22.241 11.12 11.12 0 0 1 0-22.24Z"/><path fill="#FFD43B" d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897Zm34.114-19.586a11.12 11.12 0 1 1 0-22.24 11.12 11.12 0 0 1 0 22.24Z"/></svg>';
+  const SVG_FILE = '<svg viewBox="0 0 16 16" class="lang-svg" fill="currentColor" aria-hidden="true"><path d="M4 1.5A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V5.5L9.5 1.5H4Zm5 1.56L11.94 6H9V3.06ZM5 8.5h6v1H5v-1Zm0 2.5h6v1H5v-1Z"/></svg>';
+
+  function langIconHtml(language, filename){
+    const fn = (filename || '').toLowerCase();
+    const lc = (language || '').toLowerCase();
+    const isTs = lc === 'typescript' || lc === 'ts' || fn.endsWith('.ts') || fn.endsWith('.tsx');
+    const isPy = lc === 'python' || lc === 'py' || fn.endsWith('.py');
+    if (isTs) return SVG_TS;
+    if (isPy) return SVG_PY;
+    return SVG_FILE;
+  }
+
+  function pin(){
+    requestAnimationFrame(() => { seqScroll.scrollTop = seqScroll.scrollHeight; });
+  }
+
+  function showTypingDots(){
+    let el = document.getElementById('seq-typing');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'seq-typing';
+    el.className = 'seq-typing';
+    el.innerHTML = '<span></span><span></span><span></span>';
+    seqScroll.appendChild(el);
+    pin();
+    return el;
+  }
+  function hideTypingDots(){
+    const el = document.getElementById('seq-typing');
+    if (el) el.remove();
+  }
+
+  function next(){
+    if (isFinished) return;
+    const nextIndex = currentIndex + 1;
+    if (nextIndex >= HOMEPAGE_FLOW.length){
+      currentIndex = nextIndex;
+      visibleUpTo = HOMEPAGE_FLOW.length - 1;
+      isFinished = true;
+      renderFinish();
+      return;
+    }
+    currentIndex = nextIndex;
+    const step = HOMEPAGE_FLOW[nextIndex];
+    const delay = step.delay || 0;
+    if (delayTimer){ clearTimeout(delayTimer); delayTimer = null; }
+    if (delay > 0){
+      isDelaying = true;
+      showTypingDots();
+      delayTimer = setTimeout(() => {
+        isDelaying = false;
+        hideTypingDots();
+        revealStep(nextIndex);
+      }, delay);
+    } else {
+      revealStep(nextIndex);
+    }
+  }
+
+  function revealStep(i){
+    visibleUpTo = i;
+    const step = HOMEPAGE_FLOW[i];
+    iiiTrack('experience_step_reveal', {
+      step_id: step.id,
+      step_index: i,
+      step_type: step.type
+    });
+    const wrap = document.createElement('div');
+    wrap.className = 'seq-step';
+    wrap.dataset.id = step.id;
+    seqScroll.appendChild(wrap);
+    stepEls[i] = wrap;
+    stepStates[i] = { sessionKey };
+    // schedule the typing dots for the *next* step's delay only after this step completes — handled in next()
+    switch (step.type){
+      case 'slack-message': renderChat(step, wrap, i); break;
+      case 'reply': renderReply(step, wrap, i); break;
+      case 'code-editor': renderCode(step, wrap, i); break;
+      case 'status': renderStatus(step, wrap, i); break;
+      case 'terminal-command': renderTerminal(step, wrap, i); break;
+      case 'console-trace': renderTrace(step, wrap, i); break;
+    }
+    pin();
+  }
+
+  // -------- renderers --------
+  function avatarInitials(name){
+    return String(name).split(' ').map(w => w[0] || '').join('').slice(0,2).toUpperCase();
+  }
+
+  function renderChat(step, wrap, i){
+    const initials = avatarInitials(step.sender.name);
+    const role = step.sender.role ? '<span class="role">' + escapeHtml(step.sender.role) + '</span>' : '';
+    wrap.innerHTML = ''
+      + '<div class="xp-msg">'
+      +   '<div class="avatar">' + escapeHtml(initials) + '</div>'
+      +   '<div class="body">'
+      +     '<div class="meta"><span class="name">' + escapeHtml(step.sender.name) + '</span>' + role + '</div>'
+      +     '<div class="text">' + escapeHtml(step.content) + '</div>'
+      +     '<div class="cta-row"></div>'
+      +   '</div>'
+      + '</div>';
+    const ctaRow = wrap.querySelector('.cta-row');
+    let advanced = false;
+    const advance = () => { if (advanced) return; advanced = true; ctaRow.innerHTML = ''; next(); };
+
+    if (step.action){
+      // ticket card — inline action affordance
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ticket-card';
+      const idStr = String(i + 1).padStart(3, '0');
+      const badgeStr = step.action.count != null
+        ? '<span class="ticket-badge">' + step.action.count + '</span>'
+        : '';
+      btn.innerHTML = ''
+        + '<div class="ticket-stamp">'
+        +   '<span class="stamp-id">TKT-' + idStr + '</span>'
+        +   '<span class="stamp-sep">/</span>'
+        +   '<span class="stamp-title">' + escapeHtml(step.action.title || ((step.sender && step.sender.name) || '').split(' ')[0]) + '</span>'
+        +   '<span class="stamp-spacer"></span>'
+        + '</div>'
+        + '<div class="ticket-action">'
+        +   '<span class="arrow"></span>'
+        +   '<span class="label">' + escapeHtml(step.action.label) + '</span>'
+        +   '<span class="key-hint"><kbd>\u21B5</kbd></span>'
+        + '</div>'
+        + badgeStr;
+      btn.addEventListener('click', () => {
+        iiiTrack('cta_click', {
+          cta_id: 'experience_start',
+          cta_location: 'experience',
+          cta_label: (step.action.label || '').trim().toLowerCase(),
+          step_id: step.id
+        });
+        trackStepAdvance(step, step.action.label);
+        // Drop the intro hero state on first interaction — text + spacing animate back to normal flow.
+        seqScroll.classList.remove('is-intro');
+        advance();
+      });
+      ctaRow.appendChild(btn);
+    } else if (step.autoAdvance){
+      const t = setTimeout(advance, step.autoAdvance);
+      stepStates[i].timer = t;
+    } else {
+      const a = document.createElement('button');
+      a.type = 'button'; a.className = 'continue-link';
+      a.textContent = 'Continue';
+      a.addEventListener('click', () => { trackStepAdvance(step, 'Continue'); advance(); });
+      ctaRow.appendChild(a);
+    }
+  }
+
+  function renderReply(step, wrap, i){
+    wrap.innerHTML = ''
+      + '<div class="xp-reply">'
+      +   '<div class="bubble">'
+      +     '<div class="text"><span class="content"></span><span class="caret"></span></div>'
+      +     '<div class="actions"><span class="typing">typing&hellip;</span></div>'
+      +   '</div>'
+      + '</div>';
+    const root = wrap.querySelector('.xp-reply');
+    const contentEl = wrap.querySelector('.content');
+    const caret = wrap.querySelector('.caret');
+    const actions = wrap.querySelector('.actions');
+    const speed = step.typingSpeed || 40;
+    const words = step.content.split(' ');
+    let wi = 0;
+    const tick = setInterval(() => {
+      if (stepStates[i].sessionKey !== sessionKey){ clearInterval(tick); return; }
+      if (wi < words.length){
+        contentEl.textContent = (contentEl.textContent ? contentEl.textContent + ' ' : '') + words[wi];
+        wi++;
+        pin();
+      } else {
+        clearInterval(tick);
+        caret.remove();
+        let advanced = false;
+        const advance = () => {
+          if (advanced) return; advanced = true;
+          // sent state: remove composer chrome, leave bubble accented
+          actions.remove();
+          root.classList.add('sent');
+          next();
+        };
+        if (step.autoAdvance){
+          const t = setTimeout(advance, step.autoAdvance);
+          stepStates[i].timer = t;
+        } else {
+          actions.innerHTML = '';
+          const btn = document.createElement('button');
+          btn.type = 'button'; btn.className = 'send';
+          btn.textContent = step.sendLabel || 'Send';
+          btn.addEventListener('click', () => { trackStepAdvance(step, btn.textContent); advance(); });
+          actions.appendChild(btn);
+          pin();
+        }
+      }
+    }, speed);
+    stepStates[i].interval = tick;
+  }
+
+  function renderCode(step, wrap, i){
+    wrap.innerHTML = ''
+      + '<div class="xp-code">'
+      +   '<div class="xp-code-head">'
+      +     '<div class="file">' + langIconHtml(step.language, step.filename) + '<span class="filename">' + escapeHtml(step.filename) + '</span></div>'
+      +   '</div>'
+      +   '<div class="xp-code-body" id="cb-' + i + '"><div class="empty">Ready to write&hellip;</div></div>'
+      +   '<div class="xp-code-actions"><span class="writing">writing&hellip;</span></div>'
+      + '</div>';
+    const body = wrap.querySelector('.xp-code-body');
+    const actions = wrap.querySelector('.xp-code-actions');
+    const lineDelay = step.lineDelay || 220;
+    let li = 0;
+    // start writing after a short beat
+    const startTimer = setTimeout(() => {
+      body.innerHTML = '';
+      const tick = setInterval(() => {
+        if (stepStates[i].sessionKey !== sessionKey){ clearInterval(tick); return; }
+        if (li < step.lines.length){
+          const lineEl = document.createElement('div');
+          lineEl.className = 'xp-code-line';
+          const num = li + 1;
+          const html = highlight(step.lines[li], step.language);
+          lineEl.innerHTML = '<span class="ln">' + num + '</span><span class="src">' + html + '</span>';
+          body.appendChild(lineEl);
+          li++;
+          body.scrollTop = body.scrollHeight;
+          pin();
+        } else {
+          clearInterval(tick);
+          // write done
+          let advanced = false;
+          const advance = () => {
+            if (advanced) return; advanced = true;
+            // collapse to compact completed line
+            wrap.innerHTML = ''
+              + '<div class="xp-code completed">'
+              +   '<div class="completed-line">'
+              +     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
+              +     langIconHtml(step.language, step.filename)
+              +     '<span>' + escapeHtml(step.filename) + ' completed</span>'
+              +   '</div>'
+              + '</div>';
+            next();
+          };
+          if (step.autoAdvance){
+            const t = setTimeout(advance, step.autoAdvance);
+            stepStates[i].timer = t;
+          } else {
+            actions.innerHTML = '';
+            const btn = document.createElement('button');
+            btn.type = 'button'; btn.className = 'deploy';
+            btn.textContent = step.doneLabel || 'Deploy';
+            btn.addEventListener('click', () => { trackStepAdvance(step, btn.textContent); advance(); });
+            actions.appendChild(btn);
+            pin();
+          }
+        }
+      }, lineDelay);
+      stepStates[i].interval = tick;
+    }, 400);
+    stepStates[i].timer = startTimer;
+  }
+
+  function renderStatus(step, wrap, i){
+    const variant = step.variant || 'info';
+    const icon = STATUS_ICONS[step.icon] || '\u2022';
+    wrap.innerHTML = ''
+      + '<div class="xp-status v-' + variant + '">'
+      +   '<div class="ico">' + icon + '</div>'
+      +   '<div class="body">'
+      +     '<div class="head">' + escapeHtml(step.headline) + '</div>'
+      +     (step.detail ? '<div class="detail">' + escapeHtml(step.detail) + '</div>' : '')
+      +   '</div>'
+      +   '<div class="cta-slot"></div>'
+      + '</div>';
+    const slot = wrap.querySelector('.cta-slot');
+    let advanced = false;
+    const advance = () => { if (advanced) return; advanced = true; slot.innerHTML=''; next(); };
+    if (step.autoAdvance){
+      const t = setTimeout(advance, step.autoAdvance);
+      stepStates[i].timer = t;
+    } else {
+      const a = document.createElement('button');
+      a.type = 'button'; a.className = 'continue-link';
+      a.textContent = 'continue';
+      a.addEventListener('click', () => { trackStepAdvance(step, 'continue'); advance(); });
+      slot.appendChild(a);
+    }
+  }
+
+  function renderTerminal(step, wrap, i){
+    wrap.innerHTML = ''
+      + '<div class="xp-term">'
+      +   '<div class="head">terminal</div>'
+      +   '<div class="body">'
+      +     '<div class="row"><span class="prompt">&gt;</span><span class="cmd"></span><span class="caret"></span></div>'
+      +     '<div class="out" hidden></div>'
+      +   '</div>'
+      + '</div>';
+    const cmdEl = wrap.querySelector('.cmd');
+    const caret = wrap.querySelector('.caret');
+    const outEl = wrap.querySelector('.out');
+    const speed = step.typingSpeed || 40;
+    const cmd = step.command;
+    let ci = 0;
+    const tick = setInterval(() => {
+      if (stepStates[i].sessionKey !== sessionKey){ clearInterval(tick); return; }
+      if (ci < cmd.length){
+        cmdEl.textContent = cmd.slice(0, ci + 1);
+        ci++;
+      } else {
+        clearInterval(tick);
+        caret.remove();
+        setTimeout(() => {
+          outEl.hidden = false;
+          outEl.textContent = step.output;
+          pin();
+          // auto advance after output
+          const t = setTimeout(next, step.autoAdvance || 800);
+          stepStates[i].timer = t;
+        }, 300);
+      }
+    }, speed);
+    stepStates[i].interval = tick;
+  }
+
+  function renderTrace(step, wrap, i){
+    const phasesHtml = ['traces','waterfall','detail'].map(p => '<span class="ph ph-' + p + '">' + p + '</span>').join('');
+    wrap.innerHTML = ''
+      + '<div class="xp-trace">'
+      +   '<div class="head">'
+      +     '<span class="label"><span class="pulse"></span>iii console</span>'
+      +     '<span class="phases">' + phasesHtml + '</span>'
+      +   '</div>'
+      +   '<div class="traces"></div>'
+      +   '<div class="waterfall hidden"></div>'
+      +   '<div class="detail hidden"></div>'
+      +   '<div class="xp-trace-actions"></div>'
+      + '</div>';
+    const root = wrap.querySelector('.xp-trace');
+    const tracesEl = wrap.querySelector('.traces');
+    const wfEl = wrap.querySelector('.waterfall');
+    const detEl = wrap.querySelector('.detail');
+    const actEl = wrap.querySelector('.xp-trace-actions');
+    const phEls = {
+      traces: wrap.querySelector('.ph-traces'),
+      waterfall: wrap.querySelector('.ph-waterfall'),
+      detail: wrap.querySelector('.ph-detail')
+    };
+    phEls.traces.classList.add('on');
+
+    // build trace rows (hidden initially)
+    step.traces.forEach((t, ti) => {
+      const isErr = t.status === 'error';
+      const isSel = ti === step.activeTraceIndex;
+      const row = document.createElement('div');
+      row.className = 'trace-row hidden' + (isErr ? ' err' : '') + (isSel ? ' sel' : '');
+      row.innerHTML = ''
+        + '<span class="dot"></span>'
+        + '<span class="op">' + escapeHtml(t.operation) + '</span>'
+        + '<span class="dur">' + escapeHtml(t.duration || '---') + '</span>'
+        + '<span class="st">' + (isErr ? 'ERR' : 'OK') + '</span>';
+      tracesEl.appendChild(row);
+    });
+    // reveal trace rows staggered
+    const rowEls = tracesEl.querySelectorAll('.trace-row');
+    rowEls.forEach((r, idx) => {
+      const t = setTimeout(() => {
+        if (stepStates[i].sessionKey !== sessionKey) return;
+        r.classList.remove('hidden');
+        pin();
+      }, 100 + idx * 80);
+      (stepStates[i].timers = stepStates[i].timers || []).push(t);
+    });
+    const traceDelay = step.traces.length * 80 + 400;
+    const wfDelay = traceDelay + step.spans.length * 120 + 400;
+    const detailDelay = wfDelay + 400;
+
+    // waterfall phase
+    (stepStates[i].timers || (stepStates[i].timers = [])).push(setTimeout(() => {
+      if (stepStates[i].sessionKey !== sessionKey) return;
+      phEls.traces.classList.remove('on');
+      phEls.waterfall.classList.add('on');
+      wfEl.classList.remove('hidden');
+      step.spans.forEach((sp, si) => {
+        const isErr = sp.status === 'error';
+        const row = document.createElement('div');
+        row.className = 'span-row hidden' + (isErr ? ' err' : '');
+        row.style.paddingLeft = (sp.depth * 16 + 8) + 'px';
+        row.innerHTML = ''
+          + '<span class="arrow">\u25B8</span>'
+          + '<span class="label">' + escapeHtml(sp.label) + '</span>'
+          + '<span class="bar-wrap"><span class="bar-bg"><span class="bar"></span></span><span class="dur">' + escapeHtml(sp.duration) + '</span></span>'
+          + (isErr ? '<span class="err-tag">ERROR</span>' : '');
+        wfEl.appendChild(row);
+        const t1 = setTimeout(() => {
+          if (stepStates[i].sessionKey !== sessionKey) return;
+          row.classList.remove('hidden');
+          const bar = row.querySelector('.bar');
+          const t2 = setTimeout(() => { if (bar) bar.style.width = sp.widthPercent + '%'; }, 80);
+          stepStates[i].timers.push(t2);
+          pin();
+        }, si * 120);
+        stepStates[i].timers.push(t1);
+      });
+    }, traceDelay));
+
+    // detail phase
+    stepStates[i].timers.push(setTimeout(() => {
+      if (stepStates[i].sessionKey !== sessionKey) return;
+      phEls.waterfall.classList.remove('on');
+      phEls.detail.classList.add('on');
+      detEl.classList.remove('hidden');
+      const d = step.detail;
+      detEl.innerHTML = ''
+        + '<div class="row"><span class="key">Status</span><span class="val err">' + escapeHtml(d.status) + '</span></div>'
+        + '<div class="row"><span class="key">Service</span><span class="val">' + escapeHtml(d.service) + '</span></div>'
+        + (d.error ? '<div class="row"><span class="key">Error</span><span class="val err-text">' + escapeHtml(d.error) + '</span></div>' : '');
+      pin();
+      // auto-advance OR show Continue
+      let advanced = false;
+      const advance = () => {
+        if (advanced) return; advanced = true;
+        // collapse to compact line
+        const hasErr = step.errorSpanIndex != null;
+        wrap.innerHTML = ''
+          + '<div class="xp-trace completed' + (hasErr ? ' err' : '') + '">'
+          +   '<div class="completed-line">'
+          +     '<span>' + (hasErr ? '\u25C9 Error identified in traces' : '\u2713 Traces inspected') + '</span>'
+          +   '</div>'
+          + '</div>';
+        next();
+      };
+      if (step.autoAdvance){
+        const t = setTimeout(advance, step.autoAdvance);
+        stepStates[i].timers.push(t);
+      } else {
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.className = 'deploy';
+        btn.textContent = 'Continue';
+        btn.addEventListener('click', () => { trackStepAdvance(step, 'Continue'); advance(); });
+        actEl.appendChild(btn);
+      }
+    }, detailDelay));
+  }
+
+  function renderFinish(){
+    hideTypingDots();
+    iiiTrack('experience_complete', { steps_total: HOMEPAGE_FLOW.length });
+    const el = document.createElement('div');
+    el.className = 'seq-step';
+    el.innerHTML = ''
+      + '<div class="seq-finish">'
+      +   '<div class="lead">Try it for yourself</div>'
+      +   '<a href="https://iii.dev/docs/quickstart" class="quick" target="_blank" rel="noopener noreferrer">Quickstart Guide \u2192</a>'
+      + '</div>';
+    seqScroll.appendChild(el);
+    const quickLink = el.querySelector('.quick');
+    if (quickLink) quickLink.addEventListener('click', () => {
+      iiiTrack('cta_click', {
+        cta_id: 'quickstart',
+        cta_location: 'experience_finish',
+        cta_label: 'quickstart guide',
+        cta_href: quickLink.getAttribute('href') || ''
+      });
+    });
+    pin();
+  }
+
+  function clearAllTimers(){
+    if (delayTimer){ clearTimeout(delayTimer); delayTimer = null; }
+    stepStates.forEach(s => {
+      if (!s) return;
+      if (s.timer) clearTimeout(s.timer);
+      if (s.interval) clearInterval(s.interval);
+      if (s.timers) s.timers.forEach(t => clearTimeout(t));
+    });
+  }
+
+  function startSession(){
+    clearAllTimers();
+    sessionKey++;
+    currentIndex = 0;
+    visibleUpTo = -1;
+    isDelaying = false;
+    isFinished = false;
+    stepEls = [];
+    stepStates = [];
+    seqScroll.innerHTML = '';
+    seqScroll.classList.add('is-intro');
+    if (!HOMEPAGE_FLOW.length) return;
+    const firstDelay = HOMEPAGE_FLOW[0].delay || 250;
+    isDelaying = true;
+    showTypingDots();
+    delayTimer = setTimeout(() => {
+      isDelaying = false;
+      hideTypingDots();
+      revealStep(0);
+    }, firstDelay);
+  }
+
+  let started = false;
+  function startWhenVisible(){
+    const xp = document.getElementById('experience');
+    if (!('IntersectionObserver' in window)){
+      iiiTrack('experience_start', { trigger: 'no_intersection_observer' });
+      startSession();
+      started = true;
+      return;
+    }
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting && !started){
+          started = true;
+          iiiTrack('experience_start', { trigger: 'viewport' });
+          startSession();
+          io.disconnect();
+        }
+      });
+    }, { threshold: 0.2 });
+    io.observe(xp);
+  }
+  startWhenVisible();
+
+  seqRestart.addEventListener('click', () => {
+    iiiTrack('experience_restart', { reached_step_index: visibleUpTo, reached_step_id: (HOMEPAGE_FLOW[visibleUpTo] && HOMEPAGE_FLOW[visibleUpTo].id) || null });
+    startSession();
+  });
+</script>

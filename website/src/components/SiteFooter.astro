@@ -1,0 +1,44 @@
+---
+// THE site footer — one markup, one stylesheet (src/styles/site-footer.css)
+// on every page except the landing page, whose footer adds the get-started
+// CTA block above these same columns (see landing/sections/11-footer.html).
+// Colors ride each page's design tokens, so the footer follows the surface
+// theme.
+import Logo from './blog/Logo.astro'
+import '../styles/site-footer.css'
+---
+
+<section class="foot" aria-label="Site footer">
+  <div class="foot-cols">
+    <div class="foot-col foot-col-brand">
+      <a class="fb" href="/" aria-label="iii home">
+        <Logo className="" ariaLabel="iii logo" />
+      </a>
+      <p>a next-generation software system. workers. triggers. functions.</p>
+    </div>
+    <div class="foot-col">
+      <h5>developers</h5>
+      <ul>
+        <li><a href="/docs">docs</a></li>
+        <li><a href="/docs/quickstart">quickstart</a></li>
+        <li><a href="/blog/">blog</a></li>
+        <li><a href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">github</a></li>
+      </ul>
+    </div>
+    <div class="foot-col">
+      <h5>contact</h5>
+      <ul>
+        <li><a href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer">discord</a></li>
+        <li><a href="https://x.com/iiidevs" target="_blank" rel="noopener noreferrer">twitter / X</a></li>
+        <li>
+          <a href="https://www.linkedin.com/company/iii-dev" target="_blank" rel="noopener noreferrer">linkedin</a>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="foot-bottom">
+    <span>© Motia LLC · <a href="/privacy-policy">privacy</a></span>
+    <span>pronounced <span class="pron">"three eye"</span></span>
+  </div>
+</section>

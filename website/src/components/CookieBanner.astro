@@ -1,0 +1,60 @@
+---
+// GTM <noscript> + the cookie-consent banner, shared by every page. Accepting
+// stores the shared iii_cookie_consent key and fires the iiiLoad* hooks from
+// AnalyticsHead. Markup and behavior ported verbatim from the pre-Astro
+// website/index.html; the banner styles live in each surface’s stylesheet
+// (landing.css / manifesto.css / privacy.css / blog.css).
+---
+
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N8DCTFB8" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+
+<div id="cookie-consent-banner" class="cookie-consent-wrap" hidden>
+  <div class="cookie-consent-panel">
+    <p style="margin:0;">
+      This site uses cookies to understand how visitors find us.
+      <span class="cc-strong">You can accept or decline non-essential cookies.</span>
+    </p>
+    <div class="cookie-consent-actions">
+      <button type="button" class="cc-decline" data-consent-reject>Decline</button>
+      <button type="button" class="cc-accept" data-consent-accept>Accept</button>
+    </div>
+  </div>
+</div>
+<script is:inline>
+(function () {
+  var STORAGE_KEY = 'iii_cookie_consent';
+  var banner = document.getElementById('cookie-consent-banner');
+  if (!banner) return;
+  try {
+    var stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === 'accepted' || stored === 'rejected') {
+      banner.remove();
+      return;
+    }
+  } catch (_) {}
+  banner.removeAttribute('hidden');
+  var accept = banner.querySelector('[data-consent-accept]');
+  var reject = banner.querySelector('[data-consent-reject]');
+  if (accept) {
+    accept.addEventListener('click', function () {
+      try {
+        localStorage.setItem(STORAGE_KEY, 'accepted');
+      } catch (_) {}
+      banner.remove();
+      if (window.iiiLoadGTM) window.iiiLoadGTM();
+      if (window.iiiLoadCommonRoomSignals) window.iiiLoadCommonRoomSignals();
+      if (window.iiiLoadPostHog) window.iiiLoadPostHog();
+    });
+  }
+  if (reject) {
+    reject.addEventListener('click', function () {
+      try {
+        localStorage.setItem(STORAGE_KEY, 'rejected');
+      } catch (_) {}
+      banner.remove();
+    });
+  }
+})();
+</script>

@@ -191,6 +191,21 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterF
     })
 }
 
+/// Maps the user-facing subscriber `queue_config` onto the builtin queue's
+/// subscription config. `maxRetries` counts retries after the initial
+/// attempt, while `max_attempts` is the total number of attempts.
+fn to_subscription_config(c: SubscriberQueueConfig) -> SubscriptionConfig {
+    SubscriptionConfig {
+        concurrency: c.concurrency,
+        max_attempts: c.max_retries.map(|r| r.saturating_add(1)),
+        backoff_ms: c.backoff_delay_ms,
+        mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
+            "fifo" => QueueMode::Fifo,
+            _ => QueueMode::Concurrent,
+        }),
+    }
+}
+
 #[async_trait]
 impl QueueAdapter for BuiltinQueueAdapter {
     async fn enqueue(
@@ -234,15 +249,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
             condition_function_id,
         });
 
-        let subscription_config = queue_config.map(|c| SubscriptionConfig {
-            concurrency: c.concurrency,
-            max_attempts: c.max_retries,
-            backoff_ms: c.backoff_delay_ms,
-            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
-                "fifo" => QueueMode::Fifo,
-                _ => QueueMode::Concurrent,
-            }),
-        });
+        let subscription_config = queue_config.map(to_subscription_config);
 
         let handle = self
             .queue
@@ -707,20 +714,11 @@ mod tests {
             max_priority: None,
         };
 
-        let subscription_config = Some(config).map(|c| SubscriptionConfig {
-            concurrency: c.concurrency,
-            max_attempts: c.max_retries,
-            backoff_ms: c.backoff_delay_ms,
-            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
-                "fifo" => QueueMode::Fifo,
-                _ => QueueMode::Concurrent,
-            }),
-        });
-
-        let sub_config = subscription_config.unwrap();
+        let sub_config = to_subscription_config(config);
         assert_eq!(sub_config.mode, Some(QueueMode::Fifo));
         assert_eq!(sub_config.concurrency, Some(5));
-        assert_eq!(sub_config.max_attempts, Some(3));
+        // maxRetries: 3 = 3 retries after the initial attempt = 4 total attempts
+        assert_eq!(sub_config.max_attempts, Some(4));
         assert_eq!(sub_config.backoff_ms, Some(1000));
     }
 
@@ -737,18 +735,10 @@ mod tests {
             max_priority: None,
         };
 
-        let subscription_config = Some(config).map(|c| SubscriptionConfig {
-            concurrency: c.concurrency,
-            max_attempts: c.max_retries,
-            backoff_ms: c.backoff_delay_ms,
-            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
-                "fifo" => QueueMode::Fifo,
-                _ => QueueMode::Concurrent,
-            }),
-        });
-
-        let sub_config = subscription_config.unwrap();
+        let sub_config = to_subscription_config(config);
         assert_eq!(sub_config.mode, Some(QueueMode::Concurrent));
+        // Absent maxRetries must stay absent so the global default applies.
+        assert_eq!(sub_config.max_attempts, None);
     }
 
     #[test]
@@ -765,17 +755,7 @@ mod tests {
             max_priority: None,
         };
 
-        let subscription_config = Some(config).map(|c| SubscriptionConfig {
-            concurrency: c.concurrency,
-            max_attempts: c.max_retries,
-            backoff_ms: c.backoff_delay_ms,
-            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
-                "fifo" => QueueMode::Fifo,
-                _ => QueueMode::Concurrent,
-            }),
-        });
-
-        let sub_config = subscription_config.unwrap();
+        let sub_config = to_subscription_config(config);
         assert_eq!(sub_config.mode, Some(QueueMode::Concurrent));
     }
 
@@ -792,21 +772,12 @@ mod tests {
             max_priority: None,
         };
 
-        let subscription_config = Some(config).map(|c| SubscriptionConfig {
-            concurrency: c.concurrency,
-            max_attempts: c.max_retries,
-            backoff_ms: c.backoff_delay_ms,
-            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
-                "fifo" => QueueMode::Fifo,
-                _ => QueueMode::Concurrent,
-            }),
-        });
-
-        let sub_config = subscription_config.unwrap();
+        let sub_config = to_subscription_config(config);
         // When queue_mode is None, mode should also be None (inherits global default)
         assert_eq!(sub_config.mode, None);
         assert_eq!(sub_config.concurrency, Some(10));
-        assert_eq!(sub_config.max_attempts, Some(5));
+        // maxRetries: 5 = 5 retries after the initial attempt = 6 total attempts
+        assert_eq!(sub_config.max_attempts, Some(6));
     }
 
     #[tokio::test]

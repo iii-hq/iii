@@ -183,6 +183,11 @@ pub struct ExternalWorker {
     name: String,
     binary_path: PathBuf,
     extra_args: Vec<String>,
+    /// Effective `iii-worker-manager` port, from `engine.worker_manager_port()`.
+    /// Exported to the child as III_ENGINE_URL/III_URL so builtin daemons
+    /// (sandbox-daemon, worker-manager-daemon) connect back to THIS engine
+    /// instead of their hardcoded ws://127.0.0.1:49134 default (MOT-3970).
+    worker_manager_port: u16,
     config: Option<Value>,
     child: Arc<Mutex<Option<Child>>>,
     config_file: Arc<Mutex<Option<PathBuf>>>,
@@ -204,7 +209,7 @@ const RESPAWN_BACKOFF_MAX: Duration = Duration::from_secs(30);
 const BACKOFF_RESET_UPTIME: Duration = Duration::from_secs(60);
 
 impl ExternalWorker {
-    pub fn new(info: ExternalWorkerInfo, config: Option<Value>) -> Self {
+    pub fn new(info: ExternalWorkerInfo, config: Option<Value>, worker_manager_port: u16) -> Self {
         let name = info.name.clone();
         let display_name = Box::leak(format!("ExternalWorker({})", &name).into_boxed_str());
         Self {
@@ -212,6 +217,7 @@ impl ExternalWorker {
             name,
             binary_path: info.binary_path,
             extra_args: info.extra_args,
+            worker_manager_port,
             config,
             child: Arc::new(Mutex::new(None)),
             config_file: Arc::new(Mutex::new(None)),
@@ -261,6 +267,16 @@ impl ExternalWorker {
         // engine — wrappers and debugger reparenting break it — so iii-worker's
         // daemon_exit module prefers this handshake when present.
         cmd.env("III_ENGINE_PID", std::process::id().to_string());
+
+        // Engine WS URL for the child. Builtin daemons' --engine args fall
+        // back to this env (clap `env =`), so they connect to THIS engine's
+        // actual worker-listener port rather than their hardcoded default —
+        // two engines on one host each get their own daemon (MOT-3970).
+        // Re-exported on every respawn (MOT-3857 supervisor) so a respawned
+        // daemon keeps the same contract.
+        let engine_url = format!("ws://127.0.0.1:{}", self.worker_manager_port);
+        cmd.env("III_ENGINE_URL", &engine_url);
+        cmd.env("III_URL", &engine_url);
 
         // Lifeline pipe: we hold the write end (never written) for the
         // child's lifetime; the kernel closes it the instant this engine
@@ -857,7 +873,7 @@ mod tests {
             binary_path: PathBuf::from("/tmp/test-worker"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, None);
+        let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         assert_eq!(module.name, "test-worker");
         assert_eq!(module.binary_path, PathBuf::from("/tmp/test-worker"));
         assert!(module.config.is_none());
@@ -871,7 +887,11 @@ mod tests {
             binary_path: PathBuf::from("/tmp/configured-worker"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, Some(config.clone()));
+        let module = ExternalWorker::new(
+            info,
+            Some(config.clone()),
+            crate::workers::worker::DEFAULT_PORT,
+        );
         assert_eq!(module.config, Some(config));
     }
 
@@ -882,7 +902,7 @@ mod tests {
             binary_path: PathBuf::from("/tmp/my-worker"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, None);
+        let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         assert_eq!(module.name(), "ExternalWorker(my-worker)");
     }
 
@@ -893,7 +913,7 @@ mod tests {
             binary_path: PathBuf::from("/tmp/test-worker"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, None);
+        let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         let name1 = module.name();
         let name2 = module.name();
         assert_eq!(
@@ -909,7 +929,7 @@ mod tests {
             binary_path: PathBuf::from("/tmp/clone-test"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, None);
+        let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         let cloned = module.clone();
 
         // Arc pointers should be the same (shared state)
@@ -925,7 +945,7 @@ mod tests {
             binary_path: PathBuf::from("/tmp/init-test"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, None);
+        let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         assert!(module.initialize().await.is_ok());
     }
 
@@ -936,7 +956,7 @@ mod tests {
             binary_path: PathBuf::from("/tmp/destroy-test"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, None);
+        let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
         // destroy on a fresh module (no spawned child) should succeed
         assert!(module.destroy().await.is_ok());
     }
@@ -948,7 +968,7 @@ mod tests {
             binary_path: PathBuf::from("/tmp/cleanup-test"),
             extra_args: vec![],
         };
-        let module = ExternalWorker::new(info, None);
+        let module = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
 
         // Simulate a config file being written
         let temp_config = std::env::temp_dir().join("iii-cleanup-test-config.yaml");
@@ -1128,7 +1148,9 @@ mod tests {
             extra_args: vec!["first-arg".into(), "second-arg".into()],
         };
 
-        let worker = ExternalWorker::new(info, Some(serde_json::json!({"key": "val"})));
+        // Distinctive port: the assertion below proves the child received
+        // THIS worker's port, not a hardcoded default.
+        let worker = ExternalWorker::new(info, Some(serde_json::json!({"key": "val"})), 50123);
 
         // The probe reads ARGV_LOG from env. Set it on the parent so
         // the spawned child inherits.
@@ -1178,6 +1200,10 @@ mod tests {
                 env_line.contains("lifeline_open=yes"),
                 "child's lifeline fd must be open after exec; got: {env_line:?}"
             );
+            assert!(
+                env_line.contains("engine_url=ws://127.0.0.1:50123"),
+                "child must see this engine's actual WS URL, not a default; got: {env_line:?}"
+            );
         }
     }
 
@@ -1217,7 +1243,7 @@ mod tests {
             extra_args: vec![],
         };
         // config: None — the builtin daemon path MOT-3857 is about.
-        let worker = ExternalWorker::new(info, None);
+        let worker = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
 
         // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
         unsafe {

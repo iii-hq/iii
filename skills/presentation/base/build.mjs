@@ -8,7 +8,7 @@
  *   dist/index.html            the gallery (index of every spec)
  *   dist/index.json            machine-readable spec list (landing-page timeline)
  *   dist/<slug>/index.html     one page per spec: the interactive deck when
- *                              website/presentations/<slug>/ exists, otherwise
+ *                              website/roadmap/<slug>/ exists, otherwise
  *                              the generic markdown spec viewer
  *   dist/<slug>/<file>.md      raw spec markdown, directly linkable
  *

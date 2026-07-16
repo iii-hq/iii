@@ -30,7 +30,7 @@ import type {
   Trigger,
   TriggerTypeRef,
 } from './types'
-import { isChannelRef } from './utils'
+import { isChannelRef, randomUUID } from './utils'
 
 /** @internal */
 export type TelemetryOptions = {
@@ -52,7 +52,7 @@ export type TelemetryOptions = {
  * ```
  */
 export type InitOptions = {
-  /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
+  /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
    * WebSocket reconnection behavior.
@@ -60,7 +60,7 @@ export type InitOptions = {
    * @see {@link IIIReconnectionConfig} for available fields and defaults.
    */
   reconnectionConfig?: Partial<IIIReconnectionConfig>
-  /** Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. */
+  /** Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. */
   headers?: Record<string, string>
 }
 
@@ -179,7 +179,7 @@ class Sdk implements ISdk {
    * ```
    */
   registerTrigger = (trigger: Omit<RegisterTriggerMessage, 'message_type' | 'id'>): Trigger => {
-    const id = crypto.randomUUID()
+    const id = randomUUID()
     const fullTrigger: RegisterTriggerMessage = {
       ...trigger,
       id,
@@ -204,11 +204,11 @@ class Sdk implements ISdk {
    * Registers a function with the engine. The `functionId` is the unique identifier
    * used by triggers and invocations.
    *
-   * Pass a handler for local execution, or an {@link HttpInvocationConfig}
-   * for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+   * The handler runs locally in the browser session; HTTP invocation configs
+   * are a Node.js SDK feature and are not accepted here.
    *
    * @param functionId - Unique function identifier.
-   * @param handlerOrInvocation - Async handler or HTTP invocation config.
+   * @param handlerOrInvocation - Async handler executed when the function is invoked.
    * @param options - Optional function registration options (description, request/response formats, metadata).
    * @returns A {@link FunctionRef} with `id` and `unregister()`.
    *
@@ -287,9 +287,9 @@ class Sdk implements ISdk {
    *
    * | `action`                      | Behavior                                           | Return type              |
    * |-------------------------------|----------------------------------------------------|-----------------------   |
-   * | _(none)_                      | Synchronous -- waits for the function to return     | `Promise<TOutput>`       |
-   * | `TriggerAction.Enqueue(...)` | Async via named queue -- engine acknowledges enqueue | `Promise<EnqueueResult>` |
-   * | `TriggerAction.Void()`       | Fire-and-forget -- no response                      | `Promise<undefined>`     |
+   * | _(none)_                      | Synchronous: waits for the function to return     | `Promise<TOutput>`       |
+   * | `TriggerAction.Enqueue(...)` | Async via named queue; engine acknowledges enqueue | `Promise<EnqueueResult>` |
+   * | `TriggerAction.Void()`       | Fire-and-forget, no response                      | `Promise<undefined>`     |
    *
    * @param request - The trigger request.
    * @param request.function_id - ID of the function to invoke.
@@ -333,7 +333,7 @@ class Sdk implements ISdk {
       return undefined as TOutput
     }
 
-    const invocation_id = crypto.randomUUID()
+    const invocation_id = randomUUID()
 
     return new Promise<TOutput>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -795,8 +795,8 @@ export const TriggerAction = {
 } as const
 
 /**
- * Creates and returns a connected SDK instance. The WebSocket connection is
- * established automatically -- there is no separate `connect()` call.
+ * Register the worker with a iii instance, returns a connected worker client.
+ * The WebSocket connection is established automatically.
  *
  * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49135`).
  * @param options - Optional {@link InitOptions} for worker name, timeouts, and reconnection.

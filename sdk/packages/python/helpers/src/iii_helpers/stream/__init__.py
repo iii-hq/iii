@@ -46,7 +46,14 @@ MergePath = str | list[str]
 
 
 class StreamAuthInput(BaseModel):
-    """Input for stream authentication."""
+    """Input for stream authentication.
+
+    Attributes:
+        headers: Request headers.
+        path: Request path.
+        query_params: Query parameters.
+        addr: Client address.
+    """
 
     headers: dict[str, str]
     path: str
@@ -55,7 +62,11 @@ class StreamAuthInput(BaseModel):
 
 
 class StreamAuthResult(BaseModel):
-    """Result of stream authentication."""
+    """Result of stream authentication.
+
+    Attributes:
+        context: Arbitrary context passed to stream handlers after authentication.
+    """
 
     context: Any | None = None
 
@@ -64,7 +75,15 @@ StreamContext = Any
 
 
 class StreamJoinLeaveEvent(BaseModel):
-    """Event for stream join/leave."""
+    """Event for stream join/leave.
+
+    Attributes:
+        subscription_id: Unique subscription identifier.
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        id: Item identifier (if applicable).
+        context: Auth context from :class:`StreamAuthResult`.
+    """
 
     subscription_id: str
     stream_name: str
@@ -74,13 +93,23 @@ class StreamJoinLeaveEvent(BaseModel):
 
 
 class StreamJoinResult(BaseModel):
-    """Result of stream join."""
+    """Result of stream join.
+
+    Attributes:
+        unauthorized: Whether the join was unauthorized.
+    """
 
     unauthorized: bool
 
 
 class StreamGetInput(BaseModel):
-    """Input for stream get operation."""
+    """Input for stream get operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+    """
 
     stream_name: str
     group_id: str
@@ -88,7 +117,14 @@ class StreamGetInput(BaseModel):
 
 
 class StreamSetInput(BaseModel):
-    """Input for stream set operation."""
+    """Input for stream set operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+        data: Data to store.
+    """
 
     stream_name: str
     group_id: str
@@ -97,7 +133,13 @@ class StreamSetInput(BaseModel):
 
 
 class StreamDeleteInput(BaseModel):
-    """Input for stream delete operation."""
+    """Input for stream delete operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+    """
 
     stream_name: str
     group_id: str
@@ -105,20 +147,36 @@ class StreamDeleteInput(BaseModel):
 
 
 class StreamListInput(BaseModel):
-    """Input for stream list operation."""
+    """Input for stream list operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+    """
 
     stream_name: str
     group_id: str
 
 
 class StreamListGroupsInput(BaseModel):
-    """Input for stream list groups operation."""
+    """Input for stream list groups operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+    """
 
     stream_name: str
 
 
 class StreamUpdateInput(BaseModel):
-    """Input for stream update operation."""
+    """Input for stream update operation.
+
+    Attributes:
+        stream_name: Name of the stream.
+        group_id: Group identifier.
+        item_id: Item identifier.
+        ops: Ordered list of update operations to apply atomically.
+    """
 
     stream_name: str
     group_id: str
@@ -129,9 +187,16 @@ class StreamUpdateInput(BaseModel):
 class UpdateOpError(BaseModel):
     """Per-op error returned by ``state::update`` / ``stream::update``.
 
-    Currently emitted only by the ``merge`` op when input violates the
-    new validation bounds. Successfully applied ops are still
+    Emitted by the ``merge`` and ``append`` ops when input violates the
+    validation bounds, and by ``append`` for its type-mismatch and
+    target-not-object cases. Successfully applied ops are still
     reflected in the response's ``new_value``.
+
+    Attributes:
+        op_index: Index of the offending op within the original ``ops`` array.
+        code: Stable error code, e.g. ``"merge.path.too_deep"``.
+        message: Human-readable description with concrete numbers when applicable.
+        doc_url: Optional documentation URL.
     """
 
     op_index: int
@@ -141,14 +206,31 @@ class UpdateOpError(BaseModel):
 
 
 class StreamSetResult(BaseModel, Generic[TData]):
-    """Result of stream set operation."""
+    """Result of stream set operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+        new_value: New value that was stored.
+    """
 
     old_value: TData | None = None
     new_value: TData
 
 
 class StreamUpdateResult(BaseModel, Generic[TData]):
-    """Result of stream update operation."""
+    """Result of stream update operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+        new_value: New value after the update.
+        errors: Per-op errors. Emitted by ``merge`` and ``append`` for
+            validation rejections (path depth/size, value depth, or a
+            ``__proto__`` / ``constructor`` / ``prototype`` segment or
+            top-level key) and by ``append`` for the
+            ``append.type_mismatch`` and ``append.target_not_object``
+            surfaces. Successfully applied ops are still reflected in
+            ``new_value``. The field is omitted from the JSON wire when empty.
+    """
 
     old_value: TData | None = None
     new_value: TData
@@ -163,13 +245,22 @@ class StreamUpdateResult(BaseModel, Generic[TData]):
 
 
 class StreamDeleteResult(BaseModel):
-    """Result of stream delete operation."""
+    """Result of stream delete operation.
+
+    Attributes:
+        old_value: Previous value (if it existed).
+    """
 
     old_value: Any | None = None
 
 
 class UpdateSet(BaseModel):
-    """Set operation for stream update."""
+    """Set a field at the given path to a value.
+
+    Attributes:
+        path: First-level field path. Use an empty string to target the root value.
+        value: Value to set.
+    """
 
     type: str = "set"
     path: str
@@ -177,7 +268,12 @@ class UpdateSet(BaseModel):
 
 
 class UpdateIncrement(BaseModel):
-    """Increment operation for stream update."""
+    """Increment a numeric field by a given amount.
+
+    Attributes:
+        path: First-level field path.
+        by: Amount to increment by.
+    """
 
     type: str = "increment"
     path: str
@@ -185,7 +281,12 @@ class UpdateIncrement(BaseModel):
 
 
 class UpdateDecrement(BaseModel):
-    """Decrement operation for stream update."""
+    """Decrement a numeric field by a given amount.
+
+    Attributes:
+        path: First-level field path.
+        by: Amount to decrement by.
+    """
 
     type: str = "decrement"
     path: str
@@ -224,6 +325,12 @@ class UpdateAppend(BaseModel):
     segment) are rejected with a structured error in the ``errors``
     field of the ``state::update`` / ``stream::update`` response. The
     append does not apply when an error is returned for that op.
+
+    Attributes:
+        path: Optional path to the append target. Accepts a single
+            first-level key (legacy string) or a list of literal segments
+            for nested append. See :data:`MergePath`.
+        value: Value to append. String targets only accept string values.
     """
 
     type: str = "append"
@@ -246,7 +353,11 @@ class UpdateAppend(BaseModel):
 
 
 class UpdateRemove(BaseModel):
-    """Remove operation for stream update."""
+    """Remove a field at the given path.
+
+    Attributes:
+        path: First-level field path.
+    """
 
     type: str = "remove"
     path: str
@@ -261,7 +372,7 @@ class UpdateMerge(BaseModel):
 
     Path forms accepted:
       - ``None`` / ``""`` / ``[]``: merge at the root.
-      - ``"foo"``: equivalent to ``["foo"]`` -- single first-level key.
+      - ``"foo"``: equivalent to ``["foo"]``; single first-level key.
       - ``["a", "b", "c"]``: nested path. Each element is a *literal*
         key. ``["a.b"]`` writes a single key named ``"a.b"``, not
         ``a -> b``.
@@ -278,6 +389,10 @@ class UpdateMerge(BaseModel):
     top-level key) are rejected with a structured error in the
     ``errors`` array of the ``state::update`` / ``stream::update``
     response. The merge does not apply when an error is returned.
+
+    Attributes:
+        path: Optional path to the merge target. See :data:`MergePath`.
+        value: Object to merge. Must be a JSON object.
     """
 
     type: str = "merge"
@@ -302,7 +417,14 @@ UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | Update
 
 
 class StreamTriggerConfig(BaseModel):
-    """Trigger config for ``stream`` triggers. Filters which item changes fire the handler."""
+    """Trigger config for ``stream`` triggers. Filters which item changes fire the handler.
+
+    Attributes:
+        stream_name: Stream name to watch. Only changes on this stream fire the handler.
+        group_id: If set, only changes within this group fire the handler.
+        item_id: If set, only changes to this specific item fire the handler.
+        condition_function_id: Function ID for conditional execution. If it returns ``False``, the handler is skipped.
+    """
 
     stream_name: str
     group_id: str | None = None
@@ -311,20 +433,38 @@ class StreamTriggerConfig(BaseModel):
 
 
 class StreamJoinLeaveTriggerConfig(BaseModel):
-    """Trigger config for ``stream:join`` and ``stream:leave`` triggers."""
+    """Trigger config for ``stream:join`` and ``stream:leave`` triggers.
+
+    Attributes:
+        condition_function_id: Function ID for conditional execution. If it returns ``False``, the handler is skipped.
+    """
 
     condition_function_id: str | None = None
 
 
 class StreamChangeEventDetail(BaseModel):
-    """Detail of a stream change event containing the mutation type and data."""
+    """Detail of a stream change event containing the mutation type and data.
+
+    Attributes:
+        type: The kind of mutation (create, update, or delete).
+        data: The data associated with the event.
+    """
 
     type: Literal["create", "update", "delete"]
     data: Any
 
 
 class StreamChangeEvent(BaseModel):
-    """Handler input for ``stream`` triggers, fired when an item changes."""
+    """Handler input for ``stream`` triggers, fired when an item changes via ``stream::set``, ``stream::update``, or ``stream::delete``.
+
+    Attributes:
+        type: The event type.
+        timestamp: Unix timestamp of the event.
+        streamName: The stream where the change occurred.
+        groupId: The group where the change occurred.
+        id: The item ID that changed.
+        event: The event detail containing mutation type and data.
+    """
 
     type: Literal["stream"]
     timestamp: int

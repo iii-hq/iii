@@ -102,7 +102,7 @@ export interface StateEventData<TData = any> {
 }
 
 /**
- * Interface for state management operations. Available via the `iii-sdk/state`
+ * Interface for state management operations. Available via the `iii-browser-sdk/state`
  * subpath export.
  */
 export interface IState {

@@ -6,12 +6,14 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 /// Message to send over the shared WebSocket connection
+/// <!-- docs:internal -->
 pub struct OtelMessage {
     pub prefix: &'static [u8],
     pub data: Vec<u8>,
 }
 
 /// Shared WebSocket connection for all OTEL exporters
+/// <!-- docs:internal -->
 pub struct SharedEngineConnection {
     state: Arc<RwLock<ConnectionState>>,
     tx: mpsc::Sender<OtelMessage>,

@@ -318,8 +318,8 @@ A trigger type can carry two optional JSON Schemas that describe its payloads:
   the trigger fires.
 
 Both feed the iii console, the agent-readable skills, and the
-[`engine::trigger-types::list`](../using-iii/functions#engine-functions-engine) output so consumers
-know what to send and what they'll receive.
+[`engine::triggers::list`](../using-iii/functions#engine-functions-engine) output so consumers know
+what to send and what they'll receive.
 
 <Note>
   Runtime validation is not yet supported. Attached schemas are informational only; the engine does
@@ -332,9 +332,9 @@ Each SDK accepts these in its own idiomatic way:
 
 | SDK                                                                                                                 | What you pass                                                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Node](../api-reference/sdk-node#registertriggertype) / [Browser](../api-reference/sdk-browser#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
-| [Python](../api-reference/sdk-python#register_trigger_type)                                                         | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
-| [Rust](../api-reference/sdk-rust#register_trigger_type)                                                             | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
+| [Node](../reference/sdk-node#registertriggertype) / [Browser](../reference/sdk-browser#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
+| [Python](../reference/sdk-python#register_trigger_type)                                                         | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
+| [Rust](../reference/sdk-rust#register_trigger_type)                                                             | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 

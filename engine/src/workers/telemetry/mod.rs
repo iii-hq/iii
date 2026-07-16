@@ -219,12 +219,16 @@ pub fn is_iii_builtin_function_id(id: &str) -> bool {
         || id.starts_with("steps::")
 }
 
-/// Whether OTEL spans should be emitted for built-in framework function
-/// invocations (`state::*`, `stream::*`, `engine::*`, …).
+/// Whether OTEL spans should be emitted for **context-free** built-in
+/// framework function invocations (`state::*`, `stream::*`, `engine::*`, …)
+/// — calls arriving without a caller `traceparent`.
 ///
-/// Defaults to `false`: built-in calls are high-frequency and low-value in
-/// traces, so suppressing them sharply reduces span volume. Set
-/// `III_OTEL_TRACE_BUILTINS=true` (or `1`) to emit them anyway.
+/// Defaults to `false`: context-free built-in calls are high-frequency
+/// plumbing (console RPC polling, boot-time reads, the engine's own
+/// machinery) and each would root a new single-span trace, flooding the
+/// trace list. Set `III_OTEL_TRACE_BUILTINS=true` (or `1`) to emit them
+/// anyway. Built-in calls that DO carry a caller `traceparent` are always
+/// traced — see [`should_suppress_invocation_span`].
 pub fn trace_builtins_enabled() -> bool {
     static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHE.get_or_init(|| {
@@ -232,6 +236,59 @@ pub fn trace_builtins_enabled() -> bool {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     })
+}
+
+/// Functions that ARE the observability pipeline: the trace/log/metric query
+/// and ingest surface served by the observability worker. These are never
+/// traced — not even under `III_OTEL_TRACE_BUILTINS` — because observing the
+/// observer feeds spans back into the very store/streams being read, which
+/// can loop endlessly (span → live-feed push → delivery span → push → …) and
+/// at best pollutes every trace containing a consumer of trace data.
+pub fn is_observability_function_id(id: &str) -> bool {
+    id.starts_with("engine::traces::")
+        || id.starts_with("engine::logs::")
+        || id.starts_with("engine::log::")
+        || id.starts_with("engine::metrics::")
+        || id.starts_with("engine::baggage::")
+        || id.starts_with("engine::sampling::")
+        || id.starts_with("engine::health::")
+        || id.starts_with("engine::alerts::")
+        || id.starts_with("engine::rollups::")
+        || id.starts_with("iii-observability::")
+}
+
+/// Whether the engine should suppress its own `call <fn>` span for an
+/// invocation of `function_id`.
+///
+/// - **Observability functions** ([`is_observability_function_id`]): always
+///   suppressed, unconditionally — the observability pipeline must never
+///   observe itself (endless feedback loop).
+/// - **Worker-routed functions** (non-builtin): always suppressed. The
+///   worker's own `execute <fn>` handler span is the canonical span for
+///   the invocation; an engine-side `call` span would wrap the same logical
+///   call as a cross-service duplicate.
+/// - **Built-ins** (`state::*`, `configuration::*`, `engine::*`, …) execute
+///   in-process, so the engine's `call <fn>` span is the ONLY possible
+///   record of the call. It is emitted when the caller supplied trace
+///   context (`has_caller_context`, i.e. a `traceparent`): the span then
+///   nests inside the caller's existing trace — an agent turn calling
+///   `configuration::list` shows (and, on failure, marks) that call.
+///   Context-free built-in calls (console polling, boot reads, engine
+///   machinery) stay suppressed so they cannot root new single-span traces
+///   in the trace list; `force_builtins` ([`trace_builtins_enabled`])
+///   overrides that for debugging.
+pub fn should_suppress_invocation_span(
+    function_id: &str,
+    has_caller_context: bool,
+    force_builtins: bool,
+) -> bool {
+    if is_observability_function_id(function_id) {
+        return true;
+    }
+    if !is_iii_builtin_function_id(function_id) {
+        return true;
+    }
+    !(has_caller_context || force_builtins)
 }
 
 fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
@@ -2182,6 +2239,109 @@ mod tests {
         assert!(!is_iii_builtin_function_id("orders::process"));
         assert!(!is_iii_builtin_function_id("user::my_function"));
         assert!(!is_iii_builtin_function_id("payments::charge"));
+    }
+
+    #[test]
+    fn test_should_suppress_invocation_span() {
+        // Worker-routed functions never get an engine `call` span — the
+        // worker's own `execute <fn>` span is canonical — regardless of
+        // caller context or the builtins override.
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            false,
+            false
+        ));
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            true,
+            false
+        ));
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            false,
+            true
+        ));
+        assert!(should_suppress_invocation_span(
+            "orders::process",
+            true,
+            true
+        ));
+
+        // A built-in called WITH caller trace context nests inside that
+        // trace: emit (a failed `configuration::list` inside an agent turn
+        // must be visible in the trace).
+        assert!(!should_suppress_invocation_span(
+            "configuration::list",
+            true,
+            false
+        ));
+        assert!(!should_suppress_invocation_span("state::get", true, false));
+
+        // A context-free built-in call would root a new single-span trace
+        // and flood the trace list: suppress unless the operator forces
+        // builtins tracing.
+        assert!(should_suppress_invocation_span(
+            "configuration::list",
+            false,
+            false
+        ));
+        assert!(!should_suppress_invocation_span(
+            "configuration::list",
+            false,
+            true
+        ));
+        assert!(!should_suppress_invocation_span(
+            "configuration::list",
+            true,
+            true
+        ));
+
+        // Observability functions NEVER get a span — with context, without,
+        // even force-enabled: the pipeline must not observe itself (endless
+        // span → live-feed push → delivery span loop).
+        assert!(should_suppress_invocation_span(
+            "engine::traces::list",
+            true,
+            false
+        ));
+        assert!(should_suppress_invocation_span(
+            "engine::traces::tree",
+            true,
+            true
+        ));
+        assert!(should_suppress_invocation_span(
+            "engine::logs::list",
+            true,
+            true
+        ));
+        assert!(should_suppress_invocation_span(
+            "engine::log::info",
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn test_is_observability_function_id() {
+        assert!(is_observability_function_id("engine::traces::list"));
+        assert!(is_observability_function_id("engine::traces::tree"));
+        assert!(is_observability_function_id("engine::logs::clear"));
+        assert!(is_observability_function_id("engine::log::error"));
+        assert!(is_observability_function_id("engine::metrics::list"));
+        assert!(is_observability_function_id("engine::baggage::get_all"));
+        assert!(is_observability_function_id("engine::sampling::rules"));
+        assert!(is_observability_function_id("engine::health::check"));
+        assert!(is_observability_function_id("engine::alerts::evaluate"));
+        assert!(is_observability_function_id("engine::rollups::list"));
+        assert!(is_observability_function_id(
+            "iii-observability::on-config-change"
+        ));
+        // Not observability: other engine surfaces and user functions.
+        assert!(!is_observability_function_id("engine::functions::list"));
+        assert!(!is_observability_function_id("engine::register_trigger"));
+        assert!(!is_observability_function_id("configuration::list"));
+        assert!(!is_observability_function_id("state::get"));
+        assert!(!is_observability_function_id("orders::process"));
     }
 
     // =========================================================================

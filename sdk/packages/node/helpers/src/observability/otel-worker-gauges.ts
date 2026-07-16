@@ -2,7 +2,9 @@ import type { Meter, BatchObservableResult, Observable } from '@opentelemetry/ap
 import { WorkerMetricsCollector } from './worker-metrics'
 
 export interface WorkerGaugesOptions {
+  /** Stable identifier of the worker the gauges are reported for. */
   workerId: string
+  /** Human-readable name of the worker. */
   workerName?: string
 }
 
@@ -12,6 +14,10 @@ let registeredMeter: Meter | null = null
 let registeredBatchCallback: ((observableResult: BatchObservableResult) => void) | null = null
 let registeredObservables: Observable[] = []
 
+/**
+ * Register OpenTelemetry observable gauges that report worker resource metrics
+ * (CPU, memory, event-loop) on each collection cycle.
+ */
 export function registerWorkerGauges(meter: Meter, options: WorkerGaugesOptions): void {
   if (registeredGauges) {
     return
@@ -133,6 +139,9 @@ export function registerWorkerGauges(meter: Meter, options: WorkerGaugesOptions)
   registeredGauges = true
 }
 
+/**
+ * Stop and unregister the worker resource gauges.
+ */
 export function stopWorkerGauges(): void {
   // Remove the batch observable callback before stopping
   if (registeredMeter && registeredBatchCallback) {

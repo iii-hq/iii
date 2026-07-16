@@ -3,17 +3,41 @@
   "private": true,
   "license": "Apache-2.0",
   "version": "0.1.0",
-  "description": "iii.dev — minimal static HTML site",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "description": "iii.dev — one Astro static site: landing, blog, and the /roadmap tech-spec decks",
   "scripts": {
-    "dev": "browser-sync start --server --port 3000 --no-online --no-notify --no-open --files '*.html, *.css, fonts/*'",
-    "build": "tsx scripts/generate-llms-agents.ts && tsx scripts/generate-sitemap.ts",
-    "generate:llms": "tsx scripts/generate-llms-agents.ts",
+    "dev": "astro dev",
+    "build": "tsx scripts/validate-roadmap.ts && astro build && tsx scripts/generate-llms-agents.ts && tsx scripts/generate-sitemap.ts",
+    "preview": "astro preview",
+    "type-check": "tsc -p roadmap --noEmit",
     "test": "tsx --test scripts/*.test.ts ../infra/terraform/website/cloudfront_functions/*.test.js",
-    "preview": "browser-sync start --server --port 3000 --no-notify --no-open"
+    "test:dist": "tsx --test tests/dist.test.ts"
+  },
+  "dependencies": {
+    "@astrojs/mdx": "^5.0.4",
+    "@astrojs/react": "^5.0.0",
+    "@astrojs/rss": "^4.0.18",
+    "astro": "^6.2.2",
+    "clsx": "^2.1.1",
+    "marked": "^18.0.5",
+    "mermaid": "^11.16.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "sharp": "^0.34.5",
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "browser-sync": "^3.0.4",
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^25.8.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "node-html-parser": "^7.0.1",
-    "tsx": "^4.21.0"
+    "tailwindcss": "^4.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0"
   }
 }

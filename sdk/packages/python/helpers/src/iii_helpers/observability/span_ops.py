@@ -15,7 +15,12 @@ def current_span_is_recording() -> bool:
 
 
 def set_current_span_attribute(key: str, value: Any) -> None:
-    """No-op when the current span is not recording."""
+    """No-op when the current span is not recording.
+
+    Args:
+        key: Attribute name to set on the current span.
+        value: Attribute value.
+    """
     span = trace.get_current_span()
     if not span or not span.is_recording():
         return
@@ -23,7 +28,11 @@ def set_current_span_attribute(key: str, value: Any) -> None:
 
 
 def set_current_span_error(message: str) -> None:
-    """No-op when there is no active span."""
+    """No-op when there is no active span.
+
+    Args:
+        message: Error message recorded on the current span's status.
+    """
     span = trace.get_current_span()
     if not span:
         return
@@ -31,7 +40,12 @@ def set_current_span_error(message: str) -> None:
 
 
 def record_span_event(name: str, attrs: dict[str, Any] | None = None) -> None:
-    """No-op when the current span is not recording."""
+    """No-op when the current span is not recording.
+
+    Args:
+        name: Name of the event to record on the current span.
+        attrs: Optional attributes attached to the event.
+    """
     span = trace.get_current_span()
     if not span or not span.is_recording():
         return

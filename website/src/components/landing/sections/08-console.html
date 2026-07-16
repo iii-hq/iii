@@ -1,0 +1,751 @@
+  <!-- CONSOLE — horizontal pinned side-scroll -->
+  <div class="cs-scroll" id="cs-scroll" aria-label="iii developer console — observable system">
+    <div class="cs-pin">
+      <div class="cs-pin-inner">
+        <header class="cs-section-head">
+          <h2 class="cs-section-title"><span class="accent">any log.</span> <span class="mute"><b style="color:var(--ink); font-weight:500">one context.</b><br>a system you and your agents can <i>see</i> from end to end.</span></h2>
+        </header>
+        <section class="cs-frame" id="console" data-screen-label="Console">
+        <!-- Left rail: section heading + nav -->
+        <aside class="cs-rail">
+          <div class="cs-rail-head">
+            <div class="cs-brand">
+              <svg class="cs-brand-mark" viewBox="0 0 1075.74 1075.74" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect class="bar" x="0" y="0.05" width="268.94" height="268.94"/>
+                <rect class="bar" x="0" y="403.45" width="268.94" height="672.24"/>
+                <rect class="accent" x="403.4" y="0.05" width="268.94" height="268.94"/>
+                <rect class="accent" x="403.4" y="403.45" width="268.94" height="672.24"/>
+                <rect class="bar" x="806.81" y="0.05" width="268.94" height="268.94"/>
+                <rect class="bar" x="806.81" y="403.45" width="268.94" height="672.24"/>
+              </svg>
+              <span class="cs-brand-text">developer<br/>console</span>
+            </div>
+          </div>
+          <nav class="cs-nav" id="cs-nav" aria-label="Console sections">
+            <button class="cs-nav-item is-active" data-idx="0" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg></span><span>workers</span></button>
+            <button class="cs-nav-item" data-idx="1" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span><span>functions</span></button>
+            <button class="cs-nav-item" data-idx="2" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg></span><span>triggers</span></button>
+            <button class="cs-nav-item" data-idx="3" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></span><span>states</span></button>
+            <button class="cs-nav-item" data-idx="4" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg></span><span>streams</span></button>
+            <button class="cs-nav-item" data-idx="5" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5h10"/><path d="M11 12h10"/><path d="M11 19h10"/><path d="M4 4h1v5"/><path d="M4 9h2"/><path d="M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02"/></svg></span><span>queues</span></button>
+            <button class="cs-nav-item" data-idx="6" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></span><span>traces</span></button>
+            <button class="cs-nav-item" data-idx="7" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19h8"/><path d="m4 17 6-6-6-6"/></svg></span><span>logs</span></button>
+            <button class="cs-nav-item" data-idx="8" type="button"><span class="cs-nav-ico" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg></span><span>config</span></button>
+          </nav>
+          <div class="cs-rail-foot">
+            <span class="cs-status-dot" aria-hidden="true"></span>
+            <span>online · 4/4</span>
+            <span class="cs-rail-foot-meta">v0.11.3 · 127.0.0.1:1111</span>
+          </div>
+        </aside>
+
+        <!-- Right area: section header + ticking panels -->
+        <div class="cs-main">
+          <header class="cs-mast">
+            <div class="cs-mast-step"><span id="cs-step-num">01</span> / 09 · <span id="cs-step-label">workers</span></div>
+            <div class="cs-mast-progress"><div class="cs-mast-progress-bar" id="cs-progress-bar"></div></div>
+          </header>
+
+          <div class="cs-stage">
+            <div class="cs-track" id="cs-track">
+
+              <!-- 0 · WORKERS -->
+              <div class="cs-panel" data-idx="0">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">▣</span>workers <span class="cs-pill cs-pill-ok">10/10</span></span>
+                    <span class="cs-card-meta">internal · refresh</span>
+                  </div>
+                  <div class="cs-card-bar">
+                    <div class="cs-search" aria-hidden="true">⌕ search workers by name, id, runtime, ip…</div>
+                  </div>
+                  <div class="cs-tabs">
+                    <span class="cs-tab is-active">all 10</span>
+                    <span class="cs-tab">node 3</span>
+                    <span class="cs-tab">rust 4</span>
+                    <span class="cs-tab">python 2</span>
+                    <span class="cs-tab">go 1</span>
+                  </div>
+                  <div class="cs-card-body">
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>planner</b> <span class="cs-tag node">node 0.11.3</span></span>
+                      <span class="cs-row-meta">127.0.0.1 · pid 252 · 4 fn · 1m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker is-selected">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>tool-runner</b> <span class="cs-tag rust">rust 0.11.3</span></span>
+                      <span class="cs-row-meta">127.0.0.1 · pid 95970 · 11 fn · <span class="accent">3 active</span> · 1m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>embed-worker</b> <span class="cs-tag py">python 0.11.0</span></span>
+                      <span class="cs-row-meta">127.0.0.1 · pid 218 · 3 fn · 1m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>iii-lsp</b> <span class="cs-tag rust">rust 0.1.0</span></span>
+                      <span class="cs-row-meta">127.0.0.1 · pid 28041 · 2 fn · 1m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>content-router</b> <span class="cs-tag node">node 0.11.3</span></span>
+                      <span class="cs-row-meta">127.0.0.1 · pid 14872 · 5 fn · <span class="accent">2 active</span> · 2m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>iii-state</b> <span class="cs-tag rust">rust 0.11.3</span></span>
+                      <span class="cs-row-meta">10.0.0.4 · pid 4421 · 6 fn · 4m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>iii-durable</b> <span class="cs-tag rust">rust 0.11.3</span></span>
+                      <span class="cs-row-meta">10.0.0.4 · pid 4422 · 8 fn · <span class="accent">5 active</span> · 4m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>content-classifier</b> <span class="cs-tag py">python 0.11.0</span></span>
+                      <span class="cs-row-meta">10.0.0.7 · pid 9128 · 2 fn · 6m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>billing-svc</b> <span class="cs-tag go">go 0.11.0</span></span>
+                      <span class="cs-row-meta">10.0.0.9 · pid 7203 · 4 fn · 7m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-worker">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-row-name"><b>notify-bridge</b> <span class="cs-tag node">node 0.11.3</span></span>
+                      <span class="cs-row-meta">10.0.0.11 · pid 6610 · 3 fn · 8m ago</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                  </div>
+                </div>
+                <p class="cs-cap">every worker — across runtimes — discovered as it connects.</p>
+              </div>
+
+              <!-- 1 · FUNCTIONS -->
+              <div class="cs-panel" data-idx="1">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">≡</span>functions <span class="cs-pill cs-pill-ok">38</span></span>
+                    <span class="cs-card-meta">system · refresh</span>
+                  </div>
+                  <div class="cs-card-bar">
+                    <div class="cs-search" aria-hidden="true">⌕ search functions…</div>
+                  </div>
+                  <div class="cs-card-split">
+                    <div class="cs-fn-list">
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ agent <span class="cs-fn-group-cnt">5 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>agent::plan</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn is-selected"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>agent::run_tools</b></span><span class="cs-row-chev">⌄</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>agent::synthesize</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>agent::critique</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>agent::reflect</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ tools <span class="cs-fn-group-cnt">6 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>tools::web_search</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>tools::code_exec</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>tools::browse</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>tools::fetch</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>tools::file_io</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>tools::shell</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ memory <span class="cs-fn-group-cnt">4 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>memory::recall</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>memory::store</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>memory::embed</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>memory::search</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ content <span class="cs-fn-group-cnt">4 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>content::classify</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>content::route</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>content::on-flagged</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>content::publish</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ state <span class="cs-fn-group-cnt">4 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>state::get</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>state::set</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>state::delete</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>state::scan</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ durable <span class="cs-fn-group-cnt">3 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>durable::publish</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>durable::subscribe</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>durable::ack</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ billing <span class="cs-fn-group-cnt">4 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>billing::charge</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>billing::refund</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>billing::usage</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>billing::invoice</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ notify <span class="cs-fn-group-cnt">3 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>notify::email</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>notify::slack</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>notify::webhook</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ iii <span class="cs-fn-group-cnt">5 functions</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>iii::on_functions_available</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>iii::on_worker_connect</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>iii::trace::open</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>iii::log</b></span><span class="cs-row-chev">›</span></div>
+                        <div class="cs-row cs-row-fn"><span class="cs-row-glyph">&lt;/&gt;</span><span><b>iii::heartbeat</b></span><span class="cs-row-chev">›</span></div>
+                      </div>
+                    </div>
+                    <aside class="cs-fn-side">
+                      <div class="cs-fn-side-head"><b>agent::run_tools</b></div>
+                      <div class="cs-fn-side-sub">execute a message</div>
+                      <div class="cs-fn-side-label">invoke function</div>
+                      <div class="cs-fn-side-label">input (json)</div>
+                      <pre class="cs-fn-side-input">{
+  "plan_id": "p_7f3a",
+  "tools": ["web_search","code_exec"]
+}</pre>
+                      <button class="cs-fn-side-btn" type="button">▶ invoke</button>
+                    </aside>
+                  </div>
+                </div>
+                <p class="cs-cap">every function — every language — invokable from one place.</p>
+              </div>
+
+              <!-- 2 · TRIGGERS -->
+              <div class="cs-panel" data-idx="2">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">⌁</span>triggers <span class="cs-pill cs-pill-ok">12</span></span>
+                    <span class="cs-card-meta"><span class="cs-tag http">all 12</span> <span class="cs-tag http">http 5</span> <span class="cs-tag evt">event 5</span> <span class="cs-tag">cron 2</span></span>
+                  </div>
+                  <div class="cs-card-bar">
+                    <div class="cs-search" aria-hidden="true">⌕ search triggers, functions, paths, topics…</div>
+                  </div>
+                  <div class="cs-card-split">
+                    <div class="cs-fn-list">
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ http <span class="cs-fn-group-cnt">5 triggers</span></div>
+                        <div class="cs-row cs-row-trg is-selected">
+                          <span class="cs-row-glyph http">⌖</span>
+                          <span><b>POST /agent/run</b><br/><small>agent::plan</small></span>
+                          <span class="cs-tag http">http</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph http">⌖</span>
+                          <span><b>POST /content/submit</b><br/><small>content::route</small></span>
+                          <span class="cs-tag http">http</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph http">⌖</span>
+                          <span><b>POST /billing/charge</b><br/><small>billing::charge</small></span>
+                          <span class="cs-tag http">http</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph http">⌖</span>
+                          <span><b>GET /memory/search</b><br/><small>memory::search</small></span>
+                          <span class="cs-tag http">http</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph http">⌖</span>
+                          <span><b>POST /webhooks/stripe</b><br/><small>notify::webhook</small></span>
+                          <span class="cs-tag http">http</span>
+                        </div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ event <span class="cs-fn-group-cnt">5 triggers</span></div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph evt">◇</span>
+                          <span><b>tool::completed</b><br/><small>agent::synthesize</small></span>
+                          <span class="cs-tag evt">event</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph evt">◇</span>
+                          <span><b>plan::ready</b><br/><small>agent::run_tools</small></span>
+                          <span class="cs-tag evt">event</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph evt">◇</span>
+                          <span><b>content::flagged</b><br/><small>content::on-flagged</small></span>
+                          <span class="cs-tag evt">event</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph evt">◇</span>
+                          <span><b>billing::charged</b><br/><small>notify::email</small></span>
+                          <span class="cs-tag evt">event</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph evt">◇</span>
+                          <span><b>worker::connected</b><br/><small>iii::on_worker_connect</small></span>
+                          <span class="cs-tag evt">event</span>
+                        </div>
+                      </div>
+                      <div class="cs-fn-group">
+                        <div class="cs-fn-group-head">▾ cron <span class="cs-fn-group-cnt">2 triggers</span></div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph">⏱</span>
+                          <span><b>every 5m</b><br/><small>iii::heartbeat</small></span>
+                          <span class="cs-tag">cron</span>
+                        </div>
+                        <div class="cs-row cs-row-trg">
+                          <span class="cs-row-glyph">⏱</span>
+                          <span><b>0 0 * * *</b><br/><small>billing::invoice</small></span>
+                          <span class="cs-tag">cron</span>
+                        </div>
+                      </div>
+                    </div>
+                    <aside class="cs-fn-side">
+                      <div class="cs-fn-side-head">POST /agent/run</div>
+                      <div class="cs-fn-side-sub">function: agent::plan</div>
+                      <div class="cs-fn-side-label">api endpoint</div>
+                      <div class="cs-fn-side-input">POST /api/engine/agent/run</div>
+                      <div class="cs-fn-side-label">request body</div>
+                      <pre class="cs-fn-side-input">{ "query": "research iii's primitives" }</pre>
+                      <button class="cs-fn-side-btn" type="button">▶ send request</button>
+                      <div class="cs-fn-side-resp">
+                        <span class="cs-pill cs-pill-ok">200</span>
+                        <pre>{
+  "run_id": "r_98ac",
+  "plan_id": "p_7f3a"
+}</pre>
+                      </div>
+                    </aside>
+                  </div>
+                </div>
+                <p class="cs-cap">http, events, cron, websockets — every entrypoint, one schema.</p>
+              </div>
+
+              <!-- 3 · STATES -->
+              <div class="cs-panel" data-idx="3">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">◫</span>states <span class="cs-pill">key-value store</span> <span class="cs-pill">7 groups</span></span>
+                    <span class="cs-card-meta">refresh</span>
+                  </div>
+                  <div class="cs-card-split states">
+                    <div class="cs-states-groups">
+                      <div class="cs-search small" aria-hidden="true">⌕ search groups…</div>
+                      <div class="cs-row cs-row-grp"><span class="cs-row-glyph">▣</span><span>agent</span><span class="cs-row-cnt">42</span></div>
+                      <div class="cs-row cs-row-grp is-selected"><span class="cs-row-glyph">▣</span><span>memory</span><span class="cs-row-cnt">128</span></div>
+                      <div class="cs-row cs-row-grp"><span class="cs-row-glyph">▣</span><span>session</span><span class="cs-row-cnt">31</span></div>
+                      <div class="cs-row cs-row-grp"><span class="cs-row-glyph">▣</span><span>moderation</span><span class="cs-row-cnt">87</span></div>
+                      <div class="cs-row cs-row-grp"><span class="cs-row-glyph">▣</span><span>billing</span><span class="cs-row-cnt">54</span></div>
+                      <div class="cs-row cs-row-grp"><span class="cs-row-glyph">▣</span><span>config</span><span class="cs-row-cnt">19</span></div>
+                      <div class="cs-row cs-row-grp"><span class="cs-row-glyph">▣</span><span>cache</span><span class="cs-row-cnt">364</span></div>
+                    </div>
+                    <div class="cs-states-table">
+                      <div class="cs-states-th"><span>key ↑</span><span>type</span><span>preview</span><span></span></div>
+                      <div class="cs-states-tr is-selected"><span><b>plan_p_7f3a</b></span><span class="cs-tag">json</span><span>{ steps: 4, …}</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>plan_p_88e1</b></span><span class="cs-tag">json</span><span>{ steps: 7, …}</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>plan_p_a1c4</b></span><span class="cs-tag">json</span><span>{ steps: 3, …}</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>token_count</b></span><span class="cs-tag">number</span><span>148,209</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>last_query</b></span><span class="cs-tag">string</span><span>"research iii…"</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>flags:u_4188</b></span><span class="cs-tag">number</span><span>3</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>flags:u_9920</b></span><span class="cs-tag">number</span><span>1</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>embed_index</b></span><span class="cs-tag">vector</span><span>[1024d × 8,420]</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>session:s_be12</b></span><span class="cs-tag">json</span><span>{ user: "u_4188", …}</span><span class="cs-row-chev">⎘ ✕</span></div>
+                      <div class="cs-states-tr"><span><b>cache:web:opentel…</b></span><span class="cs-tag">blob</span><span>14.2 KB</span><span class="cs-row-chev">⎘ ✕</span></div>
+                    </div>
+                    <aside class="cs-fn-side">
+                      <div class="cs-fn-side-head">plan_p_7f3a</div>
+                      <div class="cs-fn-side-label">type</div>
+                      <div class="cs-fn-side-tag"><span class="cs-tag">json</span></div>
+                      <div class="cs-fn-side-label">value</div>
+                      <pre class="cs-fn-side-input">{
+  "steps": 4,
+  "tools": ["web_search","code_exec"],
+  "estimate_ms": 7400
+}</pre>
+                      <button class="cs-fn-side-btn danger" type="button">⌫ delete item</button>
+                    </aside>
+                  </div>
+                </div>
+                <p class="cs-cap">durable state — namespaced, typed, observable.</p>
+              </div>
+
+              <!-- 4 · STREAMS -->
+              <div class="cs-panel" data-idx="4">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">≋</span>streams <span class="cs-pill">websocket monitor</span></span>
+                    <span class="cs-card-meta">pause · export · clear · system</span>
+                  </div>
+                  <div class="cs-card-bar streams">
+                    <span><b>2,418</b> messages</span>
+                    <span><span class="cs-arrow in">↘</span> 1,892 inbound</span>
+                    <span><span class="cs-arrow out">↗</span> 526 outbound</span>
+                    <span>size: 184 kb</span>
+                    <span class="cs-card-bar-right">ws://127.0.0.1:3113/ws/streams</span>
+                  </div>
+                  <div class="cs-tabs">
+                    <span class="cs-tab is-active">all</span>
+                    <span class="cs-tab">↘ inbound</span>
+                    <span class="cs-tab">↗ outbound</span>
+                  </div>
+                  <div class="cs-card-body cs-streams-body">
+                    <div class="cs-stream-row"><span class="cs-ts">12:38:01.030</span><span class="cs-tag">disconnected</span><span class="cs-stream-msg">{"message":"WebSocket connection closed"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:38:00.020</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"WebSocket connection established","url":"ws://127.0.0.1:3113/ws/streams"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:59.823</span><span class="cs-tag">disconnected</span><span class="cs-stream-msg">{"message":"agent::token","token":"primitives"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:55.819</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"agent::token","token":"composable"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:52.805</span><span class="cs-tag">disconnected</span><span class="cs-stream-msg">{"message":"agent::token","token":"runtime"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:49.798</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"tool::web_search","query":"opentelemetry"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:46.794</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"agent::step","idx":2}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:42.602</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"content::flagged","author":"u_4188","score":0.91}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:39.118</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"billing::charged","amount":2400,"customer":"c_8821"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:35.482</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"memory::store","key":"emb:3f02","bytes":4096}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:31.227</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"notify::email","to":"alex@motia.dev","template":"flagged"}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:28.014</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"durable::publish","topic":"comment.publish","seq":18420}</span></div>
+                    <div class="cs-stream-row"><span class="cs-ts">12:37:24.901</span><span class="cs-tag ok">connected</span><span class="cs-stream-msg">{"message":"worker::heartbeat","worker":"tool-runner","load":0.42}</span></div>
+                  </div>
+                </div>
+                <p class="cs-cap">live websocket bus — agent tokens, tool calls, status, in real time.</p>
+              </div>
+
+              <!-- 5 · QUEUES -->
+              <div class="cs-panel" data-idx="5">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">≣</span>queues <span class="cs-pill">9 topics</span> <span class="cs-pill">12 subscribers</span></span>
+                    <span class="cs-card-meta">refresh</span>
+                  </div>
+                  <div class="cs-card-bar">
+                    <div class="cs-search" aria-hidden="true">⌕ filter queues…</div>
+                  </div>
+                  <div class="cs-card-body cs-queues-body">
+                    <div class="cs-row cs-row-queue is-selected">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>tool-calls</b> <span class="cs-pill">durable</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:64%"></span></span>
+                      <span class="cs-row-meta">142 pending · 38 in-flight · 2 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>plan-events</b> <span class="cs-pill">fanout</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:18%"></span></span>
+                      <span class="cs-row-meta">12 pending · 9 in-flight · 0 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>embed-batch</b> <span class="cs-pill">durable</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:42%"></span></span>
+                      <span class="cs-row-meta">821 pending · 64 in-flight · 4 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>comment.publish</b> <span class="cs-pill">durable</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:28%"></span></span>
+                      <span class="cs-row-meta">48 pending · 21 in-flight · 0 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>comment.review</b> <span class="cs-pill">durable</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:78%"></span></span>
+                      <span class="cs-row-meta">204 pending · 12 in-flight · 1 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>billing.charge</b> <span class="cs-pill">durable</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:14%"></span></span>
+                      <span class="cs-row-meta">6 pending · 3 in-flight · 0 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>notify.email</b> <span class="cs-pill">fanout</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:32%"></span></span>
+                      <span class="cs-row-meta">88 pending · 14 in-flight · 0 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>notify.slack</b> <span class="cs-pill">fanout</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:8%"></span></span>
+                      <span class="cs-row-meta">2 pending · 1 in-flight · 0 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                    <div class="cs-row cs-row-queue">
+                      <span class="cs-row-glyph">≣</span>
+                      <span class="cs-row-name"><b>memory.index</b> <span class="cs-pill">durable</span></span>
+                      <span class="cs-queue-meter"><span class="cs-queue-meter-bar" style="--pct:52%"></span></span>
+                      <span class="cs-row-meta">312 pending · 28 in-flight · 0 dead</span>
+                      <span class="cs-row-chev">›</span>
+                    </div>
+                  </div>
+                </div>
+                <p class="cs-cap">named queues — backpressure & retries, native to the protocol.</p>
+              </div>
+
+              <!-- 6 · TRACES -->
+              <div class="cs-panel" data-idx="6">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">⎇</span>traces <span class="cs-pill cs-pill-ok">1,847</span></span>
+                    <span class="cs-card-meta">system · pause · refresh</span>
+                  </div>
+                  <div class="cs-card-bar">
+                    <div class="cs-search" aria-hidden="true">⌕ search traces… · status · time range · duration · service · operation</div>
+                  </div>
+                  <div class="cs-card-body cs-traces-body">
+                    <div class="cs-trace-row is-selected">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>POST /agent/run</b><br/><small>e08ff04 · 1.95ms · ⎇</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:6%;--c:var(--ink)">plan</div>
+                        <div class="cs-trace-bar" style="--l:6%;--w:18%;--c:var(--accent)">run_tools</div>
+                        <div class="cs-trace-bar" style="--l:9%;--w:8%;--c:#3ea8ff">web_search</div>
+                        <div class="cs-trace-bar" style="--l:18%;--w:11%;--c:#8a5cff">code_exec</div>
+                        <div class="cs-trace-bar" style="--l:30%;--w:7%;--c:var(--ink)">synthesize</div>
+                      </div>
+                      <span class="cs-ts">12:38:36</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>POST /content/submit</b><br/><small>4cda981 · 8.42ms · ⎇</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:8%;--c:var(--ink)">route</div>
+                        <div class="cs-trace-bar" style="--l:8%;--w:24%;--c:#3ea8ff">classify</div>
+                        <div class="cs-trace-bar" style="--l:32%;--w:10%;--c:#2e7d32">publish</div>
+                        <div class="cs-trace-bar" style="--l:42%;--w:6%;--c:var(--accent)">notify</div>
+                      </div>
+                      <span class="cs-ts">12:38:32</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>iii::on_functions_available</b><br/><small>b92fbded · 2.28ms</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:14%;--c:var(--ink)"></div>
+                        <div class="cs-trace-bar" style="--l:14%;--w:6%;--c:var(--accent)"></div>
+                      </div>
+                      <span class="cs-ts">12:38:30</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>POST /billing/charge</b><br/><small>71f084a · 14.21ms · ⎇</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:32%;--c:#00add8">charge</div>
+                        <div class="cs-trace-bar" style="--l:32%;--w:8%;--c:var(--ink)">state::set</div>
+                        <div class="cs-trace-bar" style="--l:40%;--w:14%;--c:var(--accent)">notify::email</div>
+                      </div>
+                      <span class="cs-ts">12:38:24</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>tools::web_search</b><br/><small>709bb22b · 2.71ms</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:22%;--c:#3ea8ff"></div>
+                      </div>
+                      <span class="cs-ts">12:38:16</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot warn"></span>
+                      <span class="cs-trace-name"><b>memory::search</b><br/><small>3e78c2f · 42.18ms</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:38%;--c:#3ea8ff">embed</div>
+                        <div class="cs-trace-bar" style="--l:38%;--w:48%;--c:var(--ink)">vector::knn</div>
+                      </div>
+                      <span class="cs-ts">12:38:08</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>memory::store</b><br/><small>aa521adb · 2.40ms</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:9%;--c:var(--ink)"></div>
+                      </div>
+                      <span class="cs-ts">12:37:50</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>tools::code_exec</b><br/><small>5f631ce1 · 1.06ms</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:18%;--c:#8a5cff"></div>
+                      </div>
+                      <span class="cs-ts">12:37:48</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot err"></span>
+                      <span class="cs-trace-name"><b>notify::webhook</b><br/><small>9b211ce · 502 · 3.04s</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:84%;--c:#d8423a">timeout</div>
+                      </div>
+                      <span class="cs-ts">12:37:14</span>
+                    </div>
+                    <div class="cs-trace-row">
+                      <span class="cs-dot ok"></span>
+                      <span class="cs-trace-name"><b>agent::synthesize</b><br/><small>2ce92e90 · 1.46ms</small></span>
+                      <div class="cs-trace-bars">
+                        <div class="cs-trace-bar" style="--l:0%;--w:12%;--c:var(--ink)"></div>
+                        <div class="cs-trace-bar" style="--l:12%;--w:4%;--c:var(--accent)"></div>
+                      </div>
+                      <span class="cs-ts">12:36:50</span>
+                    </div>
+                  </div>
+                </div>
+                <p class="cs-cap">opentelemetry, native — every span across every language, one trace.</p>
+              </div>
+
+              <!-- 7 · LOGS -->
+              <div class="cs-panel" data-idx="7">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">›_</span>logs <span class="cs-pill cs-pill-ok">14,208/14,208</span></span>
+                    <span class="cs-card-meta">pause · export · clear</span>
+                  </div>
+                  <div class="cs-card-bar">
+                    <span class="cs-tag">time ▾</span>
+                    <span class="cs-tag">all severities ▾</span>
+                    <div class="cs-search small" aria-hidden="true">⌕ search by trace id, source, or message…</div>
+                    <span class="cs-card-bar-right">
+                      <span class="cs-sev-key info">●</span>11,402
+                      <span class="cs-sev-key warn">●</span>2,612
+                      <span class="cs-sev-key err">●</span>184
+                      <span class="cs-sev-key dbg">●</span>10
+                    </span>
+                  </div>
+                  <div class="cs-card-body cs-logs-body">
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:35.302</span><span class="cs-tag">221e521…</span><span class="cs-tag">iii</span><span class="cs-log-msg">new functions detected, firing functions-available trigger</span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:34.821</span><span class="cs-tag">billing-svc</span><span class="cs-log-msg">charge succeeded customer=<b>c_8821</b> amount=<b>2400</b></span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:33.114</span><span class="cs-tag">notify-bridge</span><span class="cs-log-msg">delivered <span class="cs-c-mag">notify::email</span> → alex@motia.dev</span></div>
+                    <div class="cs-log-row"><span class="cs-sev warn">●</span><span class="cs-ts">12:38:32.402</span><span class="cs-tag">content-router</span><span class="cs-log-msg">classifier latency p99=842ms (budget 600ms)</span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:16.336</span><span class="cs-tag">iii</span><span class="cs-log-msg"><span class="cs-c-ok">[REGISTERED]</span> Endpoint <span class="cs-c-blu">POST /agent/run</span> → <span class="cs-c-mag">agent::plan</span></span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:16.336</span><span class="cs-tag">iii</span><span class="cs-log-msg"><span class="cs-c-ok">[REGISTERED]</span> Function <span class="cs-c-mag">tools::web_search</span></span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:16.335</span><span class="cs-tag">iii</span><span class="cs-log-msg">Worker registered <b>tool-runner</b> (rust)</span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:14.610</span><span class="cs-tag">iii</span><span class="cs-log-msg">Worker registered <b>billing-svc</b> (go)</span></div>
+                    <div class="cs-log-row"><span class="cs-sev warn">●</span><span class="cs-ts">12:38:14.610</span><span class="cs-tag">iii</span><span class="cs-log-msg">tool-runner reconnect attempt 1</span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:13.815</span><span class="cs-tag">iii</span><span class="cs-log-msg"><span class="cs-c-warn">[UNREGISTERED]</span> Function <span class="cs-c-mag">tools::web_search</span></span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:38:08.219</span><span class="cs-tag">embed-worker</span><span class="cs-log-msg">indexed batch 0e8f2a · vectors=<b>512</b> · 184ms</span></div>
+                    <div class="cs-log-row"><span class="cs-sev err">●</span><span class="cs-ts">12:37:39.302</span><span class="cs-tag">8a682f6a…</span><span class="cs-tag">iii</span><span class="cs-log-msg">Function not found: agent::critique</span></div>
+                    <div class="cs-log-row"><span class="cs-sev err">●</span><span class="cs-ts">12:37:14.022</span><span class="cs-tag">notify-bridge</span><span class="cs-log-msg">webhook 502 stripe.com — retry queued (3/5)</span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:37:18.301</span><span class="cs-tag">7e0703f4…</span><span class="cs-tag">iii</span><span class="cs-log-msg">tools::code_exec called in Python with q="2+2"</span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:36:54.594</span><span class="cs-tag">iii</span><span class="cs-log-msg">new functions detected, firing functions-available trigger</span></div>
+                    <div class="cs-log-row"><span class="cs-sev info">●</span><span class="cs-ts">12:36:52.567</span><span class="cs-tag">iii</span><span class="cs-log-msg"><span class="cs-c-ok">[REGISTERED]</span> Function <span class="cs-c-mag">iii.on_functions_available</span></span></div>
+                  </div>
+                </div>
+                <p class="cs-cap">structured logs — protocol-native, severity-coded, trace-linked.</p>
+              </div>
+
+              <!-- 8 · CONFIG -->
+              <div class="cs-panel" data-idx="8">
+                <div class="cs-card">
+                  <div class="cs-card-head">
+                    <span class="cs-card-title"><span class="cs-card-ico">◉</span>configuration <span class="cs-pill cs-pill-ok">10/10 healthy</span></span>
+                    <span class="cs-card-meta">view config · export · system · refresh</span>
+                  </div>
+                  <div class="cs-config-body">
+                    <div class="cs-config-stats">
+                      <div class="cs-stat"><span class="cs-stat-ico">▣</span><span class="cs-stat-num">10</span><span class="cs-stat-lbl">workers</span></div>
+                      <div class="cs-stat"><span class="cs-stat-ico">≡</span><span class="cs-stat-num">38</span><span class="cs-stat-lbl">functions</span></div>
+                      <div class="cs-stat"><span class="cs-stat-ico">⌁</span><span class="cs-stat-num">12</span><span class="cs-stat-lbl">triggers</span></div>
+                      <div class="cs-stat"><span class="cs-stat-ico">≣</span><span class="cs-stat-num">9</span><span class="cs-stat-lbl">queues</span></div>
+                      <div class="cs-stat"><span class="cs-stat-ico">◫</span><span class="cs-stat-num">725</span><span class="cs-stat-lbl">state keys</span></div>
+                      <div class="cs-stat"><span class="cs-stat-ico">≋</span><span class="cs-stat-num">2,418</span><span class="cs-stat-lbl">stream msgs</span></div>
+                      <div class="cs-stat"><span class="cs-stat-ico">⎇</span><span class="cs-stat-num">1,847</span><span class="cs-stat-lbl">traces</span></div>
+                      <div class="cs-stat ok"><span class="cs-stat-ico">✓</span><span class="cs-stat-num">10</span><span class="cs-stat-lbl">healthy</span></div>
+                    </div>
+                    <div class="cs-config-row">
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> iii engine</div>
+                        <div class="cs-config-card-sub">REST API & DevTools</div>
+                        <div class="cs-config-card-url">http://127.0.0.1:3113/api/engine</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> streams</div>
+                        <div class="cs-config-card-sub">websocket streams</div>
+                        <div class="cs-config-card-url">ws://127.0.0.1:3113/ws/streams</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> sdk bridge</div>
+                        <div class="cs-config-card-sub">worker connections</div>
+                        <div class="cs-config-card-url">ws://localhost:49134</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> traces</div>
+                        <div class="cs-config-card-sub">otel collector</div>
+                        <div class="cs-config-card-url">grpc://127.0.0.1:4317</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> state store</div>
+                        <div class="cs-config-card-sub">durable kv</div>
+                        <div class="cs-config-card-url">tcp://10.0.0.4:7521</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> queue broker</div>
+                        <div class="cs-config-card-sub">durable topics</div>
+                        <div class="cs-config-card-url">tcp://10.0.0.4:7522</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> embed index</div>
+                        <div class="cs-config-card-sub">vector store</div>
+                        <div class="cs-config-card-url">tcp://10.0.0.7:6333</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> billing</div>
+                        <div class="cs-config-card-sub">payment gateway</div>
+                        <div class="cs-config-card-url">https://10.0.0.9:8080</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> notify bridge</div>
+                        <div class="cs-config-card-sub">email · slack · webhook</div>
+                        <div class="cs-config-card-url">https://10.0.0.11:8081</div>
+                      </div>
+                      <div class="cs-config-card">
+                        <div class="cs-config-card-title"><span class="cs-c-ok">●</span> auth</div>
+                        <div class="cs-config-card-sub">jwt · oidc</div>
+                        <div class="cs-config-card-url">https://auth.iii.local</div>
+                      </div>
+                    </div>
+                    <div class="cs-config-section">
+                      <div class="cs-config-section-head"><span class="cs-card-ico">⌁</span> trigger types <span class="cs-pill">10</span></div>
+                      <div class="cs-config-grid">
+                        <div class="cs-config-pill"><b>http</b><span>"http"</span></div>
+                        <div class="cs-config-pill"><b>event</b><span>"event"</span></div>
+                        <div class="cs-config-pill"><b>cron</b><span>"cron"</span></div>
+                        <div class="cs-config-pill"><b>state</b><span>"state"</span></div>
+                        <div class="cs-config-pill"><b>stream::join</b><span>"stream::join"</span></div>
+                        <div class="cs-config-pill"><b>stream::leave</b><span>"stream::leave"</span></div>
+                        <div class="cs-config-pill"><b>subscribe</b><span>"subscribe"</span></div>
+                        <div class="cs-config-pill"><b>queue</b><span>"queue"</span></div>
+                        <div class="cs-config-pill"><b>webhook</b><span>"webhook"</span></div>
+                        <div class="cs-config-pill"><b>log</b><span>"log"</span></div>
+                      </div>
+                    </div>
+                    <div class="cs-config-section">
+                      <div class="cs-config-section-head"><span class="cs-card-ico">▤</span> worker pools <span class="cs-pill">4</span></div>
+                      <div class="cs-config-grid three">
+                        <div class="cs-config-pool"><b>rust</b><span class="cs-config-pool-cnt">4</span><small>connected workers</small></div>
+                        <div class="cs-config-pool"><b>node</b><span class="cs-config-pool-cnt">3</span><small>connected workers</small></div>
+                        <div class="cs-config-pool"><b>python</b><span class="cs-config-pool-cnt">2</span><small>connected workers</small></div>
+                        <div class="cs-config-pool"><b>go</b><span class="cs-config-pool-cnt">1</span><small>connected workers</small></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <p class="cs-cap">the system at a glance — every primitive, healthy and addressable.</p>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </section>
+      </div><!-- /.cs-pin-inner -->
+    </div>
+  </div>
+

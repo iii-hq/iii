@@ -539,11 +539,14 @@ pub struct InMemorySpanStorage {
     max_spans: std::sync::atomic::AtomicUsize,
     /// Secondary index: trace_id -> set of span indices for O(1) trace lookups
     spans_by_trace_id: RwLock<HashMap<String, HashSet<usize>>>,
-    /// span_ids currently stored as pending (live snapshots awaiting their
-    /// final span). Gates the replace-scan in `add_spans` so the hot append
-    /// path (OTLP ingest, exporters) stays O(1) when no pending predecessor
-    /// exists. Lock order everywhere: `spans` → `spans_by_trace_id` → this.
-    pending_span_ids: RwLock<HashSet<String>>,
+    /// `(trace_id, span_id)` pairs currently stored as pending (live
+    /// snapshots awaiting their final span). Keyed by both ids — span ids
+    /// are only unique within a trace, so a colliding final from another
+    /// trace must not replace the wrong snapshot. Gates the replace-scan in
+    /// `add_spans` so the hot append path (OTLP ingest, exporters) stays
+    /// O(1) when no pending predecessor exists. Lock order everywhere:
+    /// `spans` → `spans_by_trace_id` → this.
+    pending_span_ids: RwLock<HashSet<(String, String)>>,
     /// Broadcast of every span as it lands, driving the `trace` trigger
     /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
@@ -555,14 +558,14 @@ pub struct InMemorySpanStorage {
 fn evict_to_capacity(
     spans: &mut VecDeque<StoredSpan>,
     index: &mut HashMap<String, HashSet<usize>>,
-    pending: &mut HashSet<String>,
+    pending: &mut HashSet<(String, String)>,
     max_spans: usize,
 ) {
     // Loop converges after a shrink
     while spans.len() >= max_spans
         && let Some(old) = spans.pop_front()
     {
-        pending.remove(&old.span_id);
+        pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
         // Remove from index and shift all indices down
         if let Some(set) = index.get_mut(&old.trace_id) {
             set.remove(&0);
@@ -618,7 +621,7 @@ impl InMemorySpanStorage {
             let mut pending = self.pending_span_ids.write().unwrap();
             let excess = spans.len() - max;
             for old in spans.drain(..excess) {
-                pending.remove(&old.span_id);
+                pending.remove(&(old.trace_id, old.span_id));
             }
             index.clear();
             for (idx, span) in spans.iter().enumerate() {
@@ -638,14 +641,22 @@ impl InMemorySpanStorage {
             .max(1);
         for span in new_spans {
             // A final span replacing its live (pending) snapshot overwrites in
-            // place: same idx, same trace_id, so neither index changes. The set
-            // gate keeps the scan off the hot append path, and pending spans
-            // are by construction recent, so scan from the back. The reverse
-            // never happens — a pending snapshot must not overwrite a final
-            // (`on_start` always precedes `on_end`, and OTLP-ingested worker
-            // spans are never pending).
-            if pending.remove(&span.span_id)
-                && let Some(slot) = spans.iter_mut().rev().find(|s| s.span_id == span.span_id)
+            // place: same idx, same trace_id, so neither index changes. Keys
+            // are `(trace_id, span_id)` — span ids are only unique within a
+            // trace, so a colliding final from another trace must not steal
+            // the snapshot. The emptiness gate keeps the key clone + scan off
+            // the hot append path, and pending spans are by construction
+            // recent, so scan from the back. The reverse never happens — a
+            // pending snapshot must not overwrite a final (`on_start` always
+            // precedes `on_end`, and a worker's start snapshot always ingests
+            // before its final: same FIFO telemetry connection, see
+            // `ingest_otlp_json`).
+            if !pending.is_empty()
+                && pending.remove(&(span.trace_id.clone(), span.span_id.clone()))
+                && let Some(slot) = spans
+                    .iter_mut()
+                    .rev()
+                    .find(|s| s.span_id == span.span_id && s.trace_id == span.trace_id)
             {
                 let _ = self.tx.send(span.clone());
                 *slot = span;
@@ -671,10 +682,10 @@ impl InMemorySpanStorage {
     }
 
     /// Record an in-progress span snapshot (`LiveSpanProcessor::on_start`).
-    /// Appends + broadcasts exactly like `add_spans` and marks the id pending
-    /// so the final span replaces it in place when it closes. Pending spans
-    /// live ONLY in this store and the streams fed from it — the OTLP export
-    /// path never sees them.
+    /// Appends + broadcasts exactly like `add_spans` and marks the
+    /// `(trace_id, span_id)` pair pending so the final span replaces it in
+    /// place when it closes. Pending spans live ONLY in this store and the
+    /// streams fed from it — the OTLP export path never sees them.
     pub fn add_pending_span(&self, span: StoredSpan) {
         debug_assert!(span.pending && span.end_time_unix_nano == 0);
         let mut spans = self.spans.write().unwrap();
@@ -689,7 +700,7 @@ impl InMemorySpanStorage {
 
         let idx = spans.len();
         let trace_id = span.trace_id.clone();
-        pending.insert(span.span_id.clone());
+        pending.insert((trace_id.clone(), span.span_id.clone()));
         let _ = self.tx.send(span.clone());
         spans.push_back(span);
         index.entry(trace_id).or_default().insert(idx);
@@ -2044,6 +2055,13 @@ fn convert_resource_span_to_span_data(resource_span: &OtlpResourceSpans) -> Vec<
                 .unwrap_or_else(|| InstrumentationScope::builder("unknown").build());
 
             for span in &scope_span.spans {
+                // Live start snapshots (endTimeUnixNano == 0, see
+                // `ingest_otlp_json`) exist only for the in-memory live
+                // views; the OTLP proto documents `end_time_unix_nano` as
+                // semantically required, so they never reach the collector.
+                if span.end_time_unix_nano.0 == 0 {
+                    continue;
+                }
                 // Parse trace and span IDs
                 let trace_id = match TraceId::from_hex(&span.trace_id) {
                     Ok(id) => id,
@@ -2213,7 +2231,16 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
 
     // Store in memory if available (for API access)
     if let Some(storage) = get_span_storage() {
+        // Zero-end spans are worker start snapshots (the SDK's
+        // `LiveSpanStartProcessor`): stored as pendings so live views render
+        // in-progress worker spans, the final span replacing each in place
+        // when the batch exporter delivers it. Gated by the same live-spans
+        // switch as the engine's own start mirror — when it resolves off
+        // (incl. OTLP-only, where finals never land in memory) snapshots are
+        // dropped, never stored as zero-end finals.
+        let live_ingest = OtelConfig::default().live_spans;
         let mut stored_spans = Vec::new();
+        let mut pending_spans = Vec::new();
 
         for resource_span in &request.resource_spans {
             let service_name = extract_service_name(&resource_span.resource);
@@ -2232,6 +2259,10 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
                     .filter(|s| !s.is_empty());
 
                 for span in &scope_span.spans {
+                    let is_start_snapshot = span.end_time_unix_nano.0 == 0;
+                    if is_start_snapshot && !live_ingest {
+                        continue;
+                    }
                     // Convert parent_span_id (skip if empty or all zeros)
                     let parent_span_id = span.parent_span_id.as_ref().and_then(|p| {
                         if p.is_empty() || p == "0000000000000000" || p.chars().all(|c| c == '0') {
@@ -2318,18 +2349,29 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
                         flags: span.flags,
                         // OTLP-ingested spans don't currently carry tracestate.
                         trace_state: None,
-                        // Worker spans arrive only when closed — never pending.
-                        pending: false,
+                        pending: is_start_snapshot,
                     };
 
-                    stored_spans.push(stored_span);
+                    if is_start_snapshot {
+                        pending_spans.push(stored_span);
+                    } else {
+                        stored_spans.push(stored_span);
+                    }
                 }
             }
         }
 
-        let span_count = stored_spans.len();
-        if span_count > 0 {
+        let span_count = stored_spans.len() + pending_spans.len();
+        // Pendings before finals: the telemetry WS is FIFO per worker, so a
+        // start snapshot always ingests before its final frame — keeping
+        // that order inside a mixed batch preserves the in-place replace.
+        for pending in pending_spans {
+            storage.add_pending_span(pending);
+        }
+        if !stored_spans.is_empty() {
             storage.add_spans(stored_spans);
+        }
+        if span_count > 0 {
             tracing::debug!(
                 span_count = span_count,
                 "Ingested OTLP spans into memory storage"
@@ -5013,6 +5055,33 @@ mod tests {
     }
 
     #[test]
+    fn pending_span_not_replaced_by_colliding_final_from_another_trace() {
+        let storage = InMemorySpanStorage::new(10);
+
+        storage.add_pending_span(make_pending_span("t1", "p", "op-p", 1_000));
+
+        // Same span id, different trace: span ids are only unique within a
+        // trace, so this final must append — not steal t1's snapshot.
+        storage.add_spans(vec![make_stored_span("t2", "p", "op-x", 2_000, 3_000)]);
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2, "append, not replace");
+        assert_eq!(spans[0].trace_id, "t1");
+        assert!(spans[0].pending, "t1's snapshot untouched");
+        assert_eq!(storage.get_spans_by_trace_id("t2").len(), 1);
+        assert_eq!(storage.pending_span_ids.read().unwrap().len(), 1);
+
+        // t1's own final still replaces its snapshot in place.
+        storage.add_spans(vec![make_stored_span("t1", "p", "op-p", 1_000, 4_000)]);
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2, "replace, not append");
+        assert_eq!(spans[0].trace_id, "t1");
+        assert!(!spans[0].pending);
+        assert_eq!(spans[0].end_time_unix_nano, 4_000);
+        assert!(storage.pending_span_ids.read().unwrap().is_empty());
+    }
+
+    #[test]
     fn pending_span_evicted_before_final_appends_fresh() {
         let storage = InMemorySpanStorage::new(2);
 
@@ -5042,14 +5111,14 @@ mod tests {
 
         storage.set_max_spans(1); // drains p1
         assert_eq!(storage.len(), 1);
-        let pending: Vec<String> = storage
+        let pending: Vec<(String, String)> = storage
             .pending_span_ids
             .read()
             .unwrap()
             .iter()
             .cloned()
             .collect();
-        assert_eq!(pending, vec!["p2".to_string()]);
+        assert_eq!(pending, vec![("t2".to_string(), "p2".to_string())]);
 
         storage.clear();
         assert!(storage.pending_span_ids.read().unwrap().is_empty());
@@ -5766,6 +5835,107 @@ mod tests {
             span.attributes
                 .contains(&("http.method".to_string(), "GET".to_string()))
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_zero_end_stored_pending_replaced_and_gated() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        // Live ingest resolves through the same switch as the engine's own
+        // start mirror; pin it ON explicitly (env-independent).
+        let prev = update_otel_config(ObservabilityWorkerConfig {
+            live_spans: Some(true),
+            ..Default::default()
+        });
+
+        let start_snapshot = r#"{
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "harness"}
+                    }]
+                },
+                "scopeSpans": [{
+                    "scope": {"name": "iii-worker", "version": "1.0.0"},
+                    "spans": [{
+                        "traceId": "abcdef1234567890abcdef1234567890",
+                        "spanId": "1234567890abcdef",
+                        "name": "harness::turn step",
+                        "kind": 1,
+                        "startTimeUnixNano": "1704067200000000000",
+                        "endTimeUnixNano": "0",
+                        "status": {"code": 0},
+                        "attributes": [{
+                            "key": "iii.session.id",
+                            "value": {"stringValue": "console-abc"}
+                        }]
+                    }]
+                }]
+            }]
+        }"#;
+
+        // 1. A zero-end frame (the SDK's start snapshot) stores as pending.
+        ingest_otlp_json(start_snapshot).await.unwrap();
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 1);
+        assert!(spans[0].pending, "zero-end ingests as a pending span");
+        assert_eq!(spans[0].end_time_unix_nano, 0);
+        assert_eq!(spans[0].name, "harness::turn step");
+        assert!(
+            spans[0]
+                .attributes
+                .contains(&("iii.session.id".to_string(), "console-abc".to_string())),
+            "snapshot keeps its attributes (session attribution)"
+        );
+
+        // 2. The final span (same span_id) replaces the snapshot in place.
+        let final_span = start_snapshot.replace(
+            "\"endTimeUnixNano\": \"0\"",
+            "\"endTimeUnixNano\": \"1704067203000000000\"",
+        );
+        ingest_otlp_json(&final_span).await.unwrap();
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 1, "the final must replace, not duplicate");
+        assert!(!spans[0].pending);
+        assert_eq!(spans[0].end_time_unix_nano, 1704067203000000000);
+
+        // 3. Start snapshots never reach the OTLP forward path — the proto
+        //    requires end_time.
+        let parsed: OtlpExportTraceServiceRequest = serde_json::from_str(start_snapshot).unwrap();
+        assert!(
+            convert_otlp_to_span_data(&parsed).is_empty(),
+            "zero-end spans must not convert for collector forwarding"
+        );
+
+        // 4. Gate off: snapshots are dropped, never stored as zero-end finals.
+        update_otel_config(ObservabilityWorkerConfig {
+            live_spans: Some(false),
+            ..Default::default()
+        });
+        storage.clear();
+        ingest_otlp_json(start_snapshot).await.unwrap();
+        assert!(
+            storage.get_spans().is_empty(),
+            "live_spans off must drop start snapshots"
+        );
+
+        match prev {
+            Some(p) => {
+                update_otel_config((*p).clone());
+            }
+            None => clear_otel_config_for_test(),
+        }
     }
 
     #[tokio::test]

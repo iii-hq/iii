@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'website/**'
-      - 'blog/**'
       - 'tech-specs/**'
       - 'infra/terraform/website/**'
       - '.github/workflows/deploy-website.yml'
@@ -49,14 +48,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Generate llms.txt and AGENTS.md
+      # One build emits the whole site into website/dist/: the Astro pages
+      # (landing, manifesto, privacy, /blog), the roadmap decks (dist/roadmap/),
+      # and the generated llms.txt, AGENTS.md, and sitemap.xml.
+      - name: Build site (Astro + roadmap → website/dist/)
         run: pnpm --filter iii-website build
-
-      - name: Build blog (Astro → blog/dist/)
-        run: pnpm --filter iii-blog build
-
-      - name: Build tech-spec presentations (Vite → website/presentations/dist/)
-        run: pnpm --filter iii-presentations build
 
       - name: Configure AWS credentials (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -64,47 +60,40 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Blog, the roadmap (tech-spec presentations), and the website share the
-      # bucket; the blog/ and roadmap/ prefixes are wiped + repopulated by
-      # their own syncs below. The website sync therefore must exclude blog/*
-      # and roadmap/* so its --delete doesn't wipe their output between steps,
-      # and must exclude presentations/* so the presentations project SOURCE
-      # (src/, deck dirs, node_modules) never uploads — only its built dist/
-      # ships, under the /roadmap/ prefix.
-      - name: Sync website static assets (long cache, immutable)
+      # website/dist/ is the complete site, so two syncs cover everything.
+      # Hashed build assets (Astro /_astro/, deck assets/) plus fonts and
+      # images are immutable; every content-mutable file — HTML, XML (sitemap,
+      # RSS), JSON (roadmap feed, viewer spec.json), markdown (raw specs,
+      # AGENTS.md), text (robots.txt, llms.txt), and the unhashed
+      # posthog-consent.js — must revalidate so new deploys surface right
+      # after the CloudFront invalidation.
+      - name: Sync static assets (long cache, immutable)
         run: |
-          aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
+          aws s3 sync website/dist/ "s3://${{ vars.S3_BUCKET }}/" \
             --delete \
             --cache-control "public,max-age=31536000,immutable" \
             --exclude "*.html" \
-            --exclude "llms.txt" \
-            --exclude "AGENTS.md" \
-            --exclude "node_modules/*" \
-            --exclude "package.json" \
-            --exclude "package-lock.json" \
-            --exclude "pnpm-lock.yaml" \
-            --exclude ".gitignore" \
-            --exclude "README.md" \
-            --exclude "vercel.json" \
-            --exclude "blog/*" \
-            --exclude "roadmap/*" \
-            --exclude "presentations/*"
+            --exclude "*.xml" \
+            --exclude "*.json" \
+            --exclude "*.md" \
+            --exclude "*.txt" \
+            --exclude "posthog-consent.js"
 
-      - name: Sync website HTML and AI snapshot (no cache, must revalidate)
+      - name: Sync content files (no cache, must revalidate)
         run: |
-          aws s3 sync website/ "s3://${{ vars.S3_BUCKET }}/" \
+          aws s3 sync website/dist/ "s3://${{ vars.S3_BUCKET }}/" \
             --delete \
             --cache-control "public,max-age=0,must-revalidate" \
             --exclude "*" \
             --include "*.html" \
-            --include "llms.txt" \
-            --include "AGENTS.md" \
-            --exclude "blog/*" \
-            --exclude "roadmap/*" \
-            --exclude "presentations/*"
+            --include "*.xml" \
+            --include "*.json" \
+            --include "*.md" \
+            --include "*.txt" \
+            --include "posthog-consent.js"
 
       # Keep the CloudFront KeyValueStore route map (pretty URL → .html) in sync
-      # with the website/*.html files we just uploaded. This is what lets a new
+      # with the dist/*.html pages we just uploaded. This is what lets a new
       # page work without a `terraform apply` (MOT-3669): the redirects function
       # reads this store at the edge. Runs AFTER the HTML sync so a key is never
       # published before its object exists. `concurrency: deploy-website`
@@ -131,49 +120,6 @@ jobs:
           [ "$deletes" != '[]' ] && args+=(--deletes "$deletes")
           aws cloudfront-keyvaluestore update-keys "${args[@]}"
           echo "KVS route map updated. puts=$puts deletes=$deletes"
-
-      # Blog assets under _astro/ are content-hashed by Astro, so they're
-      # safe to mark immutable. HTML and rss.xml must revalidate so new posts
-      # surface immediately after the CloudFront invalidation.
-      - name: Sync blog static assets (long cache, immutable)
-        run: |
-          aws s3 sync blog/dist/ "s3://${{ vars.S3_BUCKET }}/blog/" \
-            --delete \
-            --cache-control "public,max-age=31536000,immutable" \
-            --exclude "*.html" \
-            --exclude "*.xml"
-
-      - name: Sync blog HTML and RSS (no cache, must revalidate)
-        run: |
-          aws s3 sync blog/dist/ "s3://${{ vars.S3_BUCKET }}/blog/" \
-            --delete \
-            --cache-control "public,max-age=0,must-revalidate" \
-            --exclude "*" \
-            --include "*.html" \
-            --include "*.xml"
-
-      # Roadmap (tech-spec presentations) assets are content-hashed by Vite →
-      # immutable. HTML, index.json (the landing-page feed), raw spec *.md, and
-      # the viewers' spec.json are unhashed and content-mutable → must
-      # revalidate.
-      - name: Sync roadmap static assets (long cache, immutable)
-        run: |
-          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/roadmap/" \
-            --delete \
-            --cache-control "public,max-age=31536000,immutable" \
-            --exclude "*.html" \
-            --exclude "*.json" \
-            --exclude "*.md"
-
-      - name: Sync roadmap HTML, markdown and index (no cache, must revalidate)
-        run: |
-          aws s3 sync website/presentations/dist/ "s3://${{ vars.S3_BUCKET }}/roadmap/" \
-            --delete \
-            --cache-control "public,max-age=0,must-revalidate" \
-            --exclude "*" \
-            --include "*.html" \
-            --include "*.json" \
-            --include "*.md"
 
       - name: Create CloudFront invalidation
         id: invalidation

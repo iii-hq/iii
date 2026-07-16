@@ -1,0 +1,93 @@
+---
+// Document shell for the marketing pages (/, /manifesto, /privacy-policy).
+// Owns everything those pages' <head>s had in common pre-Astro: consent-gated
+// analytics, favicon, SEO/OG/Twitter meta, canonical, fonts, and the pre-paint
+// theme boot — plus the GTM <noscript> and cookie banner at the top of <body>.
+// Page-specific head extras (JSON-LD, the Mailmodo form-url meta) come in
+// through the named "head" slot; page styles are imported by each page and
+// injected by Astro as hashed, immutable-cacheable stylesheets.
+import AnalyticsHead from '../components/AnalyticsHead.astro'
+import CookieBanner from '../components/CookieBanner.astro'
+import ThemeInit from '../components/ThemeInit.astro'
+import '../styles/fonts.css'
+
+interface Props {
+  title: string
+  description: string
+  /** root-relative canonical path, e.g. "/manifesto" — keeps today's extensionless URL shapes */
+  canonicalPath: string
+  keywords?: string
+  author?: string
+  themeColor?: string
+  ogType?: 'website' | 'article'
+  ogTitle?: string
+  ogDescription?: string
+  twitterTitle?: string
+  twitterDescription?: string
+}
+
+const {
+  title,
+  description,
+  canonicalPath,
+  keywords,
+  author = 'III, Inc.',
+  themeColor = '#f5f3ee',
+  ogType = 'website',
+  ogTitle = title,
+  ogDescription = description,
+  twitterTitle,
+  twitterDescription,
+} = Astro.props
+
+const canonical = new URL(canonicalPath, Astro.site).toString()
+---
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{title}</title>
+
+<AnalyticsHead />
+
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="apple-touch-icon" href="/favicon.svg" />
+
+<!-- SEO Meta Tags -->
+<meta name="description" content={description} />
+{keywords && <meta name="keywords" content={keywords} />}
+<meta name="author" content={author} />
+<meta name="theme-color" content={themeColor} />
+<link rel="canonical" href={canonical} />
+<meta name="robots" content="index,follow" />
+
+<!-- Open Graph / Facebook -->
+<meta property="og:type" content={ogType} />
+<meta property="og:url" content={canonical} />
+<meta property="og:title" content={ogTitle} />
+<meta property="og:description" content={ogDescription} />
+<meta property="og:image" content="https://iii.dev/og-image.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:url" content={canonical} />
+<meta name="twitter:title" content={twitterTitle ?? ogTitle} />
+<meta name="twitter:description" content={twitterDescription ?? ogDescription} />
+<meta name="twitter:image" content="https://iii.dev/og-image.png" />
+
+<slot name="head" />
+
+<link rel="preload" href="/fonts/ChivoMono-VariableFont_wght.ttf" as="font" type="font/ttf" crossorigin />
+<ThemeInit />
+</head>
+<body>
+<CookieBanner />
+<slot />
+</body>
+</html>

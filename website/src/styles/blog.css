@@ -1,0 +1,396 @@
+/* Design tokens mirror website/index.html so the blog inherits the same
+   warm-paper / Chivo Mono / orange-accent identity. Token values are kept
+   identical; component styles are simplified for long-form reading. */
+
+@font-face {
+  font-family: 'Chivo Mono';
+  src: url('/fonts/ChivoMono-VariableFont_wght.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Chivo Mono';
+  src: url('/fonts/ChivoMono-Italic-VariableFont_wght.ttf') format('truetype-variations');
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  --bg: #f5f3ee;
+  --panel: #e9e6e2;
+  --ink: #0a0a0a;
+  --ink-2: #1a1a1a;
+  --ink-soft: #1a1a1a;
+  --ink-faint: #6b6865;
+  --ink-ghost: #a3a09c;
+  --mute: #6b6865;
+  --mute-2: #a3a09c;
+  --rule: #d8d4cb;
+  --rule-2: #e6e3df;
+  --accent: #ff5a1f;
+  --paper: #f5f3ee;
+  --paper-2: #ebe8e3;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Chivo Mono', ui-monospace, monospace;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'clig' 0, 'calt' 0, 'dlig' 0;
+  text-rendering: geometricPrecision;
+}
+
+body {
+  min-height: 100vh;
+  padding: 36px 16px 56px;
+  display: flex;
+  justify-content: center;
+}
+
+.sheet {
+  position: relative;
+  width: min(1200px, 100%);
+  background: var(--bg);
+  padding: 0 0 44px;
+  border: 1px solid var(--rule);
+}
+
+/* ============= MAIN ============= */
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 28px 80px;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--rule);
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1px;
+  transition: color 0.12s ease, text-decoration-color 0.12s ease;
+}
+a:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  font-weight: 700;
+}
+h1 {
+  font-size: 2rem;
+  margin: 0 0 0.5rem;
+}
+h2 {
+  font-size: 1.4rem;
+  margin: 2.25rem 0 0.75rem;
+}
+h3 {
+  font-size: 1.1rem;
+  margin: 1.75rem 0 0.5rem;
+}
+
+p {
+  line-height: 1.7;
+  margin: 0 0 1.1em;
+  color: var(--ink-2);
+}
+
+.meta {
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+}
+
+article hr,
+hr.rule {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 2rem 0;
+}
+
+article header h1 {
+  font-size: 2.1rem;
+}
+
+ul.posts {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  border-top: 1px solid var(--rule);
+}
+ul.posts li {
+  padding: 1.4rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+ul.posts li a.post-link {
+  display: block;
+  text-decoration: none;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+ul.posts li a.post-link:hover {
+  color: var(--accent);
+}
+ul.posts li p {
+  margin: 0.4rem 0 0;
+  color: var(--ink-faint);
+  font-size: 0.92rem;
+}
+
+pre,
+code {
+  font-family: 'Chivo Mono', ui-monospace, monospace;
+  font-size: 0.88em;
+}
+:not(pre) > code {
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+pre {
+  background: #0e0e0e;
+  border: 1px solid var(--rule);
+  padding: 1rem 1.15rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.55;
+  margin: 1.4rem 0;
+}
+pre > code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 0.85em;
+  white-space: pre;
+}
+pre.astro-code,
+pre.shiki {
+  background: var(--shiki-bg, #0e0e0e) !important;
+}
+
+article ul,
+article ol {
+  margin: 0 0 1.25em;
+  padding-left: 1.4em;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+article ul {
+  list-style: disc;
+}
+article ul li::marker {
+  color: var(--accent);
+}
+article li {
+  margin: 0.45em 0;
+  padding-left: 0.25em;
+}
+article li > p {
+  margin: 0 0 0.4em;
+}
+article li > ul,
+article li > ol {
+  margin-top: 0.35em;
+  margin-bottom: 0.35em;
+}
+
+blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 1.5rem 0;
+  padding: 0.25rem 0 0.25rem 1.1rem;
+  color: var(--ink-faint);
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+
+/* ============= TABLES ============= */
+/* Markdown tables render as a bare <table>; turn the table itself into a
+   horizontal scroll container so wide tables never burst the layout on
+   small screens, and give cells real borders/padding. */
+article table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-collapse: collapse;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  margin: 1.6rem 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+article thead th {
+  border-bottom: 2px solid var(--ink);
+}
+article th {
+  text-align: left;
+  vertical-align: bottom;
+  font-weight: 700;
+  color: var(--ink);
+  padding: 0.6rem 0.9rem;
+  white-space: nowrap;
+}
+article td {
+  vertical-align: top;
+  color: var(--ink-2);
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--rule);
+}
+article tbody tr:last-child td {
+  border-bottom: 0;
+}
+article tbody tr:nth-child(even) {
+  background: var(--paper-2);
+}
+/* Inline code inside cells should wrap rather than force the column wide.
+   overflow-wrap (not word-break) prefers natural break points such as the
+   hyphen in worker names (iii-/directory) and only splits a token mid-word
+   when it genuinely cannot fit. */
+article td code,
+article th code {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+/* Footer styles live in src/styles/site-footer.css (shared SiteFooter). */
+
+/* ============= TABLET ============= */
+@media (max-width: 1024px) {
+  body {
+    padding: 24px 12px 40px;
+  }
+  main {
+    padding: 44px 24px 64px;
+  }
+}
+
+/* ============= MOBILE ============= */
+@media (max-width: 640px) {
+  body {
+    padding: 16px 8px 24px;
+  }
+  main {
+    padding: 32px 16px 48px;
+  }
+  h1,
+  article header h1 {
+    font-size: 1.6rem;
+  }
+  h2 {
+    font-size: 1.2rem;
+  }
+  h3 {
+    font-size: 1.05rem;
+  }
+  p,
+  article ul,
+  article ol {
+    line-height: 1.65;
+  }
+  /* Long inline-code tokens (e.g. iii://<worker>/<function>) must wrap on
+     phones instead of forcing horizontal page scroll. */
+  :not(pre) > code {
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+  article table {
+    font-size: 0.82rem;
+  }
+  article th,
+  article td {
+    padding: 0.55rem 0.65rem;
+  }
+}
+
+/* Cookie consent banner (markup in src/components/CookieBanner.astro, shared
+   with the marketing pages; each surface carries its own banner styles). */
+  .cookie-consent-wrap {
+    position: fixed;
+    inset: auto 1rem 1rem 1rem;
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .cookie-consent-panel {
+    pointer-events: auto;
+    max-width: 560px;
+    width: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+    font-size: 0.9rem;
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .cookie-consent-panel .cc-strong {
+    font-weight: 600;
+  }
+  .cookie-consent-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+  }
+  .cookie-consent-actions button {
+    font: inherit;
+    padding: 0.4rem 0.9rem;
+    border-radius: 6px;
+    border: 1px solid var(--rule);
+    cursor: pointer;
+    background: transparent;
+    color: var(--ink);
+  }
+  .cookie-consent-actions .cc-accept {
+    background: var(--ink);
+    color: var(--bg);
+    border-color: var(--ink);
+  }
+  .cookie-consent-actions .cc-accept:hover {
+    filter: brightness(1.15);
+  }
+  .cookie-consent-actions .cc-decline:hover {
+    background: var(--paper-2);
+  }

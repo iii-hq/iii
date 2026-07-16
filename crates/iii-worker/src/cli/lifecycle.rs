@@ -18,7 +18,15 @@ pub fn build_container_spec(name: &str, def: &WorkerDef, _engine_url: &str) -> C
         } => ContainerSpec {
             name: name.to_string(),
             image: image.clone(),
-            env: env.clone(),
+            env: {
+                let mut env = env.clone();
+                // The config.yaml entry name, so SDKs self-report the managed
+                // identity; engine truth (`iii worker status`/`list`) matches
+                // connections by this name. Not overridable via worker env —
+                // identity comes from the config entry.
+                env.insert("III_WORKER_NAME".to_string(), name.to_string());
+                env
+            },
             memory_limit: resources.as_ref().and_then(|r| r.memory.clone()),
             cpu_limit: resources.as_ref().and_then(|r| r.cpus.clone()),
         },
@@ -73,6 +81,7 @@ mod tests {
         assert_eq!(spec.name, "my-worker");
         assert_eq!(spec.image, "ghcr.io/iii-hq/image-resize:0.1.2");
         assert_eq!(spec.env.get("FOO").unwrap(), "bar");
+        assert_eq!(spec.env.get("III_WORKER_NAME").unwrap(), "my-worker");
         assert_eq!(spec.cpu_limit.as_deref(), Some("4"));
         assert_eq!(spec.memory_limit.as_deref(), Some("4096Mi"));
     }

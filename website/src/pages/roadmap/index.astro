@@ -1,0 +1,26 @@
+---
+// iii.dev/roadmap/ — the tech-spec gallery. The React app reads the live spec
+// list from virtual:spec-manifest (see roadmap/scripts/manifest.mjs); this
+// page provides the document shell, the shared site header and footer (in
+// wrappers matching the gallery Sheet's geometry so the columns align), and
+// mounts it.
+import GalleryApp from '../../../roadmap/src/gallery/App'
+import '../../../roadmap/src/index.css'
+import SiteFooter from '../../components/SiteFooter.astro'
+import SiteNav from '../../components/SiteNav.astro'
+import RoadmapShell from '../../layouts/RoadmapShell.astro'
+---
+
+<RoadmapShell
+  title="iii — what we're working on"
+  description="the iii roadmap, in public: every priority lands here as a tech spec before it lands as code — newest first, readable as markdown, steppable as an interactive deck."
+  canonicalPath="/roadmap/"
+>
+  <div class="mx-auto w-full max-w-[1200px] border-x border-rule bg-bg">
+    <SiteNav pageTitle="Roadmap" />
+  </div>
+  <GalleryApp client:only="react" />
+  <div class="mx-auto w-full max-w-[1200px] flow-root border-x border-b border-rule bg-bg">
+    <SiteFooter />
+  </div>
+</RoadmapShell>

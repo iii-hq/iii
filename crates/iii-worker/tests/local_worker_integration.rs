@@ -153,24 +153,28 @@ fn build_env_exports_empty_map() {
 }
 
 /// LOCAL-12 wiring: build_local_env merges engine URL and project env,
-/// excluding III_ENGINE_URL/III_URL from project env values.
+/// excluding III_ENGINE_URL/III_URL/III_WORKER_NAME from project env values.
 #[test]
 fn build_local_env_merges_and_excludes() {
     let mut project_env = HashMap::new();
     project_env.insert("CUSTOM".to_string(), "val".to_string());
     project_env.insert("III_ENGINE_URL".to_string(), "skip-this".to_string());
     project_env.insert("III_URL".to_string(), "skip-this-too".to_string());
+    project_env.insert("III_WORKER_NAME".to_string(), "impostor".to_string());
 
-    let result = build_local_env("ws://localhost:49134", &project_env);
+    let result = build_local_env("ws://localhost:49134", "my-worker", &project_env);
     assert_eq!(
         result.get("III_ENGINE_URL").unwrap(),
         "ws://localhost:49134"
     );
     assert_eq!(result.get("III_URL").unwrap(), "ws://localhost:49134");
+    assert_eq!(result.get("III_WORKER_NAME").unwrap(), "my-worker");
     assert_eq!(result.get("CUSTOM").unwrap(), "val");
-    // Engine URL values come from the function argument, not project_env
+    // Engine URL and worker name come from the function arguments, not
+    // project_env
     assert_ne!(result.get("III_ENGINE_URL").unwrap(), "skip-this");
     assert_ne!(result.get("III_URL").unwrap(), "skip-this-too");
+    assert_ne!(result.get("III_WORKER_NAME").unwrap(), "impostor");
 }
 
 /// LOCAL-11: build_libkrun_local_script includes setup/install when prepared=false.

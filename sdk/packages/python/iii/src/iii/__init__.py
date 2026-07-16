@@ -5,6 +5,8 @@ from iii_helpers.queue import EnqueueResult
 from .errors import InvocationError
 from .iii import TriggerAction, register_worker
 from .iii_constants import (
+    ConnectionStateCallback,
+    IIIConnectionState,
     InitOptions,
     TelemetryOptions,
 )
@@ -24,6 +26,8 @@ __all__ = [
     # Errors
     "InvocationError",
     # Core
+    "ConnectionStateCallback",
+    "IIIConnectionState",
     "InitOptions",
     "register_worker",
     "TelemetryOptions",

@@ -32,6 +32,7 @@ from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
     DEFAULT_RECONNECTION_CONFIG,
     MAX_QUEUE_SIZE,
+    ConnectionStateCallback,
     FunctionRef,
     IIIConnectionState,
     InitOptions,
@@ -70,15 +71,15 @@ def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
 
     Only handlers that explicitly declare a parameter named ``metadata``
     receive the sidecar; every other signature keeps its exact pre-metadata
-    call shape (``handler(data)``), so existing handlers -- including ones
-    with unrelated optional parameters, ``*args``, or ``**kwargs`` -- keep
+    call shape (``handler(data)``), so existing handlers, including ones
+    with unrelated optional parameters, ``*args``, or ``**kwargs``, keep
     working unchanged. Returns one of:
 
     - ``"positional"``: ``metadata`` is the second positional parameter
       (e.g. ``def handler(data, metadata=None)``).
     - ``"keyword"``: ``metadata`` is keyword-only
       (e.g. ``def handler(data, *, metadata=None)``).
-    - ``"none"``: no ``metadata`` parameter -- omit metadata.
+    - ``"none"``: no ``metadata`` parameter; omit metadata.
 
     If the signature cannot be introspected (some builtins/C callables),
     falls back to ``"none"`` to preserve back-compat.
@@ -202,6 +203,9 @@ class III:
         )
         self._reconnect_attempt = 0
         self._connection_state: IIIConnectionState = "disconnected"
+        # Must exist before the auto-connect below: the loop thread calls
+        # _set_connection_state as soon as connect_async starts.
+        self._connection_listeners: list[ConnectionStateCallback] = []
         self._worker_id: str | None = None
 
         # Background event loop thread
@@ -232,10 +236,15 @@ class III:
             return
         if self._connection_state == "failed":
             raise ConnectionError(f"Connection to {self._address} failed")
-        self._connected_event.wait(timeout=30)
+        connected = self._connected_event.wait(timeout=30)
         if cast(IIIConnectionState, self._connection_state) == "failed":
             raise ConnectionError(
                 f"Connection to {self._address} failed after max retries"
+            )
+        if not connected:
+            log.warning(
+                f"Timed out after 30s waiting for connection to {self._address}; "
+                "continuing to retry in background"
             )
 
     def shutdown(self) -> None:
@@ -260,7 +269,7 @@ class III:
 
         Initializes OpenTelemetry (if configured), attaches the event loop,
         and establishes the WebSocket connection. This is called automatically
-        during construction -- use it only if you need to reconnect manually
+        during construction; use it only if you need to reconnect manually
         from an async context.
         """
         self._running = True
@@ -337,7 +346,16 @@ class III:
             )
             log.info(f"Connected to {self._address}")
             await self._on_connected()
-        except (ConnectionError, OSError, TimeoutError, asyncio.TimeoutError) as e:
+        except (
+            ConnectionError,
+            OSError,
+            TimeoutError,
+            asyncio.TimeoutError,
+            # Not an OSError: raised when the peer accepts TCP but the WS
+            # upgrade fails/stalls (the MOT-3931 zombie-VM mode). Without it
+            # the connect/reconnect task dies and retrying stops silently.
+            websockets.InvalidHandshake,
+        ) as e:
             log.warning(f"Connection failed: {e}")
             if self._running:
                 self._schedule_reconnect()
@@ -807,6 +825,50 @@ class III:
                 self._connected_event.set()
             else:
                 self._connected_event.clear()
+            for handler in list(self._connection_listeners):
+                try:
+                    handler(state)
+                except Exception:
+                    log.exception("Connection state listener raised")
+
+    def add_connection_state_listener(
+        self, handler: ConnectionStateCallback
+    ) -> Callable[[], None]:
+        """Subscribe to connection-state transitions.
+
+        The handler is fired immediately with the current state (on the
+        caller's thread), then once per transition. Transitions fire on the
+        SDK's background event-loop thread: keep handlers fast and do not
+        call sync SDK methods from them (they would raise ``RuntimeError``).
+        Treat calls as state notifications, not edges — a state may rarely
+        be observed twice around subscription. Registering the same handler
+        twice fires it twice. Returns an idempotent unsubscribe function
+        that removes only its own registration.
+
+        Examples:
+            >>> unsubscribe = worker.add_connection_state_listener(
+            ...     lambda state: print(f"engine link: {state}")
+            ... )
+        """
+        self._connection_listeners.append(handler)
+        try:
+            handler(self._connection_state)
+        except Exception:
+            log.exception("Connection state listener raised on initial fire")
+
+        unsubscribed = False
+
+        def unsubscribe() -> None:
+            nonlocal unsubscribed
+            if unsubscribed:
+                return
+            unsubscribed = True
+            try:
+                self._connection_listeners.remove(handler)
+            except ValueError:
+                pass
+
+        return unsubscribe
 
     def get_connection_state(self) -> IIIConnectionState:
         """Return the current WebSocket connection state.
@@ -814,6 +876,11 @@ class III:
         Returns:
             One of ``"disconnected"``, ``"connecting"``, ``"connected"``,
             ``"reconnecting"``, or ``"failed"``.
+
+        Examples:
+            >>> worker = register_worker("ws://localhost:49134")
+            >>> if worker.get_connection_state() != "connected":
+            ...     print("engine not reachable yet")
         """
         return self._connection_state
 
@@ -912,6 +979,8 @@ class III:
     ) -> Trigger:
         """Bind a trigger configuration to a registered function.
 
+        <!-- docs:expand-params -->
+
         Args:
             trigger: A ``RegisterTriggerInput`` or dict with ``type``,
                 ``function_id``, and optional ``config``.
@@ -977,15 +1046,15 @@ class III:
         ``def handler(data, metadata=None)`` or ``def handler(data, *,
         metadata=None)``).  Metadata is only forwarded to handlers that
         declare a parameter literally named ``metadata``, so existing
-        handlers -- including ones with unrelated extra parameters,
-        ``*args``, or ``**kwargs`` -- keep working unchanged.
+        handlers, including ones with unrelated extra parameters,
+        ``*args``, or ``**kwargs``, keep working unchanged.
 
         ``request_format`` and ``response_format`` are auto-extracted
         from the handler's type hints when omitted or passed as ``None``
         (the default).  To opt out of auto-extraction, pass an explicit
         schema (``RegisterFunctionFormat`` or ``dict``).  This behavior
-        is Python-specific -- the Node SDK does not auto-extract from TS
-        types, because TypeScript types are erased at runtime.
+        is Python-specific; the Node SDK relies on explicit schemas because
+        TypeScript types are erased at runtime.
 
         Args:
             function_id: Unique string identifier for the function.
@@ -994,8 +1063,8 @@ class III:
                 ``data`` (the trigger payload) as the first argument and
                 may optionally accept ``metadata`` (per-invocation
                 metadata) as a second argument; they may return a value.
-            description: Human-readable description.
-            metadata: Arbitrary metadata.
+            description: Human-readable description of what the function does.
+            metadata: Arbitrary metadata attached to the function.
             request_format: Schema describing expected input.  When
                 ``None`` (default), auto-extracted from the handler's
                 first-parameter type hint.  Pass an explicit schema to
@@ -1127,11 +1196,14 @@ class III:
     def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.
 
+        <!-- docs:expand-params -->
+
         The routing behavior and return type depend on the ``action`` field:
 
-        - No action: synchronous -- waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns ``EnqueueResult``.
-        - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+        - No action: synchronous, waits for the function to return.
+        - ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
+          with ``messageReceiptId``.
+        - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
         Args:
             request: A ``TriggerRequest`` or dict with ``function_id``,
@@ -1139,8 +1211,8 @@ class III:
 
         Returns:
             The function's return value for synchronous (no-action) calls,
-            an ``EnqueueResult`` for enqueue actions, or ``None`` for void
-            actions.
+            a ``{"messageReceiptId": ...}`` dict for enqueue actions, or
+            ``None`` for void actions.
 
         Raises:
             InvocationError: For any engine rejection. Inspect ``code``:
@@ -1158,16 +1230,19 @@ class III:
 
         The routing behavior and return type depend on the ``action`` field:
 
-        - No action: synchronous -- waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns ``EnqueueResult``.
-        - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+        - No action: synchronous, waits for the function to return.
+        - ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
+          with ``messageReceiptId``.
+        - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
 
         Args:
             request: A ``TriggerRequest`` or dict with ``function_id``, ``payload``,
                 and optional ``action`` / ``timeout_ms``.
 
         Returns:
-            The result of the function invocation, or ``None`` for void calls.
+            The function's return value for synchronous (no-action) calls,
+            a ``{"messageReceiptId": ...}`` dict for enqueue actions, or
+            ``None`` for void actions.
 
         Raises:
             InvocationError: For any engine rejection. Inspect ``code``:
@@ -1175,8 +1250,8 @@ class III:
                 RBAC denied it.
 
         Examples:
-            >>> result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
-            >>> await iii.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+            >>> result = await worker.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
+            >>> await worker.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
         req = request if isinstance(request, dict) else request.model_dump()
         function_id = req["function_id"]
@@ -1279,7 +1354,15 @@ class III:
         except Exception:
             sdk_version = "unknown"
 
-        worker_name = self._options.worker_name or f"{platform.node()}:{os.getpid()}"
+        # III_WORKER_NAME carries the config.yaml entry name for managed
+        # workers (set by iii-worker at spawn). Engine truth (`iii worker
+        # status`/`list`) matches connections by name, so the managed identity
+        # must win over the hostname:pid fallback.
+        worker_name = (
+            self._options.worker_name
+            or os.environ.get("III_WORKER_NAME")
+            or f"{platform.node()}:{os.getpid()}"
+        )
 
         telemetry_opts = self._options.telemetry
         language = (
@@ -1330,8 +1413,8 @@ class III:
 
         Public callers must use the free function from ``iii.helpers``.
         Registers 5 of the 6 ``IStream`` methods (``get``, ``set``, ``delete``,
-        ``list``, ``list_groups``). The ``update`` method is **not** registered
-        -- atomic updates are handled by the engine's built-in stream update
+        ``list``, ``list_groups``). The ``update`` method is **not** registered;
+        atomic updates are handled by the engine's built-in stream update
         logic.
         """
 
@@ -1373,6 +1456,7 @@ class TriggerAction:
 
     Examples:
         >>> from iii import TriggerAction
+        >>> # The queue must be declared in the iii-queue worker's queue_configs.
         >>> worker.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
         >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
     """
@@ -1393,16 +1477,21 @@ class TriggerAction:
 
 
 def register_worker(address: str, options: InitOptions | None = None) -> III:
-    """Create an III client and connect to the engine.
+    """Register the worker with a iii instance, returns a connected worker client.
 
-    Blocks until the WebSocket connection is established and ready.
+    Blocks up to 30 seconds for the WebSocket connection to be established.
+    If the engine is not reachable in time, a warning is logged and the
+    client is returned anyway — it keeps retrying in the background and
+    flushes registrations once connected. Use
+    ``add_connection_state_listener`` to observe the actual transition.
 
     Args:
         address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
         options: Optional configuration for worker name, timeouts, reconnection, and OTel.
 
     Returns:
-        A connected III client instance ready to use.
+        An III client instance (connected, or still connecting after the
+        30s wait timed out).
 
     Raises:
         ConnectionError: If the connection fails or exceeds max retries.

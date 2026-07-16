@@ -1,0 +1,1264 @@
+---
+title: "Rust SDK"
+description: "API reference for the iii SDK for Rust."
+owner: "engineering"
+type: "reference"
+---
+
+{/* AUTO-GENERATED FILE. Do not edit. Regenerate with docs/next/scripts/generate-api-docs.mts. */}
+{/* AI: any skill-check (vale/AI) text fixes belong in the source doc-comments under sdk/packages/rust/iii/src (prose) or docs/next/scripts/ (structure/formatting), then regenerate. Never edit this file directly. */}
+
+## Installation
+
+```bash
+cargo add iii-sdk
+```
+
+## Initialization
+
+### register_worker
+
+Register the worker with a iii instance, returns a connected worker client.
+The WebSocket connection is established automatically in a dedicated
+background thread with its own tokio runtime.
+
+Call `IIIClient::shutdown` before the end of `main` to cleanly stop the
+connection and join the background thread. In Rust the process exits
+when `main` returns, terminating all threads, so `shutdown()` must be
+called while `main` is still running.
+
+**Signature**
+
+```rust
+register_worker(address: &str, options: InitOptions) -> IIIClient
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="address" type="&str" required>
+  WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
+</ParamField>
+
+<ParamField body="options" type="InitOptions" required>
+  Configuration for worker metadata and OTel.
+
+  <Expandable title="`InitOptions` fields">
+    <ParamField body="metadata" type="Option<iii::WorkerMetadata>">
+      Custom worker metadata. Auto-detected if `None`.
+    </ParamField>
+    <ParamField body="headers" type="Option<HashMap<String, String>>">
+      Custom HTTP headers sent during the WebSocket handshake.
+    </ParamField>
+    <ParamField body="otel" type="Option<iii_helpers::observability::OtelConfig>">
+      OpenTelemetry configuration.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```rust
+use iii_sdk::{register_worker, InitOptions};
+
+let worker = register_worker("ws://localhost:49134", InitOptions::default());
+// register functions, handle events, etc.
+worker.shutdown(); // cleanly stops the connection thread
+```
+
+
+  </Tab>
+</Tabs>
+
+## Methods
+
+### register_trigger
+
+Bind a trigger configuration to a registered function.
+
+**Signature**
+
+```rust
+register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="input" type="RegisterTriggerInput" required>
+  Trigger registration input with trigger_type, function_id, and config.
+
+  <Expandable title="`RegisterTriggerInput` fields" defaultOpen>
+    <ParamField body="trigger_type" type="String" required>
+      Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
+    </ParamField>
+    <ParamField body="function_id" type="String" required>
+      ID of the function this trigger invokes when it fires.
+    </ParamField>
+    <ParamField body="config" type="Value" required>
+      Trigger-type-specific configuration, matching the shape the trigger type expects.
+    </ParamField>
+    <ParamField body="metadata" type="Option<Value>">
+      Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```rust
+let trigger = worker.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".to_string(),
+    function_id: "greet".to_string(),
+    config: json!({ "api_path": "/greet", "http_method": "GET" }),
+    metadata: None,
+})?;
+// Later...
+trigger.unregister();
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### register_function
+
+Register a function with the engine.
+
+Argument order matches the Node and Python SDKs:
+`(id, registration)`.
+
+**Signature**
+
+```rust
+register_function(id: impl Into<String>, registration: RegisterFunction) -> FunctionRef
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="id" type="impl Into<String>" required>
+  Unique identifier for the function.
+</ParamField>
+
+<ParamField body="registration" type="RegisterFunction" required>
+  Built via [`RegisterFunction::new`], [`RegisterFunction::new_async`], or [`RegisterFunction::http`]. Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`, `.response_format(...)` as needed.
+
+  <Expandable title="`RegisterFunction` fields">
+    <ParamField body="description" type="fn(desc: impl Into<String>) -> Self" required>
+      Set the function description.
+    </ParamField>
+    <ParamField body="http" type="fn(config: HttpInvocationConfig) -> Self" required>
+      Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs.
+    </ParamField>
+    <ParamField body="metadata" type="fn(meta: Value) -> Self" required>
+      Set function metadata.
+    </ParamField>
+    <ParamField body="new" type="fn(f: F) -> Self" required>
+      Create a registration for a **sync** typed function.
+    </ParamField>
+    <ParamField body="new_async" type="fn(f: F) -> Self" required>
+      Create a registration for an **async** typed function.
+    </ParamField>
+    <ParamField body="request_format" type="fn(schema: Value) -> Self" required>
+      Set the request format schema. Overrides any auto-extracted schema.
+    </ParamField>
+    <ParamField body="response_format" type="fn(schema: Value) -> Self" required>
+      Set the response format schema. Overrides any auto-extracted schema.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```rust
+use iii_sdk::{register_worker, InitOptions, Error, RegisterFunction};
+use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
+
+#[derive(Deserialize, JsonSchema)]
+struct Input { name: String }
+#[derive(Serialize, JsonSchema)]
+struct Output { message: String }
+
+async fn greet(input: Input) -> Result<Output, Error> {
+    Ok(Output { message: format!("Hello, {}!", input.name) })
+}
+
+let worker = register_worker("ws://localhost:49134", InitOptions::default());
+worker.register_function(
+    "greetings::greet",
+    RegisterFunction::new_async(greet).description("Greets a user"),
+);
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### trigger
+
+Invoke a remote function.
+
+
+The routing behavior depends on the `action` field of the request:
+- No action: synchronous, waits for the function to return.
+- `TriggerAction::Enqueue`: async via named queue.
+- `TriggerAction::Void`: fire-and-forget.
+
+**Signature**
+
+```rust
+async trigger(request: impl Into<TriggerRequestWithMetadata>) -> Result<Value, Error>
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="request" type="impl Into<TriggerRequestWithMetadata>" required>
+
+  <Expandable title="`TriggerRequest` fields" defaultOpen>
+    <ParamField body="function_id" type="String" required>
+      ID of the function to invoke.
+    </ParamField>
+    <ParamField body="payload" type="Value" required>
+      Input data passed to the function.
+    </ParamField>
+    <ParamField body="action" type="Option<TriggerAction>">
+      Sets how the trigger is routed. `None` for a synchronous request/response. Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`).
+    </ParamField>
+    <ParamField body="timeout_ms" type="Option<u64>">
+      Override the default invocation timeout, in milliseconds.
+    </ParamField>
+    <ParamField body="metadata" type="fn(metadata: Value) -> TriggerRequestWithMetadata" required>
+      Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```rust
+// Synchronous
+let result = worker.trigger(TriggerRequest {
+    function_id: "greet".to_string(),
+    payload: json!({"name": "World"}),
+    action: None,
+    timeout_ms: None,
+}).await?;
+
+// Fire-and-forget
+worker.trigger(TriggerRequest {
+    function_id: "notify".to_string(),
+    payload: json!({}),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
+
+// Enqueue (the queue must be declared in the iii-queue worker's
+// queue_configs)
+let receipt = worker.trigger(TriggerRequest {
+    function_id: "iii::durable::publish".to_string(),
+    payload: json!({"topic": "test"}),
+    action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),
+    timeout_ms: None,
+}).await?;
+
+// Metadata
+worker.trigger(
+    TriggerRequest {
+        function_id: "audit::write".to_string(),
+        payload: json!({"event": "checkout"}),
+        action: Some(TriggerAction::Void),
+        timeout_ms: None,
+    }
+    .metadata(json!({"tenant": "acme"})),
+).await?;
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### register_trigger_type
+
+Register a custom trigger type with the engine.
+
+Returns a `TriggerTypeRef` handle that can register triggers and
+functions with compile-time validated types.
+
+**Signature**
+
+```rust
+register_trigger_type(trigger_type: RegisterTriggerType<H, C, R>) -> TriggerTypeRef<C, R>
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="trigger_type" type="RegisterTriggerType<H, C, R>" required>
+
+  <Expandable title="`RegisterTriggerType` fields">
+    <ParamField body="call_request_format" type="fn() -> RegisterTriggerType<H, C, T>" required>
+      Set the call request format schema from a type. Changes `R`, enabling compile-time validation on `TriggerTypeRef::register_function`.
+    </ParamField>
+    <ParamField body="new" type="fn(id: impl Into<String>, description: impl Into<String>, handler: H) -> Self" required>
+    </ParamField>
+    <ParamField body="trigger_request_format" type="fn() -> RegisterTriggerType<H, T, R>" required>
+      Set the trigger request format schema from a type. Changes `C`, enabling compile-time validation on `TriggerTypeRef::register_trigger`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```rust
+let my_trigger = worker.register_trigger_type(
+    RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
+        .trigger_request_format::<MyConfig>()
+        .call_request_format::<MyRequest>(),
+);
+
+// Compile-time safe: config must be MyConfig, function input must be MyRequest
+my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::Error> {
+    Ok(serde_json::json!({ "data": req.data }))
+});
+my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### unregister_trigger_type
+
+Unregister a previously registered trigger type.
+
+**Signature**
+
+```rust
+unregister_trigger_type(id: impl Into<String>)
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="id" type="impl Into<String>" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```rust
+worker.unregister_trigger_type("cron");
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### get_connection_state
+
+Get the current connection state.
+
+**Signature**
+
+```rust
+get_connection_state() -> IIIConnectionState
+```
+
+#### Example
+
+```rust
+if worker.get_connection_state() != IIIConnectionState::Connected {
+    eprintln!("engine not reachable yet");
+}
+```
+
+
+---
+
+### shutdown
+
+Shutdown the III client and wait for the connection thread to finish.
+
+This stops the connection loop, sends a shutdown signal, and joins
+the background connection thread. OpenTelemetry is flushed inside the
+connection thread before it exits.
+
+**Signature**
+
+```rust
+shutdown()
+```
+
+#### Example
+
+```rust
+worker.shutdown();
+```
+
+
+---
+
+### shutdown_async
+
+Shutdown the III client.
+
+This stops the connection loop and sends a shutdown signal, but it
+does not join `connection_thread`.
+
+This method returns without waiting for `run_connection()` to finish,
+making it safe to call from an async context without stalling the
+executor; `shutdown` blocks and joins the thread.
+The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
+after `run_connection()` returns, so it may not complete unless
+`shutdown` is used to join the thread.
+
+**Signature**
+
+```rust
+async shutdown_async()
+```
+
+#### Example
+
+```rust
+worker.shutdown_async().await;
+```
+
+
+## Types
+
+### iii_sdk
+
+[`EnqueueResult`](#enqueueresult) · [`InitOptions`](#initoptions) · [`RegisterFunction`](#registerfunction) · [`RegisterTriggerType`](#registertriggertype) · [`TelemetryOptions`](#telemetryoptions)
+
+#### EnqueueResult
+
+Result returned when a function is invoked with `TriggerAction.Enqueue`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message_receipt_id` | `String` | Yes | Unique receipt ID for the enqueued message. |
+
+---
+
+#### InitOptions
+
+Configuration options passed to `register_worker`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `metadata` | Option&lt;iii::[`WorkerMetadata`](#workermetadata)&gt; | No | Custom worker metadata. Auto-detected if `None`. |
+| `headers` | `Option<HashMap<String, String>>` | No | Custom HTTP headers sent during the WebSocket handshake. |
+| `otel` | `Option<iii_helpers::observability::OtelConfig>` | No | OpenTelemetry configuration. |
+
+---
+
+#### RegisterFunction
+
+Function registration builder.
+
+The function ID is supplied separately at registration time via
+`IIIClient::register_function`, `RegisterFunction` only carries the handler
+and optional metadata.
+
+Constructors:
+- `RegisterFunction::new`: sync function. Accepts both typed handlers
+  (schemas auto-extracted via `schemars`) and `Fn(Value, Option<Value>) -> Result<Value, Error>`
+  closures. The second argument is the per-invocation metadata sidecar and
+  is `None` when absent.
+- `RegisterFunction::new_async`: async equivalent of `new`.
+- `RegisterFunction::http`: function invoked over HTTP (Lambda,
+  Cloudflare Workers, etc.).
+
+Builder methods (all consume `self`):
+- `description`
+- `metadata`
+- `request_format`: overrides any auto-extracted schema.
+- `response_format`: overrides any auto-extracted schema.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `fn(desc: impl Into<String>) -> Self` | Yes | Set the function description. |
+| `http` | `fn(config: HttpInvocationConfig) -> Self` | Yes | Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs. |
+| `metadata` | `fn(meta: Value) -> Self` | Yes | Set function metadata. |
+| `new` | `fn(f: F) -> Self` | Yes | Create a registration for a **sync** typed function. |
+| `new_async` | `fn(f: F) -> Self` | Yes | Create a registration for an **async** typed function. |
+| `request_format` | `fn(schema: Value) -> Self` | Yes | Set the request format schema. Overrides any auto-extracted schema. |
+| `response_format` | `fn(schema: Value) -> Self` | Yes | Set the response format schema. Overrides any auto-extracted schema. |
+
+---
+
+#### RegisterTriggerType
+
+Builder for registering a custom trigger type with optional format schemas.
+
+Type parameters:
+- `C` tracks the trigger registration type (set via `.trigger_request_format::<T>()`)
+- `R` tracks the call request type (set via `.call_request_format::<T>()`)
+
+Both default to `Value` (untyped) and change when the respective builder
+method is called. This allows `IIIClient::register_trigger_type` to return a
+`TriggerTypeRef<C, R>` with compile-time safety for both config and
+function input types.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `call_request_format` | fn() -&gt; [`RegisterTriggerType`](#registertriggertype)&lt;H, C, T&gt; | Yes | Set the call request format schema from a type. Changes `R`, enabling compile-time validation on `TriggerTypeRef::register_function`. |
+| `new` | `fn(id: impl Into<String>, description: impl Into<String>, handler: H) -> Self` | Yes | - |
+| `trigger_request_format` | fn() -&gt; [`RegisterTriggerType`](#registertriggertype)&lt;H, T, R&gt; | Yes | Set the trigger request format schema from a type. Changes `C`, enabling compile-time validation on `TriggerTypeRef::register_trigger`. |
+
+---
+
+#### TelemetryOptions
+
+Worker metadata reported to the engine (language, framework, project).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `language` | `Option<String>` | No | Programming language of the worker. |
+| `project_name` | `Option<String>` | No | Name of the project this worker belongs to. |
+| `framework` | `Option<String>` | No | Framework name, if applicable. |
+| `amplitude_api_key` | `Option<String>` | No | Amplitude API key for product analytics. |
+
+### iii_sdk::builtin_triggers
+
+[`CronCallRequest`](#croncallrequest) · [`CronTriggerConfig`](#crontriggerconfig) · [`HttpCallRequest`](#httpcallrequest) · [`HttpMethod`](#httpmethod) · [`HttpTriggerConfig`](#httptriggerconfig) · [`LogCallRequest`](#logcallrequest) · [`LogLevel`](#loglevel) · [`LogTriggerConfig`](#logtriggerconfig) · [`QueueTriggerConfig`](#queuetriggerconfig) · [`StateCallRequest`](#statecallrequest) · [`StateEventType`](#stateeventtype) · [`StateTriggerConfig`](#statetriggerconfig) · [`SubscribeTriggerConfig`](#subscribetriggerconfig)
+
+#### CronCallRequest
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger` | `String` | Yes | - |
+| `job_id` | `String` | Yes | - |
+| `scheduled_time` | `String` | Yes | - |
+| `actual_time` | `String` | Yes | - |
+
+---
+
+#### CronTriggerConfig
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `expression` | `String` | Yes | Cron expression (6-field format: sec min hour day month weekday) |
+| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+
+---
+
+#### HttpCallRequest
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `query_params` | `HashMap<String, String>` | Yes | - |
+| `path_params` | `HashMap<String, String>` | Yes | - |
+| `headers` | `HashMap<String, String>` | Yes | - |
+| `path` | `String` | Yes | - |
+| `method` | `String` | Yes | - |
+| `body` | `Value` | Yes | - |
+
+---
+
+#### HttpMethod
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Get` | `unit` | Yes | - |
+| `Post` | `unit` | Yes | - |
+| `Put` | `unit` | Yes | - |
+| `Delete` | `unit` | Yes | - |
+| `Patch` | `unit` | Yes | - |
+| `Head` | `unit` | Yes | - |
+| `Options` | `unit` | Yes | - |
+
+---
+
+#### HttpTriggerConfig
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `api_path` | `String` | Yes | HTTP endpoint path (e.g. `/users/:id`) |
+| `http_method` | Option&lt;[`HttpMethod`](#httpmethod)&gt; | No | HTTP method (defaults to GET) |
+| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+
+---
+
+#### LogCallRequest
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `timestamp_unix_nano` | `u64` | Yes | - |
+| `observed_timestamp_unix_nano` | `u64` | Yes | - |
+| `severity_number` | `u32` | Yes | - |
+| `severity_text` | `String` | Yes | - |
+| `body` | `String` | Yes | - |
+| `attributes` | `Value` | Yes | - |
+| `trace_id` | `String` | Yes | - |
+| `span_id` | `String` | Yes | - |
+| `resource` | `Value` | Yes | - |
+| `service_name` | `String` | Yes | - |
+| `instrumentation_scope_name` | `String` | Yes | - |
+| `instrumentation_scope_version` | `String` | Yes | - |
+
+---
+
+#### LogLevel
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `All` | `unit` | Yes | - |
+| `Debug` | `unit` | Yes | - |
+| `Info` | `unit` | Yes | - |
+| `Warn` | `unit` | Yes | - |
+| `Error` | `unit` | Yes | - |
+
+---
+
+#### LogTriggerConfig
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `level` | Option&lt;[`LogLevel`](#loglevel)&gt; | No | Minimum log level to trigger on |
+
+---
+
+#### QueueTriggerConfig
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `topic` | `String` | Yes | Queue topic to subscribe to |
+| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+| `queue_config` | `Option<Value>` | No | Queue-specific subscriber configuration |
+| `queue_config` | fn(config: impl Serialize) -&gt; Result&lt;Self, serde_json::[`Error`](#error)&gt; | Yes | - |
+
+---
+
+#### StateCallRequest
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message_type` | `String` | Yes | - |
+| `event_type` | [`StateEventType`](#stateeventtype) | Yes | - |
+| `scope` | `String` | Yes | - |
+| `key` | `String` | Yes | - |
+| `old_value` | `Option<Value>` | No | - |
+| `new_value` | `Value` | Yes | - |
+
+---
+
+#### StateEventType
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Created` | `unit` | Yes | - |
+| `Updated` | `unit` | Yes | - |
+| `Deleted` | `unit` | Yes | - |
+
+---
+
+#### StateTriggerConfig
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scope` | `Option<String>` | No | State scope to watch (exact match filter) |
+| `key` | `Option<String>` | No | State key to watch (exact match filter) |
+| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+
+---
+
+#### SubscribeTriggerConfig
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `topic` | `String` | Yes | Topic to subscribe to |
+| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
+
+### iii_sdk::channel
+
+[`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`StreamChannelRef`](#streamchannelref)
+
+#### Channel
+
+A streaming channel pair for worker-to-worker data transfer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `writer` | [`ChannelWriter`](#channelwriter) | Yes | - |
+| `reader` | [`ChannelReader`](#channelreader) | Yes | - |
+| `writer_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
+| `reader_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
+
+---
+
+#### ChannelReader
+
+WebSocket-backed reader for streaming binary data and text messages.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `close` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
+| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | - |
+| `next_binary` | async fn() -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, [`Error`](#error)&gt; | Yes | Read the next binary chunk from the channel. Text messages are dispatched to registered callbacks. Returns `None` when the stream is closed. |
+| `on_message` | `async fn(callback: F)` | Yes | Register a callback for text messages received on this channel. |
+| `read_all` | async fn() -&gt; Result&lt;Vec&lt;u8&gt;, [`Error`](#error)&gt; | Yes | Read the entire stream into a single `Vec<u8>`. |
+
+---
+
+#### ChannelWriter
+
+WebSocket-backed writer for streaming binary data and text messages.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `close` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
+| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | - |
+| `send_message` | async fn(msg: &str) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
+| `write` | async fn(data: &[u8]) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
+
+---
+
+#### StreamChannelRef
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `channel_id` | `String` | Yes | - |
+| `access_key` | `String` | Yes | - |
+| `direction` | [`ChannelDirection`](#channeldirection) | Yes | - |
+
+### iii_sdk::channels
+
+[`ChannelDirection`](#channeldirection) · [`ChannelItem`](#channelitem)
+
+#### ChannelDirection
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Read` | `unit` | Yes | - |
+| `Write` | `unit` | Yes | - |
+
+---
+
+#### ChannelItem
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Text` | `(String)` | Yes | - |
+| `Binary` | `(Vec<u8>)` | Yes | - |
+
+### iii_sdk::engine
+
+[`EngineFunctions`](#enginefunctions) · [`EngineTriggers`](#enginetriggers)
+
+#### EngineFunctions
+
+Engine function ids for internal operations.
+
+---
+
+#### EngineTriggers
+
+Engine trigger ids.
+
+### iii_sdk::errors
+
+[`Error`](#error) · [`InvocationError`](#invocationerror)
+
+#### Error
+
+Errors returned by the III SDK.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NotConnected` | `unit` | Yes | - |
+| `Timeout` | `unit` | Yes | - |
+| `Runtime` | `(String)` | Yes | - |
+| `Remote` | `{ code: String, message: String, stacktrace: Option<String> }` | Yes | - |
+| `Handler` | `(String)` | Yes | - |
+| `Serde` | `(String)` | Yes | - |
+| `WebSocket` | `(String)` | Yes | - |
+| `invocation_error` | fn() -&gt; Option&lt;[`InvocationError`](#invocationerror)&gt; | Yes | If this is a remote invocation failure (`Error::Remote`), return its structured form. Returns `None` for transport/serde/handler errors. |
+
+---
+
+#### InvocationError
+
+Structured invocation failure, mirroring the Node and Python `InvocationError`.
+
+Produced from the `Error::Remote` variant via `Error::invocation_error`.
+`function_id` is `None` from that accessor because the wire `Remote` payload
+does not carry it.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `String` | Yes | - |
+| `message` | `String` | Yes | - |
+| `function_id` | `Option<String>` | No | - |
+| `stacktrace` | `Option<String>` | No | - |
+
+### iii_sdk::protocol
+
+[`ErrorBody`](#errorbody) · [`FunctionMessage`](#functionmessage) · [`Message`](#message) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`TriggerAction`](#triggeraction) · [`TriggerRequest`](#triggerrequest) · [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) · [`UnregisterTriggerMessage`](#unregistertriggermessage) · [`UnregisterTriggerTypeMessage`](#unregistertriggertypemessage)
+
+#### ErrorBody
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `String` | Yes | - |
+| `message` | `String` | Yes | - |
+| `stacktrace` | `Option<String>` | No | - |
+
+---
+
+#### FunctionMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | - |
+| `description` | `Option<String>` | No | - |
+| `request_format` | `Option<Value>` | No | - |
+| `response_format` | `Option<Value>` | No | - |
+| `metadata` | `Option<Value>` | No | - |
+
+---
+
+#### Message
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `RegisterTriggerType` | `{ id: String, description: String, trigger_request_format: Option<Value>, call_request_format: Option<Value> }` | Yes | - |
+| `RegisterTrigger` | `{ id: String, trigger_type: String, function_id: String, config: Value, metadata: Option<Value> }` | Yes | - |
+| `TriggerRegistrationResult` | \{ id: String, trigger_type: String, function_id: String, error: Option&lt;[`ErrorBody`](#errorbody)&gt; \} | Yes | - |
+| `UnregisterTrigger` | `{ id: String, trigger_type: String }` | Yes | - |
+| `UnregisterTriggerType` | `{ id: String }` | Yes | - |
+| `RegisterFunction` | `{ id: String, description: Option<String>, request_format: Option<Value>, response_format: Option<Value>, metadata: Option<Value>, invocation: Option<iii_helpers::http::HttpInvocationConfig> }` | Yes | - |
+| `UnregisterFunction` | `{ id: String }` | Yes | - |
+| `InvokeFunction` | \{ invocation_id: Option&lt;uuid::Uuid&gt;, function_id: String, data: Value, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt;, action: Option&lt;[`TriggerAction`](#triggeraction)&gt;, metadata: Option&lt;Value&gt; \} | Yes | - |
+| `InvocationResult` | \{ invocation_id: uuid::Uuid, function_id: String, result: Option&lt;Value&gt;, error: Option&lt;[`ErrorBody`](#errorbody)&gt;, traceparent: Option&lt;String&gt;, baggage: Option&lt;String&gt; \} | Yes | - |
+| `Ping` | `unit` | Yes | - |
+| `Pong` | `unit` | Yes | - |
+| `WorkerRegistered` | `{ worker_id: String }` | Yes | - |
+
+---
+
+#### RegisterFunctionMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `description` | `Option<String>` | No | - |
+| `request_format` | `Option<Value>` | No | - |
+| `response_format` | `Option<Value>` | No | - |
+| `metadata` | `Option<Value>` | No | - |
+| `invocation` | `Option<iii_helpers::http::HttpInvocationConfig>` | No | - |
+| `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
+
+---
+
+#### RegisterTriggerInput
+
+Input for `IIIClient::register_trigger`.
+The `id` is auto-generated internally.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `trigger_type` | `String` | Yes | Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). |
+| `function_id` | `String` | Yes | ID of the function this trigger invokes when it fires. |
+| `config` | `Value` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
+| `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+
+---
+
+#### RegisterTriggerMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `trigger_type` | `String` | Yes | - |
+| `function_id` | `String` | Yes | - |
+| `config` | `Value` | Yes | - |
+| `metadata` | `Option<Value>` | No | - |
+| `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
+
+---
+
+#### RegisterTriggerTypeMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). |
+| `description` | `String` | Yes | Human-readable description of what this trigger type does. |
+| `trigger_request_format` | `Option<Value>` | No | - |
+| `call_request_format` | `Option<Value>` | No | - |
+| `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
+
+---
+
+#### TriggerAction
+
+Routing action for `TriggerRequest`. Determines how the engine handles
+the invocation.
+
+- `Enqueue`: Routes through a named queue for async processing.
+- `Void`: Fire-and-forget, no response.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Enqueue` | `{ queue: String }` | Yes | Routes the invocation through a named queue. |
+| `Void` | `unit` | Yes | Fire-and-forget routing. |
+
+---
+
+#### TriggerRequest
+
+Request object for `trigger()`.
+
+```rust
+// Simple call
+TriggerRequest {
+    function_id: "my::function".to_string(),
+    payload: json!({ "key": "value" }),
+    action: None,
+    timeout_ms: None,
+};
+
+// With action
+TriggerRequest {
+    function_id: "my::function".to_string(),
+    payload: json!({}),
+    action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
+    timeout_ms: None,
+};
+
+// With metadata
+TriggerRequest {
+    function_id: "my::function".to_string(),
+    payload: json!({}),
+    action: None,
+    timeout_ms: None,
+}
+.metadata(json!({ "tenant": "acme" }));
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | ID of the function to invoke. |
+| `payload` | `Value` | Yes | Input data passed to the function. |
+| `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | Sets how the trigger is routed. `None` for a synchronous request/response.<br />Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`). |
+| `timeout_ms` | `Option<u64>` | No | Override the default invocation timeout, in milliseconds. |
+| `metadata` | fn(metadata: Value) -&gt; [`TriggerRequestWithMetadata`](#triggerrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `TriggerRequest` struct literals. |
+
+---
+
+#### TriggerRequestWithMetadata
+
+Trigger request plus optional per-invocation metadata.
+
+---
+
+#### UnregisterTriggerMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `trigger_type` | `String` | Yes | - |
+| `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
+
+---
+
+#### UnregisterTriggerTypeMessage
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
+
+### iii_sdk::runtime
+
+[`FunctionInfo`](#functioninfo) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`TriggerInfo`](#triggerinfo) · [`TriggerTypeRef`](#triggertyperef) · [`WorkerInfo`](#workerinfo) · [`WorkerMetadata`](#workermetadata)
+
+#### FunctionInfo
+
+Function information returned by `engine::functions::list`
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | - |
+| `description` | `Option<String>` | No | - |
+| `request_format` | `Option<Value>` | No | - |
+| `response_format` | `Option<Value>` | No | - |
+| `metadata` | `Option<Value>` | No | - |
+
+---
+
+#### FunctionRef
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `unregister` | `fn()` | Yes | - |
+
+---
+
+#### IIIConnectionState
+
+Connection state for the III WebSocket client
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Disconnected` | `unit` | Yes | - |
+| `Connecting` | `unit` | Yes | - |
+| `Connected` | `unit` | Yes | - |
+| `Reconnecting` | `unit` | Yes | - |
+| `Failed` | `unit` | Yes | - |
+
+---
+
+#### TriggerInfo
+
+Trigger information returned by `engine::triggers::list`
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `trigger_type` | `String` | Yes | - |
+| `function_id` | `String` | Yes | - |
+| `config` | `Value` | Yes | - |
+| `metadata` | `Option<Value>` | No | - |
+
+---
+
+#### TriggerTypeRef
+
+Typed handle returned by `IIIClient::register_trigger_type`.
+
+Type parameters:
+- `C`: trigger registration type for `register_trigger`
+- `R`: call request type for `register_function`
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `register_function` | fn(id: impl Into&lt;String&gt;, f: F) -&gt; [`FunctionRef`](#functionref) | Yes | Register a sync function whose input type must match the call request format `R`. |
+| `register_function_async` | fn(id: impl Into&lt;String&gt;, f: F) -&gt; [`FunctionRef`](#functionref) | Yes | Register an async function whose input type must match the call request format `R`. |
+| `register_trigger` | fn(function_id: impl Into&lt;String&gt;, config: C) -&gt; Result&lt;[`Trigger`](#trigger), [`Error`](#error)&gt; | Yes | Register a trigger with compile-time validated trigger config. |
+| `register_trigger_with_metadata` | fn(function_id: impl Into&lt;String&gt;, config: C, metadata: Option&lt;Value&gt;) -&gt; Result&lt;[`Trigger`](#trigger), [`Error`](#error)&gt; | Yes | Register a trigger with compile-time validated trigger config and optional metadata. |
+
+---
+
+#### WorkerInfo
+
+Worker information returned by `engine::workers::list`
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | - |
+| `name` | `Option<String>` | No | - |
+| `runtime` | `Option<String>` | No | - |
+| `version` | `Option<String>` | No | - |
+| `os` | `Option<String>` | No | - |
+| `ip_address` | `Option<String>` | No | - |
+| `status` | `String` | Yes | - |
+| `connected_at_ms` | `u64` | Yes | - |
+| `function_count` | `usize` | Yes | - |
+| `functions` | `Vec<String>` | Yes | - |
+| `active_invocations` | `usize` | Yes | - |
+| `isolation` | `Option<String>` | No | - |
+
+---
+
+#### WorkerMetadata
+
+Worker metadata for auto-registration
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `runtime` | `String` | Yes | - |
+| `version` | `String` | Yes | - |
+| `name` | `String` | Yes | - |
+| `os` | `String` | Yes | - |
+| `description` | `Option<String>` | No | One-line, human/LLM-readable summary of what this worker does.<br />Surfaces in `engine::workers::list` / `engine::workers::info`. |
+| `pid` | `Option<u32>` | No | - |
+| `telemetry` | Option&lt;[`TelemetryOptions`](#telemetryoptions)&gt; | No | - |
+| `isolation` | `Option<String>` | No | - |
+
+### iii_sdk::stream_provider
+
+[`IStream`](#istream)
+
+#### IStream
+
+Custom stream-provider trait. Implementors override the engine's built-in
+stream storage for a specific stream name when registered through
+`create_stream` in the `helpers` submodule.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `get` | `fn(input: StreamGetInput) -> Pin<Box<dyn Future + Send>>` | Yes | - |
+| `set` | `fn(input: StreamSetInput) -> Pin<Box<dyn Future + Send>>` | Yes | - |
+| `delete` | `fn(input: StreamDeleteInput) -> Pin<Box<dyn Future + Send>>` | Yes | - |
+| `list` | `fn(input: StreamListInput) -> Pin<Box<dyn Future + Send>>` | Yes | - |
+| `list_groups` | `fn(input: StreamListGroupsInput) -> Pin<Box<dyn Future + Send>>` | Yes | - |
+| `update` | `fn(input: StreamUpdateInput) -> Pin<Box<dyn Future + Send>>` | Yes | - |
+
+### iii_sdk::structs
+
+[`MiddlewareFunctionInput`](#middlewarefunctioninput)
+
+#### MiddlewareFunctionInput
+
+Input passed to the RBAC middleware function on every function invocation
+through the RBAC port.
+
+The middleware can inspect, modify, or reject the call before it reaches
+the target function.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `function_id` | `String` | Yes | ID of the function being invoked. |
+| `payload` | `Value` | Yes | Payload sent by the caller. |
+| `action` | Option&lt;[`TriggerAction`](#triggeraction)&gt; | No | Routing action, if any. |
+| `context` | `Value` | Yes | Auth context returned by the auth function for this session. |
+
+### iii_sdk::trigger
+
+[`IIITrigger`](#iiitrigger) · [`Trigger`](#trigger) · [`TriggerConfig`](#triggerconfig) · [`TriggerHandler`](#triggerhandler)
+
+#### IIITrigger
+
+Enum of all built-in trigger types with typed configuration.
+
+Use `.for_function()` to create a `RegisterTriggerInput`:
+```rust,no_run
+let input = IIITrigger::Cron(CronTriggerConfig::new("0 * * * * *"))
+    .for_function("my::handler");
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Http` | ([`HttpTriggerConfig`](#httptriggerconfig)) | Yes | - |
+| `Cron` | ([`CronTriggerConfig`](#crontriggerconfig)) | Yes | - |
+| `Queue` | ([`QueueTriggerConfig`](#queuetriggerconfig)) | Yes | - |
+| `Subscribe` | ([`SubscribeTriggerConfig`](#subscribetriggerconfig)) | Yes | - |
+| `State` | ([`StateTriggerConfig`](#statetriggerconfig)) | Yes | - |
+| `Stream` | `(iii_helpers::stream::StreamTriggerConfig)` | Yes | - |
+| `StreamJoin` | `(iii_helpers::stream::StreamJoinLeaveTriggerConfig)` | Yes | - |
+| `StreamLeave` | `(iii_helpers::stream::StreamJoinLeaveTriggerConfig)` | Yes | - |
+| `Log` | ([`LogTriggerConfig`](#logtriggerconfig)) | Yes | - |
+| `for_function` | fn(function_id: impl Into&lt;String&gt;) -&gt; [`RegisterTriggerInput`](#registertriggerinput) | Yes | Create a `RegisterTriggerInput` binding this trigger to a function. |
+
+---
+
+#### Trigger
+
+Handle returned by `IIIClient::register_trigger`.
+Call `unregister` to remove the trigger from the engine.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `new` | `fn(unregister_fn: Arc<dyn Fn() + Send + Sync>) -> Self` | Yes | - |
+| `unregister` | `fn()` | Yes | Remove this trigger from the engine. |
+
+---
+
+#### TriggerConfig
+
+Configuration passed to a `TriggerHandler` when a trigger instance is
+registered or unregistered.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `String` | Yes | Trigger instance ID. |
+| `function_id` | `String` | Yes | Function to invoke when the trigger fires. |
+| `config` | `Value` | Yes | Trigger-specific configuration. |
+| `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
+
+---
+
+#### TriggerHandler
+
+Handler trait for custom trigger types. Implement this and pass to
+`IIIClient::register_trigger_type`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `register_trigger` | fn(config: [`TriggerConfig`](#triggerconfig)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | Called when a trigger instance is registered. |
+| `unregister_trigger` | fn(config: [`TriggerConfig`](#triggerconfig)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | Called when a trigger instance is unregistered. |
+
+### iii_sdk::types
+
+[`RemoteFunctionData`](#remotefunctiondata) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`RemoteTriggerTypeData`](#remotetriggertypedata) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
+
+#### RemoteFunctionData
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | [`RegisterFunctionMessage`](#registerfunctionmessage) | Yes | - |
+| `handler` | `Option<RemoteFunctionHandlerWithMetadata>` | No | - |
+
+---
+
+#### RemoteFunctionHandler
+
+A dispatchable function handler. Receives the invocation payload.
+
+Handlers that also want the optional per-invocation `metadata` sidecar use
+`RemoteFunctionHandlerWithMetadata`; this single-argument shape is kept
+for backward compatibility.
+
+```rust
+type RemoteFunctionHandler = Arc<dyn Fn(Value) -> futures_util::future::BoxFuture<'static, Result<Value, Error>> + Send + Sync>
+```
+
+---
+
+#### RemoteTriggerTypeData
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | [`RegisterTriggerTypeMessage`](#registertriggertypemessage) | Yes | - |
+| `handler` | Arc&lt;dyn [`TriggerHandler`](#triggerhandler)&gt; | Yes | - |
+
+---
+
+#### StreamRequest
+
+Incoming streaming request received by a function registered with a stream trigger.
+
+Alias of `iii_helpers::http::HttpRequest`.
+
+```rust
+type StreamRequest = iii_helpers::http::HttpRequest<T>
+```
+
+---
+
+#### StreamResponse
+
+Streaming response type, mirroring the Node and Python `StreamResponse`.
+
+Alias of `iii_helpers::http::HttpResponse`; added for cross-language parity.
+
+```rust
+type StreamResponse = iii_helpers::http::HttpResponse<T>
+```

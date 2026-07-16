@@ -1,0 +1,62 @@
+---
+// Document shell for /blog/* — the long-form reading surface. Shares the
+// consent-gated analytics, cookie banner, and pre-paint theme boot with the
+// marketing pages so the visitor's iii_cookie_consent and iii_theme choices
+// travel across the whole site.
+import '../styles/blog.css'
+import AnalyticsHead from '../components/AnalyticsHead.astro'
+import CookieBanner from '../components/CookieBanner.astro'
+import SiteFooter from '../components/SiteFooter.astro'
+import SiteNav from '../components/SiteNav.astro'
+import ThemeInit from '../components/ThemeInit.astro'
+
+interface Props {
+  title: string
+  description: string
+  /** root-relative canonical path with trailing slash, e.g. "/blog/add-a-worker/" */
+  canonicalPath: string
+  ogType?: 'website' | 'article'
+  publishedTime?: Date
+  modifiedTime?: Date
+}
+
+const { title, description, canonicalPath, ogType = 'website', publishedTime, modifiedTime } = Astro.props
+const canonical = new URL(canonicalPath, Astro.site).toString()
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#f5f3ee" />
+    <ThemeInit />
+    <AnalyticsHead />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="alternate" type="application/rss+xml" title="iii blog" href="/blog/rss.xml" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta property="og:type" content={ogType} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content="https://iii.dev/og-image.png" />
+    {publishedTime && <meta property="article:published_time" content={publishedTime.toISOString()} />}
+    {modifiedTime && <meta property="article:modified_time" content={modifiedTime.toISOString()} />}
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://iii.dev/og-image.png" />
+    <slot name="head" />
+  </head>
+  <body>
+    <CookieBanner />
+    <div class="sheet">
+      <SiteNav />
+      <main>
+        <slot />
+      </main>
+      <SiteFooter />
+    </div>
+  </body>
+</html>

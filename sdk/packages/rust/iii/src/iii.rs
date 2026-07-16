@@ -219,15 +219,19 @@ where
     }
 }
 
-/// Worker metadata provided by the SDK to the engine.
+/// Worker metadata reported to the engine (language, framework, project).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TelemetryOptions {
+    /// Programming language of the worker.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Name of the project this worker belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_name: Option<String>,
+    /// Framework name, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub framework: Option<String>,
+    /// Amplitude API key for product analytics.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amplitude_api_key: Option<String>,
 }
@@ -275,7 +279,14 @@ impl Default for WorkerMetadata {
         Self {
             runtime: "rust".to_string(),
             version: SDK_VERSION.to_string(),
-            name: format!("{}:{}", hostname, pid),
+            // III_WORKER_NAME carries the config.yaml entry name for managed
+            // workers (set by iii-worker at spawn). Engine truth (`iii worker
+            // status`/`list`) matches connections by name, so the managed
+            // identity must win over the hostname:pid fallback.
+            name: std::env::var("III_WORKER_NAME")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("{}:{}", hostname, pid)),
             os: os_info,
             description: None,
             pid: Some(pid),
@@ -490,13 +501,8 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
 
 /// Build the dispatchable handler for a typed async function: deserialize
 /// the JSON input as `T`, run `f`, serialize the result. Deserialization
-/// failures map through `on_bad_request`, [`IntoAsyncHandler`] passes the
-/// default [`Error::Serde`] mapper,
-/// [`RegisterFunction::new_async_with_bad_request`] a caller-supplied one.
-fn async_handler_with<F, T, Fut, R>(
-    f: F,
-    on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
-) -> RemoteFunctionHandlerWithMetadata
+/// failures surface as [`Error::Serde`].
+fn async_handler<F, T, Fut, R>(f: F) -> RemoteFunctionHandlerWithMetadata
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + 'static,
@@ -519,7 +525,7 @@ where
                     })
                 }
                 Err(e) => {
-                    let err = on_bad_request(e);
+                    let err = Error::Serde(e.to_string());
                     Box::pin(async move { Err(err) })
                 }
             }
@@ -529,10 +535,7 @@ where
 
 /// Build the dispatchable handler for a typed async function that also accepts
 /// per-invocation metadata as its second argument.
-fn async_handler_with_metadata<F, T, Fut, R>(
-    f: F,
-    on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
-) -> RemoteFunctionHandlerWithMetadata
+fn async_handler_with_metadata<F, T, Fut, R>(f: F) -> RemoteFunctionHandlerWithMetadata
 where
     F: Fn(T, Option<Value>) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + 'static,
@@ -555,7 +558,7 @@ where
                     })
                 }
                 Err(e) => {
-                    let err = on_bad_request(e);
+                    let err = Error::Serde(e.to_string());
                     Box::pin(async move { Err(err) })
                 }
             }
@@ -576,7 +579,7 @@ where
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandlerWithMetadata {
-        async_handler_with(self, |e| Error::Serde(e.to_string()))
+        async_handler(self)
     }
 
     fn request_format() -> Option<Value> {
@@ -598,7 +601,7 @@ where
     R: serde::Serialize + schemars::JsonSchema + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandlerWithMetadata {
-        async_handler_with_metadata(self, |e| Error::Serde(e.to_string()))
+        async_handler_with_metadata(self)
     }
 
     fn request_format() -> Option<Value> {
@@ -637,9 +640,6 @@ fn empty_message() -> RegisterFunctionMessage {
 ///   closures. The second argument is the per-invocation metadata sidecar and
 ///   is `None` when absent.
 /// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
-/// - [`RegisterFunction::new_async_with_bad_request`][]: typed async handler
-///   that routes payload-deserialization failures through a caller-supplied
-///   mapper instead of the SDK's generic [`Error::Serde`].
 /// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
 ///
@@ -685,31 +685,6 @@ impl RegisterFunction {
         Self {
             message,
             handler: Some(f.into_handler()),
-        }
-    }
-
-    /// Like [`RegisterFunction::new_async`], but payload-deserialization
-    /// failures are routed through `on_bad_request` instead of becoming the
-    /// SDK's generic [`Error::Serde`] (which the dispatch loop surfaces as
-    /// `invocation_failed`). Lets a registration keep typed-handler schema
-    /// extraction while owning its wire error contract for malformed
-    /// payloads, e.g. a stable error code plus a recovery hint.
-    pub fn new_async_with_bad_request<F, T, Fut, R>(
-        f: F,
-        on_bad_request: impl Fn(serde_json::Error) -> Error + Send + Sync + 'static,
-    ) -> Self
-    where
-        F: Fn(T) -> Fut + Send + Sync + 'static,
-        T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
-        Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
-        R: serde::Serialize + schemars::JsonSchema + Send + 'static,
-    {
-        let mut message = empty_message();
-        message.request_format = json_schema_for::<T>();
-        message.response_format = json_schema_for::<R>();
-        Self {
-            message,
-            handler: Some(async_handler_with(f, on_bad_request)),
         }
     }
 
@@ -924,6 +899,13 @@ impl IIIClient {
     /// This stops the connection loop, sends a shutdown signal, and joins
     /// the background connection thread. OpenTelemetry is flushed inside the
     /// connection thread before it exits.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.shutdown();
+    /// ```
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
@@ -939,12 +921,21 @@ impl IIIClient {
     /// This stops the connection loop and sends a shutdown signal, but it
     /// does not join `connection_thread`.
     ///
-    /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
-    /// to wait for `run_connection()` to finish, making it safe to call from
-    /// an async context without stalling the executor.
+    /// This method returns without waiting for `run_connection()` to finish,
+    /// making it safe to call from an async context without stalling the
+    /// executor; [`shutdown`](Self::shutdown) blocks and joins the thread.
     /// The OpenTelemetry flush (`telemetry::shutdown_otel()`) still runs inside the connection thread
     /// after `run_connection()` returns, so it may not complete unless
     /// [`shutdown`](Self::shutdown) is used to join the thread.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # async fn docs() {
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.shutdown_async().await;
+    /// # }
+    /// ```
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
@@ -994,8 +985,8 @@ impl IIIClient {
     /// `(id, registration)`.
     ///
     /// # Arguments
-    /// * `id`: Function identifier.
-    /// * `registration`: Built via [`RegisterFunction::new`],
+    /// * `id` - Unique identifier for the function.
+    /// * `registration` - Built via [`RegisterFunction::new`],
     ///   [`RegisterFunction::new_async`], or [`RegisterFunction::http`].
     ///   Chain `.description(...)`, `.metadata(...)`, `.request_format(...)`,
     ///   `.response_format(...)` as needed.
@@ -1138,6 +1129,13 @@ impl IIIClient {
     }
 
     /// Unregister a previously registered trigger type.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// worker.unregister_trigger_type("cron");
+    /// ```
     pub fn unregister_trigger_type(&self, id: impl Into<String>) {
         let id = id.into();
         self.inner.trigger_types.lock_or_recover().remove(&id);
@@ -1146,6 +1144,7 @@ impl IIIClient {
     }
 
     /// Bind a trigger configuration to a registered function.
+    /// <!-- docs:expand-params -->
     ///
     /// # Arguments
     /// * `input` - Trigger registration input with trigger_type, function_id, and config.
@@ -1198,10 +1197,11 @@ impl IIIClient {
     }
 
     /// Invoke a remote function.
+    /// <!-- docs:expand-params: TriggerRequest -->
     ///
     /// The routing behavior depends on the `action` field of the request:
-    /// - No action: synchronous -- waits for the function to return.
-    /// - [`TriggerAction::Enqueue`] - async via named queue.
+    /// - No action: synchronous, waits for the function to return.
+    /// - [`TriggerAction::Enqueue`]: async via named queue.
     /// - [`TriggerAction::Void`][]: fire-and-forget.
     ///
     /// # Examples
@@ -1226,7 +1226,8 @@ impl IIIClient {
     ///     timeout_ms: None,
     /// }).await?;
     ///
-    /// // Enqueue
+    /// // Enqueue (the queue must be declared in the iii-queue worker's
+    /// // queue_configs)
     /// let receipt = worker.trigger(TriggerRequest {
     ///     function_id: "iii::durable::publish".to_string(),
     ///     payload: json!({"topic": "test"}),
@@ -1302,6 +1303,16 @@ impl IIIClient {
     }
 
     /// Get the current connection state.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions};
+    /// # use iii_sdk::runtime::IIIConnectionState;
+    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
+    /// if worker.get_connection_state() != IIIConnectionState::Connected {
+    ///     eprintln!("engine not reachable yet");
+    /// }
+    /// ```
     pub fn get_connection_state(&self) -> IIIConnectionState {
         *self.inner.connection_state.lock_or_recover()
     }
@@ -2468,56 +2479,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_async_with_bad_request_maps_deser_failure_and_extracts_schemas() {
-        #[derive(serde::Deserialize, schemars::JsonSchema)]
-        struct In {
-            name: String,
-        }
-        #[derive(serde::Serialize, schemars::JsonSchema)]
-        struct Out {
-            message: String,
-        }
-
-        let reg = RegisterFunction::new_async_with_bad_request(
-            |input: In| async move {
-                Ok(Out {
-                    message: format!("Hello, {}!", input.name),
-                })
-            },
-            |e| Error::Remote {
-                code: "W105".to_string(),
-                message: e.to_string(),
-                stacktrace: None,
-            },
-        );
-
-        // Schema extraction matches the plain typed constructor.
-        assert_eq!(reg.message.request_format.as_ref().unwrap()["title"], "In");
-        assert_eq!(
-            reg.message.response_format.as_ref().unwrap()["title"],
-            "Out"
-        );
-
-        let handler = reg.handler.as_ref().unwrap();
-
-        // Malformed payload routes through the custom mapper, not Serde.
-        let err = handler(json!({"name": 42}), None).await.unwrap_err();
-        match err {
-            Error::Remote {
-                code, stacktrace, ..
-            } => {
-                assert_eq!(code, "W105");
-                assert!(stacktrace.is_none());
-            }
-            other => panic!("expected Remote, got {other:?}"),
-        }
-
-        // Valid payload still runs the handler.
-        let ok = handler(json!({"name": "iii"}), None).await.unwrap();
-        assert_eq!(ok["message"], "Hello, iii!");
-    }
-
-    #[tokio::test]
     async fn register_function_request_format_setter_overrides_auto_extraction() {
         #[derive(serde::Deserialize, schemars::JsonSchema)]
         struct In {
@@ -2693,6 +2654,35 @@ mod tests {
             match previous {
                 Some(val) => std::env::set_var("III_ISOLATION", val),
                 None => std::env::remove_var("III_ISOLATION"),
+            }
+        }
+    }
+
+    // Single test covers both branches so the env var mutation is serialized
+    // within one function (env vars are process-global and cargo runs tests in parallel).
+    #[test]
+    fn worker_metadata_default_reads_iii_worker_name_env_var() {
+        let previous = std::env::var("III_WORKER_NAME").ok();
+
+        // SAFETY: env mutations are serialized within this test and restored at the end.
+        unsafe {
+            std::env::remove_var("III_WORKER_NAME");
+        }
+        let fallback = WorkerMetadata::default().name;
+        assert!(
+            fallback.ends_with(&format!(":{}", std::process::id())),
+            "expected hostname:pid fallback, got {fallback}"
+        );
+
+        unsafe {
+            std::env::set_var("III_WORKER_NAME", "managed-worker");
+        }
+        assert_eq!(WorkerMetadata::default().name, "managed-worker");
+
+        unsafe {
+            match previous {
+                Some(val) => std::env::set_var("III_WORKER_NAME", val),
+                None => std::env::remove_var("III_WORKER_NAME"),
             }
         }
     }

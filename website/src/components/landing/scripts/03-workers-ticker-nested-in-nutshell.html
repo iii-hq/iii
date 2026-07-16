@@ -1,0 +1,544 @@
+
+<script>
+  // ============= Workers ticker (nested in nutshell) =============
+  (function(){
+  const NW_WORKERS = [
+    { name:'nginx',        version:'v1.27.3', desc:'High-performance HTTP server and reverse proxy.',                                 category:'http-server',  kind:'DOCKER', verified:true },
+    { name:'rabbitmq',     version:'v3.13.7', desc:'Message broker implementing AMQP; durable queues and pub/sub.',                    category:'queue',        kind:'DOCKER', verified:true },
+    { name:'postgres',     version:'v16.4',   desc:'Relational database with ACID transactions and rich SQL.',                         category:'database',     kind:'MANAGED', verified:true },
+    { name:'mysql',        version:'v8.4.0',  desc:'Widely-deployed open-source relational database.',                                 category:'database',     kind:'MANAGED', verified:true },
+    { name:'redis',        version:'v7.4.1',  desc:'In-memory key-value store for caching, streams, and pub/sub.',                     category:'cache',        kind:'DOCKER', verified:true },
+    { name:'kafka',        version:'v3.8.0',  desc:'Distributed event streaming platform for high-throughput pipelines.',              category:'streaming',    kind:'DOCKER', verified:true },
+    { name:'s3',           version:'v2024.10',desc:'Object storage API surface — buckets, objects, presigned URLs.',                   category:'storage',      kind:'MANAGED',  verified:true },
+    { name:'minio',        version:'v2024.10.29', desc:'S3-compatible self-hosted object store.',                                      category:'storage',      kind:'DOCKER', verified:true },
+    { name:'elasticsearch',version:'v8.15.3', desc:'Distributed search and analytics engine over JSON documents.',                     category:'search',       kind:'DOCKER', verified:true },
+    { name:'datadog',      version:'v7.57.2', desc:'Observability agent — metrics, traces, and logs forwarding.',                      category:'observability',kind:'AGENT', verified:true },
+    { name:'prometheus',   version:'v2.54.1', desc:'Time-series metrics collection and alerting.',                                     category:'observability',kind:'DOCKER', verified:true },
+    { name:'grafana',      version:'v11.3.0', desc:'Dashboards and visualization for metrics, logs, and traces.',                      category:'observability',kind:'DOCKER', verified:true },
+    { name:'mongodb',      version:'v7.0.14', desc:'Document database with flexible schemas and aggregation pipelines.',               category:'database',     kind:'MANAGED', verified:true },
+    { name:'clickhouse',   version:'v24.10',  desc:'Columnar OLAP database for real-time analytics at scale.',                         category:'database',     kind:'DOCKER', verified:true },
+    { name:'traefik',      version:'v3.2.0',  desc:'Cloud-native reverse proxy and load balancer with auto-discovery.',                category:'http-server',  kind:'DOCKER', verified:true },
+    { name:'caddy',        version:'v2.8.4',  desc:'HTTPS-by-default web server with automatic TLS.',                                  category:'http-server',  kind:'DOCKER', verified:true },
+    { name:'sentry',       version:'v24.10.0',desc:'Error monitoring and performance tracing for applications.',                       category:'observability',kind:'SANDBOXED',  verified:true },
+    { name:'nats',         version:'v2.10.22',desc:'Lightweight pub/sub and request/reply messaging system.',                          category:'queue',        kind:'DOCKER', verified:true },
+    { name:'opensearch',   version:'v2.18.0', desc:'Search and analytics engine forked from Elasticsearch.',                           category:'search',       kind:'DOCKER', verified:true },
+  ];
+
+  const NW_TRIGGERS = {
+    'nginx':        { event:'http::request::inbound',   args:'{ request }' },
+    'rabbitmq':     { event:'queue::message::publish',  args:'{ message }' },
+    'postgres':     { event:'sql::query::execute',      args:'{ query }' },
+    'mysql':        { event:'sql::query::execute',      args:'{ query }' },
+    'redis':        { event:'cache::key::set',          args:'{ entry }' },
+    'kafka':        { event:'stream::event::append',    args:'{ event }' },
+    's3':           { event:'object::upload::complete', args:'{ object }' },
+    'minio':        { event:'object::upload::complete', args:'{ object }' },
+    'elasticsearch':{ event:'search::document::index',  args:'{ document }' },
+    'datadog':      { event:'metric::sample::emit',     args:'{ sample }' },
+    'prometheus':   { event:'metric::scrape::tick',     args:'{ target }' },
+    'grafana':      { event:'dashboard::panel::render', args:'{ panel }' },
+    'mongodb':      { event:'document::upsert',         args:'{ document }' },
+    'clickhouse':   { event:'analytics::batch::insert', args:'{ batch }' },
+    'traefik':      { event:'http::route::match',       args:'{ route }' },
+    'caddy':        { event:'tls::certificate::issue',  args:'{ certificate }' },
+    'sentry':       { event:'error::event::capture',    args:'{ error }' },
+    'nats':         { event:'pubsub::message::publish', args:'{ message }' },
+    'opensearch':   { event:'search::document::index',  args:'{ document }' },
+  };
+
+  function nwIconSvg(name){
+    const pre = `<svg class="compass" viewBox="0 0 70 70" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">`;
+    const post = `</g></svg>`;
+    const ICONS = {
+      'nginx': `<path d="M12 55 L12 20 L35 45 L35 15 M35 15 L58 40 L58 55"/>`,
+      'rabbitmq': `<path d="M22 16 Q 22 8 26 6 Q 30 16 28 24"/><path d="M44 16 Q 44 8 40 6 Q 36 16 38 24"/><circle cx="33" cy="36" r="12"/><circle cx="29" cy="34" r="1.2" fill="currentColor"/><circle cx="37" cy="34" r="1.2" fill="currentColor"/><path d="M30 42 Q 33 44 36 42"/><circle cx="52" cy="56" r="2"/><circle cx="60" cy="56" r="2"/>`,
+      'postgres': `<path d="M12 44 Q 12 22 30 22 Q 48 22 52 38 Q 52 48 46 52 L 46 58 M 30 58 L 30 52 Q 24 50 22 44 Q 24 38 30 38"/><circle cx="40" cy="34" r="1.2" fill="currentColor"/><path d="M52 38 Q 58 36 60 42 Q 60 48 56 50"/>`,
+      'mysql': `<path d="M10 46 Q 22 22 44 26 Q 58 28 60 42"/><path d="M44 26 L 48 18 L 42 26"/><path d="M56 42 Q 54 50 44 50 L 14 50"/><circle cx="22" cy="36" r="1.2" fill="currentColor"/>`,
+      'redis': `<ellipse cx="35" cy="18" rx="20" ry="5"/><path d="M15 18 L 15 32 Q 15 36 35 36 Q 55 36 55 32 L 55 18"/><path d="M15 30 Q 15 34 35 34 Q 55 34 55 30"/><path d="M15 38 L 15 52 Q 15 56 35 56 Q 55 56 55 52 L 55 38"/><path d="M15 50 Q 15 54 35 54 Q 55 54 55 50"/>`,
+      'kafka': `<circle cx="18" cy="20" r="4"/><circle cx="18" cy="50" r="4"/><circle cx="50" cy="35" r="8"/><path d="M22 22 L 44 32 M22 48 L 44 38"/><path d="M50 27 L 50 15 M50 43 L 50 55"/>`,
+      's3': `<path d="M16 20 L 20 56 Q 35 60 50 56 L 54 20 Z"/><ellipse cx="35" cy="20" rx="19" ry="4"/><path d="M18 24 Q 35 28 52 24"/>`,
+      'minio': `<path d="M18 22 L 22 54 Q 35 58 48 54 L 52 22 Z"/><ellipse cx="35" cy="22" rx="17" ry="3"/><path d="M20 20 Q 25 10 35 10 Q 45 10 50 20"/>`,
+      'elasticsearch': `<path d="M16 14 L 42 14 L 42 48 L 16 48 Z"/><path d="M20 22 L 38 22 M20 28 L 38 28 M20 34 L 30 34"/><circle cx="46" cy="46" r="9"/><path d="M53 53 L 60 60"/>`,
+      'datadog': `<circle cx="22" cy="24" r="4"/><circle cx="35" cy="18" r="4"/><circle cx="48" cy="24" r="4"/><circle cx="16" cy="38" r="3"/><circle cx="54" cy="38" r="3"/><path d="M24 44 Q 24 56 35 56 Q 46 56 46 44 Q 46 36 35 36 Q 24 36 24 44 Z"/>`,
+      'prometheus': `<circle cx="35" cy="35" r="22"/><path d="M35 16 Q 30 24 32 30 Q 28 28 26 34 Q 22 42 28 50 Q 32 54 35 54 Q 38 54 42 50 Q 48 42 44 34 Q 42 30 40 32 Q 42 24 35 16 Z"/>`,
+      'grafana': `<path d="M10 55 L 60 55 M10 10 L 10 55"/><path d="M14 48 L 22 34 L 30 42 L 40 22 L 50 30 L 58 18"/><circle cx="22" cy="34" r="1.6" fill="currentColor"/><circle cx="40" cy="22" r="1.6" fill="currentColor"/><circle cx="58" cy="18" r="1.6" fill="currentColor"/>`,
+      'mongodb': `<path d="M35 8 Q 52 28 35 62 Q 18 28 35 8 Z"/><path d="M35 14 L 35 62"/>`,
+      'clickhouse': `<path d="M14 10 L 14 58 M22 18 L 22 58 M30 26 L 30 58 M38 14 L 38 58 M46 22 L 46 58 M54 10 L 54 58"/><path d="M10 58 L 58 58"/>`,
+      'traefik': `<path d="M10 35 L 30 35"/><path d="M30 35 L 55 18"/><path d="M30 35 L 55 35"/><path d="M30 35 L 55 52"/><path d="M50 14 L 58 18 L 54 24"/><path d="M50 31 L 58 35 L 50 39"/><path d="M50 56 L 58 52 L 54 46"/>`,
+      'caddy': `<path d="M10 14 L 60 14 M10 28 L 60 28 M10 42 L 60 42 M10 56 L 60 56"/><path d="M10 14 L 10 56 M24 14 L 24 28 M40 14 L 40 28 M52 14 L 52 28 M18 28 L 18 42 M32 28 L 32 42 M46 28 L 46 42 M24 42 L 24 56 M40 42 L 40 56 M52 42 L 52 56 M60 14 L 60 56"/>`,
+      'sentry': `<path d="M35 8 L 56 16 L 54 38 Q 52 52 35 60 Q 18 52 16 38 L 14 16 Z"/><path d="M25 34 L 32 42 L 46 26"/>`,
+      'nats': `<circle cx="35" cy="35" r="3" fill="currentColor"/><ellipse cx="35" cy="35" rx="24" ry="10"/><ellipse cx="35" cy="35" rx="24" ry="10" transform="rotate(60 35 35)"/><ellipse cx="35" cy="35" rx="24" ry="10" transform="rotate(-60 35 35)"/>`,
+      'opensearch': `<circle cx="30" cy="30" r="16"/><path d="M42 42 L 56 56"/><circle cx="24" cy="26" r="1.6" fill="currentColor"/><circle cx="32" cy="26" r="1.6" fill="currentColor"/><circle cx="28" cy="34" r="1.6" fill="currentColor"/>`,
+    };
+    const body = ICONS[name] || `<circle cx="35" cy="35" r="18"/>`;
+    return pre + body + post;
+  }
+
+  const NW_CHECK_SVG = `<svg viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.4"/><path d="M5 8.4 L7.2 10.6 L11.2 6"/></g></svg>`;
+
+  function nwCardMarkup(w, i){
+    return `
+      <div class="nw-card" data-idx="${i}" data-cat="${w.category}">
+        <div class="top">
+          <span class="name">${w.name}</span>
+          <span class="version">${w.version}</span>
+        </div>
+        <div class="plate">
+          ${nwIconSvg(w.name)}
+          <p class="desc">${w.desc}</p>
+        </div>
+        <div class="cmd" data-name="${w.name}">
+          <div class="row"><span class="prompt">$</span><span class="text cmd-add"></span></div>
+          <div class="row"><span class="prompt">›</span><span class="text cmd-trigger"></span></div>
+        </div>
+        <div class="foot">
+          <span class="kind">${w.kind}</span>
+          <span class="check">${NW_CHECK_SVG} verified</span>
+        </div>
+      </div>`;
+  }
+
+  const nwTrack = document.getElementById('nw-track');
+  if (!nwTrack) return;
+  const nwViewport = nwTrack.parentElement;
+  const FOCUS_DWELL_MS = 6240;
+  const TRANSITION_MS  = 2160;
+
+  async function wait(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+  let currentX = 0;
+  let liveCards = [];
+
+  function appendCards(ws){
+    const frag = document.createDocumentFragment();
+    const wrap = document.createElement('div');
+    wrap.innerHTML = ws.map((w,i) => nwCardMarkup(w, liveCards.length + i)).join('');
+    while (wrap.firstChild) frag.appendChild(wrap.firstChild);
+    nwTrack.appendChild(frag);
+    liveCards = [...nwTrack.children];
+  }
+
+  function prune(){
+    const HIDE_BEFORE = -currentX - nwViewport.clientWidth * 1.5;
+    for (const c of liveCards){
+      if (c.offsetLeft + c.offsetWidth < HIDE_BEFORE){
+        c.style.visibility = 'hidden';
+      }
+    }
+  }
+
+  function randomWorkersExcept(target, n){
+    const pool = NW_WORKERS.filter(w => w.name !== target.name);
+    const out = [];
+    for (let i=0; i<n; i++) out.push(pool[Math.floor(Math.random()*pool.length)]);
+    return out;
+  }
+
+  async function focusWorker(w){
+    await showQueryFor(w);
+    await wait(360);
+
+    const FILLER_COUNT = 6;
+    const leadFillers  = randomWorkersExcept(w, FILLER_COUNT);
+    const trailFiller  = randomWorkersExcept(w, 1);
+    appendCards([...leadFillers, w, ...trailFiller]);
+
+    const targetCard = liveCards[liveCards.length - 2];
+    const vpW = nwViewport.clientWidth;
+    const cW = targetCard.offsetWidth;
+    const targetX = -(targetCard.offsetLeft - (vpW - cW) / 2);
+
+    const ease = 'cubic-bezier(.12,.78,.22,1)';
+    liveCards.forEach(el => el.classList.remove('focused'));
+
+    nwTrack.style.transition = `transform ${TRANSITION_MS}ms ${ease}`;
+    nwTrack.style.transform = `translateX(${targetX}px)`;
+
+    currentX = targetX;
+
+    await wait(TRANSITION_MS);
+    targetCard.classList.add('focused');
+    prune();
+    typeCommands(targetCard, w, ++cmdToken);
+    await wait(FOCUS_DWELL_MS);
+  }
+
+  let cmdToken = 0;
+  async function typeCommands(card, w, token){
+    const addEl = card.querySelector('.cmd-add');
+    const trgEl = card.querySelector('.cmd-trigger');
+    if (!addEl || !trgEl) return;
+    addEl.textContent = '';
+    trgEl.textContent = '';
+
+    const trig = NW_TRIGGERS[w.name] || { event:'service::event', args:'{ ... }' };
+    const addLine = `iii worker add ${w.name}`;
+    const trgSingle = `trigger("${trig.event}", ${trig.args})`;
+    const trgTwoLine = `trigger("${trig.event}",\n    ${trig.args})`;
+
+    const row = trgEl.closest('.row');
+    const available = trgEl.getBoundingClientRect().width;
+    const probe = document.createElement('span');
+    probe.style.position = 'absolute';
+    probe.style.visibility = 'hidden';
+    probe.style.whiteSpace = 'pre';
+    probe.style.font = getComputedStyle(trgEl).font;
+    probe.style.letterSpacing = getComputedStyle(trgEl).letterSpacing;
+    probe.textContent = trgSingle;
+    document.body.appendChild(probe);
+    const singleFits = probe.getBoundingClientRect().width <= available - 2;
+    probe.remove();
+    const trgLine = singleFits ? trgSingle : trgTwoLine;
+    if (row) row.classList.toggle('wrap', !singleFits);
+
+    const typeInto = async (el, str) => {
+      for (let i = 0; i < str.length; i++){
+        if (token !== cmdToken) return false;
+        el.textContent = str.slice(0, i + 1);
+        await wait(18 + Math.random() * 16);
+      }
+      return true;
+    };
+
+    await wait(480);
+    if (!(await typeInto(addEl, addLine))) return;
+    await wait(520);
+    if (!(await typeInto(trgEl, trgLine))) return;
+  }
+
+  function buildPlayOrder(){
+    const MIN_GAP = 4;
+    const arr = [...NW_WORKERS];
+    for (let i = arr.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    for (let pass = 0; pass < 6; pass++){
+      let changed = false;
+      for (let i = 0; i < arr.length; i++){
+        const windowStart = Math.max(0, i - MIN_GAP);
+        const recentCats = new Set(arr.slice(windowStart, i).map(w => w.category));
+        if (!recentCats.has(arr[i].category)) continue;
+        for (let k = i + 1; k < arr.length; k++){
+          if (recentCats.has(arr[k].category)) continue;
+          const kWindow = new Set(arr.slice(Math.max(0, k - MIN_GAP), k).map((w, idx) => {
+            const realIdx = Math.max(0, k - MIN_GAP) + idx;
+            if (realIdx === i) return arr[k].category;
+            return w.category;
+          }));
+          if (kWindow.has(arr[i].category)) continue;
+          [arr[i], arr[k]] = [arr[k], arr[i]];
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) break;
+    }
+    return arr;
+  }
+
+  async function runTicker(){
+    let order = buildPlayOrder();
+    const firstW = order[0];
+    const leadSeed = randomWorkersExcept(firstW, 1);
+    const seedTrail = randomWorkersExcept(firstW, 2);
+    appendCards([...leadSeed, firstW, ...seedTrail]);
+    const first = liveCards[1];
+    const vpW = nwViewport.clientWidth;
+    currentX = -(first.offsetLeft - (vpW - first.offsetWidth) / 2);
+    nwTrack.style.transition = 'none';
+    nwTrack.style.transform = `translateX(${currentX}px)`;
+    first.classList.add('focused');
+    await showQueryFor(firstW);
+    typeCommands(first, firstW, ++cmdToken);
+    await wait(FOCUS_DWELL_MS);
+
+    let i = 1;
+    while (true){
+      if (i >= order.length){
+        const lastCats = order.slice(-4).map(w => w.category);
+        let attempt = 0;
+        do { order = buildPlayOrder(); attempt++; }
+        while (lastCats.includes(order[0].category) && attempt < 10);
+        i = 0;
+      }
+      const w = order[i];
+      await focusWorker(w);
+      i++;
+    }
+  }
+
+  const qEl = document.getElementById('nw-search-q');
+  const matchCountEl = document.getElementById('nw-match-count');
+
+  const CATEGORY_LABEL = {
+    'queue':         'message queue',
+    'http-server':   'http server',
+    'database':      'database',
+    'cache':         'cache',
+    'streaming':     'event streaming',
+    'storage':       'file storage',
+    'search':        'search engine',
+    'observability': 'observability',
+  };
+
+  function countMatches(cat){
+    const seed = [...cat].reduce((a,c)=>a + c.charCodeAt(0), 0);
+    return 3 + (seed % 5);
+  }
+
+  let queryChain = Promise.resolve();
+  let queryToken = 0;
+
+  async function typeText(text, token){
+    qEl.textContent = '';
+    for (const ch of text){
+      if (token !== queryToken) return;
+      qEl.textContent += ch;
+      await wait(72 + Math.random()*56);
+    }
+  }
+  async function eraseText(token){
+    const t = qEl.textContent;
+    for (let i = t.length; i >= 0; i--){
+      if (token !== queryToken) return;
+      qEl.textContent = t.slice(0, i);
+      await wait(36);
+    }
+  }
+
+  function showQueryFor(w){
+    const token = ++queryToken;
+    queryChain = queryChain.then(async () => {
+      if (token !== queryToken) return;
+      await eraseText(token);
+      matchCountEl.textContent = '00';
+      await wait(144);
+      const label = CATEGORY_LABEL[w.category] || w.category;
+      await typeText(label, token);
+      if (token !== queryToken) return;
+      const target = countMatches(w.category);
+      const steps = Math.max(target, 6);
+      for (let i = 1; i <= steps; i++){
+        if (token !== queryToken) return;
+        const v = Math.min(target, Math.round((i / steps) * target));
+        matchCountEl.textContent = String(v).padStart(2, '0');
+        await wait(70 + Math.random()*30);
+      }
+      matchCountEl.textContent = String(target).padStart(2, '0');
+    });
+    return queryChain;
+  }
+
+  // start when section is in view (or immediately if already)
+  const workersSection = document.getElementById('workers');
+  const startTicker = () => runTicker();
+  if ('IntersectionObserver' in window){
+    const obs = new IntersectionObserver((entries) => {
+      for (const e of entries){
+        if (e.isIntersecting){ obs.disconnect(); startTicker(); break; }
+      }
+    }, { rootMargin: '0px 0px -10% 0px', threshold: 0.15 });
+    obs.observe(workersSection || nwViewport);
+  } else {
+    startTicker();
+  }
+  })();
+
+  // ============= CONSOLE — desktop: scroll-driven  |  mobile/tablet: chip + swipe =============
+  (function(){
+    const scroller = document.getElementById('cs-scroll');
+    const track = document.getElementById('cs-track');
+    const navItems = document.querySelectorAll('#cs-nav .cs-nav-item');
+    const navWrap = document.getElementById('cs-nav');
+    const stepNum = document.getElementById('cs-step-num');
+    const stepLabel = document.getElementById('cs-step-label');
+    const progressBar = document.getElementById('cs-progress-bar');
+    const stage = document.querySelector('#console .cs-stage');
+    if (!scroller || !track) return;
+
+    const panels = track.querySelectorAll('.cs-panel');
+    const N = panels.length;
+    const labels = ['workers','functions','triggers','states','streams','queues','traces','logs','config'];
+    const MOBILE_MAX = 1024;
+    const isMobile = () => window.matchMedia('(max-width: ' + MOBILE_MAX + 'px)').matches;
+
+    // ---------- DESKTOP: pinned horizontal scroll ----------
+    let lastIdx = -1;
+    const easeInOut = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+    const DWELL = 0.45;
+    function progressToFloatIdx(p){
+      const bucket = p * (N - 1);
+      const i = Math.min(N - 2, Math.floor(bucket));
+      const local = bucket - i;
+      const halfD = DWELL / 2;
+      let t;
+      if (local < halfD) t = 0;
+      else if (local > 1 - halfD) t = 1;
+      else t = (local - halfD) / (1 - DWELL);
+      return i + easeInOut(t);
+    }
+    function updateScroll(){
+      if (isMobile()) return;
+      const rect = scroller.getBoundingClientRect();
+      const winH = window.innerHeight || 800;
+      const total = scroller.offsetHeight - winH;
+      const passed = Math.min(Math.max(-rect.top, 0), total);
+      const raw = total > 0 ? passed / total : 0;
+      const p = Math.min(Math.max((raw - 0.02) / 0.96, 0), 1);
+      const fIdx = progressToFloatIdx(p);
+      const tx = -(fIdx * (100 / N));
+      track.style.transform = `translate3d(${tx}%,0,0)`;
+      const i = Math.min(N - 1, Math.max(0, Math.round(fIdx)));
+      navItems.forEach((el, k) => el.classList.toggle('is-active', k === i));
+      if (i !== lastIdx){
+        lastIdx = i;
+        if (stepNum) stepNum.textContent = String(i + 1).padStart(2, '0');
+        if (stepLabel) stepLabel.textContent = labels[i];
+      }
+      if (progressBar) progressBar.style.width = (p * 100).toFixed(1) + '%';
+    }
+
+    // ---------- MOBILE/TABLET: tap + swipe ----------
+    let mIdx = 0;
+    let csScrollSync = false;
+    function applyPanelChrome(i){
+      i = Math.max(0, Math.min(N - 1, i));
+      mIdx = i;
+      panels.forEach((p, k) => p.classList.toggle('is-active', k === i));
+      navItems.forEach((el, k) => el.classList.toggle('is-active', k === i));
+      if (stepNum) stepNum.textContent = String(i + 1).padStart(2, '0');
+      if (stepLabel) stepLabel.textContent = labels[i] || '';
+      const active = navItems[i];
+      if (active && navWrap){
+        const ar = active.getBoundingClientRect();
+        const wr = navWrap.getBoundingClientRect();
+        if (ar.left < wr.left || ar.right > wr.right){
+          navWrap.scrollTo({
+            left: navWrap.scrollLeft + (ar.left - wr.left) - (wr.width - ar.width)/2,
+            behavior: 'smooth'
+          });
+        }
+      }
+    }
+    function setPanel(i){
+      applyPanelChrome(i);
+      if (isMobile() && track && track.clientWidth){
+        csScrollSync = true;
+        track.scrollTo({ left: mIdx * track.clientWidth, behavior: 'smooth' });
+        window.setTimeout(() => { csScrollSync = false; }, 400);
+      }
+    }
+    // clear all .is-active panel states (used when leaving mobile mode)
+    function clearMobileState(){
+      panels.forEach(p => p.classList.remove('is-active'));
+    }
+
+    // ---------- mode switch ----------
+    function applyMode(){
+      if (isMobile()){
+        track.style.transform = '';
+        const syncIdx = lastIdx >= 0 ? lastIdx : mIdx;
+        applyPanelChrome(syncIdx);
+        const w = track.clientWidth;
+        if (w){
+          csScrollSync = true;
+          track.scrollLeft = mIdx * w;
+          csScrollSync = false;
+        }
+      } else {
+        clearMobileState();
+        updateScroll();
+      }
+    }
+
+    let ticking = false;
+    function onScroll(){
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { updateScroll(); ticking = false; });
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', () => { applyMode(); });
+
+    let csScrollTimer = null;
+    track.addEventListener('scroll', () => {
+      if (!isMobile() || csScrollSync) return;
+      window.clearTimeout(csScrollTimer);
+      csScrollTimer = window.setTimeout(() => {
+        const w = track.clientWidth;
+        if (!w) return;
+        const i = Math.round(track.scrollLeft / w);
+        if (i === mIdx || i < 0 || i >= N) return;
+        applyPanelChrome(i);
+      }, 120);
+    }, { passive: true });
+
+    // chip clicks: behave per-mode
+    navItems.forEach((el, i) => {
+      el.addEventListener('click', () => {
+        iiiTrack('nav_click', {
+          nav_group: 'console',
+          nav_idx: i,
+          nav_label: labels[i] || ''
+        });
+        if (isMobile()){
+          setPanel(i);
+        } else {
+          const winH = window.innerHeight || 800;
+          const total = scroller.offsetHeight - winH;
+          const targetRaw = (i / (N - 1)) * 0.96 + 0.02;
+          const targetY = scroller.offsetTop + targetRaw * total;
+          window.scrollTo({ top: targetY, behavior: 'smooth' });
+        }
+      });
+    });
+
+    // swipe (mobile only)
+    if (stage){
+      let sx = 0, sy = 0, tracking2 = false, locked = null;
+      const TH = 40;
+      stage.addEventListener('touchstart', (e) => {
+        if (!isMobile()) return;
+        if (e.touches.length !== 1) return;
+        sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+        tracking2 = true; locked = null;
+      }, { passive: true });
+      stage.addEventListener('touchmove', (e) => {
+        if (!tracking2) return;
+        const dx = e.touches[0].clientX - sx;
+        const dy = e.touches[0].clientY - sy;
+        if (locked === null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)){
+          locked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+        }
+      }, { passive: true });
+      stage.addEventListener('touchend', (e) => {
+        if (!tracking2) return;
+        tracking2 = false;
+        if (!isMobile()) return;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx;
+        const dy = t.clientY - sy;
+        if (locked === 'x' && Math.abs(dx) > TH && Math.abs(dx) > Math.abs(dy)){
+          if (dx < 0) setPanel(mIdx + 1);
+          else setPanel(mIdx - 1);
+        }
+      });
+    }
+
+    // keyboard arrows (mobile only, when console is in view)
+    window.addEventListener('keydown', (e) => {
+      if (!isMobile() || !stage) return;
+      const r = stage.getBoundingClientRect();
+      const inView = r.top < (window.innerHeight||800) * 0.9 && r.bottom > (window.innerHeight||800) * 0.1;
+      if (!inView) return;
+      const a = document.activeElement;
+      if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;
+      if (e.key === 'ArrowRight'){ setPanel(mIdx + 1); }
+      else if (e.key === 'ArrowLeft'){ setPanel(mIdx - 1); }
+    });
+
+    // boot
+    applyMode();
+  })();
+</script>

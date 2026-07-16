@@ -1,5 +1,6 @@
 import { Readable, Writable } from 'node:stream'
 import { WebSocket } from 'ws'
+import { WS_HANDSHAKE_TIMEOUT_MS } from './iii-constants'
 import type { StreamChannelRef } from './iii-types'
 
 /**
@@ -112,7 +113,7 @@ export class ChannelWriter {
       return
     }
     this.wsReady = false
-    this.ws = new WebSocket(this.url)
+    this.ws = new WebSocket(this.url, { handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS })
 
     this.ws.on('open', () => {
       this.wsReady = true
@@ -243,7 +244,7 @@ export class ChannelReader {
   private ensureConnected(): void {
     if (this.connected) return
     this.connected = true
-    this.ws = new WebSocket(this.url)
+    this.ws = new WebSocket(this.url, { handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS })
 
     this.ws.on('open', () => {
       ;(this.ws as unknown as { binaryType: string }).binaryType = 'nodebuffer'

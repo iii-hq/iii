@@ -17,7 +17,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest, SessionHandler},
     function::FunctionResult,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
-    trigger::{Trigger, TriggerRegistrator, TriggerType, builtin_trigger_type_owner},
+    trigger::{Trigger, TriggerRegistrator, TriggerType, known_trigger_type_provider},
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionTelemetryMeta},
     workers::traits::Worker,
     workers::worker::rbac_session::Session,
@@ -576,10 +576,9 @@ impl EngineFunctionsWorker {
 
     /// Resolves the worker name that owns a trigger type from an
     /// already-fetched `TriggerType`. Tries, in order: the `worker_id` Uuid
-    /// (populated only by WebSocket-connected workers), the static
-    /// `BUILTIN_TRIGGER_TYPES` map (used for in-process workers, which
-    /// always register with `worker_id: None`), and finally the first `::`
-    /// segment of the id.
+    /// (populated only by WebSocket-connected workers), the known provider
+    /// map (used for install guidance and in-process workers), and finally the
+    /// first `::` segment of the id.
     ///
     /// Takes the borrowed `TriggerType` instead of an id on purpose: callers
     /// usually sit inside `trigger_types` iteration or a `.get()` guard, and
@@ -593,7 +592,7 @@ impl EngineFunctionsWorker {
         {
             return name;
         }
-        if let Some(name) = builtin_trigger_type_owner(&tt.id) {
+        if let Some(name) = known_trigger_type_provider(&tt.id) {
             return name.to_string();
         }
         Self::first_segment(&tt.id)
@@ -3733,14 +3732,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_trigger_fn_unknown_type_fails_without_registering() {
+    async fn register_trigger_fn_unknown_type_defers_and_activates_later() {
         let (engine, module) = setup_engine_and_module();
         register_simple_function(&engine, "test::target", None);
 
         let result = module
             .register_trigger_fn(
                 RegisterTriggerInput {
-                    trigger_type: "no-such-type".to_string(),
+                    trigger_type: "test-type".to_string(),
                     function_id: "test::target".to_string(),
                     config: serde_json::json!({}),
                     metadata: None,
@@ -3749,9 +3748,18 @@ mod tests {
                 None,
             )
             .await;
-        assert!(matches!(result, FunctionResult::Failure(_)));
-
-        // A failed bind leaves no trigger behind.
+        // Registering ahead of the trigger type's provider succeeds and
+        // returns a usable id: the intent is parked, not live.
+        let id = match result {
+            FunctionResult::Success(r) => r.id,
+            _ => panic!("expected deferred register success"),
+        };
         assert!(engine.trigger_registry.triggers.is_empty());
+        assert!(engine.trigger_registry.pending_triggers.contains_key(&id));
+
+        // Once the type registers, the parked intent goes live.
+        register_test_trigger_type(&engine, &module).await;
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(engine.trigger_registry.triggers.contains_key(&id));
     }
 }

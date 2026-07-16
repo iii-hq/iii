@@ -1,0 +1,408 @@
+
+<!-- ============= HERO VIZ ENGINE ============= -->
+<script>
+(() => {
+  const root = document.getElementById('hero-viz');
+  if (!root) return;
+
+  const N = 10;
+  const VB = 400, cx = VB/2, cy = VB/2, R = 144;
+  const NODE_LABELS = ['orchestrator','db','cache','queue','stream','agent','http','cron','obs','memory'];
+
+  // Node positions on the unit circle (top-clockwise)
+  const nodes = Array.from({length: N}, (_, i) => {
+    const a = (i / N) * Math.PI * 2 - Math.PI / 2;
+    return {
+      x: cx + R * Math.cos(a),
+      y: cy + R * Math.sin(a),
+      angle: a,
+      label: NODE_LABELS[i] || ('w'+i)
+    };
+  });
+
+  // ALL pairwise edges (quadratic — n(n-1)/2 = 45)
+  const allEdges = [];
+  for (let i = 0; i < N; i++)
+    for (let j = i+1; j < N; j++)
+      allEdges.push([i, j]);
+
+  // Curated "actual" subgraph: 20 edges — denser than reality but less than full mesh.
+  const actualEdges = [
+    [0,1],[0,3],[0,5],[0,6],[0,7],   // orchestrator → db, queue, agent, http, cron
+    [3,4],                            // queue ↔ stream
+    [1,8],                            // db ↔ obs
+    [5,9],                            // agent ↔ memory
+    [2,6],                            // cache ↔ http
+    [7,8],                            // cron ↔ obs
+    [1,2],[2,3],[4,5],[4,6],[6,9],
+    [3,8],[0,2],[0,9],[5,7],[1,4]
+  ];
+
+  // ---- Build static elements ----
+  const $mesh = document.getElementById('hv-edges-mesh');
+  const $actual = document.getElementById('hv-edges-actual');
+  const $eph = document.getElementById('hv-edges-ephemeral');
+  const $packets = document.getElementById('hv-packets');
+  const $nodes = document.getElementById('hv-nodes');
+  const $labels = document.getElementById('hv-labels');
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    if (attrs) for (const k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  };
+
+  // Mesh edges (all pairs)
+  for (const [i, j] of allEdges) {
+    const ln = mk('line', {
+      x1: nodes[i].x, y1: nodes[i].y,
+      x2: nodes[j].x, y2: nodes[j].y,
+      class: 'hv-edge-mesh'
+    });
+    $mesh.appendChild(ln);
+  }
+  // Actual edges
+  for (const [i, j] of actualEdges) {
+    const ln = mk('line', {
+      x1: nodes[i].x, y1: nodes[i].y,
+      x2: nodes[j].x, y2: nodes[j].y,
+      class: 'hv-edge-actual'
+    });
+    $actual.appendChild(ln);
+  }
+  // Nodes
+  for (const n of nodes) {
+    const c = mk('circle', { cx: n.x, cy: n.y, r: 8, class: 'hv-node-ring' });
+    $nodes.appendChild(c);
+    const d = mk('circle', { cx: n.x, cy: n.y, r: 2, class: 'hv-node-dot' });
+    $nodes.appendChild(d);
+  }
+  // Labels (positioned slightly outside the ring)
+  for (const n of nodes) {
+    const lr = R + 22;
+    const lx = cx + lr * Math.cos(n.angle);
+    const ly = cy + lr * Math.sin(n.angle);
+    const t = mk('text', {
+      x: lx, y: ly,
+      class: 'hv-node-label',
+      'text-anchor': Math.abs(Math.cos(n.angle)) < 0.2 ? 'middle' : (Math.cos(n.angle) > 0 ? 'start' : 'end'),
+      'dominant-baseline': 'middle'
+    });
+    t.textContent = n.label;
+    $labels.appendChild(t);
+  }
+
+  // ---- Stage management ----
+  const STAGES = {
+    mesh:   { name: 'problem space', count: '45', accentCount: false, formula: '<math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>\u2212</mo><mn>1</mn><mo>)</mo></mrow><mn>2</mn></mfrac><mo>)</mo></math>', formulaSub: '' },
+    actual: { name: 'implementation', count: String(actualEdges.length), accentCount: false, formula: '<math><mi>O</mi><mo>(</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>\u2212</mo><mn>1</mn><mo>)</mo></mrow><mrow><mn>2</mn><mo>\u00b7</mo><mtext>your tolerance for integrations</mtext></mrow></mfrac><mo>)</mo></math>', formulaSub: '' },
+    iii:    { name: 'iii', count: '0', accentCount: true, formula: '<math><mi>O</mi><mo>(</mo><mn>0</mn><mo>)</mo></math>', formulaSub: '' }
+  };
+  const stageOrder = ['mesh', 'actual', 'iii'];
+  const $stageName = document.getElementById('hv-stage-name');
+  const $count = document.getElementById('hv-count');
+  const $formula = document.getElementById('hv-formula');
+  const $formulaSub = document.getElementById('hv-formula-sub');
+  const $tabs = root.querySelectorAll('.hero-viz-tabs button');
+
+  let currentStage = 'mesh';
+  let userPinned = false;
+  let cycleTimer = null;
+
+  function setStage(stage) {
+    currentStage = stage;
+    root.setAttribute('data-stage', stage);
+    const s = STAGES[stage];
+    $stageName.textContent = s.name;
+    $count.textContent = s.count;
+    $count.classList.toggle('accent', s.accentCount);
+    if ($formula) $formula.innerHTML = s.formula || '';
+    if ($formulaSub) $formulaSub.textContent = s.formulaSub || '';
+    $tabs.forEach(b => b.classList.toggle('on', b.dataset.stage === stage));
+  }
+
+  $tabs.forEach(b => {
+    b.addEventListener('click', () => {
+      iiiTrack('tab_switch', {
+        tab_group: 'hero_viz',
+        tab_id: b.dataset.stage,
+        tab_label: b.textContent.trim().toLowerCase()
+      });
+      userPinned = true;
+      stopCycle();
+      setStage(b.dataset.stage);
+    });
+  });
+
+  function startCycle() {
+    stopCycle();
+    if (userPinned) return;
+    let idx = stageOrder.indexOf(currentStage);
+    cycleTimer = setInterval(() => {
+      idx = (idx + 1) % stageOrder.length;
+      setStage(stageOrder[idx]);
+    }, 4200);
+  }
+  function stopCycle() {
+    if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null; }
+  }
+
+  // ---- Ephemeral / packet animation ----
+  // Continuously runs. In each stage, packets are spawned at different rates
+  // and attached to different edge sets. Lines themselves are drawn ephemerally
+  // ONLY in the iii stage.
+  const packets = [];
+  let lastSpawn = 0;
+
+  function spawnPacket(now) {
+    let edge;
+    if (currentStage === 'mesh') {
+      edge = allEdges[Math.floor(Math.random() * allEdges.length)];
+    } else if (currentStage === 'actual') {
+      edge = actualEdges[Math.floor(Math.random() * actualEdges.length)];
+    } else { // iii
+      // Pick any pair; create an ephemeral line for the duration.
+      edge = allEdges[Math.floor(Math.random() * allEdges.length)];
+    }
+    const [i, j] = Math.random() < 0.5 ? edge : [edge[1], edge[0]];
+    const a = nodes[i], b = nodes[j];
+
+    let lineEl = null;
+    if (currentStage === 'iii') {
+      lineEl = mk('line', {
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+        class: 'hv-edge-ephemeral'
+      });
+      $eph.appendChild(lineEl);
+    }
+    const dot = mk('circle', {
+      cx: a.x, cy: a.y, r: currentStage === 'iii' ? 2.6 : 2.2,
+      class: currentStage === 'iii' ? 'hv-packet' : 'hv-packet dim'
+    });
+    $packets.appendChild(dot);
+
+    packets.push({
+      a, b, dot, line: lineEl,
+      start: now,
+      duration: 700 + Math.random() * 350,
+      stage: currentStage
+    });
+  }
+
+  function tick(now) {
+    // Spawn rate per stage
+    const rate = currentStage === 'mesh' ? 80 : (currentStage === 'actual' ? 220 : 320);
+    if (now - lastSpawn > rate) {
+      // Cap concurrent packets to avoid runaway
+      const cap = currentStage === 'mesh' ? 36 : (currentStage === 'actual' ? 14 : 8);
+      if (packets.length < cap) {
+        spawnPacket(now);
+        lastSpawn = now;
+      }
+    }
+
+    for (let k = packets.length - 1; k >= 0; k--) {
+      const p = packets[k];
+      const t = (now - p.start) / p.duration;
+      if (t >= 1) {
+        // Cleanup
+        p.dot.remove();
+        if (p.line) {
+          // Brief fade then remove
+          p.line.style.transition = 'opacity .25s ease';
+          p.line.style.opacity = '0';
+          const ln = p.line;
+          setTimeout(() => ln.remove(), 280);
+        }
+        packets.splice(k, 1);
+        continue;
+      }
+      const x = p.a.x + (p.b.x - p.a.x) * t;
+      const y = p.a.y + (p.b.y - p.a.y) * t;
+      p.dot.setAttribute('cx', x);
+      p.dot.setAttribute('cy', y);
+
+      if (p.line) {
+        // Fade line in fast at start; sustain
+        const lo = Math.min(1, t * 6);
+        p.line.style.opacity = String(0.85 * lo);
+      }
+    }
+
+    raf = requestAnimationFrame(tick);
+  }
+
+  let raf = null;
+
+  // Pause when offscreen
+  const io = new IntersectionObserver((ents) => {
+    for (const e of ents) {
+      if (e.isIntersecting) {
+        if (!raf) raf = requestAnimationFrame(tick);
+        startCycle();
+      } else {
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
+        stopCycle();
+      }
+    }
+  }, { threshold: 0.1 });
+  io.observe(root);
+
+  // ---- Triptych design variant ----
+  // Builds three small static stages side-by-side, each rendering one fixed state.
+  const $canvas = document.getElementById('hv-canvas');
+  let triptychBuilt = false;
+
+  function buildTriptych() {
+    if (triptychBuilt) return;
+    triptychBuilt = true;
+    const labels = ['problem space', 'implementation', 'iii'];
+    const counts = ['45', String(actualEdges.length), '0'];
+    const stages = ['mesh', 'actual', 'iii'];
+    for (let s = 0; s < 3; s++) {
+      const w = document.createElement('div');
+      w.className = 'hv-mini';
+      w.dataset.stage = stages[s];
+      const lab = document.createElement('span');
+      lab.className = 'hv-mini-label' + (s === 2 ? ' on' : '');
+      lab.textContent = labels[s];
+      w.appendChild(lab);
+      const cnt = document.createElement('span');
+      cnt.className = 'hv-mini-count';
+      cnt.textContent = counts[s];
+      w.appendChild(cnt);
+
+      const svg = mk('svg', {
+        class: 'hv-mini-svg',
+        viewBox: '0 0 400 400',
+        preserveAspectRatio: 'xMidYMid meet'
+      });
+      const gMesh = mk('g', {});
+      const gActual = mk('g', {});
+      const gEph = mk('g', { class: 'mini-eph-' + s });
+      const gPkt = mk('g', { class: 'mini-pkt-' + s });
+      const gNodes = mk('g', {});
+      svg.appendChild(gMesh);
+      svg.appendChild(gActual);
+      svg.appendChild(gEph);
+      svg.appendChild(gPkt);
+      svg.appendChild(gNodes);
+
+      // mesh
+      if (stages[s] === 'mesh') {
+        for (const [i, j] of allEdges) {
+          const ln = mk('line', {
+            x1: nodes[i].x, y1: nodes[i].y, x2: nodes[j].x, y2: nodes[j].y,
+            class: 'hv-edge-mesh', style: 'opacity:.55'
+          });
+          gMesh.appendChild(ln);
+        }
+      } else if (stages[s] === 'actual') {
+        for (const [i, j] of actualEdges) {
+          const ln = mk('line', {
+            x1: nodes[i].x, y1: nodes[i].y, x2: nodes[j].x, y2: nodes[j].y,
+            class: 'hv-edge-actual', style: 'opacity:1'
+          });
+          gActual.appendChild(ln);
+        }
+      }
+
+      // nodes
+      for (const n of nodes) {
+        gNodes.appendChild(mk('circle', { cx: n.x, cy: n.y, r: 7, class: 'hv-node-ring' }));
+        gNodes.appendChild(mk('circle', { cx: n.x, cy: n.y, r: 1.8, class: 'hv-node-dot' }));
+      }
+
+      w.appendChild(svg);
+      $canvas.appendChild(w);
+
+      // For each mini, run a small packet loop targeting its own stage
+      runMiniLoop(stages[s], gEph, gPkt);
+    }
+  }
+
+  function runMiniLoop(stage, gEph, gPkt) {
+    const local = [];
+    let lastSp = 0;
+    function step(now) {
+      if (root.dataset.design !== 'triptych') {
+        // pause when not in triptych
+        for (const p of local) { p.dot.remove(); if (p.line) p.line.remove(); }
+        local.length = 0;
+        return;
+      }
+      const rate = stage === 'mesh' ? 110 : (stage === 'actual' ? 240 : 360);
+      const cap = stage === 'mesh' ? 14 : (stage === 'actual' ? 6 : 4);
+      if (now - lastSp > rate && local.length < cap) {
+        const edges = stage === 'actual' ? actualEdges : allEdges;
+        const e = edges[Math.floor(Math.random() * edges.length)];
+        const [i, j] = Math.random() < 0.5 ? e : [e[1], e[0]];
+        const a = nodes[i], b = nodes[j];
+        let line = null;
+        if (stage === 'iii') {
+          line = mk('line', {
+            x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+            class: 'hv-edge-ephemeral'
+          });
+          gEph.appendChild(line);
+        }
+        const dot = mk('circle', {
+          cx: a.x, cy: a.y, r: stage === 'iii' ? 2.6 : 2,
+          class: stage === 'iii' ? 'hv-packet' : 'hv-packet dim'
+        });
+        gPkt.appendChild(dot);
+        local.push({ a, b, dot, line, start: now, duration: 800 + Math.random() * 400 });
+        lastSp = now;
+      }
+      for (let k = local.length - 1; k >= 0; k--) {
+        const p = local[k];
+        const t = (now - p.start) / p.duration;
+        if (t >= 1) {
+          p.dot.remove();
+          if (p.line) {
+            p.line.style.transition = 'opacity .25s ease';
+            p.line.style.opacity = '0';
+            const ln = p.line;
+            setTimeout(() => ln.remove(), 280);
+          }
+          local.splice(k, 1);
+          continue;
+        }
+        p.dot.setAttribute('cx', p.a.x + (p.b.x - p.a.x) * t);
+        p.dot.setAttribute('cy', p.a.y + (p.b.y - p.a.y) * t);
+        if (p.line) {
+          p.line.style.opacity = String(0.85 * Math.min(1, t * 6));
+        }
+      }
+      requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // ---- Design variant API (called from Tweaks) ----
+  window.heroVizSetDesign = function(design) {
+    if (!['classic','triptych','focus','manual'].includes(design)) design = 'classic';
+    root.setAttribute('data-design', design);
+    if (design === 'triptych') {
+      buildTriptych();
+      stopCycle();
+    } else if (design === 'focus') {
+      userPinned = true;
+      stopCycle();
+      setStage('iii');
+    } else if (design === 'manual') {
+      userPinned = true;
+      stopCycle();
+    } else {
+      // classic
+      userPinned = false;
+      setStage('mesh');
+      startCycle();
+    }
+  };
+
+  // Init
+  setStage('mesh');
+})();
+</script>
