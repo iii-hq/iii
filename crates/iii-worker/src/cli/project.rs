@@ -253,7 +253,7 @@ pub fn validate_manifest_keys(
         "unknown key(s) in {}: [{}]. Supported fields are: name, description, \
          runtime.base_image, scripts.(setup|install|start), env, dependencies, \
          resources.(cpus|memory), plus the registry publish metadata keys \
-         (iii, deploy, manifest) which the engine accepts and ignores.",
+         (iii, deploy, manifest, tags) which the engine accepts and ignores.",
         manifest_path.display(),
         unknown.join(", "),
     ))
@@ -1015,6 +1015,9 @@ env:
   FOO: bar
 dependencies:
   iii-http: "^0.19"
+tags:
+  - http
+  - api
 resources:
   cpus: 2
   memory: 2048
@@ -1042,15 +1045,15 @@ resources:
 
     #[test]
     fn validate_keys_accepts_publish_metadata_keys() {
-        // iii/deploy/manifest are release-CI metadata carried by every worker
+        // iii/deploy/manifest/tags are release-CI metadata carried by workers
         // in the workers repo; `worker add` must accept them (neither unknown
         // nor deprecated) so one manifest satisfies both validators.
-        let d = doc("iii: v1\nname: w\ndeploy: binary\nmanifest: Cargo.toml\n");
+        let d = doc("iii: v1\nname: w\ndeploy: binary\nmanifest: Cargo.toml\ntags:\n  - api\n");
         assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
         let m = super::super::worker_manifest::WorkerManifest::from_value(&d).unwrap();
         let (unknown, deprecated) = m.classify_keys();
         assert!(unknown.is_empty(), "got: {unknown:?}");
-        for key in ["iii", "deploy", "manifest"] {
+        for key in ["iii", "deploy", "manifest", "tags"] {
             assert!(
                 !deprecated.iter().any(|x| x == key),
                 "`{key}` must not be deprecated: {deprecated:?}"

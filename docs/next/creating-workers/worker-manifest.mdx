@@ -186,14 +186,22 @@ Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
 
 Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
 
-## Publish metadata: `iii`, `deploy`, `manifest`
+## Publish metadata: `iii`, `deploy`, `manifest`, `tags`
 
-Optional strings used by the workers-repository release pipeline, not by the engine. The engine
+Optional metadata used by the workers-repository release pipeline, not by the engine. The engine
 accepts these keys (so a manifest published from the workers repo also works with local
-`iii worker add`) but never reads them.
+`iii worker add`) but never reads them at runtime.
 
 ```yaml
 iii: v1 # manifest format marker
 deploy: image # release artifact type: binary | image | bundle
 manifest: pyproject.toml # file the release version is read from
+tags: # search aliases sent to the workers registry
+  - http
+  - rest
+  - api
 ```
+
+`iii`, `deploy`, and `manifest` are strings. `tags` is a list of strings used for agent and user
+discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone would
+search for rather than repeating the worker description.
