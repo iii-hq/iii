@@ -171,6 +171,12 @@ impl Worker for WorkerManager {
             };
             tokio::pin!(shutdown);
 
+            // Fans shutdown out to every spawned connection task, mirroring
+            // what axum::serve did internally: sent when the accept loop
+            // exits, and if this task is aborted (`destroy()`), the dropped
+            // sender wakes subscribers the same way.
+            let (conn_shutdown_tx, _) = tokio::sync::watch::channel(false);
+
             // Serve connections manually instead of via `axum::serve`:
             // hyper's `header_read_timeout` is the handshake deadline that
             // reaps sockets stalling before the WS upgrade completes
@@ -199,25 +205,53 @@ impl Worker for WorkerManager {
                     Ok(service) => service,
                     Err(infallible) => match infallible {},
                 };
+                let mut conn_shutdown_rx = conn_shutdown_tx.subscribe();
                 tokio::spawn(async move {
                     let conn = http1::Builder::new()
                         .timer(TokioTimer::new())
                         .header_read_timeout(handshake_timeout)
                         .serve_connection(TokioIo::new(stream), TowerToHyperService::new(service))
                         .with_upgrades();
-                    if let Err(err) = conn.await {
-                        if err.is_timeout() {
-                            tracing::warn!(
-                                peer = %peer,
-                                timeout_ms = handshake_timeout.as_millis() as u64,
-                                "closed worker socket: WS upgrade not completed within handshake deadline"
-                            );
-                        } else {
-                            tracing::debug!(peer = %peer, error = ?err, "worker connection error");
+                    tokio::pin!(conn);
+                    // Completes on shutdown send or sender drop (abort).
+                    let conn_shutdown = async move {
+                        while conn_shutdown_rx.changed().await.is_ok() {
+                            if *conn_shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                    };
+                    tokio::pin!(conn_shutdown);
+                    let mut graceful_sent = false;
+                    loop {
+                        tokio::select! {
+                            res = conn.as_mut() => {
+                                if let Err(err) = res {
+                                    if err.is_timeout() {
+                                        tracing::warn!(
+                                            peer = %peer,
+                                            timeout_ms = handshake_timeout.as_millis() as u64,
+                                            "closed worker socket: WS upgrade not completed within handshake deadline"
+                                        );
+                                    } else {
+                                        tracing::debug!(peer = %peer, error = ?err, "worker connection error");
+                                    }
+                                }
+                                break;
+                            }
+                            // Close idle keep-alive connections immediately
+                            // and mark in-flight ones close-after-response,
+                            // then keep polling the connection to completion.
+                            _ = &mut conn_shutdown, if !graceful_sent => {
+                                conn.as_mut().graceful_shutdown();
+                                graceful_sent = true;
+                            }
                         }
                     }
                 });
             }
+
+            let _ = conn_shutdown_tx.send(true);
         });
 
         *self
