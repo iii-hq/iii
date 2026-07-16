@@ -23,6 +23,19 @@ pub enum Error {
     Serde(String),
     #[error("websocket error: {0}")]
     WebSocket(String),
+    /// The engine rejected this worker's registration because another live
+    /// worker already holds the name (or an exported function id) in the same
+    /// namespace. Fatal: the SDK stops and does not reconnect.
+    #[error(
+        "registration rejected ({code}): worker '{worker_name}' in namespace '{namespace}' \
+         is already owned by worker '{owner_worker_id}'"
+    )]
+    RegistrationRejected {
+        code: String,
+        namespace: String,
+        worker_name: String,
+        owner_worker_id: String,
+    },
 }
 
 impl From<serde_json::Error> for Error {

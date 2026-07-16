@@ -68,15 +68,43 @@ impl TriggerRequest {
         TriggerRequestWithMetadata {
             request: self,
             metadata: Some(metadata),
+            namespace: None,
+        }
+    }
+
+    /// Target a specific namespace for this invocation without adding a
+    /// required field to [`TriggerRequest`] struct literals. Serializes into
+    /// [`Message::InvokeFunction`]'s `namespace`; omitted when unset (the
+    /// engine then routes within its default namespace).
+    pub fn namespace(self, namespace: impl Into<String>) -> TriggerRequestWithMetadata {
+        TriggerRequestWithMetadata {
+            request: self,
+            metadata: None,
+            namespace: Some(namespace.into()),
         }
     }
 }
 
-/// Trigger request plus optional per-invocation metadata.
+/// Trigger request plus optional per-invocation metadata and target namespace.
 #[derive(Debug, Clone)]
 pub struct TriggerRequestWithMetadata {
     pub(crate) request: TriggerRequest,
     pub(crate) metadata: Option<Value>,
+    pub(crate) namespace: Option<String>,
+}
+
+impl TriggerRequestWithMetadata {
+    /// Attach per-invocation metadata.
+    pub fn metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Target a specific namespace for this invocation.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
 }
 
 impl<T> From<T> for TriggerRequestWithMetadata
@@ -87,6 +115,7 @@ where
         Self {
             request: request.into(),
             metadata: None,
+            namespace: None,
         }
     }
 }
@@ -155,6 +184,11 @@ pub enum Message {
         /// for wire compatibility with engines that don't send it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Target namespace for routing. Optional and additive: absent means
+        /// the engine's default namespace, so older peers that don't send it
+        /// stay wire-compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     InvocationResult {
         invocation_id: Uuid,
@@ -172,6 +206,15 @@ pub enum Message {
     Pong,
     WorkerRegistered {
         worker_id: String,
+    },
+    /// Pushed by the engine when a worker registration collides with a live
+    /// worker in the same namespace. The engine closes the connection right
+    /// after; the SDK treats this as a fatal error and does not reconnect.
+    RegistrationRejected {
+        code: String,
+        namespace: String,
+        worker_name: String,
+        owner_worker_id: String,
     },
 }
 
