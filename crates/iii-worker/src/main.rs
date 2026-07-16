@@ -114,22 +114,38 @@ async fn async_main() -> anyhow::Result<()> {
             force,
             no_wait,
         } => {
+            use colored::Colorize;
+            use iii_worker::cli::builtin_defaults::deprecated_builtin_replacement;
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
-            use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
+            use iii_worker::core::{AddOptions, ProjectCtx, WorkerSource, add as core_add};
 
             let total = args.worker_names.len();
             let brief = total > 1;
             let mut fail_count = 0usize;
 
             for (i, name) in args.worker_names.iter().enumerate() {
+                let source = parse_source_for_cli(name);
+                if let WorkerSource::Registry {
+                    name: registry_name,
+                    ..
+                } = &source
+                    && let Some(replacement) = deprecated_builtin_replacement(registry_name)
+                {
+                    eprintln!(
+                        "{} Worker name '{}' is deprecated and will be removed in a future version. Use `iii worker add {}` instead.",
+                        "warning:".yellow(),
+                        registry_name,
+                        replacement
+                    );
+                }
+
                 if brief {
-                    use colored::Colorize;
                     eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
                 }
 
                 let opts = AddOptions {
-                    source: parse_source_for_cli(name),
+                    source,
                     force,
                     reset_config: args.reset_config,
                     wait: !no_wait,
