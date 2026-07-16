@@ -135,7 +135,7 @@ class Sdk implements IIIClient {
   private workerId?: string
   private reconnectTimeout?: NodeJS.Timeout
   private heartbeatInterval?: NodeJS.Timeout
-  private lastRxAt = 0
+  private idleTimeout?: NodeJS.Timeout
   private metricsReportingEnabled: boolean
   private invocationTimeoutMs: number
   private reconnectionConfig: IIIReconnectionConfig
@@ -656,12 +656,15 @@ class Sdk implements IIIClient {
 
   private startHeartbeat(): void {
     this.stopHeartbeat()
-    this.lastRxAt = Date.now()
+    // Dedicated deadline, refresh()ed on every inbound frame, so it fires
+    // exactly WS_IDLE_TIMEOUT_MS after the last frame instead of on the next
+    // ping tick (which could add up to a full WS_PING_INTERVAL_MS of delay).
+    this.idleTimeout = setTimeout(() => {
+      this.logError(`No inbound data for ${WS_IDLE_TIMEOUT_MS}ms, terminating connection to force reconnect`)
+      this.ws?.terminate() // 'close' fires -> onSocketClose stops the heartbeat and schedules reconnect
+    }, WS_IDLE_TIMEOUT_MS)
     this.heartbeatInterval = setInterval(() => {
-      if (Date.now() - this.lastRxAt >= WS_IDLE_TIMEOUT_MS) {
-        this.logError(`No inbound data for ${WS_IDLE_TIMEOUT_MS}ms, terminating connection to force reconnect`)
-        this.ws?.terminate() // 'close' fires -> onSocketClose stops the heartbeat and schedules reconnect
-      } else if (this.ws && this.isOpen()) {
+      if (this.ws && this.isOpen()) {
         this.ws.ping()
       }
     }, WS_PING_INTERVAL_MS)
@@ -671,6 +674,10 @@ class Sdk implements IIIClient {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval)
       this.heartbeatInterval = undefined
+    }
+    if (this.idleTimeout) {
+      clearTimeout(this.idleTimeout)
+      this.idleTimeout = undefined
     }
   }
 
@@ -753,7 +760,7 @@ class Sdk implements IIIClient {
 
     // Reset the idle deadline on any inbound frame (message/ping/pong), Rust SDK parity
     const touch = () => {
-      this.lastRxAt = Date.now()
+      this.idleTimeout?.refresh()
     }
     this.ws?.on('message', touch)
     this.ws?.on('ping', touch)

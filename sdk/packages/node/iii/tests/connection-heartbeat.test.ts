@@ -145,22 +145,24 @@ describe('Sdk – WebSocket handshake timeout and keepalive heartbeat', () => {
     }
   })
 
-  it('any inbound message resets the idle deadline', async () => {
+  it('an inbound frame between ping ticks resets the idle deadline exactly', async () => {
     vi.useFakeTimers()
     const sdk = makeWorker('ws://heartbeat-touch.test')
     try {
       const sock = sockets[0]
       sock.simulateOpen()
 
-      await vi.advanceTimersByTimeAsync(40_000)
+      // Frame lands mid-tick at t=30s -> deadline moves to exactly t=90s.
+      await vi.advanceTimersByTimeAsync(30_000)
       sock.emit('message', Buffer.from('{"type":"noop"}'))
 
-      // t=60s: only 20s since the last inbound frame — still alive.
-      await vi.advanceTimersByTimeAsync(20_000)
+      // t=89.999s: 59.999s since the last inbound frame — still alive.
+      await vi.advanceTimersByTimeAsync(59_999)
       expect(sock.terminated).toBe(false)
 
-      // t=100s: 60s since the last inbound frame — terminated.
-      await vi.advanceTimersByTimeAsync(40_000)
+      // t=90s: exactly 60s after the last inbound frame — terminated, not
+      // deferred to the next ping tick at t=100s.
+      await vi.advanceTimersByTimeAsync(1)
       expect(sock.terminated).toBe(true)
     } finally {
       vi.useRealTimers()
