@@ -32,6 +32,7 @@ from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
     DEFAULT_RECONNECTION_CONFIG,
     MAX_QUEUE_SIZE,
+    ConnectionStateCallback,
     FunctionRef,
     IIIConnectionState,
     InitOptions,
@@ -202,6 +203,9 @@ class III:
         )
         self._reconnect_attempt = 0
         self._connection_state: IIIConnectionState = "disconnected"
+        # Must exist before the auto-connect below: the loop thread calls
+        # _set_connection_state as soon as connect_async starts.
+        self._connection_listeners: list[ConnectionStateCallback] = []
         self._worker_id: str | None = None
 
         # Background event loop thread
@@ -232,10 +236,15 @@ class III:
             return
         if self._connection_state == "failed":
             raise ConnectionError(f"Connection to {self._address} failed")
-        self._connected_event.wait(timeout=30)
+        connected = self._connected_event.wait(timeout=30)
         if cast(IIIConnectionState, self._connection_state) == "failed":
             raise ConnectionError(
                 f"Connection to {self._address} failed after max retries"
+            )
+        if not connected:
+            log.warning(
+                f"Timed out after 30s waiting for connection to {self._address}; "
+                "continuing to retry in background"
             )
 
     def shutdown(self) -> None:
@@ -337,7 +346,16 @@ class III:
             )
             log.info(f"Connected to {self._address}")
             await self._on_connected()
-        except (ConnectionError, OSError, TimeoutError, asyncio.TimeoutError) as e:
+        except (
+            ConnectionError,
+            OSError,
+            TimeoutError,
+            asyncio.TimeoutError,
+            # Not an OSError: raised when the peer accepts TCP but the WS
+            # upgrade fails/stalls (the MOT-3931 zombie-VM mode). Without it
+            # the connect/reconnect task dies and retrying stops silently.
+            websockets.InvalidHandshake,
+        ) as e:
             log.warning(f"Connection failed: {e}")
             if self._running:
                 self._schedule_reconnect()
@@ -807,6 +825,50 @@ class III:
                 self._connected_event.set()
             else:
                 self._connected_event.clear()
+            for handler in list(self._connection_listeners):
+                try:
+                    handler(state)
+                except Exception:
+                    log.exception("Connection state listener raised")
+
+    def add_connection_state_listener(
+        self, handler: ConnectionStateCallback
+    ) -> Callable[[], None]:
+        """Subscribe to connection-state transitions.
+
+        The handler is fired immediately with the current state (on the
+        caller's thread), then once per transition. Transitions fire on the
+        SDK's background event-loop thread: keep handlers fast and do not
+        call sync SDK methods from them (they would raise ``RuntimeError``).
+        Treat calls as state notifications, not edges — a state may rarely
+        be observed twice around subscription. Registering the same handler
+        twice fires it twice. Returns an idempotent unsubscribe function
+        that removes only its own registration.
+
+        Examples:
+            >>> unsubscribe = worker.add_connection_state_listener(
+            ...     lambda state: print(f"engine link: {state}")
+            ... )
+        """
+        self._connection_listeners.append(handler)
+        try:
+            handler(self._connection_state)
+        except Exception:
+            log.exception("Connection state listener raised on initial fire")
+
+        unsubscribed = False
+
+        def unsubscribe() -> None:
+            nonlocal unsubscribed
+            if unsubscribed:
+                return
+            unsubscribed = True
+            try:
+                self._connection_listeners.remove(handler)
+            except ValueError:
+                pass
+
+        return unsubscribe
 
     def get_connection_state(self) -> IIIConnectionState:
         """Return the current WebSocket connection state.
@@ -1417,14 +1479,19 @@ class TriggerAction:
 def register_worker(address: str, options: InitOptions | None = None) -> III:
     """Register the worker with a iii instance, returns a connected worker client.
 
-    Blocks until the WebSocket connection is established and ready.
+    Blocks up to 30 seconds for the WebSocket connection to be established.
+    If the engine is not reachable in time, a warning is logged and the
+    client is returned anyway — it keeps retrying in the background and
+    flushes registrations once connected. Use
+    ``add_connection_state_listener`` to observe the actual transition.
 
     Args:
         address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
         options: Optional configuration for worker name, timeouts, reconnection, and OTel.
 
     Returns:
-        A connected III client instance ready to use.
+        An III client instance (connected, or still connecting after the
+        30s wait timed out).
 
     Raises:
         ConnectionError: If the connection fails or exceeds max retries.
