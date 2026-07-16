@@ -139,6 +139,11 @@ def test_handshake_failure_keeps_retrying(monkeypatch: pytest.MonkeyPatch) -> No
     client._wait_until_connected()
     assert client.get_connection_state() == "connected"
     assert attempts == 3
+    # _set_connection_state sets the connected event before dispatching
+    # listeners, so give the loop thread a bounded window to deliver.
+    deadline = time.time() + 2
+    while "connected" not in states and time.time() < deadline:
+        time.sleep(0.01)
     assert "connected" in states
 
     client.shutdown()
