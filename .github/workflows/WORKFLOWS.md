@@ -132,7 +132,7 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine b
 
 **Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Console, docker and homebrew are intentionally excluded.**
 
-**Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 curl -fsSL https://iii.dev/install.sh | sh`. The worker-publish job uses the same override to pin the engine CLI.
+**Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `curl -fsSL https://iii.dev/install.sh | III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 sh`. The worker-publish job uses the same override to pin the engine CLI.
 
 **Tag format:** `iii-alpha/v{version}` (e.g., `iii-alpha/v0.19.2-alpha.1`)
 

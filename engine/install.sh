@@ -268,8 +268,8 @@ Requires: curl, jq, tar (unzip if installing a .zip asset)
 Examples:
   curl -fsSL https://iii.dev/install.sh | sh
   curl -fsSL https://iii.dev/install.sh | sh -s -- --next
-  VERSION=0.11.0 curl -fsSL https://iii.dev/install.sh | sh
-  BIN_DIR=/usr/local/bin curl -fsSL https://iii.dev/install.sh | sh
+  curl -fsSL https://iii.dev/install.sh | VERSION=0.11.0 sh
+  curl -fsSL https://iii.dev/install.sh | BIN_DIR=/usr/local/bin sh
 USAGE
       exit 0
       ;;
@@ -486,8 +486,8 @@ if [ -z "$asset_url" ]; then
     echo ""
     echo "Try:"
     echo "  - Install a stable release:  curl -fsSL https://iii.dev/install.sh | sh"
-    echo "  - Pin a different version:   VERSION=<x.y.z> curl -fsSL https://iii.dev/install.sh | sh"
-    echo "  - Override target triple:    TARGET=<triple> curl -fsSL https://iii.dev/install.sh | sh"
+    echo "  - Pin a different version:   curl -fsSL https://iii.dev/install.sh | VERSION=<x.y.z> sh"
+    echo "  - Override target triple:    curl -fsSL https://iii.dev/install.sh | TARGET=<triple> sh"
     echo "  - Browse all releases:       https://github.com/$REPO/releases"
   } >&2
   err "download" "no release asset found for target: $target"
