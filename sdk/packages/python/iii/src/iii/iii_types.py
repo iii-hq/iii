@@ -21,6 +21,7 @@ class MessageType(str, Enum):
     UNREGISTER_TRIGGER_TYPE = "unregistertriggertype"
     TRIGGER_REGISTRATION_RESULT = "triggerregistrationresult"
     WORKER_REGISTERED = "workerregistered"
+    REGISTRATION_REJECTED = "registrationrejected"
 
 
 class RegisterTriggerTypeMessage(BaseModel):
@@ -260,6 +261,12 @@ class TriggerRequest(BaseModel):
             "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
         ),
     )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Target namespace for routing. Omit to resolve in the engine's default namespace."
+        ),
+    )
 
 
 class InvokeFunctionMessage(BaseModel):
@@ -272,6 +279,7 @@ class InvokeFunctionMessage(BaseModel):
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
     action: TriggerActionEnqueue | TriggerActionVoid | None = Field(default=None)
+    namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.INVOKE_FUNCTION, alias="type")
 
 

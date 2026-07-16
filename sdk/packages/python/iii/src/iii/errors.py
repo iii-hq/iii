@@ -33,6 +33,32 @@ class InvocationError(Exception):
         self.invocation_id = invocation_id
 
 
+class RegistrationRejectedError(Exception):
+    """Raised when the engine rejects this worker's registration.
+
+    The engine pushes a ``registrationrejected`` message and closes the
+    connection on a registration collision (e.g. another live worker already
+    owns ``(namespace, worker_name)``). This is fatal: the SDK does not
+    reconnect. Inspect the attributes to identify the conflict.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        namespace: str,
+        worker_name: str,
+        owner_worker_id: str,
+    ) -> None:
+        super().__init__(
+            f"{code}: worker '{worker_name}' rejected in namespace "
+            f"'{namespace}' (owned by '{owner_worker_id}')"
+        )
+        self.code = code
+        self.namespace = namespace
+        self.worker_name = worker_name
+        self.owner_worker_id = owner_worker_id
+
+
 def _wrap_wire_error(
     error: Any,
     *,
