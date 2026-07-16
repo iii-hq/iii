@@ -24,6 +24,7 @@ export enum MessageType {
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
   WorkerRegistered = 'workerregistered',
+  RegistrationRejected = 'registrationrejected',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -171,6 +172,12 @@ export type TriggerRequest<TInput = unknown> = {
   timeoutMs?: number
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: unknown
+  /**
+   * Target namespace for routing. Omit to route within the engine's default
+   * namespace. Serialized into the {@link InvokeFunctionMessage} `namespace`
+   * field; omitted from the wire when undefined.
+   */
+  namespace?: string
 }
 
 export type InvokeFunctionMessage = {
@@ -205,6 +212,12 @@ export type InvokeFunctionMessage = {
    * inbound means "no metadata" (backward compatible with older engines).
    */
   metadata?: JsonValue
+  /**
+   * Target namespace for routing. Optional and additive: omitted from the JSON
+   * when undefined, and absence on inbound means the engine's default
+   * namespace (backward compatible with older engines).
+   */
+  namespace?: string
 }
 
 export type InvocationResultMessage = {
@@ -232,6 +245,24 @@ export type InvocationResultMessage = {
 export type WorkerRegisteredMessage = {
   message_type: MessageType.WorkerRegistered
   worker_id: string
+}
+
+/**
+ * Sent by the engine when this worker's registration collides with a live
+ * worker already owning the same `worker_name` (or an exported function id)
+ * in `namespace`. The engine closes the connection after sending it, so the
+ * SDK treats it as fatal: it stops the worker and does not reconnect.
+ */
+export type RegistrationRejectedMessage = {
+  message_type: MessageType.RegistrationRejected
+  /** Machine-readable rejection code (e.g. `worker_name_conflict`). */
+  code: string
+  /** Namespace in which the collision occurred. */
+  namespace: string
+  /** The worker name that was rejected. */
+  worker_name: string
+  /** ID of the live worker that already owns the contested identity. */
+  owner_worker_id: string
 }
 
 export type UnregisterFunctionMessage = {
@@ -263,3 +294,4 @@ export type IIIMessage =
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
   | WorkerRegisteredMessage
+  | RegistrationRejectedMessage
