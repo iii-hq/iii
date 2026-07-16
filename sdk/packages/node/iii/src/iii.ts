@@ -483,7 +483,10 @@ class Sdk implements IIIClient {
    * })
    * ```
    */
-  trigger = async <TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput> => {
+  // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
+  trigger = async <TInput = unknown, TOutput = any>(
+    request: TriggerRequest<TInput>,
+  ): Promise<TOutput> => {
     const { function_id, payload, action, timeoutMs, metadata } = request
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
