@@ -346,7 +346,16 @@ class III:
             )
             log.info(f"Connected to {self._address}")
             await self._on_connected()
-        except (ConnectionError, OSError, TimeoutError, asyncio.TimeoutError) as e:
+        except (
+            ConnectionError,
+            OSError,
+            TimeoutError,
+            asyncio.TimeoutError,
+            # Not an OSError: raised when the peer accepts TCP but the WS
+            # upgrade fails/stalls (the MOT-3931 zombie-VM mode). Without it
+            # the connect/reconnect task dies and retrying stops silently.
+            websockets.InvalidHandshake,
+        ) as e:
             log.warning(f"Connection failed: {e}")
             if self._running:
                 self._schedule_reconnect()
@@ -833,7 +842,8 @@ class III:
         call sync SDK methods from them (they would raise ``RuntimeError``).
         Treat calls as state notifications, not edges — a state may rarely
         be observed twice around subscription. Registering the same handler
-        twice fires it twice. Returns an idempotent unsubscribe function.
+        twice fires it twice. Returns an idempotent unsubscribe function
+        that removes only its own registration.
 
         Examples:
             >>> unsubscribe = worker.add_connection_state_listener(
@@ -846,7 +856,13 @@ class III:
         except Exception:
             log.exception("Connection state listener raised on initial fire")
 
+        unsubscribed = False
+
         def unsubscribe() -> None:
+            nonlocal unsubscribed
+            if unsubscribed:
+                return
+            unsubscribed = True
             try:
                 self._connection_listeners.remove(handler)
             except ValueError:

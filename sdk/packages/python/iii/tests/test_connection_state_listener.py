@@ -5,8 +5,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from iii_helpers.observability import ReconnectionConfig
+from websockets.exceptions import InvalidMessage
 
 import iii.iii as iii_module
+from iii import InitOptions
 from iii.iii import III
 
 
@@ -27,14 +30,18 @@ class FakeWebSocket:
         raise StopAsyncIteration
 
 
+def _patch_transport(monkeypatch: pytest.MonkeyPatch, connect) -> None:
+    monkeypatch.setattr(iii_module.websockets, "connect", connect)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii_helpers.observability.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
+
+
 def _connected_client(monkeypatch: pytest.MonkeyPatch) -> III:
     async def fake_connect(_addr: str, **kwargs: object) -> FakeWebSocket:
         return FakeWebSocket()
 
-    monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
-    monkeypatch.setattr("iii_helpers.observability.telemetry.init_otel", lambda **kwargs: None)
-    monkeypatch.setattr("iii_helpers.observability.telemetry.attach_event_loop", lambda loop: None)
-    monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
+    _patch_transport(monkeypatch, fake_connect)
 
     client = III("ws://fake")
     client._wait_until_connected()
@@ -84,3 +91,54 @@ def test_raising_listener_isolated_and_unsubscribe_idempotent(
 
     client.shutdown()  # fires "disconnected" into bad -> swallowed, no crash
     assert events == ["connected", "reconnecting"]
+
+
+def test_duplicate_subscription_unsubscribe_removes_only_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _connected_client(monkeypatch)
+    events: list[str] = []
+
+    unsub1 = client.add_connection_state_listener(events.append)
+    unsub2 = client.add_connection_state_listener(events.append)
+    assert events == ["connected", "connected"]
+
+    unsub1()
+    unsub1()  # second call must not remove the other registration
+    events.clear()
+    client._set_connection_state("reconnecting")
+    assert events == ["reconnecting"]
+
+    unsub2()
+    client._set_connection_state("connected")
+    assert events == ["reconnecting"]
+
+    client.shutdown()
+
+
+def test_handshake_failure_keeps_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def flaky_connect(_addr: str, **kwargs: object) -> FakeWebSocket:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            # Peer accepted TCP but the WS upgrade died (not an OSError):
+            # must not kill the connect/reconnect task.
+            raise InvalidMessage("did not receive a valid HTTP response")
+        return FakeWebSocket()
+
+    _patch_transport(monkeypatch, flaky_connect)
+
+    client = III(
+        "ws://fake",
+        InitOptions(reconnection_config=ReconnectionConfig(initial_delay_ms=5, max_delay_ms=10)),
+    )
+    states: list[str] = []
+    client.add_connection_state_listener(states.append)
+    client._wait_until_connected()
+    assert client.get_connection_state() == "connected"
+    assert attempts == 3
+    assert "connected" in states
+
+    client.shutdown()
