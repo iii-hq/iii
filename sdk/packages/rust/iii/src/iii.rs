@@ -1511,9 +1511,20 @@ impl IIIClient {
                                 should_reconnect = true;
                             }
                             _ = ping.tick() => {
-                                if let Err(err) = ws_tx.send(WsMessage::Ping(Default::default())).await {
-                                    tracing::warn!(error = %err, "keepalive ping failed; reconnecting");
-                                    should_reconnect = true;
+                                // Bounded like every send: an unbounded await
+                                // here wedges the whole select loop on a full
+                                // TCP window (see send_ws).
+                                let ping_send = ws_tx.send(WsMessage::Ping(Default::default()));
+                                match tokio::time::timeout(t.idle_timeout, ping_send).await {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(err)) => {
+                                        tracing::warn!(error = %err, "keepalive ping failed; reconnecting");
+                                        should_reconnect = true;
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!("keepalive ping timed out; reconnecting");
+                                        should_reconnect = true;
+                                    }
                                 }
                             }
                         }
@@ -1637,8 +1648,22 @@ impl IIIClient {
 
     async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), Error> {
         let payload = serde_json::to_string(message)?;
-        ws_tx.send(WsMessage::Text(payload.into())).await?;
-        Ok(())
+        // Bound the send: on a blackholed peer with a full TCP send window,
+        // send().await can block indefinitely — and since callers await this
+        // inside select! handlers, an unbounded send wedges the entire
+        // connection loop (idle detection included). A send that can't
+        // complete within the idle window is a dead link; reconnect.
+        let t = *self.inner.timings.lock_or_recover();
+        match tokio::time::timeout(t.idle_timeout, ws_tx.send(WsMessage::Text(payload.into())))
+            .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => {
+                tracing::warn!("websocket send timed out; treating link as dead");
+                Err(Error::Timeout)
+            }
+        }
     }
 
     fn handle_frame(&self, frame: WsMessage) -> Result<(), Error> {

@@ -14,7 +14,10 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde::Deserialize;
@@ -198,6 +201,11 @@ pub struct ExternalWorker {
     /// so graceful teardown signals the child the same way.
     #[cfg(unix)]
     lifeline: Arc<Mutex<Option<std::os::fd::OwnedFd>>>,
+    /// Terminal state: set by `destroy()` before it kills the child. The
+    /// supervisor re-checks it under the child lock before every spawn so a
+    /// destroy with no prior shutdown signal can never race a respawn into
+    /// resurrecting a destroyed worker.
+    stopped: Arc<AtomicBool>,
 }
 
 /// How often the supervisor polls the spawned child for unexpected exit.
@@ -223,6 +231,7 @@ impl ExternalWorker {
             config_file: Arc::new(Mutex::new(None)),
             #[cfg(unix)]
             lifeline: Arc::new(Mutex::new(None)),
+            stopped: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -485,6 +494,9 @@ impl Worker for ExternalWorker {
         // background task.
         {
             let mut slot = self.child.lock().await;
+            if self.stopped.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             self.spawn_child_into(&mut slot, config_path.as_deref())
                 .await?;
         }
@@ -577,6 +589,14 @@ impl Worker for ExternalWorker {
                         return;
                     }
                     let mut slot = worker.child.lock().await;
+                    // Terminal-state check under the child lock: a destroy()
+                    // with no prior shutdown signal (e.g. final engine
+                    // teardown of reload-added workers) that lands during our
+                    // backoff must not be raced by a respawn that resurrects
+                    // the worker.
+                    if worker.stopped.load(Ordering::SeqCst) {
+                        return;
+                    }
                     match worker
                         .spawn_child_into(&mut slot, config_path.as_deref())
                         .await
@@ -590,12 +610,6 @@ impl Worker for ExternalWorker {
                         }
                     }
                 }
-                // Residual race, deliberate: a destroy() with no prior
-                // shutdown signal (final engine teardown of reload-ADDED
-                // workers) can kill the corpse between our take() and the
-                // respawn. That only happens while the engine process is
-                // exiting — the fresh child's lifeline EOFs / III_ENGINE_PID
-                // goes stale and it self-exits. Not worth engineering around.
             }
         });
 
@@ -604,6 +618,10 @@ impl Worker for ExternalWorker {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying external worker '{}'", self.name);
+        // Terminal state BEFORE killing: the supervisor re-checks this under
+        // the child lock, so once we flip it no respawn can resurrect the
+        // worker even if destroy lands mid-backoff with no shutdown signal.
+        self.stopped.store(true, Ordering::SeqCst);
         kill_child(&self.child).await;
         // After kill_child for breadcrumb accuracy — see the shutdown task.
         #[cfg(unix)]
@@ -1208,29 +1226,32 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn read_pids(path: &std::path::Path) -> Vec<i32> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pids(path: &std::path::Path, want: usize) -> Vec<i32> {
+        // 10s ceiling: first spawn hides behind the 2s bind delay, a
+        // respawn behind SUPERVISOR_POLL + 1s backoff.
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let pids = read_pids(path);
+            if pids.len() >= want {
+                return pids;
+            }
+        }
+        read_pids(path)
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     #[serial_test::serial]
     async fn external_worker_respawns_killed_child_and_stops_on_shutdown() {
-        fn read_pids(path: &std::path::Path) -> Vec<i32> {
-            std::fs::read_to_string(path)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| l.trim().parse().ok())
-                .collect()
-        }
-        async fn wait_for_pids(path: &std::path::Path, want: usize) -> Vec<i32> {
-            // 10s ceiling: first spawn hides behind the 2s bind delay, a
-            // respawn behind SUPERVISOR_POLL + 1s backoff.
-            for _ in 0..100 {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                let pids = read_pids(path);
-                if pids.len() >= want {
-                    return pids;
-                }
-            }
-            read_pids(path)
-        }
-
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("pids.txt");
 
@@ -1287,6 +1308,61 @@ mod tests {
         );
 
         worker.destroy().await.unwrap();
+        // SAFETY: test is #[serial].
+        unsafe {
+            std::env::remove_var("RESPAWN_LOG");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn external_worker_destroy_during_backoff_prevents_respawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("pids.txt");
+
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/respawn_probe.sh");
+
+        let info = ExternalWorkerInfo {
+            name: "destroy-probe".into(),
+            binary_path: fixture,
+            extra_args: vec![],
+        };
+        let worker = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
+
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::set_var("RESPAWN_LOG", &log);
+        }
+
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        worker.start_background_tasks(rx, tx.clone()).await.unwrap();
+
+        let pids = wait_for_pids(&log, 1).await;
+        let pid1 = *pids.first().expect("probe never spawned");
+
+        // Unexpected death: supervisor detects within SUPERVISOR_POLL
+        // (500ms), then waits RESPAWN_BACKOFF_MIN (1s) — earliest respawn is
+        // ~1s after the kill.
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid1),
+            nix::sys::signal::Signal::SIGKILL,
+        )
+        .unwrap();
+
+        // destroy() with NO shutdown signal, landing inside the backoff
+        // window — the terminal `stopped` state must win over the respawn.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        worker.destroy().await.unwrap();
+
+        // Well past the 1s backoff: no second spawn may exist.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert_eq!(
+            read_pids(&log).len(),
+            1,
+            "destroy() during backoff must not be raced by a respawn"
+        );
         // SAFETY: test is #[serial].
         unsafe {
             std::env::remove_var("RESPAWN_LOG");
