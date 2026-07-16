@@ -51,7 +51,7 @@ The registry contains many workers that encapsulate common services. See
 
 <Note>
   You need iii [installed](../install) and [running](./engine) before adding a worker. To spin up a
-  temporary iii instance for testing, run `iii` in a scratch directory — when no `config.yaml`
+  temporary iii instance for testing, run `iii` in a scratch directory: when no `config.yaml`
   exists yet it creates one with an empty workers list, ready for `iii worker add` (see [Default
   configuration](./engine#default-configuration)).
 </Note>
@@ -72,7 +72,7 @@ iii worker add ghcr.io/org/worker:tag # Pulls and adds a worker from a Docker or
 The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
-`iii worker add` writes a bare `- name:` entry — no `config:` block. Workers boot with their
+`iii worker add` writes a bare `- name:` entry with no `config:` block. Workers boot with their
 built-in defaults and manage runtime settings through the
 [configuration worker](./configuration), whose entries are editable as local files under
 `./config/`. A `config:` block you write into `config.yaml` by hand still works as a one-time
@@ -88,7 +88,7 @@ iii worker add pdfkit --host localhost:49134
 ```
 
 With `--host` the CLI calls the engine's `worker::add` trigger and the engine applies the install
-in its own project directory — nothing in your current folder is touched.
+in its own project directory; nothing in your current folder is touched.
 
 <Note>
   `iii worker add` downloads worker images from remote repositories (the iii registry or an OCI
