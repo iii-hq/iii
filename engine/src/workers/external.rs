@@ -1289,6 +1289,7 @@ mod tests {
             name: "respawn-probe".into(),
             binary_path: fixture,
             extra_args: vec![],
+            env: Vec::new(),
         };
         // config: None — the builtin daemon path MOT-3857 is about.
         let worker = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
@@ -1355,6 +1356,7 @@ mod tests {
             name: "destroy-probe".into(),
             binary_path: fixture,
             extra_args: vec![],
+            env: Vec::new(),
         };
         let worker = ExternalWorker::new(info, None, crate::workers::worker::DEFAULT_PORT);
 
