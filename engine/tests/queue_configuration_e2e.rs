@@ -5,10 +5,10 @@
 // See LICENSE and PATENTS files for details.
 
 //! End-to-end test for the `iii-queue` ↔ `configuration` worker integration:
-//! seed-on-first-boot, no-clobber across worker restarts, hot-add of a queue
-//! (live consumer), hot-change of per-queue settings, full adapter/transport
-//! hot-swap, all-or-nothing gate on an invalid value, and `${VAR:default}`
-//! expansion.
+//! seed-on-first-boot, no-clobber across worker restarts, adoption of the
+//! stored transport on restart, hot-add of a queue (live consumer), hot-change
+//! of per-queue settings, full adapter/transport hot-swap, all-or-nothing gate
+//! on an invalid value, and `${VAR:default}` expansion.
 //!
 //! Modeled on `engine/tests/http_configuration_e2e.rs` — composes the two
 //! workers against a real `FsAdapter` on a `tempfile::tempdir()`. The queue
@@ -195,6 +195,116 @@ async fn runtime_edit_survives_worker_restart() {
     assert_eq!(
         restarted.config_snapshot().queue_configs["default"].concurrency,
         5
+    );
+}
+
+#[tokio::test]
+async fn restart_without_yaml_adapter_block_rebuilds_stored_transport() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    let counter = Arc::new(AtomicU64::new(0));
+    register_counting_function(&harness.engine, "e2e::restart", counter.clone());
+
+    // First boot: the config.yaml block selects a non-default transport and
+    // seeds the configuration entry (adapter included). `memory` stands in for
+    // any non-builtin backend without needing an external broker.
+    let worker = start_queue_worker(
+        &harness,
+        json!({
+            "adapter": { "name": "memory" },
+            "queue_configs": { "jobs": { "concurrency": 1 } }
+        }),
+    )
+    .await;
+    worker.destroy().await.expect("destroy");
+
+    // Restarted process: after the first boot the engine strips the seeded
+    // `config:` block from config.yaml, so `create` runs with no block and
+    // resolves the default (builtin) transport.
+    let restarted = QueueWorker::for_test(harness.engine.clone(), Some(json!({})))
+        .await
+        .expect("queue worker");
+    restarted.initialize().await.expect("queue initialize");
+    Worker::register_functions(&restarted, harness.engine.clone());
+    let boot_adapter = restarted.adapter_snapshot();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    restarted
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("queue start_background_tasks");
+
+    // The stored entry is the runtime source of truth: adopting its value must
+    // also rebuild the transport it names — not adopt the config while leaving
+    // consumers on the default transport resolved at create time.
+    assert_eq!(
+        restarted
+            .config_snapshot()
+            .adapter
+            .as_ref()
+            .map(|a| a.name.as_str()),
+        Some("memory"),
+        "the stored adapter selection must be adopted on restart"
+    );
+    assert!(
+        !Arc::ptr_eq(&boot_adapter, &restarted.adapter_snapshot()),
+        "the transport must be rebuilt to the stored adapter, not left on the \
+         default resolved at create time"
+    );
+
+    // Consumers were spawned on the rebuilt transport: a job enqueued after
+    // the restart is delivered.
+    enqueue(&restarted, "jobs", "e2e::restart", json!({}))
+        .await
+        .expect("enqueue after restart");
+    wait_for(
+        || counter.load(Ordering::SeqCst) >= 1,
+        "handler invoked on the stored transport after restart",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn restart_with_matching_adapter_keeps_boot_transport() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+
+    // First boot with no adapter block: the stored entry carries no adapter
+    // selection either.
+    let worker = start_queue_worker(
+        &harness,
+        json!({ "queue_configs": { "jobs": { "concurrency": 1 } } }),
+    )
+    .await;
+    worker.destroy().await.expect("destroy");
+
+    // Restart, also with no adapter block. `None` vs the filled-in default
+    // must not read as an adapter change: the transport resolved at create
+    // time is kept, only the config value is adopted.
+    let restarted = QueueWorker::for_test(harness.engine.clone(), Some(json!({})))
+        .await
+        .expect("queue worker");
+    restarted.initialize().await.expect("queue initialize");
+    Worker::register_functions(&restarted, harness.engine.clone());
+    let boot_adapter = restarted.adapter_snapshot();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    restarted
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("queue start_background_tasks");
+
+    assert!(
+        Arc::ptr_eq(&boot_adapter, &restarted.adapter_snapshot()),
+        "a matching adapter selection must not rebuild the transport on restart"
+    );
+    // The stored per-queue settings are still adopted.
+    assert_eq!(
+        restarted.config_snapshot().queue_configs["jobs"].concurrency,
+        1
     );
 }
 
