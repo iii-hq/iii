@@ -195,6 +195,17 @@ pub struct WorkersListInput {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct WorkerInfoInput {
     pub name: String,
+    /// Optional target namespace. A worker name is unique only *within* a
+    /// namespace, so the same name can identify two different workers once they
+    /// register into different namespaces. When set, the lookup resolves
+    /// strictly to the worker of that name in this namespace. When absent,
+    /// resolution mirrors `engine::functions::info`'s bare-id behavior: a
+    /// `default` worker wins, a name unique to one non-default namespace
+    /// resolves, and a name that lives in several non-default namespaces at once
+    /// is ambiguous — reported as an error naming the candidate namespaces
+    /// rather than silently picking one.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 // ── Outputs ─────────────────────────────────────────────────────────────
@@ -691,6 +702,97 @@ impl EngineFunctionsWorker {
         }
     }
 
+    /// The namespaces a worker `name` is currently connected in. In-process
+    /// runtime workers always live in [`DEFAULT_NAMESPACE`]; WS workers carry
+    /// the namespace they declared on `engine::workers::register`. At most one
+    /// worker per namespace can hold a given name (the engine rejects duplicate
+    /// names within a namespace), so the result is deduplicated.
+    fn worker_namespaces_for_name(&self, name: &str) -> Vec<String> {
+        let mut namespaces: Vec<String> = Vec::new();
+        if self
+            .engine
+            .list_runtime_workers()
+            .iter()
+            .any(|w| w.name == name)
+        {
+            namespaces.push(crate::protocol::DEFAULT_NAMESPACE.to_string());
+        }
+        for worker in self.engine.worker_registry.list_workers() {
+            if worker.name.as_deref() == Some(name) {
+                let ns = self.engine.worker_registry.get_namespace(&worker.id);
+                if !namespaces.contains(&ns) {
+                    namespaces.push(ns);
+                }
+            }
+        }
+        namespaces
+    }
+
+    /// Resolves which namespace a `engine::workers::info` lookup addresses,
+    /// given the caller's optional explicit `namespace`. Mirrors
+    /// [`Self::info_namespace`] for functions: an explicit namespace resolves
+    /// strictly there (a miss is NOT_FOUND); a bare name prefers `default`,
+    /// then resolves when the name is unique to one namespace, and is otherwise
+    /// ambiguous — surfaced as an error naming the candidate namespaces so the
+    /// engine never silently picks one same-named worker over another.
+    fn resolve_worker_namespace(
+        &self,
+        name: &str,
+        explicit: Option<&str>,
+    ) -> Result<String, ErrorBody> {
+        let candidates = self.worker_namespaces_for_name(name);
+        match explicit {
+            Some(ns) => {
+                if candidates.iter().any(|c| c == ns) {
+                    Ok(ns.to_string())
+                } else {
+                    Err(self.worker_not_found(name, &candidates))
+                }
+            }
+            None => {
+                if candidates
+                    .iter()
+                    .any(|ns| ns == crate::protocol::DEFAULT_NAMESPACE)
+                {
+                    return Ok(crate::protocol::DEFAULT_NAMESPACE.to_string());
+                }
+                match candidates.as_slice() {
+                    [] => Err(self.worker_not_found(name, &candidates)),
+                    [only] => Ok(only.clone()),
+                    _ => Err(ErrorBody {
+                        code: "NOT_FOUND".into(),
+                        message: format!(
+                            "Worker '{name}' is ambiguous: it is connected in namespace(s): {}. \
+                             Pass `namespace` to disambiguate.",
+                            candidates.join(", ")
+                        ),
+                        stacktrace: None,
+                    }),
+                }
+            }
+        }
+    }
+
+    /// NOT_FOUND body for a worker lookup that resolved nothing. When the name
+    /// *is* connected — just not in the requested namespace — the candidates are
+    /// named so the caller can retry, mirroring [`Self::function_not_found`].
+    fn worker_not_found(&self, name: &str, candidates: &[String]) -> ErrorBody {
+        let message = if candidates.is_empty() {
+            format!("Worker '{name}' is not connected.")
+        } else {
+            format!(
+                "Worker '{name}' is not connected in the requested namespace; \
+                 it is connected in namespace(s): {}.",
+                candidates.join(", ")
+            )
+        };
+        ErrorBody {
+            code: "NOT_FOUND".into(),
+            message,
+            stacktrace: None,
+        }
+    }
+
     /// Resolves the worker name that owns a trigger type from an
     /// already-fetched `TriggerType`. Tries, in order: the `worker_id` Uuid
     /// (populated only by WebSocket-connected workers), the known provider
@@ -724,12 +826,23 @@ impl EngineFunctionsWorker {
             .count()
     }
 
-    fn registered_trigger_refs_for_function(&self, function_id: &str) -> Vec<RegisteredTriggerRef> {
+    /// Triggers bound to `(namespace, function_id)`. The namespace is part of
+    /// the key on purpose: the same `function_id` can be registered once per
+    /// namespace, so filtering by bare id would splice `analytics`'s triggers
+    /// onto the `orders` function detail.
+    fn registered_trigger_refs_for_function(
+        &self,
+        namespace: &str,
+        function_id: &str,
+    ) -> Vec<RegisteredTriggerRef> {
         self.engine
             .trigger_registry
             .triggers
             .iter()
-            .filter(|entry| entry.value().function_id == function_id)
+            .filter(|entry| {
+                let t = entry.value();
+                t.namespace == namespace && t.function_id == function_id
+            })
             .map(|entry| {
                 let t = entry.value();
                 RegisteredTriggerRef {
@@ -942,7 +1055,7 @@ impl EngineFunctionsWorker {
             request_schema: function.request_format.clone(),
             response_schema: function.response_format.clone(),
             metadata: function.metadata.clone(),
-            registered_triggers: self.registered_trigger_refs_for_function(function_id),
+            registered_triggers: self.registered_trigger_refs_for_function(namespace, function_id),
         })
     }
 
@@ -1037,7 +1150,15 @@ impl EngineFunctionsWorker {
         }
     }
 
-    async fn build_worker_detail(&self, name: &str) -> Option<WorkerInfoOutput> {
+    /// `worker_namespace` is the already-resolved namespace of the target
+    /// worker (see [`Self::resolve_worker_namespace`]). A worker is selected
+    /// only if its name AND namespace both match — two workers can share a name
+    /// across namespaces, so name alone would pick an arbitrary one.
+    async fn build_worker_detail(
+        &self,
+        name: &str,
+        worker_namespace: &str,
+    ) -> Option<WorkerInfoOutput> {
         use crate::workers::observability::metrics::get_worker_metrics_from_storage;
 
         let envelope: WorkerDetailEnvelope;
@@ -1046,26 +1167,28 @@ impl EngineFunctionsWorker {
         // the only correct place to look them up: a `default` lookup finds
         // nothing for a namespaced worker and silently reports it as owning no
         // functions at all.
-        let worker_namespace: String;
+        let worker_namespace = worker_namespace.to_string();
 
         if let Some(runtime) = self
             .engine
             .list_runtime_workers()
             .into_iter()
-            .find(|w| w.name == name)
+            // Runtime workers only ever live in `default`; only match them when
+            // that is the namespace being asked for.
+            .find(|w| w.name == name && worker_namespace == crate::protocol::DEFAULT_NAMESPACE)
         {
             envelope = self.worker_detail_envelope_from_runtime(&runtime);
             function_ids = runtime.function_ids;
-            // In-process workers always register into the default namespace.
-            worker_namespace = crate::protocol::DEFAULT_NAMESPACE.to_string();
-        } else if let Some(worker) = self
-            .engine
-            .worker_registry
-            .list_workers()
-            .into_iter()
-            .find(|w| w.name.as_deref() == Some(name))
+        } else if let Some(worker) =
+            self.engine
+                .worker_registry
+                .list_workers()
+                .into_iter()
+                .find(|w| {
+                    w.name.as_deref() == Some(name)
+                        && self.engine.worker_registry.get_namespace(&w.id) == worker_namespace
+                })
         {
-            worker_namespace = self.engine.worker_registry.get_namespace(&worker.id);
             let function_count_async = worker.get_function_ids().await;
             let function_count = function_count_async.len();
             let active_invocations = worker.invocation_count().await;
@@ -1152,7 +1275,13 @@ impl EngineFunctionsWorker {
             .trigger_registry
             .triggers
             .iter()
-            .filter(|entry| function_id_set.contains(&entry.value().function_id))
+            // Scope by `(namespace, function_id)`: a trigger bound to the same
+            // id in another namespace belongs to a different worker's function,
+            // not this one.
+            .filter(|entry| {
+                let t = entry.value();
+                t.namespace == worker_namespace && function_id_set.contains(&t.function_id)
+            })
             .map(|entry| {
                 let t = entry.value();
                 RegisteredTriggerSummary {
@@ -1727,13 +1856,17 @@ impl EngineFunctionsWorker {
         &self,
         input: WorkerInfoInput,
     ) -> FunctionResult<WorkerInfoOutput, ErrorBody> {
-        match self.build_worker_detail(&input.name).await {
+        // Resolve the namespace first: a bare name can identify two different
+        // workers once they register into different namespaces, so returning the
+        // first match would be arbitrary.
+        let namespace = match self.resolve_worker_namespace(&input.name, input.namespace.as_deref())
+        {
+            Ok(ns) => ns,
+            Err(err) => return FunctionResult::Failure(err),
+        };
+        match self.build_worker_detail(&input.name, &namespace).await {
             Some(detail) => FunctionResult::Success(detail),
-            None => FunctionResult::Failure(ErrorBody {
-                code: "NOT_FOUND".into(),
-                message: format!("Worker '{}' is not connected.", input.name),
-                stacktrace: None,
-            }),
+            None => FunctionResult::Failure(self.worker_not_found(&input.name, &[])),
         }
     }
 
@@ -3686,6 +3819,7 @@ mod tests {
         match module
             .workers_info(WorkerInfoInput {
                 name: "iii-state".to_string(),
+                namespace: None,
             })
             .await
         {
@@ -3726,6 +3860,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "iii-state".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3790,6 +3925,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "ops-worker".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3879,6 +4015,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "ops-worker".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3898,6 +4035,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "nope".to_string(),
+                namespace: None,
             })
             .await;
         assert!(matches!(result, FunctionResult::Failure(_)));
@@ -3972,6 +4110,7 @@ mod tests {
         let info_result = module
             .workers_info(WorkerInfoInput {
                 name: "named-worker".to_string(),
+                namespace: None,
             })
             .await;
         match info_result {
