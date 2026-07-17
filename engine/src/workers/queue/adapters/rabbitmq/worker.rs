@@ -177,6 +177,11 @@ impl Worker {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
+        // Route retry/DLQ to the same namespace-scoped subscriber queue this
+        // consumer drains, so a requeued or dead-lettered message stays in its
+        // namespace instead of landing in another namespace's queue.
+        let namespace = self.engine.trigger_registry.namespace_of(trigger_id);
+
         match self
             .process_job(&job, function_id, condition_function_id, trigger_id)
             .await
@@ -202,7 +207,13 @@ impl Worker {
                     .map_err(|e| format!("Failed to nack message: {}", e))?;
 
                 self.retry_handler
-                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(function_id))
+                    .handle_failure(
+                        topic,
+                        &mut job,
+                        &format!("{:?}", e),
+                        Some(function_id),
+                        &namespace,
+                    )
                     .await
                     .map_err(|e| format!("Failed to handle failure: {}", e))?;
             }

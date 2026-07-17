@@ -157,6 +157,11 @@ impl QueueAdapter for BridgeAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        // The bridge forwards the subscription to a remote engine, which owns
+        // the durable queue identity via its own adapter; local subscriptions
+        // are already keyed by (topic, trigger id). Dispatch resolves the
+        // namespace live by id.
+        _namespace: &str,
         condition_function_id: Option<String>,
         _queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -443,7 +448,14 @@ mod tests {
         // verify subscribe doesn't panic either.
         let Ok(adapter) = result else { return };
         adapter
-            .subscribe("test_topic", "test_id", "functions.test", None, None)
+            .subscribe(
+                "test_topic",
+                "test_id",
+                "functions.test",
+                "default",
+                None,
+                None,
+            )
             .await;
     }
 

@@ -64,12 +64,19 @@ impl Publisher {
             .await
     }
 
-    pub async fn requeue(&self, topic: &str, job: &Job, function_id: Option<&str>) -> Result<()> {
+    pub async fn requeue(
+        &self,
+        topic: &str,
+        job: &Job,
+        function_id: Option<&str>,
+        namespace: &str,
+    ) -> Result<()> {
         if let Some(fid) = function_id {
             // Per-function subscriber queue: publish directly to the function's
-            // queue (default exchange) to avoid re-fanning out to all subscribers.
+            // namespace-scoped queue (default exchange) to avoid re-fanning out
+            // to all subscribers or crossing into another namespace's queue.
             let names = RabbitNames::new(topic);
-            let queue_name = names.function_queue(fid);
+            let queue_name = names.function_queue(namespace, fid);
             let headers = self.build_headers(job);
             self.publish_to_exchange("", &queue_name, job, Some(headers))
                 .await
@@ -84,10 +91,11 @@ impl Publisher {
         job: &Job,
         error: &str,
         function_id: Option<&str>,
+        namespace: &str,
     ) -> Result<()> {
         let names = RabbitNames::new(topic);
         let dlq_name = if let Some(fid) = function_id {
-            names.function_dlq(fid)
+            names.function_dlq(namespace, fid)
         } else {
             names.dlq()
         };

@@ -57,11 +57,22 @@ pub trait QueueAdapter: Send + Sync + 'static {
         traceparent: Option<String>,
         baggage: Option<String>,
     );
+    /// Registers a durable subscription.
+    ///
+    /// `namespace` is the subscribing trigger's namespace, taken from the
+    /// trigger itself. It must be passed in (not resolved via
+    /// `TriggerRegistry::namespace_of`) because at subscribe time the trigger is
+    /// not yet inserted into the registry — the registrator runs first — so a
+    /// lookup would fall back to the default namespace. Adapters use it to scope
+    /// the durable queue identity by `(namespace, function_id)`, keeping
+    /// same-topic/same-function subscribers in different namespaces on distinct
+    /// queues. Live dispatch still resolves the namespace by id at fire time.
     async fn subscribe(
         &self,
         topic: &str,
         id: &str,
         function_id: &str,
+        namespace: &str,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     );

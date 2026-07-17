@@ -1810,6 +1810,101 @@ async fn rmq_subscriber_invokes_target_in_registering_namespace() {
     );
 }
 
+/// Two `durable:subscriber` triggers for the SAME topic+function_id but in
+/// DIFFERENT namespaces must be two distinct RabbitMQ queues, each bound to the
+/// topic fanout exchange, so ONE published event reaches BOTH. Before keying the
+/// per-function subscriber queue by `(namespace, function_id)` both namespaces
+/// declared and bound the SAME queue name and became competing consumers of one
+/// queue — the fanout delivered each event to only one of them, so a single
+/// namespace won every message. Reverting the queue identity to omit the
+/// namespace turns this RED (one sink stays empty). Drives the real transport.
+#[tokio::test]
+async fn rmq_two_namespaces_same_topic_fid_are_distinct_queues() {
+    use common::queue_helpers::enqueue_to_topic;
+    use iii::trigger::Trigger;
+
+    fn register_counting_ns(engine: &Arc<Engine>, ns: &str, function_id: &str) -> Arc<AtomicU64> {
+        let hits = Arc::new(AtomicU64::new(0));
+        let sink = hits.clone();
+        let function = Function {
+            handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
+                let sink = sink.clone();
+                Box::pin(async move {
+                    sink.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: function_id.to_string(),
+            _description: Some("rmq per-namespace subscriber".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function_ns(ns, function_id.to_string(), function);
+        hits
+    }
+
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let topic = format!("{prefix}-ns-distinct-queues");
+
+    let engine = {
+        iii::workers::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    // Same function id, one subscriber per namespace, each counting its hits.
+    let hits_orders = register_counting_ns(&engine, "orders", "queue::react");
+    let hits_analytics = register_counting_ns(&engine, "analytics", "queue::react");
+
+    let module = QueueWorker::for_test(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueWorker::create should succeed");
+    module.register_functions(engine.clone());
+    module.initialize().await.expect("init should succeed");
+
+    for ns in ["orders", "analytics"] {
+        engine
+            .trigger_registry
+            .register_trigger(Trigger {
+                id: format!("trig-{}", Uuid::new_v4()),
+                trigger_type: "durable:subscriber".to_string(),
+                function_id: "queue::react".to_string(),
+                config: json!({ "topic": &topic }),
+                worker_id: None,
+                metadata: None,
+                namespace: ns.to_string(),
+            })
+            .await
+            .unwrap_or_else(|_| panic!("register {ns} trigger"));
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    enqueue_to_topic(&engine, &topic, json!({ "msg": "fanout" }))
+        .await
+        .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    assert_eq!(
+        hits_orders.load(Ordering::SeqCst),
+        1,
+        "the orders-namespace subscriber must receive the single event"
+    );
+    assert_eq!(
+        hits_analytics.load(Ordering::SeqCst),
+        1,
+        "the analytics-namespace subscriber must receive the single event; a shared \
+         (namespace-blind) queue would let one namespace win every message"
+    );
+}
+
 /// The `TriggerAction::Enqueue` function-queue path over the RabbitMQ transport
 /// must run the enqueued function in the namespace captured at enqueue, not
 /// `default`. The namespace rides the AMQP message as a `namespace` header,

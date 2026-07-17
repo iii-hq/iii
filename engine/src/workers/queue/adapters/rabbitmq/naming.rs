@@ -8,6 +8,18 @@
 
 pub const EXCHANGE_PREFIX: &str = "iii";
 
+/// Separator that folds the subscribing namespace into a per-function
+/// subscriber queue name.
+///
+/// A subscriber queue is otherwise `{prefix}.{topic}.{fid}.queue`, where both
+/// `topic` (dot-delimited) and `function_id` (`::`-delimited) can contain `.`
+/// or `::`. `@` sits outside both conventions, so a topic or function id can
+/// never forge it: the segment after the final `@` (and before the `.queue` /
+/// `.dlq` suffix) is unambiguously the namespace. Two subscribers with the same
+/// topic+function_id in different namespaces therefore get distinct, durable
+/// queues instead of colliding on one.
+pub const NS_SEP: char = '@';
+
 pub struct RabbitNames {
     pub topic: String,
 }
@@ -27,12 +39,18 @@ impl RabbitNames {
         format!("{}.{}.queue", EXCHANGE_PREFIX, self.topic)
     }
 
-    pub fn function_queue(&self, function_id: &str) -> String {
-        format!("{}.{}.{}.queue", EXCHANGE_PREFIX, self.topic, function_id)
+    pub fn function_queue(&self, namespace: &str, function_id: &str) -> String {
+        format!(
+            "{}.{}.{}{}{}.queue",
+            EXCHANGE_PREFIX, self.topic, function_id, NS_SEP, namespace
+        )
     }
 
-    pub fn function_dlq(&self, function_id: &str) -> String {
-        format!("{}.{}.{}.dlq", EXCHANGE_PREFIX, self.topic, function_id)
+    pub fn function_dlq(&self, namespace: &str, function_id: &str) -> String {
+        format!(
+            "{}.{}.{}{}{}.dlq",
+            EXCHANGE_PREFIX, self.topic, function_id, NS_SEP, namespace
+        )
     }
 
     pub fn dlq(&self) -> String {
@@ -85,6 +103,37 @@ mod tests {
         assert_eq!(names.exchange(), "iii.user.created.exchange");
         assert_eq!(names.queue(), "iii.user.created.queue");
         assert_eq!(names.dlq(), "iii.user.created.dlq");
+    }
+
+    #[test]
+    fn test_function_queue_includes_namespace() {
+        let names = RabbitNames::new("user.created");
+        // Same topic + function id, different namespaces -> distinct queues.
+        assert_eq!(
+            names.function_queue("orders", "handle::it"),
+            "iii.user.created.handle::it@orders.queue"
+        );
+        assert_eq!(
+            names.function_queue("analytics", "handle::it"),
+            "iii.user.created.handle::it@analytics.queue"
+        );
+        assert_ne!(
+            names.function_queue("orders", "handle::it"),
+            names.function_queue("analytics", "handle::it")
+        );
+    }
+
+    #[test]
+    fn test_function_dlq_includes_namespace() {
+        let names = RabbitNames::new("user.created");
+        assert_eq!(
+            names.function_dlq("orders", "handle::it"),
+            "iii.user.created.handle::it@orders.dlq"
+        );
+        assert_ne!(
+            names.function_dlq("orders", "handle::it"),
+            names.function_dlq("analytics", "handle::it")
+        );
     }
 
     #[test]

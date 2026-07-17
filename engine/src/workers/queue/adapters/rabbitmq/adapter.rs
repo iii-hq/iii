@@ -285,6 +285,7 @@ impl QueueAdapter for RabbitMQAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        namespace: &str,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -293,6 +294,7 @@ impl QueueAdapter for RabbitMQAdapter {
         let topic = topic.to_string();
         let id = id.to_string();
         let function_id = function_id.to_string();
+        let namespace = namespace.to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
 
         let already_subscribed = {
@@ -314,15 +316,21 @@ impl QueueAdapter for RabbitMQAdapter {
             return;
         }
 
+        // Scope the subscriber queue to the trigger's namespace so two
+        // subscribers with the same topic+function_id in different namespaces
+        // are distinct durable queues, not competing consumers of one. The
+        // worker re-resolves the dispatch namespace live by id, which agrees
+        // once the trigger is registered.
         let subscriber_max_priority = queue_config.as_ref().and_then(|c| c.max_priority);
         if let Err(e) = self
             .topology
-            .setup_subscriber_queue(&topic, &function_id, subscriber_max_priority)
+            .setup_subscriber_queue(&topic, &namespace, &function_id, subscriber_max_priority)
             .await
         {
             tracing::error!(
                 error = ?e,
                 topic = %topic,
+                namespace = %namespace,
                 function_id = %function_id,
                 "Failed to setup RabbitMQ per-function queue"
             );
@@ -330,7 +338,7 @@ impl QueueAdapter for RabbitMQAdapter {
         }
 
         let names = RabbitNames::new(&topic);
-        let per_function_queue = names.function_queue(&function_id);
+        let per_function_queue = names.function_queue(&namespace, &function_id);
         let consumer_tag = format!("consumer-{}", Uuid::new_v4());
 
         let effective_queue_mode = queue_config

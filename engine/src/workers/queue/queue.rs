@@ -642,6 +642,10 @@ impl TriggerRegistrator for QueueWorker {
                         &topic,
                         &trigger.id,
                         &trigger.function_id,
+                        // The trigger's own namespace: subscribe runs before the
+                        // registry inserts the trigger, so pass it directly
+                        // rather than resolving by id (which would miss).
+                        &trigger.namespace,
                         condition_function_id,
                         queue_config,
                     )
@@ -1612,6 +1616,7 @@ mod tests {
             _topic: &str,
             _id: &str,
             _function_id: &str,
+            _namespace: &str,
             _condition_function_id: Option<String>,
             _queue_config: Option<SubscriberQueueConfig>,
         ) {
