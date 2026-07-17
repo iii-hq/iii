@@ -190,6 +190,44 @@ def test_registration_rejected_is_fatal_and_does_not_reconnect() -> None:
     assert err.owner_worker_id == "owner-123"
 
 
+def test_function_namespace_conflict_keeps_worker_serving() -> None:
+    stub = III.__new__(III)
+    stub._running = True
+    stub._reconnect_task = None
+    stub._ws = None
+    stub._fatal_error = None
+    stub._pending = {}
+    stub._connection_state = "connected"
+    stub._connected_event = threading.Event()
+    stub._connection_listeners = []
+    observed: list[str] = []
+    stub._connection_listeners.append(lambda state: observed.append(state))
+
+    asyncio.run(
+        stub._handle_message(
+            json.dumps(
+                {
+                    "type": "registrationrejected",
+                    # For FUNCTION conflicts the engine reuses the struct, so
+                    # `worker_name` carries the conflicting function id.
+                    "code": "FUNCTION_NAMESPACE_CONFLICT",
+                    "namespace": "orders",
+                    "worker_name": "state::get",
+                    "owner_worker_id": "owner-123",
+                }
+            )
+        )
+    )
+
+    # Non-fatal: only that one function is refused. The worker stays running,
+    # never records a fatal error, and never disables reconnect. Its other
+    # exports keep serving.
+    assert stub._fatal_error is None
+    assert stub._running is True
+    assert stub._reconnect_task is None
+    assert "failed" not in observed
+
+
 def test_get_worker_metadata_omits_description_when_unset() -> None:
     metadata = _call_metadata_method()
 

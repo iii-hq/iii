@@ -513,14 +513,35 @@ class III:
             self._handle_registration_rejected(data)
 
     def _handle_registration_rejected(self, data: dict[str, Any]) -> None:
-        """Handle a fatal ``registrationrejected`` push from the engine.
+        """Handle a ``registrationrejected`` push from the engine.
 
-        The engine closes the connection after sending this on a registration
-        collision. Treat it as terminal: stop the worker and do NOT reconnect,
-        so the ensuing close does not trigger the reconnect loop.
+        Two codes with different semantics arrive here:
+
+        * ``FUNCTION_NAMESPACE_CONFLICT`` -- another live worker already exports
+          this one function id. Only that registration is refused; the engine
+          keeps the connection open and this worker keeps serving everything
+          else. Non-fatal: log and continue. (Here ``worker_name`` carries the
+          conflicting function id -- the engine reuses the struct.)
+        * ``WORKER_NAMESPACE_CONFLICT`` -- another live worker already holds this
+          ``(namespace, worker_name)``. The engine closes the connection. Fatal:
+          stop and do NOT reconnect. Any unknown code is treated as fatal too.
         """
+        code = data.get("code", "")
+
+        if code == "FUNCTION_NAMESPACE_CONFLICT":
+            log.warning(
+                "Function registration rejected (%s): namespace=%r "
+                "function_id=%r already owned by worker %r. Skipping that "
+                "function; the worker keeps serving its other exports.",
+                code,
+                data.get("namespace", ""),
+                data.get("worker_name", ""),
+                data.get("owner_worker_id", ""),
+            )
+            return
+
         error = RegistrationRejectedError(
-            code=data.get("code", ""),
+            code=code,
             namespace=data.get("namespace", ""),
             worker_name=data.get("worker_name", ""),
             owner_worker_id=data.get("owner_worker_id", ""),
