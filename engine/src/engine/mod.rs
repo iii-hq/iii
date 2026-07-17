@@ -25,7 +25,7 @@ use crate::{
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
     protocol::{
         DEFAULT_NAMESPACE, ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message,
-        WORKER_NAMESPACE_CONFLICT,
+        WORKER_NAMESPACE_CONFLICT, effective_namespace,
     },
     services::{Service, ServicesRegistry},
     telemetry::{
@@ -1358,11 +1358,16 @@ impl Engine {
                         && !function_id.starts_with("engine::")
                     {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        // Resolve the middleware in the caller's namespace and hand
+                        // it that namespace, so a namespaced invoke reaches the
+                        // matching middleware and can re-target the same namespace.
+                        let ns = effective_namespace(&namespace).to_string();
                         let middleware_input = serde_json::json!({
                             "function_id": function_id,
                             "payload": data,
                             "action": action,
                             "context": session.context,
+                            "namespace": ns,
                         });
                         let engine = self.clone();
                         let w = worker.clone();
@@ -1374,7 +1379,8 @@ impl Engine {
 
                         tokio::spawn(async move {
                             let response = match engine
-                                .call_with_metadata(
+                                .call_with_metadata_ns(
+                                    &ns,
                                     &middleware_id,
                                     middleware_input,
                                     middleware_metadata,

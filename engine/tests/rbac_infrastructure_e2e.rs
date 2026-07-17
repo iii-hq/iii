@@ -264,6 +264,99 @@ async fn forbidden_list_still_wins_over_infrastructure_carve_out() {
     assert!(result.is_none());
 }
 
+/// The listener middleware (`session.config.middleware_function_id`) must be
+/// resolved in the namespace the caller targeted, and must be told that
+/// namespace so it can re-target the caller's function correctly. `mw::guard`
+/// exists in both `orders` (echoes "from-orders-mw") and `default`
+/// ("from-default-mw"); an invoke carrying `namespace = orders` through a
+/// session with the middleware configured must hit the `orders` middleware and
+/// receive `namespace = "orders"` in its input.
+///
+/// RED when reverted: `call_with_metadata` (default) hits "from-default-mw";
+/// dropping `"namespace"` from `middleware_input` makes `received_ns` null.
+/// Drives the real path via `router_msg`.
+#[tokio::test]
+async fn listener_middleware_runs_in_caller_namespace() {
+    ensure_default_meter();
+    let engine = Arc::new(Engine::new());
+
+    for (ns, tag) in [("orders", "from-orders-mw"), ("default", "from-default-mw")] {
+        engine.register_function_handler_ns(
+            ns,
+            RegisterFunctionRequest {
+                function_id: "mw::guard".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: serde_json::Value| async move {
+                FunctionResult::Success(Some(json!({
+                    "mw": tag,
+                    "received_ns": input.get("namespace").cloned(),
+                })))
+            }),
+        );
+    }
+
+    let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+    let session = session_with(
+        engine.clone(),
+        restrictive_rbac(),
+        vec![],
+        Some("mw::guard".to_string()),
+    );
+    let worker = WorkerConnection::with_session(tx, session);
+
+    let invocation_id = Uuid::new_v4();
+    let msg = Message::InvokeFunction {
+        invocation_id: Some(invocation_id),
+        function_id: "api::thing".to_string(),
+        data: json!({ "hello": "world" }),
+        traceparent: None,
+        baggage: None,
+        action: None,
+        metadata: None,
+        namespace: Some("orders".to_string()),
+    };
+    engine
+        .router_msg(&worker, &msg)
+        .await
+        .expect("router_msg must not error");
+
+    let result = loop {
+        let outbound = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for InvocationResult")
+            .expect("worker channel closed");
+        if let Outbound::Protocol(Message::InvocationResult {
+            invocation_id: got,
+            result,
+            error,
+            ..
+        }) = outbound
+            && got == invocation_id
+        {
+            assert!(
+                error.is_none(),
+                "middleware invocation must succeed: {error:?}"
+            );
+            break result.expect("middleware must return a result");
+        }
+    };
+
+    assert_eq!(
+        result.get("mw").and_then(|v| v.as_str()),
+        Some("from-orders-mw"),
+        "the orders middleware must run for an orders-targeted invoke; got: {result:?}"
+    );
+    assert_eq!(
+        result.get("received_ns").and_then(|v| v.as_str()),
+        Some("orders"),
+        "the middleware must receive the caller's namespace in its input; got: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn middleware_bypass_preserved_for_infrastructure_functions() {
     // Guards the existing prefix-based bypass at engine/src/engine/mod.rs

@@ -189,13 +189,14 @@ enum MiddlewareResult {
 
 async fn execute_middleware(
     engine: &Arc<Engine>,
+    namespace: &str,
     mw_fn_id: &str,
     mw_input: Value,
     timeout_ms: u64,
 ) -> Result<MiddlewareResult, axum::response::Response> {
     match tokio::time::timeout(
         Duration::from_millis(timeout_ms),
-        engine.call(mw_fn_id, mw_input),
+        engine.call_with_metadata_ns(namespace, mw_fn_id, mw_input, None),
     )
     .await
     {
@@ -408,6 +409,7 @@ pub async fn dynamic_handler(
                 );
                 match execute_middleware(
                     &engine,
+                    &namespace,
                     &mw_config.function_id,
                     mw_input,
                     rest_api_config.default_timeout,
@@ -569,6 +571,7 @@ pub async fn dynamic_handler(
                 );
                 match execute_middleware(
                     &engine,
+                    &namespace,
                     mw_fn_id,
                     mw_input,
                     rest_api_config.default_timeout,

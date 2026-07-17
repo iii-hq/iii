@@ -307,6 +307,97 @@ async fn http_route_invokes_target_and_condition_in_registering_namespace() {
     );
 }
 
+/// BUG (real-user path): a per-route middleware on a namespaced route must be
+/// resolved in that route's namespace. `mw::guard` exists in both `orders`
+/// (short-circuits 418 "from-orders-mw") and `default` (short-circuits 400
+/// "from-default-mw"). The route lives in `orders`, so the `orders` middleware
+/// must run. Drives the real axum path.
+///
+/// RED when reverted to `engine.call` (default): the request gets 400
+/// "from-default-mw" instead of 418.
+#[tokio::test]
+async fn per_route_middleware_runs_in_route_namespace() {
+    let port = reserve_local_port();
+    let (engine, base_url) = start_api_server(port).await;
+
+    for (ns, status, tag) in [
+        ("orders", 418, "from-orders-mw"),
+        ("default", 400, "from-default-mw"),
+    ] {
+        engine.register_function_handler_ns(
+            ns,
+            RegisterFunctionRequest {
+                function_id: "mw::guard".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| async move {
+                FunctionResult::Success(Some(json!({
+                    "action": "respond",
+                    "response": { "status_code": status, "body": { "mw": tag } }
+                })))
+            }),
+        );
+    }
+
+    // Target handler lives in orders; never reached (middleware short-circuits).
+    engine.register_function_handler_ns(
+        "orders",
+        RegisterFunctionRequest {
+            function_id: "http::handler".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(|_input: Value| async move {
+            FunctionResult::Success(Some(json!({ "status_code": 200, "body": {} })))
+        }),
+    );
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("mw-ns-{}", Uuid::new_v4()),
+            trigger_type: "http".to_string(),
+            function_id: "http::handler".to_string(),
+            config: json!({
+                "api_path": "/mw-ns-route",
+                "http_method": "GET",
+                "middleware_function_ids": ["mw::guard"],
+            }),
+            worker_id: None,
+            metadata: None,
+            namespace: "orders".to_string(),
+        })
+        .await
+        .expect("register_trigger should succeed");
+
+    let client = reqwest::Client::new();
+    let url = format!("{base_url}/mw-ns-route");
+    wait_for_route(&client, &url).await;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(
+        response.status().as_u16(),
+        418,
+        "the orders route's middleware must resolve in orders, not default"
+    );
+    let body: Value = response.json().await.expect("body should be valid JSON");
+    assert_eq!(
+        body.get("mw").and_then(|v| v.as_str()),
+        Some("from-orders-mw"),
+        "the orders middleware must run; got: {body:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 2: per-route middleware short-circuits with `respond` — handler skipped
 // ---------------------------------------------------------------------------
