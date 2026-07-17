@@ -227,6 +227,23 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterF
             tracing::error!(error = ?e, "Failed to rebuild queue state from storage");
         }
 
+        // Upgrade migration: drain durable subscriber queues that predate
+        // namespace-scoped identity (`{topic}::{fid}`) into their namespaced
+        // name (`{topic}::{fid}@default`). Runs here, before any consumer
+        // subscribes, so there is no concurrent producer/consumer on the old
+        // queue. Legacy messages carry no origin namespace, so they land in the
+        // default namespace — where everything ran before this change.
+        let drained = adapter
+            .queue
+            .migrate_legacy_subscriber_queues(NS_SEP, crate::protocol::DEFAULT_NAMESPACE)
+            .await;
+        if drained > 0 {
+            tracing::info!(
+                drained,
+                "Drained legacy (namespace-less) subscriber queues into the default namespace"
+            );
+        }
+
         Ok(adapter as Arc<dyn QueueAdapter>)
     })
 }
@@ -1040,6 +1057,91 @@ mod tests {
 
         adapter.unsubscribe("events", "sub-orders").await;
         adapter.unsubscribe("events", "sub-analytics").await;
+    }
+
+    /// A message left in a pre-upgrade, namespace-less subscriber queue
+    /// (`{topic}::{fid}`) must be drained into its namespaced name
+    /// (`{topic}::{fid}@default`) and processed exactly once by the new
+    /// consumer. Draining twice must not duplicate (idempotent). Reverting the
+    /// drain to a no-op strands the message under the old name — the new
+    /// consumer subscribes to the namespaced queue and never sees it — so the
+    /// processing assertion goes RED.
+    #[tokio::test]
+    async fn drain_migrates_legacy_subscriber_queue_into_default_namespace() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let hits = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&hits);
+        let function = Function {
+            handler: Arc::new(move |_id, _input, _session, _meta| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move {
+                    sink.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: "fn.shared".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        // Registered in the default namespace — where a legacy message ran.
+        engine
+            .functions
+            .register_function("fn.shared".to_string(), function);
+
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        // Seed a pre-upgrade message under the OLD namespace-less internal queue.
+        let legacy_queue = "events::fn.shared";
+        let new_queue = "events::fn.shared@default";
+        adapter
+            .queue
+            .push(legacy_queue, json!({ "msg": "old" }), None, None)
+            .await;
+        assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 1);
+
+        // Drain twice: migrates exactly once, never duplicates.
+        let drained = adapter
+            .queue
+            .migrate_legacy_subscriber_queues('@', "default")
+            .await;
+        assert_eq!(drained, 1, "one legacy queue should be drained");
+        adapter
+            .queue
+            .migrate_legacy_subscriber_queues('@', "default")
+            .await;
+
+        // Old queue emptied; the namespaced queue holds exactly one job.
+        assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 0);
+        assert_eq!(adapter.queue.queue_depth(new_queue).await, 1);
+
+        // Consumer attaches after the drain (as in make_adapter) and processes
+        // the migrated message exactly once under the new identity.
+        adapter
+            .subscribe("events", "sub", "fn.shared", "default", None, None)
+            .await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while hits.load(Ordering::SeqCst) < 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "migrated message should be processed under the namespaced queue"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "the migrated message must be processed exactly once, not duplicated"
+        );
+
+        adapter.unsubscribe("events", "sub").await;
     }
 
     // =========================================================================
