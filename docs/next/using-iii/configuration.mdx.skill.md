@@ -12,7 +12,7 @@ iii splits configuration across two layers:
   [Engine configuration](./engine#engine-configuration).
 - **The `configuration` worker** owns _each worker's runtime settings_. It is a schema-validated,
   reactive registry that ships enabled by default: every worker registers its settings schema under
-  its own entry (`iii-http`, `iii-state`, `iii-queue`, ...), and every change is validated against
+  its own entry (`http`, `state`, `queue`, ...), and every change is validated against
   that schema and applied to the running worker. Most settings apply immediately; a few take effect
   at the next engine start (see [How changes apply](#how-changes-apply)).
 
@@ -42,16 +42,16 @@ With the default `fs` adapter, every configuration entry is one YAML file named 
 
 ```
 config/
-  iii-http.yaml
-  iii-queue.yaml
-  iii-state.yaml
+  http.yaml
+  queue.yaml
+  state.yaml
   ...
 ```
 
 Each file carries the entry's identity plus its current value:
 
-```yaml config/iii-http.yaml
-id: iii-http
+```yaml config/http.yaml
+id: http
 name: HTTP
 description:
   HTTP server settings — host/port binding, CORS, request timeout, concurrency limit, and global
@@ -94,15 +94,15 @@ own automation:
 <Tabs>
   <Tab title="CLI">
     ```bash
-    iii trigger configuration::get --json '{"id": "iii-http"}'
-    iii trigger configuration::set --json '{"id": "iii-http", "value": {"port": 8080, "host": "127.0.0.1"}}'
+    iii trigger configuration::get --json '{"id": "http"}'
+    iii trigger configuration::set --json '{"id": "http", "value": {"port": 8080, "host": "127.0.0.1"}}'
     ```
   </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
     await worker.trigger({
       function_id: "configuration::set",
-      payload: { id: "iii-http", value: { port: 8080, host: "127.0.0.1" } },
+      payload: { id: "http", value: { port: 8080, host: "127.0.0.1" } },
     });
     ```
   </Tab>
@@ -123,10 +123,10 @@ a string. Pass `raw: true` to `configuration::get` to read the stored template f
 
 ## How changes apply
 
-Most settings hot-apply the moment they change: `iii-http` swaps CORS, timeout, and middleware
+Most settings hot-apply the moment they change: `http` swaps CORS, timeout, and middleware
 without dropping the listener, and binds a new `host`/`port` before releasing the old one. A few
 fields are restart-tier: the change is recorded, logged, and takes effect at the next engine start
-(for example `iii-state`'s storage adapter). Each worker's page on
+(for example `state`'s storage adapter). Each worker's page on
 [workers.iii.dev](https://workers.iii.dev/) documents its settings and how they apply.
 
 ## Changing where configuration is stored

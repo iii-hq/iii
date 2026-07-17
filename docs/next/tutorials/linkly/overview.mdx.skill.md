@@ -20,7 +20,7 @@ each other's functions through the engine. You add capability without rewriting 
 ## Ch. 1: Foundations
 
 Build a custom `link` worker with `link::create` and `link::resolve`, store links in memory, then
-expose them over HTTP with `iii-http` as `POST /links` and `GET /s/:code`.
+expose them over HTTP with `http` as `POST /links` and `GET /s/:code`.
 
 ## Ch. 2: Observe everything
 
@@ -30,12 +30,12 @@ and live invocations.
 ## Ch. 3: Persist everything
 
 Add a `database` worker (SQLite) so links and click events are stored durably and survive restarts,
-with `iii-state` kept in front as a fast read cache.
+with `state` kept in front as a fast read cache.
 
 ## Ch. 4: Make it durable
 
-Push click events onto `iii-queue` so redirects stay fast, and publish `link.created` events with
-`iii-pubsub` that a cache and an analytics function each subscribe to.
+Push click events onto `queue` so redirects stay fast, and publish `link.created` events with
+`pubsub` that a cache and an analytics function each subscribe to.
 
 ## Ch. 5: Stream live clicks
 

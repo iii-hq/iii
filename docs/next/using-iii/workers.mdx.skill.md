@@ -63,7 +63,7 @@ workers which you can learn more about in
 `iii worker add <name>` installs a worker into your project:
 
 ```bash
-iii worker add iii-state # Downloads and adds a worker from iii registry
+iii worker add state # Downloads and adds a worker from iii registry
 iii worker add ./workers/my_worker # Adds a local worker created with `iii worker init`
 iii worker add ghcr.io/org/worker:tag # Pulls and adds a worker from a Docker or OCI image registry
 ```
@@ -176,7 +176,7 @@ and its workers.
 ## Available functions and triggers
 
 Functions and triggers come from connected workers. To use a trigger of a given type, you need the
-worker that provides it to be connected. For example if you add `http` triggers via the iii-http
+worker that provides it to be connected. For example if you add `http` triggers via the http
 worker then you can now expose endpoints for your function as you would in a web framework like
 Express or FastAPI.
 
@@ -191,7 +191,7 @@ Installing without a version specifier picks the latest release. Append `@<versi
 name to pin a specific release rather than tracking the latest:
 
 ```bash
-iii worker add iii-state@1.2.0
+iii worker add state@1.2.0
 ```
 
 The pin is recorded in `iii.lock` and replays on every subsequent install.

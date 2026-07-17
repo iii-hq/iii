@@ -21,12 +21,12 @@ defined by that worker and is read once, as a first-boot seed.
 
 ```yaml
 workers:
-  - name: iii-http
+  - name: http
     config:
       port: 3111
       host: 127.0.0.1
 
-  - name: iii-state
+  - name: state
     config:
       adapter:
         name: kv
@@ -70,7 +70,7 @@ see [Configuration / Environment variables in values](./configuration#environmen
 
 ```yaml
 workers:
-  - name: iii-http
+  - name: http
     config:
       port: ${HTTP_PORT:3111}
       host: ${HTTP_HOST:127.0.0.1}

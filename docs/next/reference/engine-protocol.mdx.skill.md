@@ -97,7 +97,7 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
 ```
 
 `config` is the per-trigger-type configuration; the shape is defined by whatever worker advertised
-that `trigger_type` (e.g. `iii-http` for `http` triggers). The engine responds with a
+that `trigger_type` (e.g. `http` for `http` triggers). The engine responds with a
 `TriggerRegistrationResult` carrying an optional `error: ErrorBody`.
 
 ## `RegisterTriggerType`
@@ -188,7 +188,7 @@ call and surfaces this code to the caller), `function_not_found`, `function_not_
 | ---------------------------------------- | -------------------------------------------------------- |
 | omitted / `null`                         | Synchronous; the worker replies with `InvocationResult`. |
 | `{ "type": "void" }`                     | Fire-and-forget; no `invocation_id`, no reply.           |
-| `{ "type": "enqueue", "queue": "math" }` | Route through the named queue (provided by `iii-queue`). |
+| `{ "type": "enqueue", "queue": "math" }` | Route through the named queue (provided by `queue`). |
 
 ## Invocation lifecycle
 

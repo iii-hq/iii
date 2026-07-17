@@ -9,23 +9,23 @@ independent subscribers: a Python analytics worker and a cache refresher, both d
 
 ## Add the workers
 
-This chapter uses two workers. `iii-queue` is already in your project from `iii project init`. Add
-`iii-pubsub` now; you publish your first event to it later in the chapter:
+This chapter uses two workers. `queue` is already in your project from `iii project init`. Add
+`pubsub` now; you publish your first event to it later in the chapter:
 
 ```bash
-iii worker add iii-pubsub
+iii worker add pubsub
 ```
 
 ## Make redirects fast with a queue
 
 A queue holds work that is accepted now and run later. Here we'll define a `clicks` queue that we're
-going to use for `link::record_click`. `iii-queue` has been running since Chapter 1, so its settings
-are managed in `./config/iii-queue.yaml` (see [Configuration](/using-iii/configuration)). Define the
+going to use for `link::record_click`. `queue` has been running since Chapter 1, so its settings
+are managed in `./config/queue.yaml` (see [Configuration](/using-iii/configuration)). Define the
 queue by adding `queue_configs` under `value:` in that file and save; the change applies without a
 restart:
 
-```yaml {4-8} config/iii-queue.yaml
-id: iii-queue
+```yaml {4-8} config/queue.yaml
+id: queue
 # ...
 value:
   queue_configs:
@@ -54,7 +54,7 @@ import { Logger } from "@iii-dev/helpers/observability";
 ```
 
 Then add an `action` to the existing `link::record_click` call in `http::redirect` so the
-`iii-queue` worker enqueues it instead of running it inline:
+`queue` worker enqueues it instead of running it inline:
 
 ```typescript src/index.ts {6}
 worker.registerFunction("http::redirect", async (req) => {
@@ -77,13 +77,13 @@ A queue delivers each message to one consumer. When several unrelated parts of t
 react to the same event, use a publish subscribe design instead.
 
 <Info>
-  We ship both a `iii-queue` and `iii-pubsub` worker. While `iii-queue` provides standard queueing
+  We ship both a `queue` and `pubsub` worker. While `queue` provides standard queueing
   it also provides its own durable publish and subscribe.
 
 When you need a publish and subscribe flow to be guaranteed to succeed (or fail to a DLQ) then use
-`iii-queue`s `iii::durable::publish` and `durable:subscriber`.
+`queue`s `iii::durable::publish` and `durable:subscriber`.
 
-When you don't need a publish and subscribe flow to be guaranteed then use `iii-pubsub`s `publish`
+When you don't need a publish and subscribe flow to be guaranteed then use `pubsub`s `publish`
 and `subscribe`.
 
 </Info>
@@ -114,7 +114,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
 Now add an update path to the `link` worker so a link's target can change, and announce it.
 
 First, the domain function: it updates the database row and publishes a `link.updated` event through
-durable pub/sub (`iii::durable::publish`, served by `iii-queue`). Place it at the end of
+durable pub/sub (`iii::durable::publish`, served by `queue`). Place it at the end of
 `link/src/index.ts`:
 
 ```typescript src/index.ts
@@ -180,9 +180,9 @@ event with a **durable** subscriber:
 
 <Info>
   **Durable vs. regular pub/sub.** `link.updated` uses durable pub/sub: `iii::durable::publish` with
-  a `durable:subscriber` trigger, both served by the `iii-queue` worker. Consumers like this cache
+  a `durable:subscriber` trigger, both served by the `queue` worker. Consumers like this cache
   refresher must receive every update. A dropped event would leave the cache pointing at a stale
-  URL. `link.created` stays on regular pub/sub (`iii-pubsub`). Its only consumer is a best-effort
+  URL. `link.created` stays on regular pub/sub (`pubsub`). Its only consumer is a best-effort
   daily counter, so an occasional miss is harmless. Use durable pub/sub when a missed event would
   corrupt state, and regular pub/sub for fire-and-forget fan-out.
 </Info>
