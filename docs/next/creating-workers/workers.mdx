@@ -154,25 +154,25 @@ get the current state of the registry. Each returns a list:
     <Tab title="Node / TypeScript">
       ```typescript
       // engine::workers::list, pass { worker_id: "<uuid>" } to look up one worker
-      const { workers } = await worker.trigger<any, any>({
+      const { workers } = await worker.trigger({
         function_id: "engine::workers::list",
         payload: {},
       });
 
       // engine::functions::list
-      const { functions } = await worker.trigger<any, any>({
+      const { functions } = await worker.trigger({
         function_id: "engine::functions::list",
         payload: { include_internal: false },
       });
 
       // engine::triggers::list
-      const { triggers } = await worker.trigger<any, any>({
+      const { triggers } = await worker.trigger({
         function_id: "engine::triggers::list",
         payload: { include_internal: false },
       });
 
       // engine::registered-triggers::list
-      const { registered_triggers } = await worker.trigger<any, any>({
+      const { registered_triggers } = await worker.trigger({
         function_id: "engine::registered-triggers::list",
         payload: { include_internal: false },
       });
