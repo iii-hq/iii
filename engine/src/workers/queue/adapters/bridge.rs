@@ -349,22 +349,26 @@ impl QueueAdapter for BridgeAdapter {
         _backoff_ms: u64,
         _traceparent: Option<String>,
         _baggage: Option<String>,
+        namespace: Option<String>,
         // Priority is resolved by the remote engine via its own adapter; the
         // bridge forwards the enqueue unchanged.
         _priority: Option<u8>,
     ) {
-        if let Err(e) = self
-            .bridge
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: data,
-                action: Some(TriggerAction::Enqueue {
-                    queue: queue_name.to_string(),
-                }),
-                timeout_ms: None,
-            })
-            .await
-        {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload: data,
+            action: Some(TriggerAction::Enqueue {
+                queue: queue_name.to_string(),
+            }),
+            timeout_ms: None,
+        };
+        // Forward the target namespace so the remote engine enqueues (and later
+        // consumes) in the enqueuer's namespace rather than `default`.
+        let result = match namespace {
+            Some(ns) => self.bridge.trigger(request.namespace(ns)).await,
+            None => self.bridge.trigger(request).await,
+        };
+        if let Err(e) = result {
             tracing::error!(error = %e, queue = %queue_name, function_id = %function_id, "Failed to enqueue via bridge");
         }
     }

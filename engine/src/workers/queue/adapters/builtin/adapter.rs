@@ -424,6 +424,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
         backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         // Priority is a RabbitMQ-only feature; the in-process builtin queue
         // ignores it.
         _priority: Option<u8>,
@@ -432,6 +433,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
         let job = Job {
             function_id: Some(function_id.to_string()),
             message_id: Some(message_id.to_string()),
+            namespace,
             ..Job::new(
                 &namespaced_queue,
                 data,
@@ -507,6 +509,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
                         message_id: job.message_id,
                         traceparent: job.traceparent,
                         baggage: job.baggage,
+                        namespace: job.namespace,
                     };
 
                     if tx.send(msg).await.is_err() {
@@ -931,6 +934,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -976,6 +980,7 @@ mod tests {
                 "msg-1",
                 1,
                 1000,
+                None,
                 None,
                 None,
                 None,
@@ -1051,6 +1056,7 @@ mod tests {
                     &format!("msg-{i}"),
                     1,
                     1000,
+                    None,
                     None,
                     None,
                     None,
@@ -1131,6 +1137,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -1172,6 +1179,7 @@ mod tests {
                 "test-msg-id",
                 3,
                 1000,
+                None,
                 None,
                 None,
                 None,
@@ -1219,6 +1227,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                     None,
@@ -1278,6 +1287,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
         }
@@ -1320,6 +1330,7 @@ mod tests {
                 1000,
                 Some("00-abc-def-01".to_string()),
                 Some("key=value".to_string()),
+                None,
                 None,
             )
             .await;

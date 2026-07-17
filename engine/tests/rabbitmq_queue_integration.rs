@@ -24,7 +24,7 @@ use iii::{
 };
 
 use common::queue_helpers::{
-    dlq_count, enqueue, register_counting_function, register_failing_function,
+    dlq_count, enqueue, enqueue_ns, register_counting_function, register_failing_function,
     register_failing_function_with_timestamps, register_group_order_recording_function,
     register_order_recording_function, register_panicking_function,
     register_payload_capturing_function, register_slow_function,
@@ -1807,5 +1807,93 @@ async fn rmq_subscriber_invokes_target_in_registering_namespace() {
         vec!["from-orders".to_string()],
         "the orders-bound rabbitmq subscriber must invoke the orders target, resolved live by \
          trigger id at the fire point; got: {fired:?}"
+    );
+}
+
+/// The `TriggerAction::Enqueue` function-queue path over the RabbitMQ transport
+/// must run the enqueued function in the namespace captured at enqueue, not
+/// `default`. The namespace rides the AMQP message as a `namespace` header,
+/// survives the native publish -> consume round trip (and header-preserving
+/// retries), and is resolved by the consumer via `call_with_metadata_ns`.
+/// `queue::react` exists in both `orders` ("from-orders") and `default`
+/// ("from-default"); enqueuing with namespace "orders" must fire "from-orders".
+/// Dropping the header (or reverting the consumer to DEFAULT_NAMESPACE) turns
+/// this RED with "from-default".
+#[tokio::test]
+async fn rmq_enqueue_runs_target_in_captured_namespace() {
+    fn register_tagged_ns(
+        engine: &Arc<Engine>,
+        ns: &str,
+        function_id: &str,
+        tag: &str,
+    ) -> Arc<Mutex<Vec<String>>> {
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = fired.clone();
+        let tag = tag.to_string();
+        let function = Function {
+            handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
+                let sink = sink.clone();
+                let tag = tag.clone();
+                Box::pin(async move {
+                    sink.lock().await.push(tag);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: function_id.to_string(),
+            _description: Some("rmq namespaced queue handler".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function_ns(ns, function_id.to_string(), function);
+        fired
+    }
+
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+
+    let engine = {
+        iii::workers::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let fired_orders = register_tagged_ns(&engine, "orders", "queue::react", "from-orders");
+    let _fired_default = register_tagged_ns(&engine, "default", "queue::react", "from-default");
+
+    let module = QueueWorker::for_test(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueWorker::create should succeed");
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("Module start_background_tasks should succeed");
+
+    enqueue_ns(
+        &module,
+        &format!("{prefix}-default"),
+        "queue::react",
+        json!({ "n": 1 }),
+        "orders",
+    )
+    .await
+    .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let fired = fired_orders.lock().await.clone();
+    assert_eq!(
+        fired,
+        vec!["from-orders".to_string()],
+        "the rabbitmq enqueue must run the orders target captured at enqueue time; got: {fired:?}"
     );
 }

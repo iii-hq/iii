@@ -84,7 +84,7 @@ async fn enqueue(
 ) -> anyhow::Result<()> {
     let message_id = uuid::Uuid::new_v4().to_string();
     worker
-        .enqueue_to_function_queue(queue_name, function_id, data, &message_id, None, None)
+        .enqueue_to_function_queue(queue_name, function_id, data, &message_id, None, None, None)
         .await
 }
 

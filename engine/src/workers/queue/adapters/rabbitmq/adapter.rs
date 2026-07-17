@@ -852,6 +852,7 @@ impl QueueAdapter for RabbitMQAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         priority: Option<u8>,
     ) {
         use super::naming::FnQueueNames;
@@ -881,6 +882,15 @@ impl QueueAdapter for RabbitMQAdapter {
             headers.insert(
                 "baggage".into(),
                 lapin::types::AMQPValue::LongString(bg.as_str().into()),
+            );
+        }
+        // Carry the target namespace on the message header so the consumer
+        // resolves the function in the enqueuer's namespace. The retry path
+        // copies all headers verbatim, so it survives requeue and DLQ redrive.
+        if let Some(ns) = &namespace {
+            headers.insert(
+                "namespace".into(),
+                lapin::types::AMQPValue::LongString(ns.as_str().into()),
             );
         }
 
@@ -1003,6 +1013,13 @@ impl QueueAdapter for RabbitMQAdapter {
                                     _ => None,
                                 });
 
+                        let namespace = headers.and_then(|h| h.inner().get("namespace")).and_then(
+                            |v| match v {
+                                lapin::types::AMQPValue::LongString(s) => Some(s.to_string()),
+                                _ => None,
+                            },
+                        );
+
                         let attempt = headers
                             .and_then(|h| h.inner().get("x-attempt"))
                             .and_then(|v| match v {
@@ -1027,6 +1044,7 @@ impl QueueAdapter for RabbitMQAdapter {
                             message_id,
                             traceparent,
                             baggage,
+                            namespace,
                         };
 
                         if tx.send(msg).await.is_err() {

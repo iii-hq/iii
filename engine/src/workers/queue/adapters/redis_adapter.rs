@@ -376,12 +376,16 @@ impl QueueAdapter for RedisAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         // RabbitMQ-only feature; the redis pub/sub adapter ignores it.
         _priority: Option<u8>,
     ) {
         let channel = format!("__queue::{}", queue_name);
         let publisher = Arc::clone(&self.publisher);
 
+        // `namespace` rides the envelope so a consumer (once implemented) can
+        // resolve the target in the enqueuer's namespace. Omitted when absent to
+        // keep the envelope stable for pre-namespace consumers.
         let envelope = serde_json::json!({
             "__trace": {
                 "traceparent": traceparent,
@@ -389,6 +393,7 @@ impl QueueAdapter for RedisAdapter {
             },
             "function_id": function_id,
             "message_id": message_id,
+            "namespace": namespace,
             "data": data,
         });
 

@@ -1419,6 +1419,10 @@ impl Engine {
                         let queue = queue.to_string();
                         let message_receipt_id = Uuid::new_v4().to_string();
                         let data = data.clone();
+                        // Capture the invoke's namespace so the queue provider
+                        // enqueues (and the consumer later resolves) the target
+                        // in the caller's namespace rather than `default`.
+                        let target_namespace = effective_namespace(&namespace).to_string();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
                         let queued_baggage = crate::telemetry::baggage_with_function_id(
@@ -1461,6 +1465,7 @@ impl Engine {
                                             "queue": queue.clone(),
                                             "function_id": function_id.clone(),
                                             "data": data,
+                                            "namespace": target_namespace.clone(),
                                             "messageReceiptId": message_receipt_id.clone(),
                                             "traceparent": traceparent.clone(),
                                             "baggage": queued_baggage,

@@ -156,12 +156,14 @@ impl QueueWorker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn enqueue_to_function_queue(
         &self,
         queue_name: &str,
         function_id: &str,
         data: Value,
         message_id: &str,
+        namespace: Option<String>,
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> anyhow::Result<()> {
@@ -229,6 +231,7 @@ impl QueueWorker {
                 queue_config.backoff_ms,
                 traceparent,
                 baggage,
+                namespace,
                 priority,
             )
             .await;
@@ -831,6 +834,12 @@ impl QueueWorker {
                     let delivery_id = msg.delivery_id;
                     let function_id = msg.function_id.clone();
                     let attempt = msg.attempt;
+                    // Resolve the target in the namespace captured at enqueue.
+                    // Absent (pre-namespace messages) falls back to `default`.
+                    let namespace = msg
+                        .namespace
+                        .clone()
+                        .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string());
 
                     // `iii.tag.*` is the console timeline's relevant-span
                     // convention (workers/console/docs/timeline-span-tags.md):
@@ -860,11 +869,14 @@ impl QueueWorker {
                         baggage.as_deref(),
                     );
 
-                    let result =
-                        AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
-                            .catch_unwind()
-                            .instrument(span)
-                            .await;
+                    let result = AssertUnwindSafe(async {
+                        engine
+                            .call_with_metadata_ns(&namespace, &function_id, msg.data, None)
+                            .await
+                    })
+                    .catch_unwind()
+                    .instrument(span)
+                    .await;
 
                     match result {
                         Ok(Ok(_)) => {
@@ -1589,6 +1601,7 @@ mod tests {
             _backoff_ms: u64,
             _traceparent: Option<String>,
             _baggage: Option<String>,
+            _namespace: Option<String>,
             _priority: Option<u8>,
         ) {
             self.enqueue_to_queue_count.fetch_add(1, Ordering::SeqCst);
@@ -2241,6 +2254,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -2312,6 +2326,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -2332,6 +2347,7 @@ mod tests {
                 "fn-1",
                 json!({"amount": 100}), // missing "transaction_id"
                 "test-msg-id",
+                None,
                 None,
                 None,
             )
@@ -2356,6 +2372,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -2378,6 +2395,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
         assert!(result.is_ok());
@@ -2393,6 +2411,7 @@ mod tests {
                 "fn-1",
                 json!({"key": "value"}),
                 "test-msg-id",
+                None,
                 None,
                 None,
             )
@@ -2500,6 +2519,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -2561,6 +2581,7 @@ mod tests {
                 "test-msg-id",
                 3,
                 100,
+                None,
                 None,
                 None,
                 None,
@@ -2628,6 +2649,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                     None,
@@ -2705,6 +2727,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                     None,

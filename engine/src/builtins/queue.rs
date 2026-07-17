@@ -45,6 +45,11 @@ pub struct Job {
     pub function_id: Option<String>,
     #[serde(default)]
     pub message_id: Option<String>,
+    /// Target namespace the enqueued function must resolve in. Persisted so it
+    /// survives retries and the DLQ. Absent on jobs written before this field
+    /// existed, which correctly resolve to the default namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl Job {
@@ -93,6 +98,7 @@ impl Job {
             baggage,
             function_id: None,
             message_id: None,
+            namespace: None,
         }
     }
 

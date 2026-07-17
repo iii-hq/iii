@@ -87,6 +87,9 @@ pub trait QueueAdapter: Send + Sync + 'static {
         _backoff_ms: u64,
         _traceparent: Option<String>,
         _baggage: Option<String>,
+        // Target namespace captured at enqueue; adapters persist it in their
+        // native message so the consumer resolves the function in this namespace.
+        _namespace: Option<String>,
         // AMQP message priority (`None` = default). Honored by adapters whose
         // queues are declared as priority queues; others ignore it.
         _priority: Option<u8>,
