@@ -72,3 +72,64 @@ describe('addConnectionStateListener', () => {
     expect(states).toContain('connected')
   })
 })
+
+describe('RegistrationRejected handling', () => {
+  let engine: MockEngine
+  let sdk: ISdk
+
+  beforeEach(() => {
+    engine = new MockEngine()
+    engine.install()
+    sdk = registerWorker('ws://test:49135')
+  })
+
+  afterEach(async () => {
+    await sdk.shutdown()
+    engine.uninstall()
+  })
+
+  it('WORKER_NAMESPACE_CONFLICT is fatal: goes to failed and does not reconnect', async () => {
+    const states: IIIConnectionState[] = []
+    sdk.addConnectionStateListener((s) => states.push(s))
+    await engine.waitForOpen()
+    expect(states).toContain('connected')
+
+    engine.socket.simulateMessage(
+      JSON.stringify({
+        type: 'registrationrejected',
+        code: 'WORKER_NAMESPACE_CONFLICT',
+        namespace: 'default',
+        worker_name: 'browser:abc',
+        owner_worker_id: 'owner-1',
+      }),
+    )
+    engine.socket.simulateClose()
+
+    // Wait past any reconnect delay; a fatal rejection must NOT reconnect.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(states).toContain('failed')
+    expect(states).not.toContain('reconnecting')
+  })
+
+  it('FUNCTION_NAMESPACE_CONFLICT is non-fatal: stays connected', async () => {
+    const states: IIIConnectionState[] = []
+    sdk.addConnectionStateListener((s) => states.push(s))
+    await engine.waitForOpen()
+    expect(states).toContain('connected')
+
+    engine.socket.simulateMessage(
+      JSON.stringify({
+        type: 'registrationrejected',
+        code: 'FUNCTION_NAMESPACE_CONFLICT',
+        namespace: 'orders',
+        worker_name: 'state::get',
+        owner_worker_id: 'owner-1',
+      }),
+    )
+
+    await new Promise((r) => setTimeout(r, 20))
+    // No terminal transition — the connection is untouched.
+    expect(states).not.toContain('failed')
+    expect(states[states.length - 1]).toBe('connected')
+  })
+})

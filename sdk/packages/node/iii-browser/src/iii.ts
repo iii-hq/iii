@@ -801,7 +801,42 @@ class Sdk implements ISdk {
       this.onUnregisterTrigger(
         message as { trigger_type?: string; id: string; function_id?: string; config?: unknown },
       )
+    } else if (msgType === MessageType.RegistrationRejected) {
+      this.onRegistrationRejected(
+        message as { code: string; namespace: string; worker_name: string; owner_worker_id: string },
+      )
     }
+  }
+
+  /**
+   * The engine rejected a registration. A `FUNCTION_NAMESPACE_CONFLICT` costs
+   * one function and leaves the connection open, so log and keep serving. A
+   * `WORKER_NAMESPACE_CONFLICT` means another live worker owns this name in the
+   * namespace: it is terminal — stop and do not reconnect (otherwise the engine
+   * would only reject the same name again, which with `maxRetries: -1` loops
+   * forever).
+   */
+  private onRegistrationRejected(init: {
+    code: string
+    namespace: string
+    worker_name: string
+    owner_worker_id: string
+  }): void {
+    if (init.code === 'FUNCTION_NAMESPACE_CONFLICT') {
+      console.warn(
+        `[iii] Function registration rejected: function "${init.worker_name}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. Staying connected and serving the rest.`,
+      )
+      return
+    }
+
+    console.error(
+      `[iii] Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}. Not reconnecting.`,
+    )
+    // Terminal: suppress reconnect, then drop the socket.
+    this.isShuttingDown = true
+    this.clearReconnectTimeout()
+    this.setConnectionState('failed')
+    this.ws?.close()
   }
 }
 
