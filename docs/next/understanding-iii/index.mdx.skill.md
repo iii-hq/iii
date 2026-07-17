@@ -73,7 +73,7 @@ to `math-worker`.
 
 ## Workers
 
-Workers are what actually do things in an iii system. Every category of capability is built as a
+Workers do the work in an iii system. Every category of capability is built as a
 Worker: queues, scheduling, sandboxing, observability, agents, business logic, devices, and even
 code executing in a browser.
 
@@ -189,7 +189,7 @@ The Quickstart tutorial invokes Functions with Triggers in three different ways:
    the invocation to whatever Worker provides `math::add`.
 1. The SDK call `worker.trigger({ function_id: 'math::add', ... })` is another version of the same
    idea: one Function inside one Worker firing a Trigger that invokes another Function, routed
-   through the Engine just like the CLI version.
+   through the Engine like the CLI version.
 
    Both paths work against any registered Function without registering an explicit Trigger; every
    `registerFunction()` inherently gets a Trigger that can be invoked with these two methods.
@@ -270,7 +270,7 @@ provides. When a Worker disconnects, the Engine removes its Functions, cancels a
 invocations of those Functions, and notifies the rest of the system that the topology changed.
 
 Routing is independent of language, runtime, and location. The Engine does not need to know where
-`math::add` is running in Docker, on a Raspberry Pi, or in a browser tab. It just knows that _some_
+`math::add` is running in Docker, on a Raspberry Pi, or in a browser tab. It knows that _some_
 Worker provides it. The same tutorial can be redeployed across different runtimes without touching
 the function code.
 
