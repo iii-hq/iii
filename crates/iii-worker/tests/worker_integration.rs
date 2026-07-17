@@ -209,6 +209,34 @@ fn add_subcommand_multiple_workers() {
 }
 
 #[test]
+fn add_prefixed_builtin_prints_deprecation_warning_and_replacement() {
+    let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
+        .args(["add", "iii-http", "--no-wait"])
+        .current_dir(temp.path())
+        .env("HOME", temp.path())
+        .env("NO_COLOR", "1")
+        .env("III_API_URL", "http://127.0.0.1:0")
+        .output()
+        .expect("failed to execute iii-worker binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "iii-worker add failed with status {}\nstderr:\n{}",
+        output.status,
+        stderr
+    );
+    assert!(stderr.contains("iii-http"), "stderr was:\n{stderr}");
+    assert!(stderr.contains("deprecated"), "stderr was:\n{stderr}");
+    assert!(stderr.contains("future version"), "stderr was:\n{stderr}");
+    assert!(
+        stderr.contains("iii worker add http"),
+        "stderr was:\n{stderr}"
+    );
+}
+
+#[test]
 fn sync_subcommand_accepts_frozen_flag() {
     let cli = Cli::parse_from(["iii-worker", "sync", "--frozen"]);
     match cli.command {

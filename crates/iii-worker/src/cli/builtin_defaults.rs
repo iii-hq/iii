@@ -15,6 +15,21 @@ pub const BUILTIN_NAMES: [&str; 7] = [
     "iii-sandbox",
 ];
 
+const DEPRECATED_BUILTIN_REPLACEMENTS: [(&str, &str); 5] = [
+    ("iii-http", "http"),
+    ("iii-cron", "cron"),
+    ("iii-queue", "queue"),
+    ("iii-state", "state"),
+    ("iii-pubsub", "pubsub"),
+];
+
+/// Return the unprefixed replacement for a deprecated builtin worker name.
+pub fn deprecated_builtin_replacement(name: &str) -> Option<&'static str> {
+    DEPRECATED_BUILTIN_REPLACEMENTS
+        .iter()
+        .find_map(|(deprecated, replacement)| (*deprecated == name).then_some(*replacement))
+}
+
 /// Optional builtin workers: baked into the engine but disabled by default.
 /// They have no auto-generated YAML config and must be configured manually.
 pub const OPTIONAL_BUILTIN_NAMES: [&str; 2] = ["iii-exec", "iii-bridge"];
@@ -115,6 +130,41 @@ pub fn get_builtin_default(name: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_yaml::Value;
+
+    #[test]
+    fn deprecated_builtin_replacement_returns_unprefixed_name() {
+        let replacements = [
+            ("iii-http", "http"),
+            ("iii-cron", "cron"),
+            ("iii-queue", "queue"),
+            ("iii-state", "state"),
+            ("iii-pubsub", "pubsub"),
+        ];
+
+        for (deprecated, replacement) in replacements {
+            assert_eq!(
+                deprecated_builtin_replacement(deprecated),
+                Some(replacement)
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_builtin_replacement_returns_none_for_other_names() {
+        for name in [
+            "http",
+            "cron",
+            "queue",
+            "state",
+            "pubsub",
+            "iii-stream",
+            "iii-sandbox",
+            "iii-http-functions",
+            "pdfkit",
+        ] {
+            assert_eq!(deprecated_builtin_replacement(name), None);
+        }
+    }
 
     #[test]
     fn all_builtins_return_some() {

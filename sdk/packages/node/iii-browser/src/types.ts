@@ -138,7 +138,8 @@ export interface ISdk {
    * })
    * ```
    */
-  trigger<TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput>
+  // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
+  trigger<TInput = unknown, TOutput = any>(request: TriggerRequest<TInput>): Promise<TOutput>
 
   /**
    * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
