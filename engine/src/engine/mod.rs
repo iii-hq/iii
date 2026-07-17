@@ -2268,6 +2268,7 @@ impl Engine {
     ) -> Result<(), NamespaceConflict> {
         self.claim_in(
             &self.function_owners,
+            &self.external_function_owners,
             namespace,
             worker_id,
             function_id,
@@ -2388,6 +2389,7 @@ impl Engine {
     ) -> Result<(), NamespaceConflict> {
         self.claim_in(
             &self.external_function_owners,
+            &self.function_owners,
             namespace,
             worker_id,
             function_id,
@@ -2395,9 +2397,34 @@ impl Engine {
         )
     }
 
+    /// The live owner of `(namespace, function_id)` in `owners`, if any — a
+    /// different worker that is still connected and not tearing down. Returns
+    /// `None` when the key is free, self-owned, or held by a worker on its way
+    /// out (which a fresh claim may take over).
+    fn live_owner_in(
+        &self,
+        owners: &DashMap<(String, String), Uuid>,
+        namespace: &str,
+        worker_id: Uuid,
+        function_id: &str,
+    ) -> Option<Uuid> {
+        let key = (namespace.to_string(), function_id.to_string());
+        let previous = *owners.get(&key)?;
+        (previous != worker_id
+            && self.worker_registry.workers.contains_key(&previous)
+            && !self.is_connection_tearing_down(&previous))
+        .then_some(previous)
+    }
+
+    /// Claims `(namespace, function_id)` in `owners`, rejecting if a live worker
+    /// already owns it in EITHER `owners` or `other` — regular and HTTP-
+    /// invocation registrations share one `FunctionsRegistry`, so a claim that
+    /// consulted only its own owner map would let the two paths silently
+    /// overwrite each other.
     fn claim_in(
         &self,
         owners: &DashMap<(String, String), Uuid>,
+        other: &DashMap<(String, String), Uuid>,
         namespace: &str,
         worker_id: Uuid,
         function_id: &str,
@@ -2411,26 +2438,43 @@ impl Engine {
                     && self.worker_registry.workers.contains_key(&previous)
                     && !self.is_connection_tearing_down(&previous)
                 {
-                    tracing::warn!(
-                        rejected_worker = %worker_id,
-                        owner = %previous,
-                        namespace = %namespace,
-                        function_id = %function_id,
-                        "{kind} id already owned by a live worker in this namespace — registration rejected"
-                    );
-                    return Err(NamespaceConflict {
-                        namespace: namespace.to_string(),
-                        worker_name: function_id.to_string(),
-                        owner_worker_id: previous.to_string(),
-                    });
+                    return Err(Self::conflict(kind, namespace, function_id, previous));
+                }
+                // Cross-path: the other invocation kind may own this id.
+                if let Some(previous) = self.live_owner_in(other, namespace, worker_id, function_id)
+                {
+                    return Err(Self::conflict(kind, namespace, function_id, previous));
                 }
                 occupied.insert(worker_id);
             }
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                if let Some(previous) = self.live_owner_in(other, namespace, worker_id, function_id)
+                {
+                    return Err(Self::conflict(kind, namespace, function_id, previous));
+                }
                 vacant.insert(worker_id);
             }
         }
         Ok(())
+    }
+
+    fn conflict(
+        kind: &str,
+        namespace: &str,
+        function_id: &str,
+        previous: Uuid,
+    ) -> NamespaceConflict {
+        tracing::warn!(
+            owner = %previous,
+            namespace = %namespace,
+            function_id = %function_id,
+            "{kind} id already owned by a live worker in this namespace — registration rejected"
+        );
+        NamespaceConflict {
+            namespace: namespace.to_string(),
+            worker_name: function_id.to_string(),
+            owner_worker_id: previous.to_string(),
+        }
     }
 
     /// Atomically removes `function_id` from the engine ONLY if `worker_id`
@@ -2984,6 +3028,40 @@ mod tests {
         engine
             .claim_worker_name("orders", restart, "state")
             .expect("a tearing-down owner must not block a restart");
+    }
+
+    #[tokio::test]
+    async fn a_function_id_owned_via_one_invocation_path_blocks_the_other() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let a = WorkerConnection::new(tx_a);
+        engine.worker_registry.register_worker(a.clone());
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(b.clone());
+
+        // A owns the id as a REGULAR function.
+        engine
+            .claim_function("orders", a.id, "svc::f")
+            .expect("A claims the regular function");
+
+        // B tries to own the SAME (ns, id) as an HTTP-invocation function.
+        // Different owner map, but the same registry entry would be
+        // overwritten — so it must be rejected, not silently accepted.
+        let conflict = engine
+            .claim_external_function("orders", b.id, "svc::f")
+            .expect_err("an id already owned via the regular path must block the external claim");
+        assert_eq!(conflict.owner_worker_id, a.id.to_string());
+
+        // ...and symmetrically.
+        engine
+            .claim_external_function("orders", b.id, "svc::g")
+            .expect("B claims an external function");
+        engine
+            .claim_function("orders", a.id, "svc::g")
+            .expect_err("an id already owned via the external path must block the regular claim");
     }
 
     #[tokio::test]
