@@ -64,7 +64,7 @@ and returns the result.
 
 A function runs when a trigger fires. The same function can be invoked from many trigger types at
 once: direct CLI calls (`iii trigger`), in-process SDK calls (`worker.trigger`), or bindings to
-event-source workers like http, cron, queue, state, and stream. All paths leave
+event-source workers like http, cron, queue, state, and iii-stream. All paths leave
 the handler unchanged.
 
 The two most common ways to invoke a function directly are from worker code with `worker.trigger` or
@@ -215,10 +215,10 @@ behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.
 - **State**: KV-style state with scoped namespaces and reactive triggers on create/update/delete.
   See [state](https://workers.iii.dev/workers/state).
 - **Stream**: Real-time push to connected clients over WebSocket. See
-  [stream](https://workers.iii.dev/workers/stream).
+  [iii-stream](https://workers.iii.dev/workers/iii-stream).
 - **Queue**: Durable, ordered job processing with retries, concurrency limits, and a dead-letter
   queue. See [queue](https://workers.iii.dev/workers/queue).
 - **Pub/Sub**: Lightweight in-engine topic subscription for fan-out without durability guarantees.
   See [pubsub](https://workers.iii.dev/workers/pubsub).
 - **Observability**: Traces, logs, metrics, alerts, sampling rules, and rollups. See
-  [observability](https://workers.iii.dev/workers/observability).
+  [iii-observability](https://workers.iii.dev/workers/iii-observability).

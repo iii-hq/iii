@@ -1,12 +1,12 @@
 ---
 title: "Ch. 5: Stream live clicks"
 description:
-  "Push clicks to subscribers in real time with a dedicated click-streamer worker and stream."
+  "Push clicks to subscribers in real time with a dedicated click-streamer worker and iii-stream."
 owner: "devrel"
 type: "tutorial"
 ---
 
-`stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
+`iii-stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
 like a live feed of clicks for a dashboard. A stream is bidirectional (subscribers can send messages
 back as well as receive them), but here you only need to broadcast clicks outward. You'll move the
 live-broadcast concern into its own `click-streamer` worker so the `link` worker stays focused on
@@ -14,12 +14,12 @@ links.
 
 ## Add the workers
 
-`stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
+`iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
 worker to manage the streaming, so scaffold it the same way you scaffolded `link` in Chapter 1, and
 `analytics` in Chapter 4:
 
 ```bash
-iii worker add stream
+iii worker add iii-stream
 iii worker init click-streamer --language typescript
 ```
 

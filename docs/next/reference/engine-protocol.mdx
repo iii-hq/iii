@@ -16,7 +16,7 @@ type: "reference"
 
 <Note>
   Observability introspection (traces, logs, metrics, sampling rules, alerts, rollups) is owned
-  end-to-end by the observability worker.
+  end-to-end by the iii-observability worker.
 </Note>
 
 ## Connection ports
@@ -28,7 +28,7 @@ The engine binds three ports of its own and runs alongside one more from the obs
 | `3111`  | engine             | REST API.                                                     |
 | `3112`  | engine             | Stream API (WebSocket; consumer-side stream subscriptions).   |
 | `49134` | engine             | SDK WebSocket; this is what `iii_sdk::register_worker` opens. |
-| `9464`  | `observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |
+| `9464`  | `iii-observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |
 
 The console UI runs on `3113` and is launched separately by `iii console`.
 

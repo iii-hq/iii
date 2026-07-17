@@ -35,15 +35,15 @@ back:
 ![iii console Traces page showing redirect spans sorted by duration with the waterfall for a selected GET /s/:code trace](/next/tutorials/linkly/console-traces.png)
 
 You didn't add a tracing library or thread a request ID between services to get this.
-`iii project init` added the `observability` worker to `config.yaml`, and from then on every
+`iii project init` added the `iii-observability` worker to `config.yaml`, and from then on every
 request gets a trace and every `Logger` line is collected automatically, across workers. In iii
 end-to-end observability is an inherent property of the system.
 
 <Info>
-  **observability emits OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
+  **iii-observability emits OpenTelemetry.** Its traces, metrics, and logs are emitted as OTel, so
   you aren't locked into the console. You can point the worker at Honeycomb, Grafana, Datadog, or
   any other OTel-compatible backend. See the worker's configuration on
-  [workers.iii.dev/workers/observability](https://workers.iii.dev/workers/observability);
+  [workers.iii.dev/workers/iii-observability](https://workers.iii.dev/workers/iii-observability);
   its settings are managed at runtime through the [configuration worker](/using-iii/configuration).
 </Info>
 

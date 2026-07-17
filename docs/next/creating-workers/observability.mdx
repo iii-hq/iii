@@ -1,6 +1,6 @@
 ---
 title: "Observability"
-description: "Traces, metrics, and logs for a iii system through the observability worker."
+description: "Traces, metrics, and logs for a iii system through the iii-observability worker."
 owner: "devrel"
 type: "how-to"
 ---
@@ -8,21 +8,21 @@ type: "how-to"
 Every call in a iii system passes through the engine: function invocations, trigger firings, and
 channel messages all flow across it. Because every worker communicates through the engine, it can
 trace work as it moves from one worker to the next, giving you observability across the whole system
-without each worker instrumenting itself. The `observability` worker turns that information into
+without each worker instrumenting itself. The `iii-observability` worker turns that information into
 OpenTelemetry traces, metrics, and logs:
 
 ```bash
-iii worker add observability
+iii worker add iii-observability
 ```
 
 <Note>
   This page is a quick tour. For the complete configuration and the full list of query functions,
-  see the [observability worker docs](https://workers.iii.dev/workers/observability).
+  see the [iii-observability worker docs](https://workers.iii.dev/workers/iii-observability).
 </Note>
 
 ## OpenTelemetry support
 
-`observability` is OpenTelemetry-based: it produces distributed traces across worker hops,
+`iii-observability` is OpenTelemetry-based: it produces distributed traces across worker hops,
 metrics, and structured logs, and it can export them to any OTel-compatible backend or keep them
 in-memory for local development. Sampling, retention, and exporter targets are configured on the
 worker; see the worker docs for the full set of options.
@@ -98,7 +98,7 @@ The [sandbox](./sandboxes) worker's `sandbox::run` is an easy one to start with:
 
 ```bash
 # add the sandbox worker if you don't have it yet
-iii worker add sandbox
+iii worker add iii-sandbox
 
 # run something to produce a trace
 iii trigger sandbox::run image=python lang=python code='print(1)'
