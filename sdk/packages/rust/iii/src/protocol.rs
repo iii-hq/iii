@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// [`Message::RegistrationRejected`] code: another live worker already holds
+/// this `(namespace, worker_name)`. The engine closes the connection; the SDK
+/// must stop and not reconnect. Mirrors the engine constant of the same name.
+pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
+
+/// [`Message::RegistrationRejected`] code: another live worker in this
+/// namespace already exports this function id. Only that one registration is
+/// refused; the connection stays open and the worker keeps serving its other
+/// functions. Mirrors the engine constant of the same name.
+pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
+
 /// Routing action for [`TriggerRequest`]. Determines how the engine handles
 /// the invocation.
 ///
@@ -207,9 +218,12 @@ pub enum Message {
     WorkerRegistered {
         worker_id: String,
     },
-    /// Pushed by the engine when a worker registration collides with a live
-    /// worker in the same namespace. The engine closes the connection right
-    /// after; the SDK treats this as a fatal error and does not reconnect.
+    /// Pushed by the engine when a registration collides with a live worker in
+    /// the same namespace. The `code` distinguishes the two cases:
+    /// [`WORKER_NAMESPACE_CONFLICT`] is fatal (the engine closes the connection;
+    /// the SDK stops and does not reconnect), while [`FUNCTION_NAMESPACE_CONFLICT`]
+    /// refuses a single function id, keeps the connection open, and here
+    /// `worker_name` carries the rejected function id.
     RegistrationRejected {
         code: String,
         namespace: String,

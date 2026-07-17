@@ -37,9 +37,10 @@ use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::Error,
     protocol::{
-        ErrorBody, Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
-        RegisterTriggerTypeMessage, TriggerAction, TriggerRequest, TriggerRequestWithMetadata,
-        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
+        ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message, RegisterFunctionMessage,
+        RegisterTriggerInput, RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction,
+        TriggerRequest, TriggerRequestWithMetadata, UnregisterTriggerMessage,
+        UnregisterTriggerTypeMessage, WORKER_NAMESPACE_CONFLICT,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{
@@ -1784,18 +1785,7 @@ impl IIIClient {
                 worker_name,
                 owner_worker_id,
             } => {
-                let err = Error::RegistrationRejected {
-                    code,
-                    namespace,
-                    worker_name,
-                    owner_worker_id,
-                };
-                tracing::error!(error = %err, "worker registration rejected; not reconnecting");
-                *self.inner.fatal_error.lock_or_recover() = Some(err);
-                self.set_connection_state(IIIConnectionState::Failed);
-                // Fatal: clear the running flag so the connection loop exits
-                // instead of reconnecting into the same collision.
-                self.inner.running.store(false, Ordering::SeqCst);
+                self.handle_registration_rejected(code, namespace, worker_name, owner_worker_id);
             }
             Message::TriggerRegistrationResult {
                 id,
@@ -1816,6 +1806,69 @@ impl IIIClient {
         }
 
         Ok(())
+    }
+
+    /// Dispatch a `RegistrationRejected` message by its `code`.
+    ///
+    /// The two rejection codes carry different semantics. A worker-name
+    /// conflict is fatal — the engine has closed the connection and the SDK
+    /// must not reconnect into the same collision. A function-id conflict costs
+    /// the worker only that one function: the connection stays open and every
+    /// other export keeps serving, so it must not be treated as fatal. Any
+    /// unrecognised code is treated as fatal, the safe default.
+    fn handle_registration_rejected(
+        &self,
+        code: String,
+        namespace: String,
+        worker_name: String,
+        owner_worker_id: String,
+    ) {
+        match code.as_str() {
+            FUNCTION_NAMESPACE_CONFLICT => {
+                // Non-fatal. `worker_name` carries the rejected function id here
+                // (the engine reuses the struct field).
+                tracing::warn!(
+                    code = %code,
+                    namespace = %namespace,
+                    function_id = %worker_name,
+                    owner_worker_id = %owner_worker_id,
+                    "function registration rejected: another worker in this namespace already \
+                     owns this function id; the worker keeps serving its other functions"
+                );
+            }
+            WORKER_NAMESPACE_CONFLICT => {
+                self.fail_registration_fatal(code, namespace, worker_name, owner_worker_id);
+            }
+            _ => {
+                tracing::error!(
+                    code = %code,
+                    "registration rejected with an unknown code; treating as fatal"
+                );
+                self.fail_registration_fatal(code, namespace, worker_name, owner_worker_id);
+            }
+        }
+    }
+
+    /// Record a fatal registration rejection: surface the error, mark the
+    /// connection failed, and clear the running flag so the connection loop
+    /// exits instead of reconnecting into the same collision.
+    fn fail_registration_fatal(
+        &self,
+        code: String,
+        namespace: String,
+        worker_name: String,
+        owner_worker_id: String,
+    ) {
+        let err = Error::RegistrationRejected {
+            code,
+            namespace,
+            worker_name,
+            owner_worker_id,
+        };
+        tracing::error!(error = %err, "worker registration rejected; not reconnecting");
+        *self.inner.fatal_error.lock_or_recover() = Some(err);
+        self.set_connection_state(IIIConnectionState::Failed);
+        self.inner.running.store(false, Ordering::SeqCst);
     }
 
     fn handle_invocation_result(
@@ -3147,7 +3200,7 @@ mod tests {
     }
 
     #[test]
-    fn registration_rejected_is_fatal_and_stops_worker() {
+    fn worker_name_conflict_is_fatal_and_stops_worker() {
         let iii = IIIClient::new("ws://localhost:1234");
         iii.inner
             .running
@@ -3155,7 +3208,7 @@ mod tests {
 
         let payload = json!({
             "type": "registrationrejected",
-            "code": "worker_name_conflict",
+            "code": "WORKER_NAMESPACE_CONFLICT",
             "namespace": "orders",
             "worker_name": "checkout",
             "owner_worker_id": "worker-abc",
@@ -3179,13 +3232,48 @@ mod tests {
                 worker_name,
                 owner_worker_id,
             } => {
-                assert_eq!(code, "worker_name_conflict");
+                assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
                 assert_eq!(namespace, "orders");
                 assert_eq!(worker_name, "checkout");
                 assert_eq!(owner_worker_id, "worker-abc");
             }
             other => panic!("expected RegistrationRejected, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn function_conflict_is_not_fatal_and_keeps_serving() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Simulate a live, connected worker.
+        iii.set_connection_state(IIIConnectionState::Connected);
+
+        // The engine refused a single duplicate function id but deliberately
+        // kept the connection open. `worker_name` carries the function id.
+        let payload = json!({
+            "type": "registrationrejected",
+            "code": "FUNCTION_NAMESPACE_CONFLICT",
+            "namespace": "orders",
+            "worker_name": "orders::charge",
+            "owner_worker_id": "worker-abc",
+        })
+        .to_string();
+
+        iii.handle_message(&payload).unwrap();
+
+        // Non-fatal: the worker keeps running, stays connected, and no fatal
+        // error is recorded — its other functions are still served.
+        assert!(
+            iii.inner.running.load(std::sync::atomic::Ordering::SeqCst),
+            "worker must keep running after a function-id conflict"
+        );
+        assert_eq!(iii.get_connection_state(), IIIConnectionState::Connected);
+        assert!(
+            iii.fatal_error().is_none(),
+            "a function-id conflict must not be fatal"
+        );
     }
 
     #[test]
