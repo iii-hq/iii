@@ -19,6 +19,23 @@ use crate::{
     workers::traits::Worker,
 };
 
+/// `InitOptions` for a bridge connection, named after the adapter that opens it.
+///
+/// Several bridge adapters can run inside one engine process, and they would
+/// otherwise all take the SDK's default `{hostname}:{pid}` worker name. The
+/// engine allows one live worker per name in a namespace, so the second and
+/// later connections would be rejected and — rejection being fatal — never
+/// reconnect. Naming each bridge keeps them distinct identities.
+pub fn bridge_init_options(worker_name: &str) -> InitOptions {
+    InitOptions {
+        metadata: Some(iii_sdk::runtime::WorkerMetadata {
+            name: worker_name.to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BridgeClientConfig {
@@ -81,7 +98,7 @@ impl Worker for BridgeClientWorker {
             .or_else(|| std::env::var("III_URL").ok())
             .unwrap_or_else(|| "ws://0.0.0.0:49134".to_string());
 
-        let bridge = register_worker(&url, InitOptions::default());
+        let bridge = register_worker(&url, bridge_init_options("iii-bridge-client"));
 
         Ok(Box::new(Self {
             engine,

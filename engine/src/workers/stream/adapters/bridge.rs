@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, InitOptions, register_worker};
+use iii_sdk::{IIIClient, register_worker};
 use serde_json::Value;
 
 use crate::{
@@ -41,7 +41,10 @@ impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(register_worker(&bridge_url, InitOptions::default()));
+        let bridge = Arc::new(register_worker(
+            &bridge_url,
+            crate::workers::bridge_client::bridge_init_options("iii-stream-bridge"),
+        ));
         let handler_function_id = format!("stream::bridge::on_pub::{}", uuid::Uuid::new_v4());
 
         Ok(Self {

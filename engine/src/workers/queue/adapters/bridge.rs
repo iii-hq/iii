@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::trigger::Trigger;
-use iii_sdk::{Error, IIIClient, InitOptions, TriggerAction, register_worker};
+use iii_sdk::{Error, IIIClient, TriggerAction, register_worker};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -73,7 +73,10 @@ impl BridgeAdapter {
     pub async fn new(engine: Arc<Engine>, bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(register_worker(&bridge_url, InitOptions::default()));
+        let bridge = Arc::new(register_worker(
+            &bridge_url,
+            crate::workers::bridge_client::bridge_init_options("iii-queue-bridge"),
+        ));
 
         Ok(Self {
             engine,
