@@ -18,7 +18,7 @@ use crate::{
     function::{FunctionHandler, FunctionResult},
     protocol::{ErrorBody, Message},
     telemetry::{inject_baggage_from_context, inject_traceparent_from_context},
-    trigger::{Trigger, TriggerRegistrator},
+    trigger::{RegistratorUnavailable, Trigger, TriggerRegistrator},
     worker_connections::WorkerConnection,
 };
 
@@ -65,10 +65,9 @@ impl TriggerRegistrator for WorkerConnection {
                 .await;
             if let Err(err) = sent {
                 acks.remove(&trigger_id);
-                return Err(anyhow::anyhow!(
-                    "failed to send register trigger message through worker channel: {}",
-                    err
-                ));
+                return Err(anyhow::Error::new(RegistratorUnavailable).context(format!(
+                    "failed to send register trigger message through worker channel: {err}"
+                )));
             }
 
             let Some(rx) = rx else { return Ok(()) };
@@ -96,7 +95,7 @@ impl TriggerRegistrator for WorkerConnection {
     /// triggers would stall the connection until the timeout — the ack can
     /// only be read once the loop is free again. Failures are still handled:
     /// the worker's `TriggerRegistrationResult` takes the late-unwind path in
-    /// `router_msg`, which removes the trigger from the registry.
+    /// `router_msg`, which re-parks the trigger as a pending intent.
     fn replay_trigger(
         &self,
         trigger: Trigger,

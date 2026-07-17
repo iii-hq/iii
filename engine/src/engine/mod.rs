@@ -626,7 +626,20 @@ impl Engine {
                     return Ok(());
                 }
 
-                self.trigger_registry.triggers.remove(id);
+                // Re-park instead of dropping; park only when this call
+                // removed it — a concurrent disconnect GC may have already
+                // reaped it, and parking then would resurrect a dead binding.
+                if let Some((_, failed)) = self.trigger_registry.triggers.remove(id) {
+                    tracing::warn!(
+                        trigger_id = %id,
+                        trigger_type = %stored_trigger_type,
+                        function_id = %stored_function_id,
+                        "Trigger registration rejected by provider; parked as pending until the trigger type re-registers"
+                    );
+                    self.trigger_registry
+                        .pending_triggers
+                        .insert(failed.id.clone(), failed);
+                }
 
                 let Some(originator_id) = originator_id else {
                     tracing::debug!(
@@ -3503,7 +3516,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trigger_registration_result_forwards_error_to_originator() {
+    async fn test_trigger_registration_result_error_forwards_parks_and_replays() {
         ensure_default_meter();
         let engine = Engine::new();
 
@@ -3564,8 +3577,39 @@ mod tests {
 
         assert!(
             engine.trigger_registry.triggers.get("trig-1").is_none(),
-            "failed trigger should be removed from registry"
+            "failed trigger leaves the live registry"
         );
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-1"),
+            "failed trigger is parked for replay, not dropped"
+        );
+
+        // Provider reconnects with a fresh registrator: the parked intent replays.
+        let (reg2_tx, mut reg2_rx) = mpsc::channel::<Outbound>(8);
+        let reg2 = WorkerConnection::new(reg2_tx);
+        engine
+            .trigger_registry
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "http",
+                "test trigger type",
+                Box::new(reg2.clone()),
+                Some(reg2.id),
+            ))
+            .await
+            .expect("re-registering the trigger type should succeed");
+
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(engine.trigger_registry.triggers.contains_key("trig-1"));
+        let replayed = reg2_rx
+            .try_recv()
+            .expect("replacement registrator receives the replayed RegisterTrigger");
+        assert!(matches!(
+            replayed,
+            Outbound::Protocol(Message::RegisterTrigger { .. })
+        ));
     }
 
     #[tokio::test]
