@@ -241,6 +241,13 @@ pub struct TriggerRegistry {
     /// (re)registers, at which point they are activated and moved into
     /// `triggers`. Keyed by trigger id, like `triggers`.
     pub pending_triggers: Arc<DashMap<String, Trigger>>,
+    /// Serializes two-map transitions between `triggers` and
+    /// `pending_triggers` (a late-rejection re-park vs an explicit
+    /// unregister). DashMap only makes each map operation atomic; without
+    /// this, a re-park's remove+insert can interleave with an unregister's
+    /// removes and resurrect an explicitly-unregistered binding. Held only
+    /// around the map operations, never across an await.
+    pub park_transition: std::sync::Mutex<()>,
 }
 
 impl TriggerRegistry {
@@ -249,6 +256,7 @@ impl TriggerRegistry {
             trigger_types: Arc::new(DashMap::new()),
             triggers: Arc::new(DashMap::new()),
             pending_triggers: Arc::new(DashMap::new()),
+            park_transition: std::sync::Mutex::new(()),
         }
     }
 
@@ -554,23 +562,33 @@ impl TriggerRegistry {
             trigger_type.as_deref().unwrap_or("<missing>").purple()
         );
 
-        let Some(trigger_entry) = self.triggers.get(&id) else {
-            // A parked intent has no live registration to tear down —
-            // dropping it from the pending bucket is the whole unregister.
-            return Ok(self.pending_triggers.remove(&id).is_some());
+        let trigger = {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let Some(trigger_entry) = self.triggers.get(&id) else {
+                // A parked intent has no live registration to tear down —
+                // dropping it from the pending bucket is the whole unregister.
+                return Ok(self.pending_triggers.remove(&id).is_some());
+            };
+            trigger_entry.value().clone()
         };
-        let trigger = trigger_entry.value().clone();
-        drop(trigger_entry);
 
         if let Some(tt) = self.trigger_types.get(&trigger.trigger_type) {
             tt.registrator.unregister_trigger(trigger.clone()).await?;
         }
 
-        self.triggers.remove(&id);
-        // A late async rejection may have re-parked this binding while the
-        // registrator call above was in flight; an explicit unregister must
+        // A late async rejection may re-park this binding while the
+        // registrator call above is in flight; an explicit unregister must
         // win over that park or the intent resurrects on the next type
-        // registration.
+        // registration. The transition lock makes this two-map clear atomic
+        // with the re-park's own live-to-pending move.
+        let _park = self
+            .park_transition
+            .lock()
+            .expect("park_transition lock poisoned");
+        self.triggers.remove(&id);
         self.pending_triggers.remove(&id);
 
         Ok(true)
