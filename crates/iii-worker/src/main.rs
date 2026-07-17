@@ -7,7 +7,7 @@
 use clap::{CommandFactory, FromArgMatches};
 use iii_worker::{Cli, Commands};
 
-/// A `stdout` tracing writer that never reports I/O errors back to the fmt
+/// A `stderr` tracing writer that never reports I/O errors back to the fmt
 /// layer. The fmt layer's sole error path is an `eprintln!`, which PANICS
 /// when stderr is *also* a broken pipe — precisely the engine-death case for
 /// the spawned daemons (`worker-manager-daemon`, `sandbox-daemon`): the engine
@@ -18,23 +18,23 @@ use iii_worker::{Cli, Commands};
 /// (`daemon_exit::redirect_stdio_to_exit_log`) and these same writes land there
 /// as forensics. For one-shot CLI use it just turns a `… | head` EPIPE into a
 /// silent drop instead of a panic — strictly better either way.
-struct ResilientStdout;
+struct ResilientStderr;
 
-impl std::io::Write for ResilientStdout {
+impl std::io::Write for ResilientStderr {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), buf);
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
         Ok(())
     }
 }
 
-impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStdout {
-    type Writer = ResilientStdout;
+impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStderr {
+    type Writer = ResilientStderr;
     fn make_writer(&self) -> Self::Writer {
-        ResilientStdout
+        ResilientStderr
     }
 }
 
@@ -68,7 +68,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_writer(ResilientStdout)
+        .with_writer(ResilientStderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
@@ -114,22 +114,38 @@ async fn async_main() -> anyhow::Result<()> {
             force,
             no_wait,
         } => {
+            use colored::Colorize;
+            use iii_worker::cli::builtin_defaults::deprecated_builtin_replacement;
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
-            use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
+            use iii_worker::core::{AddOptions, ProjectCtx, WorkerSource, add as core_add};
 
             let total = args.worker_names.len();
             let brief = total > 1;
             let mut fail_count = 0usize;
 
             for (i, name) in args.worker_names.iter().enumerate() {
+                let source = parse_source_for_cli(name);
+                if let WorkerSource::Registry {
+                    name: registry_name,
+                    ..
+                } = &source
+                    && let Some(replacement) = deprecated_builtin_replacement(registry_name)
+                {
+                    eprintln!(
+                        "{} Worker name '{}' is deprecated and will be removed in a future version. Use `iii worker add {}` instead.",
+                        "warning:".yellow(),
+                        registry_name,
+                        replacement
+                    );
+                }
+
                 if brief {
-                    use colored::Colorize;
                     eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
                 }
 
                 let opts = AddOptions {
-                    source: parse_source_for_cli(name),
+                    source,
                     force,
                     reset_config: args.reset_config,
                     wait: !no_wait,
@@ -476,12 +492,7 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::Logs {
             worker_name,
             follow,
-            address,
-            port,
-        } => {
-            iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
-                .await
-        }
+        } => iii_worker::cli::managed::handle_managed_logs(&worker_name, follow).await,
         Commands::Init(args) => iii_worker::cli::init::run(args).await,
         Commands::Exec(args) => {
             let handler = iii_worker::cli::shell_client::handle_managed_exec;

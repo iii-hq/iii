@@ -3886,6 +3886,25 @@ mod tests {
         }
     }
 
+    struct OtelConfigTestGuard(Option<Arc<config::ObservabilityWorkerConfig>>);
+
+    impl OtelConfigTestGuard {
+        fn install(config: config::ObservabilityWorkerConfig) -> Self {
+            Self(otel::update_otel_config(config))
+        }
+    }
+
+    impl Drop for OtelConfigTestGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(previous) => {
+                    otel::update_otel_config((*previous).clone());
+                }
+                None => otel::clear_otel_config_for_test(),
+            }
+        }
+    }
+
     fn make_number_metric(
         name: &str,
         value: f64,
@@ -7935,13 +7954,15 @@ mod tests {
     #[serial]
     async fn test_initialize_returns_ok_when_disabled() {
         reset_observability_test_state();
+        let config = config::ObservabilityWorkerConfig {
+            enabled: Some(false),
+            ..config::ObservabilityWorkerConfig::default()
+        };
+        let _config_guard = OtelConfigTestGuard::install(config.clone());
         let engine = Arc::new(Engine::new());
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
         let worker = ObservabilityWorker {
-            _config: config::ObservabilityWorkerConfig {
-                enabled: Some(false),
-                ..config::ObservabilityWorkerConfig::default()
-            },
+            _config: config,
             triggers: Arc::new(OtelLogTriggers::new()),
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
@@ -7975,13 +7996,15 @@ mod tests {
     #[serial]
     async fn test_initialize_defaults_to_enabled_when_none() {
         reset_observability_test_state();
+        let config = config::ObservabilityWorkerConfig {
+            enabled: None,
+            ..config::ObservabilityWorkerConfig::default()
+        };
+        let _config_guard = OtelConfigTestGuard::install(config.clone());
         let engine = Arc::new(Engine::new());
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
         let worker = ObservabilityWorker {
-            _config: config::ObservabilityWorkerConfig {
-                enabled: None,
-                ..config::ObservabilityWorkerConfig::default()
-            },
+            _config: config,
             triggers: Arc::new(OtelLogTriggers::new()),
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),
@@ -8015,13 +8038,15 @@ mod tests {
     #[serial]
     async fn test_start_background_tasks_returns_ok_when_disabled() {
         reset_observability_test_state();
+        let config = config::ObservabilityWorkerConfig {
+            enabled: Some(false),
+            ..config::ObservabilityWorkerConfig::default()
+        };
+        let _config_guard = OtelConfigTestGuard::install(config.clone());
         let engine = Arc::new(Engine::new());
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let worker = ObservabilityWorker {
-            _config: config::ObservabilityWorkerConfig {
-                enabled: Some(false),
-                ..config::ObservabilityWorkerConfig::default()
-            },
+            _config: config,
             triggers: Arc::new(OtelLogTriggers::new()),
             trace_triggers: Arc::new(OtelTraceTriggers::new()),
             engine: engine.clone(),

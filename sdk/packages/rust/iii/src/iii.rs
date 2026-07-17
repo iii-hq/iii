@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
     sync::{mpsc, oneshot},
-    time::sleep,
+    time::{Instant, interval, sleep, sleep_until},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use uuid::Uuid;
@@ -733,6 +733,37 @@ impl RegisterFunction {
     }
 }
 
+/// Connection-loop timings.
+///
+/// Private knobs — unit tests shorten them to exercise reconnect paths
+/// quickly.
+// ponytail: knobs stay private; promote to InitOptions when an operator asks.
+#[derive(Clone, Copy, Debug)]
+struct ConnTimings {
+    /// Cap on a single WS connect (TCP + TLS + HTTP upgrade). Without it a
+    /// stalled socket wedges the reconnect loop forever (MOT-3857).
+    connect_timeout: Duration,
+    /// How often to send a WS ping so an idle link produces traffic.
+    ping_interval: Duration,
+    /// Reconnect if no frame (pongs included) arrives for this long —
+    /// detects half-open sockets where the engine already dropped us and
+    /// unregistered our functions.
+    idle_timeout: Duration,
+    /// Delay between reconnect attempts.
+    retry_delay: Duration,
+}
+
+impl Default for ConnTimings {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Duration::from_secs(10),
+            ping_interval: Duration::from_secs(20),
+            idle_timeout: Duration::from_secs(60),
+            retry_delay: Duration::from_secs(2),
+        }
+    }
+}
+
 struct IIIInner {
     address: String,
     outbound: mpsc::UnboundedSender<Outbound>,
@@ -748,6 +779,7 @@ struct IIIInner {
     connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     headers: Mutex<Option<HashMap<String, String>>>,
     otel_config: Mutex<Option<OtelConfig>>,
+    timings: Mutex<ConnTimings>,
 }
 
 /// WebSocket client for communication with the III Engine.
@@ -782,6 +814,7 @@ impl IIIClient {
             connection_thread: Mutex::new(None),
             headers: Mutex::new(None),
             otel_config: Mutex::new(None),
+            timings: Mutex::new(ConnTimings::default()),
         };
         Self {
             inner: Arc::new(inner),
@@ -1334,6 +1367,7 @@ impl IIIClient {
         let mut has_connected_before = false;
 
         while self.inner.running.load(Ordering::SeqCst) {
+            let t = *self.inner.timings.lock_or_recover();
             self.set_connection_state(if has_connected_before {
                 IIIConnectionState::Reconnecting
             } else {
@@ -1342,30 +1376,37 @@ impl IIIClient {
 
             let custom_headers = self.inner.headers.lock_or_recover().clone();
 
-            let connect_result = if let Some(ref h) = custom_headers {
-                use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-                use tokio_tungstenite::tungstenite::http;
-                let mut request = self
-                    .inner
-                    .address
-                    .as_str()
-                    .into_client_request()
-                    .expect("valid ws request");
-                for (k, v) in h {
-                    if let (Ok(name), Ok(val)) = (
-                        http::header::HeaderName::from_bytes(k.as_bytes()),
-                        http::header::HeaderValue::from_str(v),
-                    ) {
-                        request.headers_mut().insert(name, val);
+            // Cap the whole connect (TCP + TLS + WS upgrade): a stalled
+            // socket otherwise wedges this loop forever and the worker sits
+            // in Reconnecting with zero functions registered engine-side
+            // (MOT-3857).
+            let connect_result = tokio::time::timeout(t.connect_timeout, async {
+                if let Some(ref h) = custom_headers {
+                    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+                    use tokio_tungstenite::tungstenite::http;
+                    let mut request = self
+                        .inner
+                        .address
+                        .as_str()
+                        .into_client_request()
+                        .expect("valid ws request");
+                    for (k, v) in h {
+                        if let (Ok(name), Ok(val)) = (
+                            http::header::HeaderName::from_bytes(k.as_bytes()),
+                            http::header::HeaderValue::from_str(v),
+                        ) {
+                            request.headers_mut().insert(name, val);
+                        }
                     }
+                    connect_async(request).await
+                } else {
+                    connect_async(&self.inner.address).await
                 }
-                connect_async(request).await
-            } else {
-                connect_async(&self.inner.address).await
-            };
+            })
+            .await;
 
             match connect_result {
-                Ok((stream, _)) => {
+                Ok(Ok((stream, _))) => {
                     tracing::info!(address = %self.inner.address, "iii connected");
                     has_connected_before = true;
                     self.set_connection_state(IIIConnectionState::Connected);
@@ -1385,7 +1426,7 @@ impl IIIClient {
 
                     if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
                         tracing::warn!(error = %err, "failed to flush queue");
-                        sleep(Duration::from_secs(2)).await;
+                        sleep(t.retry_delay).await;
                         continue;
                     }
 
@@ -1406,7 +1447,7 @@ impl IIIClient {
                                 error = %err,
                                 "failed to flush post-drain queue"
                             );
-                            sleep(Duration::from_secs(2)).await;
+                            sleep(t.retry_delay).await;
                             continue;
                         }
                     }
@@ -1415,6 +1456,14 @@ impl IIIClient {
                     self.register_worker_metadata();
 
                     let mut should_reconnect = false;
+
+                    // Keepalive: pings make an idle link produce traffic, and
+                    // a frameless idle window means the link is dead even if
+                    // our sends still "succeed" (half-open socket: the engine
+                    // has already dropped us and unregistered our functions
+                    // while we still look Connected — MOT-3857).
+                    let mut ping = interval(t.ping_interval);
+                    let mut last_rx = Instant::now();
 
                     while self.inner.running.load(Ordering::SeqCst) && !should_reconnect {
                         tokio::select! {
@@ -1440,6 +1489,7 @@ impl IIIClient {
                             incoming = ws_rx.next() => {
                                 match incoming {
                                     Some(Ok(frame)) => {
+                                        last_rx = Instant::now();
                                         if let Err(err) = self.handle_frame(frame) {
                                             tracing::warn!(error = %err, "failed to handle frame");
                                         }
@@ -1453,16 +1503,46 @@ impl IIIClient {
                                     }
                                 }
                             }
+                            _ = sleep_until(last_rx + t.idle_timeout) => {
+                                tracing::warn!(
+                                    idle_timeout = ?t.idle_timeout,
+                                    "no frames from engine within idle window; forcing reconnect"
+                                );
+                                should_reconnect = true;
+                            }
+                            _ = ping.tick() => {
+                                // Bounded like every send: an unbounded await
+                                // here wedges the whole select loop on a full
+                                // TCP window (see send_ws).
+                                let ping_send = ws_tx.send(WsMessage::Ping(Default::default()));
+                                match tokio::time::timeout(t.idle_timeout, ping_send).await {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(err)) => {
+                                        tracing::warn!(error = %err, "keepalive ping failed; reconnecting");
+                                        should_reconnect = true;
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!("keepalive ping timed out; reconnecting");
+                                        should_reconnect = true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     tracing::warn!(error = %err, "failed to connect; retrying");
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        connect_timeout = ?t.connect_timeout,
+                        "connect attempt timed out; retrying"
+                    );
                 }
             }
 
             if self.inner.running.load(Ordering::SeqCst) {
-                sleep(Duration::from_secs(2)).await;
+                sleep(t.retry_delay).await;
             }
         }
     }
@@ -1568,8 +1648,22 @@ impl IIIClient {
 
     async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), Error> {
         let payload = serde_json::to_string(message)?;
-        ws_tx.send(WsMessage::Text(payload.into())).await?;
-        Ok(())
+        // Bound the send: on a blackholed peer with a full TCP send window,
+        // send().await can block indefinitely — and since callers await this
+        // inside select! handlers, an unbounded send wedges the entire
+        // connection loop (idle detection included). A send that can't
+        // complete within the idle window is a dead link; reconnect.
+        let t = *self.inner.timings.lock_or_recover();
+        match tokio::time::timeout(t.idle_timeout, ws_tx.send(WsMessage::Text(payload.into())))
+            .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => {
+                tracing::warn!("websocket send timed out; treating link as dead");
+                Err(Error::Timeout)
+            }
+        }
     }
 
     fn handle_frame(&self, frame: WsMessage) -> Result<(), Error> {
@@ -2059,6 +2153,149 @@ mod tests {
     use super::*;
     use crate::trigger::{TriggerConfig, TriggerHandler};
     use crate::{InitOptions, protocol::RegisterTriggerInput, register_worker};
+
+    use std::sync::atomic::AtomicUsize;
+
+    /// Raw TCP listener that accepts and then holds sockets open without
+    /// ever answering (or even reading) the WS handshake — the stalled /
+    /// half-open link from MOT-3857.
+    async fn spawn_stalled_listener() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                held.push(sock);
+            }
+        });
+        (addr, accepted)
+    }
+
+    /// WS server that completes handshakes and counts them. A `silent`
+    /// server then holds the socket without polling it (no auto-pong, no
+    /// frames — half-open link); a polling server reads frames, which lets
+    /// tungstenite's auto-pong answer client pings.
+    async fn spawn_ws_server(silent: bool) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handshakes = Arc::new(AtomicUsize::new(0));
+        let counter = handshakes.clone();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(sock).await else {
+                        return;
+                    };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    if silent {
+                        std::future::pending::<()>().await;
+                    }
+                    while let Some(frame) = ws.next().await {
+                        if frame.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (addr, handshakes)
+    }
+
+    fn client_with_timings(addr: std::net::SocketAddr, timings: ConnTimings) -> IIIClient {
+        let iii = IIIClient::new(&format!("ws://{addr}"));
+        // Keep OTel out of these tests: its exporter would dial the same
+        // server and pollute the connection counters.
+        *iii.inner.otel_config.lock_or_recover() = Some(OtelConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        *iii.inner.timings.lock_or_recover() = timings;
+        iii.connect();
+        iii
+    }
+
+    async fn wait_for_count(counter: &AtomicUsize, want: usize, within: Duration) -> usize {
+        let deadline = Instant::now() + within;
+        loop {
+            let n = counter.load(Ordering::SeqCst);
+            if n >= want || Instant::now() >= deadline {
+                return n;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_timeout_abandons_stalled_connect_and_retries() {
+        let (addr, accepted) = spawn_stalled_listener().await;
+        let iii = client_with_timings(
+            addr,
+            ConnTimings {
+                connect_timeout: Duration::from_millis(150),
+                retry_delay: Duration::from_millis(100),
+                ..ConnTimings::default()
+            },
+        );
+
+        // Without the connect timeout the first attempt wedges forever and
+        // no second TCP connect ever happens.
+        let n = wait_for_count(&accepted, 2, Duration::from_secs(5)).await;
+        iii.shutdown_async().await;
+        assert!(
+            n >= 2,
+            "stalled connect must be abandoned and retried, saw {n} attempts"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_reconnects_when_engine_goes_silent() {
+        let (addr, handshakes) = spawn_ws_server(true).await;
+        let iii = client_with_timings(
+            addr,
+            ConnTimings {
+                connect_timeout: Duration::from_secs(5),
+                // Ping never fires: idle detection must not depend on the
+                // ping cadence (and a polled test server would auto-pong).
+                ping_interval: Duration::from_secs(30),
+                idle_timeout: Duration::from_millis(250),
+                retry_delay: Duration::from_millis(100),
+            },
+        );
+
+        // A half-open link produces no frames; the idle deadline must tear
+        // the connection down and reconnect (replaying registrations).
+        let n = wait_for_count(&handshakes, 2, Duration::from_secs(5)).await;
+        iii.shutdown_async().await;
+        assert!(
+            n >= 2,
+            "silent link must force a reconnect, saw {n} handshakes"
+        );
+    }
+
+    #[tokio::test]
+    async fn keepalive_pings_hold_healthy_connection_open() {
+        let (addr, handshakes) = spawn_ws_server(false).await;
+        let iii = client_with_timings(
+            addr,
+            ConnTimings {
+                connect_timeout: Duration::from_secs(5),
+                ping_interval: Duration::from_millis(100),
+                idle_timeout: Duration::from_secs(1),
+                retry_delay: Duration::from_millis(100),
+            },
+        );
+
+        // Pongs elicited by our pings count as liveness: well past the idle
+        // window, the original connection must still be the only one.
+        sleep(Duration::from_millis(1500)).await;
+        let n = handshakes.load(Ordering::SeqCst);
+        iii.shutdown_async().await;
+        assert_eq!(n, 1, "healthy pinged connection must not be torn down");
+    }
 
     struct NoopTriggerHandler;
 

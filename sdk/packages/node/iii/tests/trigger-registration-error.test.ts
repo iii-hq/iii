@@ -29,12 +29,24 @@ describe('trigger registration error surfacing', () => {
     await new Promise<void>((resolve) => wss.close(() => resolve()))
   })
 
+  // Deterministic wait: a blind post-connect sleep flakes under CI load
+  // (serverSocket still undefined at send time).
+  const waitFor = async <T,>(get: () => T | undefined, ms = 5000): Promise<T> => {
+    const deadline = Date.now() + ms
+    for (;;) {
+      const v = get()
+      if (v !== undefined) return v
+      if (Date.now() > deadline) throw new Error('timed out waiting for condition')
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
   it('logs to console.error on TriggerRegistrationResult with error', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     sdk = registerWorker(url)
-    await new Promise((r) => setTimeout(r, 50))
+    const sock = await waitFor(() => serverSocket)
 
-    serverSocket!.send(
+    sock.send(
       JSON.stringify({
         type: 'triggerregistrationresult',
         id: 'trig-1',
@@ -48,7 +60,7 @@ describe('trigger registration error surfacing', () => {
       }),
     )
 
-    await new Promise((r) => setTimeout(r, 20))
+    await waitFor(() => (spy.mock.calls.length > 0 ? true : undefined))
     expect(spy).toHaveBeenCalled()
     const formatted = spy.mock.calls.map((args) => args.join(' ')).join('\n')
     expect(formatted).toContain('trig-1')
@@ -60,9 +72,9 @@ describe('trigger registration error surfacing', () => {
   it('does not log on TriggerRegistrationResult success (no error field)', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     sdk = registerWorker(url)
-    await new Promise((r) => setTimeout(r, 50))
+    const sock = await waitFor(() => serverSocket)
 
-    serverSocket!.send(
+    sock.send(
       JSON.stringify({
         type: 'triggerregistrationresult',
         id: 'trig-2',
@@ -71,7 +83,8 @@ describe('trigger registration error surfacing', () => {
       }),
     )
 
-    await new Promise((r) => setTimeout(r, 20))
+    // Negative assertion is inherently time-bounded: give handling a beat.
+    await new Promise((r) => setTimeout(r, 100))
     const registrationLogs = spy.mock.calls
       .map((args) => args.join(' '))
       .filter((msg) => msg.includes('Trigger registration'))

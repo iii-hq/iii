@@ -2703,6 +2703,8 @@ dependencies = [
  "glob",
  "hex",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "iana-time-zone",
  "iii",
  "iii-clap-docs",

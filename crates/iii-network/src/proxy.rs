@@ -65,13 +65,15 @@ async fn tcp_proxy_task(
 ) -> io::Result<()> {
     let host_dst = resolve_host_dst(dst, gateway_ipv4);
     let stream = TcpStream::connect(host_dst).await?;
+    tracing::debug!(%dst, %host_dst, "proxy connected");
     let (mut server_rx, mut server_tx) = stream.into_split();
 
     let mut server_buf = vec![0u8; SERVER_READ_BUF_SIZE];
+    let mut guest_open = true;
 
     loop {
         tokio::select! {
-            data = from_smoltcp.recv() => {
+            data = from_smoltcp.recv(), if guest_open => {
                 match data {
                     Some(bytes) => {
                         if let Err(e) = server_tx.write_all(&bytes).await {
@@ -79,7 +81,12 @@ async fn tcp_proxy_task(
                             break;
                         }
                     }
-                    None => break,
+                    None => {
+                        // Guest sent FIN: half-close toward the server but
+                        // keep relaying its remaining response bytes back.
+                        guest_open = false;
+                        let _ = server_tx.shutdown().await;
+                    }
                 }
             }
 

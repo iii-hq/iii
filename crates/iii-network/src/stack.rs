@@ -141,10 +141,18 @@ pub fn poll_iteration(
     while let Some(frame) = state.device.stage_next_frame() {
         match classify_frame(frame) {
             FrameAction::TcpSyn { src, dst } => {
-                if !state.conn_tracker.has_socket_for(&src, &dst) {
-                    state
-                        .conn_tracker
-                        .create_tcp_socket(src, dst, &mut state.sockets);
+                if state.conn_tracker.has_socket_for(&src, &dst) {
+                    // The SYN falls through to the existing socket for this
+                    // tuple. smoltcp silently drops a pure SYN against any
+                    // post-Listen socket, so this is only harmless while
+                    // that socket is still making progress (MOT-3966).
+                    tracing::debug!(%src, %dst, "SYN for tracked tuple; passthrough to existing socket");
+                } else {
+                    let created =
+                        state
+                            .conn_tracker
+                            .create_tcp_socket(src, dst, &mut state.sockets);
+                    tracing::debug!(%src, %dst, created, "SYN: new connection");
                 }
                 state
                     .iface
@@ -190,6 +198,7 @@ pub fn poll_iteration(
 
     if state.last_cleanup.elapsed() >= std::time::Duration::from_secs(1) {
         state.conn_tracker.cleanup_closed(&mut state.sockets);
+        state.conn_tracker.debug_snapshot(&mut state.sockets);
         state.udp_relay.cleanup_expired();
         state.last_cleanup = std::time::Instant::now();
     }
@@ -268,11 +277,17 @@ pub fn smoltcp_poll_loop(
         poll_iteration(&mut state, &shared, &config, &tokio_handle);
 
         let now = smoltcp_now();
+        // Clamp: `max(1)` — smoltcp reports `PollAt::Now` while the device is
+        // full (rx_ring backed up), which would busy-spin this thread at 100%
+        // CPU; `min(100)` — the relay tick must fire even when a distant timer
+        // (e.g. a TimeWait socket, 10s) is the only pending event, because
+        // nothing wakes this loop when a proxy task frees channel capacity.
         let timeout_ms = state
             .iface
             .poll_delay(now, &state.sockets)
             .map(|d| d.total_millis().min(i32::MAX as u64) as i32)
-            .unwrap_or(100);
+            .unwrap_or(100)
+            .clamp(1, 100);
 
         // SAFETY: poll_fds is a valid array of pollfd structs with valid fds.
         unsafe {

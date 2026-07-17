@@ -618,6 +618,25 @@ pub async fn handle_worker_sync(frozen: bool) -> i32 {
         return handle_worker_verify(false).await;
     }
 
+    // Acquire the operation lock BEFORE reading iii.lock. Reading first
+    // left a TOCTOU window: sync snapshots the lockfile, a concurrent
+    // update commits a new one, then sync acquires the lock and installs
+    // artifacts from the stale snapshot while iii.lock on disk says
+    // otherwise. (The --frozen path above stays outside the lock: it is
+    // read-only and lockfile writes are atomic renames, so its reads are
+    // always self-consistent.)
+    let _operation_lock =
+        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!(
+                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
+                    "error:".red()
+                );
+                return 1;
+            }
+        };
+
     let lock_path = super::lockfile::lockfile_path();
     let lockfile = match super::lockfile::WorkerLockfile::read_from(lock_path) {
         Ok(lockfile) => lockfile,
@@ -642,18 +661,6 @@ pub async fn handle_worker_sync(frozen: bool) -> i32 {
         return 1;
     }
     let skipped_unmanaged = skipped_unmanaged_config_workers(&lockfile, &config_names);
-
-    let _operation_lock =
-        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
-            Ok(lock) => lock,
-            Err(e) => {
-                eprintln!(
-                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
-                    "error:".red()
-                );
-                return 1;
-            }
-        };
 
     match replay_lockfile(&lockfile).await {
         Ok(mut summary) => {
@@ -1074,6 +1081,36 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
     }
 
     let lock_path = super::lockfile::lockfile_path();
+    if !lock_path.exists() {
+        // No lockfile: for a named update this is the same failure as
+        // "name not pinned" below; for a bare update it's the same outcome
+        // as an empty lockfile — nothing pinned, nothing to do. Surfacing
+        // the raw ENOENT here made a fresh project look broken.
+        if let Some(name) = worker_name {
+            eprintln!("{} Worker '{}' is not in iii.lock", "error:".red(), name);
+            return 1;
+        }
+        eprintln!(
+            "  No iii.lock here; nothing to update. Install a worker first with `iii worker add <name>`."
+        );
+        return 0;
+    }
+
+    // Same mutual exclusion as sync: update rewrites config.yaml and
+    // iii.lock per resolved root, and a concurrent update/sync would race
+    // the read-modify-write (last writer silently wins).
+    let _operation_lock =
+        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!(
+                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
+                    "error:".red()
+                );
+                return 1;
+            }
+        };
+
     let lockfile = match super::lockfile::WorkerLockfile::read_from(lock_path) {
         Ok(lockfile) => lockfile,
         Err(e) => {
@@ -1295,6 +1332,25 @@ fn read_lockfile_or_default(
     } else {
         Ok(super::lockfile::WorkerLockfile::default())
     }
+}
+
+/// Delete `worker_name` from `iii.lock`. Returns `Ok(true)` when an entry
+/// was removed and the lockfile rewritten, `Ok(false)` when there was
+/// nothing to do (no lockfile, or the worker wasn't pinned — local and
+/// builtin workers never are). Without this, `iii worker sync` keeps
+/// replaying the removed worker's artifacts and a bare `iii worker update`
+/// re-resolves it as a lock root, reinstalling it into config.yaml.
+fn remove_lock_entry(worker_name: &str) -> Result<bool, String> {
+    let lock_path = super::lockfile::lockfile_path();
+    if !lock_path.exists() {
+        return Ok(false);
+    }
+    let mut lockfile = super::lockfile::WorkerLockfile::read_from(lock_path)?;
+    if lockfile.workers.remove(worker_name).is_none() {
+        return Ok(false);
+    }
+    lockfile.write_to(lock_path)?;
+    Ok(true)
 }
 
 fn write_engine_lock_entry(worker_name: &str, version: &str) -> Result<(), String> {
@@ -2124,12 +2180,53 @@ pub async fn handle_managed_remove(worker_name: &str, brief: bool) -> i32 {
         );
         return 1;
     }
+    // Same mutual exclusion as sync/update: remove edits config.yaml AND
+    // iii.lock, so racing an update's lockfile read-modify-write could
+    // silently write the removed worker's pin back, and the snapshot
+    // rollback below could wipe a concurrent add's config.yaml append.
+    let _operation_lock =
+        match crate::core::ProjectOperationLock::acquire(std::path::Path::new(".")) {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!(
+                    "{} another iii worker operation is active ({e}). Wait for it to finish.",
+                    "error:".red()
+                );
+                return 1;
+            }
+        };
+    // Snapshot config.yaml so the config and lockfile edits commit together:
+    // a worker left in iii.lock after leaving config.yaml gets resurrected by
+    // `iii worker update` and replayed by `iii worker sync`.
+    let config_snapshot = match ConfigYamlSnapshot::capture() {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
     if let Err(e) = super::config_file::remove_worker(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
+    let removed_from_lock = match remove_lock_entry(worker_name) {
+        Ok(removed) => removed,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            config_snapshot.restore_after_failure();
+            return 1;
+        }
+    };
     if brief {
         eprintln!("        {} {}", "✓".green(), worker_name.bold());
+    } else if removed_from_lock {
+        eprintln!(
+            "  {} {} removed from {} and {}",
+            "✓".green(),
+            worker_name.bold(),
+            "config.yaml".dimmed(),
+            "iii.lock".dimmed(),
+        );
     } else {
         eprintln!(
             "  {} {} removed from {}",
@@ -2211,15 +2308,18 @@ fn clear_single_worker(worker_name: &str) -> i32 {
 /// Prompts the user for confirmation before clearing all artifacts.
 /// Returns `true` if the user confirms with "y".
 fn confirm_clear() -> bool {
-    confirm_prompt("  This will remove all downloaded workers and images. Continue? [y/N] ")
+    confirm_prompt(
+        "  This will remove all downloaded workers, images, and managed VM state. Continue? [y/N] ",
+    )
 }
 
 fn clear_all_workers(skip_confirm: bool) -> i32 {
     let home = dirs::home_dir().unwrap_or_default();
     let workers_dir = home.join(".iii/workers");
     let images_dir = home.join(".iii/images");
+    let managed_dir = home.join(".iii/managed");
 
-    if !workers_dir.exists() && !images_dir.exists() {
+    if !workers_dir.exists() && !images_dir.exists() && !managed_dir.exists() {
         eprintln!("  Nothing to clear.");
         return 0;
     }
@@ -2231,33 +2331,81 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
 
     let mut skipped: Vec<String> = Vec::new();
     let mut total_freed: u64 = 0;
-    let mut worker_count: u32 = 0;
+    // Unique worker names cleared across ~/.iii/workers and ~/.iii/managed —
+    // a binary worker can have artifacts in both, and counting it twice
+    // would inflate the tally.
+    let mut cleared_workers: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut image_count: u32 = 0;
+
+    // Deletes one artifact dir entry after the shared guards: valid worker
+    // name, resolved path stays under `base`, worker not currently running.
+    let mut clear_entry = |entry: &std::fs::DirEntry,
+                           base: &std::path::Path,
+                           skipped: &mut Vec<String>|
+     -> Option<String> {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Skip entries with invalid names (e.g. symlinks with path traversal)
+        if super::registry::validate_worker_name(&name).is_err() {
+            return None;
+        }
+        // Verify resolved path stays under the artifact base dir
+        if let Ok(resolved) = entry.path().canonicalize()
+            && let Ok(base) = base.canonicalize()
+            && !resolved.starts_with(&base)
+        {
+            return None;
+        }
+        if is_worker_running(&name) {
+            if !skipped.contains(&name) {
+                skipped.push(name);
+            }
+            return None;
+        }
+        // Legacy binary workers can be a bare FILE at ~/.iii/workers/{name}
+        // (see delete_worker_artifacts); remove_dir_all fails on those with
+        // NotADirectory. Branch on the entry's own (non-following) file
+        // type, and count the entry as cleared — and its bytes as freed —
+        // only when the deletion actually succeeded.
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let (bytes, removed) = if is_dir {
+            (dir_size(&path), std::fs::remove_dir_all(&path))
+        } else {
+            let len = std::fs::symlink_metadata(&path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            (len, std::fs::remove_file(&path))
+        };
+        if removed.is_err() {
+            return None;
+        }
+        total_freed += bytes;
+        Some(name)
+    };
 
     // Clear binary workers
     if workers_dir.exists()
         && let Ok(entries) = std::fs::read_dir(&workers_dir)
     {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            // Skip entries with invalid names (e.g. symlinks with path traversal)
-            if super::registry::validate_worker_name(&name).is_err() {
-                continue;
+            if let Some(name) = clear_entry(&entry, &workers_dir, &mut skipped) {
+                cleared_workers.insert(name);
             }
-            // Verify resolved path stays under workers_dir
-            if let Ok(resolved) = entry.path().canonicalize()
-                && let Ok(base) = workers_dir.canonicalize()
-                && !resolved.starts_with(&base)
-            {
-                continue;
+        }
+    }
+
+    // Clear managed VM state (~/.iii/managed/{name}): rootfs clones, dep
+    // caches, and the `.iii-prepared` marker. The per-worker path
+    // (`delete_worker_artifacts`) already removes this dir — a stale
+    // prepared marker silently skips the in-VM dependency reinstall on the
+    // next boot (MOT-3585) — so the wipe-all path must cover it too.
+    if managed_dir.exists()
+        && let Ok(entries) = std::fs::read_dir(&managed_dir)
+    {
+        for entry in entries.flatten() {
+            if let Some(name) = clear_entry(&entry, &managed_dir, &mut skipped) {
+                cleared_workers.insert(name);
             }
-            if is_worker_running(&name) {
-                skipped.push(name);
-                continue;
-            }
-            total_freed += dir_size(&entry.path());
-            let _ = std::fs::remove_dir_all(entry.path());
-            worker_count += 1;
         }
     }
 
@@ -2305,7 +2453,7 @@ fn clear_all_workers(skip_confirm: bool) -> i32 {
     eprintln!(
         "  {} Cleared {} worker(s) and {} image(s) ({:.1} MB freed)",
         "✓".green(),
-        worker_count,
+        cleared_workers.len(),
         image_count,
         total_freed as f64 / 1_048_576.0,
     );
@@ -3775,12 +3923,7 @@ async fn follow_single_log(path: &std::path::Path) -> i32 {
     0
 }
 
-pub async fn handle_managed_logs(
-    worker_name: &str,
-    follow: bool,
-    _address: &str,
-    _port: u16,
-) -> i32 {
+pub async fn handle_managed_logs(worker_name: &str, follow: bool) -> i32 {
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -3874,8 +4017,24 @@ pub async fn handle_managed_logs(
             0
         }
         Err(_) => {
-            eprintln!("{} No logs found for '{}'", "error:".red(), worker_name);
-            1
+            // No log files anywhere. A known worker that simply hasn't
+            // produced logs yet is informational (exit 0, matching the
+            // "No logs available" branches above); a name with no config
+            // entry and no artifacts is a probable typo (exit 1).
+            let known = super::config_file::worker_exists(worker_name)
+                || home.join(".iii/managed").join(worker_name).is_dir()
+                || home.join(".iii/workers").join(worker_name).exists();
+            if known {
+                eprintln!("  No logs available for {} yet", worker_name.bold());
+                0
+            } else {
+                eprintln!(
+                    "{} No logs found for '{}'. Run `iii worker list` to see known workers.",
+                    "error:".red(),
+                    worker_name,
+                );
+                1
+            }
         }
     }
 }
@@ -5750,6 +5909,93 @@ dependencies:
         .await;
     }
 
+    #[tokio::test]
+    async fn handle_managed_remove_removes_worker_from_lockfile() {
+        in_temp_dir_async(|_| async move {
+            std::fs::write(
+                "config.yaml",
+                "workers:\n  - name: pdfkit\n  - name: keeper\n",
+            )
+            .unwrap();
+            let mut lock = cli_lockfile::WorkerLockfile::default();
+            for name in ["pdfkit", "keeper"] {
+                lock.workers.insert(
+                    name.to_string(),
+                    cli_lockfile::LockedWorker {
+                        version: "1.0.0".to_string(),
+                        worker_type: cli_lockfile::LockedWorkerType::Binary,
+                        dependencies: Default::default(),
+                        source: locked_binary_source(
+                            binary_download::current_target(),
+                            &format!("https://workers.iii.dev/{name}.tar.gz"),
+                            "a".repeat(64),
+                        ),
+                    },
+                );
+            }
+            lock.write_to(cli_lockfile::lockfile_path()).unwrap();
+
+            let rc = handle_managed_remove("pdfkit", false).await;
+
+            assert_eq!(rc, 0);
+            let config = std::fs::read_to_string("config.yaml").unwrap();
+            assert!(!config.contains("pdfkit"));
+            let lock =
+                cli_lockfile::WorkerLockfile::read_from(cli_lockfile::lockfile_path()).unwrap();
+            assert!(!lock.workers.contains_key("pdfkit"));
+            assert!(lock.workers.contains_key("keeper"));
+            // Regression: before the lockfile prune, `iii worker update pdfkit`
+            // still resolved the removed worker and reinstalled it.
+            assert_eq!(handle_worker_update(Some("pdfkit")).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_remove_leaves_lockfile_alone_for_unpinned_worker() {
+        in_temp_dir_async(|_| async move {
+            // Local/builtin workers live in config.yaml but are never pinned
+            // in iii.lock; removing one must not disturb other pins.
+            std::fs::write("config.yaml", "workers:\n  - name: local-w\n").unwrap();
+            let mut lock = cli_lockfile::WorkerLockfile::default();
+            lock.workers.insert(
+                "keeper".to_string(),
+                cli_lockfile::LockedWorker {
+                    version: "1.0.0".to_string(),
+                    worker_type: cli_lockfile::LockedWorkerType::Engine,
+                    dependencies: Default::default(),
+                    source: None,
+                },
+            );
+            lock.write_to(cli_lockfile::lockfile_path()).unwrap();
+
+            let rc = handle_managed_remove("local-w", false).await;
+
+            assert_eq!(rc, 0);
+            let lock =
+                cli_lockfile::WorkerLockfile::read_from(cli_lockfile::lockfile_path()).unwrap();
+            assert!(lock.workers.contains_key("keeper"));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_remove_restores_config_when_lockfile_is_malformed() {
+        in_temp_dir_async(|_| async move {
+            let config = "workers:\n  - name: pdfkit\n";
+            std::fs::write("config.yaml", config).unwrap();
+            std::fs::write("iii.lock", "not: [valid").unwrap();
+
+            let rc = handle_managed_remove("pdfkit", false).await;
+
+            // The lockfile edit failed, so the config removal must roll back
+            // rather than leave config.yaml and iii.lock disagreeing.
+            assert_eq!(rc, 1);
+            assert_eq!(std::fs::read_to_string("config.yaml").unwrap(), config);
+        })
+        .await;
+    }
+
     #[test]
     fn binary_config_yaml_extracts_wrapped_registry_config() {
         let config = serde_json::json!({
@@ -6182,6 +6428,156 @@ dependencies:
     fn delete_worker_artifacts_nothing_to_delete() {
         let freed = delete_worker_artifacts("__iii_test_no_artifacts_exist__");
         assert_eq!(freed, 0);
+    }
+
+    #[test]
+    fn clear_all_workers_removes_managed_vm_state() {
+        // Regression: `iii worker clear` (no name) only wiped ~/.iii/workers
+        // and ~/.iii/images, leaving every ~/.iii/managed/{name} dir — and
+        // with it the `.iii-prepared` marker whose staleness silently skips
+        // the in-VM dependency reinstall (MOT-3585). The wipe-all path must
+        // cover the same dirs as `clear <name>`.
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            // A binary worker with artifacts in BOTH dirs (must count once)
+            // and a local-path worker with managed state only.
+            let binary_dir = home.join(".iii/workers/clear-all-bin");
+            std::fs::create_dir_all(&binary_dir).unwrap();
+            std::fs::write(binary_dir.join("blob"), "bytes").unwrap();
+            let managed_bin = home.join(".iii/managed/clear-all-bin");
+            std::fs::create_dir_all(managed_bin.join("var")).unwrap();
+            std::fs::write(managed_bin.join("var/.iii-prepared"), "").unwrap();
+            let managed_local = home.join(".iii/managed/clear-all-local");
+            std::fs::create_dir_all(managed_local.join("var")).unwrap();
+            std::fs::write(managed_local.join("var/.iii-prepared"), "").unwrap();
+
+            let rc = clear_all_workers(true);
+
+            assert_eq!(rc, 0);
+            assert!(!binary_dir.exists(), "binary artifacts must be cleared");
+            assert!(
+                !managed_bin.exists() && !managed_local.exists(),
+                "managed VM state must be cleared by the wipe-all path too"
+            );
+        });
+    }
+
+    #[test]
+    fn clear_all_workers_removes_legacy_single_file_binary() {
+        // Legacy binary workers are a bare FILE at ~/.iii/workers/{name}.
+        // remove_dir_all fails on those with NotADirectory, so the old code
+        // left the file on disk while still reporting it cleared and its
+        // bytes freed. The wipe-all path must branch on file type.
+        in_temp_dir(|dir| {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+
+            let workers = home.join(".iii/workers");
+            std::fs::create_dir_all(&workers).unwrap();
+            let legacy_file = workers.join("legacy-file-worker");
+            std::fs::write(&legacy_file, "fake binary bytes").unwrap();
+
+            let rc = clear_all_workers(true);
+
+            assert_eq!(rc, 0);
+            assert!(
+                !legacy_file.exists(),
+                "legacy single-file binary artifact must be removed"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn handle_worker_update_without_lockfile_says_nothing_to_update() {
+        in_temp_dir_async(|_| async move {
+            // Bare update on a fresh project is not an error — there is
+            // nothing pinned. It used to surface a raw ENOENT and exit 1.
+            assert_eq!(handle_worker_update(None).await, 0);
+            // A named update without a lockfile is the same failure as
+            // "name not pinned".
+            assert_eq!(handle_worker_update(Some("ghost")).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_sync_fails_when_operation_lock_is_held() {
+        in_temp_dir_async(|dir| async move {
+            // The lock must be acquired BEFORE sync reads its iii.lock
+            // snapshot — reading first left a TOCTOU window where sync could
+            // replay a snapshot a concurrent update had already replaced. A
+            // held lock therefore has to fail sync even when iii.lock is
+            // perfectly readable.
+            cli_lockfile::WorkerLockfile::default()
+                .write_to(cli_lockfile::lockfile_path())
+                .unwrap();
+            let _held = crate::core::ProjectOperationLock::acquire(&dir).unwrap();
+
+            assert_eq!(handle_worker_sync(false).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_remove_fails_when_operation_lock_is_held() {
+        in_temp_dir_async(|dir| async move {
+            // Remove edits config.yaml + iii.lock, so it must respect the
+            // same operation mutex as sync/update — otherwise a concurrent
+            // update's lockfile read-modify-write can resurrect the removed
+            // worker's pin.
+            let config = "workers:\n  - name: pdfkit\n";
+            std::fs::write("config.yaml", config).unwrap();
+            let _held = crate::core::ProjectOperationLock::acquire(&dir).unwrap();
+
+            assert_eq!(handle_managed_remove("pdfkit", false).await, 1);
+            assert_eq!(std::fs::read_to_string("config.yaml").unwrap(), config);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_worker_update_fails_when_operation_lock_is_held() {
+        in_temp_dir_async(|dir| async move {
+            cli_lockfile::WorkerLockfile::default()
+                .write_to(cli_lockfile::lockfile_path())
+                .unwrap();
+            let _held = crate::core::ProjectOperationLock::acquire(&dir).unwrap();
+
+            // Update mutates config.yaml + iii.lock per root; racing another
+            // update/sync must be excluded like sync already is.
+            assert_eq!(handle_worker_update(None).await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn handle_managed_logs_no_logs_exit_code_depends_on_worker_being_known() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+            std::fs::write("config.yaml", "workers:\n  - name: quiet-w\n").unwrap();
+
+            // Known worker with no logs yet: informational, exit 0 (matches
+            // the "No logs available" branches for empty log files).
+            assert_eq!(handle_managed_logs("quiet-w", false).await, 0);
+            // Unknown name with no artifacts: probable typo, exit 1.
+            assert_eq!(handle_managed_logs("ghost-w", false).await, 1);
+        })
+        .await;
     }
 
     #[test]

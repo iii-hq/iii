@@ -563,12 +563,13 @@ fn daemon_survives_its_stdio_dying_with_the_engine() {
     let lifeline = iii_worker::daemon_exit::attach_lifeline_std(&mut cmd).expect("attach lifeline");
     let mut daemon = KillOnDrop(cmd.spawn().expect("spawn daemon"));
 
-    // Readiness gate: scan the piped stdout for the armed line, then hand
-    // the handle back so this test can break the pipe at "engine death".
-    let stdout = daemon.0.stdout.take().expect("piped stdout");
+    // Readiness gate: scan the piped stderr (tracing's sink) for the armed
+    // line, then hand the handle back so this test can break the pipe at
+    // "engine death".
+    let stderr = daemon.0.stderr.take().expect("piped stderr");
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut reader = std::io::BufReader::new(stdout);
+        let mut reader = std::io::BufReader::new(stderr);
         let mut line = String::new();
         let mut armed = false;
         while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
@@ -580,9 +581,9 @@ fn daemon_survives_its_stdio_dying_with_the_engine() {
         }
         let _ = tx.send((armed, reader.into_inner()));
     });
-    let (armed, stdout) = rx
+    let (armed, stderr) = rx
         .recv_timeout(Duration::from_secs(10))
-        .expect("daemon produced no armed line on its piped stdout");
+        .expect("daemon produced no armed line on its piped stderr");
     assert!(armed, "daemon never armed the lifeline watch");
 
     // Engine death, production-shaped: the process dies AND every pipe it
@@ -590,8 +591,8 @@ fn daemon_survives_its_stdio_dying_with_the_engine() {
     let _ = fake_engine.0.kill();
     let _ = fake_engine.0.wait();
     drop(lifeline);
-    drop(stdout);
-    drop(daemon.0.stderr.take());
+    drop(stderr);
+    drop(daemon.0.stdout.take());
 
     let crumb_file = breadcrumb_path(tmp.path(), "worker-manager-daemon");
     let deadline = Instant::now() + EXIT_DEADLINE;
