@@ -34,7 +34,10 @@ trigger_reg_calls: list[OnTriggerRegistrationInput] = []
 @pytest.fixture(scope="module")
 def iii_server():
     """Server-side III client that registers auth, middleware, and echo functions."""
-    client = register_worker(ENGINE_WS_URL)
+    # Explicit name: this fixture stays connected for the whole module while each
+    # test connects its own client, and the engine allows only one live worker per
+    # (namespace, name) -- default-named workers would conflict.
+    client = register_worker(ENGINE_WS_URL, InitOptions(worker_name="rbac-test-server"))
 
     def auth_handler(data: dict) -> dict:
         auth_input = AuthInput(**data)
@@ -158,7 +161,11 @@ class TestRbacWorkers:
     def test_should_return_auth_result_for_valid_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-should-return-auth-result-for-valid-token",
+            ),
         )
 
         try:
@@ -179,7 +186,11 @@ class TestRbacWorkers:
     def test_should_return_error_for_private_function(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-should-return-error-for-private-function",
+            ),
         )
 
         try:
@@ -194,7 +205,11 @@ class TestRbacWorkers:
     def test_should_return_forbidden_functions_for_restricted_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "restricted-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "restricted-token"},
+                worker_name="rbac-should-return-forbidden-functions-for-restricted-token",
+            ),
         )
 
         try:
@@ -209,7 +224,11 @@ class TestRbacWorkers:
     def test_should_deny_trigger_type_registration_via_hook(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-should-deny-trigger-type-registration-via-hook",
+            ),
         )
 
         try:
@@ -237,7 +256,11 @@ class TestRbacWorkers:
     def test_should_deny_trigger_registration_via_hook(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-should-deny-trigger-registration-via-hook",
+            ),
         )
 
         try:
@@ -259,7 +282,11 @@ class TestRbacWorkers:
     def test_should_deny_function_registration_via_hook(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-should-deny-function-registration-via-hook",
+            ),
         )
 
         try:
@@ -281,7 +308,11 @@ class TestRbacWorkers:
     def test_function_discovery_only_returns_allowed_for_valid_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-function-discovery-only-returns-allowed-for-valid-token",
+            ),
         )
 
         try:
@@ -305,7 +336,11 @@ class TestRbacWorkers:
     def test_function_discovery_only_returns_exposed_for_restricted_token(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "restricted-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "restricted-token"},
+                worker_name="rbac-function-discovery-only-returns-exposed-for-restricted-token",
+            ),
         )
 
         try:
@@ -329,7 +364,11 @@ class TestRbacWorkers:
     def test_function_registration_prefix(self, iii_server):
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "prefix-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "prefix-token"},
+                worker_name="rbac-function-registration-prefix",
+            ),
         )
 
         try:
@@ -354,7 +393,11 @@ class TestRbacWorkers:
         with function_id set and the engine's remediation phrase in the message."""
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-forbidden-wrapped-as-typed-error",
+            ),
         )
 
         try:
@@ -387,7 +430,11 @@ class TestRbacWorkers:
         """
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-restricted-handler-happy-path-under-infra-carveout",
+            ),
         )
 
         try:
@@ -425,7 +472,11 @@ class TestRbacWorkers:
         """
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-infrastructure-logger-callable-from-user-handler",
+            ),
         )
 
         try:
@@ -467,7 +518,11 @@ class TestRbacWorkers:
         """
         iii_client = register_worker(
             EW_URL,
-            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+            InitOptions(
+                otel={"enabled": False},
+                headers={"x-test-token": "valid-token"},
+                worker_name="rbac-infrastructure-logger-directly-callable",
+            ),
         )
 
         try:
