@@ -2,6 +2,7 @@ import { ChannelReader, ChannelWriter } from './channels'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
+  EngineFunctions,
   type IIIConnectionState,
   type IIIReconnectionConfig,
 } from './iii-constants'
@@ -52,6 +53,13 @@ export type TelemetryOptions = {
  * ```
  */
 export type InitOptions = {
+  /**
+   * Name this worker announces to the engine. Defaults to a unique
+   * `browser:<random>` per client: a browser has no pid to disambiguate by, and
+   * the engine allows only one live worker per name in a namespace, so two tabs
+   * sharing a fixed name would evict each other.
+   */
+  workerName?: string
   /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
@@ -62,6 +70,20 @@ export type InitOptions = {
   reconnectionConfig?: Partial<IIIReconnectionConfig>
   /** Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. */
   headers?: Record<string, string>
+}
+
+/** Short random suffix; `crypto.randomUUID` is unavailable on insecure origins. */
+function randomId(): string {
+  const c = globalThis.crypto
+  if (c?.randomUUID) {
+    return c.randomUUID().slice(0, 8)
+  }
+  if (c?.getRandomValues) {
+    return Array.from(c.getRandomValues(new Uint8Array(4)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+  }
+  return Math.random().toString(16).slice(2, 10)
 }
 
 class Sdk implements ISdk {
@@ -78,11 +100,13 @@ class Sdk implements ISdk {
   private connectionState: IIIConnectionState = 'disconnected'
   private connectionListeners = new Set<(state: IIIConnectionState) => void>()
   private isShuttingDown = false
+  private readonly workerName: string
 
   constructor(
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
+    this.workerName = options?.workerName ?? `browser:${randomId()}`
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
       ...DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -520,6 +544,12 @@ class Sdk implements ISdk {
       this.ws.onmessage = this.onMessage.bind(this)
     }
 
+    // Announce before registering anything. The engine buffers a connection's
+    // registrations until it knows the connection's namespace, which it takes
+    // from this call — or, failing that, only after a grace period. Registering
+    // first would stall every function behind that grace.
+    this.registerWorkerMetadata()
+
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
     })
@@ -573,6 +603,23 @@ class Sdk implements ISdk {
       return { type: messageType, ...resultRest, trigger_type: triggerType }
     }
     return { type: messageType, ...rest } as Record<string, unknown>
+  }
+
+  /**
+   * Tells the engine who this connection is. Sent on every open, before any
+   * registration, so the engine can resolve this connection's namespace and
+   * drain its buffered registrations immediately.
+   */
+  private registerWorkerMetadata(): void {
+    this.sendMessage(MessageType.InvokeFunction, {
+      function_id: EngineFunctions.REGISTER_WORKER,
+      data: {
+        runtime: 'browser',
+        name: this.workerName,
+        os: globalThis.navigator?.userAgent ?? 'browser',
+      },
+      action: { type: 'void' },
+    } as unknown as Omit<IIIMessage, 'message_type'>)
   }
 
   private sendMessage(messageType: MessageType, message: Omit<IIIMessage, 'message_type'>, skipIfClosed = false): void {
