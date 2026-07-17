@@ -116,6 +116,7 @@ fn is_namespaced_registration(msg: &Message) -> bool {
             | Message::RegisterService { .. }
             | Message::UnregisterFunction { .. }
             | Message::RegisterTrigger { .. }
+            | Message::UnregisterTrigger { .. }
     )
 }
 
@@ -2406,7 +2407,10 @@ impl Engine {
         match owners.entry(key) {
             dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
                 let previous = *occupied.get();
-                if previous != worker_id && self.worker_registry.workers.contains_key(&previous) {
+                if previous != worker_id
+                    && self.worker_registry.workers.contains_key(&previous)
+                    && !self.is_connection_tearing_down(&previous)
+                {
                     tracing::warn!(
                         rejected_worker = %worker_id,
                         owner = %previous,
@@ -2980,6 +2984,38 @@ mod tests {
         engine
             .claim_worker_name("orders", restart, "state")
             .expect("a tearing-down owner must not block a restart");
+    }
+
+    #[tokio::test]
+    async fn claim_function_takes_over_a_tearing_down_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+        engine.begin_namespace_resolution(&owner);
+        engine.resolve_connection_namespace(&owner, "orders").await;
+        engine
+            .claim_function("orders", owner.id, "state::get")
+            .expect("owner claims the function");
+
+        // While still live, the owner blocks a fresh claim of the same function.
+        let restart = uuid::Uuid::new_v4();
+        engine
+            .claim_function("orders", restart, "state::get")
+            .expect_err("a live owner must block the function claim");
+
+        // Once its connection begins teardown, it must not block the restart's
+        // functions any more than it blocks the restart's name.
+        engine.abort_namespace_resolution(&owner);
+        assert!(
+            engine.worker_registry.workers.contains_key(&owner.id),
+            "precondition: the owner is still in the registry, only tearing down"
+        );
+        engine
+            .claim_function("orders", restart, "state::get")
+            .expect("a tearing-down owner must not block a restart's function");
     }
 
     /// `cleanup_worker` releases the worker-name lease, reading the name back
@@ -6066,6 +6102,46 @@ mod tests {
         // would leave it alive.
         assert!(engine.functions.get("orders", "orders::create").is_none());
         assert!(engine.functions.get("orders", "orders::cancel").is_some());
+    }
+
+    /// `UnregisterTrigger` must be buffered alongside `RegisterTrigger`. If it
+    /// runs immediately while the register is still buffered, it no-ops against
+    /// an empty registry and the later drain re-registers the trigger that was
+    /// meant to be removed.
+    #[tokio::test]
+    async fn a_buffered_register_then_unregister_trigger_does_not_resurrect_it() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        for msg in [
+            Message::RegisterTrigger {
+                id: "t1".to_string(),
+                trigger_type: "unknown-type".to_string(),
+                function_id: "orders::handler".to_string(),
+                config: serde_json::json!({}),
+                metadata: None,
+            },
+            Message::UnregisterTrigger {
+                id: "t1".to_string(),
+                trigger_type: None,
+            },
+        ] {
+            engine.router_msg(&worker, &msg).await.expect("buffer");
+        }
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        // Registered (parked pending, since its type is absent) and then
+        // unregistered in the same buffered batch — inverting the drain would
+        // leave it parked.
+        assert!(
+            !engine.trigger_registry.pending_triggers.contains_key("t1"),
+            "the unregister must survive the drain and remove the parked trigger"
+        );
+        assert!(!engine.trigger_registry.triggers.contains_key("t1"));
     }
 
     /// Safety net for a hand-rolled client that never sends
