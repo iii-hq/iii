@@ -120,15 +120,21 @@ impl EngineConfig {
             .map(|entry| entry.name.as_str())
             .collect();
 
-        for (deprecated, replacement) in MIGRATED_BUILTIN_WORKERS {
-            if worker_names.contains(deprecated) && worker_names.contains(replacement) {
-                anyhow::bail!(
-                    "Duplicate worker configuration: '{}' is the deprecated name for '{}', but both are present. Remove '{}'.",
-                    deprecated,
-                    replacement,
-                    deprecated
-                );
-            }
+        let conflicts: Vec<String> = MIGRATED_BUILTIN_WORKERS
+            .iter()
+            .filter(|(deprecated, replacement)| {
+                worker_names.contains(deprecated) && worker_names.contains(replacement)
+            })
+            .map(|(deprecated, replacement)| {
+                format!(
+                    "- '{}' is the deprecated name for '{}', but both are present. Remove '{}' from your configuration.",
+                    deprecated, replacement, deprecated
+                )
+            })
+            .collect();
+
+        if !conflicts.is_empty() {
+            anyhow::bail!("Duplicate worker configurations:\n{}", conflicts.join("\n"));
         }
 
         Ok(())
@@ -1269,6 +1275,33 @@ mod tests {
             assert!(message.contains(deprecated), "{message}");
             assert!(message.contains(replacement), "{message}");
         }
+    }
+
+    #[test]
+    fn test_config_file_reports_all_duplicate_migrated_workers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(
+            &path,
+            "workers:\n  - name: iii-cron\n  - name: cron\n  - name: iii-queue\n  - name: queue\n",
+        )
+        .unwrap();
+
+        let error = EngineConfig::config_file(path.to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+
+        assert!(
+            message.contains("Duplicate worker configurations:"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Remove 'iii-cron' from your configuration."),
+            "{message}"
+        );
+        assert!(
+            message.contains("Remove 'iii-queue' from your configuration."),
+            "{message}"
+        );
     }
 
     #[test]
