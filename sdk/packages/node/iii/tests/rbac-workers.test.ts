@@ -12,11 +12,19 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type { MiddlewareFunctionInput } from '../src/index'
 import { InvocationError, registerWorker } from '../src/index'
 import { EngineFunctions } from '../src/iii-constants'
-import { iii, sleep } from './utils'
+import { iii, sleep, uniqueWorkerName } from './utils'
 
 type FunctionRow = { function_id: string }
 
 const EW_URL = process.env.III_RBAC_WORKER_URL ?? 'ws://localhost:49135'
+
+/**
+ * The RBAC worker manager fronts the same engine as `iii` from ./utils, so
+ * these clients share its worker registry: on the default `hostname:pid` name
+ * they collide with `iii` (and each other) and get fatally rejected. Identity
+ * here is carried by the `x-test-token` header, never by the worker name.
+ */
+const ewWorkerName = () => uniqueWorkerName('rbac')
 
 let authCalls: AuthInput[] = []
 let triggerTypeRegCalls: OnTriggerTypeRegistrationInput[] = []
@@ -147,7 +155,8 @@ beforeEach(() => {
 describe('RBAC Workers', () => {
   it('should return auth result for valid token', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -171,7 +180,8 @@ describe('RBAC Workers', () => {
 
   it('should return error for private function', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -190,7 +200,8 @@ describe('RBAC Workers', () => {
 
   it('should return forbidden_functions for restricted token', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'restricted-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'restricted-token' },
       otel: { enabled: false },
     })
 
@@ -209,7 +220,8 @@ describe('RBAC Workers', () => {
 
   it('should deny trigger type registration via on_trigger_type_registration hook', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -235,7 +247,8 @@ describe('RBAC Workers', () => {
 
   it('should deny trigger registration via on_trigger_registration hook', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -259,7 +272,8 @@ describe('RBAC Workers', () => {
 
   it('should deny function registration via on_function_registration hook', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -284,7 +298,8 @@ describe('RBAC Workers', () => {
 
   it('should only list allowed functions for valid-token worker', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -310,7 +325,8 @@ describe('RBAC Workers', () => {
 
   it('should only list exposed functions for restricted-token worker', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'restricted-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'restricted-token' },
       otel: { enabled: false },
     })
 
@@ -342,7 +358,8 @@ describe('RBAC Workers', () => {
   // fails CI immediately.
   it('infrastructure calls (logger, worker::register) succeed under restricted expose', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -364,7 +381,8 @@ describe('RBAC Workers', () => {
 
   it('wraps FORBIDDEN rejection in InvocationError with function_id', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -410,7 +428,8 @@ describe('RBAC Workers', () => {
   // allowed only via the carve-out, not the allow-list.
   it('allows engine::log::info from a user handler under restricted expose', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -454,7 +473,8 @@ describe('RBAC Workers', () => {
   // only reachable via the carve-out.
   it('allows direct engine::log::info invocation under restricted expose', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'valid-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -473,7 +493,8 @@ describe('RBAC Workers', () => {
 
   it('should apply function_registration_prefix and strip on invocation', async () => {
     const iiiClient = registerWorker(EW_URL, {
-      headers: { 'x-test-token': 'prefix-token' },
+      workerName: ewWorkerName(),
+      headers:{ 'x-test-token': 'prefix-token' },
       otel: { enabled: false },
     })
 

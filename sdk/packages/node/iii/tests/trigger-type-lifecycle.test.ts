@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TriggerAction, registerWorker } from '../src/index'
 import type { IIIClient } from '../src/types'
 import type { TriggerConfig } from '../src/triggers'
@@ -19,6 +19,17 @@ describe('Trigger type lifecycle (two workers)', () => {
   let unregisterTriggerSpy: ReturnType<typeof vi.fn>
   let handlerSpy: ReturnType<typeof vi.fn>
 
+  // The engine keeps one live worker per (namespace, name) and fatally rejects
+  // the rest, so provider and consumer — alive together — need distinct names.
+  // The suffix is per test, not per worker: the restart case below rebuilds the
+  // provider under its own name on purpose, while the previous test's worker
+  // may still be closing engine-side.
+  let testId: string
+
+  beforeEach(() => {
+    testId = crypto.randomUUID().slice(0, 8)
+  })
+
   function createProvider(): IIIClient {
     bindings.clear()
     registerTriggerSpy = vi.fn(async (cfg: TriggerConfig<TestTriggerConfig>) => {
@@ -27,6 +38,7 @@ describe('Trigger type lifecycle (two workers)', () => {
     unregisterTriggerSpy = vi.fn()
 
     const sdk = registerWorker(engineWsUrl, {
+      workerName: `node-tt-lifecycle:provider:${testId}`,
       reconnectionConfig: { maxRetries: 3, initialDelayMs: 100, maxDelayMs: 1000 },
     })
 
@@ -59,6 +71,7 @@ describe('Trigger type lifecycle (two workers)', () => {
   async function createConsumer(): Promise<void> {
     handlerSpy = vi.fn(async (payload: { n?: number }) => ({ ok: true, payload }))
     consumer = registerWorker(engineWsUrl, {
+      workerName: `node-tt-lifecycle:consumer:${testId}`,
       reconnectionConfig: { maxRetries: 3, initialDelayMs: 100, maxDelayMs: 1000 },
     })
     consumer.registerFunction(CONSUMER_FN, handlerSpy)
