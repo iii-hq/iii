@@ -12,11 +12,36 @@
 //! artifacts, locks — so the CLI can run from any directory (or machine)
 //! that can reach the engine. Without `--host`, `iii worker add` edits the
 //! config file in the current directory and only a same-directory engine
-//! picks the change up.
+//! picks the change up — unless the current directory has no config file
+//! at all, in which case [`implicit_host_fallback`] routes the op to the
+//! default local engine instead.
 
 use colored::Colorize;
 
 use crate::core::{AddOptions, AddOutcome};
+
+/// Implicit `--host localhost` for hostless ops in a NON-project cwd
+/// (MOT-4091): with no config file here (and no engine-exported
+/// `III_CONFIG_PATH`), a local edit would create an orphan config file no
+/// engine watches, then hang waiting for a worker that never boots. Prints
+/// a note so the redirect is never silent. `None` means "edit local files
+/// as before" — the cwd is a project, or is unresolvable (the local path
+/// reports that error itself).
+pub fn implicit_host_fallback() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    if crate::core::project::local_config_present(&cwd) {
+        return None;
+    }
+    eprintln!(
+        "{} no config file in {} — installing through the engine at localhost:{} instead.\n  \
+         Run from your project directory to edit a local config, or pass --host to target \
+         another engine.",
+        "note:".cyan(),
+        cwd.display(),
+        super::app::DEFAULT_PORT,
+    );
+    Some("localhost".to_string())
+}
 
 /// Turn a `--host` value into an engine WebSocket URL.
 ///
@@ -159,8 +184,10 @@ fn remote_error_message(e: &iii_sdk::Error) -> String {
 
 /// Install workers through the engine at `host`. `adds` pairs the
 /// user-facing label (the argv token) with the fully-built options shipped
-/// to `worker::add`. Returns a process exit code.
-pub async fn handle_remote_add(host: &str, adds: Vec<(String, AddOptions)>) -> i32 {
+/// to `worker::add`. `implicit` marks the [`implicit_host_fallback`] path —
+/// the user never typed `--host`, so unreachable-engine guidance must not
+/// tell them to fix it. Returns a process exit code.
+pub async fn handle_remote_add(host: &str, adds: Vec<(String, AddOptions)>, implicit: bool) -> i32 {
     let url = match host_to_ws_url(host) {
         Ok(url) => url,
         Err(e) => {
@@ -170,11 +197,14 @@ pub async fn handle_remote_add(host: &str, adds: Vec<(String, AddOptions)>) -> i
     };
 
     if let Err(e) = check_engine_reachable(&url).await {
-        eprintln!(
-            "{} {}\n  Start the engine there first (`iii`), or fix --host.",
-            "error:".red(),
-            e
-        );
+        let hint = if implicit {
+            "No config file here and no engine on this machine: run this from your project \
+             directory (or start the engine there with `iii`), or pass --host to target a \
+             remote engine."
+        } else {
+            "Start the engine there first (`iii`), or fix --host."
+        };
+        eprintln!("{} {}\n  {}", "error:".red(), e, hint);
         return 1;
     }
 

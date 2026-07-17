@@ -32,7 +32,9 @@ pub struct AddArgs {
     /// also accepted and used as-is) and invokes its worker::add. The
     /// engine applies the add in ITS project directory, so this works from
     /// any folder and with engines on non-default ports. Local worker PATHs
-    /// resolve on the engine host.
+    /// resolve on the engine host. When omitted and the current directory
+    /// has no config file, falls back to `--host localhost` — the running
+    /// local engine — instead of creating an orphan config file here.
     #[arg(long, value_name = "HOST[:PORT]")]
     pub host: Option<String>,
 }

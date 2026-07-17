@@ -90,6 +90,11 @@ iii worker add pdfkit --host localhost:49134
 With `--host` the CLI calls the engine's `worker::add` trigger and the engine applies the install
 in its own project directory; nothing in your current folder is touched.
 
+Running `iii worker add` from a directory with **no** config file does not create one there:
+the command falls back to `--host localhost` and installs through the engine running on your
+machine, printing a note that it did so. Only a directory that already holds a config file (or
+an explicit `--host`) decides where the install lands.
+
 <Note>
   `iii worker add` downloads worker images from remote repositories (the iii registry or an OCI
   registry) or from a local folder, then runs them in a microVM. A bare reference such as
