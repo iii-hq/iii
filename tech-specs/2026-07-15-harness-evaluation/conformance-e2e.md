@@ -38,7 +38,7 @@ harness.
 ## Goals
 
 1. Exercise the public path through the real queue and durable turn loop.
-2. Make stream and function-call outcomes reproducible without a model key.
+2. Make function-call outcome reproducible without a model key.
 3. Detect duplicate or missing transcript entries and target side effects.
 4. Preserve structured evidence for every failure classification.
 5. Reproduce process crashes and restart boundaries with explicit fault seeds.
