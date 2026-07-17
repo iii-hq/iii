@@ -298,7 +298,7 @@ describe('trigger — namespace targeting', () => {
   })
 })
 
-describe('registrationrejected — fatal, no reconnect', () => {
+describe('registrationrejected — code decides severity', () => {
   type RejectableSdk = {
     trigger: (req: { function_id: string; payload: unknown; timeoutMs?: number }) => Promise<unknown>
     onMessage: (data: string) => void
@@ -306,7 +306,7 @@ describe('registrationrejected — fatal, no reconnect', () => {
     connectionState: string
   }
 
-  it('rejects pending invocations and stops the worker without reconnecting', async () => {
+  it('WORKER_NAMESPACE_CONFLICT is fatal: rejects pending invocations, stops, no reconnect', async () => {
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as RejectableSdk
 
     const pending = sdk.trigger({ function_id: 'orders::get', payload: {}, timeoutMs: 5000 })
@@ -314,15 +314,53 @@ describe('registrationrejected — fatal, no reconnect', () => {
     sdk.onMessage(
       JSON.stringify({
         type: 'registrationrejected',
-        code: 'worker_name_conflict',
+        code: 'WORKER_NAMESPACE_CONFLICT',
         namespace: 'orders',
         worker_name: 'w1',
         owner_worker_id: 'abc',
       }),
     )
 
-    await expect(pending).rejects.toThrow(/worker_name_conflict/)
+    await expect(pending).rejects.toThrow(/WORKER_NAMESPACE_CONFLICT/)
     expect(sdk.isShuttingDown).toBe(true)
     expect(sdk.connectionState).toBe('failed')
+  })
+
+  it('FUNCTION_NAMESPACE_CONFLICT is non-fatal: worker keeps serving, no shutdown, no reconnect disable', async () => {
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as RejectableSdk
+
+    // An in-flight invocation for a *different*, valid function.
+    const pending = sdk.trigger({ function_id: 'orders::list', payload: {}, timeoutMs: 5000 })
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+
+    sdk.onMessage(
+      JSON.stringify({
+        type: 'registrationrejected',
+        code: 'FUNCTION_NAMESPACE_CONFLICT',
+        namespace: 'orders',
+        // For the FUNCTION case worker_name carries the contested function id.
+        worker_name: 'orders::get',
+        owner_worker_id: 'abc',
+      }),
+    )
+
+    // Let any queued microtasks/timers flush.
+    await Promise.resolve()
+
+    // The worker is still alive: not shutting down (so reconnect stays enabled --
+    // scheduleReconnect only bails when isShuttingDown), the connection is not
+    // marked failed, and the in-flight invocation for the *other* function is
+    // untouched and still serving.
+    expect(sdk.isShuttingDown).toBe(false)
+    expect(sdk.connectionState).not.toBe('failed')
+    expect(settled).toBe(false)
   })
 })

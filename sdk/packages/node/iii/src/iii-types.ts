@@ -249,17 +249,23 @@ export type WorkerRegisteredMessage = {
 
 /**
  * Sent by the engine when this worker's registration collides with a live
- * worker already owning the same `worker_name` (or an exported function id)
- * in `namespace`. The engine closes the connection after sending it, so the
- * SDK treats it as fatal: it stops the worker and does not reconnect.
+ * worker in `namespace`. The `code` decides severity:
+ *
+ * - `WORKER_NAMESPACE_CONFLICT`: another worker already holds this
+ *   `(namespace, worker_name)`. The engine closes the connection -- fatal: the
+ *   SDK stops the worker and does not reconnect.
+ * - `FUNCTION_NAMESPACE_CONFLICT`: another worker already exports this one
+ *   function id (carried in `worker_name`). The engine keeps the connection
+ *   open -- non-fatal: only that registration is refused and the worker keeps
+ *   serving its other functions.
  */
 export type RegistrationRejectedMessage = {
   message_type: MessageType.RegistrationRejected
-  /** Machine-readable rejection code (e.g. `worker_name_conflict`). */
+  /** Machine-readable rejection code (`WORKER_NAMESPACE_CONFLICT` | `FUNCTION_NAMESPACE_CONFLICT`). */
   code: string
   /** Namespace in which the collision occurred. */
   namespace: string
-  /** The worker name that was rejected. */
+  /** The contested identity: the worker name, or (FUNCTION conflict) the function id. */
   worker_name: string
   /** ID of the live worker that already owns the contested identity. */
   owner_worker_id: string

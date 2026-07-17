@@ -66,6 +66,20 @@ import { isChannelRef } from './utils'
 const require = createRequire(import.meta.url)
 const { version: SDK_VERSION } = require('../package.json')
 
+/**
+ * `registrationrejected` code (engine `protocol.rs`): another live worker
+ * already holds this `(namespace, worker_name)`. The engine closes the
+ * connection -- fatal.
+ */
+const WORKER_NAMESPACE_CONFLICT = 'WORKER_NAMESPACE_CONFLICT'
+
+/**
+ * `registrationrejected` code (engine `protocol.rs`): another live worker in
+ * this namespace already exports this one function id. The connection stays
+ * open -- non-fatal.
+ */
+const FUNCTION_NAMESPACE_CONFLICT = 'FUNCTION_NAMESPACE_CONFLICT'
+
 function getOsInfo(): string {
   return `${os.platform()} ${os.release()} (${os.arch()})`
 }
@@ -901,11 +915,33 @@ class Sdk implements IIIClient {
     }
   }
 
+  private logWarn(message: string): void {
+    const otelLogger = getLogger()
+    if (otelLogger) {
+      otelLogger.emit({
+        severityNumber: SeverityNumber.WARN,
+        body: `[iii] ${message}`,
+      })
+    } else {
+      console.warn(`[iii] ${message}`)
+    }
+  }
+
   /**
-   * Handle a fatal `registrationrejected` from the engine: another live worker
-   * already owns this identity in the target namespace. The engine closes the
-   * connection, so this is terminal -- stop the worker, do not reconnect, and
-   * surface a {@link RegistrationRejectedError} to every pending invocation.
+   * Handle a `registrationrejected` from the engine. The `code` decides the
+   * severity:
+   *
+   * - {@link WORKER_NAMESPACE_CONFLICT}: another live worker already holds this
+   *   `(namespace, worker_name)`. The engine closes the connection, so this is
+   *   fatal -- stop the worker, do not reconnect, and surface a
+   *   {@link RegistrationRejectedError} to every pending invocation.
+   * - {@link FUNCTION_NAMESPACE_CONFLICT}: another live worker in this namespace
+   *   already exports this one function id. Only that registration is refused;
+   *   the engine keeps the connection open and the worker keeps serving its
+   *   other functions. Non-fatal -- log a warning and continue. Here
+   *   `worker_name` carries the contested function id (the engine reuses the
+   *   struct).
+   * - Any other code: treated as fatal (safe default).
    */
   private onRegistrationRejected(init: {
     code: string
@@ -913,8 +949,19 @@ class Sdk implements IIIClient {
     worker_name: string
     owner_worker_id: string
   }): void {
+    if (init.code === FUNCTION_NAMESPACE_CONFLICT) {
+      this.logWarn(
+        `Function registration rejected: function "${init.worker_name}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. The worker stays connected and keeps serving its other functions.`,
+      )
+      return
+    }
+
     const error = new RegistrationRejectedError(init)
-    this.logError('Registration rejected by engine', error)
+    if (init.code === WORKER_NAMESPACE_CONFLICT) {
+      this.logError('Registration rejected by engine', error)
+    } else {
+      this.logError(`Registration rejected by engine with unknown code "${init.code}"; treating as fatal`, error)
+    }
 
     // Mark shutdown first so neither onSocketClose nor scheduleReconnect can
     // schedule a reconnect for a rejection that would only be rejected again.
