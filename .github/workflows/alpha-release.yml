@@ -287,8 +287,44 @@ jobs:
           body: |
             ## Install
 
+            ### Engine
+
             ```sh
             curl -fsSL https://install.iii.dev/iii/main/install.sh | III_RELEASE_TAG=${{ needs.prepare.outputs.tag }} sh
+            ```
+
+            ### Node.js
+
+            ```sh
+            pnpm add \
+              iii-sdk@${{ needs.prepare.outputs.version }} \
+              iii-browser-sdk@${{ needs.prepare.outputs.version }} \
+              @iii-dev/helpers@${{ needs.prepare.outputs.version }} \
+              @iii-dev/observability@${{ needs.prepare.outputs.version }}
+            ```
+
+            ### Python
+
+            ```sh
+            pip install \
+              iii-sdk==${{ needs.prepare.outputs.python_version }} \
+              iii-helpers==${{ needs.prepare.outputs.python_version }} \
+              iii-observability==${{ needs.prepare.outputs.python_version }}
+            ```
+
+            ### Rust
+
+            ```sh
+            cargo add \
+              iii-sdk@${{ needs.prepare.outputs.version }} \
+              iii-helpers@${{ needs.prepare.outputs.version }} \
+              iii-observability@${{ needs.prepare.outputs.version }}
+            ```
+
+            ### Go
+
+            ```sh
+            go get github.com/iii-hq/iii/sdk/packages/go/iii@v${{ needs.prepare.outputs.version }}
             ```
 
   init-build:
