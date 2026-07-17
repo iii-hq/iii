@@ -284,6 +284,12 @@ jobs:
           draft: false
           prerelease: true
           generate_release_notes: false
+          body: |
+            ## Install
+
+            ```sh
+            curl -fsSL https://install.iii.dev/iii/main/install.sh | III_RELEASE_TAG=${{ needs.prepare.outputs.tag }} sh
+            ```
 
   init-build:
     name: Build iii-init (${{ matrix.target }})
