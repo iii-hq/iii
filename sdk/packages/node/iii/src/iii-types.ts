@@ -154,6 +154,11 @@ export type MiddlewareFunctionInput = {
   action?: TriggerAction
   /** Auth context returned by the auth function for this session. */
   context: Record<string, unknown>
+  /**
+   * Target namespace the invoke addressed; forward the call here to stay in the
+   * caller's namespace. Absent → the engine's default namespace.
+   */
+  namespace?: string
 }
 
 /**
