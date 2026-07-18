@@ -1277,16 +1277,23 @@ impl EngineFunctionsWorker {
                 if worker_name.as_deref() != Some(owner.as_str()) {
                     return None;
                 }
-                // Namespace scoping: a trigger type pinned to a specific
-                // connection (`worker_id`) belongs to this detail only when
-                // that IS the connection we resolved. Same-named workers in
-                // different namespaces resolve to the same owner NAME but hold
-                // distinct connection ids, so name alone would splice the other
-                // namespace's trigger types in here. Types with no `worker_id`
-                // (in-process / known-provider) fall through on name, matching
-                // the runtime-worker path which only ever serves `default`.
-                if let (Some(tt_wid), Some(resolved_wid)) = (tt.worker_id, resolved_worker_id)
-                    && tt_wid != resolved_wid
+                // Namespace scoping. The owner-name match above is necessary
+                // but not sufficient: same-named workers across namespaces
+                // share an owner NAME while holding distinct connection ids, so
+                // name alone would splice another namespace's types in here.
+                // When we resolved a WebSocket worker (`Some`), only trigger
+                // types pinned to THIS exact connection are its own: internal /
+                // known-provider types (`worker_id == None`) and types pinned to
+                // a different connection must not splice in by name coincidence
+                // with a same-named worker in another namespace. When we
+                // resolved the in-process runtime worker (`None`, only ever in
+                // `default`), it has no connection id and its trigger types are
+                // attributed by owner NAME — matching `engine::triggers::list`,
+                // including the stale-daemon case where a same-named WS
+                // connection registered the type. The name check above already
+                // gated that, so only the WS case narrows further here.
+                if let Some(resolved_wid) = resolved_worker_id
+                    && tt.worker_id != Some(resolved_wid)
                 {
                     return None;
                 }

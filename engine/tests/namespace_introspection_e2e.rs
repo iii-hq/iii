@@ -960,3 +960,97 @@ async fn workers_info_scopes_trigger_types_and_reports_namespace_by_namespace() 
          type just because they share a name; got: {result}"
     );
 }
+
+/// A no-op registrator so the test can seed a connectionless (`worker_id ==
+/// None`) trigger type — the shape internal/known providers register at startup.
+struct NoopRegistrator;
+
+impl iii::trigger::TriggerRegistrator for NoopRegistrator {
+    fn register_trigger(
+        &self,
+        _trigger: iii::trigger::Trigger,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>>
+    {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn unregister_trigger(
+        &self,
+        _trigger: iii::trigger::Trigger,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>>
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A connectionless trigger type (`worker_id == None`, the shape internal /
+/// known-provider types have) must NOT be spliced into a WebSocket worker's
+/// detail just because the worker's name matches the type's owner name — the
+/// exact leak when that worker lives in a non-default namespace. Only the
+/// in-process runtime worker (which resolves to no connection id, and only ever
+/// in `default`) may claim connectionless types by name.
+#[tokio::test]
+async fn workers_info_excludes_connectionless_trigger_types_from_a_namespaced_ws_worker() {
+    let (port, engine) = spawn_engine().await;
+
+    // Seed a connectionless trigger type whose owner name resolves (via
+    // `first_segment`) to `internalonly` — no `::`, no known provider.
+    engine
+        .trigger_registry
+        .register_trigger_type(iii::trigger::TriggerType::new(
+            "internalonly",
+            "connectionless type owned by no WebSocket connection",
+            Box::new(NoopRegistrator),
+            None,
+        ))
+        .await
+        .expect("register connectionless trigger type");
+
+    // A WebSocket worker that happens to share that name, in a NON-default
+    // namespace. It registers its own trigger type over its own connection.
+    let mut worker = connect_worker(port, "internalonly", Some("orders"), "orders::f", 4601).await;
+    let landed = eventually(|| engine.functions.get("orders", "orders::f").is_some()).await;
+    assert!(landed, "the namespaced worker must finish registering");
+    let _own = register_trigger_over_ws(&mut worker, "tt-own", "orders::f", json!({})).await;
+    let both = eventually(|| {
+        engine
+            .trigger_registry
+            .trigger_types
+            .get("tt-own")
+            .is_some()
+            && engine
+                .trigger_registry
+                .trigger_types
+                .get("internalonly")
+                .is_some()
+    })
+    .await;
+    assert!(both, "both trigger types must be registered");
+
+    let result = call_engine_fn(
+        &engine,
+        "engine::workers::info",
+        json!({ "name": "internalonly", "namespace": "orders" }),
+    )
+    .await;
+
+    let tt_ids: Vec<&str> = result["trigger_types"]
+        .as_array()
+        .expect("trigger_types array")
+        .iter()
+        .map(|t| t["id"].as_str().expect("trigger type id"))
+        .collect();
+
+    // Its own connection-pinned type is still listed...
+    assert!(
+        tt_ids.contains(&"tt-own"),
+        "the worker must still list the trigger type it registered over its own \
+         connection; got: {result}"
+    );
+    // ...but the connectionless type must NOT leak in by name coincidence.
+    assert!(
+        !tt_ids.contains(&"internalonly"),
+        "a connectionless (worker_id=None) trigger type must not attach to a \
+         namespaced WS worker by name; got: {result}"
+    );
+}
