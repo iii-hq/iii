@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { registerWorker } from '../src/iii'
-import type { IIIConnectionState } from '../src/iii-constants'
+import { EngineFunctions, type IIIConnectionState } from '../src/iii-constants'
 import type { ISdk } from '../src/types'
 import { MockEngine } from './mock-websocket'
 
@@ -88,11 +88,16 @@ describe('RegistrationRejected handling', () => {
     engine.uninstall()
   })
 
-  it('WORKER_NAMESPACE_CONFLICT is fatal: goes to failed and does not reconnect', async () => {
+  it('WORKER_NAMESPACE_CONFLICT is fatal: final state is failed, no reconnect, pending invocations rejected', async () => {
     const states: IIIConnectionState[] = []
     sdk.addConnectionStateListener((s) => states.push(s))
     await engine.waitForOpen()
     expect(states).toContain('connected')
+
+    // A pending invocation must be rejected by the fatal rejection, not left to
+    // time out.
+    const pending = sdk.trigger({ function_id: 'orders::get', payload: { id: '1' } })
+    const rejection = expect(pending).rejects.toThrow(/WORKER_NAMESPACE_CONFLICT/)
 
     engine.socket.simulateMessage(
       JSON.stringify({
@@ -103,12 +108,22 @@ describe('RegistrationRejected handling', () => {
         owner_worker_id: 'owner-1',
       }),
     )
+    // The engine closes the connection after a fatal rejection. onSocketClose
+    // must NOT overwrite the terminal `failed` state with `disconnected`.
     engine.socket.simulateClose()
+
+    await rejection
 
     // Wait past any reconnect delay; a fatal rejection must NOT reconnect.
     await new Promise((r) => setTimeout(r, 50))
-    expect(states).toContain('failed')
+
+    // The FINAL state must stick as `failed` (a transient `failed` earlier in the
+    // sequence is not enough — onSocketClose could clobber it back to
+    // `disconnected`).
+    expect(states[states.length - 1]).toBe('failed')
     expect(states).not.toContain('reconnecting')
+    // Exactly one socket was ever created — no reconnect attempt.
+    expect(engine.sockets.length).toBe(1)
   })
 
   it('FUNCTION_NAMESPACE_CONFLICT is non-fatal: stays connected', async () => {
@@ -131,5 +146,58 @@ describe('RegistrationRejected handling', () => {
     // No terminal transition — the connection is untouched.
     expect(states).not.toContain('failed')
     expect(states[states.length - 1]).toBe('connected')
+  })
+})
+
+describe('namespace', () => {
+  let engine: MockEngine
+
+  beforeEach(() => {
+    engine = new MockEngine()
+    engine.install()
+  })
+
+  afterEach(async () => {
+    engine.uninstall()
+  })
+
+  it('announces the configured namespace in the register-worker payload', async () => {
+    const sdk = registerWorker('ws://test:49135', { namespace: 'orders' })
+    await engine.waitForOpen()
+
+    const announce = engine
+      .findAllSent('invokefunction')
+      .find((m) => m.function_id === EngineFunctions.REGISTER_WORKER)
+    expect(announce).toBeDefined()
+    expect((announce?.data as { namespace?: string }).namespace).toBe('orders')
+
+    await sdk.shutdown()
+  })
+
+  it('omits namespace from the announce when none is configured', async () => {
+    const sdk = registerWorker('ws://test:49135')
+    await engine.waitForOpen()
+
+    const announce = engine
+      .findAllSent('invokefunction')
+      .find((m) => m.function_id === EngineFunctions.REGISTER_WORKER)
+    expect(announce).toBeDefined()
+    expect((announce?.data as Record<string, unknown>)).not.toHaveProperty('namespace')
+
+    await sdk.shutdown()
+  })
+
+  it('serializes a per-call namespace into the InvokeFunction message', async () => {
+    const sdk = registerWorker('ws://test:49135')
+    await engine.waitForOpen()
+
+    // Fire-and-forget so no response is needed; the wire message is what matters.
+    await sdk.trigger({ function_id: 'orders::get', payload: { id: '1' }, namespace: 'orders', action: { type: 'void' } })
+
+    const invoke = engine.findAllSent('invokefunction').find((m) => m.function_id === 'orders::get')
+    expect(invoke).toBeDefined()
+    expect(invoke?.namespace).toBe('orders')
+
+    await sdk.shutdown()
   })
 })

@@ -60,6 +60,14 @@ export type InitOptions = {
    * sharing a fixed name would evict each other.
    */
   workerName?: string
+  /**
+   * Namespace this worker registers under. When omitted the engine applies its
+   * `default` namespace. Scopes worker and function registrations so
+   * identically-named entries can coexist across namespaces. The browser has no
+   * `process.env`, so there is no environment-variable fallback -- pass the
+   * option explicitly.
+   */
+  namespace?: string
   /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
@@ -101,12 +109,15 @@ class Sdk implements ISdk {
   private connectionListeners = new Set<(state: IIIConnectionState) => void>()
   private isShuttingDown = false
   private readonly workerName: string
+  private readonly namespace?: string
 
   constructor(
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
     this.workerName = options?.workerName ?? `browser:${randomId()}`
+    // No env fallback: the browser has no `process.env`.
+    this.namespace = options?.namespace
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
       ...DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -348,7 +359,7 @@ class Sdk implements ISdk {
   trigger = async <TInput = unknown, TOutput = any>(
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs } = request
+    const { function_id, payload, action, timeoutMs, namespace } = request
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     if (action?.type === 'void') {
@@ -356,6 +367,8 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
+        // Omit when absent so the engine routes within its default namespace.
+        ...(namespace !== undefined ? { namespace } : {}),
       })
       return undefined as TOutput
     }
@@ -388,6 +401,8 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
+        // Omit when absent so the engine routes within its default namespace.
+        ...(namespace !== undefined ? { namespace } : {}),
       })
     })
   }
@@ -531,6 +546,14 @@ class Sdk implements ISdk {
     }
     this.ws = undefined
 
+    // A fatal registration rejection (or shutdown) sets `isShuttingDown` and a
+    // terminal state before closing the socket. Do not overwrite that state with
+    // `disconnected`, and do not schedule a reconnect the engine would only
+    // reject again. `scheduleReconnect` already no-ops while shutting down.
+    if (this.isShuttingDown) {
+      return
+    }
+
     this.setConnectionState('disconnected')
     this.scheduleReconnect()
   }
@@ -617,6 +640,8 @@ class Sdk implements ISdk {
         runtime: 'browser',
         name: this.workerName,
         os: globalThis.navigator?.userAgent ?? 'browser',
+        // Omit when absent so the engine falls back to its `default` namespace.
+        ...(this.namespace !== undefined ? { namespace: this.namespace } : {}),
       },
       action: { type: 'void' },
     } as unknown as Omit<IIIMessage, 'message_type'>)
@@ -832,9 +857,25 @@ class Sdk implements ISdk {
     console.error(
       `[iii] Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}. Not reconnecting.`,
     )
-    // Terminal: suppress reconnect, then drop the socket.
+    // Terminal: suppress reconnect so neither onSocketClose nor scheduleReconnect
+    // revives a connection the engine would only reject again.
     this.isShuttingDown = true
     this.clearReconnectTimeout()
+
+    // Reject every in-flight invocation now rather than leaving them to time out.
+    const error = new Error(
+      `[iii] Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}.`,
+    )
+    for (const [, invocation] of this.invocations) {
+      if (invocation.timeout) {
+        clearTimeout(invocation.timeout)
+      }
+      invocation.reject(error)
+    }
+    this.invocations.clear()
+
+    // Drop the socket. onSocketClose sees `isShuttingDown` and leaves the
+    // terminal `failed` state in place instead of overwriting it.
     this.setConnectionState('failed')
     this.ws?.close()
   }

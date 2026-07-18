@@ -278,6 +278,8 @@ export type TriggerRequest<TInput = unknown> = {
   action?: TriggerAction
   /** Override the default invocation timeout, in milliseconds. */
   timeoutMs?: number
+  /** Namespace to route this invocation to. Omit to use the engine's default namespace. */
+  namespace?: string
 }
 
 export type InvokeFunctionMessage = {
@@ -306,6 +308,10 @@ export type InvokeFunctionMessage = {
    * Trigger action for queue routing or fire-and-forget
    */
   action?: TriggerAction
+  /**
+   * Namespace to route this invocation to. Omitted when routing within the default namespace.
+   */
+  namespace?: string
 }
 
 export type InvocationResultMessage = {
