@@ -339,6 +339,17 @@ pub trait EngineTrait: Send + Sync {
         F: Future<Output = HandlerOutput> + Send + 'static;
 }
 
+/// How the owner of a `function_owners` entry registered the function: over the
+/// regular WebSocket invocation path, or as an HTTP-invocation (external)
+/// function. Recorded alongside the owner so a release can assert or branch on
+/// it; the two kinds still share one `FunctionsRegistry`, which is why they must
+/// share one owner map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationKind {
+    Regular,
+    External,
+}
+
 #[derive(Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerConnectionRegistry>,
@@ -360,10 +371,16 @@ pub struct Engine {
     /// would let a worker in one namespace take the lease on an id another
     /// namespace's worker legitimately owns, leaving the loser's registration
     /// orphaned when it disconnects (its CAS release would never match).
-    pub(crate) function_owners: Arc<DashMap<(String, String), Uuid>>,
-    /// HTTP-invocation variant of `function_owners`, separate because external
-    /// functions live in their own per-worker set on `WorkerConnection`.
-    pub(crate) external_function_owners: Arc<DashMap<(String, String), Uuid>>,
+    ///
+    /// The value carries the owning worker plus the [`InvocationKind`] it
+    /// registered under. Regular and HTTP-invocation registrations share this
+    /// ONE map (and one `FunctionsRegistry`), so claim and release are a single
+    /// `DashMap` entry operation — check-and-write atomic by construction. Two
+    /// concurrent claims of the same key, one Regular and one External, cannot
+    /// both observe a free lease: whichever wins the entry lock is seen by the
+    /// other. The `kind` records how the current owner registered so a release
+    /// can branch on it if needed; the CAS key for release is the owner id.
+    pub(crate) function_owners: Arc<DashMap<(String, String), (Uuid, InvocationKind)>>,
     /// Records the current owning WS connection for each live worker name,
     /// keyed by `(namespace, worker_name)`. Populated when a worker sends
     /// `engine::workers::register` (see `claim_worker_name`) and CAS-released by
@@ -422,7 +439,6 @@ impl Engine {
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
             function_owners: Arc::new(DashMap::new()),
-            external_function_owners: Arc::new(DashMap::new()),
             worker_name_owners: Arc::new(DashMap::new()),
             namespace_states: Arc::new(DashMap::new()),
             active_scope,
@@ -514,23 +530,20 @@ impl Engine {
     /// Removes every registration recorded in `regs` from the engine's global
     /// registries. Used during in-process worker destroy and reload.
     ///
-    /// Skips ids currently owned by a WS worker via `function_owners`
-    /// (non-invocation path) or `external_function_owners` (HTTP-invocation
-    /// path) — without this, destroying an in-process worker that happened
-    /// to share a function id with a connected WS worker would tear out the
-    /// WS worker's live registration (or its `service_registry` entry, in
-    /// the HTTP case). In-process workers themselves do not populate either
-    /// owner map, so the absence of an entry in both is the "no WS owner"
-    /// signal that means we can safely remove.
+    /// Skips ids currently owned by a WS worker via `function_owners` (regular
+    /// or HTTP-invocation, now one map) — without this, destroying an in-process
+    /// worker that happened to share a function id with a connected WS worker
+    /// would tear out the WS worker's live registration (or its
+    /// `service_registry` entry, in the HTTP case). In-process workers
+    /// themselves do not populate the owner map, so the absence of an entry is
+    /// the "no WS owner" signal that means we can safely remove.
     pub fn remove_worker_registrations(&self, regs: &crate::workers::reload::WorkerRegistrations) {
         for id in &regs.function_ids {
             // In-process workers only ever register into the default namespace,
             // so only a WS owner of the *same* `(default, id)` key can be
             // clobbered by the removal below.
             let key = (DEFAULT_NAMESPACE.to_string(), id.clone());
-            if self.function_owners.contains_key(&key)
-                || self.external_function_owners.contains_key(&key)
-            {
+            if self.function_owners.contains_key(&key) {
                 tracing::debug!(
                     function_id = %id,
                     "Skipping in-process registration removal — a WS worker currently owns this id"
@@ -2176,9 +2189,9 @@ impl Engine {
                 // CAS-release at the end so a racing claim reliably aborts
                 // us at the next ownership check.
                 if self
-                    .external_function_owners
+                    .function_owners
                     .get(&owner_key)
-                    .is_none_or(|r| *r != worker.id)
+                    .is_none_or(|r| r.0 != worker.id)
                 {
                     tracing::debug!(
                         worker_id = %worker.id,
@@ -2207,9 +2220,9 @@ impl Engine {
                         // the claimant's setup path (router_msg populates it
                         // before claim completes).
                         if self
-                            .external_function_owners
+                            .function_owners
                             .get(&owner_key)
-                            .is_some_and(|r| *r == worker.id)
+                            .is_some_and(|r| r.0 == worker.id)
                         {
                             self.service_registry
                                 .remove_function_from_services(&namespace, function_id);
@@ -2220,8 +2233,8 @@ impl Engine {
                 // CAS-release ownership. A racing claim will have overwritten
                 // the entry with a new owner id; that predicate fails and we
                 // leave their ownership intact.
-                self.external_function_owners
-                    .remove_if(&owner_key, |_, owner| *owner == worker.id);
+                self.function_owners
+                    .remove_if(&owner_key, |_, (owner, _kind)| *owner == worker.id);
             }
         }
 
@@ -2278,11 +2291,10 @@ impl Engine {
         function_id: &str,
     ) -> Result<(), NamespaceConflict> {
         self.claim_in(
-            &self.function_owners,
-            &self.external_function_owners,
             namespace,
             worker_id,
             function_id,
+            InvocationKind::Regular,
             "Function",
         )
     }
@@ -2399,71 +2411,45 @@ impl Engine {
         function_id: &str,
     ) -> Result<(), NamespaceConflict> {
         self.claim_in(
-            &self.external_function_owners,
-            &self.function_owners,
             namespace,
             worker_id,
             function_id,
+            InvocationKind::External,
             "External function",
         )
     }
 
-    /// The live owner of `(namespace, function_id)` in `owners`, if any — a
-    /// different worker that is still connected and not tearing down. Returns
-    /// `None` when the key is free, self-owned, or held by a worker on its way
-    /// out (which a fresh claim may take over).
-    fn live_owner_in(
-        &self,
-        owners: &DashMap<(String, String), Uuid>,
-        namespace: &str,
-        worker_id: Uuid,
-        function_id: &str,
-    ) -> Option<Uuid> {
-        let key = (namespace.to_string(), function_id.to_string());
-        let previous = *owners.get(&key)?;
-        (previous != worker_id
-            && self.worker_registry.workers.contains_key(&previous)
-            && !self.is_connection_tearing_down(&previous))
-        .then_some(previous)
-    }
-
-    /// Claims `(namespace, function_id)` in `owners`, rejecting if a live worker
-    /// already owns it in EITHER `owners` or `other` — regular and HTTP-
-    /// invocation registrations share one `FunctionsRegistry`, so a claim that
-    /// consulted only its own owner map would let the two paths silently
-    /// overwrite each other.
+    /// Claims `(namespace, function_id)` for `worker_id` under `kind`, rejecting
+    /// if a DIFFERENT live worker already owns it — regardless of the kind that
+    /// owner registered under. Regular and HTTP-invocation registrations share
+    /// this one owner map (and one `FunctionsRegistry`), so the check and the
+    /// write are a single `DashMap` entry lock: two concurrent claims of the
+    /// same key — one Regular, one External — cannot both observe a free lease,
+    /// which is what the prior two-map design allowed. On takeover (a departed
+    /// or tearing-down previous owner) the entry is overwritten with the new
+    /// `(worker_id, kind)`, so a later restart that changes kind is reflected.
     fn claim_in(
         &self,
-        owners: &DashMap<(String, String), Uuid>,
-        other: &DashMap<(String, String), Uuid>,
         namespace: &str,
         worker_id: Uuid,
         function_id: &str,
-        kind: &str,
+        kind: InvocationKind,
+        kind_label: &str,
     ) -> Result<(), NamespaceConflict> {
         let key = (namespace.to_string(), function_id.to_string());
-        match owners.entry(key) {
+        match self.function_owners.entry(key) {
             dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
-                let previous = *occupied.get();
+                let (previous, _prev_kind) = *occupied.get();
                 if previous != worker_id
                     && self.worker_registry.workers.contains_key(&previous)
                     && !self.is_connection_tearing_down(&previous)
                 {
-                    return Err(Self::conflict(kind, namespace, function_id, previous));
+                    return Err(Self::conflict(kind_label, namespace, function_id, previous));
                 }
-                // Cross-path: the other invocation kind may own this id.
-                if let Some(previous) = self.live_owner_in(other, namespace, worker_id, function_id)
-                {
-                    return Err(Self::conflict(kind, namespace, function_id, previous));
-                }
-                occupied.insert(worker_id);
+                occupied.insert((worker_id, kind));
             }
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                if let Some(previous) = self.live_owner_in(other, namespace, worker_id, function_id)
-                {
-                    return Err(Self::conflict(kind, namespace, function_id, previous));
-                }
-                vacant.insert(worker_id);
+                vacant.insert((worker_id, kind));
             }
         }
         Ok(())
@@ -2506,7 +2492,7 @@ impl Engine {
     ) -> bool {
         let removed = self.function_owners.remove_if(
             &(namespace.to_string(), function_id.to_string()),
-            |_, owner| owner == worker_id,
+            |_, (owner, _kind)| owner == worker_id,
         );
         if removed.is_some() {
             self.remove_function_from_engine(namespace, function_id);
@@ -2519,16 +2505,21 @@ impl Engine {
     /// External-function variant of `release_function_if_owner`. Caller is
     /// responsible for unregistering from `http_functions` and the service
     /// registry on success — this helper only releases the owner index.
+    ///
+    /// The CAS predicate matches on the OWNER, not the kind: once a restart that
+    /// changes invocation kind has overwritten the entry with the new worker's
+    /// `(new_id, new_kind)`, this old-kind release finds `owner != worker_id`
+    /// and leaves the new registration intact.
     fn release_external_function_if_owner(
         &self,
         worker_id: &Uuid,
         namespace: &str,
         function_id: &str,
     ) -> bool {
-        self.external_function_owners
+        self.function_owners
             .remove_if(
                 &(namespace.to_string(), function_id.to_string()),
-                |_, owner| owner == worker_id,
+                |_, (owner, _kind)| owner == worker_id,
             )
             .is_some()
     }
@@ -5488,11 +5479,9 @@ mod tests {
     async fn test_remove_worker_registrations_skips_ws_owned_ids() {
         // The in-process reload path calls `remove_worker_registrations`
         // with a set of function_ids captured during a scope. If a WS
-        // worker is currently the owner of one of those ids (either
-        // non-invocation via `function_owners` or HTTP-invocation via
-        // `external_function_owners`), the removal must be skipped so
-        // the live WS registration survives. This covers the new
-        // ownership-aware branch added at engine/src/engine/mod.rs:347.
+        // worker is currently the owner of one of those ids (regular or
+        // HTTP-invocation — now one `function_owners` map), the removal
+        // must be skipped so the live WS registration survives.
         ensure_default_meter();
         let engine = Engine::new();
 
@@ -5525,17 +5514,16 @@ mod tests {
             "ws_fn".to_string()
         )));
 
-        // Also seed an external-owned id directly — we don't run the
+        // Also seed an External-owned id directly — we don't run the
         // HTTP registration path here (it requires the http_functions
-        // service), so we populate `external_function_owners` by hand
-        // to exercise the `|| external_function_owners` leg of the
-        // skip branch.
-        engine.external_function_owners.insert(
+        // service), so we populate `function_owners` with an External
+        // entry by hand to exercise the skip branch for that kind.
+        engine.function_owners.insert(
             (
                 crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 "ext_fn".to_string(),
             ),
-            ws_worker.id,
+            (ws_worker.id, super::InvocationKind::External),
         );
 
         // Simulate an in-process worker teardown whose scope captured
@@ -5562,7 +5550,7 @@ mod tests {
             "ownership entry for the WS worker must be intact"
         );
         assert!(
-            engine.external_function_owners.contains_key(&(
+            engine.function_owners.contains_key(&(
                 crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 "ext_fn".to_string()
             )),
@@ -5660,7 +5648,7 @@ mod tests {
                 ))
                 .expect("function_owners must still have raced_fn");
             assert_eq!(
-                *owner, new_worker.id,
+                owner.0, new_worker.id,
                 "the new worker should be the recorded owner after the race"
             );
         }
@@ -5720,13 +5708,14 @@ mod tests {
         // Ownership has transferred to B even though A still has the id in
         // its local function_ids set (A's set was not cleared by B's register).
         assert_eq!(
-            *engine
+            engine
                 .function_owners
                 .get(&(
                     crate::protocol::DEFAULT_NAMESPACE.to_string(),
                     "reg_hijacked".to_string(),
                 ))
-                .expect("owner present"),
+                .expect("owner present")
+                .0,
             worker_b.id,
             "owner should be B after hijacking register"
         );
@@ -5752,13 +5741,14 @@ mod tests {
             "B's live registration must survive A's stale UnregisterFunction"
         );
         assert_eq!(
-            *engine
+            engine
                 .function_owners
                 .get(&(
                     crate::protocol::DEFAULT_NAMESPACE.to_string(),
                     "reg_hijacked".to_string(),
                 ))
-                .expect("owner still present"),
+                .expect("owner still present")
+                .0,
             worker_b.id,
             "owner entry must remain B — gate must not release B's ownership"
         );
@@ -5828,13 +5818,14 @@ mod tests {
             .expect("B register should succeed");
 
         assert_eq!(
-            *engine
-                .external_function_owners
+            engine
+                .function_owners
                 .get(&(
                     crate::protocol::DEFAULT_NAMESPACE.to_string(),
                     "ext_hijacked".to_string(),
                 ))
-                .expect("external owner present"),
+                .expect("external owner present")
+                .0,
             worker_b.id,
             "external owner should be B after hijacking register"
         );
@@ -5876,15 +5867,83 @@ mod tests {
             "B's http_module entry must survive A's stale UnregisterFunction"
         );
         assert_eq!(
-            *engine
-                .external_function_owners
+            engine
+                .function_owners
                 .get(&(
                     crate::protocol::DEFAULT_NAMESPACE.to_string(),
                     "ext_hijacked".to_string(),
                 ))
-                .expect("external owner still present"),
+                .expect("external owner still present")
+                .0,
             worker_b.id,
             "external owner entry must remain B"
+        );
+    }
+
+    /// A worker restart that changes a function's invocation kind must not let
+    /// the OLD registration's release remove the NEW registration. With two
+    /// owner maps this leaked: the old Regular entry lived in `function_owners`
+    /// while the new External entry lived in `external_function_owners`, so the
+    /// old-kind release matched its own stale entry and could tear down state
+    /// the new owner had just written. One `(owner, kind)` map plus a
+    /// CAS-on-owner release closes it — after takeover the entry names the new
+    /// worker, so the old worker's release predicate no longer matches.
+    #[tokio::test]
+    async fn release_after_restart_changing_kind_does_not_remove_new_registration() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // A_old registers `svc::f` as a REGULAR function, then its connection
+        // begins teardown (aborted namespace resolution) — the fast-restart
+        // window where the incumbent is still in the registry but on its way out.
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let a_old = WorkerConnection::new(tx_old);
+        engine.worker_registry.register_worker(a_old.clone());
+        engine.begin_namespace_resolution(&a_old);
+        engine.resolve_connection_namespace(&a_old, "orders").await;
+        engine
+            .claim_function("orders", a_old.id, "svc::f")
+            .expect("A_old claims the regular function");
+        engine.abort_namespace_resolution(&a_old);
+
+        // A_new takes over the SAME id as an EXTERNAL function — allowed because
+        // A_old's connection is tearing down.
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let a_new = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(a_new.clone());
+        engine
+            .claim_external_function("orders", a_new.id, "svc::f")
+            .expect("A_new takes over as an external function");
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&("orders".to_string(), "svc::f".to_string()))
+                .expect("owner present")
+                .0,
+            a_new.id,
+            "precondition: A_new is the recorded owner after takeover"
+        );
+
+        // A_old's late (regular) release must NOT match — the entry names A_new.
+        assert!(
+            !engine.release_function_if_owner(&a_old.id, "orders", "svc::f"),
+            "A_old's stale release must not fire — it no longer owns the id"
+        );
+        // The external release path (had A_old been external) is the same CAS.
+        assert!(
+            !engine.release_external_function_if_owner(&a_old.id, "orders", "svc::f"),
+            "A_old's stale external release must not fire either"
+        );
+
+        // A_new's registration is intact and still owned by A_new.
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&("orders".to_string(), "svc::f".to_string()))
+                .expect("A_new's ownership entry must survive A_old's stale release")
+                .0,
+            a_new.id,
+            "owner must remain A_new — the old-kind release must not remove it"
         );
     }
 
