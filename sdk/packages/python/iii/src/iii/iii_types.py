@@ -251,6 +251,8 @@ class TriggerRequest(BaseModel):
         timeout_ms: Override the default invocation timeout, in milliseconds.
         metadata: Arbitrary user-specifiable metadata supplied to the triggered
             handler function on every invocation.
+        namespace: Target namespace for routing. Omit to resolve in the engine's
+            default namespace.
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
@@ -270,6 +272,12 @@ class TriggerRequest(BaseModel):
         default=None,
         description=(
             "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
+        ),
+    )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Target namespace for routing. Omit to resolve in the engine's default namespace."
         ),
     )
 
