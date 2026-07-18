@@ -24,6 +24,36 @@ use crate::builtins::pubsub_lite::BuiltInPubSubLite;
 
 use super::queue_kv::QueueKvStore;
 
+/// Escape character used by [`escape_ns_segment`]. Chosen so it can itself be
+/// escaped, keeping the encoding injective even when a segment contains it.
+const NS_ESCAPE: char = '\\';
+
+/// Escapes the namespace separator `sep` (and the escape char `\`) inside a
+/// single queue-name segment so that segments joined by a *literal* `sep` are
+/// unambiguous. The escape char is escaped first, so decoding is unambiguous
+/// and the map `segment -> escaped` is injective for any content — including
+/// content that already contains `sep` or `\`.
+pub(crate) fn escape_ns_segment(segment: &str, sep: char) -> String {
+    segment
+        .replace(NS_ESCAPE, &format!("{NS_ESCAPE}{NS_ESCAPE}"))
+        .replace(sep, &format!("{NS_ESCAPE}{sep}"))
+}
+
+/// Injectively folds a namespace onto a queue-name `prefix`: escapes both
+/// operands, then joins them with a single *unescaped* `sep`. Because each
+/// operand's own `sep` occurrences are escaped, the one unescaped `sep` is
+/// always the true boundary, so distinct `(prefix, namespace)` pairs always
+/// produce distinct strings — for ANY content, including operands containing
+/// `sep` itself. This closes the collision where `(fid="a@x", ns="y")` and
+/// `(fid="a", ns="x@y")` folded to the same name under a bare `@` join.
+pub(crate) fn join_ns(prefix: &str, namespace: &str, sep: char) -> String {
+    format!(
+        "{}{sep}{}",
+        escape_ns_segment(prefix, sep),
+        escape_ns_segment(namespace, sep)
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
@@ -349,7 +379,11 @@ impl BuiltinQueue {
 
         let mut drained = 0;
         for old in legacy {
-            let new = format!("{old}{ns_sep}{default_ns}");
+            // Target the injective namespaced identity. `old` is the verbatim
+            // legacy `{topic}::{fid}` prefix, so `join_ns` here produces exactly
+            // what a `default`-namespace consumer subscribes to (see the builtin
+            // adapter's `internal_queue`).
+            let new = join_ns(&old, default_ns, ns_sep);
             self.migrate_subscriber_queue(&old, &new).await;
             drained += 1;
             tracing::info!(old = %old, new = %new, "Drained legacy subscriber queue into its namespace");

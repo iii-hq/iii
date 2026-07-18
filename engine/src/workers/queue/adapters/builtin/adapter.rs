@@ -42,24 +42,26 @@ struct DeliveryInfo {
     job_id: String,
 }
 
-/// Separator that appends the subscribing namespace onto a durable
+/// Separator that folds the subscribing namespace onto a durable
 /// subscription's internal queue identity.
 ///
-/// The pre-existing identity is `{topic}::{fid}`. Both `topic` (dot-delimited)
-/// and `function_id` (`::`-delimited) may legitimately contain `.` or `::`, so
-/// neither `.` nor `::` can safely delimit the namespace we now fold in. `@` is
-/// used precisely because it lies outside both separator conventions: it cannot
-/// be produced by a topic or a function id, so the first `@` unambiguously ends
-/// the `@`-free `{topic}::{fid}` prefix and everything after it is the
-/// namespace (which may itself be arbitrary). The result — `{topic}::{fid}@{ns}`
-/// — is therefore injective over `(topic, ns, fid)` and adds the namespace
-/// dimension without introducing any new collision class.
+/// The pre-existing prefix is `{topic}::{fid}`. A bare `@` join
+/// (`{topic}::{fid}@{ns}`) is NOT collision-free: `namespace`, `topic` and
+/// `function_id` are all user-controlled and may contain `@`, so
+/// `(fid="a@x", ns="y")` and `(fid="a", ns="x@y")` fold to the same name. The
+/// identity is instead built with [`join_ns`], which escapes every `@` inside
+/// each operand and joins with a single unescaped `@` — making the fold
+/// injective over `(prefix, namespace)` for any content. (The residual
+/// `topic`/`fid` ambiguity across the `::` join predates namespaces and is
+/// preserved verbatim so the legacy-queue drain can still recover it.)
 const NS_SEP: char = '@';
 
 /// Builds the namespace-scoped internal queue identity for a durable
-/// subscription. See [`NS_SEP`] for the separator rationale.
+/// subscription. The `{topic}::{fid}` prefix is kept verbatim (the legacy
+/// drain relies on it) and the namespace is folded in injectively via
+/// [`join_ns`]. See [`NS_SEP`] for the rationale.
 fn internal_queue(topic: &str, namespace: &str, function_id: &str) -> String {
-    format!("{topic}::{function_id}{NS_SEP}{namespace}")
+    crate::builtins::queue::join_ns(&format!("{topic}::{function_id}"), namespace, NS_SEP)
 }
 
 /// Topic -> set of `(namespace, function_id)` fan-out destinations.
@@ -1057,6 +1059,24 @@ mod tests {
 
         adapter.unsubscribe("events", "sub-orders").await;
         adapter.unsubscribe("events", "sub-analytics").await;
+    }
+
+    /// The namespace fold in `internal_queue` must be injective even when the
+    /// function id or the namespace themselves contain the `@` separator. Under
+    /// the old bare `{topic}::{fid}@{ns}` join, `(fid="task@blue", ns="green")`
+    /// and `(fid="task", ns="blue@green")` both produce
+    /// `T::task@blue@green` — two distinct namespaces colliding on ONE physical
+    /// queue and becoming competing consumers. The escape-join keeps them
+    /// distinct. Reverting `internal_queue` to the bare join makes this RED
+    /// (equal names).
+    #[test]
+    fn internal_queue_namespace_fold_is_collision_free() {
+        let a = internal_queue("T", "green", "task@blue");
+        let b = internal_queue("T", "blue@green", "task");
+        assert_ne!(
+            a, b,
+            "distinct (fid, ns) tuples must not fold to the same internal queue"
+        );
     }
 
     /// A message left in a pre-upgrade, namespace-less subscriber queue
