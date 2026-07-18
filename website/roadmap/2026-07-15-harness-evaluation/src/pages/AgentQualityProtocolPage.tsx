@@ -2,7 +2,7 @@ import { PageShell } from '@lib/components/PageShell'
 import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
 import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
 import { FnChip } from '@lib/components/schematic/FnChip'
-import { ERROR_CODES, EVAL_SURFACE, RECOVERY_TABLE, SCENARIO_CORPUS } from '../content/protocols'
+import { ERROR_CODES, EVAL_SURFACE, GENERATED_VALIDATOR_RULES, RECOVERY_TABLE, SCENARIO_CORPUS } from '../content/protocols'
 
 /**
  * A14 — deep dive on the harness-eval protocol: the worker surface, the strict
@@ -54,6 +54,10 @@ export function AgentQualityProtocolPage() {
           {'\n  '}- <S>eval-private::workflow::no-duplicate-results</S>
           {'  '}
           <C>{'# held_out · final · stop'}</C>
+          {'\n  '}- source: <M>{'{ '}</M>kind: <S>generated</S>, goal: <S>&quot;…&quot;</S>, generator:{' '}
+          <S>pinned-generator-model</S> <M>{'}'}</M>
+          {'  '}
+          <C>{'# agent_authored · held_out · advisory'}</C>
           {'\n'}
           <K>limits</K>: <M>{'{ '}</M>max_cycles: <K>4</K>, attempt_timeout_ms: <K>300000</K>, max_total_tokens:{' '}
           <K>100000</K>, max_cost_usd: <K>10</K>, max_network_requests: <K>0</K> <M>{'}'}</M>
@@ -64,6 +68,27 @@ export function AgentQualityProtocolPage() {
           option; anything relying on a default must declare <span className="text-ink">single_cycle</span> with
           max_cycles 1. the manifest validator enforces this, and a requested function not declared by the fixture
           or dependency list makes the manifest invalid.
+        </p>
+      </div>
+
+      <div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+          generated validators — authored on the fly, frozen before the turn
+        </div>
+        <div className="border border-rule bg-bg flex flex-col">
+          {GENERATED_VALIDATOR_RULES.map((row) => (
+            <div
+              key={row.name}
+              className="grid grid-cols-1 @2xl:grid-cols-[220px_minmax(0,1fr)] gap-x-4 px-4 py-2.5 border-b border-rule-2 last:border-b-0"
+            >
+              <span className="font-mono text-[12.5px] text-ink lowercase">{row.name}</span>
+              <span className="font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{row.desc}</span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 font-mono text-[12px] leading-[1.7] text-ink-faint lowercase max-w-[72ch]">
+          the criterion is authored by an agent, but the trust shape is unchanged: the subject never sees, picks,
+          or edits its judges, and the code digest that judged a run is auditable in the report.
         </p>
       </div>
 

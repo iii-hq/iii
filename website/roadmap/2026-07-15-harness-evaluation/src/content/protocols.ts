@@ -67,6 +67,29 @@ export const SCENARIO_CORPUS = [
   { family: 'prompt comparison', outcome: 'identical frozen inputs; raw deltas reported' },
 ] as const
 
+export const GENERATED_VALIDATOR_RULES = [
+  {
+    name: 'declared as a goal, not code',
+    desc: 'the frozen manifest carries the generator input: goal text, a pinned generator model, and the evidence classes the code may read. never the code itself.',
+  },
+  {
+    name: 'frozen before the subject turn',
+    desc: 'generation runs once per run, before the first send. the source is persisted, digested, and recorded in the report before any subject work exists; it is never regenerated after the first send.',
+  },
+  {
+    name: 'run-scoped registration',
+    desc: 'a disposable, secret-free validator-host registers eval-gen::<run_id>::<slug> through normal iii registration; the namespace is denied to the subject and unregistered at teardown.',
+  },
+  {
+    name: 'never the sole gate',
+    desc: 'in v1 a generated required validator is valid only next to a provided required one. a generation, registration, or digest failure is error, never a subject pass.',
+  },
+  {
+    name: 'one digest per comparison',
+    desc: 'a comparison generates once and judges both legs with the same code digest; legs with differing digests are ineligible. generator usage bills to the evaluation, never the subject.',
+  },
+] as const
+
 export const TRUST_RULES = [
   {
     name: 'held-out validators',
@@ -78,7 +101,7 @@ export const TRUST_RULES = [
   },
   {
     name: 'subject function policy',
-    desc: 'harness-eval::* and eval-private::* are explicitly denied, even when the allow pattern is broad.',
+    desc: 'harness-eval::*, eval-private::*, and eval-gen::* are explicitly denied, even when the allow pattern is broad.',
   },
   {
     name: 'hard vs soft ceilings',
