@@ -265,6 +265,7 @@ interface MetricSetV1 {
     sessions: number                // the root plus every descendant session
     turns: number                   // summed over the session tree
     function_calls: number          // summed over the session tree
+    function_call_errors: number    // calls whose persisted result is an error, summed over the session tree
     input_tokens?: number           // all token and cost fields: summed over the session tree
     output_tokens?: number
     cache_read_tokens?: number
@@ -275,6 +276,7 @@ interface MetricSetV1 {
   }
   triggered?: {
     function_calls: number          // handler executions rooted in the subject turn, outside its sessions
+    function_call_errors: number    // those executions whose trace span records an error status
     spans: number                   // matching trace spans
     complete: boolean               // false when trace evidence is absent or entries were dropped
   }
@@ -287,6 +289,7 @@ interface SessionUsageV1 {
   depth: number                     // 0 for the root subject session
   turns: number
   function_calls: number
+  function_call_errors: number
   input_tokens?: number
   output_tokens?: number
   cache_read_tokens?: number
@@ -862,6 +865,7 @@ shared between scenarios.
 | Required outcome checks | Validator results | Gating |
 | Terminal reliability and cycles | Evaluator run record | Gating/diagnostic |
 | Transcript turns and function calls | `session::messages`, summed over the session tree | Reported |
+| Function-call errors | Persisted call results with an error outcome in `session::messages`; error-status trace spans for triggered work | Reported, with a per-session breakdown |
 | Input/output/cache/reasoning tokens and cost | Persisted assistant usage, summed over the session tree | Reported, with a per-session breakdown |
 | Descendant sessions (sub-agents) | Durable `harness::session-tree`, reconciled with completion payloads and lifecycle filters | Gating: an incomplete or conflicting tree is `inconclusive` |
 | Session-triggered work (hooks, reactive orchestration) | Trace spans propagated from the subject turn | Required when the scenario declares triggered work |
@@ -875,9 +879,13 @@ low latency. Before validation, and again after evaluator restart, the
 evaluator queries the durable `harness::session-tree` index rooted at the
 subject session and reconciles those observations against it. It pages every
 indexed transcript and sums persisted usage per session; `by_session` keeps the
-breakdown visible. A tree with `complete: false`, a lifecycle/index conflict,
-or a descendant transcript that cannot be fetched makes the attempt
-`inconclusive`: a partial sum is never reported as the subject total. Work the
+breakdown visible. A function call counts toward `function_call_errors` when
+its persisted result carries an error outcome; the counter is diagnostic and
+reported per session and in the tree total — a nonzero value is not itself a
+failure unless a validator or declared budget makes it one. A tree with
+`complete: false`, a lifecycle/index conflict, or a descendant transcript that
+cannot be fetched makes the attempt `inconclusive`: a partial sum is never
+reported as the subject total. Work the
 session triggers outside its own sessions — hooks and orchestration code in
 other workers — is counted from trace spans propagated from the subject turn,
 and a scenario that declares triggered work fails closed when those spans are
