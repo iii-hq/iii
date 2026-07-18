@@ -881,3 +881,82 @@ async fn functions_info_lists_only_the_triggers_in_its_own_namespace() {
          one bound to the same id in another namespace; got: {result}"
     );
 }
+
+// ── BUG: `engine::workers::info` mixes trigger TYPES across namespaces ───────
+//
+// Two workers named `state` in `orders` and `analytics`, each *providing* a
+// distinct trigger type. Trigger-type attribution resolved the provider by
+// worker NAME only, so both same-named workers were attributed each other's
+// types. The worker detail must scope to the resolved connection, and must
+// report which namespace it describes.
+
+/// `workers::info(name=state, namespace=orders)` lists ONLY the trigger type
+/// the orders `state` worker provides, and its `namespace` field is `orders`.
+#[tokio::test]
+async fn workers_info_scopes_trigger_types_and_reports_namespace_by_namespace() {
+    let (port, engine) = spawn_engine().await;
+
+    // Same worker NAME, different namespaces, different owned functions, each
+    // providing a DIFFERENT trigger type.
+    let mut orders = connect_worker(port, "state", Some("orders"), "orders::f", 4501).await;
+    let mut analytics =
+        connect_worker(port, "state", Some("analytics"), "analytics::f", 4502).await;
+
+    let landed = eventually(|| {
+        engine.functions.get("orders", "orders::f").is_some()
+            && engine.functions.get("analytics", "analytics::f").is_some()
+    })
+    .await;
+    assert!(landed, "both same-named workers must finish registering");
+
+    // Each worker provides its own trigger type over its own connection, so the
+    // type's `worker_id` is that connection's id — the disambiguator.
+    let _o = register_trigger_over_ws(&mut orders, "tt-orders", "orders::f", json!({})).await;
+    let _a =
+        register_trigger_over_ws(&mut analytics, "tt-analytics", "analytics::f", json!({})).await;
+
+    let both = eventually(|| {
+        engine
+            .trigger_registry
+            .trigger_types
+            .get("tt-orders")
+            .is_some()
+            && engine
+                .trigger_registry
+                .trigger_types
+                .get("tt-analytics")
+                .is_some()
+    })
+    .await;
+    assert!(both, "both trigger types must register");
+
+    let result = call_engine_fn(
+        &engine,
+        "engine::workers::info",
+        json!({ "name": "state", "namespace": "orders" }),
+    )
+    .await;
+
+    // The detail must say which namespace it describes.
+    assert_eq!(
+        result["worker"]["namespace"],
+        json!("orders"),
+        "the worker detail must report its resolved namespace; got: {result}"
+    );
+
+    let tt_ids: Vec<&str> = result["trigger_types"]
+        .as_array()
+        .expect("trigger_types array")
+        .iter()
+        .map(|t| t["id"].as_str().expect("trigger type id"))
+        .collect();
+    assert!(
+        tt_ids.contains(&"tt-orders"),
+        "the orders `state` worker must list its own trigger type; got: {result}"
+    );
+    assert!(
+        !tt_ids.contains(&"tt-analytics"),
+        "the orders `state` worker must NOT list the analytics worker's trigger \
+         type just because they share a name; got: {result}"
+    );
+}

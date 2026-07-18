@@ -372,6 +372,10 @@ pub struct WorkerDetailEnvelope {
     pub description: Option<String>,
     pub version: Option<String>,
     pub id: String,
+    /// Routing namespace this worker resolved to. A worker name is unique only
+    /// *within* a namespace, so the same name can identify two different
+    /// workers across namespaces; this is what tells them apart.
+    pub namespace: String,
     pub runtime: Option<String>,
     pub os: Option<String>,
     pub status: String,
@@ -1105,6 +1109,7 @@ impl EngineFunctionsWorker {
     fn worker_detail_envelope_from_connection(
         &self,
         w: &WorkerConnection,
+        namespace: String,
         function_count: usize,
         active_invocations: usize,
         ip_address: Option<String>,
@@ -1115,6 +1120,7 @@ impl EngineFunctionsWorker {
             description: w.description.clone(),
             version: w.version.clone(),
             id: w.id.to_string(),
+            namespace,
             runtime: w.runtime.clone(),
             os: w.os.clone(),
             status: w.status.as_str().to_string(),
@@ -1129,13 +1135,18 @@ impl EngineFunctionsWorker {
         }
     }
 
-    fn worker_detail_envelope_from_runtime(&self, w: &RuntimeWorkerInfo) -> WorkerDetailEnvelope {
+    fn worker_detail_envelope_from_runtime(
+        &self,
+        w: &RuntimeWorkerInfo,
+        namespace: String,
+    ) -> WorkerDetailEnvelope {
         let functions = w.function_ids.clone();
         WorkerDetailEnvelope {
             name: Some(w.name.clone()),
             description: w.description.clone(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             id: w.id.clone(),
+            namespace,
             runtime: Some("engine".to_string()),
             os: None,
             status: "available".to_string(),
@@ -1163,6 +1174,11 @@ impl EngineFunctionsWorker {
 
         let envelope: WorkerDetailEnvelope;
         let function_ids: Vec<String>;
+        // The connection id of the resolved worker, when it is a WebSocket
+        // worker. `None` for in-process runtime workers (which have no
+        // connection Uuid). This is what disambiguates same-named workers in
+        // different namespaces when scoping their trigger types below.
+        let resolved_worker_id: Option<uuid::Uuid>;
         // The namespace this worker's functions live in. Its own namespace is
         // the only correct place to look them up: a `default` lookup finds
         // nothing for a namespaced worker and silently reports it as owning no
@@ -1177,8 +1193,9 @@ impl EngineFunctionsWorker {
             // that is the namespace being asked for.
             .find(|w| w.name == name && worker_namespace == crate::protocol::DEFAULT_NAMESPACE)
         {
-            envelope = self.worker_detail_envelope_from_runtime(&runtime);
+            envelope = self.worker_detail_envelope_from_runtime(&runtime, worker_namespace.clone());
             function_ids = runtime.function_ids;
+            resolved_worker_id = None;
         } else if let Some(worker) =
             self.engine
                 .worker_registry
@@ -1194,8 +1211,10 @@ impl EngineFunctionsWorker {
             let active_invocations = worker.invocation_count().await;
             let ip_address = worker.session.as_ref().map(|s| s.ip_address.clone());
             let latest_metrics = get_worker_metrics_from_storage(&worker.id.to_string());
+            resolved_worker_id = Some(worker.id);
             envelope = self.worker_detail_envelope_from_connection(
                 &worker,
+                worker_namespace.clone(),
                 function_count,
                 active_invocations,
                 ip_address,
@@ -1256,6 +1275,19 @@ impl EngineFunctionsWorker {
                 // and the owner is resolved exactly once per entry.
                 let owner = self.owner_name_for_trigger_type(tt);
                 if worker_name.as_deref() != Some(owner.as_str()) {
+                    return None;
+                }
+                // Namespace scoping: a trigger type pinned to a specific
+                // connection (`worker_id`) belongs to this detail only when
+                // that IS the connection we resolved. Same-named workers in
+                // different namespaces resolve to the same owner NAME but hold
+                // distinct connection ids, so name alone would splice the other
+                // namespace's trigger types in here. Types with no `worker_id`
+                // (in-process / known-provider) fall through on name, matching
+                // the runtime-worker path which only ever serves `default`.
+                if let (Some(tt_wid), Some(resolved_wid)) = (tt.worker_id, resolved_worker_id)
+                    && tt_wid != resolved_wid
+                {
                     return None;
                 }
                 Some(TriggerTypeSummary {
