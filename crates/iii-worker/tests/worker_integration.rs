@@ -211,6 +211,10 @@ fn add_subcommand_multiple_workers() {
 #[test]
 fn add_prefixed_builtin_prints_deprecation_warning_and_replacement() {
     let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
+    // A config file keeps the add on the local path — without one, hostless
+    // add falls back to the running engine (MOT-4091) and this test would
+    // depend on whatever listens on the default port.
+    std::fs::write(temp.path().join("config.yaml"), "workers: []\n").unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
         .args(["add", "iii-http", "--no-wait"])
         .current_dir(temp.path())
@@ -233,6 +237,35 @@ fn add_prefixed_builtin_prints_deprecation_warning_and_replacement() {
     assert!(
         stderr.contains("iii worker add http"),
         "stderr was:\n{stderr}"
+    );
+}
+
+/// MOT-4091: hostless `add` from a directory with no config file must not
+/// create one there — it redirects to the default local engine instead.
+/// The bogus worker name makes the op fail identically whether or not an
+/// engine happens to listen on the default port (connection refused vs.
+/// engine-side not-found), so the assertions are environment-independent.
+#[test]
+fn add_from_non_project_dir_redirects_and_leaves_cwd_untouched() {
+    let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
+        .args(["add", "definitely-not-a-worker-mot4091", "--no-wait"])
+        .current_dir(temp.path())
+        .env("HOME", temp.path())
+        .env("NO_COLOR", "1")
+        .env_remove("III_CONFIG_PATH")
+        .output()
+        .expect("failed to execute iii-worker binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr was:\n{stderr}");
+    assert!(
+        stderr.contains("no config file in"),
+        "expected the fallback note, stderr was:\n{stderr}"
+    );
+    assert!(
+        !temp.path().join("iii.config.yaml").exists() && !temp.path().join("config.yaml").exists(),
+        "hostless add from a non-project dir must not create a config file"
     );
 }
 
