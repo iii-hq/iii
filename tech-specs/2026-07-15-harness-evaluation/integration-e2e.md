@@ -1,10 +1,10 @@
-# Harness conformance E2E
+# Harness integration E2E
 
 > Status: proposed architecture; implementation has not started.
 >
 > Last reviewed: 2026-07-15.
 
-Harness conformance is the deterministic regression track for the harness. It
+Harness integration is the deterministic regression track for the harness. It
 proves that a checkout or release artifact still obeys the public turn,
 durability, streaming, dispatch, and lifecycle contracts without asking a real
 model to make decisions.
@@ -17,7 +17,7 @@ strict scripted worker, and grades structured public evidence. Missing
 infrastructure is a setup error, never a skip.
 
 The first implementation is a standalone Rust runner under
-`harness/evals/conformance`. It owns process supervision, fixtures, evidence,
+`harness/evals/integration`. It owns process supervision, fixtures, evidence,
 grading, and reports. It does not add a test-only function to the engine or
 harness.
 
@@ -45,10 +45,10 @@ harness.
 
 ## Boundaries
 
-- Conformance does not evaluate prompt quality, model judgment, or aesthetic
+- Integration does not evaluate prompt quality, model judgment, or aesthetic
   output. See [agent-quality.md](agent-quality.md) for that track.
 - A test that seeds `harness_turn`, private state, or an internal continuation
-  is a lower-level integration test, not public-path conformance.
+  is a lower-level internal white-box test, not a public-path integration test.
 - The scripted router is test support outside the subject path. It mirrors the
   router contract but does not claim to test llm-router or providers.
 - Console rendering and browser reconnect behavior use a later stack profile;
@@ -88,7 +88,7 @@ inside that worker; it is not a harness fallback when the worker is absent.
 
 ## Existing contracts consumed
 
-| Contract | Source | Conformance rule |
+| Contract | Source | Integration rule |
 |---|---|---|
 | Public/internal harness IDs | [`harness/src/functions/mod.rs:32`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/mod.rs) | Normal scenarios use `harness::send` and read `harness::status`; `turn` and `function::{trigger,resolve}` stay internal. |
 | Send request/response | [`harness/src/functions/send.rs:69`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs) | `accepted` is always true on success. Optional `merged`, `queued`, and `deduplicated` fields are omitted when false; graders normalize absence to false. |
@@ -107,7 +107,7 @@ inside that worker; it is not a harness fallback when the worker is absent.
 
 ```mermaid
 sequenceDiagram
-  participant R as conformance runner
+  participant R as integration runner
   participant E as iii engine
   participant Q as queue
   participant H as harness under test
@@ -306,11 +306,11 @@ The controlled recorder registers these fixed control functions:
 
 | Function | Request | Response |
 |---|---|---|
-| `conformance-recorder::configure` | `RecorderConfigureRequestV1` | `{ schema_version: "1", target_schema_sha256 }` |
-| `conformance-recorder::reset` | `{ schema_version: "1", run_id }` | `{ schema_version: "1", next_sequence: 1 }` |
-| `conformance-recorder::snapshot` | `{ schema_version: "1", run_id, after_sequence?: number }` | `{ schema_version: "1", events: RecorderEventV1[] }` |
-| `conformance-recorder::await` | `{ schema_version: "1", run_id, kind, count, timeout_ms }` | `{ schema_version: "1", observed: number }` |
-| `conformance-recorder::lifecycle` | exact harness lifecycle payload | `{ accepted: true }` |
+| `integration-recorder::configure` | `RecorderConfigureRequestV1` | `{ schema_version: "1", target_schema_sha256 }` |
+| `integration-recorder::reset` | `{ schema_version: "1", run_id }` | `{ schema_version: "1", next_sequence: 1 }` |
+| `integration-recorder::snapshot` | `{ schema_version: "1", run_id, after_sequence?: number }` | `{ schema_version: "1", events: RecorderEventV1[] }` |
+| `integration-recorder::await` | `{ schema_version: "1", run_id, kind, count, timeout_ms }` | `{ schema_version: "1", observed: number }` |
+| `integration-recorder::lifecycle` | exact harness lifecycle payload | `{ accepted: true }` |
 
 ```ts
 interface RecorderConfigV1 {
@@ -322,7 +322,7 @@ interface RecorderConfigV1 {
   }
   lifecycle: {
     trigger_type: "harness::turn-started" | "harness::turn-completed"
-    function_id: "conformance-recorder::lifecycle"
+    function_id: "integration-recorder::lifecycle"
   }
 }
 
@@ -364,7 +364,7 @@ returns an empty event list.
 The runner CLI is:
 
 ```text
-harness-conformance \
+harness-integration \
   --engine-bin <path> \
   --harness-bin <path> \
   --worker-bin <name=path>... \
@@ -424,7 +424,7 @@ Failure names every missing or mismatched surface and attaches process logs as
 ## Proposed scenario and result schemas
 
 ```ts
-interface ConformanceScenarioV1 {
+interface IntegrationScenarioV1 {
   schema_version: "1"
   id: string
   description: string
@@ -444,7 +444,7 @@ type Classification =
   | "process_crash"
   | "runner_error"
 
-interface ConformanceResultV1 {
+interface IntegrationResultV1 {
   schema_version: "1"
   run_id: string
   scenario_id: string
@@ -522,7 +522,7 @@ diagnosis but cannot decide an ordinary public-contract scenario.
 
 ## First implementation slice
 
-### C-E2E-001 — streamed text reaches durable completion
+### I-E2E-001 — streamed text reaches durable completion
 
 Request:
 
@@ -606,7 +606,7 @@ Required invariants:
 - one non-conflicting completion payload is observed;
 - exactly one router generation is consumed.
 
-### C-E2E-002 — allowed function executes exactly once
+### I-E2E-002 — allowed function executes exactly once
 
 The request is the same shape with message `Call the recorder once.` and
 `options.functions = {allow:["<run_id>::record"],deny:[],expose:"native"}`.
@@ -617,7 +617,7 @@ Its recorder configuration is exact:
 {
   "target": {
     "function_id": "<run_id>::record",
-    "description": "Record one conformance fixture value.",
+    "description": "Record one integration fixture value.",
     "request_schema": {
       "type": "object",
       "additionalProperties": false,
@@ -631,12 +631,12 @@ Its recorder configuration is exact:
   },
   "lifecycle": {
     "trigger_type": "harness::turn-completed",
-    "function_id": "conformance-recorder::lifecycle"
+    "function_id": "integration-recorder::lifecycle"
   }
 }
 ```
 
-Generation one matches every field as in C-E2E-001, except `tools` must exactly
+Generation one matches every field as in I-E2E-001, except `tools` must exactly
 equal the single native entry below. This assertion ties the router request to
 the recorder registration rather than duplicating a prose approximation.
 
@@ -644,7 +644,7 @@ the recorder registration rather than duplicating a prose approximation.
 [
   {
     "name": "<run_id>::record",
-    "description": "Record one conformance fixture value.",
+    "description": "Record one integration fixture value.",
     "parameters": {
       "type": "object",
       "additionalProperties": false,
@@ -736,7 +736,7 @@ or mutant harness binary.
 ## Repository and artifacts
 
 ```text
-harness/evals/conformance/
+harness/evals/integration/
   Cargo.toml              # contains [workspace] and [package]
   Cargo.lock
   engine.lock             # repository, 40-hex revision, package, binary path
@@ -749,7 +749,7 @@ harness/evals/conformance/
     expected/system-prompt.txt
   fixtures/{authored,recorded}/
 
-target/conformance/<run_id>/
+target/integration/<run_id>/
   result.json
   stack.json
   logs/
@@ -768,13 +768,13 @@ The nested manifest declares its own `[workspace]` so Cargo does not treat it as
 an undeclared member of the parent harness workspace. The Make entry point is:
 
 ```bash
-make -C harness conformance-e2e
+make -C harness integration-e2e
 ```
 
 ## CI and gate policy
 
 The initial CI job is non-required and runs only for harness, session-manager,
-context-manager, queue, llm-router contract, and conformance-runner changes. It
+context-manager, queue, llm-router contract, and integration-runner changes. It
 uses the repository Rust toolchain and the runner's strict no-skip mode. The
 initial `engine.lock` pins the adjacent engine source inspected for this spec:
 
@@ -785,13 +785,13 @@ package = "iii"
 binary = "target/release/iii"
 ```
 
-The new `harness-conformance` job in `.github/workflows/ci.yml` first checks out
+The new `harness-integration` job in `.github/workflows/ci.yml` first checks out
 workers, reads and validates those four lock fields, then uses
 `actions/checkout@v4` to place that repository and exact revision at
-`target/conformance-engine-src`. It runs
+`target/integration-engine-src`. It runs
 `cargo build --locked --release -p iii` there, records SHA-256 of the resulting
 binary, and passes its absolute path as `--engine-bin`. The cache key is
-`conformance-engine-<runner-os>-<runner-arch>-<revision>-<Cargo.lock hash>`;
+`integration-engine-<runner-os>-<runner-arch>-<revision>-<Cargo.lock hash>`;
 cache hits are still re-hashed before execution. Any checkout, locked build,
 digest, or runner failure fails the job—there is no download or skip fallback.
 The job publishes compact results for every run and retains full non-pass

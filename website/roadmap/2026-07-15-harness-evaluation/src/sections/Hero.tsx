@@ -48,7 +48,7 @@ export function Hero() {
           <Terminal title="two tracks, one public boundary">
             <div className="flex flex-col gap-y-2.5">
               <TerminalRow
-                command="make -C harness conformance-e2e"
+                command="make -C harness integration-e2e"
                 output={
                   <span>
                     ✓ streamed-text · exactly-once-function{' '}

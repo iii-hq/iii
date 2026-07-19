@@ -9,7 +9,7 @@ export const HERO_STATS = [
 
 export const HERO_CLAIMS = [
   {
-    title: 'deterministic conformance',
+    title: 'deterministic integration',
     body: 'a scripted worker owns the router::* boundary, so stream and function-call outcomes reproduce without a model key.',
   },
   {

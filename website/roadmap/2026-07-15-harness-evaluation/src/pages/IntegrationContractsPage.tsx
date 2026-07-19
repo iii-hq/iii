@@ -6,14 +6,14 @@ import { CASSETTE_FIELDS, RECORDER_FUNCTIONS, SUPERVISOR_STEPS } from '../conten
 import { EXPANSION } from '../content/contract'
 
 /**
- * A14 — deep dive on the conformance test-support contracts: the script
+ * A14 — deep dive on the integration test-support contracts: the script
  * schema, cassettes, the recorder, and the supervisor. All of it is proposed
  * test-support api; production ids stay fixed.
  */
-export function ConformanceContractsPage() {
+export function IntegrationContractsPage() {
   return (
     <PageShell
-      eyebrow="deep dive · conformance"
+      eyebrow="deep dive · integration"
       title="the test-support contracts"
       description="the scripted router, cassette, recorder, and supervisor are test support outside the subject path. they mirror existing wire contracts (cited file:line in the spec), but everything on this page is proposed api, versioned and strict: schemas deny unknown fields, and script problems are runner errors before the stack even starts."
       related={[{ slug: 'agent-quality-protocol', label: 'agent-quality protocol' }]}
@@ -93,7 +93,7 @@ export function ConformanceContractsPage() {
             the supervisor cli
           </div>
           <CodeBlock title="explicit binaries · the runner never downloads">
-            harness-conformance <M>\</M>
+            harness-integration <M>\</M>
             {'\n  '}--engine-bin <S>&lt;path&gt;</S> <M>\</M>
             {'   '}
             <C>{'// or III_BIN'}</C>

@@ -63,8 +63,8 @@ aggregation required here ([`harness/src/functions/react.rs:1`](https://github.c
 
 ## Boundaries
 
-- This is not deterministic harness conformance; that track controls the model
-  boundary and is specified in [conformance-e2e.md](conformance-e2e.md).
+- This is not the deterministic harness integration track; that track controls
+  the model boundary and is specified in [integration-e2e.md](integration-e2e.md).
 - It does not require exact function trajectories when several valid solutions
   exist.
 - It does not permit a model grader to override a required deterministic or
@@ -1037,7 +1037,7 @@ green. Advisory validator failures remain visible but do not gate green.
 
 ## Related material
 
-- [Harness conformance E2E](conformance-e2e.md)
+- [Harness integration E2E](integration-e2e.md)
 - [Harness architecture](https://github.com/iii-hq/workers/blob/main/harness/architecture/README.md)
 - [`harness::send`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs)
 - [Lifecycle events](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs)

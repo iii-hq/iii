@@ -17,7 +17,7 @@ export function LifecycleSection() {
     <Section
       id="lifecycle"
       index="05"
-      eyebrow="conformance · lifecycle"
+      eyebrow="integration · lifecycle"
       title="ten stages, six classifications, no ambiguity about whose fault."
       lede="readiness is schema-based, never sleep-based. and when a run goes red, the classification says whether the subject broke a contract or the infrastructure failed; those exit differently."
     >

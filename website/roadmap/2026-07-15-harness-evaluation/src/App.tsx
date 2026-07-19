@@ -5,8 +5,8 @@ import { SpecPage } from '@lib/pages/SpecPage'
 import type { ComponentType } from 'react'
 import { NAV } from './content/deck'
 import { AgentQualityProtocolPage } from './pages/AgentQualityProtocolPage'
-import { ConformanceContractsPage } from './pages/ConformanceContractsPage'
-import { ConformanceRunSection } from './sections/ConformanceRunSection'
+import { IntegrationContractsPage } from './pages/IntegrationContractsPage'
+import { IntegrationRunSection } from './sections/IntegrationRunSection'
 import { ContractSection } from './sections/ContractSection'
 import { Hero } from './sections/Hero'
 import { LifecycleSection } from './sections/LifecycleSection'
@@ -28,7 +28,7 @@ const SECTIONS: ComponentType[] = [
   WhySection,
   TracksSection,
   MapSection,
-  ConformanceRunSection,
+  IntegrationRunSection,
   LifecycleSection,
   ContractSection,
   OraclesSection,
@@ -41,7 +41,7 @@ const SECTIONS: ComponentType[] = [
 const Spec = () => <SpecPage docs={SPEC_DOCS} />
 
 const PAGES: Record<string, ComponentType> = {
-  'conformance-contracts': ConformanceContractsPage,
+  'integration-contracts': IntegrationContractsPage,
   'agent-quality-protocol': AgentQualityProtocolPage,
   spec: Spec,
 }

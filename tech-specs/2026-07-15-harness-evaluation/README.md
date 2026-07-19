@@ -1,5 +1,5 @@
 ---
-title: harness evaluation — conformance and agent quality
+title: harness evaluation — integration and agent quality
 tagline: deterministic contract checks and real-model workflow evaluation for the durable harness.
 date: 2026-07-15
 tags: [agents, evaluation, harness]
@@ -14,7 +14,7 @@ featured: false
 > Last reviewed: 2026-07-15.
 
 The harness needs two evaluation tracks because one model boundary cannot answer
-both questions honestly. Conformance needs a controlled, deterministic router
+both questions honestly. Integration needs a controlled, deterministic router
 to prove public lifecycle and durability contracts. Agent quality needs a
 pinned real model and provider path to measure whether representative workflows
 actually succeed. The tracks share vocabulary and report conventions, but not
@@ -27,7 +27,7 @@ This split is the load-bearing constraint for the design.
 ```mermaid
 flowchart LR
   ci["CLI / CI"]
-  conformance["conformance runner\ndeterministic"]
+  integration["integration runner\ndeterministic"]
   quality["harness-eval worker\nreal model"]
   harness["public harness boundary"]
   scripted["scripted router"]
@@ -35,21 +35,21 @@ flowchart LR
   evidence["transcript · status · events · artifacts"]
   grader["code invariants / validators"]
 
-  ci --> conformance
+  ci --> integration
   ci --> quality
-  conformance --> harness
+  integration --> harness
   quality --> harness
   harness --> scripted
   harness --> provider
   harness --> evidence
-  scripted --> conformance
+  scripted --> integration
   provider --> quality
   evidence --> grader
 ```
 
 | Track | Model boundary | Primary oracle | First use |
 |---|---|---|---|
-| [Conformance E2E](conformance-e2e.md) | Scripted `router::*` implementation | Code assertions over public, durable evidence | Pull-request regression coverage |
+| [Integration E2E](integration-e2e.md) | Scripted `router::*` implementation | Code assertions over public, durable evidence | Pull-request regression coverage |
 | [Agent-quality E2E](agent-quality.md) | Production router, provider, and pinned model | Versioned validators plus raw quality and efficiency metrics | Scheduled and comparison runs |
 
 Both enter ordinary turns through `harness::send`. Neither seeds private
@@ -60,7 +60,7 @@ harness state or calls `harness::turn` as a continuation API.
 | Capability | State |
 |---|---|
 | Durable harness turn loop, public send/status APIs, lifecycle triggers, transcript persistence | Existing; exact contracts come from current Rust source and golden schemas |
-| Deterministic conformance runner, scripted router, recorder, cassette format | Proposed here |
+| Deterministic integration runner, scripted router, recorder, cassette format | Proposed here |
 | Dedicated `harness-eval` worker, scenario manifest, validator protocol, evaluation report | Proposed here |
 | HarnessBench same-prompt performance comparison and console view | Separate in-flight design in [PR #280](https://github.com/iii-hq/workers/pull/280) |
 | Durable production DAG orchestration | Existing [`workflow`](https://github.com/iii-hq/workers/blob/main/workflow/README.md) worker; intentionally separate from evaluation orchestration |
@@ -90,7 +90,7 @@ grading, and experiment aggregation require a dedicated state machine.
 
 ## Spec index
 
-- [Conformance E2E](conformance-e2e.md) — isolated deterministic stacks,
+- [Integration E2E](integration-e2e.md) — isolated deterministic stacks,
   scripted router contracts, evidence, fixtures, CI, and gate policy.
 - [Agent-quality E2E](agent-quality.md) — evaluator APIs, validation protocol,
   lifecycle, trust boundaries, metrics, artifacts, and scenario corpus.

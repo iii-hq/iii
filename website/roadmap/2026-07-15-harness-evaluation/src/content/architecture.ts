@@ -21,7 +21,7 @@ export const MAP_NODES: MapNode[] = [
     y: 96,
     w: 196,
     h: 68,
-    title: 'conformance runner',
+    title: 'integration runner',
     sub: 'supervise · grade',
     kind: 'primary',
     tag: 'deterministic',
@@ -207,12 +207,12 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         ],
       },
     ],
-    note: 'conformance runs on pull requests; agent quality runs scheduled and on demand.',
+    note: 'integration runs on pull requests; agent quality runs scheduled and on demand.',
   },
   runner: {
-    id: 'conformance runner',
+    id: 'integration runner',
     kindLabel: 'deterministic track',
-    role: 'a standalone rust runner under harness/evals/conformance. one fresh, isolated process stack per scenario: it allocates, boots, probes, arms, sends, collects, grades, and tears down.',
+    role: 'a standalone rust runner under harness/evals/integration. one fresh, isolated process stack per scenario: it allocates, boots, probes, arms, sends, collects, grades, and tears down.',
     sections: [
       {
         heading: 'owns',
@@ -260,7 +260,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   },
   scripted: {
     id: 'scripted router',
-    kindLabel: 'controlled · conformance only',
+    kindLabel: 'controlled · integration only',
     role: 'a strict deterministic implementation of the six fixed router::* functions. it consumes scripted generations in ordinal order; an unexpected call, matcher failure, or unused expectation is a contract failure.',
     sections: [
       {
@@ -307,7 +307,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   graders: {
     id: 'graders',
     kindLabel: 'independent',
-    role: 'conformance grades with pure code invariants. agent quality grades with versioned validator functions: open ones may feed a bounded feedback cycle, held-out ones stay invisible to the subject.',
+    role: 'integration grades with pure code invariants. agent quality grades with versioned validator functions: open ones may feed a bounded feedback cycle, held-out ones stay invisible to the subject.',
     sections: [
       {
         heading: 'rules',

@@ -1,12 +1,12 @@
-/* protocols — deep-dive data: recorder + supervisor (conformance), worker
+/* protocols — deep-dive data: recorder + supervisor (integration), worker
    surface + recovery (agent quality). */
 
 export const RECORDER_FUNCTIONS = [
-  { fn: 'conformance-recorder::configure', does: 'registers the run-scoped target verbatim and returns its canonical schema digest; the registration itself is part of the oracle' },
-  { fn: 'conformance-recorder::reset', does: 'clears only the current run; idempotent; next_sequence returns to 1' },
-  { fn: 'conformance-recorder::snapshot', does: 'the durable event log, ordered by strictly increasing sequence' },
-  { fn: 'conformance-recorder::await', does: 'a deadline-bounded convenience over the same durable log, never a second evidence source' },
-  { fn: 'conformance-recorder::lifecycle', does: 'receives the exact harness lifecycle payload for turn-started / turn-completed bindings' },
+  { fn: 'integration-recorder::configure', does: 'registers the run-scoped target verbatim and returns its canonical schema digest; the registration itself is part of the oracle' },
+  { fn: 'integration-recorder::reset', does: 'clears only the current run; idempotent; next_sequence returns to 1' },
+  { fn: 'integration-recorder::snapshot', does: 'the durable event log, ordered by strictly increasing sequence' },
+  { fn: 'integration-recorder::await', does: 'a deadline-bounded convenience over the same durable log, never a second evidence source' },
+  { fn: 'integration-recorder::lifecycle', does: 'receives the exact harness lifecycle payload for turn-started / turn-completed bindings' },
 ] as const
 
 export const SUPERVISOR_STEPS = [

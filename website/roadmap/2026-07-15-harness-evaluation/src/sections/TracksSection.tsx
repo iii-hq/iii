@@ -5,12 +5,12 @@ import { useState } from 'react'
 import { ADJACENT_SYSTEMS, TRACKS, type TrackId } from '../content/tracks'
 
 /**
- * A9 — the two-track split as a toggle. Flip between conformance and agent
+ * A9 — the two-track split as a toggle. Flip between integration and agent
  * quality and watch the whole profile swap: boundary, oracle, owner, first
  * use, release policy. The claim is the separation itself.
  */
 export function TracksSection() {
-  const [trackId, setTrackId] = useState<TrackId>('conformance')
+  const [trackId, setTrackId] = useState<TrackId>('integration')
   const track = TRACKS.find((t) => t.id === trackId) ?? TRACKS[0]
 
   return (

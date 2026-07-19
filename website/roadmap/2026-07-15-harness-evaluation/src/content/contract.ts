@@ -1,4 +1,4 @@
-/* contract — the scripted-router first slice (C-E2E-001/002) + matchers. */
+/* contract — the scripted-router first slice (I-E2E-001/002) + matchers. */
 
 export const FRAME_WALK = [
   { frame: 'start', payload: 'partial = A([])', note: 'an empty assistant shell opens the stream' },

@@ -1,7 +1,7 @@
-/* flows — the conformance run (A5) and the agent-quality loop (A5). */
+/* flows — the integration run (A5) and the agent-quality loop (A5). */
 import type { SeqLane, SeqStep } from '@lib/components/diagrams/SequencePlayer'
 
-/* ---- conformance: one scenario, allocate to teardown ---- */
+/* ---- integration: one scenario, allocate to teardown ---- */
 
 export const CONF_LANES: SeqLane[] = [
   { id: 'runner', label: 'runner', x: 80 },

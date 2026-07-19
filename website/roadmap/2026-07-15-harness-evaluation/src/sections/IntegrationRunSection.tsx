@@ -18,15 +18,15 @@ const PROFILE_REPLACED = [
 ] as const
 
 /**
- * A5 — one conformance scenario, end to end. The claim: the stack is real and
+ * A5 — one integration scenario, end to end. The claim: the stack is real and
  * the entry is public; only the model boundary is scripted.
  */
-export function ConformanceRunSection() {
+export function IntegrationRunSection() {
   return (
     <Section
       id="run"
       index="04"
-      eyebrow="conformance · a run"
+      eyebrow="integration · a run"
       title="everything is real except the model."
       lede="press play, or step it yourself. one fresh isolated stack per scenario: the real engine, queue, and durable turn loop, with a strict script where the model would be."
     >

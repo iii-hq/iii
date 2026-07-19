@@ -1,4 +1,4 @@
-/* oracles — the eight independent evidence sources (conformance). */
+/* oracles — the eight independent evidence sources (integration). */
 
 export const ORACLES = [
   {

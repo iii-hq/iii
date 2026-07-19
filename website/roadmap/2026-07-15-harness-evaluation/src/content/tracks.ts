@@ -1,6 +1,6 @@
 /* tracks — the two-track split (A9 toggle). data only. */
 
-export type TrackId = 'conformance' | 'quality'
+export type TrackId = 'integration' | 'quality'
 
 export interface TrackProfile {
   id: TrackId
@@ -11,8 +11,8 @@ export interface TrackProfile {
 
 export const TRACKS: TrackProfile[] = [
   {
-    id: 'conformance',
-    label: 'conformance',
+    id: 'integration',
+    label: 'integration',
     headline: 'prove the public contracts, deterministically.',
     rows: [
       {
@@ -28,7 +28,7 @@ export const TRACKS: TrackProfile[] = [
       {
         k: 'execution owner',
         v: 'standalone rust runner',
-        detail: 'harness/evals/conformance owns process supervision, fixtures, evidence, grading, and reports.',
+        detail: 'harness/evals/integration owns process supervision, fixtures, evidence, grading, and reports.',
       },
       {
         k: 'first use',

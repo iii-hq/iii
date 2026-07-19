@@ -14,7 +14,7 @@ export function AgentQualityProtocolPage() {
       eyebrow="deep dive · agent quality"
       title="the harness-eval protocol"
       description="one dedicated worker with a durable run record, a strict versioned manifest, a validation protocol every grader implements, and a recovery table that makes restarts deterministic. all proposed api, protocol_version 1, unknown fields denied."
-      related={[{ slug: 'conformance-contracts', label: 'conformance contracts' }]}
+      related={[{ slug: 'integration-contracts', label: 'integration contracts' }]}
     >
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">the worker surface</div>

@@ -51,7 +51,7 @@ export function MapSection() {
       index="03"
       eyebrow="system map"
       title="one public boundary, two tracks around it."
-      lede="the conformance runner and the harness-eval worker both drive the same harness through harness::send. only the far side of the router boundary differs. click any node to read its datasheet."
+      lede="the integration runner and the harness-eval worker both drive the same harness through harness::send. only the far side of the router boundary differs. click any node to read its datasheet."
     >
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mb-5">
         {LEGEND.map((item) => (
