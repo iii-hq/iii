@@ -14,6 +14,10 @@ import type { Context } from '@opentelemetry/api'
 import { propagation } from '@opentelemetry/api'
 import type { ReadableSpan, Span, SpanProcessor } from '@opentelemetry/sdk-trace-base'
 
+/**
+ * OpenTelemetry span processor that copies OTel baggage entries onto each
+ * started span as attributes.
+ */
 export class BaggageSpanProcessor implements SpanProcessor {
   onStart(span: Span, parentContext: Context): void {
     // NoOp guard: skip allocation when sampler drops the span.

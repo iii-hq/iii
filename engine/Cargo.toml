@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.21.5"
+version = "0.21.8-next.1"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -115,6 +115,12 @@ http-body-util = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 axum = { version = "0.8", features = ["ws", "macros"] }
+# Both already in the tree via axum; declared directly so the worker WS
+# listener can serve connections with an http1 header-read deadline
+# (MOT-3967) — axum::serve exposes no timer, so stalled pre-upgrade
+# sockets would otherwise leak fds.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"

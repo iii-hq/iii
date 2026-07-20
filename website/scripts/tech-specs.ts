@@ -17,7 +17,7 @@ const SPECS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 // Same minimal frontmatter approach as blog-posts.ts: pull the YAML block and
 // parse only the keys the sitemap needs — no YAML dependency. The full parser
-// (tags, featured, fallbacks) lives in website/presentations/scripts/manifest.mjs;
+// (tags, featured, fallbacks) lives in website/roadmap/scripts/manifest.mjs;
 // this one is deliberately tiny and read-only.
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/
 

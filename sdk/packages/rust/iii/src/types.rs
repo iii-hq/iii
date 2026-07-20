@@ -19,11 +19,12 @@ pub type RemoteFunctionHandler =
     Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, Error>> + Send + Sync>;
 
 /// A dispatchable function handler that also receives the optional
-/// per-invocation `metadata` sidecar (delivered as a distinct argument rather
-/// than folded into the payload; `None` when the caller attached none).
+/// per-invocation `metadata` sidecar (delivered as a distinct argument
+/// alongside the payload; `None` when the caller attached none).
 ///
 /// This is the SDK's internal dispatch shape: handlers built from
 /// metadata-unaware functions ignore the second argument.
+/// <!-- docs:internal -->
 pub type RemoteFunctionHandlerWithMetadata =
     Arc<dyn Fn(Value, Option<Value>) -> BoxFuture<'static, Result<Value, Error>> + Send + Sync>;
 
@@ -39,9 +40,9 @@ pub struct RemoteTriggerTypeData {
     pub handler: Arc<dyn TriggerHandler>,
 }
 
-/// Streaming request type, mirroring the Node and Python `StreamRequest`.
+/// Incoming streaming request received by a function registered with a stream trigger.
 ///
-/// Alias of [`iii_helpers::http::HttpRequest`]; added for cross-language parity.
+/// Alias of [`iii_helpers::http::HttpRequest`].
 pub type StreamRequest<T = Value> = iii_helpers::http::HttpRequest<T>;
 
 /// Streaming response type, mirroring the Node and Python `StreamResponse`.

@@ -95,9 +95,17 @@ impl ProjectCtx {
         Self { root, lock: None }
     }
 
-    /// First existing candidate (`iii.config.yaml` then `config.yaml`);
-    /// falls back to the canonical name when neither exists yet.
+    /// The project config file. `III_CONFIG_PATH` wins when set — the
+    /// engine exports it to every process it spawns so ops target (and
+    /// report) the engine's ACTUAL config file, whatever its name. Otherwise
+    /// the first existing candidate (`iii.config.yaml` then `config.yaml`),
+    /// falling back to the canonical name when neither exists yet.
     pub fn config_path(&self) -> PathBuf {
+        if let Some(p) = std::env::var_os("III_CONFIG_PATH")
+            && !p.is_empty()
+        {
+            return PathBuf::from(p);
+        }
         for name in CONFIG_CANDIDATES {
             let candidate = self.root.join(name);
             if candidate.exists() {

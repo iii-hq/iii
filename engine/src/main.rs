@@ -96,18 +96,18 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Path to the config file.
-    #[arg(short, long, default_value = "config.yaml")]
-    config: String,
+    /// Path to the config file [default: config.yaml]. When the file does
+    /// not exist, `iii` offers to create it with an empty workers list (and
+    /// creates it without asking in non-interactive sessions).
+    // Option (not default_value) so subcommand dispatch can tell "user chose
+    // this file" from "clap default" — only an explicit choice is forwarded
+    // to `iii worker …` as III_CONFIG_PATH.
+    #[arg(short, long)]
+    config: Option<String>,
 
     /// Print version and exit.
     #[arg(short = 'v', long)]
     version: bool,
-
-    /// Run with built-in defaults instead of a config file.
-    /// Cannot be combined with --config.
-    #[arg(long, conflicts_with = "config")]
-    use_default_config: bool,
 
     /// Disable background update and security advisory checks.
     #[arg(long)]
@@ -195,10 +195,6 @@ enum Commands {
     },
 }
 
-fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
-    cli.use_default_config
-}
-
 fn passthrough_command_path(command: &str, args: &[String]) -> String {
     match args.first() {
         Some(arg) if !arg.starts_with('-') => format!("{command} {arg}"),
@@ -235,24 +231,88 @@ fn cli_usage_command_path(cli: &Cli) -> String {
     }
 }
 
-async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
-    let config = if cli.use_default_config {
-        EngineConfig::default_config()
-    } else {
-        EngineConfig::config_file(&cli.config)?
+/// Make sure the config file exists before the engine loads it.
+///
+/// Missing file: on an interactive terminal, ask before writing (running
+/// `iii` in the wrong directory shouldn't silently litter a config.yaml
+/// there); headless sessions (containers, CI, service managers) create it
+/// without asking so `iii` keeps booting unattended. Returns `false` when
+/// the user declined — the caller aborts without creating anything.
+fn ensure_config_file(path: &str) -> anyhow::Result<bool> {
+    use std::io::{IsTerminal, Write};
+
+    if std::path::Path::new(path).exists() {
+        return Ok(true);
+    }
+
+    let dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        eprint!(
+            "No {} found in {}. Create it and start the engine? [Y/n] ",
+            path,
+            dir.display()
+        );
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim().to_lowercase();
+        if !(answer.is_empty() || answer == "y" || answer == "yes") {
+            return Ok(false);
+        }
+    }
+
+    std::fs::write(path, EngineConfig::starter_config_yaml())
+        .map_err(|e| anyhow::anyhow!("failed to create config file '{}': {}", path, e))?;
+    eprintln!(
+        "Created {}. Add workers with `iii worker add <name>` — the engine picks them up live.",
+        path
+    );
+    Ok(true)
+}
+
+/// Effective config file path: the explicit `--config` value, or the
+/// `config.yaml` default.
+fn config_path_of(cli: &Cli) -> &str {
+    cli.config.as_deref().unwrap_or("config.yaml")
+}
+
+/// Env vars for a dispatched `iii worker …` child. An explicit `--config`
+/// is forwarded as III_CONFIG_PATH (absolutized — the child keeps our cwd,
+/// but everything IT spawns may not) so `iii -c config.yml worker add x`
+/// edits the same file the engine reads. Without an explicit flag the
+/// child keeps its own default (and any user-exported III_CONFIG_PATH).
+fn worker_dispatch_envs(cli: &Cli) -> Vec<(String, String)> {
+    let Some(ref config) = cli.config else {
+        return Vec::new();
     };
-
-    if should_init_logging_from_engine_config(cli) {
-        logging::init_log_from_engine_config(&config);
+    let path = std::path::Path::new(config);
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        logging::init_log_from_config(Some(&cli.config));
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    vec![("III_CONFIG_PATH".to_string(), abs.display().to_string())]
+}
+
+async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
+    let config_path = config_path_of(cli);
+    if !ensure_config_file(config_path)? {
+        eprintln!(
+            "Aborted. Run `iii` from your project directory, or pass --config <path> to an existing config file."
+        );
+        std::process::exit(1);
     }
 
-    let mut builder = EngineBuilder::new().with_config(config);
-    if !cli.use_default_config {
-        builder = builder.with_config_path(&cli.config);
-    }
-    let engine = builder.build().await?;
+    let config = EngineConfig::config_file(config_path)?;
+    logging::init_log_from_config(Some(config_path));
+
+    let engine = EngineBuilder::new()
+        .with_config(config)
+        .with_config_path(config_path)
+        .build()
+        .await?;
     engine.serve().await?;
     Ok(())
 }
@@ -314,15 +374,19 @@ async fn main() -> anyhow::Result<()> {
             Err(cli_trigger::TriggerCliError::Other(e)) => Err(e),
         },
         Some(Commands::Console { args }) => {
-            let exit_code = cli::handle_dispatch("console", args, cli_args.no_update_check).await;
+            let exit_code =
+                cli::handle_dispatch("console", args, cli_args.no_update_check, &[]).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Cloud { args }) => {
-            let exit_code = cli::handle_dispatch("cloud", args, cli_args.no_update_check).await;
+            let exit_code =
+                cli::handle_dispatch("cloud", args, cli_args.no_update_check, &[]).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Worker { args }) => {
-            let exit_code = cli::handle_dispatch("worker", args, cli_args.no_update_check).await;
+            let envs = worker_dispatch_envs(&cli_args);
+            let exit_code =
+                cli::handle_dispatch("worker", args, cli_args.no_update_check, &envs).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Project(args)) => {
@@ -456,9 +520,15 @@ mod tests {
     }
 
     #[test]
-    fn use_default_config_uses_engine_config_for_logging() {
-        let cli = Cli::try_parse_from(["iii", "--use-default-config"]).unwrap();
-        assert!(should_init_logging_from_engine_config(&cli));
+    fn use_default_config_is_no_longer_a_flag() {
+        // `--use-default-config` was removed: `iii` now creates config.yaml
+        // when it's missing, so a file-less mode flag has nothing to do and
+        // only bypassed the config.yaml setup (worker add, reload watcher).
+        let result = Cli::try_parse_from(["iii", "--use-default-config"]);
+        assert!(
+            result.is_err(),
+            "--use-default-config should no longer parse"
+        );
     }
 
     #[test]
@@ -891,6 +961,23 @@ mod tests {
     fn config_flag_still_works_before_subcommand() {
         let cli = Cli::try_parse_from(["iii", "--config", "foo.yaml", "worker", "add", "x"])
             .expect("config before subcommand should still parse");
-        assert_eq!(cli.config, "foo.yaml");
+        assert_eq!(cli.config.as_deref(), Some("foo.yaml"));
+        // An explicit --config is forwarded to the dispatched `iii worker`
+        // child as an absolute III_CONFIG_PATH so both sides edit the same
+        // file even when it isn't named config.yaml.
+        let envs = worker_dispatch_envs(&cli);
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].0, "III_CONFIG_PATH");
+        assert!(std::path::Path::new(&envs[0].1).is_absolute());
+        assert!(envs[0].1.ends_with("foo.yaml"));
+    }
+
+    #[test]
+    fn default_config_is_not_forwarded_to_worker_dispatch() {
+        // Without an explicit --config the child keeps its own default and
+        // any user-exported III_CONFIG_PATH stays in effect.
+        let cli = Cli::try_parse_from(["iii", "worker", "list"]).unwrap();
+        assert!(cli.config.is_none());
+        assert!(worker_dispatch_envs(&cli).is_empty());
     }
 }

@@ -19,8 +19,8 @@ Once connected, a worker exposes:
 
 <Note>
   For the full SDK surface each Worker can use when interacting with iii, see the complete SDK
-  reference by language: [Node](../api-reference/sdk-node), [Python](../api-reference/sdk-python),
-  [Rust](../api-reference/sdk-rust), or [Browser](../api-reference/sdk-browser).
+  reference by language: [Node](../reference/sdk-node), [Python](../reference/sdk-python),
+  [Rust](../reference/sdk-rust), or [Browser](../reference/sdk-browser).
 </Note>
 
 ## Scaffold a new worker
@@ -154,25 +154,25 @@ get the current state of the registry. Each returns a list:
     <Tab title="Node / TypeScript">
       ```typescript
       // engine::workers::list, pass { worker_id: "<uuid>" } to look up one worker
-      const { workers } = await worker.trigger<any, any>({
+      const { workers } = await worker.trigger({
         function_id: "engine::workers::list",
         payload: {},
       });
 
       // engine::functions::list
-      const { functions } = await worker.trigger<any, any>({
+      const { functions } = await worker.trigger({
         function_id: "engine::functions::list",
         payload: { include_internal: false },
       });
 
       // engine::triggers::list
-      const { triggers } = await worker.trigger<any, any>({
+      const { triggers } = await worker.trigger({
         function_id: "engine::triggers::list",
         payload: { include_internal: false },
       });
 
       // engine::registered-triggers::list
-      const { registered_triggers } = await worker.trigger<any, any>({
+      const { registered_triggers } = await worker.trigger({
         function_id: "engine::registered-triggers::list",
         payload: { include_internal: false },
       });

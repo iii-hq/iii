@@ -10,7 +10,7 @@ import type { SdkDoc } from './types.mjs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // Inputs are resolved relative to the repo root (the pipeline runs from there).
 const ROOT = process.cwd()
-const DOCS_OUTPUT = resolve(__dirname, '../api-reference')
+const DOCS_OUTPUT = resolve(__dirname, '../reference')
 
 interface GenerationTarget {
   name: string

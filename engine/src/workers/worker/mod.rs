@@ -10,8 +10,10 @@ pub mod rbac_session;
 pub mod ws_handler;
 
 use std::{
+    io,
     net::SocketAddr,
     sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 
 use axum::{
@@ -22,10 +24,16 @@ use axum::{
     routing::get,
 };
 use colored::Colorize;
+use hyper::server::conn::http1;
+use hyper_util::{
+    rt::{TokioIo, TokioTimer},
+    service::TowerToHyperService,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{net::TcpListener, task::AbortHandle};
+use tower::Service as _;
 
 use crate::{
     engine::Engine,
@@ -34,6 +42,11 @@ use crate::{
 };
 
 pub const DEFAULT_PORT: u16 = 49134;
+
+/// Default deadline for an accepted TCP connection to complete its HTTP
+/// request (the WS upgrade). Generous for a handshake that normally takes
+/// milliseconds; the point is bounding it at all (MOT-3967).
+pub const DEFAULT_HANDSHAKE_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct CreateChannelInput {
@@ -59,6 +72,11 @@ pub struct WorkerManagerConfig {
     #[serde(default)]
     pub middleware_function_id: Option<String>,
     pub rbac: Option<rbac_config::RbacConfig>,
+    /// Deadline in milliseconds for an accepted TCP connection to complete
+    /// its HTTP request (the WS upgrade). Sockets that stall pre-upgrade
+    /// are closed and logged instead of leaking the fd (MOT-3967).
+    #[serde(default = "default_handshake_timeout_ms")]
+    pub handshake_timeout_ms: u64,
 }
 
 fn default_port() -> u16 {
@@ -69,6 +87,10 @@ fn default_host() -> String {
     "0.0.0.0".to_string()
 }
 
+fn default_handshake_timeout_ms() -> u64 {
+    DEFAULT_HANDSHAKE_TIMEOUT_MS
+}
+
 impl Default for WorkerManagerConfig {
     fn default() -> Self {
         Self {
@@ -76,6 +98,7 @@ impl Default for WorkerManagerConfig {
             host: default_host(),
             middleware_function_id: None,
             rbac: None,
+            handshake_timeout_ms: default_handshake_timeout_ms(),
         }
     }
 }
@@ -130,6 +153,7 @@ impl Worker for WorkerManager {
             .route("/ws/channels/{channel_id}", get(channel_ws_upgrade))
             .with_state(state);
 
+        let handshake_timeout = Duration::from_millis(config.handshake_timeout_ms);
         let handle = tokio::spawn(async move {
             let shutdown = async move {
                 tokio::select! {
@@ -145,16 +169,89 @@ impl Worker for WorkerManager {
                     } => {}
                 }
             };
+            tokio::pin!(shutdown);
 
-            if let Err(e) = axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(shutdown)
-            .await
-            {
-                tracing::error!(error = %e, "WorkerManager server exited with error");
+            // Fans shutdown out to every spawned connection task, mirroring
+            // what axum::serve did internally: sent when the accept loop
+            // exits, and if this task is aborted (`destroy()`), the dropped
+            // sender wakes subscribers the same way.
+            let (conn_shutdown_tx, _) = tokio::sync::watch::channel(false);
+
+            // Serve connections manually instead of via `axum::serve`:
+            // hyper's `header_read_timeout` is the handshake deadline that
+            // reaps sockets stalling before the WS upgrade completes
+            // (MOT-3967), and axum::serve exposes neither it nor the timer
+            // it requires. Established WS sessions are unaffected — the
+            // deadline only bounds reading request headers.
+            let mut make_service = app.into_make_service_with_connect_info::<SocketAddr>();
+            loop {
+                let (stream, peer) = tokio::select! {
+                    res = listener.accept() => match res {
+                        Ok(conn) => conn,
+                        Err(err) => {
+                            // ECONNABORTED/RESET are normal client churn;
+                            // anything else (e.g. EMFILE) gets a pause so
+                            // the accept loop doesn't spin.
+                            if !is_connection_error(&err) {
+                                tracing::warn!(error = ?err, "worker listener accept error");
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                            }
+                            continue;
+                        }
+                    },
+                    _ = &mut shutdown => break,
+                };
+                let service = match make_service.call(peer).await {
+                    Ok(service) => service,
+                    Err(infallible) => match infallible {},
+                };
+                let mut conn_shutdown_rx = conn_shutdown_tx.subscribe();
+                tokio::spawn(async move {
+                    let conn = http1::Builder::new()
+                        .timer(TokioTimer::new())
+                        .header_read_timeout(handshake_timeout)
+                        .serve_connection(TokioIo::new(stream), TowerToHyperService::new(service))
+                        .with_upgrades();
+                    tokio::pin!(conn);
+                    // Completes on shutdown send or sender drop (abort).
+                    let conn_shutdown = async move {
+                        while conn_shutdown_rx.changed().await.is_ok() {
+                            if *conn_shutdown_rx.borrow() {
+                                break;
+                            }
+                        }
+                    };
+                    tokio::pin!(conn_shutdown);
+                    let mut graceful_sent = false;
+                    loop {
+                        tokio::select! {
+                            res = conn.as_mut() => {
+                                if let Err(err) = res {
+                                    if err.is_timeout() {
+                                        tracing::warn!(
+                                            peer = %peer,
+                                            timeout_ms = handshake_timeout.as_millis() as u64,
+                                            "closed worker socket: WS upgrade not completed within handshake deadline"
+                                        );
+                                    } else {
+                                        tracing::debug!(peer = %peer, error = ?err, "worker connection error");
+                                    }
+                                }
+                                break;
+                            }
+                            // Close idle keep-alive connections immediately
+                            // and mark in-flight ones close-after-response,
+                            // then keep polling the connection to completion.
+                            _ = &mut conn_shutdown, if !graceful_sent => {
+                                conn.as_mut().graceful_shutdown();
+                                graceful_sent = true;
+                            }
+                        }
+                    }
+                });
             }
+
+            let _ = conn_shutdown_tx.send(true);
         });
 
         *self
@@ -188,6 +285,18 @@ pub struct AppState {
     pub engine: Arc<Engine>,
     pub config: Arc<WorkerManagerConfig>,
     pub(crate) shutdown_rx: tokio::sync::watch::Receiver<bool>,
+}
+
+/// Accept errors caused by the remote end (mirrors `axum::serve`'s internal
+/// accept loop) — these are normal churn and don't warrant a warning or a
+/// pause of the accept loop.
+fn is_connection_error(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+    )
 }
 
 async fn shutdown_signal() -> anyhow::Result<()> {
@@ -276,6 +385,7 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert!(config.middleware_function_id.is_none());
         assert!(config.rbac.is_none());
+        assert_eq!(config.handshake_timeout_ms, DEFAULT_HANDSHAKE_TIMEOUT_MS);
     }
 
     #[test]
@@ -286,5 +396,6 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert!(config.middleware_function_id.is_none());
         assert!(config.rbac.is_none());
+        assert_eq!(config.handshake_timeout_ms, DEFAULT_HANDSHAKE_TIMEOUT_MS);
     }
 }

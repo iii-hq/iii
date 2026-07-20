@@ -113,7 +113,7 @@ iii worker add ./auth
 ## Add a server-initiated delete
 
 First give the `link` worker a `link::delete` that removes a link from both the database and the
-`iii-state` cache. Add it to `link/src/index.ts`:
+`state` cache. Add it to `link/src/index.ts`:
 
 ```typescript link/src/index.ts
 worker.registerFunction("link::delete", async (payload: { code: string }) => {

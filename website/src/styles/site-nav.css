@@ -1,0 +1,353 @@
+/* The shared site header (src/components/SiteNav.astro) — one look on every
+   page. Extracted verbatim from the landing page's NAVBAR styles; colors ride
+   the page's own design tokens (--bg/--ink/--rule/--accent…), so the header
+   follows each surface's theme. */
+
+  /* ============= NAVBAR ============= */
+  /* id-anchored: pages ship their own generic rules (e.g. the landing's
+     `.sheet > *{position:relative; z-index:1}`) that tie on class specificity
+     and can land later in the bundle — the ids keep the header sticky and the
+     menu overlay fixed on every surface regardless of CSS order. */
+  #nav{
+    position:sticky;
+    top:0;
+    z-index:50;
+    background:var(--bg);
+    border-bottom:1px solid var(--rule);
+    padding:18px 28px;
+    display:flex; align-items:center; justify-content:space-between;
+    gap:24px;
+    transition: padding .25s ease;
+  }
+  /* id-anchored like #nav above — a bare .nav.scrolled loses to #nav's
+     specificity and the compaction never fires. */
+  #nav.scrolled{ padding:8px 28px; }
+
+  .nav-left{
+    display:flex; align-items:center; gap:24px;
+    min-width:0;
+    flex:0 0 auto;
+  }
+  .nav-right{
+    display:flex; align-items:center; gap:14px;
+    flex-shrink:0;
+    flex:0 0 auto;
+    justify-content:flex-end;
+  }
+  /* Section links, left-aligned next to the logo. Takes the remaining row
+     width (flex:1) so nav-right stays pinned to the far edge. */
+  .nav-center{
+    flex:1 1 auto;
+    min-width:0;
+    display:flex;
+    justify-content:flex-start;
+    pointer-events:auto;
+  }
+  .nav-center .nav-links{ gap:16px; flex-wrap:nowrap; }
+
+  /* Logo (sketch-style) */
+  .logo-link{
+    display:flex; align-items:center; gap:10px;
+    text-decoration:none; color:var(--ink);
+    cursor:pointer;
+  }
+  .logo-mark{
+    width:28px; height:28px;
+    transition: width .25s ease, height .25s ease;
+    color:var(--ink);
+    flex-shrink:0;
+  }
+  #nav.scrolled .logo-mark{ width:22px; height:22px; }
+  @media (prefers-reduced-motion: reduce){
+    #nav, .logo-mark{ transition:none; }
+  }
+  /* all i's black per spec — accent rects render as ink */
+  .logo-mark .accent{ fill:var(--ink); }
+  /* optional page label next to the logo (e.g. "Roadmap" on /roadmap) */
+  .logo-title{
+    font-family:"Chivo Mono", ui-monospace, monospace;
+    font-size:15px;
+    font-weight:600;
+    letter-spacing:-0.01em;
+    color:var(--ink);
+    white-space:nowrap;
+  }
+  .logo-mark .bar{ fill:var(--ink); }
+  .logo-word{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:600; font-size:18px; letter-spacing:-0.02em;
+    color:var(--ink);
+    text-transform:lowercase;
+    line-height:1;
+  }
+
+  /* Mode toggle (Human/Machine) */
+  .mode-toggle{
+    display:flex; align-items:center;
+    border:1px solid var(--rule);
+    background:var(--bg);
+    padding:2px;
+    border-radius:0; /* rectilinear, sketch style */
+  }
+  .mode-toggle button{
+    appearance:none; border:0; background:transparent;
+    padding:6px 10px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:400; font-size:12px;
+    letter-spacing:0; text-transform:none;
+    color:var(--mute);
+    cursor:pointer;
+    transition: background .15s, color .15s;
+  }
+  .mode-toggle button:hover{ color:var(--ink); }
+  .mode-toggle button.active{
+    background:var(--ink);
+    color:var(--bg);
+  }
+
+  /* Desktop nav links */
+  .nav-links{
+    display:flex; align-items:center; gap:18px;
+  }
+  /* reference-style: lowercase, no tracking, no transform */
+  .nav-link{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:400; font-size:13px;
+    letter-spacing:0;
+    text-transform:none;
+    color:var(--mute);
+    text-decoration:none;
+    transition: color .15s;
+    padding:6px 0;
+    border-bottom:1px solid transparent;
+  }
+  .nav-link:hover{ color:var(--ink); border-bottom-color:transparent; }
+
+  /* Destination group: docs / blog / registry. Different in kind from the
+     in-page anchors above, so they read as boxed tabs, not text links. */
+  .nav-divider{
+    width:1px; height:16px;
+    background:var(--rule);
+    margin:0 4px;
+    flex:0 0 auto;
+  }
+  .nav-tabs{
+    display:flex; align-items:center; gap:8px;
+  }
+  .nav-tab{
+    position:relative;
+    isolation:isolate;
+    overflow:hidden;
+    display:inline-flex; align-items:center; gap:4px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:400; font-size:13px; letter-spacing:0;
+    color:var(--mute);
+    text-decoration:none;
+    padding:5px 11px;
+    border:1px solid var(--rule);
+    border-radius:6px;
+    transition:color .2s ease, border-color .25s ease, transform .2s ease;
+  }
+  /* Fill wipes up from the bottom on hover; text inverts to paper. */
+  .nav-tab::before{
+    content:"";
+    position:absolute; inset:0; z-index:-1;
+    background:var(--ink);
+    transform:translateY(101%);
+    transition:transform .28s cubic-bezier(.65,0,.2,1);
+  }
+  .nav-tab:hover{
+    color:var(--paper);
+    border-color:var(--ink);
+    transform:translateY(-1px);
+  }
+  .nav-tab:hover::before{ transform:translateY(0); }
+  .nav-tab:active{ transform:translateY(0); }
+  .nav-tab:focus-visible{
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+  }
+  .nav-tab-ext{
+    font-size:11px;
+    line-height:1;
+    opacity:.6;
+    transition:transform .2s ease, opacity .2s ease;
+  }
+  .nav-tab:hover .nav-tab-ext{
+    opacity:1;
+    transform:translate(1px,-1px);
+  }
+  @media (prefers-reduced-motion: reduce){
+    .nav-tab, .nav-tab::before, .nav-tab-ext{ transition:none; }
+  }
+
+  /* Install button */
+  /* reference-style install pill */
+  .cta-install{
+    display:inline-flex; align-items:center; gap:6px;
+    border:1px solid var(--ink);
+    background:var(--bg);
+    padding:6px 12px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:400; font-size:13px;
+    color:var(--ink);
+    cursor:pointer;
+    letter-spacing:0;
+    transition: background .15s, color .15s, border-color .15s;
+    white-space:nowrap;
+  }
+  .cta-install:hover{
+    background:var(--ink);
+    color:var(--bg);
+  }
+  .cta-install.copied{
+    border-color:var(--accent);
+    color:var(--accent);
+    background:var(--bg);
+  }
+  .cta-install.copied:hover{ background:var(--bg); color:var(--accent); }
+  .cta-install svg{ width:12px; height:12px; flex-shrink:0; }
+
+  /* GitHub button */
+  .cta-github{
+    display:inline-flex; align-items:center; gap:8px;
+    border:1px solid var(--rule);
+    background:var(--bg);
+    padding:7px 12px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:500; font-size:12px;
+    color:var(--ink);
+    text-decoration:none;
+    transition: border-color .15s, background .15s;
+  }
+  .cta-github:hover{ border-color:var(--ink); background:var(--panel); }
+  .cta-github svg{ width:14px; height:14px; flex-shrink:0; }
+
+  /* Discord button (navbar) */
+  .cta-discord{
+    display:inline-flex; align-items:center; gap:8px;
+    border:1px solid var(--rule);
+    background:var(--bg);
+    padding:7px 12px;
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:500; font-size:12px;
+    color:var(--ink);
+    text-decoration:none;
+    transition: border-color .15s, background .15s;
+  }
+  .cta-discord:hover{ border-color:var(--ink); background:var(--panel); }
+  .cta-discord svg{ width:14px; height:14px; flex-shrink:0; }
+  .cta-discord .count{ font-variant-numeric:tabular-nums; }
+  .cta-github .stars{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:500; font-size:12px;
+    color:var(--ink);
+    letter-spacing:0;
+  }
+
+  /* Theme toggle */
+  .theme-btn{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:30px; height:30px;
+    border:1px solid var(--rule);
+    background:var(--bg);
+    color:var(--ink-faint);
+    cursor:pointer;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .theme-btn:hover{ color:var(--ink); border-color:var(--ink); }
+  .theme-btn svg{ width:14px; height:14px; }
+
+  /* Mobile menu trigger */
+  .menu-btn{
+    display:none;
+    align-items:center; justify-content:center;
+    width:30px; height:30px;
+    border:1px solid var(--rule);
+    background:var(--bg);
+    color:var(--ink);
+    cursor:pointer;
+  }
+  .menu-btn svg{ width:16px; height:16px; }
+
+  /* Mobile menu overlay */
+  #mobile-menu{
+    position:fixed; inset:0;
+    z-index:60;
+    display:none;
+  }
+  #mobile-menu.open{ display:block; }
+  .mobile-menu .scrim{
+    position:absolute; inset:0;
+    background:rgba(10,10,10,0.5);
+  }
+  .mobile-menu .panel{
+    position:absolute; top:0; right:0; bottom:0;
+    width:min(320px, 85vw);
+    background:var(--bg);
+    border-left:1px solid var(--rule);
+    padding:24px;
+    display:flex; flex-direction:column; gap:16px;
+  }
+  .mobile-menu .panel-head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding-bottom:14px;
+    border-bottom:1px solid var(--rule);
+    margin-bottom:8px;
+  }
+  .mobile-menu .panel-head .label{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:500; font-size:12px;
+    color:var(--ink-faint);
+    letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .mobile-menu .panel-head .x{
+    appearance:none; border:1px solid var(--rule); background:var(--bg);
+    width:30px; height:30px;
+    display:inline-flex; align-items:center; justify-content:center;
+    cursor:pointer; color:var(--ink);
+  }
+  .mobile-menu .panel-head .x svg{ width:14px; height:14px; }
+  .mobile-link{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 16px;
+    border:1px solid var(--rule);
+    background:var(--bg);
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:400; font-size:13px;
+    letter-spacing:0; text-transform:none;
+    color:var(--ink);
+    text-decoration:none;
+    transition: border-color .15s, background .15s;
+  }
+  .mobile-link:hover{ border-color:var(--ink); }
+  .mobile-link.docs{ color:var(--ink); border-color:var(--rule); }
+  .mobile-link.install{ justify-content:center; gap:8px; }
+  .mobile-link.install.copied{ border-color:var(--accent); color:var(--accent); }
+  .mobile-link.install svg{ width:14px; height:14px; }
+  .mobile-divider{
+    border:0; border-top:1px solid var(--rule);
+    margin:6px 0;
+  }
+
+  /* ============= RESPONSIVE ============= */
+  /* tight desktop — too narrow for the icon inside install.sh, and the
+     centered nav-links start overlapping it. Drop the icon, slide
+     nav-links further left. */
+  @media (max-width: 1220px){
+    .nav-center{ display:none; }
+    .nav-links{ display:none; }
+    #cta-install svg{ display:none; }
+    #cta-install{ padding-left:14px; padding-right:14px; }
+    .menu-btn{ display:inline-flex; }
+  }
+
+  @media (max-width: 800px){
+    #cta-install{ display:none; }
+    .mode-toggle{ display:none; }
+  }
+  @media (max-width: 520px){
+    #nav{ padding:14px 18px; }
+    #nav.scrolled{ padding:8px 18px; }
+    .cta-github{ padding:7px 10px; gap:6px; }
+  }

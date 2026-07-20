@@ -110,15 +110,16 @@ impl UrlValidator {
 
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ipv4) => {
-            ipv4.is_loopback()
-                || ipv4.is_private()
-                || ipv4.is_link_local()
-                || ipv4.is_broadcast()
-                || ipv4.is_documentation()
-                || ipv4.is_unspecified()
-        }
+        IpAddr::V4(ipv4) => is_private_ipv4(ipv4),
         IpAddr::V6(ipv6) => {
+            // An IPv4-mapped IPv6 address (e.g. ::ffff:169.254.169.254) routes
+            // to the underlying IPv4 address, so it has to be classified as
+            // that IPv4 address. Without this, ::ffff:127.0.0.1 and the
+            // ::ffff: form of the metadata IP pass straight through the IPv6
+            // checks below.
+            if let Some(mapped) = ipv6.to_ipv4_mapped() {
+                return is_private_ipv4(&mapped);
+            }
             ipv6.is_loopback()
                 || is_ipv6_unique_local(ipv6)
                 || is_ipv6_link_local(ipv6)
@@ -126,6 +127,15 @@ fn is_private_ip(ip: &IpAddr) -> bool {
                 || ipv6.is_multicast()
         }
     }
+}
+
+fn is_private_ipv4(ipv4: &std::net::Ipv4Addr) -> bool {
+    ipv4.is_loopback()
+        || ipv4.is_private()
+        || ipv4.is_link_local()
+        || ipv4.is_broadcast()
+        || ipv4.is_documentation()
+        || ipv4.is_unspecified()
 }
 
 fn is_ipv6_unique_local(ipv6: &std::net::Ipv6Addr) -> bool {
@@ -337,6 +347,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_url_validator_blocks_ipv4_mapped_ipv6_loopback() {
+        let validator = UrlValidator::new(UrlValidatorConfig {
+            allowlist: vec!["*".to_string()],
+            block_private_ips: true,
+            require_https: false,
+        })
+        .unwrap();
+
+        let result = validator.validate("http://[::ffff:127.0.0.1]/").await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SecurityError::PrivateIpBlocked
+        ));
+    }
+
+    #[tokio::test]
     async fn test_url_validator_blocks_private_rfc1918() {
         let validator = UrlValidator::new(UrlValidatorConfig {
             allowlist: vec!["*".to_string()],
@@ -489,6 +516,34 @@ mod tests {
     fn test_is_private_ip_v6_public() {
         let ip: Ipv6Addr = "2001:4860:4860::8888".parse().unwrap();
         assert!(!is_private_ip(&IpAddr::V6(ip)));
+    }
+
+    // ---- IPv4-mapped IPv6 is classified by its underlying IPv4 address ----
+
+    #[test]
+    fn test_ipv4_mapped_loopback_is_private() {
+        let ip: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(is_private_ip(&ip));
+    }
+
+    #[test]
+    fn test_ipv4_mapped_metadata_ip_is_private() {
+        // ::ffff:169.254.169.254 is the cloud metadata address in mapped form
+        let ip: IpAddr = "::ffff:169.254.169.254".parse().unwrap();
+        assert!(is_private_ip(&ip));
+    }
+
+    #[test]
+    fn test_ipv4_mapped_rfc1918_is_private() {
+        let ip: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert!(is_private_ip(&ip));
+    }
+
+    // A normal public IPv6 address is still allowed through.
+    #[test]
+    fn test_global_ipv6_is_not_private() {
+        let ip: IpAddr = "2606:4700:4700::1111".parse().unwrap();
+        assert!(!is_private_ip(&ip));
     }
 
     // ---- SecurityError Display ----

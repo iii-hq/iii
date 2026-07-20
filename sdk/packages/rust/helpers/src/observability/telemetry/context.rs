@@ -174,7 +174,7 @@ pub fn get_all_baggage() -> HashMap<String, String> {
 
 /// Run `future` with the current OTel context augmented by `entries` in
 /// baggage. Duplicate keys are overwritten. The augmented context is
-/// dropped when the future completes -- entries do not leak into the
+/// dropped when the future completes; entries do not leak into the
 /// calling scope.
 pub async fn run_with_baggage<F, T>(entries: &[(&str, &str)], future: F) -> T
 where
@@ -205,6 +205,7 @@ where
 /// `tokio::spawn` does NOT carry OTel context into the spawned task;
 /// without this, child spans become orphan roots. Capture before spawn,
 /// then call `.attach(future)` inside the spawned block.
+/// <!-- docs:internal -->
 #[derive(Clone)]
 pub struct CapturedContext(OtelContext);
 

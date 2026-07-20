@@ -284,6 +284,48 @@ jobs:
           draft: false
           prerelease: true
           generate_release_notes: false
+          body: |
+            ## Install
+
+            ### Engine
+
+            ```sh
+            curl -fsSL https://install.iii.dev/iii/main/install.sh | III_RELEASE_TAG=${{ needs.prepare.outputs.tag }} sh
+            ```
+
+            ### Node.js
+
+            ```sh
+            pnpm add \
+              iii-sdk@${{ needs.prepare.outputs.version }} \
+              iii-browser-sdk@${{ needs.prepare.outputs.version }} \
+              @iii-dev/helpers@${{ needs.prepare.outputs.version }} \
+              @iii-dev/observability@${{ needs.prepare.outputs.version }}
+            ```
+
+            ### Python
+
+            ```sh
+            pip install \
+              iii-sdk==${{ needs.prepare.outputs.python_version }} \
+              iii-helpers==${{ needs.prepare.outputs.python_version }} \
+              iii-observability==${{ needs.prepare.outputs.python_version }}
+            ```
+
+            ### Rust
+
+            ```sh
+            cargo add \
+              iii-sdk@${{ needs.prepare.outputs.version }} \
+              iii-helpers@${{ needs.prepare.outputs.version }} \
+              iii-observability@${{ needs.prepare.outputs.version }}
+            ```
+
+            ### Go
+
+            ```sh
+            go get github.com/iii-hq/iii/sdk/packages/go/iii@v${{ needs.prepare.outputs.version }}
+            ```
 
   init-build:
     name: Build iii-init (${{ matrix.target }})
@@ -400,6 +442,7 @@ jobs:
           - { worker: iii-http, worker_dir: engine/src/workers/rest_api }
           - { worker: iii-stream, worker_dir: engine/src/workers/stream }
           - { worker: iii-state, worker_dir: engine/src/workers/state }
+          - { worker: iii-queue, worker_dir: engine/src/workers/queue }
           - { worker: iii-pubsub, worker_dir: engine/src/workers/pubsub }
           - { worker: iii-cron, worker_dir: engine/src/workers/cron }
           - { worker: iii-observability, worker_dir: engine/src/workers/observability }

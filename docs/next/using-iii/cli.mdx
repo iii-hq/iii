@@ -32,7 +32,8 @@ command.
 | `iii update`  | Update iii and its managed binaries. See [Updating iii itself](#updating-iii).                                    |
 
 Running `iii` with no subcommand starts the engine from `./config.yaml` (or the path passed to
-`--config`); pass `--use-default-config` to start with the built-in defaults instead.
+`--config`). When the file doesn't exist yet, `iii` offers to create it with an empty workers list
+(and creates it without asking in non-interactive sessions); add workers with `iii worker add`.
 
 ## Managing iii Cloud deployments
 

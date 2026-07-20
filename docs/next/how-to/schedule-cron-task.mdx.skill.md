@@ -3,4 +3,4 @@
 # Schedule a cron task
 
 
-{/* TODO: write the how-to. Cover installing/enabling iii-cron, registering a function, binding it to a `cron` trigger with a schedule expression, verifying it fires, common schedule strings, timezone behaviour, what happens on overlap (skip vs queue), and how to manually invoke for testing. */}
+{/* TODO: write the how-to. Cover installing/enabling cron, registering a function, binding it to a `cron` trigger with a schedule expression, verifying it fires, common schedule strings, timezone behaviour, what happens on overlap (skip vs queue), and how to manually invoke for testing. */}

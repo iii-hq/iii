@@ -1,0 +1,71 @@
+---
+// Document shell for /roadmap/* — the head the per-deck index.html files used
+// to carry (fonts, pre-paint theme, meta), plus canonical/OG tags the
+// standalone pages never had. The page body is a React island (gallery or
+// DeckHost); its styles come from roadmap/src/index.css, imported by each
+// page so Tailwind processes the whole roadmap tree. Theme boots via the
+// shared ThemeInit (site-wide `iii_theme` key + prefers-color-scheme), so a
+// visitor's choice travels between the marketing pages, the blog, and here.
+import ThemeInit from '../components/ThemeInit.astro'
+
+interface Props {
+  title: string
+  description: string
+  /** root-relative canonical path with trailing slash, e.g. "/roadmap/<slug>/" */
+  canonicalPath: string
+}
+
+const { title, description, canonicalPath } = Astro.props
+const canonical = new URL(canonicalPath, Astro.site).toString()
+---
+
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#f5f3ee" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content="https://iii.dev/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://iii.dev/og-image.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@400;500;600&display=swap"
+    />
+    <ThemeInit />
+    <style is:global>
+      /* Bridge the site-header design tokens (site-nav.css uses --bg/--ink/…)
+         onto the roadmap's Tailwind palette, so SiteNav blends with this
+         surface in both themes — the --color-* values flip with data-theme. */
+      :root {
+        --bg: var(--color-bg);
+        --panel: var(--color-panel);
+        --paper: var(--color-bg);
+        --paper-2: var(--color-paper-2);
+        --ink: var(--color-ink);
+        --ink-2: var(--color-ink);
+        --ink-soft: var(--color-ink);
+        --ink-faint: var(--color-ink-faint);
+        --ink-ghost: var(--color-ink-ghost);
+        --mute: var(--color-ink-faint);
+        --mute-2: var(--color-ink-ghost);
+        --rule: var(--color-rule);
+        --rule-2: var(--color-rule-2);
+        --accent: var(--color-accent);
+      }
+    </style>
+  </head>
+  <body class="bg-bg text-ink font-sans">
+    <slot />
+  </body>
+</html>

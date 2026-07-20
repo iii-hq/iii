@@ -141,7 +141,7 @@
     },
     {
       "includes": [
-        "website/presentations/**",
+        "website/roadmap/**",
         "skills/presentation/template/**",
         "skills/presentation/base/**"
       ],

@@ -17,26 +17,26 @@ cd linkly
 
 ## Add the workers you'll need
 
-Later in this chapter you'll serve the `link` worker over HTTP (provided by `iii-http`) and stash
-short-code → URL mappings in a key-value store (provided by `iii-state`). Add both now so they're
+Later in this chapter you'll serve the `link` worker over HTTP (provided by `http`) and stash
+short-code → URL mappings in a key-value store (provided by `state`). Add both now so they're
 ready when the `link` worker reaches for them:
 
 ```bash
-iii worker add iii-http
-iii worker add iii-state
+iii worker add http
+iii worker add state
 ```
 
 If you open `config.yaml` now you'll notice both workers have been added, plus a few that iii ships
 by default and uses itself.
 
-`iii-state` keeps its store on disk by default, so links survive restarts. For this chapter, switch
-it to an in-memory store instead. Find the `iii-state` entry in `config.yaml` and set its
+`state` keeps its store on disk by default, so links survive restarts. For this chapter, switch
+it to an in-memory store instead. Find the `state` entry in `config.yaml` and set its
 `store_method`:
 
 ```yaml {8-9} config.yaml
 workers:
   # ...
-  - name: iii-state
+  - name: state
     config:
       adapter:
         name: kv
@@ -152,9 +152,9 @@ function makeCode(): string {
 #### Add `link::create`
 
 `registerFunction` publishes a function under a name like `link::create` that anything else on the
-engine can call. This one stores the mapping by calling `state::set` on the `iii-state` worker
+engine can call. This one stores the mapping by calling `state::set` on the `state` worker
 through `worker.trigger`. Worker-to-worker calls always flow through the engine, so the `link`
-worker doesn't import anything from `iii-state`; it knows the function name. Append it:
+worker doesn't import anything from `state`; it knows the function name. Append it:
 
 ```typescript src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -190,7 +190,7 @@ logger.info("link worker ready");
 ```
 
 The `state::set` / `state::get` calls pass a `scope` (`links`) and a `key` (the short code). Scopes
-keep different kinds of data in `iii-state` from colliding; later chapters add more.
+keep different kinds of data in `state` from colliding; later chapters add more.
 
 ## Start the engine
 
@@ -276,7 +276,7 @@ iii trigger link::resolve code=nope
 ## Expose your functions over HTTP
 
 A function becomes an HTTP endpoint when you bind it to an `http` trigger. That trigger type is
-served by the `iii-http` worker you added at the start of the chapter.
+served by the `http` worker you added at the start of the chapter.
 
 ### Create a function to handle new links
 
@@ -308,7 +308,7 @@ worker.registerFunction("http::create", async (req) => {
 ### Bind your create function to a Trigger
 
 In the same file (`link/src/index.ts`) at the end bind `http::create` to `POST /links` with a new
-trigger. This Trigger has the `iii-http` worker listen for `POST` requests to `/links` and when it
+trigger. This Trigger has the `http` worker listen for `POST` requests to `/links` and when it
 receives one it will run the function specified by `function_id`.
 
 ```typescript src/index.ts
@@ -347,7 +347,7 @@ content-type: application/json
 {"code":"demo","url":"https://example.com"}
 ```
 
-The link sits in `iii-state` now, but `GET /s/demo` has nowhere to go yet. There's no handler; add
+The link sits in `state` now, but `GET /s/demo` has nowhere to go yet. There's no handler; add
 one next.
 
 ### Create a function to handle redirects
@@ -387,7 +387,7 @@ worker.registerTrigger({
 
 ### Follow the short code
 
-`iii-state` is in-memory in this chapter, so each time the engine restarts the previous link is
+`state` is in-memory in this chapter, so each time the engine restarts the previous link is
 gone. Chapter 3 swaps in durable storage. For now create a fresh link and try it out:
 
 ```bash
@@ -421,7 +421,7 @@ HTTP/1.1 404 Not Found
 
 You have built a real link shortener: a domain worker exposed over HTTP, where the same
 `link::create` and `link::resolve` functions serve both the command line and the web. Restarting the
-engine still clears every link, though: `iii-state` is in-memory until Chapter 3 swaps it for
+engine still clears every link, though: `state` is in-memory until Chapter 3 swaps it for
 durable storage.
 
 Next, in [Ch. 2: Observe everything](/tutorials/linkly/observability), you will add logs and traces

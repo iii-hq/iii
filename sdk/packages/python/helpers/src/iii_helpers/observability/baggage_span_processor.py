@@ -1,7 +1,7 @@
 """Baggage -> span attribute processor.
 
 Copies EVERY baggage entry onto every span started in its scope,
-unconditionally -- the same contract as the upstream OTel contrib
+unconditionally; the same contract as the upstream OTel contrib
 ``BaggageSpanProcessor``. There is deliberately no key filtering here: a
 filtering policy baked into worker binaries has to be kept in lockstep
 across every SDK language and every deployed worker, and a stale binary
@@ -19,6 +19,8 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 
 class BaggageSpanProcessor(SpanProcessor):
+    """OpenTelemetry span processor that copies OTel baggage entries onto each
+    started span as attributes."""
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         # NoOp guard: skip allocation when sampler drops the span.

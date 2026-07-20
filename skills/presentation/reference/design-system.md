@@ -1,7 +1,7 @@
 # Design system — the law
 
 This is the locked visual system. It lives in the base project's
-`src/index.css` (in iii: `website/presentations/src/index.css`; seeded from
+`src/index.css` (in iii: `website/roadmap/src/index.css`; seeded from
 this skill's `base/`) as Tailwind v4 `@theme` tokens. **Do not change the
 tokens in a deck run.** This file is the reference for *using* them correctly
 in generated content.

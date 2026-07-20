@@ -7,9 +7,9 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 /**
  * Authentication configuration for HTTP-invoked functions.
  *
- * - `hmac` -- HMAC signature verification using a shared secret.
- * - `bearer` -- Bearer token authentication.
- * - `api_key` -- API key sent via a custom header.
+ * - `hmac`: HMAC signature verification using a shared secret.
+ * - `bearer`: Bearer token authentication.
+ * - `api_key`: API key sent via a custom header.
  */
 export type HttpAuthConfig =
   | { type: 'hmac'; secret_key: string }
@@ -17,8 +17,7 @@ export type HttpAuthConfig =
   | { type: 'api_key'; header: string; value_key: string }
 
 /**
- * Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
- * Workers, etc.) instead of a local handler.
+ * Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
  */
 export type HttpInvocationConfig = {
   /** URL to invoke. */
@@ -39,11 +38,17 @@ export type HttpInvocationConfig = {
  * @typeParam TBody - Type of the parsed request body.
  */
 export type HttpRequest<TBody = unknown> = {
+  /** Path parameters extracted from the matched route. */
   path_params: Record<string, string>
+  /** Query-string parameters from the request URL. */
   query_params: Record<string, string | string[]>
+  /** Parsed request body. */
   body: TBody
+  /** Request headers. */
   headers: Record<string, string | string[]>
+  /** HTTP method of the request (e.g. `GET`, `POST`). */
   method: string
+  /** Streaming reader for the raw request body. */
   request_body: HttpStreamReader
 }
 

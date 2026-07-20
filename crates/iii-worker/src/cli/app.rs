@@ -19,11 +19,22 @@ pub struct AddArgs {
     #[arg(value_name = "WORKER[@VERSION]|PATH", required = true, num_args = 1..)]
     pub worker_names: Vec<String>,
 
-    /// Discard the worker's config.yaml entry and recreate it from registry
-    /// defaults. Plain `add --force` would otherwise keep the entry. Only
-    /// takes effect together with --force on add.
+    /// Discard the worker's config.yaml entry and recreate it fresh
+    /// (dropping any hand-written config block), instead of keeping the
+    /// existing entry. With `add`, takes effect only together with --force;
+    /// `reinstall` applies force automatically.
     #[arg(long)]
     pub reset_config: bool,
+
+    /// Install through a RUNNING iii engine instead of editing the config
+    /// file in the current directory: connects to HOST[:PORT] (ex.
+    /// `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are
+    /// also accepted and used as-is) and invokes its worker::add. The
+    /// engine applies the add in ITS project directory, so this works from
+    /// any folder and with engines on non-default ports. Local worker PATHs
+    /// resolve on the engine host.
+    #[arg(long, value_name = "HOST[:PORT]")]
+    pub host: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -61,9 +72,9 @@ pub enum Commands {
         no_wait: bool,
     },
 
-    /// Remove one or more workers from config.yaml. The engine's file watcher
-    /// tears down any running sandbox. Artifacts under ~/.iii/managed/{name}/
-    /// remain; use `iii worker clear {name}` to delete them.
+    /// Remove one or more workers from config.yaml and iii.lock. The engine's
+    /// file watcher tears down any running sandbox. Artifacts under
+    /// ~/.iii/managed/{name}/ remain; use `iii worker clear {name}` to delete them.
     Remove {
         /// Worker names to remove (e.g., "pdfkit")
         #[arg(value_name = "WORKER", required = true, num_args = 1..)]
@@ -74,14 +85,16 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset
-    /// its config.yaml entry to registry defaults)
+    /// Re-download a worker (like `add --force`, but returns immediately instead of waiting
+    /// for the worker to report ready; pass `--reset-config` to also reset its config.yaml
+    /// entry to registry defaults)
     Reinstall {
         #[command(flatten)]
         args: AddArgs,
     },
 
-    /// Update workers in iii.lock to their latest allowed version
+    /// Update workers pinned in iii.lock to the latest version published in the registry,
+    /// rewriting config.yaml and iii.lock
     Update {
         /// Optional worker name to update. If omitted, updates every worker in iii.lock.
         #[arg(value_name = "WORKER")]
@@ -100,7 +113,9 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Start a previously stopped managed worker container.
+    /// Start a previously stopped managed worker container. If the worker has no
+    /// local artifacts (e.g. after `iii worker clear`), it is fetched from the
+    /// registry first.
     /// By default waits up to 120s for the worker to report ready before returning.
     /// Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for
     /// tracking workers.
@@ -139,7 +154,8 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Restart a managed worker: stop if running, then start.
+    /// Restart a managed worker: stop if running, then start (same start path as
+    /// `iii worker start`, including the registry fetch for missing local artifacts).
     /// By default waits up to 120s for the worker to report ready (same as start).
     Restart {
         /// Worker name to restart
@@ -171,7 +187,8 @@ pub enum Commands {
         frozen: bool,
     },
 
-    /// Verify the worker's manifest (iii.worker.yaml) is valid.
+    /// Verify config.yaml and iii.lock agree: every managed worker in config.yaml
+    /// must be pinned in iii.lock for this platform.
     Verify {
         /// Also check dependency declarations against locked versions.
         #[arg(long)]
@@ -180,7 +197,7 @@ pub enum Commands {
 
     /// Show detailed status of one worker (config, sandbox, process, logs).
     /// By default refreshes live in place until the worker reaches a success
-    /// or failure state.
+    /// or failure state; exits immediately when the engine is not running.
     Status {
         /// Worker name
         #[arg(value_name = "WORKER")]
@@ -191,7 +208,8 @@ pub enum Commands {
         no_watch: bool,
     },
 
-    /// Show logs from a managed worker container
+    /// Show logs from a managed worker container. Logs are read from the
+    /// local log files under ~/.iii/logs/{name}/.
     Logs {
         /// Worker name
         #[arg(value_name = "WORKER")]
@@ -200,14 +218,6 @@ pub enum Commands {
         /// Follow log output
         #[arg(long, short)]
         follow: bool,
-
-        /// Engine host address
-        #[arg(long, default_value = "localhost")]
-        address: String,
-
-        /// Engine WebSocket port
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
     },
 
     /// Scaffold a NEW standalone worker repo from scratch.
@@ -327,7 +337,7 @@ pub struct WatchSourceArgs {
 #[derive(Args, Debug)]
 pub struct WorkerManagerDaemonArgs {
     /// Engine WebSocket URL to connect back to.
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_ENGINE_URL", default_value = "ws://127.0.0.1:49134")]
     pub engine: String,
 
     /// Project root the daemon mutates. Defaults to CWD at start.
@@ -344,7 +354,7 @@ pub struct SandboxDaemonArgs {
     pub config: String,
 
     /// Engine WebSocket URL to connect back to.
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_ENGINE_URL", default_value = "ws://127.0.0.1:49134")]
     pub engine: String,
 }
 
@@ -404,8 +414,7 @@ pub enum SandboxCmd {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
 
-        /// Enable guest network access. Default follows the engine's
-        /// sandbox policy (typically disabled).
+        /// Enable guest network access (disabled unless this flag is passed).
         #[arg(long)]
         network: bool,
 
@@ -578,5 +587,58 @@ mod init_parse_tests {
             Commands::Init(args) => assert_eq!(args.template_dir.as_deref(), Some("/tmp/fix")),
             _ => panic!("expected Init variant"),
         }
+    }
+}
+
+#[cfg(test)]
+mod daemon_engine_arg_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn sandbox_engine(argv: &[&str]) -> String {
+        match Cli::try_parse_from(argv).expect("should parse").command {
+            Commands::SandboxDaemon(args) => args.engine,
+            _ => panic!("expected SandboxDaemon variant"),
+        }
+    }
+
+    fn worker_manager_engine(argv: &[&str]) -> String {
+        match Cli::try_parse_from(argv).expect("should parse").command {
+            Commands::WorkerManagerDaemon(args) => args.engine,
+            _ => panic!("expected WorkerManagerDaemon variant"),
+        }
+    }
+
+    /// The engine exports III_ENGINE_URL when spawning builtin daemons
+    /// (engine/src/workers/external.rs); both daemons must honor it so
+    /// they connect back to the spawning engine's actual worker-listener
+    /// port, not the hardcoded default (MOT-3970). Explicit --engine
+    /// still wins (clap precedence: flag > env > default).
+    #[test]
+    #[serial_test::serial]
+    fn daemon_engine_args_honor_env_and_flag_precedence() {
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::set_var("III_ENGINE_URL", "ws://127.0.0.1:55555");
+        }
+        // Capture first, assert after cleanup: a failing assert must not
+        // leak the var into later env-reading tests in this process.
+        let sandbox_env = sandbox_engine(&["iii-worker", "sandbox-daemon"]);
+        let manager_env = worker_manager_engine(&["iii-worker", "worker-manager-daemon"]);
+        let sandbox_flag =
+            sandbox_engine(&["iii-worker", "sandbox-daemon", "--engine", "ws://flag:1"]);
+        // SAFETY: edition 2024 requires unsafe wrap; test is #[serial].
+        unsafe {
+            std::env::remove_var("III_ENGINE_URL");
+        }
+        let default = sandbox_engine(&["iii-worker", "sandbox-daemon"]);
+
+        assert_eq!(sandbox_env, "ws://127.0.0.1:55555");
+        assert_eq!(manager_env, "ws://127.0.0.1:55555");
+        assert_eq!(
+            sandbox_flag, "ws://flag:1",
+            "explicit --engine must beat env"
+        );
+        assert_eq!(default, "ws://127.0.0.1:49134", "no env, no flag: default");
     }
 }

@@ -5,14 +5,30 @@
 // See LICENSE and PATENTS files for details.
 
 /// Configurable builtin workers: enabled by default and have a default YAML config.
-pub const BUILTIN_NAMES: [&str; 6] = [
+pub const BUILTIN_NAMES: [&str; 7] = [
     "iii-http",
     "iii-stream",
     "iii-state",
+    "iii-queue",
     "iii-pubsub",
     "iii-cron",
     "iii-sandbox",
 ];
+
+const DEPRECATED_BUILTIN_REPLACEMENTS: [(&str, &str); 5] = [
+    ("iii-http", "http"),
+    ("iii-cron", "cron"),
+    ("iii-queue", "queue"),
+    ("iii-state", "state"),
+    ("iii-pubsub", "pubsub"),
+];
+
+/// Return the unprefixed replacement for a deprecated builtin worker name.
+pub fn deprecated_builtin_replacement(name: &str) -> Option<&'static str> {
+    DEPRECATED_BUILTIN_REPLACEMENTS
+        .iter()
+        .find_map(|(deprecated, replacement)| (*deprecated == name).then_some(*replacement))
+}
 
 /// Optional builtin workers: baked into the engine but disabled by default.
 /// They have no auto-generated YAML config and must be configured manually.
@@ -50,6 +66,7 @@ pub fn resolve_builtin_version(requested: Option<&str>) -> &str {
 const HTTP_MANIFEST: &str = include_str!("../../../../engine/src/workers/rest_api/iii.worker.yaml");
 const STREAM_MANIFEST: &str = include_str!("../../../../engine/src/workers/stream/iii.worker.yaml");
 const STATE_MANIFEST: &str = include_str!("../../../../engine/src/workers/state/iii.worker.yaml");
+const QUEUE_MANIFEST: &str = include_str!("../../../../engine/src/workers/queue/iii.worker.yaml");
 const PUBSUB_MANIFEST: &str = include_str!("../../../../engine/src/workers/pubsub/iii.worker.yaml");
 const CRON_MANIFEST: &str = include_str!("../../../../engine/src/workers/cron/iii.worker.yaml");
 
@@ -58,6 +75,7 @@ fn manifest_for_builtin(name: &str) -> Option<&'static str> {
         "iii-http" => Some(HTTP_MANIFEST),
         "iii-stream" => Some(STREAM_MANIFEST),
         "iii-state" => Some(STATE_MANIFEST),
+        "iii-queue" => Some(QUEUE_MANIFEST),
         "iii-pubsub" => Some(PUBSUB_MANIFEST),
         "iii-cron" => Some(CRON_MANIFEST),
         _ => None,
@@ -112,6 +130,41 @@ pub fn get_builtin_default(name: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_yaml::Value;
+
+    #[test]
+    fn deprecated_builtin_replacement_returns_unprefixed_name() {
+        let replacements = [
+            ("iii-http", "http"),
+            ("iii-cron", "cron"),
+            ("iii-queue", "queue"),
+            ("iii-state", "state"),
+            ("iii-pubsub", "pubsub"),
+        ];
+
+        for (deprecated, replacement) in replacements {
+            assert_eq!(
+                deprecated_builtin_replacement(deprecated),
+                Some(replacement)
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_builtin_replacement_returns_none_for_other_names() {
+        for name in [
+            "http",
+            "cron",
+            "queue",
+            "state",
+            "pubsub",
+            "iii-stream",
+            "iii-sandbox",
+            "iii-http-functions",
+            "pdfkit",
+        ] {
+            assert_eq!(deprecated_builtin_replacement(name), None);
+        }
+    }
 
     #[test]
     fn all_builtins_return_some() {

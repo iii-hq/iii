@@ -160,8 +160,9 @@ Shared types are grouped into four helpers submodules.
 </Callout>
 
 <Callout type="info">
-  For the complete list of moved symbols per submodule, see the
-  [Helpers reference](/next/sdk-reference/helpers-lib).
+  For the complete list of moved symbols per submodule, see the Helpers reference
+  for [Node](../reference/helpers-node), [Python](../reference/helpers-python), or
+  [Rust](../reference/helpers-rust).
 </Callout>
 
 ## Step 5: Update observability imports

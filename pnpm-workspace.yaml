@@ -7,5 +7,3 @@ packages:
   - console/packages/*
   - docs
   - website
-  - website/presentations
-  - blog

@@ -350,7 +350,7 @@ impl ReloadManager {
         let path = match config_path {
             Some(p) => p,
             None => {
-                tracing::info!("reload: ignored, running with --use-default-config");
+                tracing::info!("reload: ignored, running with in-memory config (no file)");
                 return Ok(());
             }
         };

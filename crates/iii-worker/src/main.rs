@@ -7,7 +7,7 @@
 use clap::{CommandFactory, FromArgMatches};
 use iii_worker::{Cli, Commands};
 
-/// A `stdout` tracing writer that never reports I/O errors back to the fmt
+/// A `stderr` tracing writer that never reports I/O errors back to the fmt
 /// layer. The fmt layer's sole error path is an `eprintln!`, which PANICS
 /// when stderr is *also* a broken pipe — precisely the engine-death case for
 /// the spawned daemons (`worker-manager-daemon`, `sandbox-daemon`): the engine
@@ -18,23 +18,23 @@ use iii_worker::{Cli, Commands};
 /// (`daemon_exit::redirect_stdio_to_exit_log`) and these same writes land there
 /// as forensics. For one-shot CLI use it just turns a `… | head` EPIPE into a
 /// silent drop instead of a panic — strictly better either way.
-struct ResilientStdout;
+struct ResilientStderr;
 
-impl std::io::Write for ResilientStdout {
+impl std::io::Write for ResilientStderr {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = std::io::Write::write_all(&mut std::io::stdout(), buf);
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
         Ok(())
     }
 }
 
-impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStdout {
-    type Writer = ResilientStdout;
+impl tracing_subscriber::fmt::MakeWriter<'_> for ResilientStderr {
+    type Writer = ResilientStderr;
     fn make_writer(&self) -> Self::Writer {
-        ResilientStdout
+        ResilientStderr
     }
 }
 
@@ -68,7 +68,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_writer(ResilientStdout)
+        .with_writer(ResilientStderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
@@ -114,22 +114,61 @@ async fn async_main() -> anyhow::Result<()> {
             force,
             no_wait,
         } => {
+            use colored::Colorize;
+            use iii_worker::cli::builtin_defaults::deprecated_builtin_replacement;
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
-            use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
+            use iii_worker::core::{AddOptions, ProjectCtx, WorkerSource, add as core_add};
+
+            // --host: route the add through the target engine's worker::add
+            // trigger. The engine host edits ITS config file and installs
+            // artifacts there — nothing in the CLI's cwd is touched.
+            if let Some(host) = args.host.as_deref() {
+                let adds = args
+                    .worker_names
+                    .iter()
+                    .map(|name| {
+                        (
+                            name.clone(),
+                            AddOptions {
+                                source: remote_source_for_cli(name, host),
+                                force,
+                                reset_config: args.reset_config,
+                                wait: !no_wait,
+                            },
+                        )
+                    })
+                    .collect();
+                let rc = iii_worker::cli::remote_ops::handle_remote_add(host, adds).await;
+                std::process::exit(rc);
+            }
 
             let total = args.worker_names.len();
             let brief = total > 1;
             let mut fail_count = 0usize;
 
             for (i, name) in args.worker_names.iter().enumerate() {
+                let source = parse_source_for_cli(name);
+                if let WorkerSource::Registry {
+                    name: registry_name,
+                    ..
+                } = &source
+                    && let Some(replacement) = deprecated_builtin_replacement(registry_name)
+                {
+                    eprintln!(
+                        "{} Worker name '{}' is deprecated and will be removed in a future version. Use `iii worker add {}` instead.",
+                        "warning:".yellow(),
+                        registry_name,
+                        replacement
+                    );
+                }
+
                 if brief {
-                    use colored::Colorize;
                     eprintln!("  [{}/{}] Adding {}...", i + 1, total, name.bold());
                 }
 
                 let opts = AddOptions {
-                    source: parse_source_for_cli(name),
+                    source,
                     force,
                     reset_config: args.reset_config,
                     wait: !no_wait,
@@ -213,6 +252,27 @@ async fn async_main() -> anyhow::Result<()> {
             use iii_worker::cli::host_shim::CliHostShim;
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
+
+            // Reinstall is `add --force`; same --host routing as Add.
+            if let Some(host) = args.host.as_deref() {
+                let adds = args
+                    .worker_names
+                    .iter()
+                    .map(|name| {
+                        (
+                            name.clone(),
+                            AddOptions {
+                                source: remote_source_for_cli(name, host),
+                                force: true,
+                                reset_config: args.reset_config,
+                                wait: false,
+                            },
+                        )
+                    })
+                    .collect();
+                let rc = iii_worker::cli::remote_ops::handle_remote_add(host, adds).await;
+                std::process::exit(rc);
+            }
 
             let mut fail_count = 0usize;
             for name in &args.worker_names {
@@ -476,12 +536,7 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::Logs {
             worker_name,
             follow,
-            address,
-            port,
-        } => {
-            iii_worker::cli::managed::handle_managed_logs(&worker_name, follow, &address, port)
-                .await
-        }
+        } => iii_worker::cli::managed::handle_managed_logs(&worker_name, follow).await,
         Commands::Init(args) => iii_worker::cli::init::run(args).await,
         Commands::Exec(args) => {
             let handler = iii_worker::cli::shell_client::handle_managed_exec;
@@ -638,4 +693,29 @@ fn parse_source_for_cli(input: &str) -> iii_worker::core::WorkerSource {
         None => (input.to_string(), None),
     };
     iii_worker::core::WorkerSource::Registry { name, version }
+}
+
+/// Source for a `--host` add. Same parse as the local path, with one
+/// adjustment: `WorkerSource::Local` paths resolve on the ENGINE host by
+/// contract, so when the target is loopback (same machine — the
+/// engine-in-another-directory case `--host` primarily fixes) relative
+/// paths are absolutized against the CLI's cwd. For a non-loopback target
+/// the path is shipped verbatim — rewriting it against a cwd the engine
+/// machine has never seen would silently break the documented semantics —
+/// and a one-line note reminds the user where it resolves.
+fn remote_source_for_cli(input: &str, host: &str) -> iii_worker::core::WorkerSource {
+    let mut source = parse_source_for_cli(input);
+    if let iii_worker::core::WorkerSource::Local { path } = &mut source {
+        if iii_worker::cli::remote_ops::host_is_loopback(host) {
+            if let Ok(abs) = std::path::absolute(&*path) {
+                *path = abs;
+            }
+        } else {
+            eprintln!(
+                "  note: local path '{}' resolves on the engine host, not this machine",
+                path.display()
+            );
+        }
+    }
+    source
 }

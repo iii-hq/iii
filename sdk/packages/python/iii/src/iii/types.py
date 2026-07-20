@@ -21,6 +21,7 @@ from typing import (
 from iii_helpers.http import HttpInvocationConfig
 from pydantic import BaseModel, ConfigDict
 
+from .iii_constants import ConnectionStateCallback
 from .iii_types import (
     RegisterFunctionMessage,
     RegisterTriggerInput,
@@ -111,6 +112,8 @@ class IIIClient(Protocol):
 
     def unregister_trigger_type(self, trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None: ...
 
+    def add_connection_state_listener(self, handler: ConnectionStateCallback) -> Callable[[], None]: ...
+
     def shutdown(self) -> None: ...
 
 
@@ -126,7 +129,10 @@ class Channel:
 
 @dataclass
 class InternalHttpRequest:
-    """HTTP request with embedded channel references for streaming."""
+    """HTTP request with embedded channel references for streaming.
+
+    <!-- docs:internal -->
+    """
 
     path_params: dict[str, str]
     query_params: dict[str, str | list[str]]
@@ -163,7 +169,7 @@ class StreamResponse:
 
 @dataclass
 class StreamRequest:
-    """Streaming request without the response writer."""
+    """Incoming streaming request received by a function registered with a stream trigger."""
 
     path_params: dict[str, str]
     query_params: dict[str, str | list[str]]

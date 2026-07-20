@@ -13,7 +13,7 @@ the law for that layer — do not re-derive it.
 <base>/src/                            the shared component library + tokens
 ```
 
-In iii, `<base>` = `website/presentations/`. The pointer file
+In iii, `<base>` = `website/roadmap/`. The pointer file
 `tech-specs/README.md` names the base dir — that is how Phase 0 finds it in
 any repo.
 
@@ -94,10 +94,19 @@ node build.mjs --strict-registry  registry parity as a hard failure (CI)
 pnpm build && pnpm preview        the full site at :4173
 ```
 
+**iii runs an integrated shape:** the decks build as Astro routes of the
+`iii-website` package — pages at `website/src/pages/roadmap/` mount each
+deck's `src/App.tsx` as a React island (the base's `src/DeckHost.tsx`,
+code-split per deck), contract checks live in
+`website/scripts/validate-roadmap.ts`, and the output lands at
+`website/dist/roadmap/` in the same shape as the standalone build (hashed
+assets under the site-level `/_astro/`). The base dir keeps no per-deck
+`index.html`, no `build.mjs`, and no package.json of its own.
+
 **Deploy (iii):** merging to main runs `.github/workflows/deploy-website.yml`,
-which builds the base (`pnpm --filter iii-presentations build`) and syncs
-`dist/` to S3 under the `/roadmap/` prefix (immutable hashed assets;
-must-revalidate html/json/md), then invalidates CloudFront. The CloudFront
+which builds the whole site (`pnpm --filter iii-website build`) and syncs
+`website/dist/` to S3 (immutable hashed assets; must-revalidate
+html/xml/json/md/txt), then invalidates CloudFront. The CloudFront
 viewer-request function rewrites `/roadmap/…/` directory URLs to
 `…/index.html` and 301s extensionless forms to the trailing-slash canonical —
 same mechanism as `/blog/`. No Vercel, no manual deploy, no per-deck pipeline.

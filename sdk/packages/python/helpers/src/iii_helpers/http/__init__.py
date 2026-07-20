@@ -18,21 +18,34 @@ HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 
 class HttpAuthHmac(BaseModel):
-    """HMAC signature verification using a shared secret."""
+    """HMAC signature verification using a shared secret.
+
+    Attributes:
+        secret_key: Environment variable name containing the HMAC shared secret.
+    """
 
     type: Literal["hmac"] = "hmac"
     secret_key: str = Field(description="Environment variable name containing the HMAC shared secret.")
 
 
 class HttpAuthBearer(BaseModel):
-    """Bearer token authentication."""
+    """Bearer token authentication.
+
+    Attributes:
+        token_key: Environment variable name containing the bearer token.
+    """
 
     type: Literal["bearer"] = "bearer"
     token_key: str = Field(description="Environment variable name containing the bearer token.")
 
 
 class HttpAuthApiKey(BaseModel):
-    """API key sent via a custom header."""
+    """API key sent via a custom header.
+
+    Attributes:
+        header: HTTP header name for the API key.
+        value_key: Environment variable name containing the API key value.
+    """
 
     type: Literal["api_key"] = "api_key"
     header: str = Field(description="HTTP header name for the API key.")
@@ -44,7 +57,7 @@ HttpAuthConfig = HttpAuthHmac | HttpAuthBearer | HttpAuthApiKey
 
 
 class HttpInvocationConfig(BaseModel):
-    """Config for HTTP external function invocation.
+    """Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 
     Attributes:
         url: Target URL for the HTTP invocation.
@@ -68,7 +81,15 @@ class HttpInvocationConfig(BaseModel):
 
 
 class HttpRequest(BaseModel, Generic[TInput]):
-    """Represents a buffered HTTP request."""
+    """Incoming buffered HTTP request received by a function handler.
+
+    Attributes:
+        path_params: Path parameters extracted from the matched route.
+        query_params: Query-string parameters from the request URL.
+        body: Parsed request body.
+        headers: Request headers.
+        method: HTTP method of the request (e.g. ``GET``, ``POST``).
+    """
 
     path_params: dict[str, str] = Field(default_factory=dict)
     query_params: dict[str, str | list[str]] = Field(default_factory=dict)
@@ -78,7 +99,13 @@ class HttpRequest(BaseModel, Generic[TInput]):
 
 
 class HttpResponse(BaseModel, Generic[TOutput]):
-    """Represents a buffered HTTP response."""
+    """Structured buffered HTTP response returned from function handlers.
+
+    Attributes:
+        status_code: HTTP status code.
+        headers: Response headers.
+        body: Response body.
+    """
 
     model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
 
@@ -96,6 +123,10 @@ def http(
     function the iii engine can invoke directly.  The wrapper converts the
     raw dict (or ``InternalHttpRequest``) delivered by the engine into the
     typed ``StreamRequest`` / ``StreamResponse`` pair that the callback expects.
+
+    Args:
+        callback: Async handler ``(req, res) -> HttpResponse | None`` invoked with
+            the typed StreamRequest and StreamResponse.
     """
     from iii.types import InternalHttpRequest, StreamRequest, StreamResponse
 

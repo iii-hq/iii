@@ -70,3 +70,12 @@ export const DEFAULT_BRIDGE_RECONNECTION_CONFIG: IIIReconnectionConfig = {
 
 /** Default invocation timeout in milliseconds */
 export const DEFAULT_INVOCATION_TIMEOUT_MS = 30000
+
+/** WebSocket opening-handshake timeout in ms (parity with Rust SDK connect_timeout, MOT-3857) */
+export const WS_HANDSHAKE_TIMEOUT_MS = 10000
+
+/** Client keepalive ping cadence in ms (parity with Rust SDK ping_interval) */
+export const WS_PING_INTERVAL_MS = 20000
+
+/** Force reconnect after this long with no inbound frame (parity with Rust SDK idle_timeout) */
+export const WS_IDLE_TIMEOUT_MS = 60000

@@ -1,0 +1,100 @@
+/* The shared site footer (src/components/SiteFooter.astro) — one look on
+   every page. Extracted from the blog's footer styles (themselves a port of
+   the landing page's foot-cols/foot-bottom); colors ride each page's design
+   tokens (--ink/--rule/--accent…), so the footer follows the surface theme.
+   Self-contained: it sets its own font so it renders identically on surfaces
+   that don't type the body in Chivo Mono (e.g. the roadmap's Tailwind tree). */
+
+.foot {
+  border-top: 1px solid var(--rule);
+  padding: 40px 28px 8px;
+  margin-top: 40px;
+  font-family: "Chivo Mono", ui-monospace, monospace;
+  color: var(--ink);
+}
+.foot-cols {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr;
+  gap: 32px;
+}
+.foot-col h5 {
+  margin: 0 0 0.75rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+.foot-col ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.foot-col li {
+  margin: 0.35rem 0;
+  font-size: 0.9rem;
+}
+.foot-col a {
+  color: var(--ink-2);
+  text-decoration: none;
+}
+.foot-col a:hover {
+  color: var(--accent);
+}
+.fb svg {
+  width: 28px;
+  height: 28px;
+  display: block;
+  margin-bottom: 12px;
+  color: var(--ink);
+}
+.fb .bar,
+.fb .accent {
+  fill: var(--ink);
+}
+.foot-col-brand p {
+  font-size: 0.9rem;
+  color: var(--ink-faint);
+  margin: 0;
+  max-width: 32ch;
+}
+.foot-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 0 0;
+  margin-top: 32px;
+  border-top: 1px solid var(--rule-2);
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+}
+.foot-bottom a {
+  color: var(--ink-faint);
+}
+.foot-bottom a:hover {
+  color: var(--ink);
+}
+.foot-bottom .pron {
+  color: var(--ink-2);
+}
+
+@media (max-width: 1024px) {
+  .foot {
+    padding: 36px 24px 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .foot {
+    padding: 32px 16px 8px;
+  }
+  .foot-cols {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .foot-bottom {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}

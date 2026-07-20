@@ -938,7 +938,10 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut len_buf = [0u8; 4];
-    if read_exact_or_eof_generic(reader, &mut len_buf).await? == None {
+    if read_exact_or_eof_generic(reader, &mut len_buf)
+        .await?
+        .is_none()
+    {
         return Ok(None);
     }
     let frame_len = u32::from_be_bytes(len_buf) as usize;
@@ -999,7 +1002,7 @@ async fn read_one_frame(
     reader: &mut tokio::net::unix::OwnedReadHalf,
 ) -> Result<Option<(u32, u8, ShellMessage)>, VmClientError> {
     let mut len_buf = [0u8; 4];
-    if read_exact_or_eof(reader, &mut len_buf).await? == None {
+    if read_exact_or_eof(reader, &mut len_buf).await?.is_none() {
         return Ok(None);
     }
     let frame_len = u32::from_be_bytes(len_buf) as usize;

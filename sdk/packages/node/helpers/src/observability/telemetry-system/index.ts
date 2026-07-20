@@ -86,6 +86,8 @@ let serviceName: string = 'iii-node-iii'
 /**
  * Initialize OpenTelemetry with the given configuration.
  * This should be called once at application startup.
+ *
+ * @param config - OpenTelemetry configuration; env vars fill in unset fields.
  */
 export function initOtel(config: OtelConfig = {}): void {
   const enabled = config.enabled ?? parseBoolEnv(process.env.OTEL_ENABLED, DEFAULT_OTEL_CONFIG.enabled)
@@ -223,7 +225,8 @@ export function initOtel(config: OtelConfig = {}): void {
 }
 
 /**
- * Shutdown OpenTelemetry, flushing any pending data.
+ * Shut down OpenTelemetry, best-effort flushing any pending data before
+ * teardown.
  */
 export async function shutdownOtel(): Promise<void> {
   // Stop reconnecting/queuing before flushing so a final forceFlush() can't hang on a dead engine
@@ -304,6 +307,10 @@ export function getLogger(): Logger | null {
 
 /**
  * Start a new span with the given name and run the callback within it.
+ *
+ * @param name - Name of the span to create.
+ * @param options - Span options: `kind` sets the span kind, `traceparent` sets the parent context from a W3C traceparent header.
+ * @param fn - Callback run inside the active span; its result is returned.
  */
 export async function withSpan<T>(
   name: string,

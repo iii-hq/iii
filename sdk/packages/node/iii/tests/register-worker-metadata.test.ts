@@ -61,6 +61,68 @@ describe('registerWorkerMetadata — isolation field', () => {
   })
 })
 
+describe('registerWorkerMetadata — worker name', () => {
+  let previous: string | undefined
+
+  beforeEach(() => {
+    previous = process.env.III_WORKER_NAME
+    delete process.env.III_WORKER_NAME
+  })
+
+  afterEach(() => {
+    if (previous === undefined) {
+      delete process.env.III_WORKER_NAME
+    } else {
+      process.env.III_WORKER_NAME = previous
+    }
+  })
+
+  it('defaults the name from III_WORKER_NAME when no workerName option is set', () => {
+    process.env.III_WORKER_NAME = 'managed-worker'
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect(call.payload.name).toBe('managed-worker')
+  })
+
+  it('explicit workerName option wins over III_WORKER_NAME', () => {
+    process.env.III_WORKER_NAME = 'managed-worker'
+    const sdk = registerWorker('ws://127.0.0.1:0', {
+      workerName: 'explicit-name',
+    }) as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect(call.payload.name).toBe('explicit-name')
+  })
+
+  it('falls back to hostname:pid when III_WORKER_NAME is unset', () => {
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect(call.payload.name).toBe(`${os.hostname()}:${process.pid}`)
+  })
+
+  it('ignores an empty III_WORKER_NAME', () => {
+    process.env.III_WORKER_NAME = ''
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect(call.payload.name).toBe(`${os.hostname()}:${process.pid}`)
+  })
+})
+
 describe('registerWorkerMetadata — project_name auto-detection', () => {
   let tmpDir: string
   let originalCwd: string

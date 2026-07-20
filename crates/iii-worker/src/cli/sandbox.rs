@@ -29,6 +29,20 @@ fn connect(port: u16) -> IIIClient {
     register_worker(&format!("ws://127.0.0.1:{port}"), InitOptions::default())
 }
 
+/// Fail fast when no engine is listening on `port`, with a hint the raw
+/// trigger error doesn't carry. Checked BEFORE `preflight_pull_if_preset`
+/// so `sandbox create python` with no engine errors in milliseconds
+/// instead of pulling a multi-hundred-MiB preset image first.
+fn engine_down(port: u16) -> bool {
+    if super::managed::is_engine_running_on(port) {
+        return false;
+    }
+    eprintln!(
+        "error: engine not running on port {port} — start it with `iii` in another terminal, then re-run"
+    );
+    true
+}
+
 /// Pre-pull a preset image into the unified rootfs cache so
 /// `pull_and_extract_rootfs`'s "Pulling image layers..." + layer-extract
 /// progress bar renders directly on the user's terminal.
@@ -108,6 +122,9 @@ pub async fn handle_run(image: String, cmd: Vec<String>, cpus: u32, memory: u32,
         }
     };
 
+    if engine_down(port) {
+        return 1;
+    }
     preflight_pull_if_preset(&image).await;
     let iii = connect(port);
 
@@ -212,6 +229,9 @@ pub async fn handle_create(
     env: Vec<String>,
     port: u16,
 ) -> i32 {
+    if engine_down(port) {
+        return 1;
+    }
     preflight_pull_if_preset(&image).await;
     let iii = connect(port);
 
@@ -240,22 +260,31 @@ pub async fn handle_create(
         })
         .await
     {
-        Ok(resp) => {
-            let sandbox_id = resp
-                .get("sandbox_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            // On a TTY, leave a one-line "ready" breadcrumb on stderr so the
-            // user sees what actually happened before the uuid appears. On a
-            // pipe, stderr is silent and the uuid goes straight to stdout so
-            // `SB=$(iii worker sandbox create ...)` still works unchanged.
-            if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-                let elapsed = started_at.elapsed().as_millis() as f64 / 1000.0;
-                eprintln!("✓ sandbox ready in {elapsed:.1}s");
+        Ok(resp) => match resp
+            .get("sandbox_id")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+        {
+            Some(sandbox_id) => {
+                // On a TTY, leave a one-line "ready" breadcrumb on stderr so the
+                // user sees what actually happened before the uuid appears. On a
+                // pipe, stderr is silent and the uuid goes straight to stdout so
+                // `SB=$(iii worker sandbox create ...)` still works unchanged.
+                if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+                    let elapsed = started_at.elapsed().as_millis() as f64 / 1000.0;
+                    eprintln!("✓ sandbox ready in {elapsed:.1}s");
+                }
+                println!("{sandbox_id}");
+                0
             }
-            println!("{sandbox_id}");
-            0
-        }
+            // Exiting 0 with an empty stdout here would hand
+            // `SB=$(iii worker sandbox create ...)` scripts an empty id
+            // with a success status. Mirror handle_run's hard error.
+            None => {
+                eprintln!("error: sandbox::create returned no sandbox_id");
+                1
+            }
+        },
         Err(e) => {
             eprintln!("error: {}", handler_error_message(&e));
             1

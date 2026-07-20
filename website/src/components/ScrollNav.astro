@@ -1,0 +1,71 @@
+---
+// The landing page's in-page section nav — the bar the tech-spec decks render
+// below the shared site header (roadmap/src/components/TopNav.tsx),
+// re-implemented for the static landing surface: anchor links to the page's
+// sections plus an IntersectionObserver scroll-spy highlighting the one in
+// view (same observer geometry as the deck nav). The shared header (SiteNav)
+// stays destination-only; this bar carries the in-page links it dropped when
+// the navbar was unified across pages.
+import '../styles/scroll-nav.css'
+
+interface SectionLink {
+  /** id of the target section element (rendered as href="#id") */
+  id: string
+  label: string
+}
+
+interface Props {
+  links: SectionLink[]
+}
+
+const { links } = Astro.props
+---
+
+<nav class="scroll-nav" id="scroll-nav" aria-label="Page sections">
+  {links.map((link) => <a class="scroll-nav-link" href={`#${link.id}`}>{link.label}</a>)}
+</nav>
+
+<script is:inline>
+document.addEventListener('DOMContentLoaded', function () {
+  const bar = document.getElementById('scroll-nav');
+  if (!bar) return;
+  const links = Array.from(bar.querySelectorAll('.scroll-nav-link'));
+  // iiiTrack comes from AnalyticsHead; surfaces without analytics still get a
+  // working bar — tracking just no-ops. Same convention as SiteNav.
+  const track = window.iiiTrack || function () {};
+
+  // ============= Scroll-spy =============
+  // Highlight the section currently in view. Same observer geometry as the
+  // tech-spec deck nav (TopNav.tsx): a section counts as "in view" while it
+  // crosses the band between 20% from the top and 70% from the bottom of the
+  // viewport.
+  const byId = new Map(links.map(a => [(a.getAttribute('href') || '').slice(1), a]));
+  const sections = Array.from(byId.keys())
+    .map(id => document.getElementById(id))
+    .filter(el => el !== null);
+  if (sections.length) {
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          links.forEach(a => a.classList.remove('active'));
+          const link = byId.get(entry.target.id);
+          if (link) link.classList.add('active');
+        }
+      }
+    }, { rootMargin: '-20% 0px -70% 0px' });
+    for (const el of sections) observer.observe(el);
+  }
+
+  // ============= Click tracking =============
+  links.forEach(a => {
+    a.addEventListener('click', () => {
+      track('cta_click', {
+        cta_id: 'scroll_nav_link',
+        cta_location: 'scroll_nav',
+        cta_label: (a.textContent || '').trim().toLowerCase().replace(/\s+/g, '_'),
+        cta_href: a.getAttribute('href') || ''
+      });
+    });
+  });
+});
+</script>

@@ -11,8 +11,9 @@ description: >-
 
 Turn a technical specification into an interactive, persuasive web deck —
 the kind at iii.dev/roadmap/. The output is a **content layer** inside the
-repo's presentations site (one Vite project that builds every deck, the
-gallery, and a markdown spec viewer into one static site):
+repo's roadmap base (the shared component library, gallery, and markdown
+spec viewer that build every deck into one static site — Astro routes of the
+site package in iii, a standalone Vite project in other repos):
 
 1. helps engineers **understand** the spec — the architecture is a navigable
    map, not prose;
@@ -20,8 +21,8 @@ gallery, and a markdown spec viewer into one static site):
    toggles; interactivity is what makes it stick;
 3. reads like **marketing** — it argues the *why*. if no one is convinced the
    work should happen, the spec has not done its job;
-4. is **build-in-public ready** — each deck builds to a portable static
-   `dist/<slug>/`, safe to share.
+4. is **build-in-public ready** — each deck ships as a static page at
+   `/roadmap/<slug>/`, safe to share.
 
 ## Comparable to
 
@@ -65,7 +66,7 @@ The skill bundles two scaffolds:
 - `base/` — the whole per-repo presentations site: the shared component
   library + design tokens, the gallery, the md-only spec viewer, and the build
   glue (`build.mjs`, `vite.config.ts`, one `package.json`). Copy once per repo
-  (in iii it already lives at `website/presentations/`); per-deck runs never
+  (in iii it already lives at `website/roadmap/`); per-deck runs never
   modify it except **additive component promotion** per
   `reference/component-standards.md`.
 
@@ -89,13 +90,19 @@ Phases are gated. Do not skip Phase 2's approval or Phase 5's verification.
   the deck directory name AND the URL segment — the pairing contract in
   `reference/hosting.md`. Fix it now and use it everywhere; never prettify it.
 - Resolve the **base project**: read `<repo>/tech-specs/README.md` — the
-  pointer names the base dir (in iii: `website/presentations/`). Fallback:
-  search for a dir containing both `build.mjs` and `COMPONENTS.md`. Detect its
-  state:
-  - **current layout** (`package.json` + `src/` present) → use it;
+  pointer names the base dir (in iii: `website/roadmap/`). Fallback:
+  search for a dir containing both `COMPONENTS.md` and a shared `src/`.
+  Detect its shape:
+  - **integrated base** (shared `src/` + `scripts/manifest.mjs`, no
+    package.json or build.mjs of its own — iii's shape: the site's Astro
+    pages at `website/src/pages/roadmap/` render each deck's `src/App.tsx`
+    as a React island via the base's `src/DeckHost.tsx`; deps live in the
+    `iii-website` package) → use it, and scaffold content layers only;
+  - **standalone base** (`build.mjs` + own `package.json`, one `index.html`
+    per deck — the `base/` snapshot's shape) → use it;
   - **absent** → first run in this repo: pick the location with the user
-    (default `website/presentations/` when `website/` exists, else
-    `presentations/` at the repo root) and scaffold it in Phase 3;
+    (default `website/roadmap/` when `website/` exists, else
+    `roadmap/` at the repo root) and scaffold it in Phase 3;
   - **legacy layout** (`tech-specs/build.mjs` + `_gallery/` — per-deck
     standalone projects) → stop and offer the port procedure in
     `reference/hosting.md` before generating anything new.
@@ -143,11 +150,15 @@ user approves it at the same gate.
 
 **The deck:**
 
-- `mkdir -p <base>/<slug>/` and copy `template/` into it.
-- Substitute `__TITLE__` / `__DESCRIPTION__` in `index.html`, and the
-  `__SPEC_MD_GLOB__` literal in `src/spec-docs.ts` with the computed relative
-  path from `<base>/<slug>/src/` to `<specs-dir>/<slug>/*.md` (in iii:
-  `../../../../tech-specs/<slug>/*.md`).
+- `mkdir -p <base>/<slug>/` and copy `template/` into it — in an
+  **integrated base (iii)** copy `template/src/` only and skip `index.html`
+  and `src/main.tsx` (the site's `[slug]/index.astro` route provides the
+  document shell and mounts `src/App.tsx`; the page title/description come
+  from the spec frontmatter).
+- Substitute the `__SPEC_MD_GLOB__` literal in `src/spec-docs.ts` with the
+  computed relative path from `<base>/<slug>/src/` to
+  `<specs-dir>/<slug>/*.md` (in iii: `../../../../tech-specs/<slug>/*.md`);
+  in a standalone base also `__TITLE__` / `__DESCRIPTION__` in `index.html`.
 - **No per-deck install, no per-deck config, no lockfile.** Ensure deps once:
   workspace mode → `pnpm install` at the repo root (only if the base's deps
   are missing); standalone mode → `pnpm install --ignore-workspace` in
@@ -200,8 +211,9 @@ frontmatter block (and an approved promotion):
    passes the checklist in `reference/component-standards.md` without
    deck-specific hacks.
 3. A promotion = the component file **plus its `COMPONENTS.md` entry in the
-   same change**. An unregistered shared component is a defect (`build.mjs`
-   warns; `--strict-registry` fails).
+   same change**. An unregistered shared component is a defect (the base's
+   registry check warns — `scripts/validate-roadmap.ts` in iii, `build.mjs`
+   standalone; strict mode makes it fatal).
 4. Never fork a shared component into the deck to tweak it — extend it via
    additive, non-breaking props, or build a genuinely different deck-local
    one. **Modifying an existing shared component requires explicit user
@@ -215,26 +227,29 @@ frontmatter block. It needs no per-deck content — leave the wiring in place.
 
 ### 5. Verify — THE SECOND GATE
 
-All commands run from `<base>` (in iii: `pnpm --filter iii-presentations …`
-from the repo root works too):
+All commands run from `<base>`'s package (iii: `pnpm --filter iii-website
+<script>` from the repo root; standalone: inside `<base>`):
 
-- `pnpm type-check` — the whole project (shared src + gallery + every deck)
-  must pass strict; fix every error.
-- `node build.mjs --only=<slug>` — must succeed and emit `dist/<slug>/`, with
-  zero frontmatter-validation or registry-parity warnings.
+- `pnpm type-check` — the whole roadmap project (shared src + gallery + every
+  deck) must pass strict; fix every error.
+- The build must succeed with zero frontmatter-validation or registry-parity
+  warnings — iii: `pnpm build` (the site build runs the roadmap contract
+  checks and emits `dist/roadmap/<slug>/`); standalone: `node build.mjs
+  --only=<slug>`.
 - `pnpm dev` in the background, then dogfood with the **`/browse` skill**
-  (never `mcp__claude-in-chrome__*`): load `http://localhost:5173/<slug>/`,
+  (never `mcp__claude-in-chrome__*`): load
+  `http://localhost:4321/roadmap/<slug>/` (standalone: `:5173/<slug>/`),
   click the map, run a stepper, toggle the theme, open a deep-dive, open
   `#/spec` and confirm every markdown file renders (mermaid fences live, no
   raw frontmatter). Zero console errors; no horizontal body scroll at 375px.
-- `pnpm build && pnpm preview`, then `/browse http://localhost:4173/`: the
-  spec appears on the roadmap timeline in date order under its month, its
-  card shows the frontmatter title/tagline/tags with the day marker in the
-  timeline gutter, and clicking it lands on `/<slug>/`. If the spec
-  previously served the md-only viewer, confirm the deck replaced it at the
-  same URL.
+- `pnpm build && pnpm preview`, then `/browse
+  http://localhost:4321/roadmap/` (standalone: `:4173/`): the spec appears on
+  the roadmap timeline in date order under its month, its card shows the
+  frontmatter title/tagline/tags with the day marker in the timeline gutter,
+  and clicking it lands on `/roadmap/<slug>/`. If the spec previously served
+  the md-only viewer, confirm the deck replaced it at the same URL.
 - **If anything under `<base>/src/` was touched (a promotion): run the full
-  `node build.mjs`** — a shared change must not break sibling decks.
+  site build** — a shared change must not break sibling decks.
 - Run `reference/quality-bar.md` end to end; fix anything red.
 
 ### 6. Hand off
@@ -249,8 +264,10 @@ other repos `dist/` is a portable static site for whatever CI they use. Do
 
 ## Rules
 
-- **The shared layer is law**: never edit `<base>/src/**`, `build.mjs`,
-  `vite.config.ts`, tsconfigs, `package.json`, or the gallery in a deck run.
+- **The shared layer is law**: never edit `<base>/src/**`, the base's build
+  glue (iii: `website/src/pages/roadmap/` and `scripts/validate-roadmap.ts`;
+  standalone: `build.mjs` and `vite.config.ts`), tsconfigs, `package.json`,
+  or the gallery in a deck run.
   Sole exception: additive component promotion under
   `reference/component-standards.md`, always paired with a `COMPONENTS.md`
   entry.
@@ -288,7 +305,8 @@ never re-litigate it in a deck run.
 
 ## Verify
 
-`pnpm type-check` and `node build.mjs --only=<slug>` are green with zero
+`pnpm type-check` and the roadmap build (iii: `pnpm --filter iii-website
+build`; standalone: `node build.mjs --only=<slug>`) are green with zero
 registry/frontmatter warnings; `/browse` shows zero console errors, working
 interactions, and a frontmatter-free `#/spec`; the roadmap timeline lists the
 spec in date order, its card rendered from the frontmatter; `reference/quality-bar.md` passes; a promotion ran the full

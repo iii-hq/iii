@@ -57,7 +57,21 @@ impl NetBackend for SmoltcpBackend {
     /// Deliver a frame from smoltcp to the guest. Prepends a zeroed
     /// virtio-net header.
     fn read_frame(&mut self, buf: &mut [u8]) -> Result<usize, ReadError> {
-        let frame = self.shared.rx_ring.pop().ok_or(ReadError::NothingRead)?;
+        let frame = match self.shared.rx_ring.pop() {
+            Some(frame) => frame,
+            None => {
+                // The NetWorker epolls rx_wake's read end EDGE_TRIGGERED and
+                // never reads it, so the accumulated wake bytes must be
+                // consumed here — a full pipe silently swallows every future
+                // wake() and no edge is ever raised again (MOT-3966 stall).
+                // Re-pop once after draining: a push whose wake byte the drain
+                // consumed is visible to the second pop (queue Release/Acquire
+                // + the pipe syscalls order it); any later push writes into
+                // the now-empty pipe and raises a fresh edge.
+                self.shared.rx_wake.drain();
+                self.shared.rx_ring.pop().ok_or(ReadError::NothingRead)?
+            }
+        };
 
         let total_len = VIRTIO_NET_HDR_LEN + frame.len();
         if total_len > buf.len() {
@@ -193,5 +207,37 @@ mod tests {
         let backend = make_backend(16);
         let fd = backend.raw_socket_fd();
         assert!(fd >= 0);
+    }
+
+    /// MOT-3966: the NetWorker never reads the rx_wake pipe, so read_frame's
+    /// empty path must drain it — otherwise wake bytes accumulate until the
+    /// pipe is full and the edge-triggered consumer never wakes again.
+    #[test]
+    fn read_frame_empty_path_drains_wake_pipe() {
+        let shared = Arc::new(SharedState::new(16));
+        let mut backend = SmoltcpBackend::new(shared.clone());
+
+        // Accumulate wake bytes like a long-lived VM would.
+        for _ in 0..4096 {
+            shared.rx_wake.wake();
+        }
+
+        shared.rx_ring.push(vec![0xAB; 4]).unwrap();
+        shared.rx_wake.wake();
+
+        let mut buf = vec![0u8; 64];
+        assert!(backend.read_frame(&mut buf).is_ok());
+        // Empty pop: must return NothingRead AND consume the pipe backlog.
+        assert!(backend.read_frame(&mut buf).is_err());
+
+        // Pipe empty ⇒ every future push-then-wake lands a byte and raises a
+        // fresh edge. Pre-fix this held 4097 stale bytes.
+        let mut b = [0u8; 8192];
+        // SAFETY: valid nonblocking pipe read end, local buffer.
+        let n = unsafe { libc::read(shared.rx_wake.as_raw_fd(), b.as_mut_ptr().cast(), b.len()) };
+        assert!(
+            n < 0,
+            "pipe must be empty after the empty-pop drain, got {n} bytes"
+        );
     }
 }

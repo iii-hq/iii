@@ -17,9 +17,8 @@ iii [OPTIONS] [COMMAND]
 
 | Option | Description |
 | ------ | ----------- |
-| `-c, --config <CONFIG>` | Path to the config file [default: config.yaml] |
+| `-c, --config <CONFIG>` | Path to the config file [default: config.yaml]. When the file does not exist, `iii` offers to create it with an empty workers list (and creates it without asking in non-interactive sessions) |
 | `-v, --version` | Print version and exit |
-| `--use-default-config` | Run with built-in defaults instead of a config file. Cannot be combined with `--config` |
 | `--no-update-check` | Disable background update and security advisory checks |
 
 **Subcommands:**
@@ -136,17 +135,17 @@ iii worker <COMMAND>
 | [`exec`](#iii-worker-exec) | Run a command inside a running worker's VM. Pipes stdin/stdout/ stderr through and returns the child's exit code. Pass `-t` for an interactive PTY |
 | [`init`](#iii-worker-init) | Scaffold a NEW standalone worker repo from scratch. To install an EXISTING worker, use `iii worker add` |
 | [`list`](#iii-worker-list) | List all workers and their status |
-| [`logs`](#iii-worker-logs) | Show logs from a managed worker container |
-| [`reinstall`](#iii-worker-reinstall) | Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset its config.yaml entry to registry defaults) |
-| [`remove`](#iii-worker-remove) | Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them |
-| [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start. By default waits up to 120s for the worker to report ready (same as start) |
+| [`logs`](#iii-worker-logs) | Show logs from a managed worker container. Logs are read from the local log files under ~/.iii/logs/\{name\}/ |
+| [`reinstall`](#iii-worker-reinstall) | Re-download a worker (like `add --force`, but returns immediately instead of waiting for the worker to report ready; pass `--reset-config` to also reset its config.yaml entry to registry defaults) |
+| [`remove`](#iii-worker-remove) | Remove one or more workers from config.yaml and iii.lock. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them |
+| [`restart`](#iii-worker-restart) | Restart a managed worker: stop if running, then start (same start path as `iii worker start`, including the registry fetch for missing local artifacts). By default waits up to 120s for the worker to report ready (same as start) |
 | [`sandbox`](#iii-worker-sandbox) | Manage ephemeral sandboxes (create/exec/stop short-lived VMs) |
-| [`start`](#iii-worker-start) | Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready before returning. Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for tracking workers |
-| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a success or failure state |
+| [`start`](#iii-worker-start) | Start a previously stopped managed worker container. If the worker has no local artifacts (e.g. after `iii worker clear`), it is fetched from the registry first. By default waits up to 120s for the worker to report ready before returning. Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for tracking workers |
+| [`status`](#iii-worker-status) | Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a success or failure state; exits immediately when the engine is not running |
 | [`stop`](#iii-worker-stop) | Stop a managed worker container. Stop is treated as a routine, reversible action; running `iii worker start <name>` brings the worker back up |
 | [`sync`](#iii-worker-sync) | Install registry-managed workers exactly from iii.lock |
-| [`update`](#iii-worker-update) | Update workers in iii.lock to their latest allowed version |
-| [`verify`](#iii-worker-verify) | Verify the worker's manifest (iii.worker.yaml) is valid |
+| [`update`](#iii-worker-update) | Update workers pinned in iii.lock to the latest version published in the registry, rewriting config.yaml and iii.lock |
+| [`verify`](#iii-worker-verify) | Verify config.yaml and iii.lock agree: every managed worker in config.yaml must be pinned in iii.lock for this platform |
 
 ### `iii worker add`
 
@@ -162,7 +161,8 @@ iii worker add [OPTIONS] <WORKER[@VERSION]|PATH>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block), instead of keeping the existing entry. With `add`, takes effect only together with `--force`; `reinstall` applies force automatically |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host |
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
 | `--no-wait` | Don't block waiting for the engine to finish booting the worker |
 
@@ -233,7 +233,7 @@ iii worker list
 
 ### `iii worker logs`
 
-Show logs from a managed worker container
+Show logs from a managed worker container. Logs are read from the local log files under ~/.iii/logs/\{name\}/
 
 ```text
 iii worker logs [OPTIONS] <WORKER>
@@ -246,12 +246,10 @@ iii worker logs [OPTIONS] <WORKER>
 | Option | Description |
 | ------ | ----------- |
 | `-f, --follow` | Follow log output |
-| `--address <ADDRESS>` | Engine host address [default: localhost] |
-| `--port <PORT>` | Engine WebSocket port [default: 49134] |
 
 ### `iii worker reinstall`
 
-Re-download a worker (equivalent to `add --force`; pass `--reset-config` to also reset its config.yaml entry to registry defaults)
+Re-download a worker (like `add --force`, but returns immediately instead of waiting for the worker to report ready; pass `--reset-config` to also reset its config.yaml entry to registry defaults)
 
 ```text
 iii worker reinstall [OPTIONS] <WORKER[@VERSION]|PATH>...
@@ -263,11 +261,12 @@ iii worker reinstall [OPTIONS] <WORKER[@VERSION]|PATH>...
 
 | Option | Description |
 | ------ | ----------- |
-| `--reset-config` | Discard the worker's config.yaml entry and recreate it from registry defaults. Plain `add --force` would otherwise keep the entry. Only takes effect together with `--force` on add |
+| `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block), instead of keeping the existing entry. With `add`, takes effect only together with `--force`; `reinstall` applies force automatically |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host |
 
 ### `iii worker remove`
 
-Remove one or more workers from config.yaml. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them
+Remove one or more workers from config.yaml and iii.lock. The engine's file watcher tears down any running sandbox. Artifacts under ~/.iii/managed/\{name\}/ remain; use `iii worker clear {name}` to delete them
 
 ```text
 iii worker remove [OPTIONS] <WORKER>...
@@ -283,7 +282,7 @@ iii worker remove [OPTIONS] <WORKER>...
 
 ### `iii worker restart`
 
-Restart a managed worker: stop if running, then start. By default waits up to 120s for the worker to report ready (same as start)
+Restart a managed worker: stop if running, then start (same start path as `iii worker start`, including the registry fetch for missing local artifacts). By default waits up to 120s for the worker to report ready (same as start)
 
 ```text
 iii worker restart [OPTIONS] <WORKER>
@@ -327,7 +326,7 @@ iii worker sandbox create [OPTIONS] <IMAGE>
 | `--memory <MEMORY>` | Memory in MiB allocated to the sandbox VM [default: 512] |
 | `--idle-timeout <SECS>` | Auto-stop the sandbox after this many seconds of exec inactivity. Omit to use the engine's default |
 | `--name <NAME>` | Human-readable label for the sandbox (shown in `list`) |
-| `--network` | Enable guest network access. Default follows the engine's sandbox policy (typically disabled) |
+| `--network` | Enable guest network access (disabled unless this flag is passed) |
 | `-e, --env <KEY=VALUE>` | Set an environment variable inside the guest. Repeatable, `KEY=VALUE` form; entries without `=` are silently skipped |
 | `--port <PORT>` | Engine WebSocket port [default: 49134] |
 
@@ -449,7 +448,7 @@ iii worker sandbox upload [OPTIONS] <SANDBOX_ID> <LOCAL_PATH> <REMOTE_PATH>
 
 ### `iii worker start`
 
-Start a previously stopped managed worker container. By default waits up to 120s for the worker to report ready before returning. Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for tracking workers
+Start a previously stopped managed worker container. If the worker has no local artifacts (e.g. after `iii worker clear`), it is fetched from the registry first. By default waits up to 120s for the worker to report ready before returning. Workers will continue to start after 120s, see `iii worker status` and `iii worker logs` for tracking workers
 
 ```text
 iii worker start [OPTIONS] <WORKER>
@@ -467,7 +466,7 @@ iii worker start [OPTIONS] <WORKER>
 
 ### `iii worker status`
 
-Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a success or failure state
+Show detailed status of one worker (config, sandbox, process, logs). By default refreshes live in place until the worker reaches a success or failure state; exits immediately when the engine is not running
 
 ```text
 iii worker status [OPTIONS] <WORKER>
@@ -511,7 +510,7 @@ iii worker sync [OPTIONS]
 
 ### `iii worker update`
 
-Update workers in iii.lock to their latest allowed version
+Update workers pinned in iii.lock to the latest version published in the registry, rewriting config.yaml and iii.lock
 
 ```text
 iii worker update [WORKER]
@@ -523,7 +522,7 @@ iii worker update [WORKER]
 
 ### `iii worker verify`
 
-Verify the worker's manifest (iii.worker.yaml) is valid
+Verify config.yaml and iii.lock agree: every managed worker in config.yaml must be pinned in iii.lock for this platform
 
 ```text
 iii worker verify [OPTIONS]

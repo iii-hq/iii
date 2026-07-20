@@ -80,3 +80,21 @@ const extractRefsRecursive = (
     extractRefsRecursive(value, path, refs)
   }
 }
+
+/**
+ * Generate an RFC 4122 v4 UUID.
+ *
+ * `crypto.randomUUID` is only defined in secure contexts (https / localhost),
+ * so pages served over plain http from a LAN address would throw on every
+ * invocation. Fall back to building the UUID from `crypto.getRandomValues`,
+ * which is available in insecure contexts and uses the same CSPRNG. The
+ * engine parses invocation ids as UUIDs, so the fallback must be a real one.
+ */
+export function randomUUID(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}

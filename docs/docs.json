@@ -1,6 +1,16 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "iii",
+  "redirects": [
+    {
+      "source": "/next/api-reference/:slug*",
+      "destination": "/next/reference/:slug*"
+    },
+    {
+      "source": "/next/sdk-reference/engine-sdk",
+      "destination": "/next/reference/engine-protocol"
+    }
+  ],
   "theme": "mint",
   "appearance": {
     "default": "light"
@@ -152,26 +162,26 @@
               {
                 "group": "Engine protocol",
                 "pages": [
-                  "next/sdk-reference/engine-sdk"
+                  "next/reference/engine-protocol"
                 ]
               },
               {
                 "group": "Language SDKs",
                 "expanded": true,
                 "pages": [
-                  "next/api-reference/sdk-node",
-                  "next/api-reference/sdk-python",
-                  "next/api-reference/sdk-rust",
-                  "next/api-reference/sdk-browser"
+                  "next/reference/sdk-node",
+                  "next/reference/sdk-python",
+                  "next/reference/sdk-rust",
+                  "next/reference/sdk-browser"
                 ]
               },
               {
                 "group": "Helpers",
                 "expanded": true,
                 "pages": [
-                  "next/api-reference/helpers-node",
-                  "next/api-reference/helpers-python",
-                  "next/api-reference/helpers-rust"
+                  "next/reference/helpers-node",
+                  "next/reference/helpers-python",
+                  "next/reference/helpers-rust"
                 ]
               },
               {

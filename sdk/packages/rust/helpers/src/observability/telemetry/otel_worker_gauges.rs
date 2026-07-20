@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use super::worker_metrics::WorkerMetricsCollector;
 
-/// Options for registering worker gauges
+/// Options for registering worker gauges.
 pub struct WorkerGaugesOptions {
+    /// Stable identifier of the worker the gauges are reported for.
     pub worker_id: String,
+    /// Human-readable name of the worker.
     pub worker_name: Option<String>,
 }
 
@@ -81,6 +83,7 @@ pub fn register_worker_gauges(
 }
 
 /// Handle that keeps the OTEL gauges alive. Drop to stop reporting.
+/// <!-- docs:internal -->
 pub struct WorkerGaugesHandle {
     _memory_rss: opentelemetry::metrics::ObservableGauge<u64>,
     _memory_virtual: opentelemetry::metrics::ObservableGauge<u64>,

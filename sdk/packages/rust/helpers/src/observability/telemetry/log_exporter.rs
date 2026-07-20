@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 /// Custom log exporter that sends OTLP JSON over a shared WebSocket connection.
 ///
 /// Uses a hand-built JSON serializer to match the III Engine's expected format.
+/// <!-- docs:internal -->
 pub struct EngineLogExporter {
     connection: Arc<SharedEngineConnection>,
     resource: Mutex<Option<Resource>>,

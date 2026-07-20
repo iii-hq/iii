@@ -18,7 +18,12 @@ DEFAULT_RECONNECTION_CONFIG = ReconnectionConfig()
 
 @dataclass
 class FunctionRef:
-    """Reference to a registered function, allowing programmatic unregistration."""
+    """Reference to a registered function, allowing programmatic unregistration.
+
+    Attributes:
+        id: The unique function identifier.
+        unregister: Removes this function from the engine.
+    """
 
     id: str
     unregister: Callable[[], None]
@@ -26,12 +31,12 @@ class FunctionRef:
 
 @dataclass
 class TelemetryOptions:
-    """Worker metadata reported to the engine.
+    """Worker metadata reported to the engine (language, framework, project).
 
     Attributes:
-        language: Programming language of the worker (e.g. ``python``).
+        language: Programming language of the worker.
         project_name: Name of the project this worker belongs to.
-        framework: Framework name (e.g. ``motia``) if applicable.
+        framework: Framework name, if applicable.
         amplitude_api_key: Amplitude API key for product analytics.
     """
 
@@ -43,14 +48,14 @@ class TelemetryOptions:
 
 @dataclass
 class InitOptions:
-    """Options for configuring the III SDK.
+    """Configuration options passed to ``register_worker``.
 
     Attributes:
         worker_name: Display name for this worker. Defaults to ``hostname:pid``.
         worker_description: One-line, human/LLM-readable summary of what this
             worker does. Surfaces in ``engine::workers::list`` / ``engine::workers::info``.
         enable_metrics_reporting: Enable worker metrics via OpenTelemetry. Default ``True``.
-        invocation_timeout_ms: Default timeout for ``trigger()`` in milliseconds. Default ``30000``.
+        invocation_timeout_ms: Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
         reconnection_config: WebSocket reconnection behavior.
         otel: OpenTelemetry configuration. Enabled by default.
             Set ``{'enabled': False}`` or env ``OTEL_ENABLED=false`` to disable.

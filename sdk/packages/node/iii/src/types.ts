@@ -17,7 +17,7 @@ import type { TriggerHandler } from './triggers'
  *
  * `metadata` is arbitrary JSON travelling on a separate channel from the
  * payload. It is `undefined` when the caller did not attach any. Existing
- * single-argument handlers keep working -- they ignore the extra argument.
+ * single-argument handlers keep working; they ignore the extra argument.
  *
  * @typeParam TInput - Type of the invocation payload.
  * @typeParam TOutput - Type of the return value.
@@ -85,8 +85,9 @@ export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message
 export interface IIIClient {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
-   * @param trigger - The trigger to register
-   * @returns A trigger object that can be used to unregister the trigger
+   * <!-- docs:expand-params -->
+   * @param trigger - The trigger to register.
+   * @returns A trigger object that can be used to unregister the trigger.
    *
    * @example
    * ```typescript
@@ -104,10 +105,10 @@ export interface IIIClient {
 
   /**
    * Registers a new function with a local handler or an HTTP invocation config.
-   * @param functionId - Unique function identifier
-   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.)
-   * @param options - Optional function registration options (description, request/response formats, metadata)
-   * @returns A handle that can be used to unregister the function
+   * @param functionId - Unique identifier for the function.
+   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.).
+   * @param options - Optional function registration options (description, request/response formats, metadata).
+   * @returns A handle that can be used to unregister the function.
    *
    * @example
    * ```typescript
@@ -142,9 +143,10 @@ export interface IIIClient {
 
   /**
    * Invokes a function using a request object.
+   * <!-- docs:expand-params -->
    *
-   * @param request - The trigger request containing function_id, payload, and optional action/timeout
-   * @returns The result of the function
+   * @param request - The trigger request containing function_id, payload, and optional action/timeout.
+   * @returns The result of the function.
    *
    * @example
    * ```typescript
@@ -163,7 +165,8 @@ export interface IIIClient {
    *   action: TriggerAction.Void(),
    * })
    *
-   * // Enqueue for async processing
+   * // Enqueue for async processing (the queue must be declared in the
+   * // iii-queue worker's queue_configs)
    * const receipt = await worker.trigger({
    *   function_id: 'process-order',
    *   payload: { orderId: '123' },
@@ -171,13 +174,14 @@ export interface IIIClient {
    * })
    * ```
    */
-  trigger<TInput, TOutput>(request: TriggerRequest<TInput>): Promise<TOutput>
+  // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
+  trigger<TInput = unknown, TOutput = any>(request: TriggerRequest<TInput>): Promise<TOutput>
 
   /**
    * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
-   * @param triggerType - The trigger type to register
-   * @param handler - The handler for the trigger type
-   * @returns A trigger type object that can be used to unregister the trigger type
+   * @param triggerType - The trigger type to register.
+   * @param handler - The handler for the trigger type.
+   * @returns A trigger type object that can be used to unregister the trigger type.
    *
    * @example
    * ```typescript
@@ -205,7 +209,7 @@ export interface IIIClient {
 
   /**
    * Unregisters a trigger type.
-   * @param triggerType - The trigger type to unregister
+   * @param triggerType - The trigger type to unregister.
    *
    * @example
    * ```typescript
@@ -324,6 +328,10 @@ export type Channel = {
   readerRef: StreamChannelRef
 }
 
+/**
+ * Internal HTTP request shape that underlies `StreamRequest`.
+ * <!-- docs:internal -->
+ */
 export type InternalHttpRequest<TBody = unknown> = {
   path_params: Record<string, string>
   query_params: Record<string, string | string[]>

@@ -21,7 +21,7 @@ Workers can also be found on Docker and OCI-compatible registries.
 worker's first boot, and managed through the [configuration worker](./configuration) afterwards.
 
 ```bash
-iii worker add iii-state # Downloads and adds a worker from iii registry
+iii worker add state # Downloads and adds a worker from iii registry
 iii worker add ./workers/my_worker # Adds a local worker created with `iii worker init`
 iii worker add ghcr.io/org/worker:tag # Adds a local worker from a Docker or OCI image registry
 ```

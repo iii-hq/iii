@@ -24,6 +24,7 @@ pub mod overlay;
 pub mod pidfile;
 pub mod project;
 pub mod registry;
+pub mod remote_ops;
 pub mod rootfs;
 pub mod rootfs_cache;
 pub mod sandbox;

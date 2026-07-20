@@ -6,9 +6,11 @@ import { AI_OVERVIEW } from './ai-overview'
 import { buildBlogLinksSection } from './generate-blog-md'
 
 const WEBSITE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const INDEX_PATH = path.join(WEBSITE_ROOT, 'index.html')
-const LLMS_PATH = path.join(WEBSITE_ROOT, 'llms.txt')
-const AGENTS_PATH = path.join(WEBSITE_ROOT, 'AGENTS.md')
+// The homepage copy is scraped from the BUILT page, so this script runs after
+// `astro build` (see the package build script) and emits straight into dist/.
+const INDEX_PATH = path.join(WEBSITE_ROOT, 'dist', 'index.html')
+const LLMS_PATH = path.join(WEBSITE_ROOT, 'dist', 'llms.txt')
+const AGENTS_PATH = path.join(WEBSITE_ROOT, 'dist', 'AGENTS.md')
 const AGENTS_APPENDIX_PATH = path.join(WEBSITE_ROOT, 'scripts', 'agents-appendix.md')
 
 /** llms.txt-style blockquote (one-line summary for crawlers). */
@@ -193,8 +195,10 @@ export function buildAgentsMd(html: string, agentsAppendix: string, blogSection 
 }
 
 async function main() {
-  const [html, appendix, blogSection] = await Promise.all([
-    fs.readFile(INDEX_PATH, 'utf8'),
+  const html = await fs.readFile(INDEX_PATH, 'utf8').catch(() => {
+    throw new Error(`generate-llms-agents: ${INDEX_PATH} missing — run \`astro build\` first`)
+  })
+  const [appendix, blogSection] = await Promise.all([
     fs.readFile(AGENTS_APPENDIX_PATH, 'utf8'),
     buildBlogLinksSection(),
   ])

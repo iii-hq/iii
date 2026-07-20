@@ -1,0 +1,31 @@
+/* In-page section nav — the tech-spec deck's TopNav
+   (roadmap/src/components/TopNav.tsx) translated to the landing surface: an
+   in-flow bar directly below the sticky site header (src/components/
+   SiteNav.astro) carrying only the page's own section links, with a
+   scroll-spy highlighting the section in view. Same id-selector rationale as
+   site-nav.css: the landing sheet ships broad element rules that tie on
+   class specificity, so the id keeps this bar's look stable regardless of
+   CSS order. Colors ride the page tokens, so the bar follows the theme
+   toggle. */
+#scroll-nav{
+  display:flex; align-items:center;
+  gap:16px;
+  min-width:0;
+  overflow-x:auto;
+  background:var(--bg);
+  border-bottom:1px solid var(--rule);
+  /* horizontal padding matches #nav so the first link aligns with the logo */
+  padding:10px 28px;
+}
+#scroll-nav .scroll-nav-link{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px;
+  text-transform:lowercase;
+  padding:6px 0;
+  white-space:nowrap;
+  text-decoration:none;
+  color:var(--ink-faint);
+  transition:color .15s ease;
+}
+#scroll-nav .scroll-nav-link:hover{ color:var(--ink); }
+#scroll-nav .scroll-nav-link.active{ color:var(--accent); }

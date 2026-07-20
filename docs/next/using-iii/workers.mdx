@@ -66,7 +66,8 @@ The registry contains many workers that encapsulate common services. See
 
 <Note>
   You need iii [installed](../install) and [running](./engine) before adding a worker. To spin up a
-  temporary iii instance for testing, run `iii --use-default-config` (see [Default
+  temporary iii instance for testing, run `iii` in a scratch directory: when no `config.yaml`
+  exists yet it creates one with an empty workers list, ready for `iii worker add` (see [Default
   configuration](./engine#default-configuration)).
 </Note>
 
@@ -78,7 +79,7 @@ workers which you can learn more about in
 `iii worker add <name>` installs a worker into your project:
 
 ```bash
-iii worker add iii-state # Downloads and adds a worker from iii registry
+iii worker add state # Downloads and adds a worker from iii registry
 iii worker add ./workers/my_worker # Adds a local worker created with `iii worker init`
 iii worker add ghcr.io/org/worker:tag # Pulls and adds a worker from a Docker or OCI image registry
 ```
@@ -86,10 +87,23 @@ iii worker add ghcr.io/org/worker:tag # Pulls and adds a worker from a Docker or
 The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
-`iii worker add` also writes the worker's default `config:` block. That block seeds the worker's
-settings once, on its first boot; from then on, runtime settings are managed through the
-[configuration worker](./configuration), not `config.yaml`. The settings remain editable as local
-files under `./config/`; see [Configuration](./configuration).
+`iii worker add` writes a bare `- name:` entry with no `config:` block. Workers boot with their
+built-in defaults and manage runtime settings through the
+[configuration worker](./configuration), whose entries are editable as local files under
+`./config/`. A `config:` block you write into `config.yaml` by hand still works as a one-time
+first-boot seed, and re-adding a worker preserves it. (`iii-sandbox` is the one exception: its add
+writes the sandbox `config:` block, because the image allowlist is enforced from the file.)
+
+By default `iii worker add` edits the config file in the **current directory**, so run it from the
+same folder as the engine it should affect. To install into an engine running elsewhere (a
+different directory, machine, or a non-default port), pass `--host`:
+
+```bash
+iii worker add pdfkit --host localhost:49134
+```
+
+With `--host` the CLI calls the engine's `worker::add` trigger and the engine applies the install
+in its own project directory; nothing in your current folder is touched.
 
 <Note>
   `iii worker add` downloads worker images from remote repositories (the iii registry or an OCI
@@ -191,7 +205,7 @@ and its workers.
 ## Available functions and triggers
 
 Functions and triggers come from connected workers. To use a trigger of a given type, you need the
-worker that provides it to be connected. For example if you add `http` triggers via the iii-http
+worker that provides it to be connected. For example if you add `http` triggers via the http
 worker then you can now expose endpoints for your function as you would in a web framework like
 Express or FastAPI.
 
@@ -206,7 +220,7 @@ Installing without a version specifier picks the latest release. Append `@<versi
 name to pin a specific release rather than tracking the latest:
 
 ```bash
-iii worker add iii-state@1.2.0
+iii worker add state@1.2.0
 ```
 
 The pin is recorded in `iii.lock` and replays on every subsequent install.

@@ -10,8 +10,8 @@ beside it, and `index.json` feeding the __SITE_HOST__ landing timeline.
 
 ```
 tech-specs/<slug>/*.md            the spec — MARKDOWN ONLY, frontmatter in README.md
-website/presentations/<slug>/     the deck's content layer (optional, pairs by dirname)
-website/presentations/src/        the shared design system + component library
+website/roadmap/<slug>/     the deck's content layer (optional, pairs by dirname)
+website/roadmap/src/        the shared design system + component library
 ```
 
 The slug is the directory basename, used identically in three places: the spec
@@ -26,7 +26,7 @@ SHARED / HOT — never edited when adding a spec or deck:
   (COMPONENTS.md: append-only, component promotions only)
 
 PER-SPEC — the only things a spec/deck PR touches:
-  tech-specs/<slug>/**        website/presentations/<slug>/**
+  tech-specs/<slug>/**        website/roadmap/<slug>/**
 ```
 
 Corollary: two spec PRs never conflict. A component promotion is the deliberate
@@ -66,12 +66,12 @@ featured: false                                 # pin in the landing feed
 ## b. add a presentation to a spec
 
 Run `/presentation tech-specs/<slug>` — it proposes a narrative outline (gate 1:
-your approval), scaffolds `website/presentations/<slug>/` (content layer only:
+your approval), scaffolds `website/roadmap/<slug>/` (content layer only:
 `index.html` + `src/{App,sections,pages,content,spec-docs}` — no package.json,
 no config), reuses the shared library via `@lib`, updates the spec's
 frontmatter, and verifies (gate 2: typecheck + build + browser pass).
 
-It may touch ONLY `website/presentations/<slug>/**`, the spec README's
+It may touch ONLY `website/roadmap/<slug>/**`, the spec README's
 frontmatter block, and (rarely) an additive component promotion per (c).
 
 The one fragile cross-tree coupling: `src/spec-docs.ts` bundles the spec md via
@@ -80,7 +80,7 @@ the two-tree layout.
 
 ## c. add or promote a shared component
 
-Default is **deck-local**: `website/presentations/<slug>/src/diagrams/<Name>.tsx`.
+Default is **deck-local**: `website/roadmap/<slug>/src/diagrams/<Name>.tsx`.
 Promote into `src/components/` only when all three hold: props-driven with zero
 spec data inside; maps to a recurring spec shape (a lifecycle, a tree, a
 timeline, a fan-out…); passes the standards checklist (design tokens only,

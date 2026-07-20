@@ -6,7 +6,8 @@
 {
   printf '%s\n' "$*"
   if [ -e "/dev/fd/${III_LIFELINE_FD:-999}" ]; then lifeline_open=yes; else lifeline_open=no; fi
-  printf 'engine_pid=%s lifeline_fd=%s lifeline_open=%s\n' \
-    "${III_ENGINE_PID:-unset}" "${III_LIFELINE_FD:-unset}" "$lifeline_open"
+  printf 'engine_pid=%s lifeline_fd=%s lifeline_open=%s engine_url=%s extra_env=%s\n' \
+    "${III_ENGINE_PID:-unset}" "${III_LIFELINE_FD:-unset}" "$lifeline_open" \
+    "${III_ENGINE_URL:-unset}" "${III_PROBE_EXTRA_ENV:-unset}"
 } > "$ARGV_LOG"
 sleep 30

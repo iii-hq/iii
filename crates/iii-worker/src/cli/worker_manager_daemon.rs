@@ -251,17 +251,57 @@ pub fn op_description(function_id: &str) -> &'static str {
 }
 
 /// Stamp the standard introspection contract onto a registration:
-/// description plus timeout/idempotency metadata. The request/response JSON
-/// Schemas come from the SDK's typed-handler auto-extraction (the handlers
-/// take the typed options structs directly), so together with this stamp
-/// `engine::functions::info { function_id: "worker::add" }` is
-/// self-sufficient for callers that have never seen this API.
+/// description, timeout/idempotency metadata, and the request/response JSON
+/// Schemas from `schema_table()` — the same bytes `worker::schema` serves,
+/// so together with this stamp `engine::functions::info { function_id:
+/// "worker::add" }` is self-sufficient for callers that have never seen
+/// this API, and the two introspection surfaces cannot drift.
 fn describe_op(rf: RegisterFunction, function_id: &str) -> RegisterFunction {
     let (default_timeout_ms, idempotent) = op_metadata(function_id);
-    rf.description(op_description(function_id)).metadata(json!({
+    let mut rf = rf.description(op_description(function_id)).metadata(json!({
         "default_timeout_ms": default_timeout_ms,
         "idempotent": idempotent,
-    }))
+    }));
+    if let Some((_, request, response)) =
+        schema_table().iter().find(|(id, _, _)| *id == function_id)
+    {
+        if let Some(schema) = request {
+            rf = rf.request_format(schema.clone());
+        }
+        if let Some(schema) = response {
+            rf = rf.response_format(schema.clone());
+        }
+    }
+    rf
+}
+
+/// Typed async `worker::*` handler built on the SDK's `Value`-input closure
+/// form: payload-deserialization failures surface as this op's W105
+/// BadRequest envelope instead of the SDK's generic `Error::Serde` (which
+/// the dispatch loop reports as `invocation_failed`). The handler returns
+/// `R` so the SDK performs the single response serialization. Wraps the
+/// result in [`describe_op`], which also attaches the real request schema
+/// (the `Value` input would otherwise advertise a permissive any-value
+/// schema).
+fn op_registration<T, Fut, R>(
+    function_id: &'static str,
+    f: impl Fn(T) -> Fut + Send + Sync + 'static,
+) -> RegisterFunction
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, Error>> + Send + 'static,
+    R: serde::Serialize + JsonSchema + Send + 'static,
+{
+    let f = Arc::new(f);
+    let rf = RegisterFunction::new_async(move |input: Value| {
+        let f = f.clone();
+        async move {
+            let opts: T =
+                serde_json::from_value(input).map_err(|e| bad_request_error(function_id, &e))?;
+            f(opts).await
+        }
+    });
+    describe_op(rf, function_id)
 }
 
 fn register_all(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
@@ -415,45 +455,35 @@ fn schema_table() -> &'static [(&'static str, Option<Value>, Option<Value>)] {
 }
 
 fn register_logs(iii: &IIIClient) {
-    let _ =
-        iii.register_function(
-            "worker::logs",
-            describe_op(
-                RegisterFunction::new_async_with_bad_request(
-                    |opts: LogsOptions| async move {
-                        core_logs::run(opts).await.map_err(|e| op_error(&e))
-                    },
-                    |e| bad_request_error("worker::logs", &e),
-                ),
-                "worker::logs",
-            ),
-        );
+    let _ = iii.register_function(
+        "worker::logs",
+        op_registration("worker::logs", |opts: LogsOptions| async move {
+            core_logs::run(opts).await.map_err(|e| op_error(&e))
+        }),
+    );
 }
 
 fn register_schema(iii: &IIIClient) {
-    let rf = RegisterFunction::new_async_with_bad_request(
-        |req: SchemaRequest| async move {
-            let filter = req.function_id.as_deref();
-            let schemas: Vec<SchemaEntry> = schema_table()
-                .iter()
-                .filter(|(id, _, _)| filter.is_none_or(|f| f == *id))
-                .map(|(id, req, resp)| {
-                    let (timeout_ms, idempotent) = op_metadata(id);
-                    SchemaEntry {
-                        function_id: (*id).into(),
-                        description: op_description(id).into(),
-                        request: req.clone().unwrap_or(Value::Null),
-                        response: resp.clone().unwrap_or(Value::Null),
-                        default_timeout_ms: timeout_ms,
-                        idempotent,
-                    }
-                })
-                .collect();
-            Ok::<_, Error>(SchemaResponse { schemas })
-        },
-        |e| bad_request_error("worker::schema", &e),
-    );
-    let _ = iii.register_function("worker::schema", describe_op(rf, "worker::schema"));
+    let rf = op_registration("worker::schema", |req: SchemaRequest| async move {
+        let filter = req.function_id.as_deref();
+        let schemas: Vec<SchemaEntry> = schema_table()
+            .iter()
+            .filter(|(id, _, _)| filter.is_none_or(|f| f == *id))
+            .map(|(id, req, resp)| {
+                let (timeout_ms, idempotent) = op_metadata(id);
+                SchemaEntry {
+                    function_id: (*id).into(),
+                    description: op_description(id).into(),
+                    request: req.clone().unwrap_or(Value::Null),
+                    response: resp.clone().unwrap_or(Value::Null),
+                    default_timeout_ms: timeout_ms,
+                    idempotent,
+                }
+            })
+            .collect();
+        Ok::<_, Error>(SchemaResponse { schemas })
+    });
+    let _ = iii.register_function("worker::schema", rf);
 }
 
 /// Compose one worker's status from host-side observables: config.yaml
@@ -533,11 +563,10 @@ async fn build_status(name: &str) -> Result<StatusOutcome, WorkerOpError> {
 }
 
 fn register_status(iii: &IIIClient) {
-    let rf = RegisterFunction::new_async_with_bad_request(
-        |opts: StatusOptions| async move { build_status(&opts.name).await.map_err(|e| op_error(&e)) },
-        |e| bad_request_error("worker::status", &e),
-    );
-    let _ = iii.register_function("worker::status", describe_op(rf, "worker::status"));
+    let rf = op_registration("worker::status", |opts: StatusOptions| async move {
+        build_status(&opts.name).await.map_err(|e| op_error(&e))
+    });
+    let _ = iii.register_function("worker::status", rf);
 }
 
 /// `worker::validate` — dry-run an `iii.worker.yaml` without installing.
@@ -546,62 +575,59 @@ fn register_status(iii: &IIIClient) {
 /// YAML text, preferred for authoring) or `path` (host file or worker dir,
 /// resolved like `worker::add { kind: "local" }`).
 fn register_validate(iii: &IIIClient) {
-    let rf = RegisterFunction::new_async_with_bad_request(
-        |opts: ValidateOptions| async move {
-            let report: ManifestReport = match (opts.manifest, opts.path) {
-                (Some(_), Some(_)) | (None, None) => {
-                    return Err(op_error(&WorkerOpError::BadRequest {
-                        function_id: "worker::validate".into(),
-                        reason: "pass exactly one of `manifest` (inline YAML) or `path` \
+    let rf = op_registration("worker::validate", |opts: ValidateOptions| async move {
+        let report: ManifestReport = match (opts.manifest, opts.path) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Err(op_error(&WorkerOpError::BadRequest {
+                    function_id: "worker::validate".into(),
+                    reason: "pass exactly one of `manifest` (inline YAML) or `path` \
                                  (host file or worker directory)"
-                            .into(),
-                    }));
-                }
-                (Some(text), None) => report_from_str(&text),
-                (None, Some(p)) => {
-                    let file = if p.is_dir() {
-                        p.join(WORKER_MANIFEST)
-                    } else {
-                        p
-                    };
-                    // Stat-first so a huge file is rejected without reading it
-                    // into memory (same cap the add path enforces).
-                    match std::fs::metadata(&file) {
-                        Ok(meta) if meta.len() > MAX_LOCAL_MANIFEST_BYTES => {
-                            let mut r = ManifestReport::default();
-                            r.errors.push(format!(
-                                "{} is {} bytes; iii.worker.yaml is capped at \
+                        .into(),
+                }));
+            }
+            (Some(text), None) => report_from_str(&text),
+            (None, Some(p)) => {
+                let file = if p.is_dir() {
+                    p.join(WORKER_MANIFEST)
+                } else {
+                    p
+                };
+                // Stat-first so a huge file is rejected without reading it
+                // into memory (same cap the add path enforces).
+                match std::fs::metadata(&file) {
+                    Ok(meta) if meta.len() > MAX_LOCAL_MANIFEST_BYTES => {
+                        let mut r = ManifestReport::default();
+                        r.errors.push(format!(
+                            "{} is {} bytes; iii.worker.yaml is capped at \
                                  {MAX_LOCAL_MANIFEST_BYTES} bytes",
-                                file.display(),
-                                meta.len(),
-                            ));
-                            r
-                        }
-                        Ok(_) => match std::fs::read_to_string(&file) {
-                            Ok(content) => report_from_str(&content),
-                            Err(e) => {
-                                let mut r = ManifestReport::default();
-                                r.errors
-                                    .push(format!("cannot read {}: {e}", file.display()));
-                                r
-                            }
-                        },
+                            file.display(),
+                            meta.len(),
+                        ));
+                        r
+                    }
+                    Ok(_) => match std::fs::read_to_string(&file) {
+                        Ok(content) => report_from_str(&content),
                         Err(e) => {
                             let mut r = ManifestReport::default();
-                            r.errors.push(format!(
-                                "cannot stat {} on the engine/daemon host: {e}",
-                                file.display(),
-                            ));
+                            r.errors
+                                .push(format!("cannot read {}: {e}", file.display()));
                             r
                         }
+                    },
+                    Err(e) => {
+                        let mut r = ManifestReport::default();
+                        r.errors.push(format!(
+                            "cannot stat {} on the engine/daemon host: {e}",
+                            file.display(),
+                        ));
+                        r
                     }
                 }
-            };
-            Ok::<_, Error>(report)
-        },
-        |e| bad_request_error("worker::validate", &e),
-    );
-    let _ = iii.register_function("worker::validate", describe_op(rf, "worker::validate"));
+            }
+        };
+        Ok::<_, Error>(report)
+    });
+    let _ = iii.register_function("worker::validate", rf);
 }
 
 fn sink_ref(sink: &Arc<IIIEventSink>) -> &dyn EventSink {
@@ -614,110 +640,80 @@ fn sink_ref(sink: &Arc<IIIEventSink>) -> &dyn EventSink {
 fn register_add(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::add",
-        describe_op(
-            RegisterFunction::new_async_with_bad_request(
-                move |opts: AddOptions| {
-                    let project_root = project_root.clone();
-                    let sink = sink.clone();
-                    async move {
-                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                        core_add::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                            .await
-                            .map_err(|e| op_error(&e))
-                    }
-                },
-                |e| bad_request_error("worker::add", &e),
-            ),
-            "worker::add",
-        ),
+        op_registration("worker::add", move |opts: AddOptions| {
+            let project_root = project_root.clone();
+            let sink = sink.clone();
+            async move {
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                core_add::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                    .await
+                    .map_err(|e| op_error(&e))
+            }
+        }),
     );
 }
 
 fn register_remove(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::remove",
-        describe_op(
-            RegisterFunction::new_async_with_bad_request(
-                move |opts: RemoveOptions| {
-                    let project_root = project_root.clone();
-                    let sink = sink.clone();
-                    async move {
-                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                        core_remove::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                            .await
-                            .map_err(|e| op_error(&e))
-                    }
-                },
-                |e| bad_request_error("worker::remove", &e),
-            ),
-            "worker::remove",
-        ),
+        op_registration("worker::remove", move |opts: RemoveOptions| {
+            let project_root = project_root.clone();
+            let sink = sink.clone();
+            async move {
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                core_remove::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                    .await
+                    .map_err(|e| op_error(&e))
+            }
+        }),
     );
 }
 
 fn register_update(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::update",
-        describe_op(
-            RegisterFunction::new_async_with_bad_request(
-                move |opts: UpdateOptions| {
-                    let project_root = project_root.clone();
-                    let sink = sink.clone();
-                    async move {
-                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                        core_update::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                            .await
-                            .map_err(|e| op_error(&e))
-                    }
-                },
-                |e| bad_request_error("worker::update", &e),
-            ),
-            "worker::update",
-        ),
+        op_registration("worker::update", move |opts: UpdateOptions| {
+            let project_root = project_root.clone();
+            let sink = sink.clone();
+            async move {
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                core_update::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                    .await
+                    .map_err(|e| op_error(&e))
+            }
+        }),
     );
 }
 
 fn register_start(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::start",
-        describe_op(
-            RegisterFunction::new_async_with_bad_request(
-                move |opts: StartOptions| {
-                    let project_root = project_root.clone();
-                    let sink = sink.clone();
-                    async move {
-                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                        core_start::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                            .await
-                            .map_err(|e| op_error(&e))
-                    }
-                },
-                |e| bad_request_error("worker::start", &e),
-            ),
-            "worker::start",
-        ),
+        op_registration("worker::start", move |opts: StartOptions| {
+            let project_root = project_root.clone();
+            let sink = sink.clone();
+            async move {
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                core_start::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                    .await
+                    .map_err(|e| op_error(&e))
+            }
+        }),
     );
 }
 
 fn register_stop(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::stop",
-        describe_op(
-            RegisterFunction::new_async_with_bad_request(
-                move |opts: StopOptions| {
-                    let project_root = project_root.clone();
-                    let sink = sink.clone();
-                    async move {
-                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                        core_stop::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                            .await
-                            .map_err(|e| op_error(&e))
-                    }
-                },
-                |e| bad_request_error("worker::stop", &e),
-            ),
-            "worker::stop",
-        ),
+        op_registration("worker::stop", move |opts: StopOptions| {
+            let project_root = project_root.clone();
+            let sink = sink.clone();
+            async move {
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                core_stop::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                    .await
+                    .map_err(|e| op_error(&e))
+            }
+        }),
     );
 }
 
@@ -726,47 +722,33 @@ fn register_list(iii: &IIIClient, project_root: PathBuf) {
     // deserializes to `None` (→ defaults) and `{}` to `Some(default)`, while
     // any other malformed shape still fails deserialization and returns the
     // W105 envelope so the caller can tell typos apart from "no args".
-    let rf = RegisterFunction::new_async_with_bad_request(
-        move |opts: Option<ListOptions>| {
-            let project_root = project_root.clone();
-            async move {
-                let ctx = ProjectCtx::open_unlocked(project_root);
-                core_list::run(opts.unwrap_or_default(), &ctx, &NullSink, &CliHostShim)
-                    .await
-                    .map_err(|e| op_error(&e))
-            }
-        },
-        |e| bad_request_error("worker::list", &e),
-    );
-    // `Option<T>` auto-extracts a nullable wrapper schema; override with the
-    // plain `ListOptions` schema so `engine::functions::info` serves the same
-    // bytes as `worker::schema`.
-    let mut rf = describe_op(rf, "worker::list");
-    if let Some(schema) = schema_for_value::<ListOptions>() {
-        rf = rf.request_format(schema);
-    }
+    // `op_registration` advertises the plain `ListOptions` schema from
+    // `schema_table()`, not the nullable wrapper.
+    let rf = op_registration("worker::list", move |opts: Option<ListOptions>| {
+        let project_root = project_root.clone();
+        async move {
+            let ctx = ProjectCtx::open_unlocked(project_root);
+            core_list::run(opts.unwrap_or_default(), &ctx, &NullSink, &CliHostShim)
+                .await
+                .map_err(|e| op_error(&e))
+        }
+    });
     let _ = iii.register_function("worker::list", rf);
 }
 
 fn register_clear(iii: &IIIClient, project_root: PathBuf, sink: Arc<IIIEventSink>) {
     let _ = iii.register_function(
         "worker::clear",
-        describe_op(
-            RegisterFunction::new_async_with_bad_request(
-                move |opts: ClearOptions| {
-                    let project_root = project_root.clone();
-                    let sink = sink.clone();
-                    async move {
-                        let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
-                        core_clear::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
-                            .await
-                            .map_err(|e| op_error(&e))
-                    }
-                },
-                |e| bad_request_error("worker::clear", &e),
-            ),
-            "worker::clear",
-        ),
+        op_registration("worker::clear", move |opts: ClearOptions| {
+            let project_root = project_root.clone();
+            let sink = sink.clone();
+            async move {
+                let ctx = ProjectCtx::open(project_root).map_err(|e| op_error(&e))?;
+                core_clear::run(opts, &ctx, sink_ref(&sink), &CliHostShim)
+                    .await
+                    .map_err(|e| op_error(&e))
+            }
+        }),
     );
 }
 
@@ -816,6 +798,30 @@ mod tests {
 
         assert_eq!(req.as_ref().unwrap(), &manifest_schema_json());
         assert_eq!(resp.as_ref().unwrap(), &hello_world_example_json());
+    }
+
+    // `describe_op` silently falls back to the handler's permissive any-value
+    // schema when an op id is missing from `schema_table()` — pin full
+    // coverage so `engine::functions::info` never degrades unnoticed.
+    #[test]
+    fn schema_table_covers_every_registered_op() {
+        for op in [
+            "worker::add",
+            "worker::remove",
+            "worker::update",
+            "worker::start",
+            "worker::stop",
+            "worker::list",
+            "worker::clear",
+            "worker::logs",
+            "worker::schema",
+            "worker::status",
+            "worker::validate",
+        ] {
+            let (_, request, response) = schema_entry(op);
+            assert!(request.is_some(), "{op} request schema missing");
+            assert!(response.is_some(), "{op} response schema missing");
+        }
     }
 
     // `IIIClient` exposes no registry listing, so the duplicate-registration

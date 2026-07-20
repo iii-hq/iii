@@ -6,13 +6,13 @@ owner: "devrel"
 type: "tutorial"
 ---
 
-Linkly's links live in `iii-state`, which you set to in-memory back in Chapter 1. Restart the engine
+Linkly's links live in `state`, which you set to in-memory back in Chapter 1. Restart the engine
 and everything is gone. In this chapter you add a `database` worker (SQLite) that holds the durable
-record of links and a timestamped row for every click on a short code. `iii-state` stays in the
+record of links and a timestamped row for every click on a short code. `state` stays in the
 picture as a fast read cache in front of the database.
 
 <Info>
-  `iii-state` can also persist on its own (`store_method: file_based` with a `file_path`). This
+  `state` can also persist on its own (`store_method: file_based` with a `file_path`). This
   chapter uses a dedicated `database` worker instead, which gives you durable storage plus SQL to
   query it.
 </Info>
@@ -101,7 +101,7 @@ ensureSchema()
 
 #### Setup database writing
 
-**Modify `link::create`** to write to both the database (durable record) and `iii-state` (hot
+**Modify `link::create`** to write to both the database (durable record) and `state` (hot
 cache):
 
 ```typescript src/index.ts {4-11}
@@ -257,7 +257,7 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
   database::query --help` to see what arguments `database::query` accepts.
 </Info>
 
-Linkly's links are now durable: the database is the source of truth, `iii-state` keeps lookups fast,
+Linkly's links are now durable: the database is the source of truth, `state` keeps lookups fast,
 and every redirect appends a timestamped row to the `clicks` table. But that row is written on the
 redirect's hot path, so a slow database write slows the redirect. Next, in
 [Ch. 4: Make it durable](/tutorials/linkly/durable-execution), you move that write onto a queue so

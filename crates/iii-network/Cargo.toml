@@ -23,3 +23,4 @@ hickory-proto = "0.25"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+libc = "0.2"

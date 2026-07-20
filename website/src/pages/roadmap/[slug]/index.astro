@@ -1,0 +1,33 @@
+---
+// iii.dev/roadmap/<slug>/ — one page per tech spec: the interactive deck when
+// roadmap/<slug>/src/App.tsx exists, the generic markdown viewer otherwise
+// (which fetches the sibling spec.json + raw .md endpoints at runtime).
+// The shared site header/footer wrap the deck island in containers matching
+// the deck Sheet's geometry so the columns align.
+import type { Spec } from '../../../../roadmap/scripts/manifest.mjs'
+import { readSpecs } from '../../../../roadmap/scripts/manifest.mjs'
+import DeckHost from '../../../../roadmap/src/DeckHost'
+import '../../../../roadmap/src/index.css'
+import SiteFooter from '../../../components/SiteFooter.astro'
+import SiteNav from '../../../components/SiteNav.astro'
+import RoadmapShell from '../../../layouts/RoadmapShell.astro'
+
+export function getStaticPaths() {
+  const { specs, warnings } = readSpecs()
+  for (const w of warnings) console.warn(`[roadmap] ${w}`)
+  return specs.map((spec) => ({ params: { slug: spec.slug }, props: { spec } }))
+}
+
+type Props = { spec: Spec }
+const { spec } = Astro.props
+---
+
+<RoadmapShell title={spec.title} description={spec.tagline} canonicalPath={`/roadmap/${spec.slug}/`}>
+  <div class="mx-auto w-full max-w-[1200px] border-x border-rule bg-bg">
+    <SiteNav />
+  </div>
+  <DeckHost client:only="react" slug={spec.slug} hasDeck={spec.hasDeck} />
+  <div class="mx-auto w-full max-w-[1200px] flow-root border-x border-b border-rule bg-bg">
+    <SiteFooter />
+  </div>
+</RoadmapShell>

@@ -19,7 +19,7 @@ From a Claude Code session in this workspace:
 
 It reads the spec, reads the repo's component registry, proposes a
 slide-by-slide narrative outline for your approval, scaffolds the deck's
-**content layer** at `<base>/<slug>/` (in iii: `website/presentations/<slug>/`),
+**content layer** at `<base>/<slug>/` (in iii: `website/roadmap/<slug>/`),
 generates the content against the shared `@lib` component library, writes the
 spec's registration frontmatter, and verifies with a typecheck, a build, and a
 browser pass.
@@ -50,13 +50,16 @@ no Vercel, no manual step. See `reference/hosting.md`.
 
 ## Extending the design
 
-The live visual system for iii is `website/presentations/src/` (tokens in
+The live visual system for iii is `website/roadmap/src/` (tokens in
 `src/index.css`, components under `src/components/`); every promoted component
 gets a `COMPONENTS.md` entry per `reference/component-standards.md`.
 **Maintenance note:** `base/` is a snapshot of that live `src/` — re-seed it
-from `website/presentations/` periodically (copy `src/`, `build.mjs`,
-`vite.config.ts`, tsconfigs, `_viewer/`, `COMPONENTS.md`; re-tokenize
-`package.json` name, `src/gallery/site.ts`, `index.html`, `README.md`) so
-fresh repos start with the newest archetypes. The template imports only the
+from `website/roadmap/` periodically (copy `src/`, `scripts/manifest.mjs`,
+`vite.config.ts`, tsconfigs, `_viewer/`, `COMPONENTS.md`; take `build.mjs`
+but restore the standalone `DIST = join(ROOT, 'dist')` — iii's copy emits
+into `website/dist/roadmap/`; keep base's own `package.json`, since iii folds
+those deps into the `iii-website` package; re-tokenize the `package.json`
+name, `src/gallery/site.ts`, `index.html`, `README.md`) so fresh repos start
+with the newest archetypes. The template imports only the
 core `@lib` surface (Section, TopNav, Footer, Sheet, SpecSheet, PageShell,
 hooks, SpecPage), which every base version guarantees.

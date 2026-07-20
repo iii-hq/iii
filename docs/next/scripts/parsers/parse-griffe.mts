@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { EXPAND_PARAMS_RE, INTERNAL_RE, isInternalDoc, parseExpandMarker } from '../types.mjs'
 import type { FunctionDoc, ModuleDoc, ParamDoc, SdkDoc, TypeDoc, TypeGroup } from '../types.mjs'
 
 interface GriffeObject {
@@ -8,7 +9,7 @@ interface GriffeObject {
   target_path?: string
   docstring?: { value?: string; parsed?: { kind: string; value?: any }[] }
   members?: Record<string, GriffeObject>
-  parameters?: { name: string; annotation?: any; default?: string | null }[]
+  parameters?: { name: string; annotation?: any; default?: string | null; kind?: string }[]
   returns?: { annotation?: any }
   labels?: string[]
   annotation?: any
@@ -41,7 +42,11 @@ export function annotationToString(ann: any): string {
       return slice ? `${base}[${slice}]` : base
     }
     case 'ExprTuple':
-      return (ann.elements ?? []).map(annotationToString).filter(Boolean).join(', ')
+      // Don't filter empty renderings: `Callable[[], None]` carries an empty
+      // ExprList that must survive as `[]`.
+      return (ann.elements ?? []).map(annotationToString).join(', ')
+    case 'ExprList':
+      return `[${(ann.elements ?? []).map(annotationToString).join(', ')}]`
     case 'ExprAttribute':
       return ann.member ?? ann.name ?? ''
     default:
@@ -49,14 +54,74 @@ export function annotationToString(ann: any): string {
   }
 }
 
+/** Whether a griffe object is flagged `<!-- docs:internal -->` (hidden from the reference). */
+function isInternalObj(obj: GriffeObject): boolean {
+  return isInternalDoc(obj.docstring?.value)
+}
+
 function extractDocstring(obj: GriffeObject): string {
   if (!obj.docstring?.parsed) {
-    return obj.docstring?.value
-      ?.split(/\n\n(?:Args|Attributes|Returns|Raises|Examples?|Note|Yields|See Also):/)[0]
-      ?.trim() ?? ''
+    return (
+      obj.docstring?.value
+        ?.split(/\n\n(?:Args|Attributes|Returns|Raises|Examples?|Note|Yields|See Also):/)[0]
+        ?.replace(EXPAND_PARAMS_RE, '')
+        .replace(INTERNAL_RE, '')
+        .trim() ?? ''
+    )
   }
   const textParts = obj.docstring.parsed.filter(p => p.kind === 'text')
-  return textParts.map(p => (typeof p.value === 'string' ? p.value : '')).join('\n').trim()
+  return textParts
+    .map(p => (typeof p.value === 'string' ? p.value : ''))
+    .join('\n')
+    .replace(EXPAND_PARAMS_RE, '')
+    .replace(INTERNAL_RE, '')
+    .trim()
+}
+
+/**
+ * Parse a google-style docstring section (e.g. `Args:`, `Attributes:`) from the
+ * raw docstring text into a `name -> description` map. Griffe's `dump` output
+ * frequently omits the pre-parsed sections and gives us only the raw `value`,
+ * so we recover entries by indentation: the section header sets a base indent,
+ * entry lines (`name: text` or `name (type): text`) sit one level deeper, and
+ * more-indented lines continue the previous entry. A dedent back to the header
+ * level (or another section header) ends the section.
+ */
+function parseDocSection(docstring: string, section: string): Record<string, string> {
+  const lines = docstring.split('\n')
+  let headerIndent = -1
+  let i = 0
+  for (; i < lines.length; i++) {
+    const header = lines[i].match(/^(\s*)(\w[\w ]*):\s*$/)
+    if (header && header[2] === section) {
+      headerIndent = header[1].length
+      i++
+      break
+    }
+  }
+  if (headerIndent < 0) return {}
+
+  const result: Record<string, string> = {}
+  let currentName = ''
+  let currentDesc = ''
+  let entryIndent = -1
+  for (; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    const indent = line.match(/^(\s*)/)![1].length
+    if (indent <= headerIndent) break // dedent ends the section
+    const entry = line.match(/^\s*(\w+)\s*(?:\([^)]*\))?:\s*(.*)$/)
+    if (entryIndent < 0) entryIndent = indent
+    if (entry && indent === entryIndent) {
+      if (currentName) result[currentName] = currentDesc.trim()
+      currentName = entry[1]
+      currentDesc = entry[2]
+    } else if (currentName) {
+      currentDesc += ' ' + line.trim()
+    }
+  }
+  if (currentName) result[currentName] = currentDesc.trim()
+  return result
 }
 
 function extractParams(obj: GriffeObject): ParamDoc[] {
@@ -67,6 +132,18 @@ function extractParams(obj: GriffeObject): ParamDoc[] {
         for (const param of section.value as any[]) {
           if (param.name && param.description) docParams[param.name] = param.description
         }
+      }
+    }
+  }
+  // Griffe's `dump` output often omits parsed sections (only the raw docstring
+  // `value` is present), so fall back to parsing the google-style parameter
+  // block directly, the same recovery used for attribute descriptions.
+  if (Object.keys(docParams).length === 0 && obj.docstring?.value) {
+    for (const name of ['Args', 'Arguments', 'Parameters']) {
+      const parsed = parseDocSection(obj.docstring.value, name)
+      if (Object.keys(parsed).length) {
+        Object.assign(docParams, parsed)
+        break
       }
     }
   }
@@ -98,20 +175,32 @@ function isAsync(obj: GriffeObject): boolean {
   return (obj.labels ?? []).includes('async')
 }
 
+/** griffe emits the return annotation directly as `returns`; tolerate the
+ * wrapped `{ annotation }` shape too. */
+function returnAnnotation(obj: GriffeObject): any {
+  const r: any = obj.returns
+  if (!r) return undefined
+  return r.annotation ?? r
+}
+
 function buildSignature(obj: GriffeObject): string {
   const asyncPrefix = isAsync(obj) ? 'async ' : ''
-  const params = (obj.parameters ?? [])
-    .filter(p => p.name !== 'self' && p.name !== 'cls')
-    .map(p => {
-      const annStr = annotationToString(p.annotation)
-      const ann = annStr ? `: ${annStr}` : ''
-      const def = p.default !== undefined && p.default !== null ? ` = ${p.default}` : ''
-      return `${p.name}${ann}${def}`
-    })
-    .join(', ')
-  const retStr = annotationToString(obj.returns?.annotation)
+  const parts: string[] = []
+  let starEmitted = false
+  for (const p of obj.parameters ?? []) {
+    if (p.name === 'self' || p.name === 'cls') continue
+    if (p.kind === 'keyword-only' && !starEmitted) {
+      parts.push('*')
+      starEmitted = true
+    }
+    const annStr = annotationToString(p.annotation)
+    const ann = annStr ? `: ${annStr}` : ''
+    const def = p.default !== undefined && p.default !== null ? ` = ${p.default}` : ''
+    parts.push(`${p.name}${ann}${def}`)
+  }
+  const retStr = annotationToString(returnAnnotation(obj))
   const ret = retStr ? ` -> ${retStr}` : ''
-  return `${asyncPrefix}(${params})${ret}`
+  return `${asyncPrefix}(${parts.join(', ')})${ret}`
 }
 
 function griffeToFunction(obj: GriffeObject): FunctionDoc {
@@ -120,8 +209,9 @@ function griffeToFunction(obj: GriffeObject): FunctionDoc {
     signature: buildSignature(obj),
     description: extractDocstring(obj),
     params: extractParams(obj),
-    returns: { type: annotationToString(obj.returns?.annotation) || 'None', description: '' },
+    returns: { type: annotationToString(returnAnnotation(obj)) || 'None', description: '' },
     examples: extractExamples(obj),
+    ...parseExpandMarker(obj.docstring?.value),
   }
 }
 
@@ -146,6 +236,32 @@ function extractAttributeDescriptions(obj: GriffeObject): Record<string, string>
   return result
 }
 
+/**
+ * Whether a class attribute is required. A plain annotation with no value is
+ * required; any default makes it optional; a pydantic `Field(...)` call is
+ * required unless it carries a default (positional first arg, `default=`, or
+ * `default_factory=`).
+ */
+function attributeRequired(member: GriffeObject): boolean {
+  const value: any = member.value
+  if (value === undefined || value === null) return true
+  if (value?.cls === 'ExprCall' && annotationToString(value.function) === 'Field') {
+    const args: any[] = value.arguments ?? []
+    // Optional only when an explicit default is given as a keyword argument.
+    // Positional args (including the `...` ellipsis, which means "required")
+    // and other keywords like `description` keep the field required.
+    return !args.some(
+      a => a.cls === 'ExprKeyword' && (a.name === 'default' || a.name === 'default_factory'),
+    )
+  }
+  return false
+}
+
+/** Pydantic class configuration, never a data field. */
+function isModelConfig(member: GriffeObject): boolean {
+  return member.name === 'model_config'
+}
+
 function griffeToType(obj: GriffeObject): TypeDoc {
   // A module-level type alias (`X = Callable[...]`) shows up as an attribute.
   if (obj.kind === 'attribute') {
@@ -163,12 +279,23 @@ function griffeToType(obj: GriffeObject): TypeDoc {
   if (obj.members) {
     for (const [name, member] of Object.entries(obj.members)) {
       if (name.startsWith('_')) continue
+      if (isInternalObj(member)) continue
       if (member.kind === 'attribute') {
+        if (isModelConfig(member)) continue
         fields.push({
           name: member.name,
           type: annotationToString(member.annotation) || 'Any',
           description: extractDocstring(member) || attrDescs[member.name] || '',
-          required: member.value === undefined || member.value === null,
+          required: attributeRequired(member),
+        })
+      } else if (member.kind === 'function') {
+        // Methods document as callable-typed rows so their parameters survive
+        // (e.g. `Trigger.unregister`, `TriggerTypeRef.register_trigger`).
+        fields.push({
+          name: member.name,
+          type: buildSignature(member),
+          description: extractDocstring(member).split('\n')[0] ?? '',
+          required: true,
         })
       }
     }
@@ -254,8 +381,20 @@ export function parseGriffe(jsonPath: string): SdkDoc {
   }
   const rootMembers = root.members ?? {}
 
-  // Client + entry point (resolved through the root re-export aliases).
-  const client = resolve(rootMembers['IIIClient'], index)
+  // Client + entry point. Methods come from the implementation class that
+  // `register_worker` returns (`III`), never the `IIIClient` Protocol: the
+  // Protocol elides keyword-only parameters and return annotations, so pages
+  // generated from it under-document the real surface.
+  const registerWorkerAlias = resolve(rootMembers['register_worker'], index)
+  const clientClassName = annotationToString(returnAnnotation(registerWorkerAlias ?? {} as GriffeObject)) || 'III'
+  let client: GriffeObject | undefined
+  for (const obj of index.values()) {
+    if (obj.kind === 'class' && obj.name === clientClassName) {
+      client = obj
+      break
+    }
+  }
+  client ??= resolve(rootMembers['IIIClient'], index)
   const methods: FunctionDoc[] = []
   if (client?.members) {
     for (const [name, member] of Object.entries(client.members)) {
@@ -265,7 +404,7 @@ export function parseGriffe(jsonPath: string): SdkDoc {
   }
   methods.sort((a, b) => a.name.localeCompare(b.name))
 
-  const registerWorker = resolve(rootMembers['register_worker'], index)
+  const registerWorker = registerWorkerAlias
 
   // Public type surface = root re-exports + public submodule members. Both our
   // own package and the re-exported helpers types count.
@@ -281,6 +420,7 @@ export function parseGriffe(jsonPath: string): SdkDoc {
   const types: TypeDoc[] = []
   for (const [name, obj] of publicDefs) {
     if (name === 'IIIClient') continue
+    if (isInternalObj(obj)) continue
     if (obj.kind === 'class') types.push(griffeToType(obj))
     else if (obj.kind === 'attribute') {
       const t = griffeToType(obj)
@@ -365,6 +505,7 @@ export function parseHelpersGriffe(jsonPath: string): SdkDoc {
     const functions: FunctionDoc[] = []
     const types: TypeDoc[] = []
     for (const [name, obj] of resolved) {
+      if (isInternalObj(obj)) continue
       if (obj.kind === 'function') functions.push(griffeToFunction(obj))
       else if (obj.kind === 'class') types.push(griffeToType(obj))
       else if (obj.kind === 'attribute') {

@@ -42,6 +42,8 @@ function shouldIgnoreFetchUrl(url: string): boolean {
 
 /**
  * Patch globalThis.fetch to create OTel CLIENT spans for every HTTP request.
+ *
+ * @param tracer - Tracer used to create the client span for each request.
  */
 export function patchGlobalFetch(tracer: Tracer): void {
   if (originalFetch) return

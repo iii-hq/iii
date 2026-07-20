@@ -66,6 +66,7 @@ fn session_with(
             host: "127.0.0.1".to_string(),
             middleware_function_id: middleware,
             rbac: Some(rbac),
+            ..Default::default()
         }),
         ip_address: "127.0.0.1".to_string(),
         session_id: Uuid::new_v4(),
