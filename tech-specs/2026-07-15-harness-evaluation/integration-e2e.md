@@ -2,9 +2,11 @@
 
 > Status: core implementation, live-contract readiness, and typed teardown
 > exist; Phase 1 scenarios and remaining isolation/port-collision coverage
-> remain.
+> remain. Authoring revised 2026-07-20: scenarios are authored as Rust builder
+> modules instead of YAML; the migration lands before Phase 1, while exactly
+> two authored scenarios exist.
 >
-> Last reviewed: 2026-07-19.
+> Last reviewed: 2026-07-20.
 
 Harness integration is the deterministic regression track for the harness. It
 proves that a checkout or release artifact still obeys the public turn,
@@ -21,7 +23,10 @@ infrastructure is a setup error, never a skip.
 The first implementation is a standalone Rust runner under
 `harness/evals/integration`. It owns process supervision, fixtures, evidence,
 grading, and reports. It does not add a test-only function to the engine or
-harness.
+harness. As the evaluation tracks converge, reusable test support — lifecycle
+await, metric pulls, scripted harness operations — consolidates in the shared
+`harness-test` worker described in [agent-quality.md](agent-quality.md); the
+later console profile is its first consumer here.
 
 ## Decisions
 
@@ -34,7 +39,7 @@ harness.
 | Oracle | Code assertions over status, full transcript, recorder calls, lifecycle events, and process state |
 | Traces | Optional diagnostics; not a readiness requirement or ordinary oracle |
 | Stack profile | `harness-core-v1`; observability is not required |
-| Authoring | One concise `scenario.yaml`, compiled before boot into strict runtime contracts |
+| Authoring | One concise Rust builder module per scenario, compiled before boot into strict runtime contracts; compiled snapshots stay the review artifact |
 | Reports | Stable `result.json` plus volatile `execution.json`, cryptographically linked |
 | Runner packaging | Nested standalone Cargo workspace with its own lockfile |
 | Engine acquisition | Explicit `--engine-bin`/`III_BIN`; runner never downloads artifacts |
@@ -57,7 +62,10 @@ harness.
 - The scripted router is test support outside the subject path. It mirrors the
   router contract but does not claim to test llm-router or providers.
 - Console rendering and browser reconnect behavior use a later stack profile;
-  they do not gate the initial harness scenarios.
+  they do not gate the initial harness scenarios. That profile drives the
+  console with Playwright while the shared `harness-test` worker
+  ([agent-quality.md](agent-quality.md)) scripts harness operations without
+  any LLM call.
 - The runner does not download an engine, worker, model, or fixture during a
   test.
 
@@ -225,10 +233,14 @@ and [`llm-router/src/types/content.rs:5`](https://github.com/iii-hq/workers/blob
 
 ### Authoring and compilation
 
-Scenario authors maintain exactly one source file:
-`scenarios/<slug>/scenario.yaml`. It is parsed as
-`AuthoredScenarioV1`; aliases, typed replies, deterministic defaults, and
-scenario-specific expectations keep routine scenarios concise:
+Scenario authors maintain exactly one source module per scenario:
+`src/scenarios/<slug>.rs`, a Rust function that builds the authored scenario
+data through typed builders and registers it in the scenario list. There is no
+YAML layer: the authored shape below is the runner's own data model, enforced
+by the type system at `cargo build` instead of by a schema validator at load
+time. Aliases, typed replies, deterministic defaults, and scenario-specific
+expectations keep routine scenarios concise. The shape is documented in the
+spec's TS-style notation; the implementation is Rust structs with builders:
 
 ```ts
 interface AuthoredScenarioV1 {
@@ -270,6 +282,33 @@ interface AuthoredScenarioV1 {
 }
 ```
 
+A routine scenario reads like data, because it is data:
+
+```rust
+// src/scenarios/streamed_text.rs
+pub fn scenario() -> AuthoredScenario {
+    AuthoredScenario::new("streamed-text", "streamed text reaches durable completion")
+        .send(Send::message("Return the fixture phrase.").allow([]))
+        .generation(
+            Reply::text("fixture complete")
+                .chunks(["fixture ", "complete"])
+                .usage(8, 2),
+        )
+}
+```
+
+Code-authored fixtures deliberately mirror the agent-quality decision. There,
+YAML orchestration was rejected because tests should be code over public APIs;
+here the authored layer is not orchestration but model-boundary fixture data,
+and Rust is the cleanest host for it: an invalid matcher combination or a
+missing reply no longer waits for script loading — it fails `cargo build`; the
+authored and compiled layers share one set of structs, so there is no schema
+pair to keep synchronized; and the runner keeps a single toolchain. Builders
+produce data only — a builder that derives scenarios from control flow is
+rejected in review, under the same rule that forbids a second orchestration
+language below. Raw frames remain data, so script loading keeps its
+validation as the final defense.
+
 Before any process starts, the compiler resolves that source into the exact
 runtime unit:
 
@@ -300,8 +339,9 @@ literal wire frames. Defaults are allowed only in the authored layer; the
 compiled artifact is strict and self-contained. Its canonical rendering is
 checked into a snapshot or golden test so a compiler-default change is
 reviewable like an authored fixture change. CI validates schema and serde
-round trips for both layers and verifies that committed compiled snapshots
-match a fresh render.
+round trips for the compiled layer and verifies that committed compiled
+snapshots match a fresh render; the authored layer needs no round trip
+because it is never serialized.
 
 `match_overrides` and `reply.type: raw` are escape hatches, not the normal
 authoring path. Raw frames receive the same terminal-frame and
@@ -718,7 +758,7 @@ match one user text block after deleting `/0/timestamp`; `tools` exactly matches
 `[]`; and `response_format`, `thinking_level`, `max_output_tokens`,
 `provider_options`, and `metadata` each use an explicit `absent` matcher. The
 compiler stores every matcher explicitly in `CompiledFixtureV1`; the authored
-YAML states only deviations from deterministic defaults. Request-id suffixes
+builder states only deviations from deterministic defaults. Request-id suffixes
 are zero-based: the first generated ID ends in `:0`, then increments by one.
 
 To remove ambiguity while keeping the frame listing readable, define `A(c, u)`
@@ -894,7 +934,7 @@ binary.
 | 3 | Dynamic registration | Function discovery updates without stale schemas |
 | 3 | Runtime validation | A failed validator drives one bounded public continuation |
 
-The authored schema remains single-send until the repeated-send scenario needs
+The authored layer remains single-send until the repeated-send scenario needs
 more. At that point it may add a typed, ordered `steps` variant whose entries
 are public send/await operations with explicit identity expectations. It must
 not introduce a generic DAG, arbitrary callbacks, or a second orchestration
@@ -910,6 +950,10 @@ harness/evals/integration/
   engine.lock             # repository, 40-hex revision, package, binary path
   src/
     main.rs
+    scenarios/             # authored builder modules + registry
+      mod.rs
+      streamed_text.rs
+      exactly_once_function.rs
     expand/                # authored → compiled contract
     stack/                 # layout, manifest, boot
     process/               # process groups and typed teardown
@@ -917,8 +961,7 @@ harness/evals/integration/
     recorder/              # private control plane and durable event store
     scenario/              # phase runner and reports
     grader/                # pure invariants
-  schemas/
-    authored-scenario.v1.json
+  schemas/                 # serialized layers only; the authored layer is code
     compiled-fixture.v1.json
     router-script.v1.json
     recorder-event.v1.json
@@ -926,8 +969,6 @@ harness/evals/integration/
     execution-report.v1.json
   scenarios/
     system-prompt.txt
-    {streamed-text,exactly-once-function}/
-      scenario.yaml
   tests/snapshots/<scenario-id>.compiled.json
 
 target/integration/<run_id>/
@@ -1004,9 +1045,10 @@ condition for promotion.
 
 The runner implementation must include:
 
-- JSON Schema and serde round-trip tests for `AuthoredScenarioV1`,
-  `CompiledFixtureV1`, router scripts, recorder events,
-  `IntegrationResultV1`, and `ExecutionReportV1`;
+- JSON Schema and serde round-trip tests for `CompiledFixtureV1`, router
+  scripts, recorder events, `IntegrationResultV1`, and `ExecutionReportV1`;
+  builder tests proving every authored scenario compiles and registers exactly
+  once;
 - canonical compiled snapshots for every authored scenario, proving that all
   twelve matchers, frames, send fields, target contracts, and invariants are
   explicit after compilation;
