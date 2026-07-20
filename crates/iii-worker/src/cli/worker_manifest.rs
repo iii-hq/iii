@@ -96,8 +96,9 @@ pub struct WorkerManifest {
 
     // Registry publish metadata. The workers-repo release CI requires these
     // keys (deploy/manifest pick the release artifact type and version
-    // source); the engine accepts them so one iii.worker.yaml can satisfy
-    // both validators, but never reads them at add/start time.
+    // source; tags provide discovery aliases); the engine accepts them so one
+    // iii.worker.yaml can satisfy both validators, but never reads them at
+    // add/start time.
     #[schemars(
         description = "Registry publish metadata: manifest format marker, e.g. `v1`. Accepted and ignored by the engine."
     )]
@@ -112,6 +113,11 @@ pub struct WorkerManifest {
         description = "Registry publish metadata: file the release version is read from (e.g. `Cargo.toml`, `package.json`, `pyproject.toml`), consumed by the workers-repo release CI. Accepted and ignored by the engine."
     )]
     pub manifest: Option<String>,
+
+    #[schemars(
+        description = "Registry publish metadata: search aliases for agent and user discovery (e.g. `sql`, `postgres`). Accepted and ignored by the engine."
+    )]
+    pub tags: Option<Vec<String>>,
 
     #[schemars(
         with = "Option<JsonValue>",
@@ -277,6 +283,24 @@ fn shape_problems(doc: &YamlValue) -> Vec<String> {
             problems.push(format!(
                 "`{section}` must be a mapping of indented `key: value` fields, got {}",
                 yaml_value_desc(v)
+            ));
+        }
+    }
+
+    if let Some(tags) = present(doc.get("tags")) {
+        if let Some(entries) = tags.as_sequence() {
+            for (index, value) in entries.iter().enumerate() {
+                if value.as_str().is_none() {
+                    problems.push(format!(
+                        "`tags[{index}]` must be a string, got {}",
+                        yaml_value_desc(value)
+                    ));
+                }
+            }
+        } else {
+            problems.push(format!(
+                "`tags` must be a list of strings, got {}",
+                yaml_value_desc(tags)
             ));
         }
     }
@@ -709,6 +733,32 @@ mod tests {
     }
 
     #[test]
+    fn report_accepts_registry_tags() {
+        let r = report("name: database\ntags:\n  - sql\n  - postgres\nscripts:\n  start: run\n");
+
+        assert!(r.valid, "registry tags must not invalidate: {r:?}");
+        assert!(r.unknown_keys.is_empty(), "got: {:?}", r.unknown_keys);
+
+        let r = report("name: database\ntags: sql\nscripts:\n  start: run\n");
+        assert!(!r.valid, "tags must be a list: {r:?}");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("`tags` must be a list of strings")),
+            "got: {r:?}"
+        );
+
+        let r = report("name: database\ntags:\n  - sql\n  - 7\nscripts:\n  start: run\n");
+        assert!(!r.valid, "tag entries must be strings: {r:?}");
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.contains("`tags[1]` must be a string, got the number 7")),
+            "got: {r:?}"
+        );
+    }
+
+    #[test]
     fn report_minimal_manifest_is_valid() {
         let r = report("name: w\nscripts:\n  start: \"node i.js\"\n");
         assert!(r.valid, "got: {r:?}");
@@ -930,13 +980,21 @@ mod tests {
         assert!(runtime_kind_desc.contains("DEPRECATED"));
         // Publish metadata is in the schema (so authored manifests validate)
         // and described as engine-ignored (so LLMs don't cargo-cult it).
-        for field in ["iii", "deploy", "manifest"] {
+        for field in ["iii", "deploy", "manifest", "tags"] {
             let desc = s["properties"][field]["description"].as_str().unwrap_or("");
             assert!(
                 desc.contains("ignored by the engine"),
                 "`{field}` must be described as engine-ignored: {desc:?}"
             );
         }
+        assert_eq!(
+            s["properties"]["tags"]["type"],
+            serde_json::json!(["array", "null"])
+        );
+        assert_eq!(
+            s["properties"]["tags"]["items"]["type"],
+            serde_json::json!("string")
+        );
     }
 
     #[test]
