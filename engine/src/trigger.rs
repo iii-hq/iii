@@ -593,6 +593,48 @@ impl TriggerRegistry {
 
         Ok(true)
     }
+
+    /// Move a live binding to `pending_triggers` after its provider reported
+    /// an async registration error (the caller has already verified the
+    /// reporter owned the trigger type). No-op when the binding is already
+    /// gone — a concurrent disconnect GC or explicit unregister reaped it,
+    /// and parking then would resurrect a dead binding.
+    pub async fn park_rejected_trigger(&self, id: &str, reporter_worker_id: Uuid) {
+        let parked_type = {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let Some((_, failed)) = self.triggers.remove(id) else {
+                return;
+            };
+            tracing::warn!(
+                trigger_id = %id,
+                trigger_type = %failed.trigger_type,
+                function_id = %failed.function_id,
+                "Trigger registration rejected by provider; parked as pending until the trigger type re-registers"
+            );
+            let trigger_type_id = failed.trigger_type.clone();
+            self.pending_triggers.insert(failed.id.clone(), failed);
+            trigger_type_id
+        };
+
+        // Close the park/replacement race (mirror of the unknown-type park in
+        // `register_trigger`): the reporter's ownership was checked before the
+        // park, but a replacement provider may have registered — and drained
+        // pending intents — in between, which would strand this park until
+        // yet another re-registration. If the type's current owner is no
+        // longer the reporter, claim the intent back (via `remove`, so we
+        // never double-activate with a drain) and activate it through the
+        // current provider. While the reporter still owns the type the park
+        // is intended: replaying would just be rejected again.
+        if let Some(trigger_type) = self.trigger_types.get(&parked_type)
+            && trigger_type.worker_id != Some(reporter_worker_id)
+            && let Some((_, parked)) = self.pending_triggers.remove(id)
+        {
+            self.activate_pending_trigger(&trigger_type, parked).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1533,6 +1575,63 @@ mod tests {
         assert!(
             !registry.pending_triggers.contains_key("t1"),
             "explicit unregister must clear a raced re-park, or the intent replays on the next type registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_rejection_after_provider_replacement_reactivates_through_current_provider() {
+        let registry = TriggerRegistry::new();
+        let old_provider = Uuid::new_v4();
+        let replacement = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "webhook",
+                "gen B",
+                Box::new(Arc::clone(&replacement)),
+                Some(Uuid::new_v4()),
+            ))
+            .await
+            .unwrap();
+        registry
+            .triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+
+        // The rejection reporter is the replaced generation's worker, not the
+        // current owner: the park must immediately re-activate through the
+        // replacement instead of stranding the binding.
+        registry.park_rejected_trigger("t1", old_provider).await;
+
+        assert!(registry.triggers.contains_key("t1"));
+        assert!(!registry.pending_triggers.contains_key("t1"));
+        assert_eq!(replacement.register_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn rejection_from_current_owner_parks_without_replay_pingpong() {
+        let registry = TriggerRegistry::new();
+        let owner_worker = Uuid::new_v4();
+        let owner = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "webhook",
+                "Webhook",
+                Box::new(Arc::clone(&owner)),
+                Some(owner_worker),
+            ))
+            .await
+            .unwrap();
+        registry
+            .triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+
+        registry.park_rejected_trigger("t1", owner_worker).await;
+
+        assert!(!registry.triggers.contains_key("t1"));
+        assert!(registry.pending_triggers.contains_key("t1"));
+        assert_eq!(
+            owner.register_count.load(Ordering::SeqCst),
+            0,
+            "no replay back to the provider that just rejected the bind"
         );
     }
 

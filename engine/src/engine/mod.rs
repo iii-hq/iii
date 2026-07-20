@@ -626,29 +626,14 @@ impl Engine {
                     return Ok(());
                 }
 
-                // Re-park instead of dropping; park only when this call
-                // removed it — a concurrent disconnect GC may have already
-                // reaped it, and parking then would resurrect a dead binding.
-                // The transition lock makes the remove+park atomic with an
-                // explicit unregister's two-map clear.
-                {
-                    let _park = self
-                        .trigger_registry
-                        .park_transition
-                        .lock()
-                        .expect("park_transition lock poisoned");
-                    if let Some((_, failed)) = self.trigger_registry.triggers.remove(id) {
-                        tracing::warn!(
-                            trigger_id = %id,
-                            trigger_type = %stored_trigger_type,
-                            function_id = %stored_function_id,
-                            "Trigger registration rejected by provider; parked as pending until the trigger type re-registers"
-                        );
-                        self.trigger_registry
-                            .pending_triggers
-                            .insert(failed.id.clone(), failed);
-                    }
-                }
+                // Re-park instead of dropping (no-op if a concurrent
+                // disconnect GC or unregister already reaped it). If the
+                // reporting provider was replaced while the rejection was in
+                // flight, the registry re-activates the intent through the
+                // replacement instead of stranding it.
+                self.trigger_registry
+                    .park_rejected_trigger(id, worker.id)
+                    .await;
 
                 let Some(originator_id) = originator_id else {
                     tracing::debug!(
@@ -3683,6 +3668,83 @@ mod tests {
                     .pending_triggers
                     .contains_key("trig-race"),
                 "explicitly unregistered binding resurrected as a pending intent"
+            );
+        }
+    }
+
+    /// A provider replacement racing a late rejection from the replaced
+    /// generation. Whatever the interleave, the binding must end live under
+    /// the replacement — never stranded in the pending bucket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn provider_replacement_racing_late_rejection_never_strands_the_binding() {
+        ensure_default_meter();
+        for _ in 0..100 {
+            let engine = Arc::new(Engine::new());
+
+            let (user_tx, _user_rx) = mpsc::channel::<Outbound>(8);
+            let user = WorkerConnection::new(user_tx);
+            engine.worker_registry.register_worker(user.clone());
+
+            let (old_tx, _old_rx) = mpsc::channel::<Outbound>(8);
+            let old_provider = WorkerConnection::new(old_tx);
+            insert_trigger_type_for(&engine, "http", &old_provider);
+
+            engine.trigger_registry.triggers.insert(
+                "trig-race".to_string(),
+                crate::trigger::Trigger {
+                    id: "trig-race".to_string(),
+                    trigger_type: "http".to_string(),
+                    function_id: "fn-1".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: Some(user.id),
+                    metadata: None,
+                },
+            );
+
+            let msg = Message::TriggerRegistrationResult {
+                id: "trig-race".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-1".to_string(),
+                error: Some(crate::protocol::ErrorBody::new("provider_error", "boom")),
+            };
+
+            let (new_tx, _new_rx) = mpsc::channel::<Outbound>(8);
+            let new_provider = WorkerConnection::new(new_tx);
+
+            let reject = {
+                let engine = Arc::clone(&engine);
+                let old_provider = old_provider.clone();
+                tokio::spawn(async move { engine.router_msg(&old_provider, &msg).await })
+            };
+            let replace = {
+                let engine = Arc::clone(&engine);
+                let new_provider = new_provider.clone();
+                tokio::spawn(async move {
+                    engine
+                        .trigger_registry
+                        .register_trigger_type(crate::trigger::TriggerType::new(
+                            "http",
+                            "replacement",
+                            Box::new(new_provider.clone()),
+                            Some(new_provider.id),
+                        ))
+                        .await
+                })
+            };
+
+            reject.await.unwrap().unwrap();
+            replace.await.unwrap().unwrap();
+
+            assert!(
+                engine.trigger_registry.triggers.contains_key("trig-race"),
+                "binding must end live under the replacement provider"
+            );
+            assert!(
+                !engine
+                    .trigger_registry
+                    .pending_triggers
+                    .contains_key("trig-race"),
+                "binding stranded in pending despite a live replacement provider"
             );
         }
     }
