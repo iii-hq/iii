@@ -1,12 +1,14 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { type BlogPost, readBlogPosts } from './blog-posts'
+import { BLOG_CONTENT_DIR, type BlogPost, readBlogPosts } from './blog-posts'
 import { SITE_ORIGIN } from './routes'
 
 const WEBSITE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const BLOG_DIST = path.resolve(WEBSITE_ROOT, '../blog/dist')
-const BLOG_CONTENT = path.resolve(WEBSITE_ROOT, '../blog/src/content/blog')
+// The export runs after `astro build` (see the package build script), so the
+// built site is the source of truth for asset URLs and the output lands next
+// to the built /blog pages.
+const BLOG_DIST = path.join(WEBSITE_ROOT, 'dist', 'blog')
 
 const IMAGE_RE = /!\[([^\]]*)\]\(\.\.\/\.\.\/assets\/blog\/[^/]+\/([^)]+)\)/g
 
@@ -21,50 +23,42 @@ export function formatBlogPostLinkLine(post: BlogPost): string {
   return `- [${title}](${url}) — ${description}`
 }
 
-async function listAstroAssets(distDir: string): Promise<string[]> {
-  try {
-    return await fs.readdir(path.join(distDir, '_astro'))
-  } catch {
-    return []
-  }
-}
+// Absolute asset paths as they appear in the built HTML (e.g.
+// /_astro/banner.CKx2.png). Captured from each post's own page so the export
+// never guesses where the bundler put an image or what it hashed it to.
+const BUILT_ASSET_PATH_RE = /["'(](\/[^"'()\s]*_astro\/[^"'()\s]+)["')]/g
 
-const POST_ASSET_RE = /\/blog\/_astro\/([^"'\s)]+)/g
-
-async function listPostAstroAssets(distDir: string, slug: string): Promise<string[] | null> {
-  let html: string
-  try {
-    html = await fs.readFile(path.join(distDir, slug, 'index.html'), 'utf8')
-  } catch {
-    return null
-  }
+export async function listPostAssetPaths(distDir: string, slug: string): Promise<string[]> {
+  const htmlPath = path.join(distDir, slug, 'index.html')
+  const html = await fs.readFile(htmlPath, 'utf8').catch(() => {
+    throw new Error(`generate-blog-md: ${htmlPath} missing — run \`astro build\` first`)
+  })
   const assets = new Set<string>()
-  for (const match of html.matchAll(POST_ASSET_RE)) assets.add(match[1])
-  return assets.size > 0 ? [...assets] : null
+  for (const match of html.matchAll(BUILT_ASSET_PATH_RE)) assets.add(match[1])
+  return [...assets]
 }
 
-function resolveAssetUrl(filename: string, astroAssets: string[]): string | null {
+function resolveAssetUrl(filename: string, assetPaths: string[]): string | null {
   const stem = path.basename(filename, path.extname(filename))
-  const match = astroAssets.find((file) => file.startsWith(`${stem}.`))
-  return match ? `${SITE_ORIGIN}/blog/_astro/${match}` : null
+  const match = assetPaths.find((assetPath) => path.basename(assetPath).startsWith(`${stem}.`))
+  return match ? `${SITE_ORIGIN}${match}` : null
 }
 
-export function rewriteBlogImagePaths(body: string, astroAssets: string[]): string {
+export function rewriteBlogImagePaths(body: string, assetPaths: string[]): string {
   return body.replace(IMAGE_RE, (full, alt: string, filename: string) => {
-    const url = resolveAssetUrl(filename, astroAssets)
+    const url = resolveAssetUrl(filename, assetPaths)
     return url ? `![${alt}](${url})` : full
   })
 }
 
 export async function exportBlogMarkdown(
-  contentDir = BLOG_CONTENT,
+  contentDir = BLOG_CONTENT_DIR,
   distDir = BLOG_DIST,
 ): Promise<number> {
   const posts = (await readBlogPosts(contentDir)).filter((post) => !post.draft)
   if (posts.length === 0) {
     throw new Error(`no publishable blog posts found in ${contentDir} — refusing to export an empty blog`)
   }
-  const astroAssets = await listAstroAssets(distDir)
 
   await Promise.all(
     posts.map(async (post) => {
@@ -73,8 +67,8 @@ export async function exportBlogMarkdown(
       }
       const sourcePath = path.join(contentDir, post.sourceFile)
       const raw = await fs.readFile(sourcePath, 'utf8')
-      const postAssets = (await listPostAstroAssets(distDir, post.slug)) ?? astroAssets
-      const exported = rewriteBlogImagePaths(raw, postAssets)
+      const assetPaths = await listPostAssetPaths(distDir, post.slug)
+      const exported = rewriteBlogImagePaths(raw, assetPaths)
       await fs.writeFile(path.join(distDir, `${post.slug}.md`), exported, 'utf8')
     }),
   )

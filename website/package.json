@@ -7,10 +7,10 @@
   "engines": {
     "node": ">=22.12.0"
   },
-  "description": "iii.dev — one Astro static site: landing, blog, and the /roadmap tech-spec decks",
+  "description": "iii.dev \u2014 one Astro static site: landing, blog, and the /roadmap tech-spec decks",
   "scripts": {
     "dev": "astro dev",
-    "build": "tsx scripts/validate-roadmap.ts && astro build && tsx scripts/generate-llms-agents.ts && tsx scripts/generate-sitemap.ts",
+    "build": "tsx scripts/validate-roadmap.ts && astro build && tsx scripts/generate-blog-md.ts && tsx scripts/generate-llms-agents.ts && tsx scripts/generate-sitemap.ts",
     "preview": "astro preview",
     "type-check": "tsc -p roadmap --noEmit",
     "test": "tsx --test scripts/*.test.ts ../infra/terraform/website/cloudfront_functions/*.test.js",

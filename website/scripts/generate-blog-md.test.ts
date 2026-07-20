@@ -4,20 +4,32 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { exportBlogMarkdown, formatBlogPostLinkLine, rewriteBlogImagePaths } from './generate-blog-md'
+import { SITE_ORIGIN } from './routes'
 
 async function setupTempBlogDirs(): Promise<{ contentDir: string; distDir: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'iii-blog-md-'))
   const contentDir = path.join(root, 'content')
-  const distDir = path.join(root, 'dist')
+  const distDir = path.join(root, 'dist-blog')
   await fs.mkdir(contentDir, { recursive: true })
-  await fs.mkdir(path.join(distDir, '_astro'), { recursive: true })
+  await fs.mkdir(distDir, { recursive: true })
   return { contentDir, distDir }
 }
 
-test('rewriteBlogImagePaths maps source assets to built _astro URLs', () => {
+async function writeBuiltPostHtml(distDir: string, slug: string, assetPaths: string[]): Promise<void> {
+  await fs.mkdir(path.join(distDir, slug), { recursive: true })
+  const imgs = assetPaths.map((p) => `<img src="${p}">`).join('')
+  await fs.writeFile(path.join(distDir, slug, 'index.html'), `<html><body>${imgs}</body></html>`, 'utf8')
+}
+
+test('rewriteBlogImagePaths maps source assets to built asset URLs', () => {
   const body = '![banner](../../assets/blog/demo/banner.png)'
-  const out = rewriteBlogImagePaths(body, ['banner.DU5X-Ggo_1kFy9f.webp'])
-  assert.match(out, /https:\/\/iii\.dev\/blog\/_astro\/banner\.DU5X-Ggo_1kFy9f\.webp/)
+  const out = rewriteBlogImagePaths(body, ['/_astro/banner.DU5X-Ggo_1kFy9f.webp'])
+  assert.equal(out, `![banner](${SITE_ORIGIN}/_astro/banner.DU5X-Ggo_1kFy9f.webp)`)
+})
+
+test('rewriteBlogImagePaths leaves unknown images untouched', () => {
+  const body = '![banner](../../assets/blog/demo/banner.png)'
+  assert.equal(rewriteBlogImagePaths(body, []), body)
 })
 
 test('formatBlogPostLinkLine escapes brackets in title', () => {
@@ -29,13 +41,10 @@ test('formatBlogPostLinkLine escapes brackets in title', () => {
     pubDate: new Date('2026-06-01'),
     draft: false,
   })
-  assert.equal(
-    line,
-    '- [Loop \\[engineering\\]](https://iii.dev/blog/demo.md) — desc',
-  )
+  assert.equal(line, `- [Loop \\[engineering\\]](${SITE_ORIGIN}/blog/demo.md) — desc`)
 })
 
-test('exportBlogMarkdown writes slug.md and index.md', async () => {
+test('exportBlogMarkdown writes slug.md and index.md with asset URLs from the built page', async () => {
   const { contentDir, distDir } = await setupTempBlogDirs()
   await fs.writeFile(
     path.join(contentDir, 'demo.md'),
@@ -49,20 +58,20 @@ pubDate: 2026-06-01
 `,
     'utf8',
   )
-  await fs.writeFile(path.join(distDir, '_astro', 'banner.abc123.webp'), '', 'utf8')
+  await writeBuiltPostHtml(distDir, 'demo', ['/_astro/banner.abc123.webp'])
 
   const count = await exportBlogMarkdown(contentDir, distDir)
   assert.equal(count, 1)
 
   const exported = await fs.readFile(path.join(distDir, 'demo.md'), 'utf8')
   assert.match(exported, /title: 'Demo'/)
-  assert.match(exported, /https:\/\/iii\.dev\/blog\/_astro\/banner\.abc123\.webp/)
+  assert.ok(exported.includes(`${SITE_ORIGIN}/_astro/banner.abc123.webp`))
 
   const index = await fs.readFile(path.join(distDir, 'index.md'), 'utf8')
-  assert.match(index, /https:\/\/iii\.dev\/blog\/demo\.md/)
+  assert.ok(index.includes(`${SITE_ORIGIN}/blog/demo.md`))
 })
 
-test('exportBlogMarkdown resolves same-basename images from the post built HTML', async () => {
+test('exportBlogMarkdown resolves same-basename images per post from each built page', async () => {
   const { contentDir, distDir } = await setupTempBlogDirs()
   const posts = [
     { slug: 'post-a', hash: 'aaa111' },
@@ -81,13 +90,7 @@ pubDate: 2026-06-01
 `,
       'utf8',
     )
-    await fs.writeFile(path.join(distDir, '_astro', `banner.${hash}.webp`), '', 'utf8')
-    await fs.mkdir(path.join(distDir, slug), { recursive: true })
-    await fs.writeFile(
-      path.join(distDir, slug, 'index.html'),
-      `<html><body><img src="/blog/_astro/banner.${hash}.webp"></body></html>`,
-      'utf8',
-    )
+    await writeBuiltPostHtml(distDir, slug, [`/_astro/banner.${hash}.webp`])
   }
 
   await exportBlogMarkdown(contentDir, distDir)
@@ -104,6 +107,22 @@ test('exportBlogMarkdown throws when no publishable posts exist', async () => {
   await assert.rejects(() => exportBlogMarkdown(contentDir, distDir), /no publishable blog posts/)
 })
 
+test('exportBlogMarkdown throws when a post has no built page yet', async () => {
+  const { contentDir, distDir } = await setupTempBlogDirs()
+  await fs.writeFile(
+    path.join(contentDir, 'unbuilt.md'),
+    `---
+title: 'Unbuilt'
+description: 'd'
+pubDate: 2026-06-01
+---
+`,
+    'utf8',
+  )
+
+  await assert.rejects(() => exportBlogMarkdown(contentDir, distDir), /run `astro build` first/)
+})
+
 test('exportBlogMarkdown reads .mdx sources and writes slug.md output', async () => {
   const { contentDir, distDir } = await setupTempBlogDirs()
   await fs.writeFile(
@@ -118,6 +137,7 @@ MDX body
 `,
     'utf8',
   )
+  await writeBuiltPostHtml(distDir, 'mdx-post', [])
 
   const count = await exportBlogMarkdown(contentDir, distDir)
   assert.equal(count, 1)
@@ -127,5 +147,5 @@ MDX body
   assert.match(exported, /MDX body/)
 
   const index = await fs.readFile(path.join(distDir, 'index.md'), 'utf8')
-  assert.match(index, /https:\/\/iii\.dev\/blog\/mdx-post\.md/)
+  assert.ok(index.includes(`${SITE_ORIGIN}/blog/mdx-post.md`))
 })

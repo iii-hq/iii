@@ -169,9 +169,9 @@ The `skills/` directory contains 26 agent skills (iii-prefixed) auto-discovered 
 Published at https://iii.dev/blog/ — architecture posts and worked examples for coding agents. Each post is available as markdown:
 
 - Index: https://iii.dev/blog/index.md
-- Posts: https://iii.dev/blog/<slug>.md (e.g. https://iii.dev/blog/add-a-worker.md)
+- Posts: https://iii.dev/blog/<slug>.md (every slug listed in the index)
 
-Source lives in `blog/src/content/blog/`. Also indexed in https://iii.dev/llms.txt and https://iii.dev/AGENTS.md.
+Source lives in `website/src/content/blog/`. Also indexed in https://iii.dev/llms.txt and https://iii.dev/AGENTS.md.
 
 ## Licensing
 
