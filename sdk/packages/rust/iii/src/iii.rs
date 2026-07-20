@@ -2884,7 +2884,8 @@ mod tests {
         assert_eq!(IIIClient::registration_key(&Message::Pong), None);
         assert_eq!(
             IIIClient::registration_key(&Message::WorkerRegistered {
-                worker_id: "w".to_string()
+                worker_id: "w".to_string(),
+                reattach_token: None
             }),
             None
         );

@@ -457,7 +457,12 @@ class III:
     async def _send(self, msg: Any) -> None:
         data = self._to_dict(msg)
         if self._ws and self._ws.state.name == "OPEN":
-            log.debug(f"Send: {json.dumps(data)[:200]}")
+            # Redact the reattach secret from debug logs; it authorizes
+            # evicting this worker's previous connection.
+            log_safe = {
+                k: ("***" if k == "reattach_token" else v) for k, v in data.items()
+            }
+            log.debug(f"Send: {json.dumps(log_safe)[:200]}")
             await self._ws.send(json.dumps(data))
         else:
             if len(self._queue) >= MAX_QUEUE_SIZE:
