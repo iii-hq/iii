@@ -130,7 +130,7 @@ export interface ISdk {
    * })
    *
    * // Enqueue for async processing (the queue must be declared in the
-   * // iii-queue worker's queue_configs)
+   * // queue worker's queue_configs)
    * const receipt = await worker.trigger({
    *   function_id: 'process-order',
    *   payload: { orderId: '123' },

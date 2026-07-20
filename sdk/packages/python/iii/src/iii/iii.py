@@ -1457,7 +1457,7 @@ class TriggerAction:
 
     Examples:
         >>> from iii import TriggerAction
-        >>> # The queue must be declared in the iii-queue worker's queue_configs.
+        >>> # The queue must be declared in the queue worker's queue_configs.
         >>> worker.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
         >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
     """

@@ -14,11 +14,11 @@ iii splits configuration across two layers:
 - **`config.yaml`** declares _which workers run_ and provides bootstrap values for their settings.
   It is the file the engine reads at startup; see
   [Engine configuration](./engine#engine-configuration).
-- **The `configuration` worker** owns _each worker's runtime settings_. It is a schema-validated,
+- **The `configuration` worker** manages _each worker's runtime settings_. It is a schema-validated,
   reactive registry that ships enabled by default: every worker registers its settings schema under
-  its own entry (`http`, `state`, `queue`, ...), and every change is validated against
-  that schema and applied to the running worker. Most settings apply immediately; a few take effect
-  at the next engine start (see [How changes apply](#how-changes-apply)).
+  its own entry (`http`, `state`, `queue`, ...), and every change is validated against that schema
+  and applied to the running worker. Most settings apply immediately; a few take effect at the next
+  engine start (see [How changes apply](#how-changes-apply)).
 
 The `config:` block under a worker in `config.yaml` is a **bootstrap seed**: it is read once, on the
 first boot after the worker registers its schema, to create the worker's configuration entry. From
@@ -57,8 +57,8 @@ Each file carries the entry's identity plus its current value:
 ```yaml config/http.yaml
 id: http
 name: HTTP
-description:
-  HTTP server settings — host/port binding, CORS, request timeout, concurrency limit, and global
+description: >
+  HTTP server settings: host/port binding, CORS, request timeout, concurrency limit, and global
   middleware.
 value:
   port: 3111
@@ -127,8 +127,7 @@ a string. Pass `raw: true` to `configuration::get` to read the stored template f
 
 ## How changes apply
 
-Most settings hot-apply the moment they change: `http` swaps CORS, timeout, and middleware
-without dropping the listener, and binds a new `host`/`port` before releasing the old one. A few
+Most settings apply the moment they change such as `http`'s CORS, timeout, and port changes. A few
 fields are restart-tier: the change is recorded, logged, and takes effect at the next engine start
 (for example `state`'s storage adapter). Each worker's page on
 [workers.iii.dev](https://workers.iii.dev/) documents its settings and how they apply.

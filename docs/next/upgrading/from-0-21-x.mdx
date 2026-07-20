@@ -1,0 +1,102 @@
+---
+title: "Upgrading from 0.21.x to 0.22.x"
+description:
+  "Rename the always-running workers, drop the removed engine flag, and update the Rust
+  register-function API when moving to iii 0.22.x."
+owner: "devrel"
+type: "how-to"
+---
+
+0.22.x drops the `iii-` prefix from the workers that ship with the engine, removes one engine CLI
+flag, and removes one Rust SDK constructor. The worker rename is a deprecation with a migration
+window: the old names still resolve but emit a warning. The other two are clean breaks. Apply the
+steps below that touch surfaces your project uses.
+
+## Step 1: Rename the always-running workers
+
+The following workers lost their `iii-` prefix. Rename them wherever you reference them:
+`config.yaml` entries, `iii worker add` commands, etc.
+
+| Old name     | New name |
+| ------------ | -------- |
+| `iii-http`   | `http`   |
+| `iii-cron`   | `cron`   |
+| `iii-queue`  | `queue`  |
+| `iii-state`  | `state`  |
+| `iii-pubsub` | `pubsub` |
+
+```yaml config.yaml {2-3}
+workers:
+  - name: http
+  - name: queue
+```
+
+The old prefixed names still resolve, so a project keeps booting after the upgrade, but
+`iii worker add` prints a deprecation warning for them and a future release will remove the aliases.
+Rename now to clear the warning.
+
+All other workers with `iii-` prefix keep those prefixes for now. Most of them will be removed in a
+future version.
+
+## Step 2: Remove duplicate worker entries from config.yaml
+
+The engine now rejects a `config.yaml` that lists both a deprecated name and its replacement,
+failing to boot with a `Duplicate worker configurations` error that names the conflicting pair.
+Remove or rename those entries.
+
+<Warning>
+  Keep exactly one entry per worker. Listing both `iii-http` and `http` (or any other old/new pair)
+  is a hard startup error that stops the engine from booting. Remove the deprecated entry.
+</Warning>
+
+## Step 3: Drop the removed engine flag
+
+The `--use-default-config` engine flag is removed. Running `iii` with no `config.yaml` now creates
+one with an empty `workers:` list: it prompts in an interactive terminal and writes the file without
+asking in a non-interactive session (CI, containers). Drop the flag from scripts, Dockerfiles, and
+CI.
+
+The recommended way to start a new iii project is with: `iii project init`.
+
+```bash
+# Before
+iii --use-default-config
+
+# After
+iii project init .
+iii
+```
+
+See [Engine](../using-iii/engine) for the current no-config behavior.
+
+## Step 4: Update the Rust register-function API
+
+The Rust SDK removed `RegisterFunction::new_async_with_bad_request`. Register async handlers with
+`RegisterFunction::new_async`; a deserialization failure on the input now surfaces as `Error::Serde`
+rather than through a caller-supplied mapper.
+
+```rust
+// Before
+let reg = RegisterFunction::new_async_with_bad_request(handler, |e| my_error(e));
+
+// After
+let reg = RegisterFunction::new_async(handler);
+```
+
+This step applies only to Rust workers that called the removed constructor. Node, Python, Browser,
+and Go workers need no change here. This handler was only in the Rust SDK a short time so it's
+unlikely that code was using it.
+
+## Migration checklist
+
+- [ ] Rename the always-running workers to their unprefixed names in `config.yaml`,
+      `iii worker add`, and trigger types (Step 1)
+- [ ] Remove any duplicate old/new worker entry from `config.yaml` (Step 2)
+- [ ] Drop `--use-default-config` from scripts and CI (Step 3)
+- [ ] Replace Rust `new_async_with_bad_request` with `new_async` (Step 4)
+
+## Result
+
+The project boots on 0.22.x with no deprecation warnings: the always-running workers use their
+unprefixed names, `config.yaml` lists each worker once, the engine starts without the removed flag,
+and Rust workers build against the current register-function API.
