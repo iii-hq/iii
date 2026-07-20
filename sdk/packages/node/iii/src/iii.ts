@@ -145,6 +145,7 @@ class Sdk implements IIIClient {
   private workerName: string
   private workerDescription?: string
   private workerId?: string
+  private reattachToken?: string
   private reconnectTimeout?: NodeJS.Timeout
   private heartbeatInterval?: NodeJS.Timeout
   private idleTimeout?: NodeJS.Timeout
@@ -782,6 +783,20 @@ class Sdk implements IIIClient {
     this.ws?.on('pong', touch)
     this.startHeartbeat()
 
+    // Reconnect: present the previous engine-assigned identity BEFORE the
+    // registration replay so the engine retires the old connection and the
+    // replay lands on a clean slate instead of racing its cleanup. The
+    // token proves we ARE that worker (ids alone are publicly listable).
+    if (this.workerId) {
+      this.sendMessageRaw(
+        JSON.stringify({
+          type: MessageType.Reattach,
+          previous_worker_id: this.workerId,
+          reattach_token: this.reattachToken,
+        }),
+      )
+    }
+
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
     })
@@ -1100,8 +1115,9 @@ class Sdk implements IIIClient {
         message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
       )
     } else if (msgType === MessageType.WorkerRegistered) {
-      const { worker_id } = message as WorkerRegisteredMessage
+      const { worker_id, reattach_token } = message as WorkerRegisteredMessage
       this.workerId = worker_id
+      this.reattachToken = reattach_token
       console.debug('[iii] Worker registered with ID:', worker_id)
       this.startMetricsReporting()
     }

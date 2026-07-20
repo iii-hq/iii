@@ -21,6 +21,7 @@ class MessageType(str, Enum):
     UNREGISTER_TRIGGER_TYPE = "unregistertriggertype"
     TRIGGER_REGISTRATION_RESULT = "triggerregistrationresult"
     WORKER_REGISTERED = "workerregistered"
+    REATTACH = "reattach"
 
 
 class RegisterTriggerTypeMessage(BaseModel):

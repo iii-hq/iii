@@ -207,6 +207,7 @@ class III:
         # _set_connection_state as soon as connect_async starts.
         self._connection_listeners: list[ConnectionStateCallback] = []
         self._worker_id: str | None = None
+        self._reattach_token: str | None = None
 
         # Background event loop thread
         self._loop = asyncio.new_event_loop()
@@ -397,6 +398,18 @@ class III:
     async def _on_connected(self) -> None:
         self._reconnect_attempt = 0
         self._set_connection_state("connected")
+        # Reconnect: present the previous engine-assigned identity BEFORE the
+        # registration replay so the engine retires the old connection and the
+        # replay lands on a clean slate instead of racing its cleanup. The
+        # token proves we ARE that worker (ids alone are publicly listable).
+        if self._worker_id:
+            reattach: dict[str, Any] = {
+                "type": MessageType.REATTACH.value,
+                "previous_worker_id": self._worker_id,
+            }
+            if self._reattach_token:
+                reattach["reattach_token"] = self._reattach_token
+            await self._send(reattach)
         # Re-register all (snapshot to avoid mutation from caller thread)
         for trigger_type_data in list(self._trigger_types.values()):
             await self._send(trigger_type_data.message)
@@ -444,7 +457,12 @@ class III:
     async def _send(self, msg: Any) -> None:
         data = self._to_dict(msg)
         if self._ws and self._ws.state.name == "OPEN":
-            log.debug(f"Send: {json.dumps(data)[:200]}")
+            # Redact the reattach secret from debug logs; it authorizes
+            # evicting this worker's previous connection.
+            log_safe = {
+                k: ("***" if k == "reattach_token" else v) for k, v in data.items()
+            }
+            log.debug(f"Send: {json.dumps(log_safe)[:200]}")
             await self._ws.send(json.dumps(data))
         else:
             if len(self._queue) >= MAX_QUEUE_SIZE:
@@ -505,6 +523,7 @@ class III:
         elif msg_type == MessageType.WORKER_REGISTERED.value:
             worker_id = data.get("worker_id", "")
             self._worker_id = worker_id
+            self._reattach_token = data.get("reattach_token")
             log.debug(f"Worker registered with ID: {worker_id}")
 
     def _handle_result(self, invocation_id: str, result: Any, error: Any) -> None:

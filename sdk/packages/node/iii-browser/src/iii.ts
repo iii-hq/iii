@@ -78,6 +78,8 @@ class Sdk implements ISdk {
   private connectionState: IIIConnectionState = 'disconnected'
   private connectionListeners = new Set<(state: IIIConnectionState) => void>()
   private isShuttingDown = false
+  private workerId?: string
+  private reattachToken?: string
 
   constructor(
     private readonly address: string,
@@ -520,6 +522,20 @@ class Sdk implements ISdk {
       this.ws.onmessage = this.onMessage.bind(this)
     }
 
+    // Reconnect: present the previous engine-assigned identity BEFORE the
+    // registration replay so the engine retires the old connection and the
+    // replay lands on a clean slate instead of racing its cleanup. The
+    // token proves we ARE that worker (ids alone are publicly listable).
+    if (this.workerId) {
+      this.sendMessageRaw(
+        JSON.stringify({
+          type: MessageType.Reattach,
+          previous_worker_id: this.workerId,
+          reattach_token: this.reattachToken,
+        }),
+      )
+    }
+
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
     })
@@ -754,6 +770,10 @@ class Sdk implements ISdk {
       this.onUnregisterTrigger(
         message as { trigger_type?: string; id: string; function_id?: string; config?: unknown },
       )
+    } else if (msgType === MessageType.WorkerRegistered) {
+      const { worker_id, reattach_token } = message as { worker_id: string; reattach_token?: string }
+      this.workerId = worker_id
+      this.reattachToken = reattach_token
     }
   }
 }
