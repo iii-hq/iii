@@ -349,7 +349,7 @@ class III:
         except Exception as e:
             # Catch everything: a connect-time failure must never kill the
             # reconnect loop. Enumerating exception types here has failed
-            # twice — ConnectionError/OSError missed websockets'
+            # twice: ConnectionError/OSError missed websockets'
             # InvalidHandshake (MOT-3931), and that in turn missed
             # InvalidMessage, raised when the engine-boot listener race
             # surfaces through iii-network's accept-then-dial as an EOF
@@ -841,7 +841,7 @@ class III:
         caller's thread), then once per transition. Transitions fire on the
         SDK's background event-loop thread: keep handlers fast and do not
         call sync SDK methods from them (they would raise ``RuntimeError``).
-        Treat calls as state notifications, not edges — a state may rarely
+        Treat calls as state notifications, not edges. A state may rarely
         be observed twice around subscription. Registering the same handler
         twice fires it twice. Returns an idempotent unsubscribe function
         that removes only its own registration.
@@ -1482,7 +1482,7 @@ def register_worker(address: str, options: InitOptions | None = None) -> III:
 
     Blocks up to 30 seconds for the WebSocket connection to be established.
     If the engine is not reachable in time, a warning is logged and the
-    client is returned anyway — it keeps retrying in the background and
+    client is returned anyway; it keeps retrying in the background and
     flushes registrations once connected. Use
     ``add_connection_state_listener`` to observe the actual transition.
 

@@ -18,7 +18,7 @@ Register the worker with a iii instance, returns a connected worker client.
 
 Blocks up to 30 seconds for the WebSocket connection to be established.
 If the engine is not reachable in time, a warning is logged and the
-client is returned anyway — it keeps retrying in the background and
+client is returned anyway; it keeps retrying in the background and
 flushes registrations once connected. Use
 ``add_connection_state_listener`` to observe the actual transition.
 
@@ -425,7 +425,7 @@ The handler is fired immediately with the current state (on the
 caller's thread), then once per transition. Transitions fire on the
 SDK's background event-loop thread: keep handlers fast and do not
 call sync SDK methods from them (they would raise ``RuntimeError``).
-Treat calls as state notifications, not edges — a state may rarely
+Treat calls as state notifications, not edges. A state may rarely
 be observed twice around subscription. Registering the same handler
 twice fires it twice. Returns an idempotent unsubscribe function
 that removes only its own registration.
