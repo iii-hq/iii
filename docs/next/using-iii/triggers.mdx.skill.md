@@ -85,29 +85,36 @@ Per-type configuration is documented in each worker's Worker Docs (e.g.
 
 ### Trigger metadata
 
-The optional `metadata` field on a trigger registration (`null` / `None` in the examples above)
-is arbitrary JSON stored with the trigger and delivered to the receiving function as a
-distinct argument alongside the payload. It is useful for providing contextual information about
-the trigger or execution context to the receiving function.
+The optional `metadata` field on a trigger registration (`null` / `None` in the examples above) is
+arbitrary JSON stored with the trigger and delivered to the receiving function as a distinct
+argument alongside the payload. It is useful for providing contextual information about the trigger
+or execution context to the receiving function.
 
-A target function shared by many triggers can use it to recover which registration fired and
-with what context. See
-[Receive per-invocation metadata](../creating-workers/functions#receive-per-invocation-metadata)
-for handler-side access in each SDK.
+A target function shared by many triggers can use it to recover which registration fired and with
+what context. See
+[Receive per-invocation metadata](../creating-workers/functions#receive-per-invocation-metadata) for
+handler-side access in each SDK.
 
 <Note>
   `metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations
 </Note>
 
-## Handling missing triggers
+## Registering before a trigger type is available
 
-When the engine cannot register a trigger, most commonly because the trigger type's worker is not
-active in the project, it sends a `TriggerRegistrationResult` with an `error` body back to the
-worker that initiated the request and logs it.
+Registration is order-independent. If you register a trigger whose type is not active in the project
+yet (for example, the worker that publishes `http` has not connected), the engine stores the
+registration optimistically and activates it automatically once that trigger type becomes available.
+The engine logs a pending notice while a registration waits, and re-establishes stored registrations
+when a publishing worker restarts, so a worker that comes up after its consumers receives trigger
+registrations as expected.
 
-For known trigger types (ex. `http`, `subscribe`, `state`, `durable:subscriber`, `stream`), the
-error message will include the install command for the missing worker. If it doesn't you can find
-the worker that exposes the needed type at [workers.iii.dev](https://workers.iii.dev)
+For known trigger types (ex. `http`, `state`, `durable:subscriber`, `stream`), the pending notice
+includes the install command for the worker that provides the type. For other types, find the worker
+that exposes the needed type at [workers.iii.dev](https://workers.iii.dev).
+
+A registration fails when an active provider rejects the config it was given (for example, an
+invalid trigger config). The engine then sends a `TriggerRegistrationResult` with an `error` body
+back to the worker that initiated the request and logs it.
 
 ## Bind multiple triggers to one function
 

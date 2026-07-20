@@ -16,7 +16,11 @@ pip install iii-sdk
 
 Register the worker with a iii instance, returns a connected worker client.
 
-Blocks until the WebSocket connection is established and ready.
+Blocks up to 30 seconds for the WebSocket connection to be established.
+If the engine is not reachable in time, a warning is logged and the
+client is returned anyway — it keeps retrying in the background and
+flushes registrations once connected. Use
+``add_connection_state_listener`` to observe the actual transition.
 
 **Signature**
 
@@ -405,6 +409,47 @@ unregister_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any])
 ```python
 worker.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
 worker.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### add_connection_state_listener
+
+Subscribe to connection-state transitions.
+
+The handler is fired immediately with the current state (on the
+caller's thread), then once per transition. Transitions fire on the
+SDK's background event-loop thread: keep handlers fast and do not
+call sync SDK methods from them (they would raise ``RuntimeError``).
+Treat calls as state notifications, not edges — a state may rarely
+be observed twice around subscription. Registering the same handler
+twice fires it twice. Returns an idempotent unsubscribe function
+that removes only its own registration.
+
+**Signature**
+
+```python
+add_connection_state_listener(handler: ConnectionStateCallback) -> Callable[[], None]
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="handler" type="ConnectionStateCallback" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```python
+unsubscribe = worker.add_connection_state_listener(
+    lambda state: print(f"engine link: {state}")
+)
 ```
 
 
