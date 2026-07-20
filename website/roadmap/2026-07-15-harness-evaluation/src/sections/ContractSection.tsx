@@ -15,7 +15,7 @@ export function ContractSection() {
       index="06"
       eyebrow="integration · the script"
       title="every router field is matched explicitly. there is no runner default."
-      lede="the first scenario, C-E2E-001, streams the phrase “fixture complete” through eight frozen frames. authors write one concise scenario.yaml; the compiler expands it into an explicit matcher for all twelve router::chat fields, including five explicit absences."
+      lede="the first scenario, C-E2E-001, streams the phrase “fixture complete” through eight frozen frames. authors write one concise rust builder module; the compiler expands it into an explicit matcher for all twelve router::chat fields, including five explicit absences."
     >
       <div className="grid grid-cols-1 @4xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
         <div className="border border-rule bg-bg">

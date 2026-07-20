@@ -5,26 +5,26 @@ import { QUAL_LANES, QUAL_STEPS } from '../content/flows'
 import { TRUST_RULES } from '../content/protocols'
 
 const BUDGETS = [
-  { name: 'max_cycles · attempt_timeout_ms', type: 'hard', desc: 'the evaluator refuses work beyond them and calls harness::stop at the deadline.' },
-  { name: 'max_total_tokens · max_cost_usd', type: 'soft ceiling', desc: 'visible only after a model turn; may overshoot by one bounded turn, recorded, never mislabeled as hard.' },
-  { name: 'max_browser_actions · max_network_requests', type: 'soft ceiling', desc: 'checked before the next unit; a fixture can pin network activity to zero.' },
-  { name: 'attempts', type: '1–10 per leg', desc: 'comparison legs run in a persisted, seed-derived interleaved schedule, reproducible pair by pair.' },
+  { name: 'vitest timeout + harness::stop', type: 'hard', desc: 'a test deadline bounds every case; afterEach stops any non-terminal session the test created.' },
+  { name: 'tokens · cost', type: 'asserted ceiling', desc: 'expect() over harness::metrics totals. visible only after a model turn; may overshoot by one bounded turn, never mislabeled as hard.' },
+  { name: 'feedback loops', type: 'bounded in code', desc: 'an ordinary loop with its bound visible in the test file; each retry is a public send in the same session.' },
+  { name: 'network', type: 'fixture-pinned', desc: 'a fixture profile can pin network activity to zero and prove it from its own evidence.' },
 ] as const
 
 /**
- * A5 — one agent-quality attempt: start, send, validate, feed back or publish.
- * The claim: real model, bounded feedback, independent judgment.
+ * A5 — one agent-quality test: send, await, read evidence, assert.
+ * The claim: real model, plain tests, evidence it cannot fake.
  */
 export function QualityLoopSection() {
   return (
     <Section
       id="quality"
       index="09"
-      eyebrow="agent quality · a run"
-      title="a real model, a bounded loop, and validators it cannot see."
-      lede="the harness-eval worker persists before every step, survives duplicate and missing completion events, and lets exactly one thing extend a run: an open validator with feedback and budget remaining."
+      eyebrow="agent quality · a test"
+      title="a real model, plain tests, and evidence it cannot fake."
+      lede="an ordinary vitest file drives the production path through trigger(), waits for durable terminal state, and grades outcomes with explicit assertions over assets the harness builds by default. helpers exist only where real platform work exists."
     >
-      <SequencePlayer title="one attempt, manifest to report" lanes={QUAL_LANES} steps={QUAL_STEPS} />
+      <SequencePlayer title="one test, send to verdict" lanes={QUAL_LANES} steps={QUAL_STEPS} width={1030} />
 
       <div className="mt-6 grid grid-cols-1 @4xl:grid-cols-2 gap-4">
         <SpecSheet title="budgets, honestly labeled" meta="hard vs soft">
@@ -37,7 +37,7 @@ export function QualityLoopSection() {
           </div>
         </SpecSheet>
 
-        <SpecSheet title="trust boundaries" meta="the subject stays a subject">
+        <SpecSheet title="trust boundaries" meta="no self-grading, no model judges">
           <div className="flex flex-col">
             {TRUST_RULES.map((row) => (
               <SpecRow key={row.name} name={row.name}>
@@ -53,7 +53,7 @@ export function QualityLoopSection() {
           href="#/agent-quality-protocol"
           className="inline-flex h-10 items-center bg-bg text-ink border border-ink px-4 font-mono text-[13px] lowercase transition-colors hover:bg-ink hover:text-bg"
         >
-          the manifest, error codes, recovery table, and corpus →
+          the test file, helpers, evidence contracts, and corpus →
         </a>
       </div>
     </Section>

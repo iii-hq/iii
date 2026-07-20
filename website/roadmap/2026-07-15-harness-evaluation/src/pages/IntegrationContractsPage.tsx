@@ -21,26 +21,23 @@ export function IntegrationContractsPage() {
     >
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
-          authoring and compilation · one source file per scenario
+          authoring and compilation · one source module per scenario
         </div>
-        <CodeBlock title="scenario.yaml · AuthoredScenarioV1, resolved before boot">
-          <K>id</K>: <S>streamed-text</S>
-          {'\n'}
-          <K>send</K>: <M>{'{ '}</M>message: <S>&quot;Return the fixture phrase.&quot;</S>, allow: <M>[]</M>{' '}
-          <M>{'}'}</M>
+        <CodeBlock title="src/scenarios/streamed_text.rs · builders producing data, resolved before boot">
+          <K>AuthoredScenario</K>::new(<S>&quot;streamed-text&quot;</S>,{' '}
+          <S>&quot;streamed text reaches durable completion&quot;</S>)
+          {'\n  '}.send(<K>Send</K>::message(<S>&quot;Return the fixture phrase.&quot;</S>).allow(<M>[]</M>))
           {'   '}
-          <C>{'# [] disables dispatch'}</C>
-          {'\n'}
-          <K>router</K>:{'\n  '}generations:{'\n    '}- reply: <M>{'{ '}</M>type: <S>text</S>, text:{' '}
-          <S>&quot;fixture complete&quot;</S>, chunks: <M>[</M>
+          <C>{'// [] disables dispatch'}</C>
+          {'\n  '}.generation(<K>Reply</K>::text(<S>&quot;fixture complete&quot;</S>).chunks(<M>[</M>
           <S>&quot;fixture &quot;</S>, <S>&quot;complete&quot;</S>
-          <M>]</M> <M>{'}'}</M>
+          <M>]</M>).usage(<K>8</K>, <K>2</K>))
           {'\n\n'}
-          <C>{'# the compiler expands this into CompiledFixtureV1:'}</C>
+          <C>{'// no yaml layer: a fixture mistake fails cargo build first.'}</C>
           {'\n'}
-          <C>{'# all twelve matchers explicit, literal wire frames,'}</C>
+          <C>{'// the compiler expands this into CompiledFixtureV1: all twelve'}</C>
           {'\n'}
-          <C>{'# derived recorder config, deadlines, invariants.'}</C>
+          <C>{'// matchers explicit, literal wire frames, derived recorder config.'}</C>
         </CodeBlock>
         <div className="mt-4 border border-rule bg-bg flex flex-col">
           {AUTHORING_LAYERS.map((row) => (

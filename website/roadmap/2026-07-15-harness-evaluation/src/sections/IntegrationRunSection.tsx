@@ -31,7 +31,7 @@ export function IntegrationRunSection() {
       title="everything is real except the model."
       lede="press play, or step it yourself. one fresh isolated stack per scenario: the real engine, queue, and durable turn loop, with a strict script where the model would be."
     >
-      <SequencePlayer title="one scenario, allocate to teardown" lanes={CONF_LANES} steps={CONF_STEPS} />
+      <SequencePlayer title="one scenario, allocate to teardown" lanes={CONF_LANES} steps={CONF_STEPS} width={1030} />
 
       <div className="mt-6 grid grid-cols-1 @4xl:grid-cols-2 gap-4">
         <SpecSheet title="what runs for real" meta="stack profile · harness-core-v1">

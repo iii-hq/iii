@@ -59,13 +59,13 @@ export function Hero() {
               <TerminalRow
                 command={
                   <>
-                    harness-eval::start <span className="text-ink-faint">{'{ scenario: fan-out-security-scan }'}</span>
+                    vitest run <span className="text-ink-faint">order-refund-flow.test.ts</span>
                   </>
                 }
                 output={
                   <span className="flex items-center gap-x-2">
                     <StatusDot pulse />
-                    <span>running · attempt 1 · cycle 1 · pinned real model</span>
+                    <span>running · harness::send · pinned real model</span>
                   </span>
                 }
               />

@@ -14,14 +14,14 @@ export const HERO_CLAIMS = [
   },
   {
     title: 'real-model quality',
-    body: 'a pinned model, prompt, and function catalog runs representative workflows through the production router and provider.',
+    body: 'plain vitest tests drive a pinned model, prompt, and function catalog through the production router and provider.',
   },
   {
     title: 'evidence over claims',
-    body: 'code assertions over durable public evidence: send response, status, full transcript, recorder log, lifecycle events.',
+    body: 'code assertions over durable public evidence: transcript, status, session tree, tree-summed metrics, trace spans.',
   },
   {
     title: 'no silent green',
-    body: 'missing infrastructure, malformed evidence, or a validator failure never becomes a passing skip. ever.',
+    body: 'missing infrastructure, malformed evidence, or a failed check never becomes a passing skip. ever.',
   },
 ] as const

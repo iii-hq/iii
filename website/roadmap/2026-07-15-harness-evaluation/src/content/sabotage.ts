@@ -219,9 +219,10 @@ export const SABOTAGE_MODES: SabotageMode[] = [
   {
     id: 'bad-fixture',
     chip: 'ship a broken fixture',
-    deed: 'author a script whose generation has no terminal frame.',
+    deed: 'author a raw-frame generation with no terminal frame.',
     log: [
-      { text: 'compile scenario.yaml → generation 1 never ends', tone: 'bad' },
+      { text: 'cargo build accepts it: raw frames are data, not types', tone: 'dim' },
+      { text: 'compile builders → generation 1 never ends', tone: 'bad' },
       { text: 'script validation rejects the fixture', tone: 'warn' },
       { text: 'nothing boots, nothing sends', tone: 'dim' },
     ],

@@ -18,11 +18,11 @@ export function VerdictsSection() {
       id="verdicts"
       index="10"
       eyebrow="agent quality · verdicts"
-      title="one precedence rule, applied at every level. no composite score."
-      lede="required validators fold into a cycle, cycles into an attempt, attempts into the run, always error over fail over inconclusive over pass. a required or safety failure cannot be offset by lower latency or cost."
+      title="explicit assertions, complete evidence, nothing silent."
+      lede="every check is an expect() a reviewer can read in the file. helpers throw on incomplete evidence, so a partial sum is never graded — and no model grader or blended score sits between the evidence and the verdict."
     >
       <Funnel
-        title="how a run gets its verdict"
+        title="how a test earns its verdict"
         paths={VERDICT_PATHS}
         target={VERDICT_TARGET}
         reject={VERDICT_REJECT}
@@ -42,8 +42,9 @@ export function VerdictsSection() {
             ))}
           </div>
           <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
-            advisory validators (<span className="text-ink">required: false</span>) stay visible in the report and
-            never change the aggregate.
+            custom domain checks are ordinary iii functions the test calls with{' '}
+            <span className="text-ink">trigger()</span> and asserts on — not a validator protocol with its own
+            lifecycle.
           </div>
         </div>
 

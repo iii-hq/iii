@@ -54,8 +54,8 @@ export const TRACKS: TrackProfile[] = [
     rows: [
       {
         k: 'status',
-        v: 'proposed',
-        detail: 'delivery starts only after the public durable harness::session-tree dependency exists; the integration runner does not host or emulate this evaluator.',
+        v: 'proposed · revised',
+        detail: 'revised 2026-07-20 after design review: test cases are code, not manifests. delivery starts after the harness::session-tree and harness::metrics contracts exist.',
       },
       {
         k: 'model boundary',
@@ -64,23 +64,23 @@ export const TRACKS: TrackProfile[] = [
       },
       {
         k: 'primary oracle',
-        v: 'versioned validators',
-        detail: 'deterministic outcome checks plus raw quality, reliability, latency, token, and cost dimensions.',
+        v: 'explicit expect() assertions',
+        detail: 'plain code assertions over durable records and fixture state, plus raw metrics from assets the harness builds by default. no model grader in the suite.',
       },
       {
         k: 'execution owner',
-        v: 'harness-eval worker',
-        detail: 'one dedicated worker with a durable run record: orchestration, validation, evidence, reports.',
+        v: 'vitest + harness-test worker',
+        detail: 'an ordinary e2e suite calling trigger() on public functions directly; the shared harness-test worker holds only helpers with real platform work: awaitTerminal, sessionMetrics, triggeredWork.',
       },
       {
         k: 'first use',
-        v: 'scheduled + comparison runs',
-        detail: 'single-scenario runs and baseline/candidate comparisons with a persisted interleaved schedule.',
+        v: 'scheduled real-model runs',
+        detail: 'headless, against a dedicated stack with a scoped provider key. baseline/candidate comparison is deferred until repeated runs establish variance.',
       },
       {
         k: 'release policy',
         v: 'no composite score',
-        detail: 'raw deltas only; thresholds arrive only after repeated runs establish variance. safety failures disqualify.',
+        detail: 'raw metrics only; thresholds arrive only after repeated runs establish variance. a failed required check disqualifies.',
       },
     ],
   },
@@ -95,11 +95,11 @@ export const ADJACENT_SYSTEMS = [
   {
     name: 'workflow worker',
     type: 'stays separate',
-    desc: 'a production dag orchestrator. it may be the subject of a scenario, but harness-eval does not extend its dag or retry model.',
+    desc: 'a production dag orchestrator. it may be the subject of a test, but the agent-quality suite does not extend its dag or retry model.',
   },
   {
     name: 'harness::react',
     type: 'not an evaluator',
-    desc: 'a lightweight event-to-agent bridge without an experiment record, validation protocol, retries, or report aggregation.',
+    desc: 'a lightweight event-to-agent bridge without the evidence contracts or assertions required here.',
   },
 ] as const

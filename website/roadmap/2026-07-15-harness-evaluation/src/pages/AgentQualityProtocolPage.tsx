@@ -2,112 +2,127 @@ import { PageShell } from '@lib/components/PageShell'
 import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
 import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
 import { FnChip } from '@lib/components/schematic/FnChip'
-import { ERROR_CODES, EVAL_SURFACE, GENERATED_VALIDATOR_RULES, RECOVERY_TABLE, SCENARIO_CORPUS } from '../content/protocols'
+import { AUTHORING_RULES, EVIDENCE_CONTRACTS, FUTURE_WORK, QUALITY_HELPERS, SCENARIO_CORPUS } from '../content/protocols'
 
 /**
- * A14 — deep dive on the harness-eval protocol: the worker surface, the strict
- * manifest, durable recovery, and the initial scenario corpus.
+ * A14 — deep dive on the agent-quality suite: the test file as the protocol,
+ * the minimal helpers, the proposed default evidence contracts, and the corpus.
  */
 export function AgentQualityProtocolPage() {
   return (
     <PageShell
       eyebrow="deep dive · agent quality"
-      title="the harness-eval protocol"
-      description="one dedicated worker with a durable run record, a strict versioned manifest, a validation protocol every grader implements, and a recovery table that makes restarts deterministic. all proposed api, protocol_version 1, unknown fields denied."
+      title="the test file is the protocol"
+      description="an ordinary vitest suite over public iii and harness functions. no scenario manifest, no wrapper dsl, no evaluator state machine: a developer reading a test file sees exactly how to orchestrate a headless harness programmatically. revised 2026-07-20 after design review."
       related={[{ slug: 'integration-contracts', label: 'integration contracts' }]}
     >
       <div>
-        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">the worker surface</div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+          a test file, abridged
+        </div>
+        <CodeBlock title="order-refund-flow.test.ts · vitest + trigger(), nothing else">
+          <K>const</K> subject <M>=</M> <M>{'{ '}</M>model: <S>&apos;pinned-provider-model&apos;</S>, options:{' '}
+          <M>{'{ '}</M>system_prompt, system_prompt_strategy: <S>&apos;override&apos;</S>, functions <M>{'} }'}</M>
+          {'\n\n'}
+          <K>const</K> <M>{'{ '}</M>session_id<M>{' }'}</M> <M>=</M> <K>await</K> trigger(
+          <S>&apos;harness::send&apos;</S>, <M>{'{ '}</M>...subject, message, idempotency_key: <S>`$&#123;RUN&#125;:refund:1`</S>
+          <M>{' }'}</M>)
+          {'\n'}
+          <K>await</K> awaitTerminal(session_id)
+          {'   '}
+          <C>{'// events signal, durable status decides'}</C>
+          {'\n\n'}
+          <K>await</K> trigger(<S>&apos;harness::send&apos;</S>, <M>{'{ '}</M>...subject, session_id, message: next
+          <M>{' }'}</M>)
+          {'   '}
+          <C>{'// a sequence is just the next send'}</C>
+          {'\n'}
+          <K>await</K> awaitTerminal(session_id)
+          {'\n\n'}
+          <K>const</K> refunds <M>=</M> <K>await</K> trigger(<S>&apos;database::query&apos;</S>, <M>{'{ '}</M>sql
+          <M>{' }'}</M>)
+          {'   '}
+          <C>{'// durable outcome, not the agent’s claim'}</C>
+          {'\n'}
+          expect(refunds).toHaveLength(<K>1</K>)
+          {'\n\n'}
+          <K>const</K> metrics <M>=</M> <K>await</K> sessionMetrics(session_id)
+          {'   '}
+          <C>{'// whole session tree, or a typed throw'}</C>
+          {'\n'}
+          expect(metrics.totals.function_call_errors).toBe(<K>0</K>)
+          {'\n'}
+          expect(metrics.totals.cost_usd).toBeLessThan(<K>5</K>)
+          {'\n\n'}
+          <K>const</K> triggered <M>=</M> <K>await</K> triggeredWork(session_id)
+          {'   '}
+          <C>{'// trace spans — fails closed when missing'}</C>
+          {'\n'}
+          expect(triggered.function_call_errors).toBe(<K>0</K>)
+        </CodeBlock>
+        <p className="mt-3 font-mono text-[12px] leading-[1.7] text-ink-faint lowercase max-w-[72ch]">
+          harness defaults re-resolve on every send, so the subject object pins model, provider, prompt strategy,
+          and every option once, and every send spreads it verbatim. every idempotency and fixture key derives
+          from the launcher-supplied run id, so a retried run cannot double-apply side effects.
+        </p>
+      </div>
+
+      <div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+          the helpers — only where real platform work exists
+        </div>
         <div className="border border-rule bg-bg flex flex-col">
-          {EVAL_SURFACE.map((row) => (
+          {QUALITY_HELPERS.map((row) => (
             <div key={row.fn} className="px-4 py-3 border-b border-rule-2 last:border-b-0">
               <FnChip>{row.fn}</FnChip>
               <p className="mt-1.5 font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{row.does}</p>
             </div>
           ))}
         </div>
-      </div>
-
-      <div>
-        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
-          a scenario manifest, abridged
-        </div>
-        <CodeBlock title="fan-out-security-scan · strict yaml, frozen before start">
-          <K>subject</K>:{'\n  '}message: <S>&quot;Inspect the fixture repository and persist the findings.&quot;</S>
-          {'\n  '}model: <S>pinned-provider-model</S>
-          {'\n  '}continuation: <S>explicit_override</S>
-          {'   '}
-          <C>{'# multi-cycle ⇒ every option pinned'}</C>
-          {'\n  '}options: <M>{'{ '}</M>mode: <S>agent</S>, max_turns: <K>40</K>, functions: <M>{'{ '}</M>allow:{' '}
-          <M>[</M>
-          <S>state::get</S>, <S>database::query</S>, <S>harness::spawn</S>
-          <M>]</M>, deny: <M>[</M>
-          <S>harness-eval::*</S>
-          <M>]</M> <M>{'} }'}</M>
-          {'\n'}
-          <K>fixtures</K>: <M>{'{ '}</M>profile: <S>repository-security-v1</S>, setup/teardown fns + timeouts,
-          capability ids <M>{'}'}</M>
-          {'\n'}
-          <K>validators</K>:{'\n  '}- <S>validation::workflow::all-files-processed</S>
-          {'   '}
-          <C>{'# open · after_turn · continue_with_feedback'}</C>
-          {'\n  '}- <S>eval-private::workflow::no-duplicate-results</S>
-          {'  '}
-          <C>{'# held_out · final · stop'}</C>
-          {'\n  '}- source: <M>{'{ '}</M>kind: <S>generated</S>, goal: <S>&quot;…&quot;</S>, generator:{' '}
-          <S>pinned-generator-model</S> <M>{'}'}</M>
-          {'  '}
-          <C>{'# agent_authored · held_out · advisory'}</C>
-          {'\n'}
-          <K>limits</K>: <M>{'{ '}</M>max_cycles: <K>4</K>, attempt_timeout_ms: <K>300000</K>, max_total_tokens:{' '}
-          <K>100000</K>, max_cost_usd: <K>10</K>, max_network_requests: <K>0</K> <M>{'}'}</M>
-        </CodeBlock>
         <p className="mt-3 font-mono text-[12px] leading-[1.7] text-ink-faint lowercase max-w-[72ch]">
-          harness defaults are re-resolved on every send, so a multi-cycle scenario cannot truthfully promise to
-          preserve an omitted value: <span className="text-ink">explicit_override</span> pins the prompt and every
-          option; anything relying on a default must declare <span className="text-ink">single_cycle</span> with
-          max_cycles 1. the manifest validator enforces this, and a requested function not declared by the fixture
-          or dependency list makes the manifest invalid.
+          a helper never wraps an existing public api. when one proves generally useful it graduates into default
+          harness api — the same read paths production orchestration code around the harness needs anyway.
         </p>
       </div>
 
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
-          generated validators — authored on the fly, frozen before the turn
+          evidence the harness builds by default
         </div>
         <div className="border border-rule bg-bg flex flex-col">
-          {GENERATED_VALIDATOR_RULES.map((row) => (
+          {EVIDENCE_CONTRACTS.map((row) => (
             <div
               key={row.name}
               className="grid grid-cols-1 @2xl:grid-cols-[220px_minmax(0,1fr)] gap-x-4 px-4 py-2.5 border-b border-rule-2 last:border-b-0"
             >
-              <span className="font-mono text-[12.5px] text-ink lowercase">{row.name}</span>
+              <span className="font-mono text-[12.5px] text-ink lowercase">
+                {row.name}
+                <span className="block font-mono text-[10.5px] uppercase tracking-[0.08em] text-ink-faint mt-0.5">
+                  {row.type}
+                </span>
+              </span>
               <span className="font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{row.desc}</span>
             </div>
           ))}
         </div>
-        <p className="mt-3 font-mono text-[12px] leading-[1.7] text-ink-faint lowercase max-w-[72ch]">
-          the criterion is authored by an agent, but the trust shape is unchanged: the subject never sees, picks,
-          or edits its judges, and the code digest that judged a run is auditable in the report.
-        </p>
       </div>
 
       <div className="grid grid-cols-1 @4xl:grid-cols-2 gap-4">
-        <SpecSheet title="stable error codes" meta="code: message on the bus" defaultOpen>
+        <SpecSheet title="authoring rules" meta="enforced in review" defaultOpen>
           <div className="flex flex-col">
-            {ERROR_CODES.map((row) => (
-              <SpecRow key={row.code} name={row.code}>
-                {row.meaning}
+            {AUTHORING_RULES.map((row) => (
+              <SpecRow key={row.name} name={row.name}>
+                {row.desc}
               </SpecRow>
             ))}
           </div>
         </SpecSheet>
 
-        <SpecSheet title="restart recovery, state by state" meta="single durable writer" defaultOpen>
+        <SpecSheet title="future work — deferred, not redesigned" meta="enabled by the default assets" defaultOpen>
           <div className="flex flex-col">
-            {RECOVERY_TABLE.map((row) => (
-              <SpecRow key={row.state} name={row.state}>
-                {row.action}
+            {FUTURE_WORK.map((row) => (
+              <SpecRow key={row.name} name={row.name}>
+                {row.desc}
               </SpecRow>
             ))}
           </div>
@@ -129,8 +144,8 @@ export function AgentQualityProtocolPage() {
             </div>
           ))}
           <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
-            subjective model or visual graders arrive only where deterministic state cannot express the objective,
-            and stay advisory until calibrated against a human-reviewed set with measured false rates.
+            each row is one test file. no llm judges the suite: an llm is only ever the subject, and every check
+            stays explicit code a reviewer can read.
           </div>
         </div>
       </div>

@@ -32,8 +32,8 @@ export const MAP_NODES: MapNode[] = [
     y: 408,
     w: 196,
     h: 68,
-    title: 'harness-eval',
-    sub: 'orchestrate · validate',
+    title: 'agent-quality suite',
+    sub: 'vitest · trigger()',
     kind: 'primary',
     tag: 'real model',
   },
@@ -88,7 +88,7 @@ export const MAP_NODES: MapNode[] = [
     w: 168,
     h: 66,
     title: 'graders',
-    sub: 'invariants · validators',
+    sub: 'invariants · expect()',
     kind: 'secondary',
     tag: 'independent',
   },
@@ -111,7 +111,7 @@ export const MAP_EDGES: MapEdge[] = [
     from: 'ci',
     to: 'eval',
     d: 'M 196 302 C 230 320, 240 400, 268 428',
-    label: 'harness-eval::start',
+    label: 'vitest run',
     lx: 214,
     ly: 386,
     anchor: 'start',
@@ -203,7 +203,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         heading: 'supplies',
         items: [
           { name: '--engine-bin / III_BIN', desc: 'explicit pinned engine; digests recorded before boot.' },
-          { name: 'scenario manifests', desc: 'strict yaml, parsed into versioned json; unknown fields rejected.' },
+          { name: 'authored inputs', desc: 'integration: rust builder scenarios compiled before boot. agent quality: ordinary vitest test files.' },
         ],
       },
     ],
@@ -219,7 +219,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         dotted: true,
         items: [
           { name: 'process supervision', desc: 'ports, deadlines, sigterm → sigkill escalation, typed teardown.' },
-          { name: 'scenario compiler', desc: 'one concise scenario.yaml expands into strict compiled contracts before any process starts.' },
+          { name: 'scenario compiler', desc: 'one concise rust builder module expands into strict compiled contracts before any process starts; a fixture mistake fails cargo build first.' },
           { name: 'readiness probes', desc: 'contract-based, never sleep-based: live descriptors via engine::functions::info, compared against goldens.' },
           { name: 'grading', desc: 'pure code assertions; no mutation of the subject.' },
         ],
@@ -228,20 +228,21 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
     bullets: ['exit 0 only when every selected scenario passes; 2 for contract failures, 3 for everything owned by the runner.'],
   },
   eval: {
-    id: 'harness-eval',
+    id: 'agent-quality suite',
     kindLabel: 'real-model track',
-    role: 'one dedicated worker with a durable run record. it lowers scenario manifests to harness::send, survives duplicate and missing completion events, runs validators, and publishes reports.',
+    role: 'an ordinary vitest e2e suite. test files call trigger("harness::send") directly with an explicit pinned subject, await durable terminal state, and grade with plain expect() assertions. the shared harness-test worker holds only the helpers with real platform work.',
     sections: [
       {
-        heading: 'surface',
+        heading: 'helpers',
         dotted: true,
         items: [
-          { name: 'start · status · report · cancel', desc: 'protocol_version "1", unknown fields denied.' },
-          { name: 'artifact::put / get', desc: 'token-scoped evidence exchange for validators only.' },
+          { name: 'awaitTerminal', desc: 'events as signal, harness::status as authority; duplicates accepted.' },
+          { name: 'sessionMetrics', desc: 'session-tree + metrics; throws on complete: false — never a partial sum.' },
+          { name: 'triggeredWork', desc: 'trace spans propagated from the turn; fails closed when missing.' },
         ],
       },
     ],
-    bullets: ['a periodic reconciler polls every non-terminal attempt, so a missed callback cannot strand a run.'],
+    bullets: ['a helper that proves generally useful graduates into default harness api.'],
   },
   harness: {
     id: 'harness',
@@ -293,14 +294,15 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   evidence: {
     id: 'evidence',
     kindLabel: 'durable · shared vocabulary',
-    role: 'what both tracks grade: the send response, harness::status, the complete paginated transcript, recorder and lifecycle events, and process state. private state never decides a public-contract scenario.',
+    role: 'what both tracks grade: the send response, harness::status, the complete paginated transcript, lifecycle events, and — for agent quality — the session tree, tree-summed metrics, and trace spans the harness builds by default.',
     sections: [
       {
         heading: 'collected',
         items: [
           { name: 'session::messages', desc: 'oldest-first, cursor-paginated to completion.' },
           { name: 'lifecycle events', desc: 'identical duplicates accepted; conflicting terminals fail.' },
-          { name: 'artifacts', desc: 'a stable result.json plus a volatile execution.json linked by sha-256, retained on non-pass.' },
+          { name: 'session-tree + metrics + spans', desc: 'proposed default harness assets; complete: false fails closed, never a partial sum.' },
+          { name: 'artifacts', desc: 'stable results plus full evidence directories, retained on non-pass.' },
         ],
       },
     ],
@@ -308,13 +310,13 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   graders: {
     id: 'graders',
     kindLabel: 'independent',
-    role: 'integration grades with pure code invariants. agent quality grades with versioned validator functions: open ones may feed a bounded feedback cycle, held-out ones stay invisible to the subject.',
+    role: 'integration grades with pure code invariants. agent quality grades with explicit expect() assertions; a reusable domain check is an ordinary iii function the test calls and asserts on.',
     sections: [
       {
         heading: 'rules',
         items: [
           { name: 'no self-grading', desc: 'outcome correctness is independent of the subject’s claims.' },
-          { name: 'no override', desc: 'a model grader can never override a required deterministic failure.' },
+          { name: 'no model judges', desc: 'an llm is only ever the subject; every check is code a reviewer can read.' },
         ],
       },
     ],

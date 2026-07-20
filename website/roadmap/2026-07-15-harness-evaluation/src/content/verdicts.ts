@@ -1,50 +1,50 @@
-/* verdicts — the one aggregation rule (A8 funnel) + status semantics. */
+/* verdicts — how a test earns its verdict (A8 funnel) + status semantics. */
 import type { FunnelPath } from '@lib/components/diagrams/Funnel'
 
 export const VERDICT_PATHS: FunnelPath[] = [
-  { id: 'validators', label: 'required validators', desc: 'every one, in every cycle' },
-  { id: 'cycles', label: 'cycles', desc: 'bounded feedback rounds' },
-  { id: 'attempts', label: 'attempts', desc: '1–10 per leg' },
-  { id: 'legs', label: 'comparison legs', desc: 'baseline + candidate' },
+  { id: 'outcomes', label: 'durable outcomes', desc: 'expect() over records' },
+  { id: 'metrics', label: 'session-tree metrics', desc: 'complete, or a typed throw' },
+  { id: 'spans', label: 'triggered-work spans', desc: 'present, or fail closed' },
+  { id: 'budgets', label: 'budgets', desc: 'asserted token + cost caps' },
 ]
 
 export const VERDICT_TARGET = {
-  label: 'error > fail > inconclusive > pass',
-  sub: 'the same fold at every level',
+  label: 'expect() over complete evidence',
+  sub: 'a partial sum is never graded',
 }
 
 export const VERDICT_REJECT = {
-  label: 'weighted composite score',
-  desc: 'no blended number gates a release in v1',
+  label: 'composite scores',
+  desc: 'no llm judge, no blend',
 }
 
 export const STATUS_MEANINGS = [
   {
     id: 'pass',
     tone: 'accent' as const,
-    desc: 'every required validator in every attempt passed. the only green.',
+    desc: 'every assertion passed over complete evidence. the only green.',
   },
   {
     id: 'fail',
     tone: 'alert' as const,
-    desc: 'the subject missed an objective, including exhausting a declared budget.',
+    desc: 'an expect() missed: the subject failed an objective or exceeded a declared budget.',
   },
   {
-    id: 'error',
+    id: 'incomplete evidence',
     tone: 'warn' as const,
-    desc: 'the evaluator, a fixture, the provider, or a validator dependency broke. never blamed on the subject.',
+    desc: 'sessionMetrics or triggeredWork threw a typed error: an incomplete tree, an unreachable transcript, missing spans. never blamed on the subject as a mere fail, never graded partially.',
   },
   {
-    id: 'inconclusive',
+    id: 'infrastructure',
     tone: 'warn' as const,
-    desc: 'evidence cannot support a decision: missing traces, dropped browser entries, a validator timeout.',
+    desc: 'a fixture, provider, or stack failure fails the run and retains evidence. never a skip.',
   },
 ] as const
 
 export const NEVER_A_PASS = [
-  'missing traces',
+  'missing trace spans',
+  'an incomplete session tree',
   'provider outage',
   'browser dropped > 0',
-  'malformed validator results',
-  'validator timeouts',
+  'malformed evidence',
 ] as const
