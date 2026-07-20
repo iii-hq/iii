@@ -9,6 +9,7 @@ export enum MessageType {
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
   WorkerRegistered = 'workerregistered',
+  Reattach = 'reattach',
 }
 
 export type RegisterTriggerTypeMessage = {

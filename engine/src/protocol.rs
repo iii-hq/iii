@@ -126,8 +126,28 @@ pub enum Message {
     },
     Ping,
     Pong,
+    /// Worker→engine, sent as the first message of a reconnect, before the
+    /// registration replay: `previous_worker_id` and `reattach_token` are
+    /// the values the engine handed this worker via `WorkerRegistered` on
+    /// its previous connection. The engine retires that previous connection
+    /// (same teardown as a disconnect) so the replay lands on a clean slate
+    /// instead of racing the old connection's cleanup. The token is
+    /// required: worker ids are publicly discoverable, the token was only
+    /// ever sent over the previous connection's own socket. Old engines
+    /// warn-log and ignore unknown message types, so this is version-skew
+    /// safe.
+    Reattach {
+        previous_worker_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reattach_token: Option<String>,
+    },
     WorkerRegistered {
         worker_id: String,
+        /// Secret the worker must present in `Reattach` to retire this
+        /// connection after a reconnect. Optional on the wire so older
+        /// SDKs/engines interop cleanly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reattach_token: Option<String>,
     },
 }
 
@@ -236,6 +256,50 @@ mod tests {
             }
             _ => panic!("unexpected message variant"),
         }
+    }
+
+    #[test]
+    fn reattach_round_trips() {
+        // Token present.
+        let raw = r#"{"type":"reattach","previous_worker_id":"abc-123","reattach_token":"tok-1"}"#;
+        let message: Message = serde_json::from_str(raw).expect("reattach should deserialize");
+        match &message {
+            Message::Reattach {
+                previous_worker_id,
+                reattach_token,
+            } => {
+                assert_eq!(previous_worker_id, "abc-123");
+                assert_eq!(reattach_token.as_deref(), Some("tok-1"));
+            }
+            _ => panic!("unexpected message variant"),
+        }
+        let serialized = serde_json::to_string(&message).expect("serialize");
+        assert_eq!(serialized, raw);
+
+        // Token absent (older SDK): still deserializes, token None.
+        let raw = r#"{"type":"reattach","previous_worker_id":"abc-123"}"#;
+        let message: Message = serde_json::from_str(raw).expect("tokenless reattach deserializes");
+        assert!(matches!(
+            message,
+            Message::Reattach {
+                reattach_token: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn worker_registered_token_is_optional_on_the_wire() {
+        // Older engines omit the token; SDKs must still parse the frame.
+        let raw = r#"{"type":"workerregistered","worker_id":"w-1"}"#;
+        let message: Message = serde_json::from_str(raw).expect("should deserialize");
+        assert!(matches!(
+            message,
+            Message::WorkerRegistered {
+                reattach_token: None,
+                ..
+            }
+        ));
     }
 
     #[test]

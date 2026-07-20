@@ -45,6 +45,7 @@ const (
 	MsgPing                      MessageType = "ping"
 	MsgPong                      MessageType = "pong"
 	MsgWorkerRegistered          MessageType = "workerregistered"
+	MsgReattach                  MessageType = "reattach"
 )
 
 // ErrorBody is the wire representation of a remote error
@@ -225,6 +226,21 @@ type RegisterServiceMessage struct {
 // (engine/src/protocol.rs:123-125). The worker treats it as informational.
 type WorkerRegisteredMessage struct {
 	WorkerID string `json:"worker_id"`
+	// ReattachToken is the secret to present in a ReattachMessage on reconnect;
+	// empty on older engines.
+	ReattachToken string `json:"reattach_token,omitempty"`
+}
+
+// Reattach is sent worker->engine as the first message of a reconnect, before the
+// registration replay: PreviousWorkerID is the id the engine assigned via
+// WorkerRegistered on the previous connection. The engine retires that connection so
+// the replay lands on a clean slate instead of racing its cleanup.
+type ReattachMessage struct {
+	PreviousWorkerID string `json:"previous_worker_id"`
+	// ReattachToken authorizes retiring the previous connection: worker ids are
+	// publicly listable, the token was only ever sent over that connection's own
+	// socket.
+	ReattachToken string `json:"reattach_token,omitempty"`
 }
 
 // PingMessage is the payloadless keepalive the engine sends; it serializes to
@@ -283,6 +299,8 @@ func MarshalMessage(msg any) ([]byte, error) {
 		return marshalEnvelope(MsgRegisterService, m)
 	case *WorkerRegisteredMessage:
 		return marshalEnvelope(MsgWorkerRegistered, m)
+	case *ReattachMessage:
+		return marshalEnvelope(MsgReattach, m)
 	case *PingMessage:
 		return marshalEnvelope(MsgPing, struct{}{})
 	case *PongMessage:
@@ -310,6 +328,8 @@ func MarshalMessage(msg any) ([]byte, error) {
 		return marshalEnvelope(MsgRegisterService, &m)
 	case WorkerRegisteredMessage:
 		return marshalEnvelope(MsgWorkerRegistered, &m)
+	case ReattachMessage:
+		return marshalEnvelope(MsgReattach, &m)
 	case PingMessage:
 		return marshalEnvelope(MsgPing, struct{}{})
 	case PongMessage:

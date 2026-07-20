@@ -24,6 +24,7 @@ export enum MessageType {
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
   WorkerRegistered = 'workerregistered',
+  Reattach = 'reattach',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -232,6 +233,8 @@ export type InvocationResultMessage = {
 export type WorkerRegisteredMessage = {
   message_type: MessageType.WorkerRegistered
   worker_id: string
+  /** Secret to present in a reattach frame on reconnect; absent on older engines. */
+  reattach_token?: string
 }
 
 export type UnregisterFunctionMessage = {

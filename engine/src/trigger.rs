@@ -250,7 +250,23 @@ impl TriggerRegistry {
 
         for trigger in worker_triggers {
             tracing::debug!(trigger_id = trigger.id, "Removing trigger");
-            self.triggers.remove(&trigger.id);
+            // The entry may have been replaced between the snapshot above and
+            // now (worker reconnect: the new connection replays the same
+            // trigger id before the old connection's cleanup runs). Only
+            // remove it — and only unregister it with the registrator — if it
+            // still belongs to the disconnecting worker; a replaced binding
+            // keeps firing. Same guard as trigger types below.
+            if self
+                .triggers
+                .remove_if(&trigger.id, |_, t| t.worker_id == Some(*worker_id))
+                .is_none()
+            {
+                tracing::debug!(
+                    trigger_id = trigger.id,
+                    "Trigger already replaced by another worker; leaving it"
+                );
+                continue;
+            }
 
             if let Some(trigger_type) = self.trigger_types.get(&trigger.trigger_type) {
                 tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
@@ -833,6 +849,82 @@ mod tests {
                 a.register_count.load(Ordering::SeqCst),
                 1,
                 "stale generation receives nothing after replacement"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replayed_binding_survives_stale_worker_cleanup() {
+        // Regression guard for the reconnect kill loop (iii-hq/iii#1975),
+        // binding half. When a worker's socket drops and its SDK reconnects,
+        // the new connection replays its RegisterTrigger batch while the old
+        // connection's `unregister_worker` cleanup runs concurrently. The
+        // cleanup used to `triggers.remove(id)` unconditionally from a
+        // snapshot, deleting (and provider-unregistering) the binding the new
+        // connection had just re-registered — the console watcher would die
+        // and never come back. Post-fix, removal is guarded by an ownership
+        // CAS, mirroring the trigger-type guard in the same function.
+        for _ in 0..100 {
+            let registry = Arc::new(TriggerRegistry::new());
+
+            // Trigger type owned by a separate provider worker so the stale
+            // worker's cleanup never removes the type (which would orphan the
+            // binding into `pending_triggers` and mask the guard we test).
+            let provider = Arc::new(ControlledRegistrator::new(false, false));
+            let provider_worker = Uuid::new_v4();
+            registry
+                .register_trigger_type(TriggerType::new(
+                    "evt",
+                    "provider",
+                    Box::new(provider.clone()),
+                    Some(provider_worker),
+                ))
+                .await
+                .unwrap();
+
+            let old_worker = Uuid::new_v4();
+            let new_worker = Uuid::new_v4();
+
+            // Filler bindings owned by the old worker widen the snapshot→remove
+            // window: each removal awaits the provider's unregister, giving the
+            // racing re-registration room to land before `t1`'s turn.
+            for fid in ["f1", "f2", "f3"] {
+                let mut b = make_trigger(fid, "evt");
+                b.worker_id = Some(old_worker);
+                registry.register_trigger(b).await.unwrap();
+            }
+            let mut binding = make_trigger("t1", "evt");
+            binding.worker_id = Some(old_worker);
+            registry.register_trigger(binding).await.unwrap();
+
+            let cleanup = {
+                let registry = registry.clone();
+                tokio::spawn(async move { registry.unregister_worker(&old_worker).await })
+            };
+            let reregister = {
+                let registry = registry.clone();
+                tokio::spawn(async move {
+                    let mut replay = make_trigger("t1", "evt");
+                    replay.worker_id = Some(new_worker);
+                    registry.register_trigger(replay).await.unwrap();
+                })
+            };
+            let (r1, r2) = tokio::join!(cleanup, reregister);
+            r1.unwrap();
+            r2.unwrap();
+
+            let t1 = registry
+                .triggers
+                .get("t1")
+                .expect("re-registered binding must survive the stale worker's cleanup");
+            assert_eq!(
+                t1.worker_id,
+                Some(new_worker),
+                "surviving binding must be owned by the reconnected worker"
+            );
+            assert!(
+                !registry.pending_triggers.contains_key("t1"),
+                "binding must be live, not parked"
             );
         }
     }
