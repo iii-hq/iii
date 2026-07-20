@@ -10,6 +10,7 @@ services:
       - "9464:9464"    # Prometheus metrics
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - iii_data:/app/data
     environment:
       - RUST_LOG=info
       - III_EXECUTION_CONTEXT=docker
@@ -52,5 +53,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  iii_data:
   redis_data:
   rabbitmq_data:
