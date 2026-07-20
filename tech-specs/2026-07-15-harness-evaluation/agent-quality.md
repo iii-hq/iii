@@ -2,7 +2,7 @@
 
 > Status: proposed architecture; implementation has not started.
 >
-> Last reviewed: 2026-07-17.
+> Last reviewed: 2026-07-19.
 
 Agent-quality E2E evaluates whether a pinned model, prompt, function catalog,
 worker set, and harness build can complete representative user workflows. It
@@ -65,6 +65,9 @@ aggregation required here ([`harness/src/functions/react.rs:1`](https://github.c
 
 - This is not the deterministic harness integration track; that track controls
   the model boundary and is specified in [integration-e2e.md](integration-e2e.md).
+- The integration runner does not implement, host, or partially emulate this
+  evaluator. Agent-quality delivery starts only after the public durable
+  `harness::session-tree` dependency below exists.
 - It does not require exact function trajectories when several valid solutions
   exist.
 - It does not permit a model grader to override a required deterministic or

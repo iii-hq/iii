@@ -1,12 +1,19 @@
 /* protocols — deep-dive data: recorder + supervisor (integration), worker
    surface + recovery (agent quality). */
 
-export const RECORDER_FUNCTIONS = [
-  { fn: 'integration-recorder::configure', does: 'registers the run-scoped target verbatim and returns its canonical schema digest; the registration itself is part of the oracle' },
-  { fn: 'integration-recorder::reset', does: 'clears only the current run; idempotent; next_sequence returns to 1' },
-  { fn: 'integration-recorder::snapshot', does: 'the durable event log, ordered by strictly increasing sequence' },
-  { fn: 'integration-recorder::await', does: 'a deadline-bounded convenience over the same durable log, never a second evidence source' },
-  { fn: 'integration-recorder::lifecycle', does: 'receives the exact harness lifecycle payload for turn-started / turn-completed bindings' },
+export const AUTHORING_LAYERS = [
+  { name: 'AuthoredScenarioV1', type: 'what humans write', desc: 'one concise scenario.yaml per scenario: the send message, function aliases, typed replies (text / function_call / raw), deterministic defaults, an optional fault.' },
+  { name: 'CompiledFixtureV1', type: 'what the runner executes', desc: 'resolved before any process starts: all twelve router matchers explicit, literal wire frames, the derived recorder config, deadlines, and invariants. strict and self-contained.' },
+  { name: 'compiled snapshots', type: 'reviewable in ci', desc: 'the canonical rendering of every authored scenario is checked into a snapshot test, so a compiler-default change reviews like an authored fixture change.' },
+  { name: 'match_overrides · raw frames', type: 'escape hatches', desc: 'not the normal authoring path. raw frames receive the same terminal-frame and response/frame-consistency validation as compiler-generated ones.' },
+] as const
+
+export const RECORDER_PLANE = [
+  { name: 'configure · reset · snapshot · await', type: 'in-process', desc: 'ordinary rust calls on a private service owned by the runner, never registered as iii functions. test setup stays out of the subject engine, and durable evidence stays readable after an engine crash.' },
+  { name: '<run_id>::record', type: 'controlled target', desc: 'the run-scoped target functions are the first of two handler kinds that traverse the engine. the compiler derives each response schema as the exact-value draft 7 const of the declared response.' },
+  { name: 'integration-recorder::lifecycle', type: 'lifecycle sink', desc: 'the second engine-visible handler, bound to harness::turn-completed. v1 records only the terminal event; the grader compares the delivered status with expect.terminal.status.' },
+  { name: 'durable log', type: 'fsync before ack', desc: 'every target or lifecycle event is appended and fsynced before acknowledgement, with a strictly increasing sequence. await polls the same store; it is never a second evidence source.' },
+  { name: 'no self-attestation', type: 'verified via engine', desc: 'the recorder does not attest its own registration. the runner independently queries engine::functions::info and requires the exact description and canonical schemas before send.' },
 ] as const
 
 export const SUPERVISOR_STEPS = [
@@ -15,16 +22,9 @@ export const SUPERVISOR_STEPS = [
   'apply an environment allowlist; provider keys and developer secrets are not inherited',
   'write per-worker seed yaml: unique session data_dir, context lease_dir, queue path, artifact dir',
   'start workers in declared order, stdout/stderr captured separately',
-  'enforce startup, readiness, scenario, collection, and teardown deadlines',
+  'observe bounded immediate exits during boot; enforce readiness, scenario, collection, and teardown deadlines',
   'classify early process exit before any ordinary timeout',
-  'sigterm, wait five seconds, sigkill the remaining children',
-] as const
-
-export const CASSETTE_FIELDS = [
-  { name: 'captured_at · revisions', type: 'provenance', desc: 'engine, harness, and router revisions recorded at capture; capture is manual and non-gating.' },
-  { name: 'script', type: 'RouterScriptV1', desc: 'a sanitized script: the same schema the scripted router replays.' },
-  { name: 'sanitized_sha256', type: 'digest', desc: 'sha-256 over canonical json with the digest field omitted.' },
-  { name: 'denylist scan', type: 'gate', desc: 'credentials, cookies, personal data, unstable trace/session/request ids, provider-private metadata. a cassette commits only after the scan and a schema round-trip pass.' },
+  'sigterm, wait five seconds, sigkill the remaining process groups; write the typed teardown report',
 ] as const
 
 export const EVAL_SURFACE = [

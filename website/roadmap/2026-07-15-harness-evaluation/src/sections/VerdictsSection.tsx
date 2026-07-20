@@ -16,7 +16,7 @@ export function VerdictsSection() {
   return (
     <Section
       id="verdicts"
-      index="09"
+      index="10"
       eyebrow="agent quality · verdicts"
       title="one precedence rule, applied at every level. no composite score."
       lede="required validators fold into a cycle, cycles into an attempt, attempts into the run, always error over fail over inconclusive over pass. a required or safety failure cannot be offset by lower latency or cost."

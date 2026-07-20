@@ -15,12 +15,12 @@ export function ContractSection() {
       index="06"
       eyebrow="integration · the script"
       title="every router field is matched explicitly. there is no runner default."
-      lede="the first scenario, I-E2E-001, streams the phrase “fixture complete” through eight frozen frames. the authored fixture states a matcher for all twelve router::chat fields, including five explicit absences."
+      lede="the first scenario, C-E2E-001, streams the phrase “fixture complete” through eight frozen frames. authors write one concise scenario.yaml; the compiler expands it into an explicit matcher for all twelve router::chat fields, including five explicit absences."
     >
       <div className="grid grid-cols-1 @4xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
         <div className="border border-rule bg-bg">
           <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
-            I-E2E-001 · the eight frames, in order
+            C-E2E-001 · the eight frames, in order
           </div>
           <div className="flex flex-col">
             {FRAME_WALK.map((f, i) => (
@@ -41,8 +41,9 @@ export function ContractSection() {
           </div>
           <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
             fifteen variants are frozen; only <span className="text-ink">done</span> and{' '}
-            <span className="text-ink">error</span> are terminal. the invariants then check the durable side: one
-            user message, one assistant message reading exactly{' '}
+            <span className="text-ink">error</span> are terminal, and streamed usage, the terminal{' '}
+            <span className="text-ink">done</span>, and the response must agree exactly. the invariants then check
+            the durable side: one user message, one assistant message reading exactly{' '}
             <span className="text-ink">fixture complete</span>, no partial-created duplicates, one generation
             consumed.
           </div>
@@ -74,7 +75,7 @@ export function ContractSection() {
             </div>
           </div>
 
-          <SpecSheet title="I-E2E-002 · allowed function, exactly once" meta="two generations">
+          <SpecSheet title="C-E2E-002 · allowed function, exactly once" meta="two generations">
             <p className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase pb-2">
               generation one returns a function_call; the recorder answers; generation two must contain that exact
               durable result; the tools array is asserted against the recorder&apos;s own registration, not a prose
@@ -97,7 +98,7 @@ export function ContractSection() {
           href="#/integration-contracts"
           className="inline-flex h-10 items-center bg-bg text-ink border border-ink px-4 font-mono text-[13px] lowercase transition-colors hover:bg-ink hover:text-bg"
         >
-          the script schema, cassettes, recorder, and supervisor →
+          the compiler, script schema, recorder, and supervisor →
         </a>
       </div>
     </Section>

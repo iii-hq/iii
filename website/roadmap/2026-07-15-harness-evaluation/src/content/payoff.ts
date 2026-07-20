@@ -11,7 +11,7 @@ export const PAYOFF_SOLVES = [
   {
     problem: 'real-model flake blocked contract regression',
     answer: 'a scripted router::* boundary',
-    detail: 'stream and function-call outcomes reproduce deterministically on every pull request: the same two scenarios, byte-normalized, with or without a key.',
+    detail: 'stream and function-call outcomes reproduce deterministically on every pull request: ci executes each scenario twice and requires byte-identical result.json, with or without a key.',
   },
   {
     problem: 'workflow quality was invisible until users hit it',

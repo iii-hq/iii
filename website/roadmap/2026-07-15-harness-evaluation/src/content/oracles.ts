@@ -7,7 +7,7 @@ export const ORACLES = [
   },
   {
     name: 'full transcript',
-    proves: 'durable order and content, function results, and the absence of duplicate entries, paginated to the last cursor.',
+    proves: 'durable order and content, function results, and the absence of duplicate entries; usage only when the shipped transcript persists it.',
   },
   {
     name: 'status',

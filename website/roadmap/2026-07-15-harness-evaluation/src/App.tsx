@@ -6,6 +6,7 @@ import type { ComponentType } from 'react'
 import { NAV } from './content/deck'
 import { AgentQualityProtocolPage } from './pages/AgentQualityProtocolPage'
 import { IntegrationContractsPage } from './pages/IntegrationContractsPage'
+import { BreakSection } from './sections/BreakSection'
 import { IntegrationRunSection } from './sections/IntegrationRunSection'
 import { ContractSection } from './sections/ContractSection'
 import { Hero } from './sections/Hero'
@@ -32,6 +33,7 @@ const SECTIONS: ComponentType[] = [
   LifecycleSection,
   ContractSection,
   OraclesSection,
+  BreakSection,
   QualityLoopSection,
   VerdictsSection,
   PayoffSection,

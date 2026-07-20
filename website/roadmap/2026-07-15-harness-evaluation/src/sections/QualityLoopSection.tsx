@@ -19,7 +19,7 @@ export function QualityLoopSection() {
   return (
     <Section
       id="quality"
-      index="08"
+      index="09"
       eyebrow="agent quality · a run"
       title="a real model, a bounded loop, and validators it cannot see."
       lede="the harness-eval worker persists before every step, survives duplicate and missing completion events, and lets exactly one thing extend a run: an open validator with feedback and budget remaining."

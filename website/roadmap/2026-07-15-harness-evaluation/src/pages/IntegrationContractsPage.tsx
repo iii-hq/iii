@@ -2,25 +2,58 @@ import { PageShell } from '@lib/components/PageShell'
 import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
 import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
 import { FnChip } from '@lib/components/schematic/FnChip'
-import { CASSETTE_FIELDS, RECORDER_FUNCTIONS, SUPERVISOR_STEPS } from '../content/protocols'
+import { AUTHORING_LAYERS, RECORDER_PLANE, SUPERVISOR_STEPS } from '../content/protocols'
 import { EXPANSION } from '../content/contract'
 
 /**
- * A14 — deep dive on the integration test-support contracts: the script
- * schema, cassettes, the recorder, and the supervisor. All of it is proposed
- * test-support api; production ids stay fixed.
+ * A14 — deep dive on the integration test-support contracts: the authored →
+ * compiled scenario layers, the compiled script schema, the recorder control
+ * plane, and the supervisor. Test-support api owned by the runner; production
+ * ids stay fixed.
  */
 export function IntegrationContractsPage() {
   return (
     <PageShell
       eyebrow="deep dive · integration"
       title="the test-support contracts"
-      description="the scripted router, cassette, recorder, and supervisor are test support outside the subject path. they mirror existing wire contracts (cited file:line in the spec), but everything on this page is proposed api, versioned and strict: schemas deny unknown fields, and script problems are runner errors before the stack even starts."
+      description="the scenario compiler, scripted router, recorder, and supervisor are test support outside the subject path, owned by the integration runner and implemented in its core. they mirror existing wire contracts (cited file:line in the spec), versioned and strict: schemas deny unknown fields, and fixture problems are runner errors before the stack even starts."
       related={[{ slug: 'agent-quality-protocol', label: 'agent-quality protocol' }]}
     >
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
-          the script, sketched
+          authoring and compilation · one source file per scenario
+        </div>
+        <CodeBlock title="scenario.yaml · AuthoredScenarioV1, resolved before boot">
+          <K>id</K>: <S>streamed-text</S>
+          {'\n'}
+          <K>send</K>: <M>{'{ '}</M>message: <S>&quot;Return the fixture phrase.&quot;</S>, allow: <M>[]</M>{' '}
+          <M>{'}'}</M>
+          {'   '}
+          <C>{'# [] disables dispatch'}</C>
+          {'\n'}
+          <K>router</K>:{'\n  '}generations:{'\n    '}- reply: <M>{'{ '}</M>type: <S>text</S>, text:{' '}
+          <S>&quot;fixture complete&quot;</S>, chunks: <M>[</M>
+          <S>&quot;fixture &quot;</S>, <S>&quot;complete&quot;</S>
+          <M>]</M> <M>{'}'}</M>
+          {'\n\n'}
+          <C>{'# the compiler expands this into CompiledFixtureV1:'}</C>
+          {'\n'}
+          <C>{'# all twelve matchers explicit, literal wire frames,'}</C>
+          {'\n'}
+          <C>{'# derived recorder config, deadlines, invariants.'}</C>
+        </CodeBlock>
+        <div className="mt-4 border border-rule bg-bg flex flex-col">
+          {AUTHORING_LAYERS.map((row) => (
+            <SpecRow key={row.name} name={row.name} type={row.type}>
+              {row.desc}
+            </SpecRow>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
+          the compiled script, sketched
         </div>
         <CodeBlock title="RouterScriptV1 · one strict script per scenario">
           <M>interface</M> <K>RouterScriptV1</K> <M>{'{'}</M>
@@ -46,7 +79,6 @@ export function IntegrationContractsPage() {
           {'   '}
           <C>{'// exactly one terminal frame'}</C>
           {'\n  '}response: <K>RouterChatResponse</K>
-          {'\n  '}barriers?: <M>{'{ '}</M>before_frame, id, timeout_ms <M>{'}'}</M>[]
           {'\n'}
           <M>{'}'}</M>
         </CodeBlock>
@@ -54,35 +86,31 @@ export function IntegrationContractsPage() {
           an unexpected subject call, a matcher failure, or an unused expectation is a{' '}
           <span className="text-ink">contract_failure</span>. duplicate ordinals, an invalid matcher, extra
           generations, or response/frame disagreement reject the script as <span className="text-ink">runner_error</span>{' '}
-          before boot. normalizers apply to copies, never to stored evidence; delays are relative and barriers are
-          named; fixtures never depend on wall-clock time.
+          before boot. normalizers apply to copies, never to stored evidence; fixtures never depend on wall-clock
+          time. barriers are gone from v1: a fault that must land after a target call uses a compiler-derived
+          deterministic gate (<span className="text-ink">fault.after_target_calls</span>): the recorder fsyncs the
+          event, signals the gate, the runner applies the fault, then releases the held response on every success
+          or error path.
         </p>
       </div>
 
-      <SpecSheet title="RouterCassetteV1 · recorded fixtures with provenance" meta="capture is manual, non-gating" defaultOpen>
-        <div className="flex flex-col">
-          {CASSETTE_FIELDS.map((f) => (
-            <SpecRow key={f.name} name={f.name} type={f.type}>
-              {f.desc}
-            </SpecRow>
-          ))}
-        </div>
-      </SpecSheet>
-
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
-          the recorder · five fixed control functions
+          the recorder · a private control plane, two engine-visible handlers
         </div>
         <div className="border border-rule bg-bg flex flex-col">
-          {RECORDER_FUNCTIONS.map((row) => (
-            <div key={row.fn} className="px-4 py-3 border-b border-rule-2 last:border-b-0">
-              <FnChip>{row.fn}</FnChip>
-              <p className="mt-1.5 font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{row.does}</p>
+          {RECORDER_PLANE.map((row) => (
+            <div key={row.name} className="px-4 py-3 border-b border-rule-2 last:border-b-0">
+              <div className="flex flex-wrap items-baseline gap-x-3">
+                <FnChip>{row.name}</FnChip>
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.06em] text-ink-ghost">{row.type}</span>
+              </div>
+              <p className="mt-1.5 font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{row.desc}</p>
             </div>
           ))}
           <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
-            every accepted call is durably appended with a strictly increasing sequence before the handler responds.
-            a run-scoped target may only use an id prefixed by its own run; production ids stay fixed.
+            a run-scoped target may only use an id prefixed by its own run; production ids stay fixed. keeping the
+            control plane out of the engine means durable evidence stays readable even after an engine crash.
           </div>
         </div>
       </div>
@@ -93,18 +121,23 @@ export function IntegrationContractsPage() {
             the supervisor cli
           </div>
           <CodeBlock title="explicit binaries · the runner never downloads">
-            harness-integration <M>\</M>
+            harness-integration <K>run</K> <M>\</M>
             {'\n  '}--engine-bin <S>&lt;path&gt;</S> <M>\</M>
             {'   '}
             <C>{'// or III_BIN'}</C>
             {'\n  '}--harness-bin <S>&lt;path&gt;</S> <M>\</M>
             {'\n  '}--worker-bin <S>&lt;name=path&gt;</S>... <M>\</M>
             {'\n  '}--scenario <S>&lt;id|all&gt;</S> <M>\</M>
+            {'\n  '}[--repeat <S>&lt;n&gt;</S>] <M>\</M>
             {'\n  '}--artifacts-dir <S>&lt;path&gt;</S>
             {'\n\n'}
-            <C>{'// absolute paths, sha-256 digests, and versions'}</C>
+            <C>{'// every executable: absolute path + sha-256, plus the'}</C>
             {'\n'}
-            <C>{'// are recorded before boot.'}</C>
+            <C>{'// exact engine.lock contents, recorded before boot.'}</C>
+            {'\n'}
+            <C>{'// an unreadable binary is a setup failure; an error'}</C>
+            {'\n'}
+            <C>{'// string is never written into a digest field.'}</C>
           </CodeBlock>
         </div>
         <div>
@@ -122,6 +155,17 @@ export function IntegrationContractsPage() {
         </div>
       </div>
 
+      <SpecSheet title="offline cassette tooling · future work" meta="outside the v1 runner and gate">
+        <p className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase">
+          a capture schema and sanitizer without a real capture → sanitize → verify → import workflow would be
+          unused surface and could give false confidence about secret handling. when that workflow exists it lives
+          in isolated offline tooling: versioned provenance (engine, harness, router, provider, model), canonical
+          content hashing, and a denylist that rejects credentials, cookies, personal data, unstable ids, and
+          provider-private metadata. no captured artifact becomes a committed fixture until schema round-trip,
+          sanitization, and denylist tests pass.
+        </p>
+      </SpecSheet>
+
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
           the expansion order after the first slice
@@ -134,8 +178,10 @@ export function IntegrationContractsPage() {
             </div>
           ))}
           <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
-            promotion to a required pull-request check needs 100 consecutive clean runs across 14 days, zero skips,
-            zero unexplained flakes. stack reuse is not a condition, and never happens in v1.
+            during flake characterization the non-required ci job runs on every pull request, executes each
+            scenario twice, and requires byte-identical result.json. promotion to a required check needs 100
+            consecutive clean runs across 14 days, zero skips, zero unexplained flakes. stack reuse is not a
+            condition, and never happens in v1.
           </div>
         </div>
       </div>

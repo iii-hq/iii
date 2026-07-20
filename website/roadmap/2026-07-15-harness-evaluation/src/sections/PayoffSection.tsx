@@ -3,13 +3,13 @@ import { OPEN_QUESTIONS, PAYOFF_METRICS, PAYOFF_SOLVES } from '../content/payoff
 
 /**
  * A11 — the payoff. A before/after scorecard, the problem → answer table, and
- * the honest limits: this is a proposed architecture with open questions.
+ * the honest limits: the integration core exists, the rest stays proposed.
  */
 export function PayoffSection() {
   return (
     <Section
       id="payoff"
-      index="10"
+      index="11"
       eyebrow="the payoff"
       title="a gate that is earned, not assumed."
       lede="deterministic contract regression on every pull request, real-model workflow measurement on a schedule, and a promotion policy that makes the gate prove itself before it can block anyone."
@@ -54,7 +54,7 @@ export function PayoffSection() {
       {/* honest limits */}
       <div className="mt-8 border border-rule bg-bg">
         <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
-          honest limits · proposed architecture, implementation not started
+          honest limits · integration core implemented, agent quality proposed
         </div>
         <div className="grid grid-cols-1 @3xl:grid-cols-3 gap-px bg-rule">
           {OPEN_QUESTIONS.map((q) => (

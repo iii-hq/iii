@@ -218,8 +218,9 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         heading: 'owns',
         dotted: true,
         items: [
-          { name: 'process supervision', desc: 'ports, deadlines, sigterm → sigkill escalation.' },
-          { name: 'readiness probes', desc: 'schema-based, never sleep-based; failure names every missing surface.' },
+          { name: 'process supervision', desc: 'ports, deadlines, sigterm → sigkill escalation, typed teardown.' },
+          { name: 'scenario compiler', desc: 'one concise scenario.yaml expands into strict compiled contracts before any process starts.' },
+          { name: 'readiness probes', desc: 'contract-based, never sleep-based: live descriptors via engine::functions::info, compared against goldens.' },
           { name: 'grading', desc: 'pure code assertions; no mutation of the subject.' },
         ],
       },
@@ -299,7 +300,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         items: [
           { name: 'session::messages', desc: 'oldest-first, cursor-paginated to completion.' },
           { name: 'lifecycle events', desc: 'identical duplicates accepted; conflicting terminals fail.' },
-          { name: 'artifacts', desc: 'canonical json per scenario/attempt, retained on non-pass.' },
+          { name: 'artifacts', desc: 'a stable result.json plus a volatile execution.json linked by sha-256, retained on non-pass.' },
         ],
       },
     ],

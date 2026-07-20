@@ -1,4 +1,4 @@
-/* contract — the scripted-router first slice (I-E2E-001/002) + matchers. */
+/* contract — the scripted-router first slice (C-E2E-001/002) + matchers. */
 
 export const FRAME_WALK = [
   { frame: 'start', payload: 'partial = A([])', note: 'an empty assistant shell opens the stream' },
@@ -24,7 +24,7 @@ export const C001_MATCH = [
   { field: 'writer_ref', matcher: 'subset { direction: "write" }' },
   { field: 'request_id', matcher: 'regex ^t_[0-9a-f]{32}:[0-9]+$' },
   { field: 'model · provider', matcher: 'exact "fixture-model" · "scripted"' },
-  { field: 'system_prompt', matcher: 'sha256 of expected/system-prompt.txt' },
+  { field: 'system_prompt', matcher: 'sha256 of compiled scenarios/system-prompt.txt' },
   { field: 'messages', matcher: 'exact, /0/timestamp deleted' },
   { field: 'tools', matcher: 'exact []' },
   { field: 'response_format … metadata', matcher: 'absent · five explicit absences' },

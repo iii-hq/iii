@@ -16,6 +16,11 @@ export const TRACKS: TrackProfile[] = [
     headline: 'prove the public contracts, deterministically.',
     rows: [
       {
+        k: 'status',
+        v: 'core implemented',
+        detail: 'the runner, live-contract readiness, scenario compiler, and typed teardown exist. phase 1 scenarios and remaining isolation/port-collision coverage remain.',
+      },
+      {
         k: 'model boundary',
         v: 'scripted router::* worker',
         detail: 'the real llm-router and providers are absent; a strict script owns the six fixed router functions.',
@@ -47,6 +52,11 @@ export const TRACKS: TrackProfile[] = [
     label: 'agent quality',
     headline: 'measure whether real workflows succeed.',
     rows: [
+      {
+        k: 'status',
+        v: 'proposed',
+        detail: 'delivery starts only after the public durable harness::session-tree dependency exists; the integration runner does not host or emulate this evaluator.',
+      },
       {
         k: 'model boundary',
         v: 'production router + pinned model',

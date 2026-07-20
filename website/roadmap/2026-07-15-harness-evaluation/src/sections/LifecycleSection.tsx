@@ -9,7 +9,7 @@ const TONE_TEXT = {
 } as const
 
 /**
- * A6 — the ten-stage scenario lifecycle, then the six classifications with
+ * A6 — the twelve-stage scenario lifecycle, then the six classifications with
  * their exit codes. The claim: no ambiguity about whose fault a red run is.
  */
 export function LifecycleSection() {
@@ -18,8 +18,8 @@ export function LifecycleSection() {
       id="lifecycle"
       index="05"
       eyebrow="integration · lifecycle"
-      title="ten stages, six classifications, no ambiguity about whose fault."
-      lede="readiness is schema-based, never sleep-based. and when a run goes red, the classification says whether the subject broke a contract or the infrastructure failed; those exit differently."
+      title="twelve stages, six classifications, no ambiguity about whose fault."
+      lede="readiness is contract-based, never sleep-based, and the boot order is split so the controlled target is verified before the subject starts. when a run goes red, the classification says whether the subject broke a contract or the infrastructure failed; those exit differently."
     >
       <StepReveal title="scenario lifecycle" stages={LIFECYCLE_STAGES} />
 

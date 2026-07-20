@@ -9,9 +9,10 @@ featured: false
 
 # Harness evaluation
 
-> Status: proposed architecture; implementation has not started.
+> Status: integration track core implemented; remaining acceptance expansion
+> and the agent-quality track remain proposed.
 >
-> Last reviewed: 2026-07-15.
+> Last reviewed: 2026-07-19.
 
 The harness needs two evaluation tracks because one model boundary cannot answer
 both questions honestly. Integration needs a controlled, deterministic router
@@ -60,7 +61,8 @@ harness state or calls `harness::turn` as a continuation API.
 | Capability | State |
 |---|---|
 | Durable harness turn loop, public send/status APIs, lifecycle triggers, transcript persistence | Existing; exact contracts come from current Rust source and golden schemas |
-| Deterministic integration runner, scripted router, recorder, cassette format | Proposed here |
+| Deterministic integration runner, single-file scenario compiler, scripted router, recorder, live-contract readiness, typed teardown, and stable/volatile reports | Implemented; Phase 1 scenarios and remaining isolation/port-collision coverage remain |
+| Offline router cassette capture/import tooling | Future work; outside the integration v1 gate |
 | Dedicated `harness-eval` worker, scenario manifest, validator protocol, evaluation report | Proposed here |
 | HarnessBench same-prompt performance comparison and console view | Separate in-flight design in [PR #280](https://github.com/iii-hq/workers/pull/280) |
 | Durable production DAG orchestration | Existing [`workflow`](https://github.com/iii-hq/workers/blob/main/workflow/README.md) worker; intentionally separate from evaluation orchestration |

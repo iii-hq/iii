@@ -15,6 +15,7 @@ export const NAV: NavItem[] = [
   { id: 'run', label: 'a run' },
   { id: 'contract', label: 'contract' },
   { id: 'oracles', label: 'oracles' },
+  { id: 'break', label: 'break it' },
   { id: 'quality', label: 'quality' },
   { id: 'verdicts', label: 'verdicts' },
   { id: 'payoff', label: 'payoff' },
