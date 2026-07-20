@@ -651,7 +651,14 @@ impl Engine {
                     return Ok(());
                 }
 
-                self.trigger_registry.triggers.remove(id);
+                // Re-park instead of dropping (no-op if a concurrent
+                // disconnect GC or unregister already reaped it). If the
+                // reporting provider was replaced while the rejection was in
+                // flight, the registry re-activates the intent through the
+                // replacement instead of stranding it.
+                self.trigger_registry
+                    .park_rejected_trigger(id, worker.id)
+                    .await;
 
                 let Some(originator_id) = originator_id else {
                     tracing::debug!(
@@ -3636,7 +3643,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trigger_registration_result_forwards_error_to_originator() {
+    async fn test_trigger_registration_result_error_forwards_parks_and_replays() {
         ensure_default_meter();
         let engine = Engine::new();
 
@@ -3697,8 +3704,182 @@ mod tests {
 
         assert!(
             engine.trigger_registry.triggers.get("trig-1").is_none(),
-            "failed trigger should be removed from registry"
+            "failed trigger leaves the live registry"
         );
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-1"),
+            "failed trigger is parked for replay, not dropped"
+        );
+
+        // Provider reconnects with a fresh registrator: the parked intent replays.
+        let (reg2_tx, mut reg2_rx) = mpsc::channel::<Outbound>(8);
+        let reg2 = WorkerConnection::new(reg2_tx);
+        engine
+            .trigger_registry
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "http",
+                "test trigger type",
+                Box::new(reg2.clone()),
+                Some(reg2.id),
+            ))
+            .await
+            .expect("re-registering the trigger type should succeed");
+
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(engine.trigger_registry.triggers.contains_key("trig-1"));
+        let replayed = reg2_rx
+            .try_recv()
+            .expect("replacement registrator receives the replayed RegisterTrigger");
+        assert!(matches!(
+            replayed,
+            Outbound::Protocol(Message::RegisterTrigger { .. })
+        ));
+    }
+
+    /// A late async rejection racing an explicit unregister. Whatever the
+    /// interleave, the binding must never resurrect: once both complete it is
+    /// in neither the live registry nor the pending bucket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn unregister_racing_late_rejection_never_resurrects_the_binding() {
+        ensure_default_meter();
+        for _ in 0..100 {
+            let engine = Arc::new(Engine::new());
+
+            let (user_tx, _user_rx) = mpsc::channel::<Outbound>(8);
+            let user = WorkerConnection::new(user_tx);
+            engine.worker_registry.register_worker(user.clone());
+
+            let (registrator_tx, _registrator_rx) = mpsc::channel::<Outbound>(8);
+            let registrator = WorkerConnection::new(registrator_tx);
+            insert_trigger_type_for(&engine, "http", &registrator);
+
+            engine.trigger_registry.triggers.insert(
+                "trig-race".to_string(),
+                crate::trigger::Trigger {
+                    id: "trig-race".to_string(),
+                    trigger_type: "http".to_string(),
+                    function_id: "fn-1".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: Some(user.id),
+                    metadata: None,
+                },
+            );
+
+            let msg = Message::TriggerRegistrationResult {
+                id: "trig-race".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-1".to_string(),
+                error: Some(crate::protocol::ErrorBody::new("provider_error", "boom")),
+            };
+
+            let reject = {
+                let engine = Arc::clone(&engine);
+                let registrator = registrator.clone();
+                tokio::spawn(async move { engine.router_msg(&registrator, &msg).await })
+            };
+            let unregister = {
+                let engine = Arc::clone(&engine);
+                tokio::spawn(async move {
+                    engine
+                        .trigger_registry
+                        .unregister_trigger("trig-race".to_string(), None)
+                        .await
+                })
+            };
+
+            reject.await.unwrap().unwrap();
+            let removed = unregister.await.unwrap().unwrap();
+
+            assert!(removed, "the binding existed in one of the buckets");
+            assert!(!engine.trigger_registry.triggers.contains_key("trig-race"));
+            assert!(
+                !engine
+                    .trigger_registry
+                    .pending_triggers
+                    .contains_key("trig-race"),
+                "explicitly unregistered binding resurrected as a pending intent"
+            );
+        }
+    }
+
+    /// A provider replacement racing a late rejection from the replaced
+    /// generation. Whatever the interleave, the binding must end live under
+    /// the replacement — never stranded in the pending bucket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn provider_replacement_racing_late_rejection_never_strands_the_binding() {
+        ensure_default_meter();
+        for _ in 0..100 {
+            let engine = Arc::new(Engine::new());
+
+            let (user_tx, _user_rx) = mpsc::channel::<Outbound>(8);
+            let user = WorkerConnection::new(user_tx);
+            engine.worker_registry.register_worker(user.clone());
+
+            let (old_tx, _old_rx) = mpsc::channel::<Outbound>(8);
+            let old_provider = WorkerConnection::new(old_tx);
+            insert_trigger_type_for(&engine, "http", &old_provider);
+
+            engine.trigger_registry.triggers.insert(
+                "trig-race".to_string(),
+                crate::trigger::Trigger {
+                    id: "trig-race".to_string(),
+                    trigger_type: "http".to_string(),
+                    function_id: "fn-1".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: Some(user.id),
+                    metadata: None,
+                },
+            );
+
+            let msg = Message::TriggerRegistrationResult {
+                id: "trig-race".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-1".to_string(),
+                error: Some(crate::protocol::ErrorBody::new("provider_error", "boom")),
+            };
+
+            let (new_tx, _new_rx) = mpsc::channel::<Outbound>(8);
+            let new_provider = WorkerConnection::new(new_tx);
+
+            let reject = {
+                let engine = Arc::clone(&engine);
+                let old_provider = old_provider.clone();
+                tokio::spawn(async move { engine.router_msg(&old_provider, &msg).await })
+            };
+            let replace = {
+                let engine = Arc::clone(&engine);
+                let new_provider = new_provider.clone();
+                tokio::spawn(async move {
+                    engine
+                        .trigger_registry
+                        .register_trigger_type(crate::trigger::TriggerType::new(
+                            "http",
+                            "replacement",
+                            Box::new(new_provider.clone()),
+                            Some(new_provider.id),
+                        ))
+                        .await
+                })
+            };
+
+            reject.await.unwrap().unwrap();
+            replace.await.unwrap().unwrap();
+
+            assert!(
+                engine.trigger_registry.triggers.contains_key("trig-race"),
+                "binding must end live under the replacement provider"
+            );
+            assert!(
+                !engine
+                    .trigger_registry
+                    .pending_triggers
+                    .contains_key("trig-race"),
+                "binding stranded in pending despite a live replacement provider"
+            );
+        }
     }
 
     #[tokio::test]
