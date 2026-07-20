@@ -110,6 +110,60 @@ The engine logs a pending notice while a registration waits, and re-establishes 
 when a publishing worker restarts, so a worker that comes up after its consumers receives trigger
 registrations as expected.
 
+Bind `math::add` to the `http` type before the http worker is running. The engine accepts the
+registration and stores it:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // http worker not started
+    worker.registerTrigger({
+      type: "http",
+      function_id: "math::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # http worker not started
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "math::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::RegisterTriggerInput;
+    use serde_json::json;
+
+    // http worker not started
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".into(),
+        function_id: "math::add".into(),
+        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
+        metadata: None,
+    })?;
+    ```
+  </Tab>
+</Tabs>
+
+Start the http worker afterward. The engine activates the stored binding automatically, and the
+endpoint serves requests without re-registering:
+
+```bash
+# http worker started after registration
+iii worker add http
+
+# the stored binding is now live on the http worker's default port (3111)
+curl -X POST http://localhost:3111/math/add \
+  -H 'Content-Type: application/json' \
+  -d '{"a": 2, "b": 3}'
+# 200 OK: the request reaches math::add through the activated trigger
+```
+
 For known trigger types (ex. `http`, `state`, `durable:subscriber`, `stream`), the pending notice
 includes the install command for the worker that provides the type. For other types, find the worker
 that exposes the needed type at [workers.iii.dev](https://workers.iii.dev).
