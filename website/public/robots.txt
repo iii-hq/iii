@@ -66,9 +66,10 @@ Allow: /
 Disallow: /preview
 Disallow: /roadmap
 
-# Training-only crawlers (no citation capability) — opt out
 User-agent: CCBot
-Disallow: /
+Allow: /
+Disallow: /preview
+Disallow: /roadmap
 
 Sitemap: https://iii.dev/sitemap.xml
 Sitemap: https://iii.dev/docs/sitemap.xml
