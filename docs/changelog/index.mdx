@@ -16,7 +16,7 @@ type: "reference"
 
   ## `TriggerAction.Enqueue` routes through the standalone queue worker
 
-  Enqueue actions are delivered to the registered `engine::queue::enqueue` provider instead of the in-process queue module. Engine-owned receipt IDs are preserved and `traceparent` / `baggage` propagate to queued work; a missing or failing provider fails closed with `enqueue_error` — there is no silent in-process fallback. `durable:subscriber` and `TriggerAction.Enqueue` now require the standalone `queue` worker. The legacy in-engine `iii-queue` builtin was retired from the default config but remains available **opt-in**: an explicit `iii-queue` entry in `config.yaml` still boots it (`enabled_by_default = false`).
+  Enqueue actions are delivered to the registered `engine::queue::enqueue` provider instead of the in-process queue worker. Engine-owned receipt IDs are preserved and `traceparent` / `baggage` propagate to queued work; a missing or failing provider fails closed with `enqueue_error` — there is no silent in-process fallback. `durable:subscriber` and `TriggerAction.Enqueue` now require the standalone `queue` worker. The legacy in-engine `iii-queue` builtin was retired from the default config but remains available **opt-in**: an explicit `iii-queue` entry in `config.yaml` still boots it (`enabled_by_default = false`).
 
   ## Per-subscriber queue retry tuning is corrected
 
