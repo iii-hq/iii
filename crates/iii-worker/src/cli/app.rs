@@ -131,11 +131,12 @@ pub enum Commands {
         no_wait: bool,
 
         /// Engine WebSocket port the spawned worker connects back to. Defaults
-        /// to DEFAULT_PORT; the engine passes its configured
-        /// iii-worker-manager port when auto-spawning external workers so
-        /// non-default manager ports don't silently break connectivity.
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// to the iii-worker-manager port in config.yaml (else 49134); the
+        /// engine passes its configured port explicitly when auto-spawning
+        /// external workers so non-default manager ports don't silently
+        /// break connectivity.
+        #[arg(long)]
+        port: Option<u16>,
 
         /// YAML config forwarded to the spawned worker binary as `--config <path>`.
         /// Binary workers only; OCI workers warn and ignore.
@@ -170,8 +171,8 @@ pub enum Commands {
 
         /// Engine WebSocket port the spawned worker connects back to. Same
         /// semantics as `start --port`.
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        #[arg(long)]
+        port: Option<u16>,
 
         /// Same as `start --config`.
         #[arg(long, value_name = "PATH")]
