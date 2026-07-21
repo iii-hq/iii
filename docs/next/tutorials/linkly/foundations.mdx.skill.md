@@ -197,7 +197,9 @@ On this first start the engine also creates a `config/` directory with one file 
 (`config/state.yaml`, `config/http.yaml`, and so on) and moves each worker's seeded settings out of
 `config.yaml` into its file. You'll notice the `iii-observability` block in `config.yaml` get
 replaced by a short pointer comment as this happens. From here on, you edit a worker's settings in
-its `config/<worker>.yaml` file, and the engine hot-reloads the change without a restart.
+its `config/<worker>.yaml` file. The engine hot-reloads most changes without a restart. A few
+settings, like a worker's storage adapter, are restart-tier: the edit is saved and validated
+immediately but only takes effect the next time the engine starts.
 
 ## Switch state to in-memory
 
@@ -223,8 +225,10 @@ value:
       store_method: in_memory
 ```
 
-The engine picks up the edit and reloads `state` without a restart. Because the store is now
-in-memory, every restart clears the data. That's fine here; Chapter 3 swaps in durable storage.
+The storage adapter is a restart-tier setting, so the engine saves and validates this edit
+immediately but applies the in-memory store the next time it starts, not on a live reload. Because
+the store is now in-memory, every restart clears the data. That's fine here; Chapter 3 swaps in
+durable storage.
 
 ## Register the worker
 
