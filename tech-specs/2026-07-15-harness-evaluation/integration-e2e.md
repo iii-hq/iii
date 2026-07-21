@@ -1,17 +1,8 @@
-# Harness integration E2E
+# Harness integration tests
 
-> Status: core implementation, live-contract readiness, and typed teardown
-> exist; Phase 1 scenarios and remaining isolation/port-collision coverage
-> remain. Authoring revised 2026-07-20: scenarios are authored as Rust builder
-> modules instead of YAML; the migration lands before Phase 1, while exactly
-> two authored scenarios exist.
->
-> Last reviewed: 2026-07-20.
-
-Harness integration is the deterministic regression track for the harness. It
-proves that a checkout or release artifact still obeys the public turn,
-durability, streaming, dispatch, and lifecycle contracts without asking a real
-model to make decisions.
+The integration tests are a deterministic conformance suite verifying public
+turn, durability, streaming, dispatch, and lifecycle contracts without a
+provider connection or model inference.
 
 ## Definition
 
@@ -20,38 +11,40 @@ durable dependencies, replaces only the `router::*` model boundary with a
 strict scripted worker, and grades structured public evidence. Missing
 infrastructure is a setup error, never a skip.
 
-The first implementation is a standalone Rust runner under
+Version 1 is a standalone Rust runner under
 `harness/evals/integration`. It owns process supervision, fixtures, evidence,
 grading, and reports. It does not add a test-only function to the engine or
-harness. As the evaluation tracks converge, reusable test support — lifecycle
-await, metric pulls, scripted harness operations — consolidates in the shared
-`harness-test` worker described in [agent-quality.md](agent-quality.md); the
-later console profile is its first consumer here.
+harness.
+
+Runner control and evidence reads use synchronous function invocation. The
+runner does not submit `harness::send` with SDK `Enqueue` or `Void` actions;
+queue delivery and lifecycle `Void` notifications inside the harness remain
+part of the system under test.
 
 ## Decisions
 
 | Area | Version 1 decision |
 |---|---|
 | Isolation | One fresh process stack per scenario; scenarios run serially |
-| Harness entry | `harness::send` for an ordinary turn |
+| Harness entry | Synchronous SDK invocation of `harness::send`; the harness owns internal enqueueing |
 | Model boundary | Scripted worker owns the fixed router functions; real llm-router/providers are absent |
 | Context | Real context-manager is mandatory and fails closed |
 | Oracle | Code assertions over status, full transcript, recorder calls, lifecycle events, and process state |
-| Traces | Optional diagnostics; not a readiness requirement or ordinary oracle |
+| Traces | Diagnostic only; excluded from readiness and v1 verdicts |
 | Stack profile | `harness-core-v1`; observability is not required |
-| Authoring | One concise Rust builder module per scenario, compiled before boot into strict runtime contracts; compiled snapshots stay the review artifact |
+| Authoring | One Rust builder module per scenario; compilation produces a strict fixture snapshot before process startup |
 | Reports | Stable `result.json` plus volatile `execution.json`, cryptographically linked |
 | Runner packaging | Nested standalone Cargo workspace with its own lockfile |
 | Engine acquisition | Explicit `--engine-bin`/`III_BIN`; runner never downloads artifacts |
-| Stack reuse | Never in v1; reconsider only after a measured runtime problem and reset proof |
+| Stack reuse | Prohibited in v1 |
 
-## Goals
+## Functional requirements
 
 1. Exercise the public path through the real queue and durable turn loop.
 2. Make function-call outcome reproducible without a model key.
 3. Detect duplicate or missing transcript entries and target side effects.
 4. Preserve structured evidence for every failure classification.
-5. Reproduce process crashes and restart boundaries with explicit fault seeds.
+5. Classify process crashes and teardown failures with explicit evidence.
 
 ## Boundaries
 
@@ -59,23 +52,26 @@ later console profile is its first consumer here.
   output. See [agent-quality.md](agent-quality.md) for that track.
 - A test that seeds `harness_turn`, private state, or an internal continuation
   is a lower-level internal white-box test, not a public-path integration test.
+- Hold/release scenarios settle a held call through
+  `harness::function::resolve`, acting as the trusted approval sibling — the
+  same role and registered function the production `approval-gate` worker
+  uses. Resolve stays denied to in-run agents; this does not make it a
+  subject-visible API.
 - The scripted router is test support outside the subject path. It mirrors the
   router contract but does not claim to test llm-router or providers.
-- Console rendering and browser reconnect behavior use a later stack profile;
-  they do not gate the initial harness scenarios. That profile drives the
-  console with Playwright while the shared `harness-test` worker
-  ([agent-quality.md](agent-quality.md)) scripts harness operations without
-  any LLM call.
+- Console rendering and browser reconnect behavior are outside version 1.
+  Browser coverage uses a separately versioned Playwright profile and the
+  shared `harness-test` support described in
+  [agent-quality.md](agent-quality.md).
 - The runner does not download an engine, worker, model, or fixture during a
   test.
 
 ## System profile
 
-The first profile is named `harness-core-v1`. The resolved profile name and
+The version 1 profile is named `harness-core-v1`. The resolved profile name and
 component list are persisted in `stack.json`. Profile selection is runner-owned;
-the authored v1 scenario has no opaque free-form profile field. A later,
-versioned telemetry profile may add observability when a scenario declares
-traces as an invariant.
+the authored v1 scenario has no free-form profile field. Trace invariants
+and observability are outside this profile.
 
 | Component | Profile | Reason |
 |---|---|---|
@@ -93,8 +89,8 @@ traces as an invariant.
 | llm-router | Absent; fixed IDs replaced by scripted router | Avoid duplicate registration |
 | provider-anthropic/provider-openai | Absent | No production network/model behavior |
 | recorder service | Controlled, in-process | Target calls, lifecycle events, deterministic fault gates, and test-owned evidence |
-| shell/web | Absent in first slice | Declared dependencies intentionally omitted until a scenario profile exercises them |
-| browser | Absent in first slice | Not a harness manifest dependency; added only by a browser profile |
+| shell/web | Absent in version 1 | Declared dependencies are outside the v1 scenario corpus |
+| browser | Absent in version 1 | Browser coverage belongs to a separate profile |
 
 `iii-observability` is absent from `harness-core-v1`. Adding an exporter to the
 core stack would increase boot and configuration surface without proving the
@@ -108,21 +104,21 @@ packaged dependency is declared at
 context-manager `allow_fallback_limits` option only changes model-limit lookup
 inside that worker; it is not a harness fallback when the worker is absent.
 
-## Existing contracts consumed
+## Platform contracts consumed
 
 | Contract | Source | Integration rule |
 |---|---|---|
 | Public/internal harness IDs | [`harness/src/functions/mod.rs:32`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/mod.rs) | Normal scenarios use `harness::send` and read `harness::status`; `turn` and `function::{trigger,resolve}` stay internal. |
-| Send request/response | [`harness/src/functions/send.rs:69`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs) | `accepted` is always true on success. Optional `merged`, `queued`, and `deduplicated` fields are omitted when false; graders normalize absence to false. |
-| Status | [`harness/src/functions/status.rs:12`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/status.rs) | Unknown session returns JSON `null`; known status exposes current turn, counters, pending calls, live children, queue, and result. |
+| Send request/response | [`harness/src/functions/send.rs:92`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs) | `accepted` is always true on success. Optional `merged`, `queued`, and `deduplicated` fields are omitted when false; graders normalize absence to false. |
+| Status | [`harness/src/functions/status.rs:24`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/status.rs) | Unknown session returns JSON `null`; known status exposes current turn, counters, pending calls, live children, queue, and result. |
 | Transcript | [`session-manager/src/functions/messages.rs:10`](https://github.com/iii-hq/workers/blob/main/session-manager/src/functions/messages.rs) | Follow `next_cursor` until absent and grade ordered `MessageItem` entries. |
-| Lifecycle | [`harness/src/events.rs:26`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs), [`harness/src/events.rs:271`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs) | Hyphenated IDs, strict binding filters, and exact started/completed payload fields. |
+| Lifecycle | [`harness/src/events.rs:26`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs), [`harness/src/events.rs:311`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs) | Hyphenated IDs, strict binding filters, and exact completion payload fields. |
 | Event delivery | [`harness/src/events.rs:7`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs), [`harness/src/events.rs:409`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs) | `Void` notifications are at-least-once and unordered; status/transcript confirm durable outcome. Identical duplicates are accepted, conflicting terminals fail. |
 | Queue readiness | [`harness/src/queue.rs:13`](https://github.com/iii-hq/workers/blob/main/harness/src/queue.rs), [`queue/src/functions.rs:197`](https://github.com/iii-hq/workers/blob/main/queue/src/functions.rs) | `engine::queue::list_topics` must include `harness-turn` before send. |
 | Router IDs | [`llm-router/src/surface.rs:27`](https://github.com/iii-hq/workers/blob/main/llm-router/src/surface.rs) | Scripted worker claims the exact required fixed IDs and no production router starts. |
 | Router chat | [`llm-router/src/chat/chat.rs:39`](https://github.com/iii-hq/workers/blob/main/llm-router/src/chat/chat.rs) | Match `writer_ref`, request id, model/provider, prompt, messages, tools, response format, thinking, output limit, provider options, and metadata. |
 | Stream vocabulary | [`llm-router/src/types/events.rs:49`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/events.rs) | Exactly 15 snake-case variants; only `done` and `error` are terminal. |
-| Router response | [`llm-router/src/types/router.rs:54`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/router.rs), [`llm-router/src/chat/chat.rs:313`](https://github.com/iii-hq/workers/blob/main/llm-router/src/chat/chat.rs) | Return `{ok, provider, model, stop_reason?, usage?, error?}` only after terminal streaming has been relayed. |
+| Router response | [`llm-router/src/types/router.rs:54`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/router.rs), [`llm-router/src/chat/chat.rs:254`](https://github.com/iii-hq/workers/blob/main/llm-router/src/chat/chat.rs) | Return `{ok, provider, model, stop_reason?, usage?, error?}` only after terminal streaming has been relayed. |
 | Stable harness errors | [`harness/src/error.rs:1`](https://github.com/iii-hq/workers/blob/main/harness/src/error.rs) | Preserve the `harness/<code>: message` bus shape in evidence. |
 | Engine call metadata | Engine-injected top-level fields such as `_caller_worker_id` | Strip top-level keys beginning with `_` before validating a declared function request; nested underscore-prefixed user data is not stripped. |
 
@@ -170,7 +166,7 @@ This is test-support API owned by the integration runner. The scripted worker
 and real llm-router are mutually exclusive. Duplicate function registration
 would otherwise make ownership boot-order dependent.
 
-The worker implements these existing IDs for the first profile:
+The worker implements these required IDs for `harness-core-v1`:
 
 - `router::chat`
 - `router::abort`
@@ -178,6 +174,12 @@ The worker implements these existing IDs for the first profile:
 - `router::models::get`
 - `router::models::supports`
 - `router::system_prompt::get`
+
+These six are the subset the `harness-core-v1` path requires. The full
+llm-router surface registers further functions (`router::complete`,
+`router::embed`, `router::models::budget`, `router::provider::*`,
+`router::route`, `router::models::reconcile`) that stay absent and uncalled
+in this profile.
 
 `router::models::get` returns the pinned fixture model with a context window
 large enough to prevent accidental compaction in the first two scenarios.
@@ -228,7 +230,7 @@ The frozen frame variants are `start`, `text_start`, `text_delta`, `text_end`,
 `thinking_start`, `thinking_delta`, `thinking_end`, `functioncall_start`,
 `functioncall_delta`, `functioncall_end`, `usage`, `ping`, `stop`, `done`, and
 `error`. Frames use the exact content/message shapes in
-[`llm-router/src/types/messages.rs:30`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/messages.rs)
+[`llm-router/src/types/messages.rs:37`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/messages.rs)
 and [`llm-router/src/types/content.rs:5`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/content.rs).
 
 ### Authoring and compilation
@@ -238,9 +240,9 @@ Scenario authors maintain exactly one source module per scenario:
 data through typed builders and registers it in the scenario list. There is no
 YAML layer: the authored shape below is the runner's own data model, enforced
 by the type system at `cargo build` instead of by a schema validator at load
-time. Aliases, typed replies, deterministic defaults, and scenario-specific
-expectations keep routine scenarios concise. The shape is documented in the
-spec's TS-style notation; the implementation is Rust structs with builders:
+time. The compiler expands aliases and deterministic defaults; scenario modules
+contain only scenario-specific values and expectations. The notation below is
+TypeScript-like documentation for Rust structs and builders:
 
 ```ts
 interface AuthoredScenarioV1 {
@@ -282,7 +284,7 @@ interface AuthoredScenarioV1 {
 }
 ```
 
-A routine scenario reads like data, because it is data:
+Example builder input:
 
 ```rust
 // src/scenarios/streamed_text.rs
@@ -297,17 +299,12 @@ pub fn scenario() -> AuthoredScenario {
 }
 ```
 
-Code-authored fixtures deliberately mirror the agent-quality decision. There,
-YAML orchestration was rejected because tests should be code over public APIs;
-here the authored layer is not orchestration but model-boundary fixture data,
-and Rust is the cleanest host for it: an invalid matcher combination or a
-missing reply no longer waits for script loading — it fails `cargo build`; the
-authored and compiled layers share one set of structs, so there is no schema
-pair to keep synchronized; and the runner keeps a single toolchain. Builders
-produce data only — a builder that derives scenarios from control flow is
-rejected in review, under the same rule that forbids a second orchestration
-language below. Raw frames remain data, so script loading keeps its
-validation as the final defense.
+The authored layer is model-boundary fixture data, not an orchestration
+language. Rust builders make invalid matcher combinations and missing replies
+compile errors, keep the authored and compiled layers on one set of structs,
+and use the runner's existing toolchain. Builders produce data only; deriving
+scenarios from arbitrary control flow is outside the contract. Raw frames
+remain data and receive runtime validation when the script loads.
 
 Before any process starts, the compiler resolves that source into the exact
 runtime unit:
@@ -418,11 +415,13 @@ every expected object member or array element at the same position; it does not
 ignore array ordering or extra elements between expected entries.
 
 Calls consume generations in ordinal order. An unexpected subject call,
-matcher failure, or unused expectation is a `contract_failure`. Script loading
-rejects duplicate ordinals, an invalid matcher/normalizer, extra generations,
-missing or multiple terminal frames, and response/frame disagreement as
-`runner_error` before the stack starts. Fixtures never depend on absolute
-wall-clock timestamps.
+matcher failure, or unused generation is a `contract_failure`; unused
+generations are graded after the run through the
+`router.generations_consumed` invariant, since loading cannot know how many
+generations the subject will consume. Script loading rejects duplicate
+ordinals, an invalid matcher/normalizer, missing or multiple terminal frames,
+and response/frame disagreement as `runner_error` before the stack starts.
+Fixtures never depend on absolute wall-clock timestamps.
 
 Barriers are not part of the v1 fixture contract. A fault that must occur after
 a target accepts a call uses an internal deterministic gate: the recorder
@@ -440,14 +439,13 @@ registrations and restores only missing lifecycle or scenario bindings before
 resuming **Await**. A descriptor or binding that cannot be restored is runner
 infrastructure failure (`runner_error`), not a subject timeout.
 
-A future barrier schema requires a complete reached/release/acknowledgement
-handshake and will use a new schema version.
+Any barrier contract is outside version 1 and requires its own versioned
+reached/release/acknowledgement handshake.
 
-## Future offline cassette tooling
+## Offline cassette tooling boundary
 
-Cassette capture/import is outside the v1 runner and gate. A schema and
-sanitizer without a real `capture → sanitize → verify → import` workflow would
-be unused surface and could give false confidence about secret handling.
+Cassette capture/import is outside the v1 runner and gate. Version 1 defines no
+cassette schema, sanitizer, capture command, or import command.
 
 When that workflow exists, it lives in isolated offline tooling rather than in
 every scenario directory. Its versioned artifact records engine, harness,
@@ -459,11 +457,10 @@ sanitization, and denylist tests pass.
 
 ## Recorder contract
 
-The recorder control plane is a private in-process service owned by the
-runner. `configure`, `reset`, `snapshot`, and bounded `await` are ordinary Rust
-calls and are never registered as iii functions. This keeps test setup out of
-the subject engine and ensures durable evidence remains readable after an
-engine crash.
+The recorder control plane is a private in-process service owned by the runner.
+`configure`, `reset`, `snapshot`, and bounded `await` are direct Rust method
+calls and are never registered as iii functions. Recorder state is stored
+outside the subject engine so it remains readable after an engine crash.
 
 Only two kinds of recorder handlers traverse the engine:
 
@@ -549,7 +546,7 @@ authority when a binary has no reliable `--version` surface.
 
 For each scenario it:
 
-1. creates a unique engine working/config directory and an engine YAML whose
+1. creates a unique engine working/config directory and `config.yaml` whose
    `configuration` worker uses `adapter.name: fs` and
    `adapter.config.directory: <run>/configuration`;
 2. reserves loopback ports, starts processes, and retries a bind race with a new
@@ -561,10 +558,10 @@ For each scenario it:
 5. starts workers in declared order and captures stdout/stderr separately;
 6. performs bounded immediate-exit observation during boot and enforces
    readiness, scenario, collection, and teardown deadlines;
-7. classifies early process exit before any ordinary timeout;
+7. classifies early process exit before applying the scenario timeout;
 8. sends SIGTERM, waits five seconds, then sends SIGKILL to remaining children.
 
-The engine starts its built-in configuration worker from the engine YAML before
+The engine starts its built-in configuration worker from `config.yaml` before
 external workers. The runner then starts each configurable external worker with
 its per-run `--config <seed.yaml>`. On this fresh configuration directory, the
 worker's first `configuration::register` installs that seed as
@@ -637,6 +634,7 @@ interface ExecutionReportV1 {
   schema_version: "1"
   run_id: string
   scenario_id: string
+  attempt: number
   started_at: string
   duration_ms: number
   result_path: string
@@ -649,6 +647,11 @@ interface ExecutionReportV1 {
 execution report links to the result by both `scenario_id` and SHA-256 of the
 exact persisted `result.json` bytes; a consumer verifies that digest before
 treating the pair as one execution.
+Stable results contain only attempt-relative evidence paths. Dynamic run,
+session, turn, request, port, process, timestamp, and absolute-path values are
+replaced with documented symbolic tokens while constructing `expected` and
+`actual`; raw evidence is never normalized or overwritten. This makes repeated
+results byte-comparable without discarding diagnostic data.
 Schemas deny unknown fields. Failure precedence is `runner_error`,
 `process_crash`, `setup_error`, `timeout`, then `contract_failure`; `pass` is
 possible only when all required invariants pass. The process exits 0 only when
@@ -658,6 +661,15 @@ subject exceeded its completion deadline while the runner was in **Await**.
 A readiness deadline is `setup_error`; recorder, collection, artifact, or
 teardown failure after **Send** is `runner_error`. Infrastructure deadlines
 never become subject timeouts.
+
+Classification does not replace engine or SDK error codes. Evidence retains the
+exact error code and object fields; values matching the credential denylist are
+redacted before persistence. `function_not_found` or `FORBIDDEN` on a required
+readiness probe is `setup_error`; a wire `timeout` or SDK timeout while the
+runner is in **Await** is `timeout`. The same timeout during collection or
+teardown is `runner_error`. The runner does not retry a function invocation
+inside an attempt. `--repeat` creates independent attempts with new stacks and
+does not convert a failed attempt into a retry pass.
 
 ## Scenario lifecycle
 
@@ -675,12 +687,11 @@ never become subject timeouts.
 10. **Grade:** pure code assertions; no mutation of the subject.
 11. **Teardown:** stop all process groups and produce a typed teardown report.
 12. **Report:** combine teardown with the verdict, then write canonical result,
-    execution metadata, and concise console output.
+    execution metadata, and a one-line process summary.
 
 Teardown is part of the execution outcome. Remaining process groups,
 signal/reap errors, or cleanup deadline expiration produce `runner_error` and
-`teardown.json`; a warning-only incomplete teardown cannot leave a scenario
-green.
+`teardown.json`; incomplete teardown always produces a non-pass classification.
 
 The lifecycle notification is not the only source of truth. The harness
 persists terminal state before emitting completion, so the runner confirms the
@@ -695,28 +706,35 @@ key, and artifact path is scoped by `run_id`. Every **test-owned** target
 function ID is also scoped. Production IDs such as
 `harness::send`, `router::chat`, and lifecycle trigger types remain fixed.
 
-The first version never reuses a stack. Reuse may be proposed only when measured
-p95 runtime exceeds the CI budget and a reset-contract test proves no session,
-state, registration, event, queue item, or file crosses scenario boundaries.
-Restart and redelivery scenarios always own their complete stack.
+Version 1 never reuses a stack. Reuse may be proposed only when measured
+p95 runtime exceeds the CI budget and a reset-contract test verifies that no
+session, state, registration, event, queue item, or file crosses scenario
+boundaries. Restart and redelivery scenarios always own their complete stack.
 
 ## Oracles
 
-| Oracle | What it proves |
+| Oracle | Verified property |
 |---|---|
 | Send response | Acceptance, identity, steering, queueing, and deduplication flags |
 | Full transcript | Durable order/content, function results, and absence of duplicate entries; usage only when the shipped transcript persists it |
 | Status | Terminal state, result, pending calls, live children, queue, and retry counters |
 | Target recorder | Invocation arguments, count, order, and forbidden side effects |
 | Scripted router | Generation count and model-visible messages/`tools` |
-| Lifecycle recorder | Started/completed delivery and duplicate consistency |
+| Lifecycle recorder | Completed delivery and duplicate consistency |
 | Process supervisor | Unexpected exit, restart boundary, and shutdown behavior |
 | Traces/logs | Diagnosis only unless telemetry is the explicit invariant |
 
-No single oracle is sufficient. Private state may be copied after failure for
-diagnosis but cannot decide an ordinary public-contract scenario.
+Every v1 verdict uses all required oracles for that scenario. Private state may
+be copied after failure for diagnosis but cannot determine the verdict.
 
-## First implementation slice
+## Version 1 reference scenarios
+
+Version 1 contains exactly C-E2E-001 and C-E2E-002 as the required scenario
+corpus; they exercise the shared streaming, dispatch, durability, lifecycle,
+isolation, supervision, and reporting machinery. Quarantined reproduction
+scenarios (currently C-E2E-505, C-E2E-506, and C-E2E-507) are checked in
+alongside them but stay outside the required corpus and the `run --scenario
+all` gate until their underlying issues are fixed.
 
 ### C-E2E-001 — streamed text reaches durable completion
 
@@ -913,33 +931,30 @@ Required invariants:
 - no pending call remains and exactly two generations are consumed.
 
 The grader's duplicate-detection rule is unit-tested with synthetic evidence
-containing two target calls. Phase 1 must also exercise repeated send through
-the public API; it does not add a private injection API or mutant harness
-binary.
+containing two target calls. Post-v1 repeated-send coverage uses the public API;
+it cannot add a private injection API or mutant harness binary.
 
-## Expansion order
+## Post-v1 expansion
 
-| Phase | Scenario | Core invariant |
+| Order | Scenario | Core invariant |
 |---|---|---|
 | 1 | Denied function | Target never runs and a durable denial reaches the next generation |
-| 1 | Repeated send idempotency | Original ids return and no duplicate message/turn appears |
-| 1 | Router failure | Retry/resume and terminal error match stable contracts |
-| 1 | Structured output | Repair retries and final classification are bounded |
-| 2 | Steering while streaming | New message participates exactly once in the active turn |
-| 2 | Hook ordering and failure | Each synchronous hook follows documented chain semantics |
-| 2 | Approval allow/deny | Target runs once after allow and never after deny |
-| 2 | Sub-agent fan-out/fan-in | Parent waits for required children and resolves each once |
-| 2 | Cancellation | Streams and descendants stop consistently |
-| 3 | Queue redelivery/restart | Durable checkpoints prevent duplicate transcript and effects |
-| 3 | Dynamic registration | Function discovery updates without stale schemas |
-| 3 | Runtime validation | A failed validator drives one bounded public continuation |
+| 2 | Repeated send idempotency | Original ids return and no duplicate message/turn appears |
+| 3 | Router failure | Retry/resume and terminal error match stable contracts |
+| 4 | Structured output | Repair retries and final classification are bounded |
+| 5 | Steering while streaming | New message participates exactly once in the active turn |
+| 6 | Hook ordering and failure | Each synchronous hook follows documented chain semantics |
+| 7 | Approval allow/deny | Target runs once after allow and never after deny |
+| 8 | Sub-agent fan-out/fan-in | Parent waits for required children and resolves each once |
+| 9 | Cancellation | Streams and descendants stop consistently |
+| 10 | Queue redelivery/restart | Durable checkpoints prevent duplicate transcript and effects |
+| 11 | Dynamic registration | Function discovery updates without stale schemas |
+| 12 | Runtime validation | A failed validator drives one bounded public continuation |
 
-The authored layer remains single-send until the repeated-send scenario needs
-more. At that point it may add a typed, ordered `steps` variant whose entries
-are public send/await operations with explicit identity expectations. It must
-not introduce a generic DAG, arbitrary callbacks, or a second orchestration
-language. Denied function, repeated-send idempotency, router failure, and
-structured output all belong to Phase 1.
+The v1 authored contract is single-send. Multi-send coverage requires a new
+schema version with typed, ordered public send/await steps and explicit identity
+expectations; it cannot introduce a generic DAG, arbitrary callbacks, or a
+second orchestration language.
 
 ## Repository and artifacts
 
@@ -952,8 +967,12 @@ harness/evals/integration/
     main.rs
     scenarios/             # authored builder modules + registry
       mod.rs
+      builder.rs           # data-only typed builders
       streamed_text.rs
       exactly_once_function.rs
+      hold_mutation_505.rs
+      hook_held_release_506.rs
+      crash_recovery_507.rs
     expand/                # authored → compiled contract
     stack/                 # layout, manifest, boot
     process/               # process groups and typed teardown
@@ -969,28 +988,32 @@ harness/evals/integration/
     execution-report.v1.json
   scenarios/
     system-prompt.txt
-  tests/snapshots/<scenario-id>.compiled.json
+  tests/snapshots/<slug>.compiled.json
 
 target/integration/<run_id>/
-  result.json
-  execution.json
-  stack.json
-  teardown.json                  # always written; records complete cleanup
-  process-exit.json              # present for unexpected exits
-  logs/
   scenarios/<scenario_id>/
-    request.json
-    send-response.json
-    transcript.json
-    status.json
-    router-calls.json
-    target-calls.json
-    lifecycle-events.json
-    invariants.json
+    attempts/<attempt>/
+      result.json
+      execution.json
+      stack.json
+      teardown.json              # always written once allocation succeeds; records complete cleanup
+      process-exit.json          # present for unexpected exits
+      logs/
+      evidence/
+        request.json
+        send-response.json
+        transcript.json
+        status.json
+        router-calls.json
+        target-calls.json
+        lifecycle-events.json
+        invariants.json
 ```
 
-`stack.json` records `harness-core-v1`, the exact resolved component set, and
-for every executable its absolute path, SHA-256, and optional version. It also
+Each attempt directory represents one fresh stack and prevents `--scenario all`
+or `--repeat` from overwriting another result. `stack.json` records
+`harness-core-v1`, the exact resolved component set, and for every executable
+its absolute path, SHA-256, and optional version. It also
 records the exact engine-lock provenance. Unexpected-exit evidence references
 the corresponding stderr path; typed teardown evidence names the affected
 process and operation while the run retains its stdout/stderr files.
@@ -1004,16 +1027,13 @@ make -C harness integration-e2e
 
 ## CI and gate policy
 
-During the flake-characterization period, the non-required job runs on every
-pull request and manual workflow dispatch. Main-branch and scheduled execution
-remain promotion work; they must be added before collecting the 100-run
-promotion window below. Once duration and dependency data are available, a
-pull-request filter may replace the broad trigger only if it follows the
-dependency graph: harness, session-manager, context-manager, queue, directory,
-SDK/wire contracts, integration runner, `engine.lock`, build plumbing, and CI
-changes must all select the job. The job uses the repository Rust toolchain and
-the runner's strict no-skip mode. The initial `engine.lock` pins the adjacent
-engine source inspected for this spec:
+The version 1 job runs on every pull request, manual workflow dispatch, and
+schedule. It is non-required while collecting the promotion window below. A
+pull-request filter is valid only when it follows the dependency graph:
+harness, session-manager, context-manager, queue, directory, SDK/wire
+contracts, integration runner, `engine.lock`, build plumbing, and CI changes
+must all select the job. The job uses the repository Rust toolchain and the
+runner's strict no-skip mode. `engine.lock` pins the engine artifact:
 
 ```toml
 repository = "iii-hq/iii"
@@ -1022,7 +1042,7 @@ package = "iii"
 binary = "target/release/iii"
 ```
 
-The new `harness-integration` job in `.github/workflows/ci.yml` first checks out
+The `harness-integration` job in `.github/workflows/ci.yml` first checks out
 workers, reads and validates those four lock fields, then uses
 `actions/checkout@v4` to place that repository and exact revision at
 `target/integration-engine-src`. It runs
@@ -1070,21 +1090,22 @@ The runner implementation must include:
   files, and environment secrets are scoped with no cross-run leakage;
 - stable result bytes, result/execution digest verification, structured
   process and teardown evidence, and the documented process exit codes;
-- both initial scenarios repeated through real stacks without a model key and
+- both version 1 scenarios repeated through real stacks without a model key and
   with byte-identical stable results;
-- Phase 1 public-path coverage for denied function, repeated-send
-  idempotency, router failure, and structured output.
+- C-E2E-001 and C-E2E-002 as the complete v1 scenario corpus.
 
-Barrier and cassette tests are intentionally absent from v1 acceptance. They
-become acceptance criteria only for their own versioned runtime or offline
-tooling proposals.
+Barrier and cassette behavior is outside v1 acceptance and requires separate
+versioned runtime or offline-tooling contracts.
 
 ## Related material
 
-- [Harness agent-quality E2E](agent-quality.md)
+- [Harness E2E tests](agent-quality.md)
 - [Harness architecture](https://github.com/iii-hq/workers/blob/main/harness/architecture/README.md)
 - [`harness::send`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs)
 - [Durable turn loop](https://github.com/iii-hq/workers/blob/main/harness/src/turn_loop.rs)
 - [Queue provisioning](https://github.com/iii-hq/workers/blob/main/harness/src/queue.rs)
 - [Lifecycle events](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs)
 - [Router event vocabulary](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/events.rs)
+- [iii core primitives](../../skills/iii-core-primitives/SKILL.md)
+- [iii engine configuration](../../skills/iii-engine-config/SKILL.md)
+- [iii error handling](../../skills/iii-error-handling/SKILL.md)

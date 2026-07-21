@@ -1,6 +1,6 @@
 ---
-title: harness evaluation — integration and agent quality
-tagline: deterministic contract checks and real-model workflow evaluation for the durable harness.
+title: harness evaluation — integration and e2e tests
+tagline: deterministic integration tests and real-model e2e tests for the durable harness.
 date: 2026-07-15
 tags: [agents, evaluation, harness]
 status: draft
@@ -9,29 +9,21 @@ featured: false
 
 # Harness evaluation
 
-> Status: integration track core implemented; remaining acceptance expansion
-> and the agent-quality track remain proposed. Agent quality was revised on
-> 2026-07-20: test cases are vitest code over public functions, and evidence
-> assets are default harness API.
->
-> Last reviewed: 2026-07-20.
-
-The harness needs two evaluation tracks because one model boundary cannot answer
-both questions honestly. Integration needs a controlled, deterministic router
-to prove public lifecycle and durability contracts. Agent quality needs a
-pinned real model and provider path to measure whether representative workflows
-actually succeed. The tracks share vocabulary and report conventions, but not
-an oracle, execution owner, or release policy.
-
-This split is the load-bearing constraint for the design.
+This specification defines two evaluation tracks with separate model
+boundaries and gate policies. The integration tests replace the production
+router with a scripted worker and verify harness contracts deterministically.
+The e2e tests use the production router/provider path with a pinned model and
+verify scenario-specific outcomes and resource usage. The tracks share
+identifiers and artifact conventions; they do not share an oracle or execution
+policy.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   ci["CLI / CI"]
-  integration["integration runner\ndeterministic"]
-  quality["agent-quality suite\nvitest · real model"]
+  integration["integration runner<br/>deterministic"]
+  quality["e2e suite<br/>vitest · real model"]
   harness["public harness boundary"]
   scripted["scripted router"]
   provider["production router + provider"]
@@ -50,70 +42,80 @@ flowchart LR
   evidence --> grader
 ```
 
-| Track | Model boundary | Primary oracle | First use |
+| Track | Model boundary | Primary oracle | Version 1 execution |
 |---|---|---|---|
-| [Integration E2E](integration-e2e.md) | Scripted `router::*` implementation | Code assertions over public, durable evidence | Pull-request regression coverage |
-| [Agent-quality E2E](agent-quality.md) | Production router, provider, and pinned model | Explicit code assertions over harness-built evidence assets, plus raw metrics | Scheduled real-model runs |
+| [Integration tests](integration-e2e.md) | Scripted `router::*` implementation | Code assertions over public, durable evidence | Pull-request regression coverage |
+| [E2E tests](agent-quality.md) | Production router, provider, and pinned model | Explicit code assertions over harness-built evidence assets, plus raw metrics | Scheduled real-model runs |
 
-Both enter ordinary turns through `harness::send`. Neither seeds private
-harness state or calls `harness::turn` as a continuation API.
+Both invoke `harness::send` through the SDK function-call shape
+`trigger({ function_id, payload })`. The harness enqueues `harness-turn`
+internally. Neither track writes private harness state or invokes
+`harness::turn` as a continuation API.
 
-## What exists and what is proposed
+## Version 1 scope
 
-| Capability | State |
+| Capability | Role in version 1 |
 |---|---|
-| Durable harness turn loop, public send/status APIs, lifecycle triggers, transcript persistence | Existing; exact contracts come from current Rust source and golden schemas |
-| Deterministic integration runner, scenario compiler, scripted router, recorder, live-contract readiness, typed teardown, and stable/volatile reports | Implemented; Phase 1 scenarios and isolation/port-collision coverage remain, and authoring migrates from YAML to Rust builder modules before Phase 1 |
-| Offline router cassette capture/import tooling | Future work; outside the integration v1 gate |
-| Vitest agent-quality suite, shared `harness-test` worker and helpers, and default harness evidence contracts (`harness::session-tree`, `harness::metrics`, trace propagation) | Proposed here |
-| HarnessBench same-prompt performance comparison and console view | Separate in-flight design in [PR #280](https://github.com/iii-hq/workers/pull/280) |
-| Durable production DAG orchestration | Existing [`workflow`](https://github.com/iii-hq/workers/blob/main/workflow/README.md) worker; intentionally separate from evaluation orchestration |
+| Durable harness turn loop, public send/status APIs, lifecycle triggers, transcript persistence | Platform contracts consumed by both tracks |
+| Deterministic integration runner, scenario compiler, scripted router, recorder, live-contract readiness, typed teardown, and stable/volatile reports | Integration v1 |
+| Vitest e2e suite, `harness-test` helpers, session-tree metrics, and complete triggered-work evidence | E2E v1 |
+| Offline router cassette capture/import tooling | Outside v1 |
+| HarnessBench same-prompt performance comparison and console view | Separate system described in [PR #280](https://github.com/iii-hq/workers/pull/280) |
+| Durable production DAG orchestration | Separate [`workflow`](https://github.com/iii-hq/workers/blob/main/workflow/README.md) responsibility |
 
-HarnessBench remains an independent performance-comparison product. It compares
-one prompt across model/configuration legs and intentionally omits correctness
-grading, multi-turn scenarios, and release gates. Agent quality owns those
-evaluation semantics and does not share a run record or public API with
-HarnessBench.
+The integration v1 gate contains C-E2E-001 and C-E2E-002. The e2e v1 gate
+contains four real-model tests: plain response, single function, sub-agent
+fan-out/fan-in, and triggered work. Each track's acceptance section is
+authoritative for its gate.
 
-The `workflow` worker remains an independent production orchestrator. It may
-be the subject of an evaluation test, but the agent-quality suite does not
-extend its DAG or retry model: tests drive the harness only through public
-functions and add no orchestration model of their own.
+HarnessBench is outside this specification. It compares one prompt across
+model/configuration legs and does not define correctness assertions, multi-turn
+scenarios, or release gates. It does not share a run record or public API with
+the e2e suite.
+
+The `workflow` worker is also outside this specification. An e2e test
+may evaluate it as a dependency, but the suite does not modify its DAG or retry
+model. Tests invoke public functions and do not define another orchestration
+protocol.
 
 ## Conventions
 
-- Current interfaces are cited as `file:line`; the linked source is the wire
+- Platform interfaces are cited as `file:line`; the linked source is the wire
   authority.
-- New identifiers and schemas are labeled **Proposed** until implemented.
+- Contracts introduced by these documents carry an explicit `V1` schema or
+  version marker.
 - `harness::hook::*` names synchronous in-path extension points.
   `harness::turn-completed` is an asynchronous lifecycle trigger.
-- Model-visible iii capabilities are called functions. `tools` is used only
-  when naming the router/provider wire field.
+- Function, Trigger, and Worker refer to the three iii primitives. Function IDs
+  use `::`; SDK invocation uses `trigger({ function_id, payload })`.
+- Model-visible capabilities are Functions. `tools` is used only for the
+  router/provider wire field.
 - Missing infrastructure, malformed evidence, or a failed check never becomes
   a passing skip.
 
 ## Spec index
 
-- [Integration E2E](integration-e2e.md) — isolated deterministic stacks,
+- [Integration tests](integration-e2e.md) — isolated deterministic stacks,
   scripted router contracts, evidence, fixtures, CI, and gate policy.
-- [Agent-quality E2E](agent-quality.md) — vitest authoring, `harness-test`
+- [E2E tests](agent-quality.md) — vitest authoring, `harness-test`
   helpers, default harness evidence contracts, metrics policy, artifacts, and
   scenario corpus.
-- [Interactive overview](https://iii.dev/roadmap/2026-07-15-harness-evaluation/) —
-  one generated deck; the Markdown files remain canonical.
-- [Harness implementation design](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/harness.md) — historical
-  turn-loop design. Current source and golden schemas govern exact wire shapes.
+- [Rendered presentation](https://iii.dev/roadmap/2026-07-15-harness-evaluation/) —
+  non-canonical output derived from these Markdown files.
+- [Harness implementation design](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/harness.md) — background
+  for the turn loop. Source and golden schemas govern exact wire shapes.
+- [iii skill catalog](../../skills/SKILLS.md) — terminology and SDK/config/error
+  references used by these specifications.
 
 ## Open questions
 
-These do not block the first implementation:
+These questions are outside the version 1 gate:
 
 - Which remote artifact backend and retention policy should replace local/CI
   artifact storage when evaluation runs become a shared service?
 - What signing and sandbox guarantees would an agent-authored or held-out
-  validator need before participating in a release gate? (Both are deferred
-  future work in the agent-quality spec.)
+  validator need before participating in a release gate?
 - Should the harness persist effective-prompt and peak-context telemetry, or
   should those two dimensions remain trace-only diagnostics? (Sub-agent and
   triggered-work usage is already covered by the default evidence contracts;
-  see the agent-quality metrics policy.)
+  see the e2e metrics policy.)
