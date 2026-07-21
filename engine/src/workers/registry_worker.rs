@@ -136,28 +136,13 @@ fn spawn_args(worker_name: &str, port: u16, config_path: Option<&std::path::Path
 // iii-worker binary resolution
 // =============================================================================
 
-/// Resolve the `iii-worker` binary. Checks ~/.local/bin/ and system PATH.
+/// Resolve the `iii-worker` binary via the shared PATH-first resolver
+/// (`cli::platform::find_existing_binary`): system PATH first, then the
+/// managed `~/.local/bin` copy. Kept as a thin wrapper so call sites read
+/// clearly and so the CLI dispatcher and worker spawners can never disagree
+/// on which `iii-worker` runs.
 pub fn resolve_iii_worker_binary() -> Option<PathBuf> {
-    let exe_name = if cfg!(target_os = "windows") {
-        "iii-worker.exe"
-    } else {
-        "iii-worker"
-    };
-
-    // Check ~/.local/bin/ (standard managed binary location)
-    if let Some(home) = dirs::home_dir() {
-        let managed_path = home.join(".local").join("bin").join(exe_name);
-        if managed_path.exists() {
-            return Some(managed_path);
-        }
-    }
-
-    // Check system PATH
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(exe_name))
-            .find(|p| p.exists())
-    })
+    crate::bin_resolve::find_existing_binary("iii-worker")
 }
 
 // =============================================================================

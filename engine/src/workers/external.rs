@@ -97,20 +97,8 @@ pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<Extern
         .iter()
         .find(|k| k.name == binary_name_candidate)
     {
-        let binary_path = which::which(hit.binary)
-            .or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| PathBuf::from(h).join(".local/bin").join(hit.binary))
-                    .map_err(|_| which::Error::CannotFindBinaryPath)
-                    .and_then(|p| {
-                        if p.exists() {
-                            Ok(p)
-                        } else {
-                            Err(which::Error::CannotFindBinaryPath)
-                        }
-                    })
-            })
-            .ok()?;
+        // Shared PATH-first resolver: system PATH, then managed ~/.local/bin.
+        let binary_path = crate::bin_resolve::find_existing_binary(hit.binary)?;
 
         return Some(ExternalWorkerInfo {
             name: binary_name_candidate,

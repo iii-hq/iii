@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod bin_resolve;
 pub mod builtins;
 pub mod condition;
 pub mod config;

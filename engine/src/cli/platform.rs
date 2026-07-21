@@ -172,37 +172,22 @@ fn format_target_human(target: &str) -> String {
     }
 }
 
-/// Find an existing installation of a binary.
+/// Resolve an existing `iii-*` binary to EXECUTE, PATH-first.
 ///
 /// Checks in order:
-/// 1. Our managed bin dir (~/.local/bin/ on macOS/Linux, data_dir/bin on Windows)
-/// 2. System PATH
+/// 1. System PATH (a dev/override build earlier on PATH wins)
+/// 2. Our managed bin dir (~/.local/bin/ on macOS/Linux, data_dir/bin on Windows)
 ///
 /// Returns the path to the binary if found, or None.
+///
+/// This is the single shared *execution* resolver: the CLI dispatcher
+/// (`mod.rs`) and the engine's worker spawners (`workers::registry_worker`,
+/// `workers::external`) all route through it so they can never disagree on
+/// which copy runs. The install/update lifecycle (`update.rs`) deliberately
+/// probes `binary_path()` — the managed `~/.local/bin` copy — first, because
+/// it manages that specific file regardless of what's on PATH.
 pub fn find_existing_binary(binary_name: &str) -> Option<PathBuf> {
-    let exe_name = if cfg!(target_os = "windows") {
-        format!("{}.exe", binary_name)
-    } else {
-        binary_name.to_string()
-    };
-
-    // 1. Check our managed bin dir (~/.local/bin/ on macOS/Linux)
-    let managed = bin_dir().join(&exe_name);
-    if managed.exists() {
-        return Some(managed);
-    }
-
-    // 2. Check system PATH
-    which_binary(&exe_name)
-}
-
-/// Look up a binary on the system PATH.
-fn which_binary(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(name))
-            .find(|p| p.exists())
-    })
+    iii::bin_resolve::find_existing_binary(binary_name)
 }
 
 /// Constructs the expected checksum asset filename for a binary.
