@@ -5,6 +5,7 @@ description: 'The agent harness debate takes for granted that the harness is its
 pubDate: 2026-04-28  
 author: 'Mike Piccolo, Founder & CEO of iii'  
 tags: ['agents', 'architecture', 'harness', 'backend']
+ogImage: ../../assets/blog/the-harness-is-the-backend/point-to-point-vs-shared-runtime.png
 ---
 
 The most important architectural question in AI infrastructure right now isn't

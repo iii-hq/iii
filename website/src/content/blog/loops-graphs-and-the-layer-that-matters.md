@@ -4,6 +4,7 @@ description: 'Prompt engineering, context engineering, loop engineering, graph e
 pubDate: 2026-07-21
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'harness', 'loops', 'graphs', 'workers']
+ogImage: ../../assets/blog/loops-graphs-and-the-layer-that-matters/banner.png
 ---
 
 ![Loops, graphs, and the layer that matters -- patterns come down, substrates hold.](../../assets/blog/loops-graphs-and-the-layer-that-matters/banner.png)

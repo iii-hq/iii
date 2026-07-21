@@ -1,13 +1,22 @@
 ---
+import { getImage } from 'astro:assets'
 import type { CollectionEntry } from 'astro:content'
 import FormattedDate from '../components/blog/FormattedDate.astro'
 import BlogLayout from './BlogLayout.astro'
 
 type Props = CollectionEntry<'blog'>['data'] & { slug: string }
 
-const { title, description, pubDate, updatedDate, author, slug } = Astro.props
+const { title, description, pubDate, updatedDate, author, slug, ogImage } = Astro.props
 const canonicalPath = `/blog/${slug}/`
 const canonical = new URL(canonicalPath, Astro.site).toString()
+
+// Reuse the post's own banner as its link-preview image instead of the
+// site-wide default, so sharing a post in Slack/Twitter/etc. shows the post
+// itself rather than the generic iii.dev card.
+const resolvedOgImage = ogImage ? await getImage({ src: ogImage, format: 'png' }) : undefined
+const ogImageUrl = resolvedOgImage
+  ? new URL(resolvedOgImage.src, Astro.site).toString()
+  : 'https://iii.dev/og-image.png'
 
 const jsonLd = {
   '@context': 'https://schema.org',
@@ -23,7 +32,7 @@ const jsonLd = {
     url: 'https://iii.dev/',
     logo: { '@type': 'ImageObject', url: 'https://iii.dev/favicon.svg' },
   },
-  image: 'https://iii.dev/og-image.png',
+  image: ogImageUrl,
   url: canonical,
   mainEntityOfPage: canonical,
 }
@@ -36,6 +45,9 @@ const jsonLd = {
   ogType="article"
   publishedTime={pubDate}
   modifiedTime={updatedDate}
+  ogImage={ogImageUrl}
+  ogImageWidth={resolvedOgImage?.attributes.width}
+  ogImageHeight={resolvedOgImage?.attributes.height}
 >
   <script is:inline type="application/ld+json" slot="head" set:html={JSON.stringify(jsonLd)} />
   <article>
