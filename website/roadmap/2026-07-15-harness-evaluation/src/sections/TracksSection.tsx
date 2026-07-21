@@ -18,8 +18,8 @@ export function TracksSection() {
       id="tracks"
       index="02"
       eyebrow="the split"
-      title="same vocabulary. never the same oracle."
-      lede="both tracks enter through harness::send as ordinary public turns, name evidence the same way, and report in the same conventions. everything else (oracle, execution owner, release policy) is deliberately unshared."
+      title="shared identifiers. never a shared oracle."
+      lede="both tracks enter through harness::send as ordinary public turns and name runs, tests, and artifacts the same way. everything else (model boundary, oracle, execution policy, gate) is deliberately unshared. the canonical files keep their historical names: integration-e2e.md and agent-quality.md."
     >
       <div className="border border-rule bg-bg">
         <div className="flex flex-wrap items-center justify-between gap-3 bg-panel px-3.5 py-2.5 border-b border-rule">
@@ -48,7 +48,7 @@ export function TracksSection() {
       </div>
 
       <div className="mt-8">
-        <SpecSheet title="what this is deliberately not" meta="three adjacent systems">
+        <SpecSheet title="what this is deliberately not" meta="outside the suite boundary">
           <div className="flex flex-col">
             {ADJACENT_SYSTEMS.map((row) => (
               <SpecRow key={row.name} name={row.name} type={row.type}>

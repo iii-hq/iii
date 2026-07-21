@@ -15,7 +15,7 @@ const PROFILE_REPLACED = [
   { name: 'recorder', type: 'controlled, in-process', desc: 'a private service owned by the runner: run-scoped target calls, lifecycle events, deterministic fault gates, fsynced evidence.' },
   { name: 'iii-observability', type: 'absent from harness-core-v1', desc: 'an exporter would grow boot and configuration surface without proving the turn contract; traces are diagnostic in this profile.' },
   { name: 'provider-anthropic / provider-openai', type: 'absent', desc: 'no production network or model behavior in this track.' },
-  { name: 'shell · web · browser', type: 'absent in the first slice', desc: 'added only when a later stack profile exercises them, never silently skipped.' },
+  { name: 'shell · web · browser', type: 'absent in version 1', desc: 'browser coverage belongs to a separately versioned playwright profile; nothing is silently skipped.' },
 ] as const
 
 /**
@@ -27,7 +27,7 @@ export function IntegrationRunSection() {
     <Section
       id="run"
       index="04"
-      eyebrow="integration · a run"
+      eyebrow="integration tests · a run"
       title="everything is real except the model."
       lede="press play, or step it yourself. one fresh isolated stack per scenario: the real engine, queue, and durable turn loop, with a strict script where the model would be."
     >

@@ -17,7 +17,7 @@ export function LifecycleSection() {
     <Section
       id="lifecycle"
       index="05"
-      eyebrow="integration · lifecycle"
+      eyebrow="integration tests · lifecycle"
       title="twelve stages, six classifications, no ambiguity about whose fault."
       lede="readiness is contract-based, never sleep-based, and the boot order is split so the controlled target is verified before the subject starts. when a run goes red, the classification says whether the subject broke a contract or the infrastructure failed; those exit differently."
     >

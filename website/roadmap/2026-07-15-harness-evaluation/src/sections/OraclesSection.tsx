@@ -11,7 +11,7 @@ export function OraclesSection() {
     <Section
       id="oracles"
       index="07"
-      eyebrow="integration · evidence"
+      eyebrow="integration tests · evidence"
       title="no single oracle is sufficient."
       lede="a scenario passes only when independent evidence sources agree. the lifecycle event is not trusted alone; the transcript is not trusted alone; the subject is never asked to grade itself."
     >

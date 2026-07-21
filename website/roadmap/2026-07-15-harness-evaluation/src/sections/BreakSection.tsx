@@ -11,7 +11,7 @@ export function BreakSection() {
     <Section
       id="break"
       index="08"
-      eyebrow="integration · play it"
+      eyebrow="integration tests · play it"
       title="try to sneak one past the oracles."
       lede="you are the misbehaving model, the flaky stack, the sloppy fixture author. pick a sabotage and watch the evidence catch it, classify it, and blame the right party. all six classifications are in there."
     >

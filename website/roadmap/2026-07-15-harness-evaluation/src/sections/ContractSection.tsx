@@ -13,7 +13,7 @@ export function ContractSection() {
     <Section
       id="contract"
       index="06"
-      eyebrow="integration · the script"
+      eyebrow="integration tests · the script"
       title="every router field is matched explicitly. there is no runner default."
       lede="the first scenario, C-E2E-001, streams the phrase “fixture complete” through eight frozen frames. authors write one concise rust builder module; the compiler expands it into an explicit matcher for all twelve router::chat fields, including five explicit absences."
     >

@@ -1,4 +1,4 @@
-/* flows — the integration run (A5) and the agent-quality loop (A5). */
+/* flows — the integration run (A5) and the e2e test loop (A5). */
 import type { SeqLane, SeqStep } from '@lib/components/diagrams/SequencePlayer'
 
 /* ---- integration: one scenario, allocate to teardown ---- */
@@ -158,14 +158,13 @@ export const CONF_STEPS: SeqStep[] = [
   },
 ]
 
-/* ---- agent quality: one test, send to verdict ---- */
+/* ---- e2e tests: one test, send to verdict ---- */
 
 export const QUAL_LANES: SeqLane[] = [
-  { id: 'test', label: 'vitest test', x: 100 },
-  { id: 'helpers', label: 'harness-test', x: 300 },
-  { id: 'harness', label: 'harness', x: 520 },
-  { id: 'session', label: 'session-mgr', x: 730 },
-  { id: 'obs', label: 'observability', x: 930 },
+  { id: 'test', label: 'vitest test file', x: 110 },
+  { id: 'helpers', label: 'harness-test', x: 380 },
+  { id: 'harness', label: 'harness', x: 650 },
+  { id: 'session', label: 'session-mgr', x: 920 },
 ]
 
 export const QUAL_STEPS: SeqStep[] = [
@@ -174,14 +173,14 @@ export const QUAL_STEPS: SeqStep[] = [
     to: 'test',
     label: 'fixture setup',
     title: 'idempotent, run-scoped',
-    desc: 'beforeAll triggers the fixture setup function with a key derived from the launcher-supplied run id. a retried run cannot double-apply side effects.',
+    desc: 'beforeAll triggers the fixture setup function with an idempotency key derived from the launcher-supplied run id. a retried run cannot double-apply side effects.',
   },
   {
     from: 'test',
     to: 'harness',
     label: 'harness::send',
     title: 'the api as-is',
-    desc: 'trigger("harness::send") with an explicit subject object: pinned model, provider, prompt strategy, and every option. no wrapper, no manifest — the same call production orchestration code would make.',
+    desc: 'worker.trigger({ function_id: "harness::send", payload }) with an explicit subject object: pinned model, provider, prompt strategy, and every option. the returned session_id goes straight into the session registry.',
   },
   {
     from: 'harness',
@@ -193,9 +192,9 @@ export const QUAL_STEPS: SeqStep[] = [
   {
     from: 'test',
     to: 'helpers',
-    label: 'awaitTerminal',
+    label: 'awaitTerminal(iii, session, turn)',
     title: 'events signal, status decides',
-    desc: 'lifecycle events are the low-latency signal; the helper accepts duplicate and out-of-order deliveries and always confirms terminal state through harness::status before returning.',
+    desc: 'lifecycle events are the low-latency signal; the helper accepts duplicate and out-of-order deliveries, ignores terminal events for other turns, and confirms the requested turn through harness::status before returning.',
     event: 'harness::turn-completed',
   },
   {
@@ -203,7 +202,7 @@ export const QUAL_STEPS: SeqStep[] = [
     to: 'harness',
     label: 'next send, same session',
     title: 'sequences and feedback are code',
-    desc: 'a prompt sequence is the next send after the prior turn is terminal; a feedback loop is an ordinary bounded loop, its bound visible in the file. every send reuses the same subject object verbatim.',
+    desc: 'a prompt sequence is the next send after the prior turn is terminal; a feedback loop is a bounded loop with its maximum iteration count declared in the file. every send spreads the same subject object verbatim.',
   },
   {
     from: 'test',
@@ -217,27 +216,27 @@ export const QUAL_STEPS: SeqStep[] = [
     to: 'helpers',
     label: 'sessionMetrics',
     title: 'the whole tree or nothing',
-    desc: 'the helper aggregates usage over the root and every descendant session. complete: false throws a typed error — a partial sum is never graded.',
+    desc: 'the helper aggregates usage over the root and every descendant session, per session and in total. complete: false throws a typed error — a partial sum is never graded.',
   },
   {
     from: 'helpers',
     to: 'harness',
     label: 'session-tree + metrics',
-    title: 'default harness assets',
-    desc: 'harness::session-tree and harness::metrics are proposed public reads: tree membership, then turns, calls, errors, tokens, and cost summed per session and in total. the same reads production orchestration needs.',
+    title: 'versioned harness reads',
+    desc: 'harness::session-tree is the recovery authority for tree membership; harness::metrics sums persisted usage over that tree. V1 requests and responses reject unknown fields.',
   },
   {
     from: 'helpers',
-    to: 'obs',
-    label: 'triggeredWork → spans',
-    title: 'traces are first-class',
-    desc: 'trace spans propagated from the subject turn count the work the session caused in other workers. a test asserting triggered work fails closed when spans are missing or dropped.',
+    to: 'harness',
+    label: 'triggered-work → spans',
+    title: 'traces are gating evidence',
+    desc: 'the helper polls harness::triggered-work until complete or its deadline: every function call, hook, trigger, and sub-agent as spans rooted at the subject turns. dropped or open spans throw, never pass.',
   },
   {
     from: 'test',
     to: 'test',
     label: 'expect() · cleanup',
     title: 'explicit verdict, typed cleanup',
-    desc: 'assertions over outcomes, metrics, and spans give the verdict. afterEach stops any non-terminal session with harness::stop, and helpers persist the evidence directory as they run.',
+    desc: 'assertions over outcomes, metrics, and spans give the verdict. afterEach stops every tracked non-terminal session via harness::stop, and a failed test writes ordered failure.json records by phase.',
   },
 ]

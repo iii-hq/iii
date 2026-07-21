@@ -32,8 +32,8 @@ export const MAP_NODES: MapNode[] = [
     y: 408,
     w: 196,
     h: 68,
-    title: 'agent-quality suite',
-    sub: 'vitest · trigger()',
+    title: 'e2e suite',
+    sub: 'vitest · worker.trigger',
     kind: 'primary',
     tag: 'real model',
   },
@@ -203,11 +203,11 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
         heading: 'supplies',
         items: [
           { name: '--engine-bin / III_BIN', desc: 'explicit pinned engine; digests recorded before boot.' },
-          { name: 'authored inputs', desc: 'integration: rust builder scenarios compiled before boot. agent quality: ordinary vitest test files.' },
+          { name: 'authored inputs', desc: 'integration: rust builder scenarios compiled before boot. e2e: ordinary vitest test files.' },
         ],
       },
     ],
-    note: 'integration runs on pull requests; agent quality runs scheduled and on demand.',
+    note: 'integration tests run on pull requests; e2e tests run scheduled and on demand.',
   },
   runner: {
     id: 'integration runner',
@@ -228,21 +228,21 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
     bullets: ['exit 0 only when every selected scenario passes; 2 for contract failures, 3 for everything owned by the runner.'],
   },
   eval: {
-    id: 'agent-quality suite',
+    id: 'e2e suite',
     kindLabel: 'real-model track',
-    role: 'an ordinary vitest e2e suite. test files call trigger("harness::send") directly with an explicit pinned subject, await durable terminal state, and grade with plain expect() assertions. the shared harness-test worker holds only the helpers with real platform work.',
+    role: 'an ordinary vitest suite. test files call worker.trigger({ function_id: "harness::send", payload }) with an explicit pinned subject, await durable terminal state, and grade with plain expect() assertions. helpers coordinate only what a single public call cannot.',
     sections: [
       {
         heading: 'helpers',
         dotted: true,
         items: [
-          { name: 'awaitTerminal', desc: 'events as signal, harness::status as authority; duplicates accepted.' },
-          { name: 'sessionMetrics', desc: 'session-tree + metrics; throws on complete: false — never a partial sum.' },
-          { name: 'triggeredWork', desc: 'trace spans propagated from the turn; fails closed when missing.' },
+          { name: 'awaitTerminal', desc: 'events as signal, harness::status as authority; keys on session and turn, accepts duplicates.' },
+          { name: 'sessionMetrics', desc: 'session-tree + metrics; a typed throw on complete: false — never a partial sum.' },
+          { name: 'triggeredWork', desc: 'polls harness::triggered-work until complete; dropped or open spans throw.' },
         ],
       },
     ],
-    bullets: ['a helper that proves generally useful graduates into default harness api.'],
+    bullets: ['createSessionRegistry tracks every session a test creates; afterEach stops any non-terminal one.'],
   },
   harness: {
     id: 'harness',
@@ -255,6 +255,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
           { name: 'harness::send', desc: 'accepted always true on success; merged/queued/deduplicated only when true.' },
           { name: 'harness::status', desc: 'turn, counters, pending calls, children, queue, result.' },
           { name: 'harness::turn-completed', desc: 'at-least-once, unordered lifecycle notification.' },
+          { name: 'session-tree · metrics · triggered-work', desc: 'versioned V1 evidence reads; requests and responses reject unknown fields.' },
         ],
       },
     ],
@@ -279,8 +280,8 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   },
   provider: {
     id: 'router + provider',
-    kindLabel: 'production · quality only',
-    role: 'the real llm-router and provider path with a pinned model. agent quality measures what production would do, so nothing on this path is mocked.',
+    kindLabel: 'production · e2e only',
+    role: 'the real llm-router and provider path with a pinned model. e2e tests measure what production would do, so nothing on this path is mocked.',
     sections: [
       {
         heading: 'pinned in the report',
@@ -294,14 +295,14 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   evidence: {
     id: 'evidence',
     kindLabel: 'durable · shared vocabulary',
-    role: 'what both tracks grade: the send response, harness::status, the complete paginated transcript, lifecycle events, and — for agent quality — the session tree, tree-summed metrics, and trace spans the harness builds by default.',
+    role: 'what both tracks grade: the send response, harness::status, the complete paginated transcript, lifecycle events, and — for e2e tests — the session tree, tree-summed metrics, and triggered-work spans read through versioned harness contracts.',
     sections: [
       {
         heading: 'collected',
         items: [
           { name: 'session::messages', desc: 'oldest-first, cursor-paginated to completion.' },
           { name: 'lifecycle events', desc: 'identical duplicates accepted; conflicting terminals fail.' },
-          { name: 'session-tree + metrics + spans', desc: 'proposed default harness assets; complete: false fails closed, never a partial sum.' },
+          { name: 'session-tree + metrics + triggered-work', desc: 'versioned V1 harness reads; complete: false fails closed, never a partial sum.' },
           { name: 'artifacts', desc: 'stable results plus full evidence directories, retained on non-pass.' },
         ],
       },
@@ -310,7 +311,7 @@ export const MAP_INFO: Record<string, MapNodeInfo> = {
   graders: {
     id: 'graders',
     kindLabel: 'independent',
-    role: 'integration grades with pure code invariants. agent quality grades with explicit expect() assertions; a reusable domain check is an ordinary iii function the test calls and asserts on.',
+    role: 'integration tests grade with pure code invariants. e2e tests grade with explicit expect() assertions; a reusable domain check is a registered iii function the test calls and asserts on.',
     sections: [
       {
         heading: 'rules',

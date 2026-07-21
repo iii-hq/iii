@@ -23,7 +23,7 @@ export const ORACLES = [
   },
   {
     name: 'lifecycle recorder',
-    proves: 'started/completed delivery and duplicate consistency across at-least-once fan-out.',
+    proves: 'completed delivery and duplicate consistency across at-least-once fan-out; v1 records only harness::turn-completed.',
   },
   {
     name: 'process supervisor',

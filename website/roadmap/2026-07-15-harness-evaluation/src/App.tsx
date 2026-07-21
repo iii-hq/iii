@@ -4,17 +4,17 @@ import { useHashRoute } from '@lib/hooks/useHashRoute'
 import { SpecPage } from '@lib/pages/SpecPage'
 import type { ComponentType } from 'react'
 import { NAV } from './content/deck'
-import { AgentQualityProtocolPage } from './pages/AgentQualityProtocolPage'
+import { E2EProtocolPage } from './pages/E2EProtocolPage'
 import { IntegrationContractsPage } from './pages/IntegrationContractsPage'
 import { BreakSection } from './sections/BreakSection'
 import { IntegrationRunSection } from './sections/IntegrationRunSection'
 import { ContractSection } from './sections/ContractSection'
+import { E2ESection } from './sections/E2ESection'
 import { Hero } from './sections/Hero'
 import { LifecycleSection } from './sections/LifecycleSection'
 import { MapSection } from './sections/MapSection'
 import { OraclesSection } from './sections/OraclesSection'
 import { PayoffSection } from './sections/PayoffSection'
-import { QualityLoopSection } from './sections/QualityLoopSection'
 import { TracksSection } from './sections/TracksSection'
 import { VerdictsSection } from './sections/VerdictsSection'
 import { WhySection } from './sections/WhySection'
@@ -34,7 +34,7 @@ const SECTIONS: ComponentType[] = [
   ContractSection,
   OraclesSection,
   BreakSection,
-  QualityLoopSection,
+  E2ESection,
   VerdictsSection,
   PayoffSection,
 ]
@@ -44,7 +44,7 @@ const Spec = () => <SpecPage docs={SPEC_DOCS} />
 
 const PAGES: Record<string, ComponentType> = {
   'integration-contracts': IntegrationContractsPage,
-  'agent-quality-protocol': AgentQualityProtocolPage,
+  'e2e-protocol': E2EProtocolPage,
   spec: Spec,
 }
 

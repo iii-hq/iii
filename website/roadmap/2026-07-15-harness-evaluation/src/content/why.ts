@@ -8,7 +8,7 @@ export const PAIN_CARDS = [
   },
   {
     n: '02',
-    title: 'scripted stacks cannot judge quality',
+    title: 'scripted stacks cannot judge outcomes',
     body: 'a deterministic router proves ordering, streaming, and durability. it cannot say whether a representative workflow actually succeeded for a user.',
   },
   {
@@ -26,17 +26,17 @@ export const PAIN_CARDS = [
 export const SPLIT_TERMS = [
   {
     name: 'shared',
-    type: 'vocabulary · report conventions',
-    desc: 'both tracks name scenarios, evidence, and classifications the same way, so a report reads the same either side.',
+    type: 'identifiers · artifact conventions',
+    desc: 'both tracks name runs, tests, and evidence artifacts the same way, so a report reads the same either side.',
   },
   {
     name: 'never shared',
-    type: 'oracle · execution owner · release policy',
-    desc: 'a deterministic runner and a real-model evaluator answer different questions; blending them is how a gate starts lying.',
+    type: 'oracle · execution policy · gate',
+    desc: 'a deterministic runner and a real-model suite answer different questions; blending them is how a gate starts lying.',
   },
   {
     name: 'both enter through',
     type: 'harness::send',
-    desc: 'ordinary public turns. neither track seeds private harness state or calls harness::turn as a continuation api.',
+    desc: 'via the sdk shape trigger({ function_id, payload }); the harness enqueues harness-turn internally. neither track writes private harness state or calls harness::turn as a continuation api.',
   },
 ] as const

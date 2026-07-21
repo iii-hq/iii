@@ -39,7 +39,12 @@ export const C002_INVARIANTS = [
 ] as const
 
 export const EXPANSION = [
-  { phase: '1', items: 'denied function · repeated-send idempotency · router failure · structured output' },
-  { phase: '2', items: 'steering while streaming · hook ordering · approval allow/deny · sub-agent fan-out · cancellation' },
-  { phase: '3', items: 'queue redelivery/restart · dynamic registration · runtime validation' },
+  { order: '1–4', items: 'denied function · repeated-send idempotency · router failure · structured output' },
+  { order: '5–9', items: 'steering while streaming · hook ordering and failure · approval allow/deny · sub-agent fan-out/fan-in · cancellation' },
+  { order: '10–12', items: 'queue redelivery/restart · dynamic registration · runtime validation' },
 ] as const
+
+export const QUARANTINE = {
+  ids: 'C-E2E-505 · C-E2E-506 · C-E2E-507',
+  desc: 'quarantined reproduction scenarios are checked in beside the corpus but stay outside the required gate and run --scenario all until their underlying issues are fixed.',
+} as const

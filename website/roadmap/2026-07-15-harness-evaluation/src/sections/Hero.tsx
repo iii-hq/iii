@@ -24,9 +24,9 @@ export function Hero() {
           </h1>
           <p className="mt-6 font-mono text-[14px] leading-[1.7] text-ink-faint lowercase max-w-[58ch]">
             two evaluation tracks for the durable harness, because one model boundary cannot answer both
-            questions honestly: a <span className="text-ink">deterministic runner</span> that proves the public
-            contracts, and a <span className="text-ink">real-model evaluator</span> that grades representative
-            workflows, sharing <span className="text-ink">vocabulary, never an oracle</span>.
+            questions honestly: <span className="text-ink">integration tests</span> that prove the public
+            contracts deterministically, and <span className="text-ink">e2e tests</span> that grade real-model
+            workflows, sharing <span className="text-ink">identifiers, never an oracle</span>.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <a
@@ -51,7 +51,7 @@ export function Hero() {
                 command="make -C harness integration-e2e"
                 output={
                   <span>
-                    ✓ streamed-text · exactly-once-function{' '}
+                    ✓ C-E2E-001 · C-E2E-002{' '}
                     <span className="text-ink-faint">· scripted router, no model key</span>
                   </span>
                 }
@@ -59,7 +59,7 @@ export function Hero() {
               <TerminalRow
                 command={
                   <>
-                    vitest run <span className="text-ink-faint">order-refund-flow.test.ts</span>
+                    vitest run <span className="text-ink-faint">single-function-refund.test.ts</span>
                   </>
                 }
                 output={

@@ -3,7 +3,7 @@ import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
 import { C, CodeBlock, K, M, S } from '@lib/components/schematic/CodeBlock'
 import { FnChip } from '@lib/components/schematic/FnChip'
 import { AUTHORING_LAYERS, RECORDER_PLANE, SUPERVISOR_STEPS } from '../content/protocols'
-import { EXPANSION } from '../content/contract'
+import { EXPANSION, QUARANTINE } from '../content/contract'
 
 /**
  * A14 — deep dive on the integration test-support contracts: the authored →
@@ -14,10 +14,10 @@ import { EXPANSION } from '../content/contract'
 export function IntegrationContractsPage() {
   return (
     <PageShell
-      eyebrow="deep dive · integration"
+      eyebrow="deep dive · integration tests"
       title="the test-support contracts"
-      description="the scenario compiler, scripted router, recorder, and supervisor are test support outside the subject path, owned by the integration runner and implemented in its core. they mirror existing wire contracts (cited file:line in the spec), versioned and strict: schemas deny unknown fields, and fixture problems are runner errors before the stack even starts."
-      related={[{ slug: 'agent-quality-protocol', label: 'agent-quality protocol' }]}
+      description="the scenario compiler, scripted router, recorder, and supervisor are test support outside the subject path, owned by the integration runner. they mirror existing wire contracts (cited file:line in the spec), versioned and strict: schemas deny unknown fields, and fixture problems are runner errors before the stack even starts."
+      related={[{ slug: 'e2e-protocol', label: 'e2e protocol' }]}
     >
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
@@ -152,7 +152,7 @@ export function IntegrationContractsPage() {
         </div>
       </div>
 
-      <SpecSheet title="offline cassette tooling · future work" meta="outside the v1 runner and gate">
+      <SpecSheet title="offline cassette tooling" meta="outside the v1 runner and gate">
         <p className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase">
           a capture schema and sanitizer without a real capture → sanitize → verify → import workflow would be
           unused surface and could give false confidence about secret handling. when that workflow exists it lives
@@ -165,20 +165,27 @@ export function IntegrationContractsPage() {
 
       <div>
         <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-faint mb-3">
-          the expansion order after the first slice
+          the expansion order after version 1
         </div>
         <div className="border border-rule bg-bg flex flex-col">
           {EXPANSION.map((row) => (
-            <div key={row.phase} className="grid grid-cols-[64px_minmax(0,1fr)] gap-x-4 px-4 py-3 border-b border-rule-2 last:border-b-0">
-              <span className="font-mono text-[12px] text-ink">phase {row.phase}</span>
+            <div key={row.order} className="grid grid-cols-[64px_minmax(0,1fr)] gap-x-4 px-4 py-3 border-b border-rule-2 last:border-b-0">
+              <span className="font-mono text-[12px] text-ink">{row.order}</span>
               <span className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase">{row.items}</span>
             </div>
           ))}
+          <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-x-4 px-4 py-3 border-b border-rule-2">
+            <span className="font-mono text-[12px] text-warn">held</span>
+            <span className="font-mono text-[12px] leading-[1.7] text-ink-faint lowercase">
+              {QUARANTINE.ids.toUpperCase()} — {QUARANTINE.desc}
+            </span>
+          </div>
           <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
-            during flake characterization the non-required ci job runs on every pull request, executes each
-            scenario twice, and requires byte-identical result.json. promotion to a required check needs 100
-            consecutive clean runs across 14 days, zero skips, zero unexplained flakes. stack reuse is not a
-            condition, and never happens in v1.
+            engine.lock pins the exact engine revision; ci checks it out, builds it with cargo --locked, and
+            records the binary&apos;s sha-256 — no download or skip fallback. the non-required job runs on every
+            pull request, executes each scenario twice, and requires byte-identical result.json. promotion to a
+            required check needs 100 consecutive clean runs across 14 days, zero skips, zero unexplained flakes;
+            stack reuse is not a condition, and never happens in v1.
           </div>
         </div>
       </div>

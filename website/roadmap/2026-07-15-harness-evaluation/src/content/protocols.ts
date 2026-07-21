@@ -1,5 +1,5 @@
-/* protocols — deep-dive data: recorder + supervisor (integration), helpers +
-   evidence contracts (agent quality). */
+/* protocols — deep-dive data: recorder + supervisor (integration tests),
+   helpers + evidence contracts (e2e tests). */
 
 export const AUTHORING_LAYERS = [
   { name: 'AuthoredScenarioV1', type: 'what humans write', desc: 'one rust builder module per scenario: the send message, function aliases, typed replies (text / function_call / raw), deterministic defaults, an optional fault. no yaml layer — the type system validates authoring at cargo build.' },
@@ -28,35 +28,41 @@ export const SUPERVISOR_STEPS = [
 ] as const
 
 export const QUALITY_HELPERS = [
-  { fn: 'awaitTerminal(session_id)', does: 'lifecycle events as the low-latency signal, harness::status as the authority; accepts duplicate and out-of-order deliveries and always confirms durable terminal state before returning' },
-  { fn: 'sessionMetrics(session_id)', does: 'harness::session-tree + harness::metrics: usage summed over the root and every descendant, per session and in total. throws a typed error on complete: false — never a partial sum' },
-  { fn: 'triggeredWork(session_id)', does: 'trace spans propagated from the subject turn: calls, errors, and span counts for work the session caused in other workers. fails closed when spans are missing or dropped' },
-  { fn: 'eval-fixture::<profile>::setup / teardown', does: 'ordinary iii functions with idempotent run-scoped keys, called from beforeAll/afterAll; teardown is safe to repeat and failure retains the namespace' },
+  { fn: 'awaitTerminal(client, session_id, turn_id)', does: 'lifecycle events as the low-latency signal, harness::status as the authority; accepts duplicate and out-of-order deliveries, ignores terminal events for other turns in the session, and confirms the requested turn before returning' },
+  { fn: 'sessionMetrics(client, session_id)', does: 'harness::session-tree + harness::metrics: usage summed over the root and every descendant, per session and in total. throws a typed error on complete: false — never a partial sum' },
+  { fn: 'triggeredWork(client, session_id)', does: 'polls harness::triggered-work until complete or its deadline; throws when spans are dropped or open, parentage is malformed, or the subject-turn roots are wrong. assertions run only after that completeness check' },
+  { fn: 'createSessionRegistry(client)', does: 'test-local bookkeeping with idempotent track() and stopNonTerminal(): cleanup reads durable status, stops only non-terminal sessions, confirms the terminal result, and throws if any tracked session cannot be stopped before the deadline' },
+  { fn: 'eval-fixture::<profile>::setup / teardown', does: 'ordinary iii functions with idempotent run-scoped keys, called from beforeAll/afterAll; teardown is safe to repeat and failure retains the namespace for inspection' },
   { fn: 'runId()', does: 'the launcher-supplied stack identity every idempotency, fixture, and state key derives from, so a retried run cannot double-apply side effects' },
 ] as const
 
 export const EVIDENCE_CONTRACTS = [
   {
     name: 'harness::session-tree',
-    type: 'proposed public read',
-    desc: 'the recovery authority for tree membership: the root at depth zero plus every dispatcher-linked or reactive descendant, each parent relation persisted before the child runs. complete: false means the set is not provably exhaustive.',
+    type: 'versioned public read · V1',
+    desc: 'the recovery authority for tree membership: the root at depth zero plus every dispatcher-linked or reactive descendant, each parent relation persisted before the child becomes runnable. complete: false means the set is not provably exhaustive.',
   },
   {
     name: 'harness::metrics',
-    type: 'proposed public read',
-    desc: 'turns, function calls, errors, tokens, and cost summed over that tree, with a per-session breakdown, root first. a partial sum is never returned as a total.',
+    type: 'versioned public read · V1',
+    desc: 'turns, function calls, errors, tokens, and cost summed over that tree, with a per-session breakdown, root first. when any descendant transcript is unavailable it sets complete: false and helpers refuse to grade it.',
+  },
+  {
+    name: 'harness::triggered-work',
+    type: 'versioned public read · V1',
+    desc: 'the complete retained span set rooted at the subject turns: function, hook, trigger, and sub_agent spans with worker, session, status, and parentage. complete: true only with zero drops, zero open spans, and no query truncation. payloads and arbitrary attributes are omitted, so evidence never grows a second secret-bearing surface.',
   },
   {
     name: 'trace propagation',
     type: 'default behavior',
-    desc: 'the harness propagates the subject turn’s trace context to every function call, sub-agent, hook, and triggered handler. an evaluation feature for no one: the same assets the console tracks and production orchestration reads.',
+    desc: 'the harness propagates the subject turn’s trace context to every function call, sub-agent turn, hook, and triggered handler. not an evaluation feature: the same context production observability reads.',
   },
 ] as const
 
 export const AUTHORING_RULES = [
   {
     name: 'only public api',
-    desc: 'a test uses trigger() on public iii and harness functions plus the helper package. anything that would wrap a single existing call in a nicer name is rejected in review.',
+    desc: 'a test uses worker.trigger on public iii and harness functions plus the helper package. a helper that only renames a single existing call is outside the package contract.',
   },
   {
     name: 'explicit subject, reused verbatim',
@@ -64,46 +70,53 @@ export const AUTHORING_RULES = [
   },
   {
     name: 'sequences and feedback are code',
-    desc: 'a prompt sequence is the next send after the prior terminal turn; a feedback loop is an ordinary bounded loop with its bound visible in the file.',
+    desc: 'a prompt sequence is the next send after the prior terminal turn; a feedback loop is a bounded loop with its maximum iteration count declared in the test file.',
+  },
+  {
+    name: 'deterministic identity',
+    desc: 'every idempotency, fixture, and state key derives from the launcher-supplied run id plus a test-local suffix, so a retried test run cannot double-apply side effects.',
   },
   {
     name: 'cleanup is mandatory',
-    desc: 'helpers track every session a test creates; afterEach stops any non-terminal one with harness::stop, and a vitest timeout bounds every case.',
+    desc: 'every send response is tracked immediately in the session registry; afterEach stops any non-terminal session with harness::stop, and a vitest timeout bounds every case. token and cost ceilings are post-turn assertions, never hard preemption.',
   },
   {
     name: 'custom checks are functions',
-    desc: 'a reusable domain check is an ordinary registered iii function the test calls and asserts on — not a validator protocol with its own lifecycle.',
+    desc: 'a reusable domain check is a registered iii function the test calls with worker.trigger and asserts on — not a validator protocol with its own lifecycle.',
   },
 ] as const
 
-export const SCENARIO_CORPUS = [
-  { family: 'plain response', outcome: 'durable final text, no duplicate assistant entry' },
-  { family: 'single function', outcome: 'the allowed target executes once; its result reaches the next generation' },
-  { family: 'parallel functions', outcome: 'independent calls finish without loss or duplication' },
+export const V1_CORPUS = [
+  { family: 'plain response', outcome: 'durable final text with no duplicate assistant entry' },
+  { family: 'single function', outcome: 'the allowed target executes once and its result reaches the next generation' },
   { family: 'sub-agent fan-out/fan-in', outcome: 'children complete, the parent waits for all required results, and every child’s usage appears in by_session' },
+  { family: 'triggered work', outcome: 'declared reactive orchestration is visible in trace spans and error-free' },
+] as const
+
+export const POST_V1_CORPUS = [
+  { family: 'parallel functions', outcome: 'independent calls finish without loss or duplication' },
   { family: 'multi-prompt conversation', outcome: 'each scripted send follows the prior terminal turn; the final state reflects every input in order' },
   { family: 'persistent workflow', outcome: 'external records match processed fixture items exactly' },
-  { family: 'triggered work', outcome: 'declared reactive orchestration is visible in trace spans and error-free' },
   { family: 'browser workflow', outcome: 'url, dom, network, console, and screenshot evidence agree' },
   { family: 'recovery', outcome: 'a dependency failure is surfaced and bounded rather than hidden' },
 ] as const
 
-export const FUTURE_WORK = [
+export const EXCLUDED_CAPABILITIES = [
   {
     name: 'baseline/candidate comparison',
     desc: 'paired scheduling, per-dimension deltas, and eligibility rules. the raw assets already allow comparing two runs by hand; the machinery waits until repeated single-subject runs establish variance.',
   },
   {
     name: 'held-out + generated validators',
-    desc: 'checks invisible to the subject, and checks generated from a frozen goal by a pinned model, need their own trust and isolation design before any release authority. out of v1 entirely.',
+    desc: 'checks invisible to the subject, and checks generated from a frozen goal by a pinned model, need their own trust and isolation design before any release authority.',
   },
   {
     name: 'production/runtime evaluation',
-    desc: 'evaluating a production session is pulling its metrics, traces, and transcript by session id and grading them — the same reads this suite uses. no dedicated feature; the discussion continues elsewhere.',
+    desc: 'evaluating a production session is pulling its metrics, traces, and transcript by session id and grading them — the same reads this suite uses. no dedicated feature belongs to version 1.',
   },
   {
     name: 'an orchestrator worker',
-    desc: 'a durable harness-eval worker (long-running runs, comparison legs at scale, retry-safe run records) is justified only by a measured need a ci test run cannot meet.',
+    desc: 'a durable harness-eval worker (long-running runs, comparison legs at scale, retry-safe run records) is outside version 1.',
   },
 ] as const
 
@@ -122,6 +135,6 @@ export const TRUST_RULES = [
   },
   {
     name: 'secret hygiene',
-    desc: 'the stack runs with a scoped provider key; provider keys and credentials never appear in persisted evidence.',
+    desc: 'provider credentials enter only through an environment allowlist and never appear in config, artifacts, or persisted evidence; failure messages are redacted before persistence.',
   },
 ] as const

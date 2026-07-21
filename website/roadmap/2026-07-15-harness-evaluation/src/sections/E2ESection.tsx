@@ -5,24 +5,24 @@ import { QUAL_LANES, QUAL_STEPS } from '../content/flows'
 import { TRUST_RULES } from '../content/protocols'
 
 const BUDGETS = [
-  { name: 'vitest timeout + harness::stop', type: 'hard', desc: 'a test deadline bounds every case; afterEach stops any non-terminal session the test created.' },
-  { name: 'tokens · cost', type: 'asserted ceiling', desc: 'expect() over harness::metrics totals. visible only after a model turn; may overshoot by one bounded turn, never mislabeled as hard.' },
-  { name: 'feedback loops', type: 'bounded in code', desc: 'an ordinary loop with its bound visible in the test file; each retry is a public send in the same session.' },
-  { name: 'network', type: 'fixture-pinned', desc: 'a fixture profile can pin network activity to zero and prove it from its own evidence.' },
+  { name: 'vitest timeout + session registry', type: 'hard', desc: 'a test deadline bounds every case; afterEach stops every tracked non-terminal session with harness::stop, and a cleanup miss is itself a typed failure class.' },
+  { name: 'tokens · cost', type: 'asserted ceiling', desc: 'expect() over harness::metrics totals — post-turn checks that may overshoot by one bounded turn, never mislabeled as hard preemption.' },
+  { name: 'feedback loops', type: 'bounded in code', desc: 'an ordinary loop with its maximum iteration count declared in the test file; each retry is a public send in the same session.' },
+  { name: 'no test-layer retry', type: 'policy', desc: 'subject calls are never retried by the test layer; timeout or transport retry lives only in the configured subject runtime, only for idempotent operations, recorded in stack.json.' },
 ] as const
 
 /**
- * A5 — one agent-quality test: send, await, read evidence, assert.
+ * A5 — one e2e test: send, await, read evidence, assert.
  * The claim: real model, plain tests, evidence it cannot fake.
  */
-export function QualityLoopSection() {
+export function E2ESection() {
   return (
     <Section
-      id="quality"
+      id="e2e"
       index="09"
-      eyebrow="agent quality · a test"
+      eyebrow="e2e tests · a test"
       title="a real model, plain tests, and evidence it cannot fake."
-      lede="an ordinary vitest file drives the production path through trigger(), waits for durable terminal state, and grades outcomes with explicit assertions over assets the harness builds by default. helpers exist only where real platform work exists."
+      lede="an ordinary vitest file drives the production path through worker.trigger, waits for durable terminal state, and grades outcomes with explicit assertions over versioned evidence the harness serves by default. helpers coordinate only what a single public call cannot."
     >
       <SequencePlayer title="one test, send to verdict" lanes={QUAL_LANES} steps={QUAL_STEPS} width={1030} />
 
@@ -50,7 +50,7 @@ export function QualityLoopSection() {
 
       <div className="mt-6">
         <a
-          href="#/agent-quality-protocol"
+          href="#/e2e-protocol"
           className="inline-flex h-10 items-center bg-bg text-ink border border-ink px-4 font-mono text-[13px] lowercase transition-colors hover:bg-ink hover:text-bg"
         >
           the test file, helpers, evidence contracts, and corpus →
