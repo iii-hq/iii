@@ -4,6 +4,7 @@ description: 'Local-first coding agents need hardware isolation on macOS and Lin
 pubDate: 2026-05-15
 author: 'Rohit Ghumare'
 tags: ['agents', 'sandbox', 'libkrun', 'firecracker']
+ogImage: ../../assets/blog/why-agent-sandboxes-are-converging-on-libkrun-not-firecracker/banner.png
 ---
 
 ![Why agent sandboxes are converging on libkrun, not Firecracker](../../assets/blog/why-agent-sandboxes-are-converging-on-libkrun-not-firecracker/banner.png)
