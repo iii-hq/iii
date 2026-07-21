@@ -454,7 +454,7 @@ async fn handle_managed_restart_invalid_name_fails_fast() {
         let rc = iii_worker::cli::managed::handle_managed_restart(
             "bad name with spaces",
             false,
-            iii_worker::DEFAULT_PORT,
+            Some(iii_worker::DEFAULT_PORT),
             None,
         )
         .await;
@@ -487,7 +487,7 @@ async fn handle_managed_restart_on_not_running_surfaces_start_rc() {
         let restart_rc = iii_worker::cli::managed::handle_managed_restart(
             "iii-http",
             false,
-            iii_worker::DEFAULT_PORT,
+            Some(iii_worker::DEFAULT_PORT),
             None,
         )
         .await;
