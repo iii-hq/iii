@@ -106,28 +106,32 @@ pub fn data_dir() -> PathBuf {
 ///
 /// Deliberately decoupled from data_dir() so that binaries live in a
 /// PATH-visible location shared with shell-script installers.
-pub fn bin_dir() -> PathBuf {
+///
+/// Returns `None` when the home directory can't be resolved. We never fall
+/// back to the current directory: installing a managed `iii-*` binary into a
+/// CWD-relative `.local/bin` would let it be picked up and executed as a
+/// trusted helper from wherever the process happened to run.
+pub fn bin_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        data_dir().join("bin")
+        Some(data_dir().join("bin"))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local")
-            .join("bin")
+        Some(dirs::home_dir()?.join(".local").join("bin"))
     }
 }
 
 /// Returns the path where a specific binary should be stored.
-pub fn binary_path(binary_name: &str) -> PathBuf {
+///
+/// `None` when the managed bin dir can't be resolved (see [`bin_dir`]).
+pub fn binary_path(binary_name: &str) -> Option<PathBuf> {
     let name = if cfg!(target_os = "windows") {
         format!("{}.exe", binary_name)
     } else {
         binary_name.to_string()
     };
-    bin_dir().join(name)
+    Some(bin_dir()?.join(name))
 }
 
 /// Returns the path to the state.json file.
@@ -201,7 +205,7 @@ pub fn checksum_asset_name(binary_name: &str) -> String {
 ///
 /// Creates both bin_dir() (~/.local/bin/) and data_dir() (for state.json).
 pub fn ensure_dirs() -> Result<(), super::error::StorageError> {
-    let bin = bin_dir();
+    let bin = bin_dir().ok_or(super::error::StorageError::NoBinDir)?;
     if !bin.exists() {
         std::fs::create_dir_all(&bin).map_err(|e| super::error::StorageError::CreateDir {
             path: bin.display().to_string(),
@@ -247,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_binary_path_format() {
-        let path = binary_path("iii-console");
+        let path = binary_path("iii-console").unwrap();
         assert!(path.to_str().unwrap().contains("iii-console"));
     }
 
@@ -263,7 +267,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_bin_dir_is_local_bin() {
-        let bd = bin_dir();
+        let bd = bin_dir().unwrap();
         let bd_str = bd.to_str().unwrap();
         assert!(
             bd_str.ends_with(".local/bin"),
@@ -275,7 +279,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_bin_dir_separate_from_data_dir() {
-        let bd = bin_dir();
+        let bd = bin_dir().unwrap();
         let dd = data_dir();
         assert!(
             !bd.starts_with(&dd),

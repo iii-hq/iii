@@ -89,6 +89,9 @@ pub enum StorageError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Could not resolve home directory to locate the iii bin directory")]
+    NoBinDir,
 }
 
 #[derive(Error, Debug)]

@@ -27,20 +27,19 @@ use std::path::PathBuf;
 /// - macOS/Linux: `~/.local/bin/` (matches `install.sh` and
 ///   `cli::platform::bin_dir`).
 /// - Windows: `%LOCALAPPDATA%\iii\bin\`.
-pub fn managed_bin_dir() -> PathBuf {
+///
+/// Returns `None` when the home / local-data directory can't be resolved. We
+/// never fall back to the current directory: resolving the managed dir to `.`
+/// would let a binary planted in whatever CWD the process happens to run from
+/// be executed as a trusted `iii-*` helper.
+pub fn managed_bin_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("iii")
-            .join("bin")
+        Some(dirs::data_local_dir()?.join("iii").join("bin"))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local")
-            .join("bin")
+        Some(dirs::home_dir()?.join(".local").join("bin"))
     }
 }
 
@@ -54,13 +53,13 @@ pub fn find_existing_binary(binary_name: &str) -> Option<PathBuf> {
         return Some(p);
     }
 
-    // 2. Managed bin dir fallback.
+    // 2. Managed bin dir fallback (only if we could resolve it).
     let exe_name = if cfg!(target_os = "windows") {
         format!("{}.exe", binary_name)
     } else {
         binary_name.to_string()
     };
-    let managed = managed_bin_dir().join(exe_name);
+    let managed = managed_bin_dir()?.join(exe_name);
     managed.exists().then_some(managed)
 }
 
