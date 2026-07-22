@@ -27,22 +27,40 @@ use std::path::PathBuf;
 
 /// Managed binary install directory (fallback lookup location).
 ///
-/// - macOS/Linux: `~/.local/bin/` (matches `install.sh` and
-///   `cli::platform::bin_dir`).
-/// - Windows: `%LOCALAPPDATA%\iii\bin\`.
+/// - macOS/Linux: `~/.local/bin/` (matches `install.sh`).
+/// - Windows: `%APPDATA%\iii\bin\` (legacy `%APPDATA%\iii-cli\bin\` while the
+///   migration fallback applies — see [`resolve_iii_dir`]).
 ///
-/// Returns `None` when the home / local-data directory can't be resolved. We
-/// never fall back to the current directory: resolving the managed dir to `.`
-/// would let a binary planted in whatever CWD the process happens to run from
-/// be executed as a trusted `iii-*` helper.
+/// `cli::platform::bin_dir` delegates here, so the install lifecycle and this
+/// execution resolver can never disagree on where the managed copy lives.
+///
+/// Returns `None` when the home / data directory can't be resolved. We never
+/// fall back to the current directory: resolving the managed dir to `.` would
+/// let a binary planted in whatever CWD the process happens to run from be
+/// executed as a trusted `iii-*` helper.
 pub fn managed_bin_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        Some(dirs::data_local_dir()?.join("iii").join("bin"))
+        Some(resolve_iii_dir(dirs::data_dir()?).join("bin"))
     }
     #[cfg(not(target_os = "windows"))]
     {
         Some(dirs::home_dir()?.join(".local").join("bin"))
+    }
+}
+
+/// Picks the iii data dir under `base`, preferring the new `iii` directory and
+/// falling back to the legacy `iii-cli` directory for migration compat.
+///
+/// Shared by [`managed_bin_dir`] and `cli::platform::data_dir` so the install
+/// lifecycle and the execution resolver apply the same legacy fallback.
+pub fn resolve_iii_dir(base: PathBuf) -> PathBuf {
+    let new_dir = base.join("iii");
+    let old_dir = base.join("iii-cli");
+    if !new_dir.exists() && old_dir.exists() {
+        old_dir
+    } else {
+        new_dir
     }
 }
 
@@ -165,6 +183,18 @@ mod tests {
         }
 
         assert!(resolved.is_none());
+    }
+
+    /// Legacy fallback: prefer `iii`, use `iii-cli` only when `iii` is absent.
+    #[test]
+    fn resolve_iii_dir_prefers_new_falls_back_to_legacy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().to_path_buf();
+        assert_eq!(resolve_iii_dir(base.clone()), base.join("iii"));
+        fs::create_dir(base.join("iii-cli")).unwrap();
+        assert_eq!(resolve_iii_dir(base.clone()), base.join("iii-cli"));
+        fs::create_dir(base.join("iii")).unwrap();
+        assert_eq!(resolve_iii_dir(base.clone()), base.join("iii"));
     }
 
     #[cfg(unix)]

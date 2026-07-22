@@ -75,14 +75,15 @@ pub fn asset_name(binary_name: &str) -> String {
 ///
 /// - Linux: $XDG_DATA_HOME/iii/ (fallback ~/.local/share/iii/)
 /// - macOS: ~/Library/Application Support/iii/
-/// - Windows: %LOCALAPPDATA%\iii\
+/// - Windows: %APPDATA%\iii\
 ///
 /// For backward compatibility, if the old `iii-cli` directory exists and the
 /// new `iii` directory does not, the old path is returned so existing state
 /// is preserved until the user migrates.
 pub fn data_dir() -> PathBuf {
-    data_dir_opt()
-        .unwrap_or_else(|| resolve_iii_dir(PathBuf::from(".").join(".local").join("share")))
+    data_dir_opt().unwrap_or_else(|| {
+        iii::bin_resolve::resolve_iii_dir(PathBuf::from(".").join(".local").join("share"))
+    })
 }
 
 /// Option-returning variant of [`data_dir`]: `None` when neither the platform
@@ -92,42 +93,25 @@ pub fn data_dir() -> PathBuf {
 fn data_dir_opt() -> Option<PathBuf> {
     let base =
         dirs::data_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))?;
-    Some(resolve_iii_dir(base))
-}
-
-/// Picks the iii data dir under `base`, preferring the new `iii` directory and
-/// falling back to the legacy `iii-cli` directory for migration compat.
-fn resolve_iii_dir(base: PathBuf) -> PathBuf {
-    let new_dir = base.join("iii");
-    let old_dir = base.join("iii-cli");
-    if !new_dir.exists() && old_dir.exists() {
-        old_dir
-    } else {
-        new_dir
-    }
+    Some(iii::bin_resolve::resolve_iii_dir(base))
 }
 
 /// Returns the directory where binaries are stored.
 ///
 /// On macOS/Linux: ~/.local/bin/ (matches install.sh convention).
-/// On Windows: %LOCALAPPDATA%\iii\bin\ (unchanged).
+/// On Windows: %APPDATA%\iii\bin\ (legacy %APPDATA%\iii-cli\bin\ during
+/// migration).
 ///
-/// Deliberately decoupled from data_dir() so that binaries live in a
-/// PATH-visible location shared with shell-script installers.
+/// Delegates to [`iii::bin_resolve::managed_bin_dir`] so the install/update
+/// lifecycle and the execution resolver (`find_existing_binary`) can never
+/// disagree on where the managed copy lives.
 ///
-/// Returns `None` when the home directory can't be resolved. We never fall
-/// back to the current directory: installing a managed `iii-*` binary into a
-/// CWD-relative `.local/bin` would let it be picked up and executed as a
+/// Returns `None` when the home / data directory can't be resolved. We never
+/// fall back to the current directory: installing a managed `iii-*` binary
+/// into a CWD-relative path would let it be picked up and executed as a
 /// trusted helper from wherever the process happened to run.
 pub fn bin_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        Some(data_dir_opt()?.join("bin"))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Some(dirs::home_dir()?.join(".local").join("bin"))
-    }
+    iii::bin_resolve::managed_bin_dir()
 }
 
 /// Returns the path where a specific binary should be stored.
@@ -311,7 +295,7 @@ mod tests {
 
     #[test]
     fn test_resolve_iii_dir_never_bare_cwd() {
-        let d = resolve_iii_dir(PathBuf::from(".").join(".local").join("share"));
+        let d = iii::bin_resolve::resolve_iii_dir(PathBuf::from(".").join(".local").join("share"));
         // Even the last-resort data_dir() fallback stays under .local/share,
         // and the bin path never routes through it (data_dir_opt is None).
         assert!(d.ends_with(PathBuf::from(".local").join("share").join("iii")));
