@@ -560,6 +560,131 @@ fn dep_graph_accepts_within_bounds() {
 }
 
 #[test]
+fn dep_graph_accepts_wide_shared_dependencies() {
+    // Regression: a shallow but wide DAG whose nodes share dependencies
+    // has far more distinct root→leaf paths than distinct nodes. The old
+    // walk counted paths, so a legitimate in-bounds graph (few nodes,
+    // depth well under the cap) was rejected with a spurious
+    // `edge_traversal` error. This is the shape a real bundle produced:
+    // `iii worker add <bundle>` failed with
+    // "edge_traversal exceeded: limit 64, found 65".
+    //
+    // Fully-connected layers of width 3: root → L1(3) → L2(3) → L3(3) → leaf.
+    // 11 distinct nodes, longest path 4 — both within bounds — but 3*3*3
+    // = 27 paths reach the leaf, which alone overflows the old limit of 64.
+    let layers = [
+        vec!["a0", "a1", "a2"],
+        vec!["b0", "b1", "b2"],
+        vec!["c0", "c1", "c2"],
+        vec!["leaf"],
+    ];
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for name in layers.iter().flatten() {
+        nodes.push(make_resolved_worker(name));
+    }
+    // root fully connects to the first layer.
+    for name in &layers[0] {
+        edges.push(ResolvedEdge {
+            from: "root".into(),
+            to: (*name).into(),
+            range: "*".into(),
+        });
+    }
+    // each layer fully connects to the next (bipartite), so nodes share
+    // downstream dependencies.
+    for pair in layers.windows(2) {
+        for from in &pair[0] {
+            for to in &pair[1] {
+                edges.push(ResolvedEdge {
+                    from: (*from).into(),
+                    to: (*to).into(),
+                    range: "*".into(),
+                });
+            }
+        }
+    }
+
+    let graph = ResolvedWorkerGraph {
+        root: make_root_worker("root"),
+        target: None,
+        graph: nodes,
+        edges,
+    };
+    enforce_dep_graph_bounds(&graph).expect("wide shared-dependency graph is within bounds");
+}
+
+#[test]
+fn dep_graph_accepts_dense_layered_graph() {
+    // Regression for the backstop itself. `walked` counts frontier pops,
+    // and a dense DAG pushes each node once per parent, so pops grow
+    // roughly with node_count squared while distinct nodes stay small.
+    // A budget that is only linear in node_count therefore rejects a
+    // valid dense graph. This is the maximal shape within bounds: four
+    // fully-connected layers of width 8 — 32 nodes (the transitive_count
+    // cap), longest path 4 (under the depth cap) — which produces ~200
+    // pops and tripped the first linear budget.
+    const WIDTH: usize = 8;
+    let layers: Vec<Vec<String>> = (0..4)
+        .map(|l| (0..WIDTH).map(|w| format!("l{l}_{w}")).collect())
+        .collect();
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for name in layers.iter().flatten() {
+        nodes.push(make_resolved_worker(name));
+    }
+    for name in &layers[0] {
+        edges.push(ResolvedEdge {
+            from: "root".into(),
+            to: name.clone(),
+            range: "*".into(),
+        });
+    }
+    for pair in layers.windows(2) {
+        for from in &pair[0] {
+            for to in &pair[1] {
+                edges.push(ResolvedEdge {
+                    from: from.clone(),
+                    to: to.clone(),
+                    range: "*".into(),
+                });
+            }
+        }
+    }
+
+    let graph = ResolvedWorkerGraph {
+        root: make_root_worker("root"),
+        target: None,
+        graph: nodes,
+        edges,
+    };
+    enforce_dep_graph_bounds(&graph).expect("dense in-bounds layered graph is accepted");
+}
+
+#[test]
+fn dep_graph_tolerates_repeated_edges() {
+    // A malformed resolver response repeating the same edge must not be
+    // able to inflate the traversal: deduped adjacency collapses the
+    // duplicates, so a two-node graph stays within bounds no matter how
+    // many identical edges it carries.
+    let graph = ResolvedWorkerGraph {
+        root: make_root_worker("root"),
+        target: None,
+        graph: vec![make_resolved_worker("a")],
+        edges: (0..1000)
+            .map(|_| ResolvedEdge {
+                from: "root".into(),
+                to: "a".into(),
+                range: "*".into(),
+            })
+            .collect(),
+    };
+    enforce_dep_graph_bounds(&graph).expect("repeated identical edges collapse to one");
+}
+
+#[test]
 fn dep_graph_rejects_excessive_depth() {
     // Linear chain root → n0 → n1 → ... → n_{depth}.
     let mut nodes = vec![make_resolved_worker("root")];
