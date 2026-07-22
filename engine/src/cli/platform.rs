@@ -81,17 +81,25 @@ pub fn asset_name(binary_name: &str) -> String {
 /// new `iii` directory does not, the old path is returned so existing state
 /// is preserved until the user migrates.
 pub fn data_dir() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local")
-            .join("share")
-    });
+    data_dir_opt()
+        .unwrap_or_else(|| resolve_iii_dir(PathBuf::from(".").join(".local").join("share")))
+}
 
+/// Option-returning variant of [`data_dir`]: `None` when neither the platform
+/// data directory nor the home directory can be resolved. Unlike [`data_dir`],
+/// this never falls back to the current directory, so it is safe for building
+/// the managed bin path (see [`bin_dir`]).
+fn data_dir_opt() -> Option<PathBuf> {
+    let base =
+        dirs::data_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))?;
+    Some(resolve_iii_dir(base))
+}
+
+/// Picks the iii data dir under `base`, preferring the new `iii` directory and
+/// falling back to the legacy `iii-cli` directory for migration compat.
+fn resolve_iii_dir(base: PathBuf) -> PathBuf {
     let new_dir = base.join("iii");
     let old_dir = base.join("iii-cli");
-
-    // Prefer the new directory; fall back to the old one for migration compat.
     if !new_dir.exists() && old_dir.exists() {
         old_dir
     } else {
@@ -114,7 +122,7 @@ pub fn data_dir() -> PathBuf {
 pub fn bin_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        Some(data_dir().join("bin"))
+        Some(data_dir_opt()?.join("bin"))
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -290,6 +298,23 @@ mod tests {
             "data dir was not created: {}",
             data.display()
         );
+    }
+
+    #[test]
+    fn test_data_dir_opt_agrees_with_data_dir() {
+        // Wherever the platform dirs resolve, the option-returning variant
+        // must agree with data_dir(). When they don't resolve it is None,
+        // which bin_dir()/binary_path() propagate instead of installing
+        // under a CWD-relative path.
+        assert_eq!(data_dir_opt(), Some(data_dir()));
+    }
+
+    #[test]
+    fn test_resolve_iii_dir_never_bare_cwd() {
+        let d = resolve_iii_dir(PathBuf::from(".").join(".local").join("share"));
+        // Even the last-resort data_dir() fallback stays under .local/share,
+        // and the bin path never routes through it (data_dir_opt is None).
+        assert!(d.ends_with(PathBuf::from(".local").join("share").join("iii")));
     }
 
     #[test]
