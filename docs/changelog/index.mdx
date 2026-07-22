@@ -71,6 +71,7 @@ type: "reference"
   - The browser SDK exports `IIIReconnectionConfig` and `RegisterFunctionFormat`, and generates invocation UUIDs in insecure (non-HTTPS) contexts.
   - The engine rejects duplicate migrated builtin workers and warns on deprecated builtin names.
   - The Docker image boots cleanly: `/app/config` is pre-created for the non-root user, and the config seed-strip no longer logs spurious warnings on a read-only mount.
+  - `iii worker add` no longer rejects a valid bundle whose transitive dependencies share nodes — the dependency-graph bounds check counts unique nodes instead of distinct paths, so a wide shared graph stops overflowing the `edge_traversal` guard (`limit 64, found 65`).
   - Some workers drop the `iii-` prefix: `http`, `state`, `queue`, `cron`, and `pubsub` names.
 </Update>
 
