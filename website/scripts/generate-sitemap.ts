@@ -58,7 +58,19 @@ async function buildSitemap(): Promise<string> {
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>`)
+      blogUrls.push(`  <url>
+    <loc>${SITE_ORIGIN}/blog/${post.slug}.md</loc>
+    <lastmod>${isoDate(post.updatedDate ?? post.pubDate)}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>`)
     }
+    blogUrls.push(`  <url>
+    <loc>${SITE_ORIGIN}/blog/index.md</loc>
+    <lastmod>${indexLastmod}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>`)
   }
 
   // the roadmap (/roadmap/ and the per-spec pages) stays out of the sitemap

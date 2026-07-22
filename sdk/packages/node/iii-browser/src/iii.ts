@@ -110,6 +110,8 @@ class Sdk implements ISdk {
   private isShuttingDown = false
   private readonly workerName: string
   private readonly namespace?: string
+  private workerId?: string
+  private reattachToken?: string
 
   constructor(
     private readonly address: string,
@@ -567,11 +569,29 @@ class Sdk implements ISdk {
       this.ws.onmessage = this.onMessage.bind(this)
     }
 
+    // Reconnect: present the previous engine-assigned identity BEFORE the
+    // metadata announce and registration replay so the engine retires the old
+    // connection and the replay lands on a clean slate instead of racing its
+    // cleanup. This must precede registerWorkerMetadata(): otherwise the old
+    // connection still holds this (namespace, worker_name) and the announce
+    // would trip WORKER_NAMESPACE_CONFLICT against ourselves. The token proves
+    // we ARE that worker (ids alone are publicly listable).
+    if (this.workerId) {
+      this.sendMessageRaw(
+        JSON.stringify({
+          type: MessageType.Reattach,
+          previous_worker_id: this.workerId,
+          reattach_token: this.reattachToken,
+        }),
+      )
+    }
+
     // Announce before registering anything. The engine buffers a connection's
     // registrations until it knows the connection's namespace, which it takes
     // from this call — or, failing that, only after a grace period. Registering
     // first would stall every function behind that grace.
     this.registerWorkerMetadata()
+
 
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
@@ -830,6 +850,10 @@ class Sdk implements ISdk {
       this.onRegistrationRejected(
         message as { code: string; namespace: string; worker_name: string; owner_worker_id: string },
       )
+    } else if (msgType === MessageType.WorkerRegistered) {
+      const { worker_id, reattach_token } = message as { worker_id: string; reattach_token?: string }
+      this.workerId = worker_id
+      this.reattachToken = reattach_token
     }
   }
 

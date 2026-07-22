@@ -569,8 +569,13 @@ impl WorkerHostShim for CliHostShim {
         _events: &dyn EventSink,
     ) -> Result<StartOutcome, WorkerOpError> {
         // handle_managed_start expects port: u16 + config: Option<&Path>.
-        use crate::cli::app::DEFAULT_PORT;
-        let port = opts.port.unwrap_or(DEFAULT_PORT);
+        // No explicit port in the request: resolve the engine's actual
+        // manager port from config.yaml (honors III_CONFIG_PATH) instead of
+        // assuming the compiled-in default — a daemon serving a non-default
+        // engine must not point spawned workers at 49134 (workers#526).
+        let port = opts
+            .port
+            .unwrap_or_else(crate::cli::config_file::manager_port);
         let name_for_call = opts.name.clone();
         let config_for_call = opts.config.clone();
         let wait = opts.wait;
@@ -586,7 +591,7 @@ impl WorkerHostShim for CliHostShim {
             Ok(StartOutcome {
                 name: opts.name,
                 pid,
-                port: opts.port,
+                port: Some(port),
             })
         } else {
             Err(classify_handler_error(rc, &captured, "start", &opts.name))

@@ -164,7 +164,7 @@ iii worker add [OPTIONS] <WORKER[@VERSION]|PATH>...
 | Option | Description |
 | ------ | ----------- |
 | `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block), instead of keeping the existing entry. With `add`, takes effect only together with `--force`; `reinstall` applies force automatically |
-| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host. When omitted and the current directory has no config file, falls back to `--host localhost` (the running local engine) instead of creating an orphan config file here |
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
 | `--no-wait` | Don't block waiting for the engine to finish booting the worker |
 
@@ -264,7 +264,7 @@ iii worker reinstall [OPTIONS] <WORKER[@VERSION]|PATH>...
 | Option | Description |
 | ------ | ----------- |
 | `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block), instead of keeping the existing entry. With `add`, takes effect only together with `--force`; `reinstall` applies force automatically |
-| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host. When omitted and the current directory has no config file, falls back to `--host localhost` (the running local engine) instead of creating an orphan config file here |
 
 ### `iii worker remove`
 
@@ -297,7 +297,7 @@ iii worker restart [OPTIONS] <WORKER>
 | Option | Description |
 | ------ | ----------- |
 | `--no-wait` | Return immediately. Don't block waiting for the worker to report ready |
-| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Same semantics as `start --port` [default: 49134] |
+| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Same semantics as `start --port` |
 | `--config <PATH>` | Same as `start --config` |
 
 ### `iii worker sandbox`
@@ -463,7 +463,7 @@ iii worker start [OPTIONS] <WORKER>
 | Option | Description |
 | ------ | ----------- |
 | `--no-wait` | Return immediately. Don't block waiting for the worker to report ready |
-| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Defaults to DEFAULT_PORT; the engine passes its configured iii-worker-manager port when auto-spawning external workers so non-default manager ports don't silently break connectivity [default: 49134] |
+| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Defaults to the iii-worker-manager port in config.yaml (else 49134); the engine passes its configured port explicitly when auto-spawning external workers so non-default manager ports don't silently break connectivity |
 | `--config <PATH>` | YAML config forwarded to the spawned worker binary as `--config <path>`. Binary workers only; OCI workers warn and ignore |
 
 ### `iii worker status`

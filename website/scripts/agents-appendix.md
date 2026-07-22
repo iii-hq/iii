@@ -108,6 +108,7 @@ The iii engine is Elastic License 2.0 (ELv2). The SDKs, CLI, console, docs, and 
 - Homepage: https://iii.dev/
 - Manifesto: https://iii.dev/manifesto
 - Docs: https://iii.dev/docs
+- Blog index (markdown): https://iii.dev/blog/index.md
 - llms.txt (AI discovery): https://iii.dev/llms.txt
 - This file: https://iii.dev/AGENTS.md
 - GitHub: https://github.com/iii-hq/iii

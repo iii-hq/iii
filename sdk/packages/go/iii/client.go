@@ -55,6 +55,14 @@ type Client struct {
 	conn     *websocket.Conn
 	writerWG sync.WaitGroup
 
+	// workerID/reattachToken are the engine-assigned identity from the last
+	// WorkerRegistered frame, presented back via a Reattach frame on reconnect so
+	// the engine retires the previous connection before the registration replay.
+	// The token authorizes the eviction (ids alone are publicly listable).
+	// Guarded by mu.
+	workerID      string
+	reattachToken string
+
 	// In-memory registries, replayed on every (re)connect. Keyed by id.
 	functions    map[string]registeredFunction
 	triggers     map[string]*RegisterTriggerMessage
@@ -516,6 +524,33 @@ func (c *Client) runConnection() error {
 	// The engine can send large registration payloads; lift the default read limit.
 	conn.SetReadLimit(-1)
 
+	// Reconnect: present the previous engine-assigned identity as the very
+	// first frame — written directly here, before the writer goroutine,
+	// StateConnected, or onConnect expose this socket to any other traffic —
+	// so the engine retires the old connection before anything can hit its
+	// stale registrations. The token proves we ARE that worker (ids alone
+	// are publicly listable).
+	c.mu.Lock()
+	prevWorkerID, prevToken := c.workerID, c.reattachToken
+	c.mu.Unlock()
+	if prevWorkerID != "" {
+		frame, merr := MarshalMessage(&ReattachMessage{
+			PreviousWorkerID: prevWorkerID,
+			ReattachToken:    prevToken,
+		})
+		if merr == nil {
+			if werr := conn.Write(connCtx, websocket.MessageText, frame); werr != nil {
+				_ = conn.CloseNow()
+				select {
+				case <-c.shutdown:
+					return nil
+				default:
+					return werr
+				}
+			}
+		}
+	}
+
 	// A reply channel owned by THIS connection. Connection-scoped replies go here so they
 	// can never be drained by a later connection's writer (iii-hq/iii#1749).
 	reply := make(chan []byte, 64)
@@ -654,7 +689,7 @@ type workerMetadata struct {
 
 // sdkVersion is reported in the worker metadata. Kept as a const for v1; a release
 // process can wire this to the module version later.
-const sdkVersion = "0.21.8-next.1"
+const sdkVersion = "0.21.8-next.3"
 
 // writeLoop is the single writer for one connection. It drains the shared outbound
 // channel (connection-agnostic frames) and this connection's own reply channel
@@ -717,7 +752,16 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 		if frame, err := MarshalMessage(&PongMessage{}); err == nil {
 			c.enqueueOutboundDirect(frame)
 		}
-	case MsgWorkerRegistered, MsgTriggerRegistrationResult:
+	case MsgWorkerRegistered:
+		// Remember the engine-assigned identity so the next reconnect can present
+		// it via Reattach.
+		if dec.WorkerRegistered != nil {
+			c.mu.Lock()
+			c.workerID = dec.WorkerRegistered.WorkerID
+			c.reattachToken = dec.WorkerRegistered.ReattachToken
+			c.mu.Unlock()
+		}
+	case MsgTriggerRegistrationResult:
 		// Informational; nothing to do. (A trigger-registration error is the engine's
 		// to surface; the reference SDKs only log it.)
 	default:

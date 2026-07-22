@@ -812,6 +812,14 @@ struct IIIInner {
     headers: Mutex<Option<HashMap<String, String>>>,
     otel_config: Mutex<Option<OtelConfig>>,
     timings: Mutex<ConnTimings>,
+    /// Engine-assigned worker id from `WorkerRegistered`; presented back via
+    /// `Message::Reattach` on reconnect so the engine retires the previous
+    /// connection before the registration replay.
+    worker_id: Mutex<Option<String>>,
+    /// Secret paired with `worker_id` (from the same `WorkerRegistered`
+    /// frame); required by the engine to authorize the reattach — ids alone
+    /// are publicly discoverable.
+    reattach_token: Mutex<Option<String>>,
 }
 
 /// WebSocket client for communication with the III Engine.
@@ -848,6 +856,8 @@ impl IIIClient {
             headers: Mutex::new(None),
             otel_config: Mutex::new(None),
             timings: Mutex::new(ConnTimings::default()),
+            worker_id: Mutex::new(None),
+            reattach_token: Mutex::new(None),
         };
         Self {
             inner: Arc::new(inner),
@@ -1275,7 +1285,7 @@ impl IIIClient {
     ///     timeout_ms: None,
     /// }).await?;
     ///
-    /// // Enqueue (the queue must be declared in the iii-queue worker's
+    /// // Enqueue (the queue must be declared in the queue worker's
     /// // queue_configs)
     /// let receipt = worker.trigger(TriggerRequest {
     ///     function_id: "iii::durable::publish".to_string(),
@@ -1464,6 +1474,32 @@ impl IIIClient {
                     has_connected_before = true;
                     self.set_connection_state(IIIConnectionState::Connected);
                     let (mut ws_tx, mut ws_rx) = stream.split();
+
+                    // Reconnect: present the previous engine-assigned identity
+                    // BEFORE the registration replay so the engine retires the
+                    // old connection and the replay lands on a clean slate
+                    // instead of racing its cleanup. The token proves we ARE
+                    // that worker (ids alone are publicly listable). Sent
+                    // directly (not via `queue`) so it never accumulates
+                    // across retries.
+                    let previous_worker_id = self.inner.worker_id.lock_or_recover().clone();
+                    if let Some(previous_worker_id) = previous_worker_id {
+                        let reattach_token = self.inner.reattach_token.lock_or_recover().clone();
+                        if let Err(err) = self
+                            .send_ws(
+                                &mut ws_tx,
+                                &Message::Reattach {
+                                    previous_worker_id,
+                                    reattach_token,
+                                },
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %err, "failed to send reattach; reconnecting");
+                            sleep(t.retry_delay).await;
+                            continue;
+                        }
+                    }
 
                     queue.extend(self.collect_registrations());
                     Self::dedupe_registrations(&mut queue);
@@ -1776,8 +1812,13 @@ impl IIIClient {
             Message::Ping => {
                 let _ = self.send_message(Message::Pong);
             }
-            Message::WorkerRegistered { worker_id } => {
+            Message::WorkerRegistered {
+                worker_id,
+                reattach_token,
+            } => {
                 tracing::debug!(worker_id = %worker_id, "Worker registered");
+                *self.inner.worker_id.lock_or_recover() = Some(worker_id);
+                *self.inner.reattach_token.lock_or_recover() = reattach_token;
             }
             Message::RegistrationRejected {
                 code,
@@ -2969,7 +3010,8 @@ mod tests {
         assert_eq!(IIIClient::registration_key(&Message::Pong), None);
         assert_eq!(
             IIIClient::registration_key(&Message::WorkerRegistered {
-                worker_id: "w".to_string()
+                worker_id: "w".to_string(),
+                reattach_token: None
             }),
             None
         );

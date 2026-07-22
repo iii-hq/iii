@@ -6,12 +6,16 @@
 
 pub mod traits;
 
-use std::{collections::HashSet, str::FromStr, sync::Arc};
+use std::{
+    collections::HashSet,
+    str::FromStr,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use opentelemetry::KeyValue;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{Notify, RwLock, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use schemars::JsonSchema;
@@ -264,6 +268,30 @@ pub struct WorkerConnection {
     /// (function-path) registrations wait on an entry here — see the
     /// `TriggerRegistrator` impl in `traits.rs`.
     pub pending_trigger_acks: Arc<DashMap<String, oneshot::Sender<Option<ErrorBody>>>>,
+    /// Signaled when a reconnecting successor of this worker reattaches
+    /// (`Message::Reattach`): the connection's read loop must exit (its exit
+    /// path runs the connection's cleanup). Shared across clones so the
+    /// registry's copy can wake the socket task.
+    pub evict: Arc<Notify>,
+    /// True once a `handle_worker` read loop services this connection — i.e.
+    /// `evict` has a listener whose exit path will run the cleanup. Reattach
+    /// uses this to choose between "evict and await the reader's own
+    /// cleanup" and "no reader: clean up directly".
+    pub has_reader: Arc<AtomicBool>,
+    /// Claimed (swap to true) by the single caller that runs this
+    /// connection's teardown; later callers await `cleanup_done` instead of
+    /// returning early, so `cleanup_worker` returning always means the
+    /// teardown has COMPLETED.
+    pub cleanup_claimed: Arc<AtomicBool>,
+    /// Flips to true when the connection's teardown has completed.
+    /// `subscribe()` + `wait_for(|d| *d)` to await it.
+    pub cleanup_done: Arc<watch::Sender<bool>>,
+    /// Per-connection secret, sent to the worker only over its own socket
+    /// (in `WorkerRegistered`). A reconnecting successor must present it in
+    /// `Message::Reattach` to retire this connection: worker ids alone are
+    /// public (`engine::workers::list`, the workers-available trigger) and
+    /// must not suffice to evict a live worker.
+    pub reattach_token: Uuid,
 }
 
 impl WorkerConnection {
@@ -288,6 +316,11 @@ impl WorkerConnection {
             namespace: None,
             session: None,
             pending_trigger_acks: Arc::new(DashMap::new()),
+            evict: Arc::new(Notify::new()),
+            has_reader: Arc::new(AtomicBool::new(false)),
+            cleanup_claimed: Arc::new(AtomicBool::new(false)),
+            cleanup_done: Arc::new(watch::channel(false).0),
+            reattach_token: Uuid::new_v4(),
         }
     }
 
@@ -312,6 +345,11 @@ impl WorkerConnection {
             namespace: None,
             session: Some(Arc::new(session)),
             pending_trigger_acks: Arc::new(DashMap::new()),
+            evict: Arc::new(Notify::new()),
+            has_reader: Arc::new(AtomicBool::new(false)),
+            cleanup_claimed: Arc::new(AtomicBool::new(false)),
+            cleanup_done: Arc::new(watch::channel(false).0),
+            reattach_token: Uuid::new_v4(),
         }
     }
 

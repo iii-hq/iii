@@ -164,6 +164,15 @@ iii.register_trigger({
 
 The `skills/` directory contains 26 agent skills (iii-prefixed) auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`. Reference implementations live in `skills/references/` with TypeScript, Python, and Rust variants.
 
+## Blog (agent knowledge base)
+
+Published at https://iii.dev/blog/ — architecture posts and worked examples for coding agents. Each post is available as markdown:
+
+- Index: https://iii.dev/blog/index.md
+- Posts: https://iii.dev/blog/<slug>.md (every slug listed in the index)
+
+Source lives in `website/src/content/blog/`. Also indexed in https://iii.dev/llms.txt and https://iii.dev/AGENTS.md.
+
 ## Licensing
 
 - `engine/` — Elastic License v2 (ELv2)

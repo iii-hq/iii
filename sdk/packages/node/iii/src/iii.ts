@@ -184,6 +184,7 @@ class Sdk implements IIIClient {
   private namespace?: string
   private workerDescription?: string
   private workerId?: string
+  private reattachToken?: string
   private reconnectTimeout?: NodeJS.Timeout
   private heartbeatInterval?: NodeJS.Timeout
   private idleTimeout?: NodeJS.Timeout
@@ -828,9 +829,27 @@ class Sdk implements IIIClient {
     this.ws?.on('pong', touch)
     this.startHeartbeat()
 
+    // Reconnect: present the previous engine-assigned identity BEFORE the
+    // metadata announce and registration replay so the engine retires the old
+    // connection and the replay lands on a clean slate instead of racing its
+    // cleanup. This must precede registerWorkerMetadata(): otherwise the old
+    // connection still holds this (namespace, worker_name) and the announce
+    // would trip WORKER_NAMESPACE_CONFLICT against ourselves. The token proves
+    // we ARE that worker (ids alone are publicly listable).
+    if (this.workerId) {
+      this.sendMessageRaw(
+        JSON.stringify({
+          type: MessageType.Reattach,
+          previous_worker_id: this.workerId,
+          reattach_token: this.reattachToken,
+        }),
+      )
+    }
+
     // Announce worker metadata (carrying the namespace) before flushing any
     // registrations so the engine knows this connection's namespace up front.
     this.registerWorkerMetadata()
+
 
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
@@ -1227,8 +1246,9 @@ class Sdk implements IIIClient {
         message as { id: string; trigger_type?: string; type?: string; function_id: string; error?: { code: string; message: string; stacktrace?: string } },
       )
     } else if (msgType === MessageType.WorkerRegistered) {
-      const { worker_id } = message as WorkerRegisteredMessage
+      const { worker_id, reattach_token } = message as WorkerRegisteredMessage
       this.workerId = worker_id
+      this.reattachToken = reattach_token
       console.debug('[iii] Worker registered with ID:', worker_id)
       this.startMetricsReporting()
     } else if (msgType === MessageType.RegistrationRejected) {

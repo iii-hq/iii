@@ -75,8 +75,11 @@ fn cli_parses_all_subcommands() {
 #[test]
 fn start_subcommand_matches_engine_spawn_args() {
     // Bare-name form used when a human runs `iii-worker start <name>` from
-    // the terminal. Must still parse cleanly and default port to DEFAULT_PORT.
-    // Humans DO expect the wait-for-ready status panel here; only the engine
+    // the terminal. Must still parse cleanly with NO parsed port — the
+    // handler then resolves config.yaml's iii-worker-manager port (else
+    // DEFAULT_PORT), so a bare start on a non-default-port host targets the
+    // engine actually configured there (iii-hq/workers#526). Humans DO
+    // expect the wait-for-ready status panel here; only the engine
     // auto-spawn path opts out via --no-wait.
     let cli = Cli::try_parse_from(["iii-worker", "start", "image-resize"])
         .expect("bare start form must parse");
@@ -90,9 +93,8 @@ fn start_subcommand_matches_engine_spawn_args() {
             assert_eq!(worker_name, "image-resize");
             assert!(!no_wait, "bare human invocation keeps default wait=true");
             assert_eq!(
-                port,
-                iii_worker::DEFAULT_PORT,
-                "bare form must default to DEFAULT_PORT"
+                port, None,
+                "bare form parses no port; the handler resolves config.yaml"
             );
             assert!(config.is_none(), "bare human form has no --config");
         }
@@ -128,7 +130,7 @@ fn start_subcommand_accepts_port_flag_from_engine_spawn() {
         } => {
             assert_eq!(worker_name, "pdfkit");
             assert!(no_wait, "engine auto-spawn must pass --no-wait");
-            assert_eq!(port, 49199, "--port must surface the custom port");
+            assert_eq!(port, Some(49199), "--port must surface the custom port");
             assert!(config.is_none(), "no --config in this spawn form");
         }
         _ => panic!("expected Start"),
@@ -173,7 +175,7 @@ fn restart_subcommand_accepts_port_flag() {
             worker_name, port, ..
         } => {
             assert_eq!(worker_name, "pdfkit");
-            assert_eq!(port, 49199);
+            assert_eq!(port, Some(49199));
         }
         _ => panic!("expected Restart"),
     }
@@ -211,6 +213,10 @@ fn add_subcommand_multiple_workers() {
 #[test]
 fn add_prefixed_builtin_prints_deprecation_warning_and_replacement() {
     let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
+    // A config file keeps the add on the local path — without one, hostless
+    // add falls back to the running engine (MOT-4091) and this test would
+    // depend on whatever listens on the default port.
+    std::fs::write(temp.path().join("config.yaml"), "workers: []\n").unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
         .args(["add", "iii-http", "--no-wait"])
         .current_dir(temp.path())
@@ -233,6 +239,35 @@ fn add_prefixed_builtin_prints_deprecation_warning_and_replacement() {
     assert!(
         stderr.contains("iii worker add http"),
         "stderr was:\n{stderr}"
+    );
+}
+
+/// MOT-4091: hostless `add` from a directory with no config file must not
+/// create one there — it redirects to the default local engine instead.
+/// The bogus worker name makes the op fail identically whether or not an
+/// engine happens to listen on the default port (connection refused vs.
+/// engine-side not-found), so the assertions are environment-independent.
+#[test]
+fn add_from_non_project_dir_redirects_and_leaves_cwd_untouched() {
+    let temp = tempfile::tempdir().expect("failed to create isolated temp directory");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_iii-worker"))
+        .args(["add", "definitely-not-a-worker-mot4091", "--no-wait"])
+        .current_dir(temp.path())
+        .env("HOME", temp.path())
+        .env("NO_COLOR", "1")
+        .env_remove("III_CONFIG_PATH")
+        .output()
+        .expect("failed to execute iii-worker binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stderr was:\n{stderr}");
+    assert!(
+        stderr.contains("no config file in"),
+        "expected the fallback note, stderr was:\n{stderr}"
+    );
+    assert!(
+        !temp.path().join("iii.config.yaml").exists() && !temp.path().join("config.yaml").exists(),
+        "hostless add from a non-project dir must not create a config file"
     );
 }
 

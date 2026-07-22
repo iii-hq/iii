@@ -210,6 +210,7 @@ class III:
         # Set when the engine fatally rejects this worker's registration
         # (e.g. a namespace/name collision). Terminal: no reconnect follows.
         self._fatal_error: RegistrationRejectedError | None = None
+        self._reattach_token: str | None = None
 
         # Background event loop thread
         self._loop = asyncio.new_event_loop()
@@ -352,7 +353,7 @@ class III:
         except Exception as e:
             # Catch everything: a connect-time failure must never kill the
             # reconnect loop. Enumerating exception types here has failed
-            # twice — ConnectionError/OSError missed websockets'
+            # twice: ConnectionError/OSError missed websockets'
             # InvalidHandshake (MOT-3931), and that in turn missed
             # InvalidMessage, raised when the engine-boot listener race
             # surfaces through iii-network's accept-then-dial as an EOF
@@ -400,6 +401,18 @@ class III:
     async def _on_connected(self) -> None:
         self._reconnect_attempt = 0
         self._set_connection_state("connected")
+        # Reconnect: present the previous engine-assigned identity BEFORE the
+        # registration replay so the engine retires the old connection and the
+        # replay lands on a clean slate instead of racing its cleanup. The
+        # token proves we ARE that worker (ids alone are publicly listable).
+        if self._worker_id:
+            reattach: dict[str, Any] = {
+                "type": MessageType.REATTACH.value,
+                "previous_worker_id": self._worker_id,
+            }
+            if self._reattach_token:
+                reattach["reattach_token"] = self._reattach_token
+            await self._send(reattach)
         # Re-register all (snapshot to avoid mutation from caller thread)
         for trigger_type_data in list(self._trigger_types.values()):
             await self._send(trigger_type_data.message)
@@ -447,7 +460,12 @@ class III:
     async def _send(self, msg: Any) -> None:
         data = self._to_dict(msg)
         if self._ws and self._ws.state.name == "OPEN":
-            log.debug(f"Send: {json.dumps(data)[:200]}")
+            # Redact the reattach secret from debug logs; it authorizes
+            # evicting this worker's previous connection.
+            log_safe = {
+                k: ("***" if k == "reattach_token" else v) for k, v in data.items()
+            }
+            log.debug(f"Send: {json.dumps(log_safe)[:200]}")
             await self._ws.send(json.dumps(data))
         else:
             if len(self._queue) >= MAX_QUEUE_SIZE:
@@ -508,6 +526,7 @@ class III:
         elif msg_type == MessageType.WORKER_REGISTERED.value:
             worker_id = data.get("worker_id", "")
             self._worker_id = worker_id
+            self._reattach_token = data.get("reattach_token")
             log.debug(f"Worker registered with ID: {worker_id}")
         elif msg_type == MessageType.REGISTRATION_REJECTED.value:
             self._handle_registration_rejected(data)
@@ -903,7 +922,7 @@ class III:
         caller's thread), then once per transition. Transitions fire on the
         SDK's background event-loop thread: keep handlers fast and do not
         call sync SDK methods from them (they would raise ``RuntimeError``).
-        Treat calls as state notifications, not edges — a state may rarely
+        Treat calls as state notifications, not edges. A state may rarely
         be observed twice around subscription. Registering the same handler
         twice fires it twice. Returns an idempotent unsubscribe function
         that removes only its own registration.
@@ -1532,7 +1551,7 @@ class TriggerAction:
 
     Examples:
         >>> from iii import TriggerAction
-        >>> # The queue must be declared in the iii-queue worker's queue_configs.
+        >>> # The queue must be declared in the queue worker's queue_configs.
         >>> worker.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
         >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
     """
@@ -1557,7 +1576,7 @@ def register_worker(address: str, options: InitOptions | None = None) -> III:
 
     Blocks up to 30 seconds for the WebSocket connection to be established.
     If the engine is not reachable in time, a warning is logged and the
-    client is returned anyway — it keeps retrying in the background and
+    client is returned anyway; it keeps retrying in the background and
     flushes registrations once connected. Use
     ``add_connection_state_listener`` to observe the actual transition.
 

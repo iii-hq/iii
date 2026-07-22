@@ -4,13 +4,15 @@ import { fileURLToPath } from 'node:url'
 
 export interface BlogPost {
   slug: string
+  sourceFile: string
   title: string
+  description: string
   pubDate: Date
   updatedDate?: Date
   draft: boolean
 }
 
-const BLOG_CONTENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/content/blog')
+export const BLOG_CONTENT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/content/blog')
 
 // Minimal frontmatter reader sized to our schema (title, pubDate, updatedDate,
 // draft). We pull the YAML block between leading `---` fences and parse only
@@ -58,7 +60,9 @@ export async function readBlogPosts(dir = BLOG_CONTENT_DIR): Promise<BlogPost[]>
     if (!pubDate) continue
     posts.push({
       slug: entry.replace(/\.(md|mdx)$/, ''),
+      sourceFile: entry,
       title: fm.title ?? entry,
+      description: fm.description ?? '',
       pubDate,
       updatedDate: parseDate(fm.updatedDate),
       draft: fm.draft === 'true',

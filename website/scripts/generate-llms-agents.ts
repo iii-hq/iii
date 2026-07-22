@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { type HTMLElement, parse } from 'node-html-parser'
 import { AI_OVERVIEW } from './ai-overview'
+import { buildBlogLinksSection } from './generate-blog-md'
 
 const WEBSITE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // The homepage copy is scraped from the BUILT page, so this script runs after
@@ -18,6 +19,13 @@ const LLMS_TAGLINE =
 
 function isoDate(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/** Non-empty optional section plus trailing blank line; empty input adds nothing. */
+function optionalSection(section: string): string[] {
+  const trimmed = section.trimEnd()
+  if (!trimmed) return []
+  return [trimmed, '']
 }
 
 /** Drop the leading H1 so `llms.txt` keeps a single project `# iii` title per llms.txt guidance. */
@@ -117,7 +125,7 @@ export function buildHomepageExtractFromHtml(html: string): string {
 /**
  * llms.txt: H1, blockquote summary, prose, homepage extract, then H2 sections with annotated links.
  */
-export function buildLlmsTxt(html: string): string {
+export function buildLlmsTxt(html: string, blogSection = ''): string {
   const overview = overviewBodyWithoutLeadingH1()
   const home = buildHomepageExtractFromHtml(html)
   const tail = `
@@ -126,6 +134,7 @@ export function buildLlmsTxt(html: string): string {
 - [Homepage](https://iii.dev/) — positioning and visuals
 - [Manifesto](https://iii.dev/manifesto) — paradigm argument
 - [Documentation](https://iii.dev/docs) — full documentation
+- [Blog index (markdown)](https://iii.dev/blog/index.md) — architecture posts for coding agents
 - [llms.txt](https://iii.dev/llms.txt) — this file (AI / LLM discovery)
 - [AGENTS.md](https://iii.dev/AGENTS.md) — build path: install, wire-level notes, and guardrails for coding agents
 - [GitHub](https://github.com/iii-hq/iii) — engine, TypeScript/Python/Rust SDKs
@@ -150,6 +159,7 @@ Last updated: ${isoDate()}
     '',
     home.trimEnd(),
     '',
+    ...optionalSection(blogSection),
     tail.trimEnd(),
     '',
   ].join('\n')
@@ -160,7 +170,7 @@ Last updated: ${isoDate()}
 /**
  * AGENTS.md: [agents.md](https://agents.md/) product context + same pre-written overview + homepage extract + wire-level appendix.
  */
-export function buildAgentsMd(html: string, agentsAppendix: string): string {
+export function buildAgentsMd(html: string, agentsAppendix: string, blogSection = ''): string {
   const overview = overviewBodyWithoutLeadingH1()
   const home = buildHomepageExtractFromHtml(html)
   const intro = [
@@ -174,6 +184,7 @@ export function buildAgentsMd(html: string, agentsAppendix: string): string {
     '',
     home.trimEnd(),
     '',
+    ...optionalSection(blogSection),
     agentsAppendix.trimEnd(),
     '',
     `Last updated: ${isoDate()}`,
@@ -187,9 +198,12 @@ async function main() {
   const html = await fs.readFile(INDEX_PATH, 'utf8').catch(() => {
     throw new Error(`generate-llms-agents: ${INDEX_PATH} missing — run \`astro build\` first`)
   })
-  const appendix = await fs.readFile(AGENTS_APPENDIX_PATH, 'utf8')
-  const llms = buildLlmsTxt(html)
-  const agents = buildAgentsMd(html, appendix)
+  const [appendix, blogSection] = await Promise.all([
+    fs.readFile(AGENTS_APPENDIX_PATH, 'utf8'),
+    buildBlogLinksSection(),
+  ])
+  const llms = buildLlmsTxt(html, blogSection)
+  const agents = buildAgentsMd(html, appendix, blogSection)
   await Promise.all([fs.writeFile(LLMS_PATH, llms, 'utf8'), fs.writeFile(AGENTS_PATH, agents, 'utf8')])
   console.log(
     `wrote ${path.relative(WEBSITE_ROOT, LLMS_PATH)} (${llms.length} b), ${path.relative(WEBSITE_ROOT, AGENTS_PATH)} (${agents.length} b)`,

@@ -215,8 +215,23 @@ pub enum Message {
     },
     Ping,
     Pong,
+    /// Sent to the engine as the first message of a reconnect, before the
+    /// registration replay: `previous_worker_id` and `reattach_token` are
+    /// the values the engine assigned via `WorkerRegistered` on the previous
+    /// connection. The engine retires that connection so the replay lands on
+    /// a clean slate; the token is required because worker ids alone are
+    /// publicly discoverable.
+    Reattach {
+        previous_worker_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reattach_token: Option<String>,
+    },
     WorkerRegistered {
         worker_id: String,
+        /// Secret to present in `Reattach` on reconnect; absent on older
+        /// engines.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reattach_token: Option<String>,
     },
     /// Pushed by the engine when a registration collides with a live worker in
     /// the same namespace. The `code` distinguishes the two cases:

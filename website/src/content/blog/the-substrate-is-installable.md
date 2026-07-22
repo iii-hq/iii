@@ -4,6 +4,7 @@ description: 'Every long-running agent ends up rebuilding the same surrounding l
 pubDate: 2026-05-21
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'substrate', 'registry']
+ogImage: ../../assets/blog/the-substrate-is-installable/banner.png
 ---
 
 ![The substrate is installable — every category collapses into iii worker add](../../assets/blog/the-substrate-is-installable/banner.png)

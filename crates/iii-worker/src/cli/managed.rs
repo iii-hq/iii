@@ -3411,7 +3411,7 @@ pub async fn handle_managed_start(
             );
             return 1;
         }
-        if !is_engine_running() {
+        if !is_engine_running_on(port) {
             eprintln!(
                 "{} '{}' is a builtin served by the iii engine, but the engine isn't running.\n  \
                  Start the engine:  iii",
@@ -3469,7 +3469,7 @@ pub async fn handle_managed_start(
             )
         }
         ResolvedWorkerType::Binary { binary_path } => {
-            StartOutcome::Exit(start_binary_worker(worker_name, &binary_path, config).await)
+            StartOutcome::Exit(start_binary_worker(worker_name, &binary_path, config, port).await)
         }
         ResolvedWorkerType::Config => StartOutcome::FallThrough,
     };
@@ -3511,7 +3511,7 @@ pub async fn handle_managed_start(
             match binary_download::download_and_install_binary(worker_name, binary_info).await {
                 Ok(installed_path) => {
                     eprintln!("  {} Installed successfully", "✓".green());
-                    let rc = start_binary_worker(worker_name, &installed_path, config).await;
+                    let rc = start_binary_worker(worker_name, &installed_path, config, port).await;
                     return finish_start(worker_name, rc, wait, port).await;
                 }
                 Err(e) => {
@@ -3559,7 +3559,7 @@ pub async fn handle_managed_start(
                 );
                 return 1;
             }
-            if !is_engine_running() {
+            if !is_engine_running_on(port) {
                 eprintln!(
                     "{} '{}' is an engine builtin, but the engine isn't running.\n  \
                      Start the engine:  iii",
@@ -3624,9 +3624,12 @@ async fn finish_start(worker_name: &str, rc: i32, wait: bool, port: u16) -> i32 
 pub async fn handle_managed_restart(
     worker_name: &str,
     wait: bool,
-    port: u16,
+    port: Option<u16>,
     config: Option<&std::path::Path>,
 ) -> i32 {
+    // No explicit --port: target the engine config.yaml actually points at
+    // (honors engine-exported III_CONFIG_PATH), not the compiled-in default.
+    let port = port.unwrap_or_else(super::config_file::manager_port);
     if let Err(e) = super::registry::validate_worker_name(worker_name) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
@@ -3692,6 +3695,7 @@ async fn start_binary_worker(
     worker_name: &str,
     binary_path: &std::path::Path,
     config: Option<&std::path::Path>,
+    port: u16,
 ) -> i32 {
     // Kill any stale process from a previous engine run
     kill_stale_worker(worker_name).await;
@@ -3737,6 +3741,13 @@ async fn start_binary_worker(
     // engine truth (`iii worker status`/`list`) matches connections by this
     // name.
     cmd.env("III_WORKER_NAME", worker_name);
+    // Engine WS URL — the documented worker contract (III_URL/III_ENGINE_URL
+    // are engine-set). Without these a registry binary on a non-default
+    // manager port dials its compiled-in ws://127.0.0.1:49134 default and
+    // strands retrying (iii-hq/workers#526).
+    let engine_url = format!("ws://127.0.0.1:{}", port);
+    cmd.env("III_ENGINE_URL", &engine_url);
+    cmd.env("III_URL", &engine_url);
     cmd.stdout(stdout_file).stderr(stderr_file);
 
     #[cfg(unix)]
@@ -6724,6 +6735,70 @@ dependencies:
         let _h = super::super::test_support::lock_home();
         // Should not panic when no PID files exist
         kill_stale_worker("__iii_test_nonexistent_99999__").await;
+    }
+
+    /// The env half of the binary spawn contract (iii-hq/workers#526):
+    /// registry binaries receive the engine URL ONLY via these exports —
+    /// no --url flag exists on the spawn — so dropping them silently
+    /// re-strands every binary worker on non-default manager ports. The
+    /// probe "binary" dumps its env to stdout, which start_binary_worker
+    /// wires to ~/.iii/logs/<name>/stdout.log.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn start_binary_worker_exports_engine_url_env() {
+        let _h = super::super::test_support::lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = std::env::var_os("HOME");
+        // SAFETY: test-only, serialized via test_support::lock_home.
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let probe = tmp.path().join("env-probe.sh");
+        std::fs::write(&probe, "#!/bin/sh\nenv\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // Distinctive port: proves the child sees THIS spawn's port, not
+        // a hardcoded default.
+        let rc = start_binary_worker("__iii_test_env_probe__", &probe, None, 50123).await;
+
+        // Child is detached; poll the log briefly for the env dump.
+        let log = tmp
+            .path()
+            .join(".iii/logs/__iii_test_env_probe__/stdout.log");
+        let mut content = String::new();
+        for _ in 0..50 {
+            content = std::fs::read_to_string(&log).unwrap_or_default();
+            if content.contains("III_URL=") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // Restore HOME before asserting so a failing assert can't leak
+        // the temp HOME into later env-reading tests.
+        // SAFETY: test-only, serialized via test_support::lock_home.
+        unsafe {
+            match &original_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert_eq!(rc, 0, "probe spawn must succeed");
+        assert!(
+            content.contains("III_ENGINE_URL=ws://127.0.0.1:50123"),
+            "child must see III_ENGINE_URL for this spawn's port; got: {content:?}"
+        );
+        assert!(
+            content.contains("III_URL=ws://127.0.0.1:50123"),
+            "child must see III_URL for this spawn's port; got: {content:?}"
+        );
+        assert!(
+            content.contains("III_WORKER_NAME=__iii_test_env_probe__"),
+            "child must see its managed identity; got: {content:?}"
+        );
     }
 
     #[tokio::test]

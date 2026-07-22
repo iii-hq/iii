@@ -162,7 +162,7 @@ iii worker add [OPTIONS] <WORKER[@VERSION]|PATH>...
 | Option | Description |
 | ------ | ----------- |
 | `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block), instead of keeping the existing entry. With `add`, takes effect only together with `--force`; `reinstall` applies force automatically |
-| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host. When omitted and the current directory has no config file, falls back to `--host localhost` (the running local engine) instead of creating an orphan config file here |
 | `-f, --force` | Force re-download: delete existing artifacts before adding |
 | `--no-wait` | Don't block waiting for the engine to finish booting the worker |
 
@@ -262,7 +262,7 @@ iii worker reinstall [OPTIONS] <WORKER[@VERSION]|PATH>...
 | Option | Description |
 | ------ | ----------- |
 | `--reset-config` | Discard the worker's config.yaml entry and recreate it fresh (dropping any hand-written config block), instead of keeping the existing entry. With `add`, takes effect only together with `--force`; `reinstall` applies force automatically |
-| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host |
+| `--host <HOST[:PORT]>` | Install through a RUNNING iii engine instead of editing the config file in the current directory: connects to HOST[:PORT] (ex. `localhost:49134`; port defaults to 49134; ws:// and wss:// URLs are also accepted and used as-is) and invokes its worker::add. The engine applies the add in ITS project directory, so this works from any folder and with engines on non-default ports. Local worker PATHs resolve on the engine host. When omitted and the current directory has no config file, falls back to `--host localhost` (the running local engine) instead of creating an orphan config file here |
 
 ### `iii worker remove`
 

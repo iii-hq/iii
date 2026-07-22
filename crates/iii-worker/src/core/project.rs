@@ -120,6 +120,23 @@ impl ProjectCtx {
     }
 }
 
+/// True when worker ops have a local config target: the engine exported
+/// `III_CONFIG_PATH` (its value wins over cwd probing — see
+/// [`ProjectCtx::config_path`]) or `root` already holds a config candidate.
+/// When false, a hostless `iii worker add` has nothing here to edit —
+/// writing anyway would create an orphan config file no engine watches,
+/// then hang waiting for a worker that never boots (MOT-4091).
+pub fn local_config_present(root: &Path) -> bool {
+    if let Some(p) = std::env::var_os("III_CONFIG_PATH")
+        && !p.is_empty()
+    {
+        return true;
+    }
+    CONFIG_CANDIDATES
+        .iter()
+        .any(|name| root.join(name).exists())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +211,38 @@ mod tests {
         std::fs::write(dir.path().join("config.yaml"), "workers: []\n").unwrap();
         let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());
         assert_eq!(ctx.config_path(), dir.path().join("iii.config.yaml"));
+    }
+
+    #[test]
+    fn local_config_present_false_for_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        assert!(!local_config_present(dir.path()));
+    }
+
+    #[test]
+    fn local_config_present_true_for_either_candidate() {
+        let canonical = TempDir::new().unwrap();
+        std::fs::write(canonical.path().join("iii.config.yaml"), "workers: []\n").unwrap();
+        assert!(local_config_present(canonical.path()));
+
+        let legacy = TempDir::new().unwrap();
+        std::fs::write(legacy.path().join("config.yaml"), "workers: []\n").unwrap();
+        assert!(local_config_present(legacy.path()));
+    }
+
+    #[test]
+    fn local_config_present_true_when_env_points_elsewhere() {
+        // The engine exports III_CONFIG_PATH to every process it spawns;
+        // ops then target that file, so an empty cwd is still "local".
+        let dir = TempDir::new().unwrap();
+        let prior = std::env::var_os("III_CONFIG_PATH");
+        unsafe { std::env::set_var("III_CONFIG_PATH", "/srv/proj/config.yml") };
+        let present = local_config_present(dir.path());
+        match prior {
+            Some(v) => unsafe { std::env::set_var("III_CONFIG_PATH", v) },
+            None => unsafe { std::env::remove_var("III_CONFIG_PATH") },
+        }
+        assert!(present);
     }
 
     #[test]

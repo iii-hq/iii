@@ -12,8 +12,8 @@ A worker uses triggers two ways. Most of the time, you bind the worker's functio
 trigger on an existing trigger type such as: [`http`](https://workers.iii.dev/workers/http),
 [`cron`](https://workers.iii.dev/workers/cron),
 [queue messages](https://workers.iii.dev/workers/queue),
-[`state` changes](https://workers.iii.dev/workers/state), and any other event source in the
-system. Less often, you register a new trigger type from your worker so other workers can bind their
+[`state` changes](https://workers.iii.dev/workers/state), and any other event source in the system.
+Less often, you register a new trigger type from your worker so other workers can bind their
 functions to events your worker emits.
 
 This page primarily covers the latter: making your own triggers, if you want to use existing
@@ -29,14 +29,16 @@ triggers in new workers then refer to [Using iii / Triggers](../using-iii/trigge
 
 ## Bind a function to an existing trigger type
 
-Most workers consume trigger types that other workers already publish: `http` from
-[http](https://workers.iii.dev/workers/http) to expose a function as an endpoint, `cron`
-from [cron](https://workers.iii.dev/workers/cron) to run a function on a schedule, queue
-triggers from [queue](https://workers.iii.dev/workers/queue) to fire a function on each
-message, `state` from [state](https://workers.iii.dev/workers/state) to react to data
-changes. Bind one of your worker's functions to a trigger type with
-`worker.registerTrigger({ type, function_id, config })`. The worker that publishes the trigger type
-must be connected when you register; otherwise the registration fails.
+Most workers consume trigger types that other workers already publish. Bind one of your worker's
+functions to a trigger type with `worker.registerTrigger({ type, function_id, config })`.
+
+<Info>
+  You can register against a trigger type before its publishing worker is connected. The engine
+  stores the binding optimistically and activates it automatically once that worker joins. See
+  [Registering before a trigger type is
+  available](../using-iii/triggers#registering-before-a-trigger-type-is-available) for how
+  optimistic registrations behave.
+</Info>
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -132,8 +134,7 @@ time. The engine stores it as-is and surfaces it in two places:
 </Tabs>
 
 <Note>
-  Trigger _types_ have no metadata field of their own. Metadata is attached per binding, not per
-  type.
+  Trigger _types_ have no metadata field of their own; metadata is attached per binding.
 
 Don't confuse trigger _metadata_ with trigger type [_schemas_](#attach-schemas-to-the-trigger-type)
 (`trigger_request_format` and `call_request_format`):
@@ -194,8 +195,8 @@ signatures.
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 
-The example below sketches a tiny version of [http](https://workers.iii.dev/workers/http),
-the worker that publishes the real `http` trigger type. The publisher worker:
+The example below sketches a tiny version of [http](https://workers.iii.dev/workers/http), the
+worker that publishes the real `http` trigger type. The publisher worker:
 
 1. Declares an HTTP-shaped trigger type called `mini-http`
 1. Maintains a `bindings` map of `{ trigger id → function_id, method+path }` as consumers
@@ -335,11 +336,11 @@ what to send and what they'll receive.
 
 Each SDK accepts these in its own idiomatic way:
 
-| SDK                                                                                                                 | What you pass                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| SDK                                                                                                         | What you pass                                                                                                                                  |
+| ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Node](../reference/sdk-node#registertriggertype) / [Browser](../reference/sdk-browser#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
-| [Python](../reference/sdk-python#register_trigger_type)                                                         | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
-| [Rust](../reference/sdk-rust#register_trigger_type)                                                             | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
+| [Python](../reference/sdk-python#register_trigger_type)                                                     | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
+| [Rust](../reference/sdk-rust#register_trigger_type)                                                         | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 

@@ -49,6 +49,11 @@ const MTRC_WS_PREFIX: &[u8] = b"MTRC";
 /// Magic prefix for logs binary frames (used by SDKs for OTEL logs)
 const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 
+/// How long a `Reattach` waits for the evicted previous connection's read
+/// loop to exit and finish its own cleanup before tearing the connection
+/// down directly (wedged reader guard).
+const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Function provided by the standalone `queue` worker for named enqueue
 /// actions. The engine owns receipt generation and uses this function only as
 /// the durable transport boundary.
@@ -1041,7 +1046,14 @@ impl Engine {
                     return Ok(());
                 }
 
-                self.trigger_registry.triggers.remove(id);
+                // Re-park instead of dropping (no-op if a concurrent
+                // disconnect GC or unregister already reaped it). If the
+                // reporting provider was replaced while the rejection was in
+                // flight, the registry re-activates the intent through the
+                // replacement instead of stranding it.
+                self.trigger_registry
+                    .park_rejected_trigger(id, worker.id)
+                    .await;
 
                 let Some(originator_id) = originator_id else {
                     tracing::debug!(
@@ -1894,6 +1906,74 @@ impl Engine {
 
                 Ok(())
             }
+            Message::Reattach {
+                previous_worker_id,
+                reattach_token,
+            } => {
+                // First message of a reconnect replay: the worker presents
+                // the identity of its previous connection so the engine can
+                // retire it before processing the replayed registrations
+                // that follow on this sequential read loop — they must land
+                // on a clean slate instead of racing the old connection's
+                // cleanup (the reconnect ownership kill loop).
+                let Ok(prev) = Uuid::parse_str(previous_worker_id) else {
+                    tracing::warn!(
+                        worker_id = %worker.id,
+                        previous_worker_id = %previous_worker_id,
+                        "Reattach with malformed previous worker id; ignoring"
+                    );
+                    return Ok(());
+                };
+                if prev == worker.id {
+                    return Ok(());
+                }
+                let Some(old) = self.worker_registry.get_worker(&prev) else {
+                    return Ok(());
+                };
+                // Worker ids are public (engine::workers::list, the
+                // workers-available trigger), so the id alone must never be
+                // able to evict a live worker. The token was only ever sent
+                // over the previous connection's own socket — presenting it
+                // proves this is the same worker reconnecting.
+                if reattach_token.as_deref() != Some(old.reattach_token.to_string().as_str()) {
+                    tracing::warn!(
+                        worker_id = %worker.id,
+                        previous_worker = %prev,
+                        "Reattach with wrong or missing token; ignoring"
+                    );
+                    return Ok(());
+                }
+                tracing::info!(
+                    new_worker = %worker.id,
+                    previous_worker = %prev,
+                    "Reattach: retiring previous connection of reconnected worker"
+                );
+                // Evict FIRST: the old read loop exits at its next poll
+                // (biased select checks eviction before draining more
+                // frames), discarding any still-buffered stale
+                // registrations, and its exit path runs the connection's
+                // cleanup. Await that cleanup's COMPLETION — running it here
+                // concurrently with a still-draining reader could snapshot
+                // before an in-flight registration commits and orphan it.
+                old.evict.notify_one();
+                let cleaned = if old.has_reader.load(std::sync::atomic::Ordering::SeqCst) {
+                    let mut done = old.cleanup_done.subscribe();
+                    matches!(
+                        tokio::time::timeout(REATTACH_EVICT_TIMEOUT, done.wait_for(|d| *d)).await,
+                        Ok(Ok(_))
+                    )
+                } else {
+                    false
+                };
+                if !cleaned {
+                    // No reader on this connection (or it is wedged
+                    // mid-message): tear down directly. The ownership guards
+                    // in the release paths keep any late stale write from
+                    // clobbering the replay that follows.
+                    self.cleanup_worker(&old).await;
+                }
+                Ok(())
+            }
             Message::Ping => {
                 self.send_msg(worker, Message::Pong).await;
                 Ok(())
@@ -1998,6 +2078,12 @@ impl Engine {
         });
 
         let worker = WorkerConnection::with_session(tx.clone(), session);
+        // Mark before registering: from the moment this connection is
+        // discoverable, a Reattach targeting it can rely on this read loop
+        // to exit on eviction and run the cleanup.
+        worker
+            .has_reader
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
@@ -2006,11 +2092,13 @@ impl Engine {
         // queue rather than land in `DEFAULT_NAMESPACE`.
         self.begin_namespace_resolution(&worker);
 
-        // Send worker ID back to the worker
+        // Send worker ID back to the worker, along with the secret it must
+        // present to reattach (retire this connection) after a reconnect.
         self.send_msg(
             &worker,
             Message::WorkerRegistered {
                 worker_id: worker.id.to_string(),
+                reattach_token: Some(worker.reattach_token.to_string()),
             },
         )
         .await;
@@ -2024,6 +2112,20 @@ impl Engine {
 
         loop {
             tokio::select! {
+                // `biased` + eviction first: once a reattaching successor
+                // evicts this connection, the loop must exit at the very next
+                // iteration instead of draining more buffered frames — a
+                // stale registration replayed from this socket after eviction
+                // would re-claim ids for a retired identity.
+                biased;
+                _ = worker.evict.notified() => {
+                    tracing::info!(worker_id = %worker.id, peer = %peer, "Worker evicted by reattaching successor");
+                    break;
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::info!(peer = %peer, "Shutdown signal received, closing worker connection");
+                    break;
+                }
                 frame = ws_rx.next() => {
                     match frame {
                         Some(Ok(WsMessage::Text(text))) => {
@@ -2059,10 +2161,6 @@ impl Engine {
                             break;
                         }
                     }
-                }
-                _ = shutdown_rx.changed() => {
-                    tracing::info!(peer = %peer, "Shutdown signal received, closing worker connection");
-                    break;
                 }
             }
         }
@@ -2148,12 +2246,30 @@ impl Engine {
     }
 
     async fn cleanup_worker(&self, worker: &WorkerConnection) {
+        // Run this connection's teardown exactly once, with COMPLETION
+        // visible to every caller: the loser of the claim waits for the
+        // winner to finish instead of returning early. "cleanup_worker
+        // returned" must always mean "the slate is clean" — a reattach that
+        // returned while a concurrent exit-path teardown was still mid-flight
+        // would let the successor's replay race the remaining removals, which
+        // is exactly the bug this path exists to close. No double
+        // worker_disconnected trigger, no double death metrics.
+        if worker
+            .cleanup_claimed
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            tracing::debug!(worker_id = %worker.id, "Cleanup already running or done; awaiting completion");
+            let mut done = worker.cleanup_done.subscribe();
+            let _ = done.wait_for(|done| *done).await;
+            return;
+        }
+
         // Before snapshotting anything: a drain can be running concurrently on
         // the `engine::workers::register` task (worker disconnects right after
         // sending it), and would otherwise keep registering functions for the
         // rest of the teardown — after the snapshot below has decided what to
         // release. Those would leak, with `function_owners` pointing at a dead
-        // worker. Aborting first stops the drain at its next message.
+        // worker. Aborting stops the drain at its next message.
         self.abort_namespace_resolution(worker);
 
         let regular_functions = worker.get_regular_function_ids().await;
@@ -2270,6 +2386,7 @@ impl Engine {
         self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
             .await;
 
+        worker.cleanup_done.send_replace(true);
         tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
     }
 
@@ -2476,10 +2593,13 @@ impl Engine {
 
     /// Atomically removes `function_id` from the engine ONLY if `worker_id`
     /// is still the recorded owner. Returns true if the removal occurred.
-    /// `DashMap::remove_if` gives compare-and-swap semantics: no other thread
-    /// can race the predicate against the actual remove, which closes the
-    /// TOCTOU window a check-then-remove pair would leave between reading
-    /// ownership and `remove_function_from_engine`.
+    /// Holds the `function_owners` entry (shard write lock) across the
+    /// engine-global removal: `claim_function`'s `insert` serializes behind
+    /// the same lock, so a racing claim can never land between the ownership
+    /// check and `remove_function_from_engine` — the window that let a stale
+    /// connection's cleanup delete its reconnected successor's fresh
+    /// registration. NOTE: `remove_function_from_engine` must never touch
+    /// `function_owners`, or this deadlocks.
     /// `namespace` must be the owning connection's effective namespace — the
     /// caller holds the `WorkerConnection`, so it is passed in rather than
     /// re-derived from the registry (which would silently fall back to
@@ -2490,15 +2610,16 @@ impl Engine {
         namespace: &str,
         function_id: &str,
     ) -> bool {
-        let removed = self.function_owners.remove_if(
-            &(namespace.to_string(), function_id.to_string()),
-            |_, (owner, _kind)| owner == worker_id,
-        );
-        if removed.is_some() {
-            self.remove_function_from_engine(namespace, function_id);
-            true
-        } else {
-            false
+        match self
+            .function_owners
+            .entry((namespace.to_string(), function_id.to_string()))
+        {
+            dashmap::mapref::entry::Entry::Occupied(entry) if entry.get().0 == *worker_id => {
+                self.remove_function_from_engine(namespace, function_id);
+                entry.remove();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -4581,6 +4702,7 @@ mod tests {
 
         let msg = Message::WorkerRegistered {
             worker_id: "some-worker-id".to_string(),
+            reattach_token: None,
         };
 
         engine
@@ -4608,7 +4730,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trigger_registration_result_forwards_error_to_originator() {
+    async fn test_trigger_registration_result_error_forwards_parks_and_replays() {
         ensure_default_meter();
         let engine = Engine::new();
 
@@ -4670,8 +4792,184 @@ mod tests {
 
         assert!(
             engine.trigger_registry.triggers.get("trig-1").is_none(),
-            "failed trigger should be removed from registry"
+            "failed trigger leaves the live registry"
         );
+        assert!(
+            engine
+                .trigger_registry
+                .pending_triggers
+                .contains_key("trig-1"),
+            "failed trigger is parked for replay, not dropped"
+        );
+
+        // Provider reconnects with a fresh registrator: the parked intent replays.
+        let (reg2_tx, mut reg2_rx) = mpsc::channel::<Outbound>(8);
+        let reg2 = WorkerConnection::new(reg2_tx);
+        engine
+            .trigger_registry
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "http",
+                "test trigger type",
+                Box::new(reg2.clone()),
+                Some(reg2.id),
+            ))
+            .await
+            .expect("re-registering the trigger type should succeed");
+
+        assert!(engine.trigger_registry.pending_triggers.is_empty());
+        assert!(engine.trigger_registry.triggers.contains_key("trig-1"));
+        let replayed = reg2_rx
+            .try_recv()
+            .expect("replacement registrator receives the replayed RegisterTrigger");
+        assert!(matches!(
+            replayed,
+            Outbound::Protocol(Message::RegisterTrigger { .. })
+        ));
+    }
+
+    /// A late async rejection racing an explicit unregister. Whatever the
+    /// interleave, the binding must never resurrect: once both complete it is
+    /// in neither the live registry nor the pending bucket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn unregister_racing_late_rejection_never_resurrects_the_binding() {
+        ensure_default_meter();
+        for _ in 0..100 {
+            let engine = Arc::new(Engine::new());
+
+            let (user_tx, _user_rx) = mpsc::channel::<Outbound>(8);
+            let user = WorkerConnection::new(user_tx);
+            engine.worker_registry.register_worker(user.clone());
+
+            let (registrator_tx, _registrator_rx) = mpsc::channel::<Outbound>(8);
+            let registrator = WorkerConnection::new(registrator_tx);
+            insert_trigger_type_for(&engine, "http", &registrator);
+
+            engine.trigger_registry.triggers.insert(
+                "trig-race".to_string(),
+                crate::trigger::Trigger {
+                    id: "trig-race".to_string(),
+                    trigger_type: "http".to_string(),
+                    function_id: "fn-1".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: Some(user.id),
+                    metadata: None,
+                    namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                },
+            );
+
+            let msg = Message::TriggerRegistrationResult {
+                id: "trig-race".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-1".to_string(),
+                error: Some(crate::protocol::ErrorBody::new("provider_error", "boom")),
+            };
+
+            let reject = {
+                let engine = Arc::clone(&engine);
+                let registrator = registrator.clone();
+                tokio::spawn(async move { engine.router_msg(&registrator, &msg).await })
+            };
+            let unregister = {
+                let engine = Arc::clone(&engine);
+                tokio::spawn(async move {
+                    engine
+                        .trigger_registry
+                        .unregister_trigger("trig-race".to_string(), None)
+                        .await
+                })
+            };
+
+            reject.await.unwrap().unwrap();
+            let removed = unregister.await.unwrap().unwrap();
+
+            assert!(removed, "the binding existed in one of the buckets");
+            assert!(!engine.trigger_registry.triggers.contains_key("trig-race"));
+            assert!(
+                !engine
+                    .trigger_registry
+                    .pending_triggers
+                    .contains_key("trig-race"),
+                "explicitly unregistered binding resurrected as a pending intent"
+            );
+        }
+    }
+
+    /// A provider replacement racing a late rejection from the replaced
+    /// generation. Whatever the interleave, the binding must end live under
+    /// the replacement — never stranded in the pending bucket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn provider_replacement_racing_late_rejection_never_strands_the_binding() {
+        ensure_default_meter();
+        for _ in 0..100 {
+            let engine = Arc::new(Engine::new());
+
+            let (user_tx, _user_rx) = mpsc::channel::<Outbound>(8);
+            let user = WorkerConnection::new(user_tx);
+            engine.worker_registry.register_worker(user.clone());
+
+            let (old_tx, _old_rx) = mpsc::channel::<Outbound>(8);
+            let old_provider = WorkerConnection::new(old_tx);
+            insert_trigger_type_for(&engine, "http", &old_provider);
+
+            engine.trigger_registry.triggers.insert(
+                "trig-race".to_string(),
+                crate::trigger::Trigger {
+                    id: "trig-race".to_string(),
+                    trigger_type: "http".to_string(),
+                    function_id: "fn-1".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: Some(user.id),
+                    metadata: None,
+                    namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                },
+            );
+
+            let msg = Message::TriggerRegistrationResult {
+                id: "trig-race".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "fn-1".to_string(),
+                error: Some(crate::protocol::ErrorBody::new("provider_error", "boom")),
+            };
+
+            let (new_tx, _new_rx) = mpsc::channel::<Outbound>(8);
+            let new_provider = WorkerConnection::new(new_tx);
+
+            let reject = {
+                let engine = Arc::clone(&engine);
+                let old_provider = old_provider.clone();
+                tokio::spawn(async move { engine.router_msg(&old_provider, &msg).await })
+            };
+            let replace = {
+                let engine = Arc::clone(&engine);
+                let new_provider = new_provider.clone();
+                tokio::spawn(async move {
+                    engine
+                        .trigger_registry
+                        .register_trigger_type(crate::trigger::TriggerType::new(
+                            "http",
+                            "replacement",
+                            Box::new(new_provider.clone()),
+                            Some(new_provider.id),
+                        ))
+                        .await
+                })
+            };
+
+            reject.await.unwrap().unwrap();
+            replace.await.unwrap().unwrap();
+
+            assert!(
+                engine.trigger_registry.triggers.contains_key("trig-race"),
+                "binding must end live under the replacement provider"
+            );
+            assert!(
+                !engine
+                    .trigger_registry
+                    .pending_triggers
+                    .contains_key("trig-race"),
+                "binding stranded in pending despite a live replacement provider"
+            );
+        }
     }
 
     #[tokio::test]
@@ -5651,6 +5949,421 @@ mod tests {
                 owner.0, new_worker.id,
                 "the new worker should be the recorded owner after the race"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reattach_evicts_old_worker_and_cleanup_is_idempotent() {
+        // Reconnect kill loop fix (iii-hq/iii#1975): a reconnecting worker
+        // presents its previous connection's id + reattach token via
+        // `Message::Reattach`. With no reader attached, the engine must
+        // retire the old connection directly (so the replay lands on a clean
+        // slate) and signal eviction; a later exit-path `cleanup_worker`
+        // must then be a completed no-op.
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // OLD connection registers fn1.
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let old_worker = WorkerConnection::new(tx_old);
+        engine.worker_registry.register_worker(old_worker.clone());
+        engine
+            .router_msg(
+                &old_worker,
+                &Message::RegisterFunction {
+                    id: "fn1".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("old register");
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_some()
+        );
+
+        // NEW connection reattaches, presenting the old worker's id + token.
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let new_worker = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(new_worker.clone());
+        engine
+            .router_msg(
+                &new_worker,
+                &Message::Reattach {
+                    previous_worker_id: old_worker.id.to_string(),
+                    reattach_token: Some(old_worker.reattach_token.to_string()),
+                },
+            )
+            .await
+            .expect("reattach");
+
+        // Old connection retired: gone from the registry, its fn released,
+        // and its read loop woken to exit.
+        assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_none(),
+            "old connection's function released on reattach"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            old_worker.evict.notified(),
+        )
+        .await
+        .expect("evicted old worker's read loop must be signalled to exit");
+
+        // NEW connection replays fn1 (owned by new now).
+        engine
+            .router_msg(
+                &new_worker,
+                &Message::RegisterFunction {
+                    id: "fn1".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("new register");
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_some()
+        );
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "fn1".to_string()
+                ))
+                .unwrap()
+                .0,
+            new_worker.id
+        );
+
+        // The evicted old socket task now runs its own exit-path cleanup. It
+        // must NOT tear down fn1 (now owned by the new connection).
+        engine.cleanup_worker(&old_worker).await;
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_some(),
+            "idempotent cleanup of the evicted old connection must not touch the live function"
+        );
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "fn1".to_string()
+                ))
+                .unwrap()
+                .0,
+            new_worker.id
+        );
+        assert!(engine.worker_registry.workers.contains_key(&new_worker.id));
+    }
+
+    #[tokio::test]
+    async fn test_reattach_with_reader_awaits_the_readers_own_cleanup() {
+        // When the old connection has a live read loop (the production
+        // path), Reattach must evict it and WAIT for the reader's own
+        // exit-path cleanup to complete before returning — never run
+        // teardown concurrently with a still-draining reader.
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let old_worker = WorkerConnection::new(tx_old);
+        old_worker
+            .has_reader
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        engine.worker_registry.register_worker(old_worker.clone());
+        engine
+            .router_msg(
+                &old_worker,
+                &Message::RegisterFunction {
+                    id: "reader_fn".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("old register");
+
+        // Simulated read loop: wait for eviction, then run the exit-path
+        // cleanup — exactly what handle_worker does.
+        let reader = {
+            let engine = engine.clone();
+            let old = old_worker.clone();
+            tokio::spawn(async move {
+                old.evict.notified().await;
+                engine.cleanup_worker(&old).await;
+            })
+        };
+
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let new_worker = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(new_worker.clone());
+        engine
+            .router_msg(
+                &new_worker,
+                &Message::Reattach {
+                    previous_worker_id: old_worker.id.to_string(),
+                    reattach_token: Some(old_worker.reattach_token.to_string()),
+                },
+            )
+            .await
+            .expect("reattach");
+
+        // Reattach returned => the reader-driven cleanup COMPLETED: old
+        // connection gone, its registration released.
+        assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "reader_fn")
+                .is_none()
+        );
+        assert!(*old_worker.cleanup_done.borrow());
+        tokio::time::timeout(std::time::Duration::from_secs(1), reader)
+            .await
+            .expect("reader task must have exited")
+            .expect("reader task must not panic");
+    }
+
+    #[tokio::test]
+    async fn test_reattach_requires_matching_token() {
+        // Worker ids are publicly discoverable (engine::workers::list, the
+        // workers-available trigger), so an id without the per-connection
+        // secret must never evict a live worker.
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let old_worker = WorkerConnection::new(tx_old);
+        engine.worker_registry.register_worker(old_worker.clone());
+
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let new_worker = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(new_worker.clone());
+
+        // Missing token.
+        engine
+            .router_msg(
+                &new_worker,
+                &Message::Reattach {
+                    previous_worker_id: old_worker.id.to_string(),
+                    reattach_token: None,
+                },
+            )
+            .await
+            .expect("reattach without token ok");
+        assert!(engine.worker_registry.workers.contains_key(&old_worker.id));
+
+        // Wrong token.
+        engine
+            .router_msg(
+                &new_worker,
+                &Message::Reattach {
+                    previous_worker_id: old_worker.id.to_string(),
+                    reattach_token: Some(uuid::Uuid::new_v4().to_string()),
+                },
+            )
+            .await
+            .expect("reattach with wrong token ok");
+        assert!(engine.worker_registry.workers.contains_key(&old_worker.id));
+        assert!(!*old_worker.cleanup_done.borrow());
+    }
+
+    #[tokio::test]
+    async fn test_reattach_self_garbage_and_unknown_are_noops() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        // Reattaching to itself is a no-op (it must not evict its own loop).
+        engine
+            .router_msg(
+                &worker,
+                &Message::Reattach {
+                    previous_worker_id: worker.id.to_string(),
+                    reattach_token: Some(worker.reattach_token.to_string()),
+                },
+            )
+            .await
+            .expect("self reattach ok");
+        assert!(engine.worker_registry.workers.contains_key(&worker.id));
+
+        // Malformed id: ignored, no error, worker untouched.
+        engine
+            .router_msg(
+                &worker,
+                &Message::Reattach {
+                    previous_worker_id: "not-a-uuid".to_string(),
+                    reattach_token: None,
+                },
+            )
+            .await
+            .expect("garbage reattach ok");
+        assert!(engine.worker_registry.workers.contains_key(&worker.id));
+
+        // Unknown (never-registered) id: ignored, no error.
+        engine
+            .router_msg(
+                &worker,
+                &Message::Reattach {
+                    previous_worker_id: uuid::Uuid::new_v4().to_string(),
+                    reattach_token: None,
+                },
+            )
+            .await
+            .expect("unknown reattach ok");
+        assert!(engine.worker_registry.workers.contains_key(&worker.id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_concurrent_replay_and_cleanup_preserves_reregistered_state() {
+        // The reconnect race at its real interleaving, exercising the function
+        // guard (F2) and the trigger-binding guard (F1) together: an old
+        // connection's `cleanup_worker` runs concurrently with the new
+        // connection's replayed RegisterFunction + RegisterTrigger. Both the
+        // function and the binding must end up owned by the new connection.
+        ensure_default_meter();
+
+        for _ in 0..50 {
+            let engine = Arc::new(Engine::new());
+
+            // Provider owns the trigger type for the whole test.
+            let (tx_p, _rx_p) = mpsc::channel::<Outbound>(8);
+            let provider = WorkerConnection::new(tx_p);
+            engine.worker_registry.register_worker(provider.clone());
+            engine
+                .router_msg(
+                    &provider,
+                    &Message::RegisterTriggerType {
+                        id: "evt".to_string(),
+                        description: "provider".to_string(),
+                        trigger_request_format: None,
+                        call_request_format: None,
+                    },
+                )
+                .await
+                .expect("register trigger type");
+
+            let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+            let old_worker = WorkerConnection::new(tx_old);
+            engine.worker_registry.register_worker(old_worker.clone());
+            let reg_fn = Message::RegisterFunction {
+                id: "raced_fn".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            };
+            let reg_trigger = Message::RegisterTrigger {
+                id: "t1".to_string(),
+                trigger_type: "evt".to_string(),
+                function_id: "raced_fn".to_string(),
+                config: serde_json::json!({}),
+                metadata: None,
+            };
+            engine
+                .router_msg(&old_worker, &reg_fn)
+                .await
+                .expect("old fn");
+            engine
+                .router_msg(&old_worker, &reg_trigger)
+                .await
+                .expect("old trigger");
+
+            let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+            let new_worker = WorkerConnection::new(tx_new);
+            engine.worker_registry.register_worker(new_worker.clone());
+
+            let replay = {
+                let engine = engine.clone();
+                let new_worker = new_worker.clone();
+                let old_worker = old_worker.clone();
+                let reg_fn = reg_fn.clone();
+                let reg_trigger = reg_trigger.clone();
+                tokio::spawn(async move {
+                    // The reconnect replay opens with Reattach — the same first
+                    // message the SDK sends — so the engine retires the previous
+                    // connection and the registrations below take over on a clean
+                    // slate (one live worker per namespace still holds otherwise).
+                    engine
+                        .router_msg(
+                            &new_worker,
+                            &Message::Reattach {
+                                previous_worker_id: old_worker.id.to_string(),
+                                reattach_token: Some(old_worker.reattach_token.to_string()),
+                            },
+                        )
+                        .await
+                        .expect("reattach");
+                    engine
+                        .router_msg(&new_worker, &reg_fn)
+                        .await
+                        .expect("new fn");
+                    engine
+                        .router_msg(&new_worker, &reg_trigger)
+                        .await
+                        .expect("new trigger");
+                })
+            };
+            let cleanup = {
+                let engine = engine.clone();
+                let old_worker = old_worker.clone();
+                tokio::spawn(async move { engine.cleanup_worker(&old_worker).await })
+            };
+            replay.await.expect("replay task");
+            cleanup.await.expect("cleanup task");
+
+            assert!(
+                engine
+                    .functions
+                    .get(crate::protocol::DEFAULT_NAMESPACE, "raced_fn")
+                    .is_some(),
+                "function must survive concurrent cleanup"
+            );
+            assert_eq!(
+                engine
+                    .function_owners
+                    .get(&(
+                        crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                        "raced_fn".to_string()
+                    ))
+                    .unwrap()
+                    .0,
+                new_worker.id
+            );
+            let t1 = engine
+                .trigger_registry
+                .triggers
+                .get("t1")
+                .expect("binding must survive concurrent cleanup");
+            assert_eq!(t1.worker_id, Some(new_worker.id));
         }
     }
 

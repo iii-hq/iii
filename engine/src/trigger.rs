@@ -57,9 +57,10 @@ fn preferred_install_name(provider: &'static str) -> &'static str {
 pub enum RegisterTriggerOutcome {
     /// The trigger type was available and the binding is live.
     Registered,
-    /// The trigger type is not (yet) available. The registration intent is
-    /// parked in [`TriggerRegistry::pending_triggers`] and will be activated
-    /// automatically when the trigger type registers.
+    /// The trigger type is not (yet) available, or the bind could not be
+    /// delivered to its provider (connection closing). The registration
+    /// intent is parked in [`TriggerRegistry::pending_triggers`] and will be
+    /// activated automatically when the trigger type (re)registers.
     Deferred,
 }
 
@@ -165,6 +166,22 @@ impl TriggerType {
     }
 }
 
+/// Marker error for registrator failures where the bind never reached the
+/// provider (its connection channel is closed — the worker is dying or
+/// disconnecting). The registry parks such binds for replay on the next type
+/// (re)registration. Any other registrator error is a provider rejection
+/// (e.g. invalid config): a definitive answer that fails the registration.
+#[derive(Debug)]
+pub struct RegistratorUnavailable;
+
+impl std::fmt::Display for RegistratorUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("trigger provider connection unavailable")
+    }
+}
+
+impl std::error::Error for RegistratorUnavailable {}
+
 pub trait TriggerRegistrator: Send + Sync {
     fn register_trigger(
         &self,
@@ -223,12 +240,21 @@ impl std::hash::Hash for Trigger {
 pub struct TriggerRegistry {
     pub trigger_types: Arc<DashMap<String, TriggerType>>,
     pub triggers: Arc<DashMap<String, Trigger>>,
-    /// Registration intents whose trigger type is not currently available:
-    /// either it never registered, or its provider worker disconnected. These
+    /// Registration intents whose trigger type is not currently available or
+    /// whose activation did not complete: the type never registered, its
+    /// provider worker disconnected, the bind could not be delivered, or the
+    /// provider asynchronously rejected the activation. These
     /// bindings are disabled (they never fire) until the trigger type
     /// (re)registers, at which point they are activated and moved into
     /// `triggers`. Keyed by trigger id, like `triggers`.
     pub pending_triggers: Arc<DashMap<String, Trigger>>,
+    /// Serializes two-map transitions between `triggers` and
+    /// `pending_triggers` (a late-rejection re-park vs an explicit
+    /// unregister). DashMap only makes each map operation atomic; without
+    /// this, a re-park's remove+insert can interleave with an unregister's
+    /// removes and resurrect an explicitly-unregistered binding. Held only
+    /// around the map operations, never across an await.
+    pub park_transition: std::sync::Mutex<()>,
 }
 
 impl TriggerRegistry {
@@ -237,6 +263,7 @@ impl TriggerRegistry {
             trigger_types: Arc::new(DashMap::new()),
             triggers: Arc::new(DashMap::new()),
             pending_triggers: Arc::new(DashMap::new()),
+            park_transition: std::sync::Mutex::new(()),
         }
     }
 
@@ -277,7 +304,23 @@ impl TriggerRegistry {
 
         for trigger in worker_triggers {
             tracing::debug!(trigger_id = trigger.id, "Removing trigger");
-            self.triggers.remove(&trigger.id);
+            // The entry may have been replaced between the snapshot above and
+            // now (worker reconnect: the new connection replays the same
+            // trigger id before the old connection's cleanup runs). Only
+            // remove it — and only unregister it with the registrator — if it
+            // still belongs to the disconnecting worker; a replaced binding
+            // keeps firing. Same guard as trigger types below.
+            if self
+                .triggers
+                .remove_if(&trigger.id, |_, t| t.worker_id == Some(*worker_id))
+                .is_none()
+            {
+                tracing::debug!(
+                    trigger_id = trigger.id,
+                    "Trigger already replaced by another worker; leaving it"
+                );
+                continue;
+            }
 
             if let Some(trigger_type) = self.trigger_types.get(&trigger.trigger_type) {
                 tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
@@ -509,8 +552,28 @@ impl TriggerRegistry {
             .register_trigger(trigger.clone())
             .await
         {
-            tracing::error!(error = %err, "Error registering trigger");
-            return Err(err);
+            if err.downcast_ref::<RegistratorUnavailable>().is_none() {
+                // The provider processed and rejected the bind (e.g. invalid
+                // config): a definitive answer, not a delivery failure. Fail
+                // the registration so callers surface the error, and leave any
+                // previous live registration of this id tracked — the provider
+                // still runs it and it must stay reachable for teardown.
+                tracing::error!(error = %err, "Error registering trigger");
+                return Err(err);
+            }
+            tracing::error!(
+                error = %err,
+                trigger_id = %trigger.id,
+                trigger_type = %trigger.trigger_type,
+                "Trigger provider unreachable; bind parked as pending until the trigger type re-registers"
+            );
+            // Park instead of failing; an undeliverable re-registration
+            // supersedes a previous live binding with the same id (the dying
+            // provider's jobs die with it) — the binding must end in exactly
+            // one bucket.
+            self.triggers.remove(&trigger.id);
+            self.pending_triggers.insert(trigger.id.clone(), trigger);
+            return Ok(RegisterTriggerOutcome::Deferred);
         }
 
         drop(trigger_type);
@@ -542,21 +605,78 @@ impl TriggerRegistry {
             trigger_type.as_deref().unwrap_or("<missing>").purple()
         );
 
-        let Some(trigger_entry) = self.triggers.get(&id) else {
-            // A parked intent has no live registration to tear down —
-            // dropping it from the pending bucket is the whole unregister.
-            return Ok(self.pending_triggers.remove(&id).is_some());
+        let trigger = {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let Some(trigger_entry) = self.triggers.get(&id) else {
+                // A parked intent has no live registration to tear down —
+                // dropping it from the pending bucket is the whole unregister.
+                return Ok(self.pending_triggers.remove(&id).is_some());
+            };
+            trigger_entry.value().clone()
         };
-        let trigger = trigger_entry.value().clone();
-        drop(trigger_entry);
 
         if let Some(tt) = self.trigger_types.get(&trigger.trigger_type) {
             tt.registrator.unregister_trigger(trigger.clone()).await?;
         }
 
+        // A late async rejection may re-park this binding while the
+        // registrator call above is in flight; an explicit unregister must
+        // win over that park or the intent resurrects on the next type
+        // registration. The transition lock makes this two-map clear atomic
+        // with the re-park's own live-to-pending move.
+        let _park = self
+            .park_transition
+            .lock()
+            .expect("park_transition lock poisoned");
         self.triggers.remove(&id);
+        self.pending_triggers.remove(&id);
 
         Ok(true)
+    }
+
+    /// Move a live binding to `pending_triggers` after its provider reported
+    /// an async registration error (the caller has already verified the
+    /// reporter owned the trigger type). No-op when the binding is already
+    /// gone — a concurrent disconnect GC or explicit unregister reaped it,
+    /// and parking then would resurrect a dead binding.
+    pub async fn park_rejected_trigger(&self, id: &str, reporter_worker_id: Uuid) {
+        let parked_type = {
+            let _park = self
+                .park_transition
+                .lock()
+                .expect("park_transition lock poisoned");
+            let Some((_, failed)) = self.triggers.remove(id) else {
+                return;
+            };
+            tracing::warn!(
+                trigger_id = %id,
+                trigger_type = %failed.trigger_type,
+                function_id = %failed.function_id,
+                "Trigger registration rejected by provider; parked as pending until the trigger type re-registers"
+            );
+            let trigger_type_id = failed.trigger_type.clone();
+            self.pending_triggers.insert(failed.id.clone(), failed);
+            trigger_type_id
+        };
+
+        // Close the park/replacement race (mirror of the unknown-type park in
+        // `register_trigger`): the reporter's ownership was checked before the
+        // park, but a replacement provider may have registered — and drained
+        // pending intents — in between, which would strand this park until
+        // yet another re-registration. If the type's current owner is no
+        // longer the reporter, claim the intent back (via `remove`, so we
+        // never double-activate with a drain) and activate it through the
+        // current provider. While the reporter still owns the type the park
+        // is intended: replaying would just be rejected again.
+        if let Some(trigger_type) = self.trigger_types.get(&parked_type)
+            && trigger_type.worker_id != Some(reporter_worker_id)
+            && let Some((_, parked)) = self.pending_triggers.remove(id)
+        {
+            self.activate_pending_trigger(&trigger_type, parked).await;
+        }
     }
 }
 
@@ -861,6 +981,82 @@ mod tests {
                 a.register_count.load(Ordering::SeqCst),
                 1,
                 "stale generation receives nothing after replacement"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replayed_binding_survives_stale_worker_cleanup() {
+        // Regression guard for the reconnect kill loop (iii-hq/iii#1975),
+        // binding half. When a worker's socket drops and its SDK reconnects,
+        // the new connection replays its RegisterTrigger batch while the old
+        // connection's `unregister_worker` cleanup runs concurrently. The
+        // cleanup used to `triggers.remove(id)` unconditionally from a
+        // snapshot, deleting (and provider-unregistering) the binding the new
+        // connection had just re-registered — the console watcher would die
+        // and never come back. Post-fix, removal is guarded by an ownership
+        // CAS, mirroring the trigger-type guard in the same function.
+        for _ in 0..100 {
+            let registry = Arc::new(TriggerRegistry::new());
+
+            // Trigger type owned by a separate provider worker so the stale
+            // worker's cleanup never removes the type (which would orphan the
+            // binding into `pending_triggers` and mask the guard we test).
+            let provider = Arc::new(ControlledRegistrator::new(false, false));
+            let provider_worker = Uuid::new_v4();
+            registry
+                .register_trigger_type(TriggerType::new(
+                    "evt",
+                    "provider",
+                    Box::new(provider.clone()),
+                    Some(provider_worker),
+                ))
+                .await
+                .unwrap();
+
+            let old_worker = Uuid::new_v4();
+            let new_worker = Uuid::new_v4();
+
+            // Filler bindings owned by the old worker widen the snapshot→remove
+            // window: each removal awaits the provider's unregister, giving the
+            // racing re-registration room to land before `t1`'s turn.
+            for fid in ["f1", "f2", "f3"] {
+                let mut b = make_trigger(fid, "evt");
+                b.worker_id = Some(old_worker);
+                registry.register_trigger(b).await.unwrap();
+            }
+            let mut binding = make_trigger("t1", "evt");
+            binding.worker_id = Some(old_worker);
+            registry.register_trigger(binding).await.unwrap();
+
+            let cleanup = {
+                let registry = registry.clone();
+                tokio::spawn(async move { registry.unregister_worker(&old_worker).await })
+            };
+            let reregister = {
+                let registry = registry.clone();
+                tokio::spawn(async move {
+                    let mut replay = make_trigger("t1", "evt");
+                    replay.worker_id = Some(new_worker);
+                    registry.register_trigger(replay).await.unwrap();
+                })
+            };
+            let (r1, r2) = tokio::join!(cleanup, reregister);
+            r1.unwrap();
+            r2.unwrap();
+
+            let t1 = registry
+                .triggers
+                .get("t1")
+                .expect("re-registered binding must survive the stale worker's cleanup");
+            assert_eq!(
+                t1.worker_id,
+                Some(new_worker),
+                "surviving binding must be owned by the reconnected worker"
+            );
+            assert!(
+                !registry.pending_triggers.contains_key("t1"),
+                "binding must be live, not parked"
             );
         }
     }
@@ -1396,11 +1592,206 @@ mod tests {
         let err = registry
             .register_trigger(make_trigger("t-error", "durable:subscriber"))
             .await
-            .expect_err("register should fail when registrator errors");
+            .expect_err("provider rejection should fail the registration");
 
         assert_eq!(err.to_string(), "register failed");
         assert_eq!(registrator.register_count.load(Ordering::SeqCst), 1);
         assert!(!registry.triggers.contains_key("t-error"));
+        assert!(
+            !registry.pending_triggers.contains_key("t-error"),
+            "a rejected bind must not be parked"
+        );
+    }
+
+    fn closed_channel_connection() -> crate::worker_connections::WorkerConnection {
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::engine::Outbound>(1);
+        drop(rx);
+        crate::worker_connections::WorkerConnection::new(tx)
+    }
+
+    #[tokio::test]
+    async fn register_trigger_transport_failure_parks_and_next_type_registration_activates() {
+        let registry = TriggerRegistry::new();
+        // Real provider connection whose channel is already closed: the send
+        // fails, which must classify as RegistratorUnavailable and park.
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue",
+            Box::new(closed_channel_connection()),
+            None,
+        );
+        registry.register_trigger_type(trigger_type).await.unwrap();
+
+        let outcome = registry
+            .register_trigger(make_trigger("t-park", "durable:subscriber"))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, RegisterTriggerOutcome::Deferred);
+        assert!(!registry.triggers.contains_key("t-park"));
+        assert!(
+            registry.pending_triggers.contains_key("t-park"),
+            "undeliverable bind is parked, not dropped"
+        );
+
+        // Provider heals and re-registers the type: the parked intent activates.
+        let healthy = Arc::new(ControlledRegistrator::new(false, false));
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue",
+            Box::new(Arc::clone(&healthy)),
+            None,
+        );
+        registry.register_trigger_type(trigger_type).await.unwrap();
+
+        assert_eq!(healthy.register_count.load(Ordering::SeqCst), 1);
+        assert!(registry.pending_triggers.is_empty());
+        assert!(registry.triggers.contains_key("t-park"));
+    }
+
+    #[tokio::test]
+    async fn rejected_reregistration_keeps_existing_live_binding_tracked() {
+        let registry = TriggerRegistry::new();
+        let failing = Arc::new(ControlledRegistrator::new(true, false));
+        registry.trigger_types.insert(
+            "webhook".to_string(),
+            TriggerType::new("webhook", "Webhook", Box::new(Arc::clone(&failing)), None),
+        );
+        registry
+            .triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+
+        let result = registry
+            .register_trigger(make_trigger("t1", "webhook"))
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            registry.triggers.contains_key("t1"),
+            "the previous live registration must stay tracked for teardown"
+        );
+        assert!(!registry.pending_triggers.contains_key("t1"));
+    }
+
+    #[tokio::test]
+    async fn undeliverable_reregistration_of_live_binding_ends_parked_not_split() {
+        let registry = TriggerRegistry::new();
+        registry.trigger_types.insert(
+            "webhook".to_string(),
+            TriggerType::new(
+                "webhook",
+                "Webhook",
+                Box::new(closed_channel_connection()),
+                None,
+            ),
+        );
+        registry
+            .triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+
+        let result = registry
+            .register_trigger(make_trigger("t1", "webhook"))
+            .await;
+
+        assert!(matches!(result, Ok(RegisterTriggerOutcome::Deferred)));
+        assert!(
+            !registry.triggers.contains_key("t1"),
+            "stale live entry must not survive; the dying provider's jobs die with it"
+        );
+        assert!(registry.pending_triggers.contains_key("t1"));
+    }
+
+    #[tokio::test]
+    async fn unregister_live_trigger_clears_stale_pending_intent() {
+        // Mid-unregister race state: a late async rejection re-parked the
+        // binding while the registrator unregister call was in flight.
+        let registry = TriggerRegistry::new();
+        let registrator = Arc::new(ControlledRegistrator::new(false, false));
+        registry.trigger_types.insert(
+            "webhook".to_string(),
+            TriggerType::new(
+                "webhook",
+                "Webhook",
+                Box::new(Arc::clone(&registrator)),
+                None,
+            ),
+        );
+        registry
+            .triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+        registry
+            .pending_triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+
+        let removed = registry
+            .unregister_trigger("t1".to_string(), None)
+            .await
+            .unwrap();
+
+        assert!(removed);
+        assert_eq!(registrator.unregister_count.load(Ordering::SeqCst), 1);
+        assert!(!registry.triggers.contains_key("t1"));
+        assert!(
+            !registry.pending_triggers.contains_key("t1"),
+            "explicit unregister must clear a raced re-park, or the intent replays on the next type registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_rejection_after_provider_replacement_reactivates_through_current_provider() {
+        let registry = TriggerRegistry::new();
+        let old_provider = Uuid::new_v4();
+        let replacement = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "webhook",
+                "gen B",
+                Box::new(Arc::clone(&replacement)),
+                Some(Uuid::new_v4()),
+            ))
+            .await
+            .unwrap();
+        registry
+            .triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+
+        // The rejection reporter is the replaced generation's worker, not the
+        // current owner: the park must immediately re-activate through the
+        // replacement instead of stranding the binding.
+        registry.park_rejected_trigger("t1", old_provider).await;
+
+        assert!(registry.triggers.contains_key("t1"));
+        assert!(!registry.pending_triggers.contains_key("t1"));
+        assert_eq!(replacement.register_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn rejection_from_current_owner_parks_without_replay_pingpong() {
+        let registry = TriggerRegistry::new();
+        let owner_worker = Uuid::new_v4();
+        let owner = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "webhook",
+                "Webhook",
+                Box::new(Arc::clone(&owner)),
+                Some(owner_worker),
+            ))
+            .await
+            .unwrap();
+        registry
+            .triggers
+            .insert("t1".to_string(), make_trigger("t1", "webhook"));
+
+        registry.park_rejected_trigger("t1", owner_worker).await;
+
+        assert!(!registry.triggers.contains_key("t1"));
+        assert!(registry.pending_triggers.contains_key("t1"));
+        assert_eq!(
+            owner.register_count.load(Ordering::SeqCst),
+            0,
+            "no replay back to the provider that just rejected the bind"
+        );
     }
 
     #[tokio::test]

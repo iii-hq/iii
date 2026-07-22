@@ -123,7 +123,13 @@ async fn async_main() -> anyhow::Result<()> {
             // --host: route the add through the target engine's worker::add
             // trigger. The engine host edits ITS config file and installs
             // artifacts there — nothing in the CLI's cwd is touched.
-            if let Some(host) = args.host.as_deref() {
+            // Hostless from a non-project directory falls back to the
+            // default local engine (MOT-4091).
+            let host_flag = args
+                .host
+                .clone()
+                .or_else(iii_worker::cli::remote_ops::implicit_host_fallback);
+            if let Some(host) = host_flag.as_deref() {
                 let adds = args
                     .worker_names
                     .iter()
@@ -139,7 +145,9 @@ async fn async_main() -> anyhow::Result<()> {
                         )
                     })
                     .collect();
-                let rc = iii_worker::cli::remote_ops::handle_remote_add(host, adds).await;
+                let rc =
+                    iii_worker::cli::remote_ops::handle_remote_add(host, adds, args.host.is_none())
+                        .await;
                 std::process::exit(rc);
             }
 
@@ -253,8 +261,13 @@ async fn async_main() -> anyhow::Result<()> {
             use iii_worker::cli::stderr_sink::StderrSink;
             use iii_worker::core::{AddOptions, ProjectCtx, add as core_add};
 
-            // Reinstall is `add --force`; same --host routing as Add.
-            if let Some(host) = args.host.as_deref() {
+            // Reinstall is `add --force`; same --host routing (and
+            // non-project-cwd fallback, MOT-4091) as Add.
+            let host_flag = args
+                .host
+                .clone()
+                .or_else(iii_worker::cli::remote_ops::implicit_host_fallback);
+            if let Some(host) = host_flag.as_deref() {
                 let adds = args
                     .worker_names
                     .iter()
@@ -270,7 +283,9 @@ async fn async_main() -> anyhow::Result<()> {
                         )
                     })
                     .collect();
-                let rc = iii_worker::cli::remote_ops::handle_remote_add(host, adds).await;
+                let rc =
+                    iii_worker::cli::remote_ops::handle_remote_add(host, adds, args.host.is_none())
+                        .await;
                 std::process::exit(rc);
             }
 
@@ -395,7 +410,7 @@ async fn async_main() -> anyhow::Result<()> {
             // Adapt CLI Start arg shape to StartOptions.
             let opts = StartOptions {
                 name: worker_name,
-                port: Some(port),
+                port,
                 config: config.map(|p| p.display().to_string()),
                 wait: !no_wait,
             };

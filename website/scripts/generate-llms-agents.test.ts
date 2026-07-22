@@ -10,6 +10,7 @@ import {
   buildLlmsTxt,
   overviewBodyWithoutLeadingH1,
 } from './generate-llms-agents'
+import { buildBlogLinksSection } from './generate-blog-md'
 
 const INDEX_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist/index.html')
 const APPENDIX_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'agents-appendix.md')
@@ -25,7 +26,8 @@ test('overviewBodyWithoutLeadingH1 drops duplicate H1 for llms.txt', () => {
 
 test('buildLlmsTxt is an understanding-first explainer (no spin-up instructions)', needsDist, async () => {
   const html = await fs.readFile(INDEX_PATH, 'utf8')
-  const text = buildLlmsTxt(html)
+  const blogSection = await buildBlogLinksSection()
+  const text = buildLlmsTxt(html, blogSection)
   assert.ok(text.startsWith('# iii\n'))
   assert.ok(text.includes('> iii turns distributed'))
   assert.ok(text.includes('## Three primitives'))
@@ -40,6 +42,8 @@ test('buildLlmsTxt is an understanding-first explainer (no spin-up instructions)
   assert.ok(!text.includes('npx skills add iii-hq/iii/skills'))
   assert.ok(!text.includes('install.iii.dev'))
   assert.ok(text.includes('[AGENTS.md](https://iii.dev/AGENTS.md)'))
+  assert.ok(text.includes('## Blog (knowledge base for coding agents)'))
+  assert.ok(text.includes('https://iii.dev/blog/index.md'))
 })
 
 test('buildHomepageExtractFromHtml pulls hero prose but not hello code fences', needsDist, async () => {
@@ -54,7 +58,8 @@ test('buildHomepageExtractFromHtml pulls hero prose but not hello code fences', 
 test('buildAgentsMd includes agents.md framing and appendix', needsDist, async () => {
   const html = await fs.readFile(INDEX_PATH, 'utf8')
   const appendix = await fs.readFile(APPENDIX_PATH, 'utf8')
-  const md = buildAgentsMd(html, appendix)
+  const blogSection = await buildBlogLinksSection()
+  const md = buildAgentsMd(html, appendix, blogSection)
   assert.ok(md.startsWith('# iii for AI Agents'))
   assert.ok(md.includes('agents.md'))
   assert.ok(md.includes('## Overview and comparisons'))
@@ -62,5 +67,7 @@ test('buildAgentsMd includes agents.md framing and appendix', needsDist, async (
   assert.ok(md.includes('## Guardrails'))
   assert.ok(md.includes('## Agent skills (after onboarding)'))
   assert.ok(md.includes('npx skills add iii-hq/iii/skills'))
+  assert.ok(md.includes('## Blog (knowledge base for coding agents)'))
+  assert.ok(md.includes('https://iii.dev/blog/index.md'))
   assert.ok(md.includes('Last updated:'))
 })

@@ -93,5 +93,6 @@ test('readBlogPosts reads the real blog content directory', async () => {
     assert.ok(post.slug.length > 0, 'every post derives a slug from its filename')
     assert.ok(post.title.length > 0, `${post.slug}: title missing`)
     assert.ok(post.pubDate instanceof Date, `${post.slug}: pubDate missing or invalid`)
+    assert.ok(post.sourceFile.endsWith('.md'), `${post.slug}: sourceFile missing`)
   }
 })
