@@ -71,7 +71,7 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.22.x",
+        "version": "0.23.x",
         "tag": "Next",
         "tabs": [
           {
@@ -201,7 +201,7 @@
         ]
       },
       {
-        "version": "0.21.x",
+        "version": "0.22.x",
         "tag": "Latest",
         "default": true,
         "tabs": [
@@ -220,7 +220,7 @@
               {
                 "group": "Upgrading",
                 "pages": [
-                  "upgrading/from-0-19-x"
+                  "upgrading/from-0-21-x"
                 ]
               },
               {
@@ -231,6 +231,7 @@
                   "using-iii/triggers",
                   "using-iii/functions",
                   "using-iii/engine",
+                  "using-iii/configuration",
                   "using-iii/console",
                   "using-iii/cli",
                   "using-iii/deployment"
@@ -292,32 +293,160 @@
               {
                 "group": "Engine protocol",
                 "pages": [
-                  "sdk-reference/engine-sdk"
+                  "reference/engine-protocol"
                 ]
               },
               {
                 "group": "Language SDKs",
                 "expanded": true,
                 "pages": [
-                  "api-reference/sdk-node",
-                  "api-reference/sdk-python",
-                  "api-reference/sdk-rust",
-                  "api-reference/sdk-browser"
+                  "reference/sdk-node",
+                  "reference/sdk-python",
+                  "reference/sdk-rust",
+                  "reference/sdk-browser"
                 ]
               },
               {
                 "group": "Helpers",
                 "expanded": true,
                 "pages": [
-                  "api-reference/helpers-node",
-                  "api-reference/helpers-python",
-                  "api-reference/helpers-rust"
+                  "reference/helpers-node",
+                  "reference/helpers-python",
+                  "reference/helpers-rust"
                 ]
               },
               {
                 "group": "CLI reference",
                 "pages": [
                   "cli-reference/index"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "pages": [
+              "changelog/index"
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.21.x",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "0-21-0/index",
+                  "0-21-0/install",
+                  "0-21-0/quickstart",
+                  "0-21-0/troubleshooting"
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "0-21-0/upgrading/from-0-19-x"
+                ]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "0-21-0/using-iii/workers",
+                  "0-21-0/using-iii/workers-registry",
+                  "0-21-0/using-iii/triggers",
+                  "0-21-0/using-iii/functions",
+                  "0-21-0/using-iii/engine",
+                  "0-21-0/using-iii/console",
+                  "0-21-0/using-iii/cli",
+                  "0-21-0/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "0-21-0/understanding-iii/index",
+                  "0-21-0/understanding-iii/engine",
+                  "0-21-0/understanding-iii/channels"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "0-21-0/creating-workers/index",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "0-21-0/creating-workers/http",
+                      "0-21-0/creating-workers/queues",
+                      "0-21-0/creating-workers/observability",
+                      "0-21-0/creating-workers/sandboxes",
+                      "0-21-0/creating-workers/worker-manager"
+                    ]
+                  },
+                  "0-21-0/creating-workers/workers",
+                  "0-21-0/creating-workers/worker-manifest",
+                  "0-21-0/creating-workers/triggers",
+                  "0-21-0/creating-workers/functions",
+                  "0-21-0/creating-workers/channels"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "0-21-0/tutorials/linkly/overview",
+                  "0-21-0/tutorials/linkly/foundations",
+                  "0-21-0/tutorials/linkly/observability",
+                  "0-21-0/tutorials/linkly/persistence",
+                  "0-21-0/tutorials/linkly/durable-execution",
+                  "0-21-0/tutorials/linkly/streaming",
+                  "0-21-0/tutorials/linkly/channels",
+                  "0-21-0/tutorials/linkly/frontend"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": [
+                  "0-21-0/sdk-reference/engine-sdk"
+                ]
+              },
+              {
+                "group": "Language SDKs",
+                "expanded": true,
+                "pages": [
+                  "0-21-0/api-reference/sdk-node",
+                  "0-21-0/api-reference/sdk-python",
+                  "0-21-0/api-reference/sdk-rust",
+                  "0-21-0/api-reference/sdk-browser"
+                ]
+              },
+              {
+                "group": "Helpers",
+                "expanded": true,
+                "pages": [
+                  "0-21-0/api-reference/helpers-node",
+                  "0-21-0/api-reference/helpers-python",
+                  "0-21-0/api-reference/helpers-rust"
+                ]
+              },
+              {
+                "group": "CLI reference",
+                "pages": [
+                  "0-21-0/cli-reference/index"
                 ]
               }
             ]
