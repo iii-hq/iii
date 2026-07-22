@@ -6,13 +6,13 @@ owner: "devrel"
 type: "tutorial"
 ---
 
-Linkly's links live in `iii-state`, which you set to in-memory back in Chapter 1. Restart the engine
+Linkly's links live in `state`, which you set to in-memory back in Chapter 1. Restart the engine
 and everything is gone. In this chapter you add a `database` worker (SQLite) that holds the durable
-record of links and a timestamped row for every click on a short code. `iii-state` stays in the
+record of links and a timestamped row for every click on a short code. `state` stays in the
 picture as a fast read cache in front of the database.
 
 <Info>
-  `iii-state` can also persist on its own (`store_method: file_based` with a `file_path`). This
+  `state` can also persist on its own (`store_method: file_based` with a `file_path`). This
   chapter uses a dedicated `database` worker instead, which gives you durable storage plus SQL to
   query it.
 </Info>
@@ -28,9 +28,10 @@ mkdir -p data
 ```
 
 The engine has been running since Chapter 1, so it starts the `database` worker as soon as it is
-added, and the worker's settings are managed in `./config/database.yaml` from that point on (see
-[Configuration](/using-iii/configuration)). Adjust the fields under `value:` in that file so it
-looks like the below and save; the change applies without a restart.
+added, and generates its settings file at `./config/database.yaml` (see
+[Configuration](/using-iii/configuration)). Open that file: the generated defaults already point at
+a SQLite database at `./data/iii.db`, so there's nothing to change here. This is what durable
+storage looks like:
 
 <Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
 
@@ -39,9 +40,9 @@ looks like the below and save; the change applies without a restart.
   docs](https://workers.iii.dev/workers/database) for all supported databases.
 </Info>
 
-```yaml {3-10} config/database.yaml
+```yaml config/database.yaml
 id: database
-# ...
+name: Database
 value:
   databases:
     primary:
@@ -63,7 +64,7 @@ First add the `DB` constant **near the top of `link/src/index.ts`**:
 import { registerWorker } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 
-const DB = "primary"; // Matches db name in config.yaml
+const DB = "primary"; // Matches db name in config/database.yaml
 ```
 
 ### Make link storage persistent
@@ -101,7 +102,7 @@ ensureSchema()
 
 #### Setup database writing
 
-**Modify `link::create`** to write to both the database (durable record) and `iii-state` (hot
+**Modify `link::create`** to write to both the database (durable record) and `state` (hot
 cache):
 
 ```typescript src/index.ts {4-11}
@@ -257,7 +258,7 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
   database::query --help` to see what arguments `database::query` accepts.
 </Info>
 
-Linkly's links are now durable: the database is the source of truth, `iii-state` keeps lookups fast,
+Linkly's links are now durable: the database is the source of truth, `state` keeps lookups fast,
 and every redirect appends a timestamped row to the `clicks` table. But that row is written on the
 redirect's hot path, so a slow database write slows the redirect. Next, in
 [Ch. 4: Make it durable](/tutorials/linkly/durable-execution), you move that write onto a queue so

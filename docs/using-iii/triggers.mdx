@@ -83,33 +83,94 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 </Tabs>
 
 Per-type configuration is documented in each worker's Worker Docs (e.g.
-[iii-http](https://workers.iii.dev/workers/iii-http) for the `http` type).
+[http](https://workers.iii.dev/workers/http) for the `http` type).
 
 ### Trigger metadata
 
-The optional `metadata` field on a trigger registration (`null` / `None` in the examples above)
-is arbitrary JSON stored with the trigger and delivered to the receiving function as a
-distinct argument alongside the payload. It is useful for providing contextual information about
-the trigger or execution context to the receiving function.
+The optional `metadata` field on a trigger registration (`null` / `None` in the examples above) is
+arbitrary JSON stored with the trigger and delivered to the receiving function as a distinct
+argument alongside the payload. It is useful for providing contextual information about the trigger
+or execution context to the receiving function.
 
-A target function shared by many triggers can use it to recover which registration fired and
-with what context. See
-[Receive per-invocation metadata](../creating-workers/functions#receive-per-invocation-metadata)
-for handler-side access in each SDK.
+A target function shared by many triggers can use it to recover which registration fired and with
+what context. See
+[Receive per-invocation metadata](../creating-workers/functions#receive-per-invocation-metadata) for
+handler-side access in each SDK.
 
 <Note>
   `metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations
 </Note>
 
-## Handling missing triggers
+## Registering before a trigger type is available
 
-When the engine cannot register a trigger, most commonly because the trigger type's worker is not
-active in the project, it sends a `TriggerRegistrationResult` with an `error` body back to the
-worker that initiated the request and logs it.
+Registration is order-independent. If you register a trigger whose type is not active in the project
+yet (for example, the worker that publishes `http` has not connected), the engine stores the
+registration optimistically and activates it automatically once that trigger type becomes available.
+The engine logs a pending notice while a registration waits, and re-establishes stored registrations
+when a publishing worker restarts, so a worker that comes up after its consumers receives trigger
+registrations as expected.
 
-For known trigger types (ex. `http`, `subscribe`, `state`, `durable:subscriber`, `stream`), the
-error message will include the install command for the missing worker. If it doesn't you can find
-the worker that exposes the needed type at [workers.iii.dev](https://workers.iii.dev)
+Bind `math::add` to the `http` type before the http worker is running. The engine accepts the
+registration and stores it:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // http worker not started
+    worker.registerTrigger({
+      type: "http",
+      function_id: "math::add",
+      config: { api_path: "/math/add", http_method: "POST" },
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # http worker not started
+    worker.register_trigger({
+        "type": "http",
+        "function_id": "math::add",
+        "config": {"api_path": "/math/add", "http_method": "POST"},
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::RegisterTriggerInput;
+    use serde_json::json;
+
+    // http worker not started
+    worker.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".into(),
+        function_id: "math::add".into(),
+        config: json!({ "api_path": "/math/add", "http_method": "POST" }),
+        metadata: None,
+    })?;
+    ```
+  </Tab>
+</Tabs>
+
+Start the http worker afterward. The engine activates the stored binding automatically, and the
+endpoint serves requests without re-registering:
+
+```bash
+# http worker started after registration
+iii worker add http
+
+# the stored binding is now live on the http worker's default port (3111)
+curl -X POST http://localhost:3111/math/add \
+  -H 'Content-Type: application/json' \
+  -d '{"a": 2, "b": 3}'
+# 200 OK: the request reaches math::add through the activated trigger
+```
+
+For known trigger types (ex. `http`, `state`, `durable:subscriber`, `stream`), the pending notice
+includes the install command for the worker that provides the type. For other types, find the worker
+that exposes the needed type at [workers.iii.dev](https://workers.iii.dev).
+
+A registration fails when an active provider rejects the config it was given (for example, an
+invalid trigger config). The engine then sends a `TriggerRegistrationResult` with an `error` body
+back to the worker that initiated the request and logs it.
 
 ## Bind multiple triggers to one function
 

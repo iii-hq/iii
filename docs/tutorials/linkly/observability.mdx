@@ -29,7 +29,7 @@ curl -s -X POST http://127.0.0.1:3111/links \
 for n in $(seq 1 5); do curl -s -o /dev/null http://127.0.0.1:3111/s/iii; done
 ```
 
-Click any redirect to see a full waterfall of timed spans crossing from `iii-http` into `link` and
+Click any redirect to see a full waterfall of timed spans crossing from `http` into `link` and
 back:
 
 ![iii console Traces page showing redirect spans sorted by duration with the waterfall for a selected GET /s/:code trace](/next/tutorials/linkly/console-traces.png)
@@ -130,7 +130,7 @@ GET /s/:code (iii) 2.044 ms
     execute link::resolve (iii-node) 0.52 ms
 ```
 
-This shows the redirect arriving through `/s/:code` via the `iii-http` worker's Trigger, calling
+This shows the redirect arriving through `/s/:code` via the `http` worker's Trigger, calling
 `http::redirect` in `link`, which then calls `link::resolve` in the `link` worker via the engine.
 The per-span timing shows where the request spends its time.
 

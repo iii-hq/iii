@@ -27,7 +27,7 @@ iii worker init click-streamer --language typescript
 
 We'll continue to keep `link` decoupled by having it announce that a click happened, and
 `click-streamer` reacts by pushing it onto the live feed. A live counter can tolerate the rare
-dropped event, so a regular `iii-pubsub` event is the right tool here.
+dropped event, so a regular `pubsub` event is the right tool here.
 
 ### Add a `link.clicked` event to the `link` worker
 

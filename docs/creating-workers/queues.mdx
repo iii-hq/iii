@@ -1,18 +1,18 @@
 ---
 title: "Queues"
 description:
-  "Async job processing with named topics, retries, and dead-letter support via the iii-queue
+  "Async job processing with named topics, retries, and dead-letter support via the queue
   worker."
 owner: "devrel"
 type: "how-to"
 ---
 
-The `iii-queue` worker decouples producers from consumers: a function publishes a message to a named
+The `queue` worker decouples producers from consumers: a function publishes a message to a named
 topic and returns right away, and any function subscribed to that topic processes the message in the
 background, with retries and a dead-letter queue (DLQ) for messages that keep failing.
 
 ```bash
-iii worker add iii-queue
+iii worker add queue
 ```
 
 <Note>
@@ -27,10 +27,10 @@ number of retries then you can use `TriggerAction.Enqueue` to place that operati
 
 ### Creating a Queue
 
-Queues are defined in the `iii-queue` worker's config under `queue_configs`:
+Queues are defined in the `queue` worker's config under `queue_configs`:
 
 ```yaml
-- name: iii-queue
+- name: queue
   config:
     queue_configs:
       email-jobs:

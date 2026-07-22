@@ -60,7 +60,7 @@ and returns the result.
 
 A function runs when a trigger fires. The same function can be invoked from many trigger types at
 once: direct CLI calls (`iii trigger`), in-process SDK calls (`worker.trigger`), or bindings to
-event-source workers like iii-http, iii-cron, iii-queue, iii-state, and iii-stream. All paths leave
+event-source workers like http, cron, queue, state, and iii-stream. All paths leave
 the handler unchanged.
 
 The two most common ways to invoke a function directly are from worker code with `worker.trigger` or
@@ -83,7 +83,7 @@ fire. Pass a different `TriggerAction` to change that.
       function_id: "math::add",
       payload: { a: 2, b: 3 },
       // action: TriggerAction.Void(),                       // fire-and-forget
-      // action: TriggerAction.Enqueue({ queue: "math" }),   // route through iii-queue
+      // action: TriggerAction.Enqueue({ queue: "math" }),   // route through queue
     });
     ```
 
@@ -96,7 +96,7 @@ fire. Pass a different `TriggerAction` to change that.
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
         # "action": TriggerAction.Void(),                    # fire-and-forget
-        # "action": TriggerAction.Enqueue(queue="math"),     # route through iii-queue
+        # "action": TriggerAction.Enqueue(queue="math"),     # route through queue
     })
     # result = await worker.trigger_async({...})             # awaitable form for asyncio callers
     ```
@@ -114,7 +114,7 @@ fire. Pass a different `TriggerAction` to change that.
             payload: json!({ "a": 2, "b": 3 }),
             action: None,
             // action: Some(TriggerAction::Void),                                  // fire-and-forget
-            // action: Some(TriggerAction::Enqueue { queue: "math".to_string() }), // route through iii-queue
+            // action: Some(TriggerAction::Enqueue { queue: "math".to_string() }), // route through queue
             timeout_ms: None,
         })
         .await?;
@@ -130,7 +130,7 @@ Some common actions are:
 - **`TriggerAction.Void()`**. Fire-and-forget. The call returns immediately; the function still runs
   but the caller doesn't see the result.
 - **`TriggerAction.Enqueue({ queue })`**. Provided by
-  [iii-queue](https://workers.iii.dev/workers/iii-queue). Routes the invocation through a named
+  [queue](https://workers.iii.dev/workers/queue). Routes the invocation through a named
   queue with retries; the call returns once the message is enqueued.
 
 <Note>
@@ -147,7 +147,7 @@ Some common actions are:
 <Note>
   In Python, every blocking method has an awaitable twin (`trigger_async`, `shutdown_async`,
   `create_channel_async`) for use inside `asyncio`. See the [Python SDK
-  reference](../api-reference/sdk-python).
+  reference](../reference/sdk-python).
 </Note>
 
 ## Trigger functions from the CLI
@@ -184,7 +184,7 @@ only thing special about them is that you didn't have to register them.
 
 The engine itself registers a small set of introspection and lifecycle functions. Full request and
 response schemas are in the
-[engine protocol reference](../sdk-reference/engine-sdk#engine-discovery-functions).
+[engine protocol reference](../reference/engine-protocol#engine-discovery-functions).
 
 | Function                            | What it does                                                                                                                                      |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -209,12 +209,12 @@ Each of these is published by a separate worker. Function ids, payload shapes, a
 behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.dev):
 
 - **State**: KV-style state with scoped namespaces and reactive triggers on create/update/delete.
-  See [iii-state](https://workers.iii.dev/workers/iii-state).
+  See [state](https://workers.iii.dev/workers/state).
 - **Stream**: Real-time push to connected clients over WebSocket. See
   [iii-stream](https://workers.iii.dev/workers/iii-stream).
 - **Queue**: Durable, ordered job processing with retries, concurrency limits, and a dead-letter
-  queue. See [iii-queue](https://workers.iii.dev/workers/iii-queue).
+  queue. See [queue](https://workers.iii.dev/workers/queue).
 - **Pub/Sub**: Lightweight in-engine topic subscription for fan-out without durability guarantees.
-  See [iii-pubsub](https://workers.iii.dev/workers/iii-pubsub).
+  See [pubsub](https://workers.iii.dev/workers/pubsub).
 - **Observability**: Traces, logs, metrics, alerts, sampling rules, and rollups. See
   [iii-observability](https://workers.iii.dev/workers/iii-observability).
