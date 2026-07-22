@@ -75,8 +75,11 @@ fn cli_parses_all_subcommands() {
 #[test]
 fn start_subcommand_matches_engine_spawn_args() {
     // Bare-name form used when a human runs `iii-worker start <name>` from
-    // the terminal. Must still parse cleanly and default port to DEFAULT_PORT.
-    // Humans DO expect the wait-for-ready status panel here; only the engine
+    // the terminal. Must still parse cleanly with NO parsed port — the
+    // handler then resolves config.yaml's iii-worker-manager port (else
+    // DEFAULT_PORT), so a bare start on a non-default-port host targets the
+    // engine actually configured there (iii-hq/workers#526). Humans DO
+    // expect the wait-for-ready status panel here; only the engine
     // auto-spawn path opts out via --no-wait.
     let cli = Cli::try_parse_from(["iii-worker", "start", "image-resize"])
         .expect("bare start form must parse");
@@ -90,9 +93,8 @@ fn start_subcommand_matches_engine_spawn_args() {
             assert_eq!(worker_name, "image-resize");
             assert!(!no_wait, "bare human invocation keeps default wait=true");
             assert_eq!(
-                port,
-                iii_worker::DEFAULT_PORT,
-                "bare form must default to DEFAULT_PORT"
+                port, None,
+                "bare form parses no port; the handler resolves config.yaml"
             );
             assert!(config.is_none(), "bare human form has no --config");
         }
@@ -128,7 +130,7 @@ fn start_subcommand_accepts_port_flag_from_engine_spawn() {
         } => {
             assert_eq!(worker_name, "pdfkit");
             assert!(no_wait, "engine auto-spawn must pass --no-wait");
-            assert_eq!(port, 49199, "--port must surface the custom port");
+            assert_eq!(port, Some(49199), "--port must surface the custom port");
             assert!(config.is_none(), "no --config in this spawn form");
         }
         _ => panic!("expected Start"),
@@ -173,7 +175,7 @@ fn restart_subcommand_accepts_port_flag() {
             worker_name, port, ..
         } => {
             assert_eq!(worker_name, "pdfkit");
-            assert_eq!(port, 49199);
+            assert_eq!(port, Some(49199));
         }
         _ => panic!("expected Restart"),
     }

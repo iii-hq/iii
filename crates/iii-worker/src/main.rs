@@ -410,7 +410,7 @@ async fn async_main() -> anyhow::Result<()> {
             // Adapt CLI Start arg shape to StartOptions.
             let opts = StartOptions {
                 name: worker_name,
-                port: Some(port),
+                port,
                 config: config.map(|p| p.display().to_string()),
                 wait: !no_wait,
             };

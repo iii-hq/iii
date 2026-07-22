@@ -19,9 +19,9 @@ iii worker add pubsub
 ## Make redirects fast with a queue
 
 A queue holds work that is accepted now and run later. Here we'll define a `clicks` queue that we're
-going to use for `link::record_click`. `queue` has been running since Chapter 1, so its settings
-are managed in `./config/queue.yaml` (see [Configuration](/using-iii/configuration)). Define the
-queue by adding `queue_configs` under `value:` in that file and save; the change applies without a
+going to use for `link::record_click`. `queue` has been running since Chapter 1, so its settings are
+managed in `./config/queue.yaml` (see [Configuration](/using-iii/configuration)). Define the queue
+by adding `queue_configs` under `value:` in that file and save; the change applies without a
 restart:
 
 ```yaml {4-8} config/queue.yaml
@@ -53,8 +53,8 @@ import { registerWorker, TriggerAction } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 ```
 
-Then add an `action` to the existing `link::record_click` call in `http::redirect` so the
-`queue` worker enqueues it instead of running it inline:
+Then add an `action` to the existing `link::record_click` call in `http::redirect` so the `queue`
+worker enqueues it instead of running it inline:
 
 ```typescript src/index.ts {6}
 worker.registerFunction("http::redirect", async (req) => {
@@ -83,8 +83,8 @@ react to the same event, use a publish subscribe design instead.
 When you need a publish and subscribe flow to be guaranteed to succeed (or fail to a DLQ) then use
 `queue`s `iii::durable::publish` and `durable:subscriber`.
 
-When you don't need a publish and subscribe flow to be guaranteed then use `pubsub`s `publish`
-and `subscribe`.
+When you don't need a publish and subscribe flow to be guaranteed then use `pubsub`s `publish` and
+`subscribe`.
 
 </Info>
 
@@ -182,9 +182,9 @@ event with a **durable** subscriber:
   **Durable vs. regular pub/sub.** `link.updated` uses durable pub/sub: `iii::durable::publish` with
   a `durable:subscriber` trigger, both served by the `queue` worker. Consumers like this cache
   refresher must receive every update. A dropped event would leave the cache pointing at a stale
-  URL. `link.created` stays on regular pub/sub (`pubsub`). Its only consumer is a best-effort
-  daily counter, so an occasional miss is harmless. Use durable pub/sub when a missed event would
-  corrupt state, and regular pub/sub for fire-and-forget fan-out.
+  URL. `link.created` stays on regular pub/sub (`pubsub`). Its only consumer is a best-effort daily
+  counter, so an occasional miss is harmless. Use durable pub/sub when a missed event would corrupt
+  state, and regular pub/sub for fire-and-forget fan-out.
 </Info>
 
 ```typescript src/index.ts
@@ -299,19 +299,23 @@ scripts:
 ```
 
 Analytics keeps its counts in its own database, so the `link` worker never has to know it exists.
-Add an `analytics` database to the `database` worker, alongside the `primary` one from Chapter 3:
+Add an `analytics` database to the `database` worker's config file, alongside the `primary` one from
+Chapter 3. Edit `config/database.yaml` and add the second entry under `value: databases:`, then
+save; the change applies automatically without a restart:
 
-```yaml {9-10} config.yaml
-workers:
-  # ...
-  - name: database
-    config:
-      databases:
-        primary:
-          # ...
-          url: sqlite:./data/iii.db
-        analytics:
-          url: sqlite:./data/analytics.db
+```yaml {12-13} config/database.yaml
+id: database
+name: Database
+value:
+  databases:
+    primary:
+      pool:
+        acquire_timeout_ms: 5000
+        idle_timeout_ms: 30000
+        max: 10
+      url: sqlite:./data/iii.db
+    analytics:
+      url: sqlite:./data/analytics.db
 ```
 
 Finally, add the new analytics worker to your `config.yaml`:

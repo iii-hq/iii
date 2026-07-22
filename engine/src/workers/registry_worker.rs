@@ -132,6 +132,17 @@ fn spawn_args(worker_name: &str, port: u16, config_path: Option<&std::path::Path
     args
 }
 
+/// Env exported to the spawned `iii-worker start` tree so binary workers
+/// (which inherit their parent's environment) receive THIS engine's actual
+/// WS address instead of falling back to their compiled-in
+/// ws://127.0.0.1:49134 default (iii-hq/workers#526). Mirrors the
+/// MOT-3970 exports in external.rs for builtin daemons. Kept pure so the
+/// env contract regression-tests without spawning, like `spawn_args`.
+fn spawn_url_env(port: u16) -> [(&'static str, String); 2] {
+    let url = format!("ws://127.0.0.1:{}", port);
+    [("III_ENGINE_URL", url.clone()), ("III_URL", url)]
+}
+
 // =============================================================================
 // iii-worker binary resolution
 // =============================================================================
@@ -305,6 +316,12 @@ impl ExternalWorkerProcess {
         // iii` left every managed worker running: this path — not
         // external.rs — is how production workers are spawned.
         cmd.env("III_ENGINE_PID", std::process::id().to_string());
+        // Engine WS URL for the whole detached tree (workers#526): binary
+        // workers inherit env from `iii-worker start`, so exporting here
+        // reaches them even through a version-skewed iii-worker binary.
+        for (key, value) in spawn_url_env(port) {
+            cmd.env(key, value);
+        }
         // Same-file contract: the spawned `iii-worker start` (and everything
         // it detaches — VM boot, source watcher restarts) must read the
         // engine's actual config file, not assume ./config.yaml in its cwd.
@@ -1012,6 +1029,21 @@ mod tests {
                 "--port".to_string(),
                 "49199".to_string(),
                 "--no-wait".to_string(),
+            ],
+        );
+    }
+
+    /// The env half of the spawn contract (iii-hq/workers#526): binary
+    /// workers receive the engine URL only via inherited env, so the
+    /// exported pair must carry the actual manager port. Drift here
+    /// re-strands every registry binary on non-default ports.
+    #[test]
+    fn spawn_url_env_carries_manager_port() {
+        assert_eq!(
+            spawn_url_env(3034),
+            [
+                ("III_ENGINE_URL", "ws://127.0.0.1:3034".to_string()),
+                ("III_URL", "ws://127.0.0.1:3034".to_string()),
             ],
         );
     }

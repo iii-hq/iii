@@ -87,6 +87,14 @@ This step applies only to Rust workers that called the removed constructor. Node
 and Go workers need no change here. This handler was only in the Rust SDK a short time so it's
 unlikely that code was using it.
 
+## Behavior change: worker start port resolution
+
+`iii worker start` and `restart` (and the worker-manager daemon's `worker::start`) without an
+explicit `--port` now resolve the engine's `iii-worker-manager` port from `config.yaml` instead of
+always assuming `49134`. Auto-spawned registry binaries also receive `III_URL`/`III_ENGINE_URL`
+pointing at the engine's actual port, so worker builds that honor those variables connect correctly
+on non-default ports. Pass `--port` explicitly to target a specific port.
+
 ## Migration checklist
 
 - [ ] Rename the always-running workers to their unprefixed names in `config.yaml`,

@@ -297,7 +297,7 @@ iii worker restart [OPTIONS] <WORKER>
 | Option | Description |
 | ------ | ----------- |
 | `--no-wait` | Return immediately. Don't block waiting for the worker to report ready |
-| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Same semantics as `start --port` [default: 49134] |
+| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Same semantics as `start --port` |
 | `--config <PATH>` | Same as `start --config` |
 
 ### `iii worker sandbox`
@@ -463,7 +463,7 @@ iii worker start [OPTIONS] <WORKER>
 | Option | Description |
 | ------ | ----------- |
 | `--no-wait` | Return immediately. Don't block waiting for the worker to report ready |
-| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Defaults to DEFAULT_PORT; the engine passes its configured iii-worker-manager port when auto-spawning external workers so non-default manager ports don't silently break connectivity [default: 49134] |
+| `--port <PORT>` | Engine WebSocket port the spawned worker connects back to. Defaults to the iii-worker-manager port in config.yaml (else 49134); the engine passes its configured port explicitly when auto-spawning external workers so non-default manager ports don't silently break connectivity |
 | `--config <PATH>` | YAML config forwarded to the spawned worker binary as `--config <path>`. Binary workers only; OCI workers warn and ignore |
 
 ### `iii worker status`
