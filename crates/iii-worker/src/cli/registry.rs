@@ -335,33 +335,41 @@ pub fn enforce_dep_graph_bounds(
         });
     }
 
-    // BFS over edges to find the longest path from `root.name`. The
-    // graph is a DAG by construction (registry rejects cycles during
-    // resolve), so we can use simple visited-set + depth tracking.
-    let mut adjacency: std::collections::HashMap<&str, Vec<&str>> =
+    // Find the longest path from `root.name`. The graph is a DAG by
+    // construction (registry rejects cycles during resolve). Edges are
+    // deduped into a set-backed adjacency so a malformed response with
+    // repeated edges cannot inflate the traversal, and each node is
+    // re-expanded only when it is reached via a strictly deeper path.
+    // That memoization is what keeps a wide diamond DAG — many distinct
+    // paths, few distinct nodes — from being counted path-by-path: the
+    // old walk lacked it and rejected legitimate graphs (e.g. a bundle
+    // whose transitives shared a dependency) with a spurious
+    // `edge_traversal` error.
+    let mut adjacency: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
         std::collections::HashMap::new();
     for edge in &graph.edges {
-        adjacency.entry(&edge.from).or_default().push(&edge.to);
+        adjacency.entry(&edge.from).or_default().insert(&edge.to);
     }
 
+    // Deepest path on which each node has already been expanded. A DAG
+    // within bounds expands each node at most MAX_DEPENDENCY_DEPTH + 1
+    // times (once per strictly deeper path), so the number of expansions
+    // — the only work that pushes new frontier entries — is bounded by
+    // node_count * (depth + 1).
+    let mut best_depth: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut frontier: Vec<(&str, u32)> = vec![(graph.root.name.as_str(), 0)];
-    let mut max_depth: u32 = 0;
-    // Bound the walk at MAX_TRANSITIVE_DEPS to keep this cheap even on
-    // a maliciously crafted very-wide graph.
-    let mut walked = 0u32;
+    // Backstop against a graph that is malformed in a way the DAG
+    // invariant should have prevented (self-reference, hidden cycle).
+    // It counts *expansions*, not frontier pops: a dense DAG pushes each
+    // node once per parent, so pops grow with node_count squared while
+    // expansions stay linear. Bounding pops here would reject a valid
+    // dense graph; bounding expansions does not. Memo-skipped pops are
+    // O(1) and cannot outnumber the pushes the expansions produced.
+    let mut expanded = 0u32;
+    let expansion_budget = node_count
+        .saturating_add(1)
+        .saturating_mul(MAX_DEPENDENCY_DEPTH + 1);
     while let Some((node, depth)) = frontier.pop() {
-        walked += 1;
-        if walked > MAX_TRANSITIVE_DEPS.saturating_mul(2) {
-            // Defense against malformed graphs with repeated edges.
-            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
-                dimension: "edge_traversal".into(),
-                limit: MAX_TRANSITIVE_DEPS.saturating_mul(2),
-                actual: walked,
-            });
-        }
-        if depth > max_depth {
-            max_depth = depth;
-        }
         if depth >= MAX_DEPENDENCY_DEPTH {
             return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
                 dimension: "depth".into(),
@@ -369,14 +377,27 @@ pub fn enforce_dep_graph_bounds(
                 actual: depth + 1,
             });
         }
+        // Skip nodes already reached via an equal-or-deeper path: the
+        // longest path through them is already accounted for.
+        if best_depth.get(node).is_some_and(|&seen| depth <= seen) {
+            continue;
+        }
+        best_depth.insert(node, depth);
+        expanded += 1;
+        if expanded > expansion_budget {
+            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
+                dimension: "edge_traversal".into(),
+                limit: expansion_budget,
+                actual: expanded,
+            });
+        }
         if let Some(children) = adjacency.get(node) {
-            for child in children {
+            for &child in children {
                 frontier.push((child, depth + 1));
             }
         }
     }
 
-    let _ = max_depth; // retained for future structured logging
     Ok(())
 }
 
