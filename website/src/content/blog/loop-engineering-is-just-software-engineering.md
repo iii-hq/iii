@@ -4,6 +4,7 @@ description: 'Loop engineering describes an event-driven, observable, stateful d
 pubDate: 2026-06-25
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'harness', 'loops', 'workers']
+ogImage: ../../assets/blog/loop-engineering-is-just-software-engineering/banner.png
 ---
 
 ![Loop Engineering Is Just Software Engineering. We Have a Name for That.](../../assets/blog/loop-engineering-is-just-software-engineering/banner.png)

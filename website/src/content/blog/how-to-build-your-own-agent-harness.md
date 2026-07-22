@@ -4,6 +4,7 @@ description: 'Most agent teams adopt a harness as one decision. iii decomposes i
 pubDate: 2026-05-28
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'harness', 'architecture', 'workers', 'orchestration']
+ogImage: ../../assets/blog/how-to-build-your-own-agent-harness/cover.png
 ---
 
 ![How to Build Your Own Agent Harness — loops, tools, memory, sandbox, and observability](../../assets/blog/how-to-build-your-own-agent-harness/cover.png)

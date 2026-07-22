@@ -4,6 +4,7 @@ description: 'Reliable agent systems converge when validation, isolation, and ob
 pubDate: 2026-05-14
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'runtime', 'workers']
+ogImage: ../../assets/blog/building-agents-for-real-world/banner.png
 ---
 
 ![Agents break at month six — the fix is the runtime](../../assets/blog/building-agents-for-real-world/banner.png)
