@@ -285,7 +285,11 @@ mod tests {
         let bin = bin.unwrap();
         assert!(bin.starts_with(home.path()), "bin dir escaped tempdir HOME");
         assert!(bin.is_dir(), "bin dir was not created: {}", bin.display());
-        assert!(data.is_dir(), "data dir was not created: {}", data.display());
+        assert!(
+            data.is_dir(),
+            "data dir was not created: {}",
+            data.display()
+        );
     }
 
     #[test]
