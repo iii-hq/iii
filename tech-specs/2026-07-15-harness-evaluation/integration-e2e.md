@@ -1,1111 +1,810 @@
-# Harness integration tests
+# Harness integration and Console E2E tests
 
-The integration tests are a deterministic conformance suite verifying public
-turn, durability, streaming, dispatch, and lifecycle contracts without a
-provider connection or model inference.
+The integration suite is a deterministic conformance test for the harness
+public turn path. It verifies queue delivery, model streaming, durable
+transcripts, native function dispatch, lifecycle delivery, traces, process
+supervision, and reporting without a provider connection or model inference.
 
 ## Definition
 
-Each scenario starts a fresh isolated iii stack, runs the real harness and its
-durable dependencies, replaces only the `router::*` model boundary with a
-strict scripted worker, and grades structured public evidence. Missing
-infrastructure is a setup error, never a skip.
+Each scenario starts a fresh isolated iii stack with the pinned engine, the
+real harness, and the real durable dependencies. Only the router model boundary
+is replaced by a strict scripted implementation. A runner-owned
+integration-probe supplies event sinks and an optional controlled target
+function; it is outside the subject path and does not add a test-only API to
+the engine or harness.
 
-Version 1 is a standalone Rust runner under
-`harness/evals/integration`. It owns process supervision, fixtures, evidence,
-grading, and reports. It does not add a test-only function to the engine or
-harness.
+Missing required infrastructure is a setup_error, never a skip.
 
-Runner control and evidence reads use synchronous function invocation. The
-runner does not submit `harness::send` with SDK `Enqueue` or `Void` actions;
-queue delivery and lifecycle `Void` notifications inside the harness remain
-part of the system under test.
+The implementation is the harness-integration package under
+[harness/tests/e2e](https://github.com/iii-hq/workers/tree/main/harness/tests/e2e).
+It is a member of the workspace in
+[harness/Cargo.toml](https://github.com/iii-hq/workers/blob/main/harness/Cargo.toml)
+and uses that workspace lockfile. It is not a nested standalone workspace.
+
+There are two drivers:
+
+| Driver | Owner of the stimulus | Purpose |
+|---|---|---|
+| direct | The runner synchronously invokes harness::send | Required headless integration scenarios |
+| playground | A person or Playwright sends through the production Console or SDK | Console and multi-turn coverage |
+
+The direct runner never uses SDK Enqueue or Void as a substitute for
+harness::send. The harness still owns its internal queueing and lifecycle
+notifications, so the real durable turn loop remains under test.
 
 ## Decisions
 
 | Area | Version 1 decision |
 |---|---|
-| Isolation | One fresh process stack per scenario; scenarios run serially |
-| Harness entry | Synchronous SDK invocation of `harness::send`; the harness owns internal enqueueing |
-| Model boundary | Scripted worker owns the fixed router functions; real llm-router/providers are absent |
-| Context | Real context-manager is mandatory and fails closed |
-| Oracle | Code assertions over status, full transcript, recorder calls, lifecycle events, and process state |
-| Traces | Diagnostic only; excluded from readiness and v1 verdicts |
-| Stack profile | `harness-core-v1`; observability is not required |
-| Authoring | One Rust builder module per scenario; compilation produces a strict fixture snapshot before process startup |
-| Reports | Stable `result.json` plus volatile `execution.json`, cryptographically linked |
-| Runner packaging | Nested standalone Cargo workspace with its own lockfile |
-| Engine acquisition | Explicit `--engine-bin`/`III_BIN`; runner never downloads artifacts |
-| Stack reuse | Prohibited in v1 |
+| Isolation | One fresh process stack per scenario; selected scenarios run serially |
+| Model boundary | A scripted router owns the six fixed router functions used by the harness |
+| Durable dependencies | Real queue, session-manager, context-manager, iii-directory, state, configuration, stream, and cron |
+| Readiness | Event-driven harness::ready plus engine::functions-available |
+| Completion | harness::turn-completed awakens the runner; durable status and traces confirm the result |
+| Oracle | Code assertions over send response, status, transcript, router calls, traces, lifecycle spans, and process state |
+| Traces | Normative evidence for target execution and lifecycle delivery |
+| Observability | iii-observability is required, in-memory, live, and sampled at 100 percent |
+| Authoring | One Rust module per scenario using a small typed DSL that builds runtime contracts directly |
+| Reports | Stable result.json plus volatile execution.json linked by SHA-256 |
+| Engine acquisition | Explicit --engine-bin or III_BIN; the runner never downloads an engine |
+| Repetition | No retry or repeat mode; every selected scenario runs once with a fresh stack |
+| Stack reuse | Prohibited |
 
 ## Functional requirements
 
-1. Exercise the public path through the real queue and durable turn loop.
-2. Make function-call outcome reproducible without a model key.
-3. Detect duplicate or missing transcript entries and target side effects.
-4. Preserve structured evidence for every failure classification.
-5. Classify process crashes and teardown failures with explicit evidence.
+1. Exercise the public path through harness::send, the real queue, and the
+   durable harness turn loop.
+2. Produce deterministic model behavior without credentials or external
+   network access.
+3. Detect missing or duplicate transcript entries, router generations,
+   function side effects, and lifecycle deliveries.
+4. Correlate every terminal turn with one complete, clean session trace.
+5. Preserve structured evidence for contract failures, timeouts, process
+   crashes, setup failures, and runner failures.
+6. Tear down every child process within one bounded cleanup budget.
+7. Support production Console stimulus without moving browser automation into
+   the Rust runner.
 
-## Boundaries
+## Boundaries and non-goals
 
-- Integration does not evaluate prompt quality, model judgment, or aesthetic
+- The suite does not evaluate prompt quality, model judgment, or aesthetic
   output. See [agent-quality.md](agent-quality.md) for that track.
-- A test that seeds `harness_turn`, private state, or an internal continuation
-  is a lower-level internal white-box test, not a public-path integration test.
-- Hold/release scenarios settle a held call through
-  `harness::function::resolve`, acting as the trusted approval sibling — the
-  same role and registered function the production `approval-gate` worker
-  uses. Resolve stays denied to in-run agents; this does not make it a
-  subject-visible API.
-- The scripted router is test support outside the subject path. It mirrors the
-  router contract but does not claim to test llm-router or providers.
-- Console rendering and browser reconnect behavior are outside version 1.
-  Browser coverage uses a separately versioned Playwright profile and the
-  shared `harness-test` support described in
-  [agent-quality.md](agent-quality.md).
+- A test that seeds private harness turn state or invokes an internal
+  continuation is not a public-path integration test.
+- The scripted router mirrors only the router surface consumed by these
+  scenarios. It does not claim to test llm-router routing or providers.
+- The integration-probe is runner infrastructure. Its controlled function
+  returns a fixed response; target-call and lifecycle evidence come from
+  engine traces, not from a private recorder database.
+- The direct driver is browserless. The playground driver starts the
+  production Console, but a person or external Playwright process owns UI
+  interaction and rendering assertions.
+- Restart, redelivery, hold/release, fault barriers, approval, cancellation,
+  and crash-recovery scenarios are not part of version 1.
 - The runner does not download an engine, worker, model, or fixture during a
-  test.
+  scenario.
 
 ## System profile
 
-The version 1 profile is named `harness-core-v1`. The resolved profile name and
-component list are persisted in `stack.json`. Profile selection is runner-owned;
-the authored v1 scenario has no free-form profile field. Trace invariants
-and observability are outside this profile.
+The profile is named harness-core-v1 and is recorded in stack.json with its
+component groups, binary paths, binary SHA-256 values, engine lock provenance,
+environment allowlist, and start order.
 
-| Component | Profile | Reason |
+| Component | Profile | Purpose |
 |---|---|---|
-| iii engine and worker manager | Real, pinned artifact | Function registration, triggers, channels, worker lifecycle |
-| queue | Real | Provision and deliver `harness-turn` FIFO work |
-| iii-state | Real, isolated data directory | Durable harness state |
-| configuration | Real, isolated data directory | Authoritative worker configuration |
-| iii-cron | Real | Packaged dependency; no scheduled fixture is armed |
-| iii-stream | Real | Packaged channel implementation |
-| iii-directory | Real, isolated directory | Declared harness dependency and worker discovery support |
-| session-manager | Real | Transcript and session durability |
-| context-manager | Real and required | Context assembly and token preflight fail closed without it |
-| harness artifact under test | Real | The system under test |
-| scripted router | Controlled | Deterministic implementation of required fixed `router::*` functions |
-| llm-router | Absent; fixed IDs replaced by scripted router | Avoid duplicate registration |
-| provider-anthropic/provider-openai | Absent | No production network/model behavior |
-| recorder service | Controlled, in-process | Target calls, lifecycle events, deterministic fault gates, and test-owned evidence |
-| shell/web | Absent in version 1 | Declared dependencies are outside the v1 scenario corpus |
-| browser | Absent in version 1 | Browser coverage belongs to a separate profile |
+| iii engine and worker manager | Real, pinned source build | Function registration, triggers, channels, worker lifecycle |
+| configuration | Real, isolated filesystem | Authoritative worker configuration |
+| iii-state | Real, isolated filesystem | Durable harness state |
+| iii-stream | Real | Stream channels |
+| iii-cron | Real | Packaged dependency; no fixture schedules are armed |
+| iii-observability | Real, in-memory | Live trace storage and query functions |
+| queue | Real, file-backed and isolated | Provision and deliver harness-turn work |
+| iii-directory | Real, isolated skills directory | Harness dependency and discovery support |
+| session-manager | Real, isolated data directory | Session and transcript durability |
+| context-manager | Real, isolated lease directory | Context assembly and token preflight |
+| harness | Real | System under test |
+| scripted-router | Controlled in-process service | Deterministic router model boundary |
+| integration-probe | Controlled in-process service | Readiness, registry, trace, lifecycle, and target endpoints |
+| Console | Real, playground only | Production browser surface |
+| llm-router and providers | Absent | Prevent duplicate router ownership and external inference |
+| shell and web workers | Absent | Outside the version 1 corpus |
 
-`iii-observability` is absent from `harness-core-v1`. Adding an exporter to the
-core stack would increase boot and configuration surface without proving the
-turn contract, while traces are explicitly diagnostic in this profile.
+The engine configuration enables the observability memory exporter with live
+spans, a 10,000-span capacity, and a sampling ratio of 1.0. Production
+llm-router and provider workers are intentionally not started.
 
-Context manager is not optional. The harness explicitly rejects unbudgeted raw
-history when `context::assemble` or `context::count-tokens` is unavailable
-([`harness/src/clients/context.rs:1`](https://github.com/iii-hq/workers/blob/main/harness/src/clients/context.rs)); its
-packaged dependency is declared at
-[`harness/iii.worker.yaml:19`](https://github.com/iii-hq/workers/blob/main/harness/iii.worker.yaml). The
-context-manager `allow_fallback_limits` option only changes model-limit lookup
-inside that worker; it is not a harness fallback when the worker is absent.
+The external worker start order is queue, iii-directory, session-manager, and
+context-manager. The runner then arms its controlled services and starts the
+harness. Console starts only after the playground stack is ready.
+
+Only PATH, HOME, LANG, and RUST_LOG are forwarded from the parent environment.
+Every durable path is allocated under the run root, and the engine port is
+reserved independently for each run.
 
 ## Platform contracts consumed
 
-| Contract | Source | Integration rule |
-|---|---|---|
-| Public/internal harness IDs | [`harness/src/functions/mod.rs:32`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/mod.rs) | Normal scenarios use `harness::send` and read `harness::status`; `turn` and `function::{trigger,resolve}` stay internal. |
-| Send request/response | [`harness/src/functions/send.rs:92`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs) | `accepted` is always true on success. Optional `merged`, `queued`, and `deduplicated` fields are omitted when false; graders normalize absence to false. |
-| Status | [`harness/src/functions/status.rs:24`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/status.rs) | Unknown session returns JSON `null`; known status exposes current turn, counters, pending calls, live children, queue, and result. |
-| Transcript | [`session-manager/src/functions/messages.rs:10`](https://github.com/iii-hq/workers/blob/main/session-manager/src/functions/messages.rs) | Follow `next_cursor` until absent and grade ordered `MessageItem` entries. |
-| Lifecycle | [`harness/src/events.rs:26`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs), [`harness/src/events.rs:311`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs) | Hyphenated IDs, strict binding filters, and exact completion payload fields. |
-| Event delivery | [`harness/src/events.rs:7`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs), [`harness/src/events.rs:409`](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs) | `Void` notifications are at-least-once and unordered; status/transcript confirm durable outcome. Identical duplicates are accepted, conflicting terminals fail. |
-| Queue readiness | [`harness/src/queue.rs:13`](https://github.com/iii-hq/workers/blob/main/harness/src/queue.rs), [`queue/src/functions.rs:197`](https://github.com/iii-hq/workers/blob/main/queue/src/functions.rs) | `engine::queue::list_topics` must include `harness-turn` before send. |
-| Router IDs | [`llm-router/src/surface.rs:27`](https://github.com/iii-hq/workers/blob/main/llm-router/src/surface.rs) | Scripted worker claims the exact required fixed IDs and no production router starts. |
-| Router chat | [`llm-router/src/chat/chat.rs:39`](https://github.com/iii-hq/workers/blob/main/llm-router/src/chat/chat.rs) | Match `writer_ref`, request id, model/provider, prompt, messages, tools, response format, thinking, output limit, provider options, and metadata. |
-| Stream vocabulary | [`llm-router/src/types/events.rs:49`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/events.rs) | Exactly 15 snake-case variants; only `done` and `error` are terminal. |
-| Router response | [`llm-router/src/types/router.rs:54`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/router.rs), [`llm-router/src/chat/chat.rs:254`](https://github.com/iii-hq/workers/blob/main/llm-router/src/chat/chat.rs) | Return `{ok, provider, model, stop_reason?, usage?, error?}` only after terminal streaming has been relayed. |
-| Stable harness errors | [`harness/src/error.rs:1`](https://github.com/iii-hq/workers/blob/main/harness/src/error.rs) | Preserve the `harness/<code>: message` bus shape in evidence. |
-| Engine call metadata | Engine-injected top-level fields such as `_caller_worker_id` | Strip top-level keys beginning with `_` before validating a declared function request; nested underscore-prefixed user data is not stripped. |
+| Contract | Integration rule |
+|---|---|
+| harness::send | Direct scenarios invoke the public function synchronously and persist the exact request and response |
+| harness::status | Terminal status must be completed with no pending function calls, queued messages, or child sessions |
+| session::messages | The runner follows next_cursor until absent and rejects repeated cursors |
+| harness::ready | Empty strict trigger config; payload status is ready and timestamp is an integer |
+| harness::turn-completed | Bound by session_id; terminal payload shape is strict and identical retries are accepted |
+| engine::functions-available | Supplies the current registry snapshot after registration, replacement, or removal |
+| trace | Wakes trace collection when trace_ids change |
+| engine::traces::group_by | Selects all trace IDs whose iii.session.id equals the scenario session |
+| engine::traces::tree | Returns the complete tree for each selected trace |
+| router functions | The scripted service owns exactly the fixed IDs required by the harness path |
+| stream events | Frames use the router AssistantMessageEvent vocabulary and end in one terminal done or error event |
+| engine call metadata | Top-level keys beginning with an underscore are removed before target and lifecycle payload comparison |
+
+The runner does not use broad descriptor polling as readiness. In particular,
+it does not require engine::functions::info checks for every request and
+response schema, configuration seed queries, or engine::queue::list_topics.
+Mirrored wire contracts are instead pinned by typed structures, JSON Schema
+tests, serialization round trips, and producer goldens.
 
 ## Architecture
 
-```mermaid
+~~~mermaid
 sequenceDiagram
   participant R as integration runner
   participant E as iii engine
+  participant P as integration-probe
   participant Q as queue
-  participant H as harness under test
-  participant X as scripted router
+  participant H as harness
+  participant X as scripted-router
   participant S as session-manager
-  participant C as recorder
+  participant O as iii-observability
 
-  R->>R: allocate cwd, ports, data dirs, deadlines
-  R->>E: boot base stack
-  R->>E: probe base contracts and configuration
-  R->>C: configure/reset target and load strict script
-  C->>E: register controlled target
-  R->>E: verify live target descriptor
-  R->>E: boot and probe harness
-  R->>E: bind lifecycle sink
-  R->>H: harness::send(public request)
+  R->>R: allocate run root, port, stores, and deadlines
+  R->>E: boot isolated base stack
+  R->>P: register sinks and optional controlled target
+  P->>E: bind functions, trace, lifecycle, and ready triggers
+  R->>H: start harness
+  H-->>P: harness::ready
+  E-->>P: engine::functions-available
+  R->>P: confirm active completion binding
+  R->>H: harness::send or wait for external stimulus
   H->>Q: enqueue harness-turn
-  Q->>H: durable step
-  H->>S: persist messages and state
-  H->>X: router::chat(writer_ref, request)
+  Q->>H: durable turn step
+  H->>S: persist messages
+  H->>X: router::chat
   X-->>H: ordered AssistantMessageEvent frames
-  H-->>C: turn-completed notification
+  H-->>P: harness::turn-completed
+  E-->>P: trace changed
   R->>H: harness::status
-  R->>S: session::messages(all pages)
-  R->>C: target and lifecycle evidence
-  R->>R: grade, teardown, report
-```
-
-The split boot order is deliberate. Native function discovery can snapshot
-registrations while a worker starts, so the controlled target is armed and
-verified before the harness boots. The lifecycle binding is installed only
-after both the base stack and harness surfaces have passed readiness.
-
-## Scripted-router contract
-
-This is test-support API owned by the integration runner. The scripted worker
-and real llm-router are mutually exclusive. Duplicate function registration
-would otherwise make ownership boot-order dependent.
-
-The worker implements these required IDs for `harness-core-v1`:
-
-- `router::chat`
-- `router::abort`
-- `router::models::list`
-- `router::models::get`
-- `router::models::supports`
-- `router::system_prompt::get`
-
-These six are the subset the `harness-core-v1` path requires. The full
-llm-router surface registers further functions (`router::complete`,
-`router::embed`, `router::models::budget`, `router::provider::*`,
-`router::route`, `router::models::reconcile`) that stay absent and uncalled
-in this profile.
-
-`router::models::get` returns the pinned fixture model with a context window
-large enough to prevent accidental compaction in the first two scenarios.
-Compaction scenarios explicitly script the additional context-manager
-`router::chat` generation instead of consuming a subject generation silently.
-
-The other fixed functions are deterministic projections of the fixture.
-`models::list` returns the model when its provider/capability filters match;
-`models::get` returns `{model}` for its exact id and, when a provider is
-supplied, its exact provider; provider omission is accepted because the
-production router and context-manager use that form. It returns JSON `null`
-otherwise. `models::supports` maps the requested capability to the
-corresponding `supports_*` field and returns `{supported:false}` for an unknown
-capability or model. `system_prompt::get` returns `{"provider":"scripted"}`
-with `system_prompt` omitted, so the harness uses its checked-in built-in
-prompt. `abort` indexes live generations by request id, closes the stream once,
-and returns `{aborted:true}` only for the first abort of a live call.
-
-The exact `router::chat` request is:
-
-```ts
-interface RouterChatInput {
-  writer_ref: StreamChannelRef
-  request_id?: string
-  model: string
-  provider?: string
-  system_prompt?: string
-  messages: unknown[]
-  tools?: unknown
-  response_format?: unknown
-  thinking_level?: unknown
-  max_output_tokens?: number
-  provider_options?: unknown
-  metadata?: unknown
-}
-
-interface RouterChatResponse {
-  ok: boolean
-  provider: string
-  model: string
-  stop_reason?: "end" | "length" | "function_call" | "aborted" | "error"
-  usage?: { input?: number; output?: number; cache_read?: number; cache_write?: number; reasoning?: number; cost_usd?: number }
-  error?: { code: string; message: string }
-}
-```
-
-The frozen frame variants are `start`, `text_start`, `text_delta`, `text_end`,
-`thinking_start`, `thinking_delta`, `thinking_end`, `functioncall_start`,
-`functioncall_delta`, `functioncall_end`, `usage`, `ping`, `stop`, `done`, and
-`error`. Frames use the exact content/message shapes in
-[`llm-router/src/types/messages.rs:37`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/messages.rs)
-and [`llm-router/src/types/content.rs:5`](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/content.rs).
-
-### Authoring and compilation
-
-Scenario authors maintain exactly one source module per scenario:
-`src/scenarios/<slug>.rs`, a Rust function that builds the authored scenario
-data through typed builders and registers it in the scenario list. There is no
-YAML layer: the authored shape below is the runner's own data model, enforced
-by the type system at `cargo build` instead of by a schema validator at load
-time. The compiler expands aliases and deterministic defaults; scenario modules
-contain only scenario-specific values and expectations. The notation below is
-TypeScript-like documentation for Rust structs and builders:
-
-```ts
-interface AuthoredScenarioV1 {
-  schema_version: "1"
-  id: string
-  description: string
-  quarantine?: boolean
-  send: {
-    message: string
-    allow?: string[]              // function aliases; [] disables dispatch
-    idempotency_key?: string
-  }
-  functions?: Record<string, {
-    description: string
-    request_schema: Record<string, unknown>
-    response: unknown
-    expose?: boolean              // default true
-  }>
-  router: {
-    model?: ModelFixtureV1
-    generations: Array<{
-      reply:
-        | { type: "text"; text: string; chunks?: string[]; usage?: Usage }
-        | { type: "function_call"; id?: string; function: string; arguments: unknown; usage?: Usage }
-        | { type: "raw"; frames: AssistantMessageEvent[]; response: RouterChatResponse }
-      match_overrides?: Partial<GenerationMatchV1>
-    }>
-  }
-  bindings?: TriggerBindingSpecV1[]
-  release?: { function_call_id?: string; action: "execute" | "deliver" }
-  fault?: {
-    kind: "engine_sigkill"
-    function?: string
-    after_target_calls?: number
-    restart_delay_ms?: number
-  }
-  timeouts?: { readiness_ms?: number; scenario_ms?: number; teardown_ms?: number }
-  expect?: ExpectationsV1
-}
-```
-
-Example builder input:
-
-```rust
-// src/scenarios/streamed_text.rs
-pub fn scenario() -> AuthoredScenario {
-    AuthoredScenario::new("streamed-text", "streamed text reaches durable completion")
-        .send(Send::message("Return the fixture phrase.").allow([]))
-        .generation(
-            Reply::text("fixture complete")
-                .chunks(["fixture ", "complete"])
-                .usage(8, 2),
-        )
-}
-```
-
-The authored layer is model-boundary fixture data, not an orchestration
-language. Rust builders make invalid matcher combinations and missing replies
-compile errors, keep the authored and compiled layers on one set of structs,
-and use the runner's existing toolchain. Builders produce data only; deriving
-scenarios from arbitrary control flow is outside the contract. Raw frames
-remain data and receive runtime validation when the script loads.
-
-Before any process starts, the compiler resolves that source into the exact
-runtime unit:
-
-```ts
-interface CompiledFixtureV1 {
-  scenario: CompiledScenarioV1
-  script: RouterScriptV1
-  system_prompt_template: string
-}
-
-interface CompiledScenarioV1 {
-  schema_version: "1"
-  id: string
-  description: string
-  send: SendRequest
-  recorder: RecorderConfigV1
-  deadlines: { readiness_ms: number; scenario_ms: number; teardown_ms: number }
-  invariants: Array<{ id: string; parameters: Record<string, unknown> }>
-  fault?: CompiledFaultV1
-  bindings?: TriggerBindingV1[]
-  release?: { function_call_id: string; action: "execute" | "deliver" }
-  quarantine?: boolean
-}
-```
-
-Every compiled generation contains all twelve router matchers explicitly and
-literal wire frames. Defaults are allowed only in the authored layer; the
-compiled artifact is strict and self-contained. Its canonical rendering is
-checked into a snapshot or golden test so a compiler-default change is
-reviewable like an authored fixture change. CI validates schema and serde
-round trips for the compiled layer and verifies that committed compiled
-snapshots match a fresh render; the authored layer needs no round trip
-because it is never serialized.
-
-`match_overrides` and `reply.type: raw` are escape hatches, not the normal
-authoring path. Raw frames receive the same terminal-frame and
-response/frame-consistency validation as compiler-generated frames.
-
-### Compiled script schema
-
-```ts
-interface RouterScriptV1 {
-  schema_version: "1"
-  scenario_id: string
-  model: ModelFixtureV1
-  generations: ScriptedGenerationV1[]
-}
-
-interface ModelFixtureV1 {
-  id: string
-  provider: string
-  display_name?: string
-  context_window: number
-  max_output_tokens: number
-  input_limit?: number
-  supports_thinking?: boolean
-  supports_xhigh?: boolean
-  reasoning_efforts?: Array<{ effort: string; description?: string }>
-  supports_tools?: boolean
-  supports_vision?: boolean
-  supports_cache?: boolean
-  supports_structured_output?: boolean
-  thinking_budgets?: Record<string, number>
-  pricing?: { input?: number; output?: number; cache_read?: number; cache_write?: number }
-}
-
-type JsonMatcherV1 =
-  | { mode: "absent" }
-  | { mode: "present" }
-  | { mode: "regex"; pattern: string }
-  | { mode: "sha256"; expected: string }
-  | { mode: "exact"; expected: unknown; normalize?: JsonNormalizerV1[] }
-  | { mode: "subset"; expected: unknown; normalize?: JsonNormalizerV1[] }
-
-interface JsonNormalizerV1 {
-  pointer: string                 // RFC 6901 JSON Pointer
-  operation: "delete" | "replace"
-  replacement?: unknown          // required for replace; forbidden for delete
-}
-
-interface ScriptedGenerationV1 {
-  ordinal: number
-  match: {
-    writer_ref: JsonMatcherV1
-    request_id: JsonMatcherV1
-    model: JsonMatcherV1
-    provider: JsonMatcherV1
-    system_prompt: JsonMatcherV1
-    messages: JsonMatcherV1
-    tools: JsonMatcherV1
-    response_format: JsonMatcherV1
-    thinking_level: JsonMatcherV1
-    max_output_tokens: JsonMatcherV1
-    provider_options: JsonMatcherV1
-    metadata: JsonMatcherV1
-  }
-  frames: AssistantMessageEvent[]
-  response: RouterChatResponse
-}
-```
-
-Schemas deny unknown fields. `sha256` accepts a JSON string and hashes its
-UTF-8 bytes. Normalizers are applied to copies of actual and
-expected values before comparison and never to stored evidence. Regex uses the
-Rust `regex` crate syntax and is valid only for a JSON string. `subset` requires
-every expected object member or array element at the same position; it does not
-ignore array ordering or extra elements between expected entries.
-
-Calls consume generations in ordinal order. An unexpected subject call,
-matcher failure, or unused generation is a `contract_failure`; unused
-generations are graded after the run through the
-`router.generations_consumed` invariant, since loading cannot know how many
-generations the subject will consume. Script loading rejects duplicate
-ordinals, an invalid matcher/normalizer, missing or multiple terminal frames,
-and response/frame disagreement as `runner_error` before the stack starts.
-Fixtures never depend on absolute wall-clock timestamps.
-
-Barriers are not part of the v1 fixture contract. A fault that must occur after
-a target accepts a call uses an internal deterministic gate: the recorder
-durably appends and `fsync`s the event, signals that the gate was reached, the
-runner applies the fault, and then releases or cancels the blocked response.
-The gate holds only the one-based call ordinal selected by
-`fault.after_target_calls`; earlier calls return normally. The compiler derives
-it automatically from `fault`, and the runner releases it on every success or
-error path. Scenario authors do not declare a response delay or synchronization
-primitive.
-
-After an engine restart, the runner repeats live readiness for the base,
-controlled, and harness contracts. It then inspects the exact trigger
-registrations and restores only missing lifecycle or scenario bindings before
-resuming **Await**. A descriptor or binding that cannot be restored is runner
-infrastructure failure (`runner_error`), not a subject timeout.
-
-Any barrier contract is outside version 1 and requires its own versioned
-reached/release/acknowledgement handshake.
-
-## Offline cassette tooling boundary
-
-Cassette capture/import is outside the v1 runner and gate. Version 1 defines no
-cassette schema, sanitizer, capture command, or import command.
-
-When that workflow exists, it lives in isolated offline tooling rather than in
-every scenario directory. Its versioned artifact records engine, harness,
-router, provider, and model provenance; hashes canonical sanitized content;
-and rejects credentials, authorization headers, cookies, personal data,
-unstable trace/session/request identifiers, and provider-private metadata.
-No captured artifact may become a committed fixture until schema round-trip,
-sanitization, and denylist tests pass.
-
-## Recorder contract
-
-The recorder control plane is a private in-process service owned by the runner.
-`configure`, `reset`, `snapshot`, and bounded `await` are direct Rust method
-calls and are never registered as iii functions. Recorder state is stored
-outside the subject engine so it remains readable after an engine crash.
-
-Only two kinds of recorder handlers traverse the engine:
-
-- run-scoped controlled target functions such as `<run_id>::record`;
-- the lifecycle sink bound to the harness trigger under test.
-
-```ts
-interface RecorderTargetV1 {
-  function_id: string
-  description: string
-  request_schema: Record<string, unknown>
-  response: unknown
-  hold_response_at?: number       // one-based; compiler-derived from fault
-}
-
-interface RecorderConfigV1 {
-  target: RecorderTargetV1
-  extra_functions?: RecorderTargetV1[] // hook callbacks and other controlled functions
-  lifecycle: {
-    trigger_type: "harness::turn-completed"
-    function_id: "integration-recorder::lifecycle"
-  }
-}
-
-interface RecorderEventV1 {
-  schema_version: "1"
-  run_id: string
-  sequence: number
-  kind: "target_call" | "lifecycle"
-  function_id: string
-  payload: unknown
-  received_at: string
-}
-```
-
-Configuration may register only a target ID prefixed by `<run_id>::`. The
-handler registers the declared description and request schema verbatim and
-uses the declared response for every accepted target call. The compiler
-derives its response schema deterministically as the exact-value Draft 7
-schema `{"$schema":"http://json-schema.org/draft-07/schema#","const":<response>}`;
-authors do not maintain a second response declaration. Every
-target or lifecycle event is appended and `fsync`ed before acknowledgement,
-with a strictly increasing sequence. Reset is run-scoped and idempotent;
-snapshots are ordered by sequence; `await` polls the same durable store and is
-not a second evidence source.
-
-V1 records only `harness::turn-completed`; `turn-started` has a different
-payload shape and is not represented by this terminal-event contract. The
-lifecycle grader compares the delivered status with the compiled
-`expect.terminal.status`, so `completed`, `failed`, and `cancelled` outcomes
-remain distinct without hard-coding success.
-
-The recorder does not attest to its own registration. During **Arm**, the
-runner resets the durable log, registers the target, and independently queries
-`engine::functions::info`. The live descriptor must have the exact authored
-description, canonically equal request schema, and canonically equal
-compiler-derived response schema before **Send**. A direct snapshot must also
-return an empty event list. Lifecycle delivery is verified against its exact
-binding and payload contract.
-
-## Supervisor contract
-
-The runner CLI is:
-
-```text
-harness-integration run \
-  --engine-bin <path> \
-  --harness-bin <path> \
-  --worker-bin <name=path>... \
-  --scenario <id|all> \
-  [--repeat <positive integer>] \
-  --artifacts-dir <path> \
-  [--retain-success]
-```
-
-`III_BIN` may supply the engine path when `--engine-bin` is absent. All other
-artifacts are explicit or built by the Make target. Before boot, the runner
-records every executable's absolute path and SHA-256, an optional reported
-version, and the exact `engine.lock` contents as engine provenance. An
-unreadable binary is a setup failure; an error string is never written into a
-digest field. SHA-256 plus the recorded path and engine lock are the identity
-authority when a binary has no reliable `--version` surface.
-
-For each scenario it:
-
-1. creates a unique engine working/config directory and `config.yaml` whose
-   `configuration` worker uses `adapter.name: fs` and
-   `adapter.config.directory: <run>/configuration`;
-2. reserves loopback ports, starts processes, and retries a bind race with a new
-   complete port set;
-3. applies an environment allowlist rather than inheriting provider keys or
-   developer secrets;
-4. writes per-worker seed YAML for a unique session-manager `data_dir`,
-   context-manager `lease_dir`, queue file path, and artifact directory;
-5. starts workers in declared order and captures stdout/stderr separately;
-6. performs bounded immediate-exit observation during boot and enforces
-   readiness, scenario, collection, and teardown deadlines;
-7. classifies early process exit before applying the scenario timeout;
-8. sends SIGTERM, waits five seconds, then sends SIGKILL to remaining children.
-
-The engine starts its built-in configuration worker from `config.yaml` before
-external workers. The runner then starts each configurable external worker with
-its per-run `--config <seed.yaml>`. On this fresh configuration directory, the
-worker's first `configuration::register` installs that seed as
-`initial_value`; the value returned by the configuration worker is the
-authoritative value. The readiness probe fetches each entry with
-`configuration::get` and requires every seeded key/value to match canonically.
-Additional defaults installed by the worker are permitted. The runner never
-writes the configuration worker's private per-entry files.
-
-## Readiness
-
-Readiness is contract-based, never sleep-based. It queries live descriptors
-through `engine::functions::info`; catalog membership alone is insufficient.
-Before sending a scenario the runner verifies:
-
-- engine discovery responds;
-- every required function ID for the resolved profile has a live descriptor;
-- every mirrored session, context, scripted-router, and harness surface has a
-  request and response schema canonically equal to its authoritative checked-in
-  golden;
-- the controlled target has the exact authored function ID, description, and
-  request schema plus the exact compiler-derived constant response schema;
-- internal functions such as `harness::send` are queried through
-  `engine::functions::list { include_internal: true }` or exact function-info
-  lookup rather than the default filtered catalog;
-- `harness::turn-completed` is a registered trigger type;
-- `engine::queue::list_topics` contains `harness-turn` with the expected broker
-  type.
-
-Object-key order and equivalent JSON serialization do not create a mismatch.
-Producer-owned mirrors may ignore JSON Schema annotation keywords such as
-`$schema`, `title`, and `description`; validation keywords including required
-fields, `additionalProperties`, enums, defaults, and nullability remain exact.
-The controlled target is stricter: its model-visible description and complete
-request/response schemas, including property descriptions, are compared
-canonically without removing annotations. Queue readiness remains a semantic
-call/topic/broker check when no function golden exists. Configuration readiness
-treats the seed as an authoritative subset, as defined above.
-
-The probe accumulates all missing and mismatched surfaces, includes expected
-and actual digests in `readiness-failure.json`, and retains the run's process
-logs beside that evidence. Any divergence before **Send** is `setup_error`.
-
-## Result schemas
-
-```ts
-type Classification =
-  | "pass"
-  | "setup_error"
-  | "contract_failure"
-  | "timeout"
-  | "process_crash"
-  | "runner_error"
-
-interface IntegrationResultV1 {
-  schema_version: "1"
-  scenario_id: string
-  classification: Classification
-  invariants: Array<{
-    id: string
-    passed: boolean
-    expected: unknown
-    actual: unknown
-    evidence_refs: string[]
-  }>
-  artifacts: string[]
-}
-
-interface ExecutionReportV1 {
-  schema_version: "1"
-  run_id: string
-  scenario_id: string
-  attempt: number
-  started_at: string
-  duration_ms: number
-  result_path: string
-  result_sha256: string
-}
-```
-
-`IntegrationResultV1` is the stable, canonical, byte-comparable verdict.
-`ExecutionReportV1` contains volatile execution identity and timing. The
-execution report links to the result by both `scenario_id` and SHA-256 of the
-exact persisted `result.json` bytes; a consumer verifies that digest before
-treating the pair as one execution.
-Stable results contain only attempt-relative evidence paths. Dynamic run,
-session, turn, request, port, process, timestamp, and absolute-path values are
-replaced with documented symbolic tokens while constructing `expected` and
-`actual`; raw evidence is never normalized or overwritten. This makes repeated
-results byte-comparable without discarding diagnostic data.
-Schemas deny unknown fields. Failure precedence is `runner_error`,
-`process_crash`, `setup_error`, `timeout`, then `contract_failure`; `pass` is
-possible only when all required invariants pass. The process exits 0 only when
-every selected scenario is `pass`, 2 for any `contract_failure` or `timeout`,
-and 3 for `runner_error`, `setup_error`, or `process_crash`. `timeout` means the
-subject exceeded its completion deadline while the runner was in **Await**.
-A readiness deadline is `setup_error`; recorder, collection, artifact, or
-teardown failure after **Send** is `runner_error`. Infrastructure deadlines
-never become subject timeouts.
-
-Classification does not replace engine or SDK error codes. Evidence retains the
-exact error code and object fields; values matching the credential denylist are
-redacted before persistence. `function_not_found` or `FORBIDDEN` on a required
-readiness probe is `setup_error`; a wire `timeout` or SDK timeout while the
-runner is in **Await** is `timeout`. The same timeout during collection or
-teardown is `runner_error`. The runner does not retry a function invocation
-inside an attempt. `--repeat` creates independent attempts with new stacks and
-does not convert a failed attempt into a retry pass.
-
-## Scenario lifecycle
-
-1. **Allocate:** run id, cwd, stores, ports, deadlines, artifact directory.
-2. **Boot base:** pinned engine, real dependencies, scripted router, recorder.
-3. **Probe base:** live contracts, configuration subset, triggers, queue topic.
-4. **Arm target:** load router script, reset recorder, register and inspect target.
-5. **Boot/probe harness:** start the harness and inspect its live contracts.
-6. **Bind:** install and verify the lifecycle binding.
-7. **Send:** call `harness::send` and record the exact request/response.
-8. **Await:** key on both returned session and turn id; accept identical event
-   duplicates and confirm terminal durable status.
-9. **Collect:** paginate the transcript and collect router/target/lifecycle and
-   process evidence.
-10. **Grade:** pure code assertions; no mutation of the subject.
-11. **Teardown:** stop all process groups and produce a typed teardown report.
-12. **Report:** combine teardown with the verdict, then write canonical result,
-    execution metadata, and a one-line process summary.
-
-Teardown is part of the execution outcome. Remaining process groups,
-signal/reap errors, or cleanup deadline expiration produce `runner_error` and
-`teardown.json`; incomplete teardown always produces a non-pass classification.
-
-The lifecycle notification is not the only source of truth. The harness
-persists terminal state before emitting completion, so the runner confirms the
-event against `harness::status` and the complete transcript. Missing lifecycle
-delivery fails a lifecycle invariant when that contract is under test but does
-not make evidence collection hang.
-
-## Isolation and identity
-
-Every session id, send idempotency key, recorder sequence, fixture row/state
-key, and artifact path is scoped by `run_id`. Every **test-owned** target
-function ID is also scoped. Production IDs such as
-`harness::send`, `router::chat`, and lifecycle trigger types remain fixed.
-
-Version 1 never reuses a stack. Reuse may be proposed only when measured
-p95 runtime exceeds the CI budget and a reset-contract test verifies that no
-session, state, registration, event, queue item, or file crosses scenario
-boundaries. Restart and redelivery scenarios always own their complete stack.
+  R->>S: session::messages, all pages
+  R->>O: group session traces and fetch trees
+  R->>R: grade, teardown, and report
+~~~
+
+The probe binds observers before the harness starts. Trigger registration may
+initially be deferred while custom trigger types do not yet exist. Once
+readiness proves that the harness registered them, the runner creates an
+acknowledged active harness::turn-completed binding and removes the stale
+deferred completion binding before any direct stimulus.
+
+## Lifecycle and readiness
+
+The harness owns two custom trigger types:
+
+- harness::ready accepts an empty configuration object and emits
+  {status: ready, timestamp: now_ms} after boot initialization, queue
+  provisioning, lifecycle registration, and configuration bindings complete.
+- harness::turn-completed accepts a strict session filter and emits the
+  terminal turn payload after durable state is persisted.
+
+The ready trigger retains ready state. Subscribers already bound receive the
+boot emission; a binding registered after the harness is ready receives an
+immediate delivery.
+
+Turn-completed delivery is Void, at-least-once, and unordered. Its required
+fields are session_id, turn_id, status, terminal, and timestamp. Status is one
+of completed, cancelled, or failed. Optional fields are result, result_error,
+reason, parent, parent_session_id, and reactive_depth; parent contains
+session_id, turn_id, and function_call_id.
+
+The integration-probe registers four sink functions:
+
+- integration-probe::harness-ready
+- integration-probe::functions-changed
+- integration-probe::traces-changed
+- integration-probe::turn-completed
+
+Readiness requires both the harness::ready observation and a current function
+snapshot containing at least:
+
+- harness::send
+- session::messages
+- context::assemble
+
+All waits and RPCs have monotonic deadlines. Failure before stimulus, including
+a readiness deadline, is setup_error. Once the direct send or external
+playground turn is active, expiration of the scenario deadline is timeout.
+
+## Scripted router
+
+The scripted router and production llm-router are mutually exclusive. It owns
+these six function IDs:
+
+- router::chat
+- router::abort
+- router::models::list
+- router::models::get
+- router::models::supports
+- router::system_prompt::get
+
+Models list, get, and supports are deterministic projections of the fixture
+model. Models get accepts an omitted or empty provider and resolves by model ID
+alone; when a provider is present it must match. System prompt get identifies
+the scripted provider and omits a provider prompt so the harness uses
+[harness/prompts/default.txt](https://github.com/iii-hq/workers/blob/main/harness/prompts/default.txt).
+Abort closes a live generation once and reports whether it actually aborted
+one.
+
+Every router::chat generation explicitly matches all twelve request fields, in
+canonical order:
+
+1. writer_ref
+2. request_id
+3. model
+4. provider
+5. system_prompt
+6. messages
+7. tools
+8. response_format
+9. thinking_level
+10. max_output_tokens
+11. provider_options
+12. metadata
+
+Supported JSON matchers are absent, regex, sha256, exact, and subset. Exact and
+subset may normalize values only by deleting RFC 6901 JSON Pointer locations.
+There is no present matcher and no replace normalizer.
+
+The fixture model contains:
+
+- id and provider
+- context_window and max_output_tokens
+- optional supports_thinking, supports_xhigh, supports_tools,
+  supports_vision, supports_cache, and supports_structured_output
+
+The scripted response constructors cover plain text, streamed text, and native
+function calls. Streamed text uses the router's 15 event variants:
+
+- start, text_start, text_delta, text_end
+- thinking_start, thinking_delta, thinking_end
+- functioncall_start, functioncall_delta, functioncall_end
+- usage, ping, stop, done, error
+
+The version 1 streamed fixture emits start, text_start, one or more text_delta
+events, text_end, usage, stop, and done. Exactly one terminal frame is allowed,
+and terminal message, stop reason, provider, model, and usage must agree with
+the RouterChatResponse. The fixture DSL does not expose arbitrary raw response
+or frame escape hatches.
+
+RouterChatResponse contains ok, provider, and model, with optional stop_reason,
+usage, and error. The scripted function returns it only after the ordered
+stream frames have been relayed.
+
+## Scenario authoring and expansion
+
+Each scenario is a Rust module under
+[harness/tests/e2e/src/scenarios](https://github.com/iii-hq/workers/tree/main/harness/tests/e2e/src/scenarios).
+The typed DSL keeps the send policy, request matchers, scripted responses,
+controlled function, expected history, and verification together at the call
+site.
+
+Builders compile directly to runtime structures. There is no YAML layer,
+generic authored-scenario compiler, committed compiled snapshot directory, or
+checked-in schemas directory.
+
+The in-memory CompiledFixtureV1 groups the compiled scenario, router script,
+and system prompt template. ScenarioFixture adds runner-only slug, driver,
+expected terminal-turn count, and verification function.
+
+CompiledScenarioV1 contains:
+
+| Field | Contract |
+|---|---|
+| schema_version | Literal version 1 |
+| id | 1 to 128 ASCII letters, digits, hyphen, or underscore |
+| description | Human-readable scenario intent |
+| send | Narrow typed harness::send request |
+| target | Optional controlled target |
+| deadlines | readiness_ms, scenario_ms, teardown_ms |
+
+CompiledSendV1 contains session_id, message, model, provider,
+idempotency_key, and an options.functions object. The functions object has
+allow and deny arrays and expose fixed to native.
+
+ControlledTargetV1 contains function_id, description, an object request_schema,
+and a fixed JSON response. Its function ID must be prefixed by the concrete
+run ID before registration.
+
+Default deadlines are:
+
+| Phase | Milliseconds |
+|---|---:|
+| readiness | 60,000 |
+| scenario | 60,000 |
+| teardown | 15,000 |
+
+Before boot, expansion replaces:
+
+- {{run_id}}
+- {{session_id}}
+- {{system_prompt_sha256}}
+
+The expanded expected system prompt is persisted as
+expected-system-prompt.txt. Fixture validation occurs before process startup;
+an invalid fixture is runner_error, not a subject failure.
+
+## Probe and trace evidence
+
+The integration-probe is in-process runner infrastructure. It registers the
+optional controlled function directly with the SDK and returns the fixture's
+fixed response. It does not maintain a target-call log or a durable lifecycle
+event store.
+
+The completion sink stores only enough in-memory information to awaken the
+runner and remember the trace generation observed at completion. Normative
+function-call and lifecycle evidence is reconstructed from traces:
+
+- a controlled call is a span named execute <run_id>::<alias>
+- a lifecycle delivery is a span named
+  execute integration-probe::turn-completed
+- invocation input and output come from iii.invocation.input and
+  iii.invocation.output span events
+- payload JSON comes from iii.payload.json and must not be marked truncated
+
+After completion, the collector waits for a later trace change, calls
+engine::traces::group_by with attribute iii.session.id, limit 100, and
+include_internal true, then fetches every tree through engine::traces::tree.
+Trace IDs and spans are sorted deterministically before grading and
+persistence.
+
+Trace evidence is stable only when:
+
+- no span is pending
+- the number of distinct turn IDs equals expected_terminal_turns
+- every expected terminal turn has a lifecycle sink span
+- lifecycle turn IDs belong to the collected session traces
+
+The grading floor separately requires the number of trace trees to equal
+expected_terminal_turns.
+
+TraceEvidenceV1 persists complete trees and this summary:
+
+- trace_count
+- span_count
+- error_count
+- pending_span_count
+- ordered turn_ids
+
+## Common grading floor
+
+Every scenario first passes the same runner-owned floor:
+
+1. Final status is completed.
+2. pending_function_calls, queued, and children are empty.
+3. Trace count and distinct turn count equal expected_terminal_turns.
+4. No trace span is pending or in error.
+5. The latest collected turn ID equals the active turn ID.
+6. Lifecycle trace inputs are complete, use only the published payload fields,
+   are terminal and completed, and bind to the scenario session and trace turn.
+7. Repeated lifecycle deliveries are allowed only when their payloads are
+   identical after timestamp removal; conflicting terminal payloads fail.
+8. Every scripted router generation is consumed, with no missing or extra
+   generation.
+9. For direct scenarios, send is accepted and merged, queued, and deduplicated
+   are false or absent.
+
+The scenario-specific verifier then checks transcript content, message counts,
+controlled call count and payload, function history, and duplicate entry IDs.
+The first floor or scenario failure is retained.
 
 ## Oracles
 
 | Oracle | Verified property |
 |---|---|
-| Send response | Acceptance, identity, steering, queueing, and deduplication flags |
-| Full transcript | Durable order/content, function results, and absence of duplicate entries; usage only when the shipped transcript persists it |
-| Status | Terminal state, result, pending calls, live children, queue, and retry counters |
-| Target recorder | Invocation arguments, count, order, and forbidden side effects |
-| Scripted router | Generation count and model-visible messages/`tools` |
-| Lifecycle recorder | Completed delivery and duplicate consistency |
-| Process supervisor | Unexpected exit, restart boundary, and shutdown behavior |
-| Traces/logs | Diagnosis only unless telemetry is the explicit invariant |
+| Send response | Acceptance, returned turn identity, and clean merge, queue, and deduplication flags |
+| Final status | Durable completion and absence of pending work |
+| Full transcript | Ordered durable user, assistant, and function-result messages with no duplicate entry IDs |
+| Scripted router evidence | Exact request shape, model-visible history, tools, generation order, and complete consumption |
+| Session trace trees | Turn count, clean completion, controlled target calls, lifecycle delivery, and payloads |
+| Process supervisor | Unexpected exits and bounded shutdown |
+| Teardown report | Signal, reap, and cleanup outcome for every process group |
 
-Every v1 verdict uses all required oracles for that scenario. Private state may
-be copied after failure for diagnosis but cannot determine the verdict.
+Private state, logs, and raw stack files are diagnostic only and cannot turn a
+failing public oracle into a pass.
 
-## Version 1 reference scenarios
+## Version 1 scenario corpus
 
-Version 1 contains exactly C-E2E-001 and C-E2E-002 as the required scenario
-corpus; they exercise the shared streaming, dispatch, durability, lifecycle,
-isolation, supervision, and reporting machinery. Quarantined reproduction
-scenarios (currently C-E2E-505, C-E2E-506, and C-E2E-507) are checked in
-alongside them but stay outside the required corpus and the `run --scenario
-all` gate until their underlying issues are fixed.
+The registry contains exactly four scenarios:
 
-### C-E2E-001 — streamed text reaches durable completion
+| ID | Slug | Driver | Terminal turns | Core invariant |
+|---|---|---|---:|---|
+| E2E-001 | streamed-text | direct | 1 | Streamed text reaches durable completion |
+| E2E-002 | exactly-once-function | direct | 1 | One allowed native function executes exactly once |
+| UI-001 | console-streamed-text | playground | 1 | A Console-originated message streams to durable completion |
+| UI-002 | multi-turn-traces | playground | 2 | A function turn and a Console turn produce distinct complete traces |
 
-Request:
+Validate all checks all four fixtures. Run all executes only direct scenarios;
+playground scenarios must be selected individually with the playground
+command.
 
-```json
-{
-  "message": "Return the fixture phrase.",
-  "model": "fixture-model",
-  "provider": "scripted",
-  "idempotency_key": "<run_id>:streamed-text",
-  "options": {
-    "functions": { "allow": [], "deny": [], "expose": "native" }
-  }
-}
-```
+### E2E-001 — streamed text
 
-The script's model fixture is:
+The direct request sends Return the fixture phrase. to fixture-model through
+the scripted provider, with no allowed functions and an idempotency key scoped
+to the run.
 
-```json
-{
-  "id": "fixture-model",
-  "provider": "scripted",
-  "context_window": 32768,
-  "max_output_tokens": 4096,
-  "supports_thinking": false,
-  "supports_tools": true,
-  "supports_vision": false,
-  "supports_cache": false,
-  "supports_structured_output": true
-}
-```
+The router expects one user message, no tools, the SHA-256 of the built-in
+system prompt, and the first generated request ID. It streams fixture complete
+in two deltas with usage input 8 and output 2.
 
-The single generation matches every router field. `writer_ref` is a `subset`
-match for `{ "direction": "write" }`; `request_id` is `regex` matched by
-`^t_[0-9a-f]{32}:[0-9]+$`; model/provider are exact; system prompt is matched by
-the SHA-256 of the compiled `scenarios/system-prompt.txt`; messages exactly
-match one user text block after deleting `/0/timestamp`; `tools` exactly matches
-`[]`; and `response_format`, `thinking_level`, `max_output_tokens`,
-`provider_options`, and `metadata` each use an explicit `absent` matcher. The
-compiler stores every matcher explicitly in `CompiledFixtureV1`; the authored
-builder states only deviations from deterministic defaults. Request-id suffixes
-are zero-based: the first generated ID ends in `:0`, then increments by one.
+Required scenario assertions:
 
-To remove ambiguity while keeping the frame listing readable, define `A(c, u)`
-as this fully expanded wire object, where `c` is the `content` array and `u` is
-omitted or the exact usage object:
+- exactly one user and one assistant durable message
+- assistant text equals fixture complete
+- no function-result message
+- no duplicate transcript entry ID
+- exactly one router generation consumed
 
-```json
-{
-  "role": "assistant",
-  "content": "<c>",
-  "stop_reason": "end",
-  "usage": "<u, omitted when absent>",
-  "model": "fixture-model",
-  "provider": "scripted",
-  "timestamp": 1
-}
-```
+### E2E-002 — exactly-once native function
 
-The committed script expands the following table into literal
-`AssistantMessageEvent` objects; `A(...)` is authoring notation, not an
-additional wire format:
+The direct request sends Call the recorder once. and allows one run-scoped
+function named <run_id>::record. The controlled target has an exact object
+schema requiring the string field value and returns a successful text result
+containing recorded.
 
-| Frame | Exact payload |
-|---|---|
-| `start` | `partial=A([])` |
-| `text_start` | `partial=A([{type:"text",text:""}])` |
-| `text_delta` | `partial=A([{type:"text",text:"fixture "}]), delta="fixture "` |
-| `text_delta` | `partial=A([{type:"text",text:"fixture complete"}]), delta="complete"` |
-| `text_end` | `partial=A([{type:"text",text:"fixture complete"}])` |
-| `usage` | `usage={input:8,output:2}` |
-| `stop` | `stop_reason="end"`, with `error_message` and `error_kind` omitted |
-| `done` | `message=A([{type:"text",text:"fixture complete"}], {input:8,output:2})` |
+Generation one emits native call call-1 with {value: expected}, usage input 8
+and output 4. Generation two must see, in order, the original user message, the
+assistant function call, and the durable function result. It returns recorded
+once with usage input 18 and output 2.
 
-The terminal response is
-`{ok:true,provider:"scripted",model:"fixture-model",stop_reason:"end",usage:{input:8,output:2}}`.
+Required scenario assertions:
 
-Required invariants:
+- the trace contains exactly one execute <run_id>::record span
+- its normalized invocation input equals {value: expected}
+- the second router request contains the exact function-call and
+  function-result history
+- final assistant text equals recorded once
+- no duplicate transcript entry ID
+- exactly two router generations consumed
 
-- one durable user message and one durable assistant message;
-- durable assistant text is exactly `fixture complete`;
-- streamed `usage`, terminal `done`, and `RouterChatResponse` agree exactly;
-  durable transcript usage is compared only when the shipped transcript
-  contract persists it;
-- no partial update created another assistant entry;
-- status is `completed` with no pending calls or queued message;
-- one non-conflicting completion payload is observed;
-- exactly one router generation is consumed.
+The word recorder remains fixture wording only; there is no recorder service
+or recorder event schema.
 
-### C-E2E-002 — allowed function executes exactly once
+### UI-001 — Console streamed text
 
-The request is the same shape with message `Call the recorder once.` and
-`options.functions = {allow:["<run_id>::record"],deny:[],expose:"native"}`.
+The playground creates a Console session and waits for a person or Playwright
+to submit Return the console fixture phrase. The router matcher permits the
+Console-specific system prompt through an agent_trigger regex and requires the
+tools collection to contain agent_trigger.
 
-Its recorder configuration is exact:
+The response streams console fixture complete. The Rust verifier enforces the
+common floor and absence of duplicate transcript entries; browser rendering
+assertions belong to the external Playwright test.
 
-```json
-{
-  "target": {
-    "function_id": "<run_id>::record",
-    "description": "Record one integration fixture value.",
-    "request_schema": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": { "value": { "type": "string" } },
-      "required": ["value"]
-    },
-    "response": {
-      "content": [{ "type": "text", "text": "recorded" }],
-      "is_error": false
-    }
-  },
-  "lifecycle": {
-    "trigger_type": "harness::turn-completed",
-    "function_id": "integration-recorder::lifecycle"
-  }
-}
-```
+### UI-002 — two turns and traces
 
-Generation one matches every field as in C-E2E-001, except `tools` must exactly
-equal the single native entry below. This assertion ties the router request to
-the recorder registration rather than duplicating a prose approximation.
+The playground expects two terminal turns. The external driver owns both
+stimuli:
 
-```json
-[
-  {
-    "name": "<run_id>::record",
-    "description": "Record one integration fixture value.",
-    "parameters": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": { "value": { "type": "string" } },
-      "required": ["value"]
-    },
-    "execution_mode": "sequential"
-  }
-]
-```
+1. Invoke the compiled send from playground-ready.json. This performs the same
+   controlled function flow as E2E-002 and finishes with recorded once.
+2. Submit Return the second trace phrase. through the Console. This streams
+   second trace complete.
 
-Generation one emits one `done` frame whose full assistant message is:
+The first turn consumes request steps 0 and 1. The Console turn starts a new
+turn at request step 0. Required assertions are two complete traces, two user
+messages, three assistant messages including the function-call assistant
+entry, one function result, one controlled target execution, the exact target
+payload, both final assistant texts, and no duplicate transcript entries.
 
-```json
-{
-  "role": "assistant",
-  "content": [{
-    "type": "function_call",
-    "id": "call-1",
-    "function_id": "<run_id>::record",
-    "arguments": { "value": "expected" }
-  }],
-  "stop_reason": "function_call",
-  "usage": { "input": 8, "output": 4 },
-  "model": "fixture-model",
-  "provider": "scripted",
-  "timestamp": 2
-}
-```
+## CLI
 
-Its response is
-`{ok:true,provider:"scripted",model:"fixture-model",stop_reason:"function_call",usage:{input:8,output:4}}`.
-The recorder response normalizes into this exact durable/model-visible message
-(only `timestamp` is normalized out while matching):
+The harness-integration binary exposes:
 
-```json
-{
-  "role": "function_result",
-  "function_call_id": "call-1",
-  "function_id": "<run_id>::record",
-  "content": [{ "type": "text", "text": "recorded" }],
-  "details": {
-    "content": [{ "type": "text", "text": "recorded" }],
-    "is_error": false
-  },
-  "is_error": false,
-  "timestamp": "<normalized>"
-}
-```
-
-Generation two matches, in order, the original user message, generation one's
-assistant message, and that function result. It also re-matches the same tool
-entry and every other router field; its request id ends in `:1`. It emits one
-`done` frame whose message is
-`A([{type:"text",text:"recorded once"}], {input:18,output:2})`, with timestamp
-`3`, followed by the response
-`{ok:true,provider:"scripted",model:"fixture-model",stop_reason:"end",usage:{input:18,output:2}}`.
-
-Required invariants:
-
-- the target receives `{value:"expected"}` exactly once;
-- one durable function-result message references `call-1` and the correct ID;
-- the second router request contains that result;
-- the final assistant entry and status are terminal and durable;
-- no pending call remains and exactly two generations are consumed.
-
-The grader's duplicate-detection rule is unit-tested with synthetic evidence
-containing two target calls. Post-v1 repeated-send coverage uses the public API;
-it cannot add a private injection API or mutant harness binary.
-
-## Post-v1 expansion
-
-| Order | Scenario | Core invariant |
+| Command | Selection | Purpose |
 |---|---|---|
-| 1 | Denied function | Target never runs and a durable denial reaches the next generation |
-| 2 | Repeated send idempotency | Original ids return and no duplicate message/turn appears |
-| 3 | Router failure | Retry/resume and terminal error match stable contracts |
-| 4 | Structured output | Repair retries and final classification are bounded |
-| 5 | Steering while streaming | New message participates exactly once in the active turn |
-| 6 | Hook ordering and failure | Each synchronous hook follows documented chain semantics |
-| 7 | Approval allow/deny | Target runs once after allow and never after deny |
-| 8 | Sub-agent fan-out/fan-in | Parent waits for required children and resolves each once |
-| 9 | Cancellation | Streams and descendants stop consistently |
-| 10 | Queue redelivery/restart | Durable checkpoints prevent duplicate transcript and effects |
-| 11 | Dynamic registration | Function discovery updates without stale schemas |
-| 12 | Runtime validation | A failed validator drives one bounded public continuation |
+| run | ID, slug, or all | Execute one or all direct scenarios |
+| validate | ID, slug, or all | Compile and validate registered fixtures without booting |
+| playground | One ID or slug | Boot one playground scenario and production Console |
 
-The v1 authored contract is single-send. Multi-send coverage requires a new
-schema version with typed, ordered public send/await steps and explicit identity
-expectations; it cannot introduce a generic DAG, arbitrary callbacks, or a
-second orchestration language.
+Shared stack arguments:
+
+- --engine-bin, falling back to III_BIN
+- optional --harness-bin
+- repeated --worker-bin name=path
+
+Run additionally supports --artifacts-dir, defaulting to target/integration,
+and --retain-success. Playground requires --console-bin, supports optional
+--ready-file, and defaults to target/console-e2e. Playground rejects all
+because it owns one isolated interactive stack. Scenario selection defaults to
+all; run rejects an explicitly selected playground scenario.
+
+Make entry points are:
+
+~~~sh
+make -C harness integration-validate
+make -C harness integration-e2e III_BIN=/path/to/iii
+make -C harness integration-playground III_BIN=/path/to/iii
+~~~
+
+There is no --repeat option and no attempt subdirectory.
+
+## Playground handoff
+
+After the stack, session, and production Console are ready, the runner writes
+playground-ready.json and optionally publishes the same JSON atomically to
+--ready-file.
+
+PlaygroundReadyV1 contains:
+
+- schema version, run ID, scenario ID, slug, and driver
+- run root and result path
+- engine and Console URLs
+- session ID and title
+- model ID and provider
+- fixture message
+- controlled function aliases mapped to expanded IDs
+- the fully expanded direct send
+
+There is no separate start signal. Depending on the scenario, Playwright uses
+the compiled send through the SDK or interacts through the Console UI. The
+runner waits for the first terminal completion and then remains active until
+SIGINT or SIGTERM. On shutdown it requires every terminal turn declared by the
+fixture, binds evidence to the latest one, and refreshes durable status. If
+shutdown arrives just before the first completion callback, it allows a
+one-second grace period; stopping before that completion is a contract failure.
+
+PlaygroundResultV1 contains classification, failure, a compact evidence object,
+and artifact paths. Complete trace trees remain in traces.json.
+
+## Process supervision and teardown
+
+Every child runs in its own process group. The supervisor:
+
+- waits up to ten seconds for the engine listener, probing every 25
+  milliseconds
+- retries engine startup once only for an explicit bind race after complete
+  teardown
+- observes Unix SIGCHLD for event-driven early-exit detection, with a polling
+  fallback on non-Unix platforms
+- treats an unexpected exit before teardown as process_crash
+- tears down in reverse start order
+- sends SIGTERM, then SIGKILL when needed, within one hard teardown budget
+- records typed signal, wait, reap, and deadline issues in teardown.json
+
+Incomplete teardown cannot pass. Process-exit.json is written when a subject
+process exits unexpectedly and references its stderr log.
+
+## Classification and reports
+
+Classifications, in increasing precedence, are:
+
+1. pass
+2. contract_failure
+3. timeout
+4. setup_error
+5. process_crash
+6. runner_error
+
+A readiness failure is setup_error. A subject completion deadline in Await is
+timeout. Evidence collection, artifact persistence, or teardown failures are
+runner_error. A harness::send RPC failure in Send is contract_failure even if
+the transport error text mentions a timeout. Classification does not replace
+underlying engine or SDK error details in failure artifacts.
+
+Process exit codes are:
+
+| Exit | Meaning |
+|---:|---|
+| 0 | Every selected scenario passed |
+| 2 | At least one contract_failure or timeout |
+| 3 | At least one setup_error, process_crash, or runner_error |
+
+IntegrationResultV1 is the stable, byte-comparable result:
+
+- schema_version
+- scenario_id
+- classification
+- optional failure string
+- artifact path list
+
+Concrete run, session, and turn IDs in failure text are replaced by
+{{run_id}}, {{session_id}}, and {{turn_id}}. IntegrationResultV1 has no
+invariants array.
+
+ExecutionReportV1 is intentionally volatile:
+
+- schema_version
+- run_id
+- scenario_id
+- started_at
+- duration_ms
+- result_path
+- result_sha256
+
+The digest covers the exact result.json bytes. There is no attempt field.
 
 ## Repository and artifacts
 
-```text
-harness/evals/integration/
-  Cargo.toml              # contains [workspace] and [package]
+Relevant source layout:
+
+~~~text
+harness/
+  Cargo.toml
   Cargo.lock
-  engine.lock             # repository, 40-hex revision, package, binary path
-  src/
-    main.rs
-    scenarios/             # authored builder modules + registry
-      mod.rs
-      builder.rs           # data-only typed builders
-      streamed_text.rs
-      exactly_once_function.rs
-      hold_mutation_505.rs
-      hook_held_release_506.rs
-      crash_recovery_507.rs
-    expand/                # authored → compiled contract
-    stack/                 # layout, manifest, boot
-    process/               # process groups and typed teardown
-    readiness/             # live descriptor checks
-    recorder/              # private control plane and durable event store
-    scenario/              # phase runner and reports
-    grader/                # pure invariants
-  schemas/                 # serialized layers only; the authored layer is code
-    compiled-fixture.v1.json
-    router-script.v1.json
-    recorder-event.v1.json
-    integration-result.v1.json
-    execution-report.v1.json
-  scenarios/
-    system-prompt.txt
-  tests/snapshots/<slug>.compiled.json
+  tests/e2e/
+    Cargo.toml
+    README.md
+    engine.lock
+    src/
+      main.rs
+      artifacts.rs
+      probe.rs
+      scripted_router.rs
+      trace_evidence.rs
+      scenarios/
+        dsl.rs
+        streamed_text.rs
+        exactly_once_function.rs
+        console_streamed_text.rs
+        multi_turn_traces.rs
+      scenario/
+        floor.rs
+        playground.rs
+        phases/
+      stack/
+      process/
+      types/
+    tests/
+      determinism.rs
+      scenario_compilation.rs
+      schemas.rs
+      supervisor.rs
+~~~
 
+A direct run writes:
+
+~~~text
 target/integration/<run_id>/
+  result.json
+  execution.json
+  stack.json
+  teardown.json
+  process-exit.json                 # only after an unexpected exit
+  logs/
+  engine/
+  seeds/
+  session-data/
+  leases/
+  queue/
+  skills/
   scenarios/<scenario_id>/
-    attempts/<attempt>/
-      result.json
-      execution.json
-      stack.json
-      teardown.json              # always written once allocation succeeds; records complete cleanup
-      process-exit.json          # present for unexpected exits
-      logs/
-      evidence/
-        request.json
-        send-response.json
-        transcript.json
-        status.json
-        router-calls.json
-        target-calls.json
-        lifecycle-events.json
-        invariants.json
-```
+    expected-system-prompt.txt
+    request.json
+    send-response.json
+    transcript.json
+    status.json
+    router-calls.json
+    traces.json
+    failure.json                    # only after failure
+~~~
 
-Each attempt directory represents one fresh stack and prevents `--scenario all`
-or `--repeat` from overwriting another result. `stack.json` records
-`harness-core-v1`, the exact resolved component set, and for every executable
-its absolute path, SHA-256, and optional version. It also
-records the exact engine-lock provenance. Unexpected-exit evidence references
-the corresponding stderr path; typed teardown evidence names the affected
-process and operation while the run retains its stdout/stderr files.
+Playground uses an analogous tree under target/console-e2e/<run_id>/. It writes
+playground-ready.json and playground-result.json instead of result.json and
+execution.json. It retains stack.json, teardown.json, logs, stack state, the
+expected prompt, transcript, status, router calls, traces, and an optional
+failure. It does not write request.json or send-response.json because the Rust
+runner does not issue the stimulus.
 
-The nested manifest declares its own `[workspace]` so Cargo does not treat it as
-an undeclared member of the parent harness workspace. The Make entry point is:
-
-```bash
-make -C harness integration-e2e
-```
+On a direct pass, unless --retain-success is set, the runner removes engine,
+logs, seeds, session-data, leases, skills, and queue state while retaining
+compact reports and collected scenario evidence. Playground always performs
+the same trimming on pass. Non-pass runs keep the full stack state.
 
 ## CI and gate policy
 
-The version 1 job runs on every pull request, manual workflow dispatch, and
-schedule. It is non-required while collecting the promotion window below. A
-pull-request filter is valid only when it follows the dependency graph:
-harness, session-manager, context-manager, queue, directory, SDK/wire
-contracts, integration runner, `engine.lock`, build plumbing, and CI changes
-must all select the job. The job uses the repository Rust toolchain and the
-runner's strict no-skip mode. `engine.lock` pins the engine artifact:
+The harness-integration job in
+[.github/workflows/ci.yml](https://github.com/iii-hq/workers/blob/main/.github/workflows/ci.yml)
+runs on every pull request and workflow_dispatch. There is no scheduled
+trigger. It is currently non-required through branch protection; the job
+itself does not use continue-on-error.
 
-```toml
+The engine pin in
+[harness/tests/e2e/engine.lock](https://github.com/iii-hq/workers/blob/main/harness/tests/e2e/engine.lock)
+is:
+
+~~~toml
 repository = "iii-hq/iii"
-revision = "085e0fde6b424092a8b7e3ab31ac5e0cd36fa2e0"
+revision = "15dc993ebfdbfcabe5d299cf4cae4dd676db4c06"
 package = "iii"
 binary = "target/release/iii"
-```
+~~~
 
-The `harness-integration` job in `.github/workflows/ci.yml` first checks out
-workers, reads and validates those four lock fields, then uses
-`actions/checkout@v4` to place that repository and exact revision at
-`target/integration-engine-src`. It runs
-`cargo build --locked --release -p iii` there, records SHA-256 of the resulting
-binary, and passes its absolute path as `--engine-bin`. The cache key is
-`integration-engine-<runner-os>-<runner-arch>-<revision>-<Cargo.lock hash>`;
-cache hits are still re-hashed before execution. Any checkout, locked build,
-digest, or runner failure fails the job—there is no download or skip fallback.
-CI executes C-E2E-001 and C-E2E-002 twice and requires byte-identical
-`result.json` for each repeated scenario. It uploads both `result.json` and
-`execution.json` for every run, verifies their link, and retains stack,
-teardown, process, evidence, and logs for every non-pass for 14 days.
+CI:
 
-Promotion to a required pull-request check needs at least 100 consecutive clean
-scheduled or pull-request runs across 14 days, zero skips, and zero unexplained
-flakes. Any unexplained flake resets the clean-run count. Stack reuse is not a
-condition for promotion.
+1. Validates that engine.lock contains exactly the four supported fields and a
+   40-hex revision.
+2. Checks out the exact engine source under target/integration-engine-src.
+3. Builds the pinned package with Cargo locked in release mode.
+4. Caches the build by operating system, architecture, revision, and engine
+   Cargo.lock hash, then re-hashes the resulting binary.
+5. Runs the harness-integration unit and contract tests.
+6. Runs integration-validate.
+7. Runs E2E-001 and E2E-002 once each through integration-e2e.
+8. Verifies every execution report against the exact result.json SHA-256.
+9. Always uploads result.json, execution.json, and teardown.json.
+10. On failure, uploads the complete target/integration tree for 14 days.
+
+There is no CI repeat pass, byte-comparison loop between attempts, scheduled
+promotion window, or automatic engine download fallback.
 
 ## Verification and acceptance
 
-The runner implementation must include:
+The implementation is accepted when:
 
-- JSON Schema and serde round-trip tests for `CompiledFixtureV1`, router
-  scripts, recorder events, `IntegrationResultV1`, and `ExecutionReportV1`;
-  builder tests proving every authored scenario compiles and registers exactly
-  once;
-- canonical compiled snapshots for every authored scenario, proving that all
-  twelve matchers, frames, send fields, target contracts, and invariants are
-  explicit after compilation;
-- contract/golden checks for every mirrored existing request/response and
-  stream shape, plus live descriptor checks through
-  `engine::functions::info`;
-- readiness failures for hidden internal functions, missing context manager,
-  wrong queue topic, target description mismatch, and either request or
-  response schema mismatch;
-- raw scripted-frame rejection for provider/model/stop-reason/usage/error
-  disagreement and for streamed content inconsistent with terminal `done`;
-- duplicate, conflicting, missing, malformed, and out-of-order lifecycle
-  deliveries, including exact status/function identity;
-- supervisor tests for early exit, port collision, timeout precedence, signal
-  escalation, typed teardown failure, and complete teardown;
-- classification tests proving subject expiration in **Await** is `timeout`
-  while collection and teardown deadlines are `runner_error`;
-- isolation tests proving all durable stores, registrations, queue items,
-  files, and environment secrets are scoped with no cross-run leakage;
-- stable result bytes, result/execution digest verification, structured
-  process and teardown evidence, and the documented process exit codes;
-- both version 1 scenarios repeated through real stacks without a model key and
-  with byte-identical stable results;
-- C-E2E-001 and C-E2E-002 as the complete v1 scenario corpus.
+- fixture validation registers exactly E2E-001, E2E-002, UI-001, and UI-002
+  once each
+- validate all checks all four while run all selects exactly the two direct
+  scenarios
+- serde round trips cover compiled scenario, compiled fixture, router script,
+  trace evidence, stable result, and execution report
+- the generated CompiledScenarioV1 JSON Schema enforces safe scenario IDs and
+  positive deadlines
+- producer goldens pin the scripted router and authoritative harness::send
+  request shape
+- frame tests enforce one terminal event and agreement with the terminal
+  router response
+- router matcher tests cover all twelve fields and only the supported
+  normalization behavior
+- probe tests reject malformed ready, function-registry, trace, and lifecycle
+  payloads
+- trace and floor tests cover pending spans, error spans, target payload
+  extraction, lifecycle shape, and conflicting duplicate deliveries
+- supervisor tests cover early exits, environment isolation, process groups,
+  cooperative shutdown, and SIGKILL escalation
+- classification tests enforce phase-sensitive timeout and error precedence
+- result tests enforce stable scrubbed bytes and execution digest linkage
+- E2E-001 and E2E-002 pass through fresh real stacks without a model key
+- playground produces a complete automation handoff for UI-001 and UI-002
 
-Barrier and cassette behavior is outside v1 acceptance and requires separate
-versioned runtime or offline-tooling contracts.
+The package test command is:
+
+~~~sh
+cargo test --locked --manifest-path harness/Cargo.toml -p harness-integration
+~~~
+
+## Post-version-1 expansion
+
+Future scenarios may add denied functions, repeated-send idempotency, router
+failure and retry, structured output repair, steering, hooks, approval,
+sub-agents, cancellation, queue redelivery, restart recovery, dynamic
+registration, and runtime validation.
+
+Multi-send automation should extend the typed scenario contract with ordered
+public send and await steps. Fault injection should use separately versioned
+test-support contracts. Neither should introduce private harness state
+mutation into the public-path suite.
 
 ## Related material
 
+- [Harness E2E runner README](https://github.com/iii-hq/workers/blob/main/harness/tests/e2e/README.md)
 - [Harness E2E tests](agent-quality.md)
 - [Harness architecture](https://github.com/iii-hq/workers/blob/main/harness/architecture/README.md)
-- [`harness::send`](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs)
+- [harness::send](https://github.com/iii-hq/workers/blob/main/harness/src/functions/send.rs)
+- [Harness lifecycle and readiness](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs)
 - [Durable turn loop](https://github.com/iii-hq/workers/blob/main/harness/src/turn_loop.rs)
 - [Queue provisioning](https://github.com/iii-hq/workers/blob/main/harness/src/queue.rs)
-- [Lifecycle events](https://github.com/iii-hq/workers/blob/main/harness/src/events.rs)
-- [Router event vocabulary](https://github.com/iii-hq/workers/blob/main/llm-router/src/types/events.rs)
+- [Scripted router types](https://github.com/iii-hq/workers/blob/main/harness/tests/e2e/src/types/script.rs)
+- [Trace evidence](https://github.com/iii-hq/workers/blob/main/harness/tests/e2e/src/trace_evidence.rs)
 - [iii core primitives](../../skills/iii-core-primitives/SKILL.md)
 - [iii engine configuration](../../skills/iii-engine-config/SKILL.md)
 - [iii error handling](../../skills/iii-error-handling/SKILL.md)

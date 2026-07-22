@@ -1,41 +1,52 @@
 import { Section } from '@lib/components/Section'
 import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
-import { PAIN_CARDS, SPLIT_TERMS } from '../content/why'
+import { FnChip } from '@lib/components/schematic/FnChip'
+import { EVALUATION_TRACKS, SHARED_CONTRACTS } from '../content/tracks'
 
-/**
- * A2 — the problem. Name today's failures as concrete cards, then state the
- * split precisely: what the two tracks share and what they never share.
- */
 export function WhySection() {
   return (
     <Section
       id="why"
       index="01"
-      eyebrow="the problem"
-      title="one test track lies to you, one way or the other."
-      lede="the harness makes durable public promises (turns, streaming, dispatch, lifecycle) and separately promises that real workflows succeed. no single model boundary can check both honestly."
+      eyebrow="two tracks"
+      title="one harness path answers two different questions."
+      lede="integration isolates harness behavior from model variance. quality/E2E keeps real inference and asks whether one pinned subject achieves durable outcomes within explicit budgets. neither track can substitute for the other."
     >
-      <div className="grid grid-cols-1 @2xl:grid-cols-2 gap-px bg-rule border border-rule">
-        {PAIN_CARDS.map((card) => (
-          <div key={card.n} className="bg-bg p-6 @3xl:p-7 min-w-0">
-            <div className="flex items-baseline gap-x-2.5 mb-3">
-              <span className="font-mono text-[11px] text-alert tabular-nums">{card.n}</span>
-              <span className="font-mono text-[15px] font-semibold text-ink lowercase">{card.title}</span>
+      <div className="grid grid-cols-1 gap-px border border-rule bg-rule @4xl:grid-cols-2">
+        {EVALUATION_TRACKS.map((track, index) => (
+          <article key={track.id} className="min-w-0 bg-bg p-6 @3xl:p-8">
+            <div className="flex items-center justify-between gap-3">
+              <FnChip tone="accent">0{index + 1}</FnChip>
+              <span className="font-mono text-[10px] tracking-[0.1em] text-ink-ghost uppercase">{track.label}</span>
             </div>
-            <p className="font-mono text-[13px] leading-[1.7] text-ink-faint lowercase max-w-[46ch]">{card.body}</p>
-          </div>
+            <h3 className="mt-5 max-w-[30ch] font-mono text-[21px] font-semibold leading-[1.35] text-ink lowercase">
+              {track.question}
+            </h3>
+            <dl className="mt-6 flex flex-col gap-4">
+              {[
+                ['model boundary', track.boundary],
+                ['oracle', track.oracle],
+                ['corpus', track.corpus],
+                ['gate', track.cadence],
+                ['output', track.output],
+              ].map(([label, value]) => (
+                <div key={label} className="border-t border-rule-2 pt-3">
+                  <dt className="font-mono text-[10px] tracking-[0.08em] text-ink-ghost uppercase">{label}</dt>
+                  <dd className="mt-1 font-mono text-[12.5px] leading-[1.6] text-ink-faint lowercase">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </article>
         ))}
       </div>
 
-      <div className="mt-8">
-        <SpecSheet title="the split, stated precisely" meta="the load-bearing constraint">
-          <div className="flex flex-col">
-            {SPLIT_TERMS.map((row) => (
-              <SpecRow key={row.name} name={row.name} type={row.type}>
-                {row.desc}
-              </SpecRow>
-            ))}
-          </div>
+      <div className="mt-6">
+        <SpecSheet title="what both tracks promise" meta="shared public contract">
+          {SHARED_CONTRACTS.map((row) => (
+            <SpecRow key={row.name} name={row.name} type={row.type}>
+              {row.desc}
+            </SpecRow>
+          ))}
         </SpecSheet>
       </div>
     </Section>

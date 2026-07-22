@@ -1,75 +1,68 @@
 import { Section } from '@lib/components/Section'
-import { OPEN_QUESTIONS, PAYOFF_METRICS, PAYOFF_SOLVES } from '../content/payoff'
+import { PAYOFF_STATS, SOLVES_ROWS } from '../content/payoff'
 
-/**
- * A11 — the payoff. A before/after scorecard, the problem → answer table, and
- * the honest limits: the open questions that sit outside the version 1 gate.
- */
 export function PayoffSection() {
   return (
     <Section
       id="payoff"
       index="11"
       eyebrow="the payoff"
-      title="a gate that is earned, not assumed."
-      lede="deterministic contract regression on every pull request, four real-model workflows on a schedule, and a promotion policy that makes the gate prove itself before it can block anyone."
+      title="green means the substrate held and the pinned agent delivered."
+      lede="integration gives a reproducible answer about harness contracts. quality/E2E gives an evidence-backed answer about real-model outcomes and resource use. together they provide release confidence without confusing determinism with capability."
     >
-      {/* scorecard */}
-      <div className="grid grid-cols-2 @3xl:grid-cols-4 border-x border-t border-rule bg-rule gap-px">
-        {PAYOFF_METRICS.map((m) => (
-          <div key={m.label} className="bg-bg px-4 py-5 min-w-0">
-            <div className="flex items-baseline gap-x-2 flex-wrap">
-              <span className="font-mono text-[13px] text-ink-ghost line-through">{m.before}</span>
-              <span className="font-mono text-[12px] text-ink-ghost">→</span>
-              <span className="font-mono text-[20px] @3xl:text-[24px] font-semibold text-accent leading-none">
-                {m.after}
-              </span>
+      <div className="grid grid-cols-2 gap-px border border-rule bg-rule @3xl:grid-cols-3 @5xl:grid-cols-6">
+        {PAYOFF_STATS.map((stat) => (
+          <div key={stat.label} className="min-w-0 bg-bg px-4 py-5">
+            <div className="font-mono text-[10px] leading-[1.4] tracking-[0.08em] text-ink-ghost uppercase">
+              {stat.before}
             </div>
-            <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">{m.label}</div>
+            <div className="mt-3 font-mono text-[26px] leading-none font-semibold text-accent tabular-nums">
+              {stat.after}
+            </div>
+            <div className="mt-2 font-mono text-[11px] leading-[1.45] text-ink-faint lowercase">{stat.label}</div>
           </div>
         ))}
       </div>
 
-      {/* problem → answer */}
-      <div className="mt-8 grid grid-cols-1 @3xl:grid-cols-2 border border-rule bg-rule gap-px">
-        <div className="bg-panel px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
-          the problem
+      <div className="mt-8 border border-rule">
+        <div className="grid grid-cols-2 border-b border-rule bg-panel px-4 py-2.5">
+          <span className="font-mono text-[10px] tracking-[0.12em] text-alert uppercase">risk</span>
+          <span className="font-mono text-[10px] tracking-[0.12em] text-accent uppercase">answer</span>
         </div>
-        <div className="bg-panel px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint hidden @3xl:block">
-          the answer
-        </div>
-        {PAYOFF_SOLVES.map((row) => (
-          <div key={row.problem} className="contents">
-            <div className="bg-bg px-4 py-4 min-w-0">
-              <div className="font-mono text-[13px] text-alert lowercase">{row.problem}</div>
-            </div>
-            <div className="bg-bg px-4 py-4 min-w-0">
-              <div className="font-mono text-[13px] text-accent lowercase">{row.answer}</div>
-              <div className="mt-1 font-mono text-[12px] leading-[1.6] text-ink-faint lowercase">{row.detail}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* honest limits */}
-      <div className="mt-8 border border-rule bg-bg">
-        <div className="bg-panel px-3.5 py-2 border-b border-rule font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
-          honest limits · outside the version 1 gate
-        </div>
-        <div className="grid grid-cols-1 @3xl:grid-cols-3 gap-px bg-rule">
-          {OPEN_QUESTIONS.map((q) => (
-            <div key={q.q} className="bg-bg px-4 py-4 min-w-0">
-              <div className="font-mono text-[12.5px] font-semibold text-ink lowercase">{q.q}</div>
-              <p className="mt-1.5 font-mono text-[12px] leading-[1.65] text-ink-faint lowercase">{q.detail}</p>
+        <div className="grid grid-cols-1 gap-px bg-rule">
+          {SOLVES_ROWS.map((row) => (
+            <div key={row.problem} className="grid grid-cols-1 bg-bg @3xl:grid-cols-2">
+              <p className="border-b border-rule px-4 py-4 font-mono text-[12.5px] leading-[1.6] text-ink-faint lowercase @3xl:border-r @3xl:border-b-0">
+                {row.problem}
+              </p>
+              <p className="px-4 py-4 font-mono text-[12.5px] leading-[1.6] text-ink lowercase">{row.answer}</p>
             </div>
           ))}
         </div>
-        <div className="px-4 py-3 border-t border-rule font-mono text-[11.5px] leading-[1.6] text-ink-faint lowercase">
-          none of these block version 1. the markdown spec remains canonical.{' '}
-          <a href="#/spec" className="text-ink hover:text-accent transition-colors">
-            read it in full →
-          </a>
-        </div>
+      </div>
+
+      <div className="mt-8 flex flex-wrap items-center gap-3">
+        <a
+          href="#/protocol"
+          className="inline-flex h-11 items-center border border-ink bg-ink px-5 font-mono text-[14px] text-bg lowercase transition-colors hover:bg-bg hover:text-ink"
+        >
+          integration protocol →
+        </a>
+        <a
+          href="#/quality"
+          className="inline-flex h-11 items-center border border-ink bg-bg px-5 font-mono text-[14px] text-ink lowercase transition-colors hover:bg-ink hover:text-bg"
+        >
+          quality protocol
+        </a>
+        <a
+          href="#/scenarios"
+          className="font-mono text-[13px] text-ink-faint lowercase transition-colors hover:text-accent"
+        >
+          compare all scenarios →
+        </a>
+        <a href="#/spec" className="font-mono text-[13px] text-ink-faint lowercase transition-colors hover:text-accent">
+          read the full spec →
+        </a>
       </div>
     </Section>
   )

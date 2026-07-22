@@ -1,23 +1,19 @@
 import { MapDatasheet, SystemMap } from '@lib/components/diagrams/SystemMap'
 import { Section } from '@lib/components/Section'
+import { SpecRow, SpecSheet } from '@lib/components/SpecSheet'
 import { StatusDot } from '@lib/components/schematic/StatusDot'
 import { useEffect, useRef, useState } from 'react'
 import { MAP_EDGES, MAP_INFO, MAP_NODES } from '../content/architecture'
 
-/** matches tailwind @5xl container width (64rem) */
 const PAIRED_LAYOUT_MIN_WIDTH = 1024
 
 const LEGEND = [
-  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: 'track owner / boundary' },
-  { swatch: <span className="inline-block size-3 border border-ink-faint bg-bg" />, label: 'controlled / evidence' },
-  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: 'operator / production' },
-  { swatch: <StatusDot pulse />, label: 'active flow' },
+  { swatch: <span className="inline-block size-3 border-[1.25px] border-ink bg-bg" />, label: 'core' },
+  { swatch: <span className="inline-block size-3 border border-ink-faint bg-bg" />, label: 'track boundary' },
+  { swatch: <span className="inline-block size-3 border border-rule bg-bg" />, label: 'external' },
+  { swatch: <StatusDot pulse />, label: 'selected flow' },
 ] as const
 
-/**
- * A4 — the system map. One public boundary in the middle, the deterministic
- * track above it, the real-model track below it, evidence and graders shared.
- */
 export function MapSection() {
   const [selected, setSelected] = useState('harness')
   const layoutRef = useRef<HTMLDivElement>(null)
@@ -26,20 +22,20 @@ export function MapSection() {
   const [mapHeight, setMapHeight] = useState<number | undefined>()
 
   useEffect(() => {
-    const layoutEl = layoutRef.current
-    const mapEl = mapRef.current
-    if (!layoutEl || !mapEl) return
+    const layout = layoutRef.current
+    const map = mapRef.current
+    if (!layout || !map) return
 
     const sync = () => {
-      const paired = layoutEl.clientWidth >= PAIRED_LAYOUT_MIN_WIDTH
+      const paired = layout.clientWidth >= PAIRED_LAYOUT_MIN_WIDTH
       setPairedLayout(paired)
-      setMapHeight(paired ? mapEl.offsetHeight : undefined)
+      setMapHeight(paired ? map.offsetHeight : undefined)
     }
 
     sync()
     const observer = new ResizeObserver(sync)
-    observer.observe(layoutEl)
-    observer.observe(mapEl)
+    observer.observe(layout)
+    observer.observe(map)
     return () => observer.disconnect()
   }, [])
 
@@ -50,26 +46,26 @@ export function MapSection() {
       id="map"
       index="03"
       eyebrow="system map"
-      title="one public boundary, two tracks around it."
-      lede="the integration runner and the e2e suite both drive the same harness through harness::send. only the far side of the router boundary differs. click any node to read its datasheet."
+      title="the public path stays fixed. the model boundary changes by track."
+      lede="click any node to inspect its responsibility. integration routes to a controlled script; quality routes to the production provider. both return to the same harness-owned durability and evidence boundaries."
     >
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mb-5">
+      <div className="mb-5 flex flex-wrap items-center gap-x-5 gap-y-2">
         {LEGEND.map((item) => (
           <span key={item.label} className="flex items-center gap-x-2">
             {item.swatch}
-            <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">{item.label}</span>
+            <span className="font-mono text-[10px] tracking-[0.06em] text-ink-faint uppercase">{item.label}</span>
           </span>
         ))}
       </div>
 
-      <div ref={layoutRef} className="grid grid-cols-1 @5xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-stretch">
-        <div ref={mapRef} className="border border-rule bg-bg p-3 overflow-x-auto min-h-0 self-start">
+      <div ref={layoutRef} className="grid grid-cols-1 items-stretch gap-6 @5xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div ref={mapRef} className="min-h-0 self-start overflow-x-auto border border-rule bg-bg p-3">
           <div className="min-w-[760px]">
             <SystemMap nodes={MAP_NODES} edges={MAP_EDGES} selected={selected} onSelect={setSelected} />
           </div>
         </div>
         <div
-          className="@5xl:sticky @5xl:top-16 min-h-0 overflow-hidden"
+          className="min-h-0 overflow-hidden @5xl:sticky @5xl:top-16"
           style={pairedLayout && mapHeight ? { height: mapHeight } : undefined}
         >
           <MapDatasheet
@@ -78,6 +74,21 @@ export function MapSection() {
             layoutKey={pairedLayout ? mapHeight : 'stack'}
           />
         </div>
+      </div>
+
+      <div className="mt-6">
+        <SpecSheet title="the boundary rule" meta="one run selects one branch">
+          <SpecRow name="integration" type="scripted router">
+            exact model requests and ordered frames make contract behavior reproducible without credentials.
+          </SpecRow>
+          <SpecRow name="quality / e2e" type="production router + provider">
+            the pinned subject retains real inference, capability choice, latency, usage, and cost.
+          </SpecRow>
+          <SpecRow name="shared" type="public durable path">
+            harness::send, queueing, status, transcript, domain effects, traces, classification, and cleanup remain
+            authoritative.
+          </SpecRow>
+        </SpecSheet>
       </div>
     </Section>
   )
