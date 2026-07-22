@@ -79,6 +79,7 @@ fn build_messages() -> Vec<(&'static str, Message)> {
             "WorkerRegistered",
             Message::WorkerRegistered {
                 worker_id: Uuid::new_v4().to_string(),
+                reattach_token: None,
             },
         ),
     ]
