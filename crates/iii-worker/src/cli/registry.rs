@@ -353,26 +353,23 @@ pub fn enforce_dep_graph_bounds(
 
     // Deepest path on which each node has already been expanded. A DAG
     // within bounds expands each node at most MAX_DEPENDENCY_DEPTH + 1
-    // times, so total work is bounded by node_count * (depth + 1).
+    // times (once per strictly deeper path), so the number of expansions
+    // — the only work that pushes new frontier entries — is bounded by
+    // node_count * (depth + 1).
     let mut best_depth: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut frontier: Vec<(&str, u32)> = vec![(graph.root.name.as_str(), 0)];
     // Backstop against a graph that is malformed in a way the DAG
     // invariant should have prevented (self-reference, hidden cycle).
-    // With deduped adjacency and memoization a well-formed in-bounds
-    // graph never approaches this ceiling.
-    let mut walked = 0u32;
-    let walk_budget = node_count
+    // It counts *expansions*, not frontier pops: a dense DAG pushes each
+    // node once per parent, so pops grow with node_count squared while
+    // expansions stay linear. Bounding pops here would reject a valid
+    // dense graph; bounding expansions does not. Memo-skipped pops are
+    // O(1) and cannot outnumber the pushes the expansions produced.
+    let mut expanded = 0u32;
+    let expansion_budget = node_count
         .saturating_add(1)
         .saturating_mul(MAX_DEPENDENCY_DEPTH + 1);
     while let Some((node, depth)) = frontier.pop() {
-        walked += 1;
-        if walked > walk_budget {
-            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
-                dimension: "edge_traversal".into(),
-                limit: walk_budget,
-                actual: walked,
-            });
-        }
         if depth >= MAX_DEPENDENCY_DEPTH {
             return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
                 dimension: "depth".into(),
@@ -386,6 +383,14 @@ pub fn enforce_dep_graph_bounds(
             continue;
         }
         best_depth.insert(node, depth);
+        expanded += 1;
+        if expanded > expansion_budget {
+            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
+                dimension: "edge_traversal".into(),
+                limit: expansion_budget,
+                actual: expanded,
+            });
+        }
         if let Some(children) = adjacency.get(node) {
             for &child in children {
                 frontier.push((child, depth + 1));

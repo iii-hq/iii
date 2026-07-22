@@ -616,6 +616,54 @@ fn dep_graph_accepts_wide_shared_dependencies() {
 }
 
 #[test]
+fn dep_graph_accepts_dense_layered_graph() {
+    // Regression for the backstop itself. `walked` counts frontier pops,
+    // and a dense DAG pushes each node once per parent, so pops grow
+    // roughly with node_count squared while distinct nodes stay small.
+    // A budget that is only linear in node_count therefore rejects a
+    // valid dense graph. This is the maximal shape within bounds: four
+    // fully-connected layers of width 8 — 32 nodes (the transitive_count
+    // cap), longest path 4 (under the depth cap) — which produces ~200
+    // pops and tripped the first linear budget.
+    const WIDTH: usize = 8;
+    let layers: Vec<Vec<String>> = (0..4)
+        .map(|l| (0..WIDTH).map(|w| format!("l{l}_{w}")).collect())
+        .collect();
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for name in layers.iter().flatten() {
+        nodes.push(make_resolved_worker(name));
+    }
+    for name in &layers[0] {
+        edges.push(ResolvedEdge {
+            from: "root".into(),
+            to: name.clone(),
+            range: "*".into(),
+        });
+    }
+    for pair in layers.windows(2) {
+        for from in &pair[0] {
+            for to in &pair[1] {
+                edges.push(ResolvedEdge {
+                    from: from.clone(),
+                    to: to.clone(),
+                    range: "*".into(),
+                });
+            }
+        }
+    }
+
+    let graph = ResolvedWorkerGraph {
+        root: make_root_worker("root"),
+        target: None,
+        graph: nodes,
+        edges,
+    };
+    enforce_dep_graph_bounds(&graph).expect("dense in-bounds layered graph is accepted");
+}
+
+#[test]
 fn dep_graph_tolerates_repeated_edges() {
     // A malformed resolver response repeating the same edge must not be
     // able to inflate the traversal: deduped adjacency collapses the
