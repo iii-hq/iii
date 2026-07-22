@@ -1,6 +1,6 @@
 {
   "name": "@iii-dev/helpers",
-  "version": "0.21.8-next.3",
+  "version": "0.22.0",
   "private": false,
   "publishConfig": { "access": "public" },
   "type": "module",
