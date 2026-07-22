@@ -249,6 +249,45 @@ mod tests {
         assert!(!data_dir().as_os_str().is_empty());
     }
 
+    /// `ensure_dirs()` creates the managed bin dir (and data dir) under a fresh
+    /// HOME. Hermetic: relocates HOME to a tempdir so nothing touches the real
+    /// filesystem. `#[serial]` because it mutates the process env.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial]
+    fn test_ensure_dirs_creates_bin_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let orig_home = std::env::var_os("HOME");
+        let orig_xdg = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: #[serial] guarantees no parallel env mutation. Clear
+        // XDG_DATA_HOME so data_dir() falls back under the tempdir HOME.
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+
+        let result = ensure_dirs();
+        let bin = bin_dir();
+        let data = data_dir();
+
+        unsafe {
+            match orig_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match orig_xdg {
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+
+        assert!(result.is_ok(), "ensure_dirs failed: {:?}", result.err());
+        let bin = bin.unwrap();
+        assert!(bin.starts_with(home.path()), "bin dir escaped tempdir HOME");
+        assert!(bin.is_dir(), "bin dir was not created: {}", bin.display());
+        assert!(data.is_dir(), "data dir was not created: {}", data.display());
+    }
+
     #[test]
     fn test_binary_path_format() {
         let path = binary_path("iii-console").unwrap();
