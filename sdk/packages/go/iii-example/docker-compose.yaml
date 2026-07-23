@@ -1,0 +1,46 @@
+# Telemetry stack for the Go observability example: an OpenTelemetry Collector that
+# receives OTLP from the worker and forwards to OpenObserve, a single-binary UI for
+# logs/traces/metrics. Mirrors sdk/packages/node/iii-example/docker-compose.yaml.
+#
+#   docker compose up -d            # start the stack
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 go run .   # run the worker
+#   open http://localhost:5080      # OpenObserve UI (root@example.com / Complexpass#123)
+#   docker compose logs -f otel-collector   # or just watch records on the collector
+
+services:
+  # OpenObserve — observability UI for logs, traces, and metrics.
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v0.50.3
+    container_name: iii-go-openobserve
+    ports:
+      - "5080:5080" # Web UI
+    environment:
+      - ZO_ROOT_USER_EMAIL=root@example.com
+      - ZO_ROOT_USER_PASSWORD=Complexpass#123
+      - ZO_DATA_DIR=/data
+    volumes:
+      - ./data/openobserve:/data
+    networks:
+      - iii-network
+    restart: unless-stopped
+
+  # OpenTelemetry Collector — receives OTLP and forwards to OpenObserve (+ debug log).
+  otel-collector:
+    image: otel/opentelemetry-collector:0.114.0
+    container_name: iii-go-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP (the Go SDK exporter targets this)
+      - "13133:13133" # health_check
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    networks:
+      - iii-network
+    depends_on:
+      - openobserve
+    restart: unless-stopped
+
+networks:
+  iii-network:
+    driver: bridge
