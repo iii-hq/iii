@@ -1456,7 +1456,12 @@ where
     P: TextMapPropagator,
 {
     let mut carrier: HashMap<String, String> = HashMap::new();
-    carrier.insert(header.to_string(), value.to_string());
+    // An empty header value is treated as absent. A present-but-empty `baggage`
+    // header makes `BaggagePropagator::extract` log a per-call
+    // `InvalidKeyValueFormat` warning (empty split yields an unparsable entry).
+    if !value.is_empty() {
+        carrier.insert(header.to_string(), value.to_string());
+    }
     propagator.extract(&carrier)
 }
 
@@ -1479,13 +1484,16 @@ pub fn extract_context_with_state(
     baggage: Option<&str>,
 ) -> Context {
     let mut carrier: HashMap<String, String> = HashMap::new();
-    if let Some(tp) = traceparent {
+    // Empty values are treated as absent: a present-but-empty `baggage` header
+    // makes `BaggagePropagator::extract` emit a per-call `InvalidKeyValueFormat`
+    // warning, so callers passing `Some("")` must not seed the carrier.
+    if let Some(tp) = traceparent.filter(|s| !s.is_empty()) {
         carrier.insert("traceparent".to_string(), tp.to_string());
     }
-    if let Some(ts) = tracestate {
+    if let Some(ts) = tracestate.filter(|s| !s.is_empty()) {
         carrier.insert("tracestate".to_string(), ts.to_string());
     }
-    if let Some(bg) = baggage {
+    if let Some(bg) = baggage.filter(|s| !s.is_empty()) {
         carrier.insert("baggage".to_string(), bg.to_string());
     }
 
@@ -7687,6 +7695,47 @@ mod tests {
         drop(span_ref);
         assert!(inject_traceparent_from_context(&cx).is_none());
         assert!(inject_baggage_from_context(&cx).is_none());
+    }
+
+    #[test]
+    fn empty_baggage_header_does_not_emit_propagator_warning() {
+        use std::sync::{Arc, Mutex};
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
+
+        // Captures the metadata name of every event emitted on this thread.
+        // The OTel `BaggagePropagator` logs `warn!(name: "BaggagePropagator
+        // .Extract.InvalidKeyValueFormat", ...)` when it parses an empty
+        // `baggage` header, which is exactly what a present-but-empty carrier
+        // entry produced before the fix.
+        #[derive(Clone, Default)]
+        struct WarnCapture(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> Layer<S> for WarnCapture {
+            fn on_event(&self, event: &tracing::Event<'_>, _cx: LayerContext<'_, S>) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(event.metadata().name().to_string());
+            }
+        }
+
+        let capture = WarnCapture::default();
+        let names = capture.0.clone();
+        let subscriber = tracing_subscriber::registry().with(capture);
+        with_default(subscriber, || {
+            // Absent and empty baggage must be indistinguishable: neither seeds
+            // the carrier, so the propagator never sees an unparsable header.
+            let _ = extract_context(None, Some(""));
+            let _ = extract_baggage("");
+            let _ = baggage_with_function_id(None, "fn-1");
+        });
+
+        let warned = names.lock().unwrap();
+        assert!(
+            !warned.iter().any(|n| n.contains("BaggagePropagator")),
+            "empty baggage must not trigger BaggagePropagator warnings, got: {warned:?}"
+        );
     }
 
     #[test]
