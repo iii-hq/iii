@@ -133,7 +133,7 @@ jobs:
         if: inputs.slack_thread_ts != ''
         id: slack
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -145,35 +145,20 @@ jobs:
       - name: Generate token
         if: inputs.skip_create_release != true && inputs.dry_run != true
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: inputs.skip_create_release != true && inputs.dry_run != true
         with:
           token: ${{ steps.generate_token.outputs.token }}
           fetch-tags: true
 
-      - name: Compute previous stable tag
-        id: prev
-        if: inputs.skip_create_release != true && inputs.dry_run != true && inputs.tag_prefix != ''
-        env:
-          TAG_PREFIX: ${{ inputs.tag_prefix }}
-          CURRENT_TAG: ${{ inputs.tag_name }}
-        run: |
-          PREFIX="${TAG_PREFIX}v"
-          PREV_STABLE=$(git tag --list "${PREFIX}*" --sort=-v:refname \
-            | grep -E "^${PREFIX}[0-9]+\.[0-9]+\.[0-9]+\$" \
-            | grep -v "^${CURRENT_TAG}\$" \
-            | head -n 1 || true)
-          echo "previous_tag=${PREV_STABLE}" >> "$GITHUB_OUTPUT"
-          echo "::notice::Previous stable tag for release notes: ${PREV_STABLE:-<none, GitHub default>}"
-
       - name: Create GitHub Release
         if: inputs.skip_create_release != true && inputs.dry_run != true
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ steps.generate_token.outputs.token }}
           tag_name: ${{ inputs.tag_name }}
@@ -181,7 +166,6 @@ jobs:
           draft: false
           prerelease: ${{ inputs.is_prerelease }}
           generate_release_notes: true
-          previous_tag: ${{ steps.prev.outputs.previous_tag }}
 
   build:
     name: Build ${{ matrix.target }}
@@ -198,12 +182,12 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.generate_token.outputs.token }}
           ref: refs/tags/${{ inputs.tag_name }}
@@ -211,21 +195,21 @@ jobs:
 
       - name: Download pre-built artifact
         if: inputs.artifact_name != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.artifact_dest }}
 
       - name: Download iii-init (x86_64-musl)
         if: inputs.init_artifacts == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: iii-init-x86_64-unknown-linux-musl
           path: target/x86_64-unknown-linux-musl/release/
 
       - name: Download iii-init (aarch64-musl)
         if: inputs.init_artifacts == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: iii-init-aarch64-unknown-linux-musl
           path: target/aarch64-unknown-linux-musl/release/
@@ -310,7 +294,7 @@ jobs:
     steps:
       - name: Update thread message
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2.0.0
+        uses: slackapi/slack-github-action@v3
         with:
           method: chat.update
           token: ${{ secrets.SLACK_BOT_TOKEN }}

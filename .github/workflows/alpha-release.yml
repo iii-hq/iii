@@ -37,7 +37,6 @@ on:
 
 permissions:
   contents: write # prepare tag push, go tag, GitHub prerelease + binary uploads
-  id-token: write # OIDC / npm + pypi provenance (sdk-node, _py.yml)
 
 jobs:
   prepare:
@@ -52,7 +51,7 @@ jobs:
       dry_run: ${{ inputs.dry_run }}
     steps:
       - name: Checkout selected branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # Default GITHUB_TOKEN (contents: write) is persisted in git config
@@ -119,15 +118,15 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'pnpm'
@@ -167,8 +166,39 @@ jobs:
           --access public
           ${{ needs.prepare.outputs.dry_run == 'true' && '--dry-run' || '' }}
 
-  observability-py:
-    name: Observability Python (pypi)
+  helpers-py-build:
+    name: Helpers Python (build)
+    needs: prepare
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/helpers
+      ref: ${{ needs.prepare.outputs.tag }}
+      artifact_name: pypi-helpers
+
+  helpers-py:
+    name: Helpers Python (pypi)
+    needs: [prepare, helpers-py-build]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-helpers
+          path: dist/
+
+      - name: Publish to PyPI
+        if: needs.prepare.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  observability-py-build:
+    name: Observability Python (build)
     # The shim pins iii-helpers at the release version; publish helpers first so
     # PyPI can resolve the dependency.
     needs: [prepare, helpers-py]
@@ -177,24 +207,31 @@ jobs:
     with:
       package_path: sdk/packages/python/observability
       ref: ${{ needs.prepare.outputs.tag }}
-      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
-    secrets:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      artifact_name: pypi-observability
 
-  helpers-py:
-    name: Helpers Python (pypi)
-    needs: prepare
+  observability-py:
+    name: Observability Python (pypi)
+    needs: [prepare, observability-py-build]
     if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_py.yml
-    with:
-      package_path: sdk/packages/python/helpers
-      ref: ${{ needs.prepare.outputs.tag }}
-      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
-    secrets:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-observability
+          path: dist/
 
-  sdk-py:
-    name: SDK Python (pypi)
+      - name: Publish to PyPI
+        if: needs.prepare.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  sdk-py-build:
+    name: SDK Python (build)
     # iii depends on iii-observability and iii-helpers; publish them first
     # so the package is installable from PyPI.
     needs: [prepare, observability-py, helpers-py]
@@ -203,9 +240,28 @@ jobs:
     with:
       package_path: sdk/packages/python/iii
       ref: ${{ needs.prepare.outputs.tag }}
-      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
-    secrets:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      artifact_name: pypi-sdk
+
+  sdk-py:
+    name: SDK Python (pypi)
+    needs: [prepare, sdk-py-build]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-sdk
+          path: dist/
+
+      - name: Publish to PyPI
+        if: needs.prepare.outputs.dry_run != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
 
   observability-rust:
     name: Observability Rust (cargo)
@@ -277,7 +333,7 @@ jobs:
       # The tag was already pushed by `prepare`; this attaches a prerelease
       # to it. Uses the default GITHUB_TOKEN (contents: write).
       - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: iii ${{ needs.prepare.outputs.version }} (alpha)
@@ -343,7 +399,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             publish_aliases: 'aarch64-unknown-linux-gnu aarch64-apple-darwin'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
           # Build runs checked-out code; uploads go through softprops (token
@@ -368,7 +424,7 @@ jobs:
         run: cargo build -p iii-init --target ${{ matrix.target }} --release
 
       - name: Upload init binary as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iii-init-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/iii-init
@@ -387,7 +443,7 @@ jobs:
 
       - name: Upload release assets
         if: needs.prepare.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           files: target/${{ matrix.target }}/release/iii-init-*.tar.gz,target/${{ matrix.target }}/release/iii-init-*.sha256
