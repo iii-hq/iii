@@ -20,7 +20,14 @@ pub struct SubscriberQueueConfig {
     pub queue_mode: Option<String>,
     pub max_retries: Option<u32>,
     pub concurrency: Option<u32>,
-    pub visibility_timeout: Option<u64>,
+    /// Maximum time in milliseconds a dispatched delivery may remain
+    /// uncompleted before the engine abandons the invocation and the
+    /// delivery flows into the path's normal failure handling (nack →
+    /// retry → DLQ where the adapter supports it). Unset means the
+    /// dispatch is unbounded. The timeout does not cancel work already
+    /// running on a worker, so a retry can overlap the original attempt —
+    /// bounded handlers must be idempotent.
+    pub dispatch_timeout_ms: Option<u64>,
     pub delay_seconds: Option<u64>,
     pub backoff_type: Option<String>,
     pub backoff_delay_ms: Option<u64>,
@@ -67,8 +74,8 @@ impl SubscriberQueueConfig {
         );
         extract_field!(
             config,
-            "visibilityTimeout",
-            subscriber_config.visibility_timeout,
+            "dispatchTimeoutMs",
+            subscriber_config.dispatch_timeout_ms,
             has_any_value,
             as_u64,
             |v| v
@@ -112,6 +119,21 @@ impl SubscriberQueueConfig {
             None
         }
     }
+
+    /// Resolves `dispatch_timeout_ms` into a `Duration`, treating `0` as
+    /// invalid (unbounded) since a zero-duration dispatch timeout would
+    /// abandon every delivery immediately.
+    pub fn dispatch_timeout(&self) -> Option<std::time::Duration> {
+        match self.dispatch_timeout_ms {
+            Some(0) => {
+                tracing::warn!(
+                    "'dispatchTimeoutMs' 0 is invalid; ignoring (dispatch stays unbounded)"
+                );
+                None
+            }
+            ms => ms.map(std::time::Duration::from_millis),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -125,7 +147,7 @@ mod tests {
             "type": "fifo",
             "maxRetries": 5,
             "concurrency": 20,
-            "visibilityTimeout": 3000,
+            "dispatchTimeoutMs": 3000,
             "delaySeconds": 10,
             "backoffType": "exponential",
             "backoffDelayMs": 2000
@@ -138,7 +160,7 @@ mod tests {
         assert_eq!(subscriber_config.queue_mode, Some("fifo".to_string()));
         assert_eq!(subscriber_config.max_retries, Some(5));
         assert_eq!(subscriber_config.concurrency, Some(20));
-        assert_eq!(subscriber_config.visibility_timeout, Some(3000));
+        assert_eq!(subscriber_config.dispatch_timeout_ms, Some(3000));
         assert_eq!(subscriber_config.delay_seconds, Some(10));
         assert_eq!(
             subscriber_config.backoff_type,
@@ -193,5 +215,26 @@ mod tests {
         let config = json!("not an object");
         let result = SubscriberQueueConfig::from_value(Some(&config));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_dispatch_timeout_filters_zero() {
+        let unset = SubscriberQueueConfig::default();
+        assert_eq!(unset.dispatch_timeout(), None);
+
+        let zero = SubscriberQueueConfig {
+            dispatch_timeout_ms: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(zero.dispatch_timeout(), None);
+
+        let bounded = SubscriberQueueConfig {
+            dispatch_timeout_ms: Some(5000),
+            ..Default::default()
+        };
+        assert_eq!(
+            bounded.dispatch_timeout(),
+            Some(std::time::Duration::from_millis(5000))
+        );
     }
 }
