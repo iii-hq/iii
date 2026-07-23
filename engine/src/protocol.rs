@@ -86,6 +86,12 @@ pub enum Message {
         config: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Namespace the trigger's target function resolves in. Optional and
+        /// additive: absent means the engine's default namespace, independent
+        /// of the registering connection's namespace. Older peers that never
+        /// send it stay wire-compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,

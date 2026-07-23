@@ -211,6 +211,7 @@ fn register_subscriber(iii: &IIIClient, function_id: &str, filter: Value) -> Sub
         function_id: function_id.to_string(),
         config: filter,
         metadata: None,
+        namespace: None,
     })
     .expect("register worker trigger");
     Subscriber { rx }

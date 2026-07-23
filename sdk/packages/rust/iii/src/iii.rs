@@ -195,6 +195,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
             function_id: function_id.into(),
             config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
             metadata,
+            namespace: None,
         })
     }
 }
@@ -1232,6 +1233,7 @@ impl IIIClient {
             function_id: input.function_id,
             config: input.config,
             metadata: input.metadata,
+            namespace: input.namespace,
         };
 
         self.inner
@@ -1803,6 +1805,9 @@ impl IIIClient {
                 function_id,
                 config,
                 metadata,
+                // Routing namespace is resolved engine-side; a custom trigger-type
+                // handler does not need it.
+                namespace: _,
             } => {
                 self.handle_register_trigger(id, trigger_type, function_id, config, metadata);
             }

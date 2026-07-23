@@ -322,6 +322,7 @@ impl IIITrigger {
             function_id: function_id.into(),
             config: serde_json::to_value(&self).unwrap(),
             metadata: None,
+            namespace: None,
         }
     }
 }

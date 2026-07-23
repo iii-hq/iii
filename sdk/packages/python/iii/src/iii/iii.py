@@ -1093,6 +1093,7 @@ class III:
             function_id=trigger.function_id,
             config=trigger.config,
             metadata=trigger.metadata,
+            namespace=trigger.namespace,
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)

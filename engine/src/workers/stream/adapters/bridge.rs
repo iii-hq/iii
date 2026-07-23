@@ -285,6 +285,7 @@ impl StreamAdapter for BridgeAdapter {
             })
             .unwrap_or_default(),
             metadata: None,
+            namespace: None,
         });
 
         self.pub_sub.watch_events().await;

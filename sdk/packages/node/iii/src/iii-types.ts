@@ -74,6 +74,11 @@ export type RegisterTriggerMessage = {
   config: unknown
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the trigger's target function resolves in. Omit for the engine's
+   * default namespace, independent of this connection's namespace.
+   */
+  namespace?: string
 }
 
 export type RegisterFunctionFormat = {

@@ -107,6 +107,13 @@ class RegisterTriggerInput(BaseModel):
             "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
         ),
     )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Namespace the trigger's target function resolves in. Omit for the engine's "
+            "default namespace, independent of this connection's namespace."
+        ),
+    )
 
 
 class RegisterTriggerMessage(BaseModel):
@@ -117,6 +124,7 @@ class RegisterTriggerMessage(BaseModel):
     function_id: str = Field()
     config: Any
     metadata: Any | None = Field(default=None)
+    namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
 
 

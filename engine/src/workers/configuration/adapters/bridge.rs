@@ -281,6 +281,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                 function_id: RELAY_FUNCTION_ID.to_string(),
                 config: serde_json::json!({}),
                 metadata: None,
+                namespace: None,
             })
             .map_err(|e| {
                 anyhow::anyhow!("failed to subscribe to remote configuration trigger: {}", e)

@@ -286,6 +286,7 @@ impl QueueAdapter for BridgeAdapter {
             function_id: handler_path.clone(),
             config: serde_json::json!({ "topic": topic }),
             metadata: None,
+            namespace: None,
         }) {
             Ok(t) => t,
             Err(e) => {

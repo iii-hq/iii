@@ -104,16 +104,13 @@ enum NamespaceState {
 /// registry while the matching `RegisterFunction` still sits in the queue,
 /// inverting the pair and resurrecting a function the worker retired.
 ///
-/// `RegisterTrigger` is buffered too, and this is load-bearing. A trigger now
-/// carries the namespace of the worker that registered it (`Trigger::namespace`,
-/// captured via `connection_namespace` in the `RegisterTrigger` handler) so
-/// `Engine::fire_triggers` can run the trigger's target in that namespace rather
-/// than unconditionally in `default`. That capture is only correct once the
-/// connection's namespace is known: a `RegisterTrigger` that arrives before
-/// `engine::workers::register` (the order the SDKs flush in) would otherwise
-/// capture the transient `default` and silently pin the trigger to the wrong
-/// namespace. Buffering it until the namespace resolves makes the capture read
-/// the real namespace — the same reason `RegisterFunction` is buffered.
+/// `RegisterTrigger` is buffered too, to preserve arrival order relative to the
+/// same connection's `RegisterFunction`s. A trigger carries an explicit target
+/// namespace from the message (absent means `default`), not the connection's, so
+/// buffering is no longer about capturing the connection namespace. Instead it
+/// keeps an earlier-arrived `RegisterFunction` visible when the trigger's RBAC
+/// gate resolves its target: draining in order means the function this trigger
+/// exposes is already in the registry by the time the gate inspects it.
 fn is_namespaced_registration(msg: &Message) -> bool {
     matches!(
         msg,
@@ -1179,6 +1176,7 @@ impl Engine {
                 function_id,
                 config,
                 metadata,
+                namespace,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
@@ -1255,6 +1253,53 @@ impl Engine {
                     reg_function_id = format!("{prefix}::{reg_function_id}");
                 }
 
+                // The trigger's target namespace comes from the message, not the
+                // connection: absent means the engine's default namespace. A
+                // worker can therefore expose a function in any namespace, and
+                // must opt in explicitly to reach its own namespaced functions.
+                let trigger_namespace = namespace
+                    .clone()
+                    .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string());
+
+                // Gate the target the same way `InvokeFunction` does: RBAC is
+                // keyed by function id but inspects the `Function` this trigger
+                // would actually reach in `trigger_namespace`. Without this a
+                // worker could expose any namespace's function over a trigger.
+                if let Some(session) = &worker.session {
+                    let function = self
+                        .resolve_function(Some(&trigger_namespace), &reg_function_id)
+                        .ok();
+                    if !crate::workers::worker::rbac_config::is_function_allowed(
+                        &reg_function_id,
+                        session.config.rbac.clone(),
+                        &session.allowed_functions,
+                        &session.forbidden_functions,
+                        function.as_ref(),
+                    ) {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            trigger_id = %reg_trigger_id,
+                            function_id = %reg_function_id,
+                            namespace = %trigger_namespace,
+                            "trigger registration denied by RBAC"
+                        );
+                        let result_msg = Message::TriggerRegistrationResult {
+                            id: reg_trigger_id,
+                            trigger_type: reg_trigger_type,
+                            function_id: reg_function_id,
+                            error: Some(crate::protocol::ErrorBody::new(
+                                "FORBIDDEN",
+                                format!(
+                                    "function '{}' not allowed in namespace '{}'",
+                                    function_id, trigger_namespace
+                                ),
+                            )),
+                        };
+                        let _ = self.send_msg(worker, result_msg).await;
+                        return Ok(());
+                    }
+                }
+
                 match self
                     .trigger_registry
                     .register_trigger(Trigger {
@@ -1264,12 +1309,7 @@ impl Engine {
                         config: reg_config,
                         worker_id: Some(worker.id),
                         metadata: metadata.clone(),
-                        // Capture the connection's namespace at the point the
-                        // trigger is actually applied. Because `RegisterTrigger`
-                        // is buffered until the namespace is known (see
-                        // `is_namespaced_registration`), this reads the resolved
-                        // namespace, never the transient `default`.
-                        namespace: self.connection_namespace(worker),
+                        namespace: trigger_namespace,
                     })
                     .await
                 {
@@ -3382,6 +3422,66 @@ mod tests {
         }
     }
 
+    fn session_forbidding(function_id: &str) -> crate::workers::worker::rbac_session::Session {
+        use crate::workers::worker::{WorkerManagerConfig, rbac_session::Session};
+        use uuid::Uuid;
+        Session {
+            engine: Arc::new(Engine::new()),
+            config: Arc::new(WorkerManagerConfig::default()),
+            ip_address: "127.0.0.1".to_string(),
+            session_id: Uuid::new_v4(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![function_id.to_string()],
+            allowed_trigger_types: None,
+            allow_function_registration: true,
+            allow_trigger_type_registration: true,
+            context: serde_json::json!({}),
+            function_registration_prefix: None,
+        }
+    }
+
+    /// The RBAC gate on `RegisterTrigger` rejects a trigger whose target the
+    /// session forbids, mirroring `InvokeFunction`: without it a worker could
+    /// expose a forbidden function over a trigger. The registration is refused
+    /// with a `FORBIDDEN` `TriggerRegistrationResult` and never enters the
+    /// registry.
+    #[tokio::test]
+    async fn test_register_trigger_denied_when_target_forbidden() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(tx, session_forbidding("secret::charge"));
+
+        let msg = Message::RegisterTrigger {
+            id: "t-forbidden".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "secret::charge".to_string(),
+            config: serde_json::json!({ "api_path": "charge", "http_method": "POST" }),
+            metadata: None,
+            namespace: Some("default".to_string()),
+        };
+        // dispatch directly to skip the namespace buffer (test worker never
+        // announces a namespace); we only exercise the RBAC gate.
+        engine
+            .dispatch_msg(&worker, &msg)
+            .await
+            .expect("dispatch RegisterTrigger");
+
+        match rx
+            .try_recv()
+            .expect("a TriggerRegistrationResult should be sent")
+        {
+            Outbound::Protocol(Message::TriggerRegistrationResult { error: Some(e), .. }) => {
+                assert_eq!(e.code, "FORBIDDEN", "expected FORBIDDEN, got {e:?}");
+            }
+            other => panic!("expected FORBIDDEN TriggerRegistrationResult, got {other:?}"),
+        }
+        assert!(
+            engine.trigger_registry.triggers.is_empty(),
+            "forbidden trigger must not enter the registry"
+        );
+    }
+
     /// Regression: `function.unregister()` must honor
     /// `function_registration_prefix`. Before the fix, register prepended the
     /// prefix but unregister looked up the raw id, so the entry stayed in
@@ -3616,6 +3716,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({"key": "value"}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -3658,6 +3759,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -4528,6 +4630,7 @@ mod tests {
             function_id: "some_func".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -5109,6 +5212,7 @@ mod tests {
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -5149,6 +5253,7 @@ mod tests {
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -5204,6 +5309,7 @@ mod tests {
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -5277,6 +5383,7 @@ mod tests {
             function_id: "b::echo".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker_b, &reg_msg)
@@ -6287,6 +6394,7 @@ mod tests {
                 function_id: "raced_fn".to_string(),
                 config: serde_json::json!({}),
                 metadata: None,
+                namespace: None,
             };
             engine
                 .router_msg(&old_worker, &reg_fn)
@@ -6688,6 +6796,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &t_msg)
@@ -6855,6 +6964,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({"key": "value"}),
             metadata: Some(serde_json::json!({"team": "platform", "env": "staging"})),
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -6984,6 +7094,7 @@ mod tests {
                 function_id: "orders::handler".to_string(),
                 config: serde_json::json!({}),
                 metadata: None,
+                namespace: None,
             },
             Message::UnregisterTrigger {
                 id: "t1".to_string(),

@@ -149,6 +149,10 @@ pub enum Message {
         config: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Namespace the trigger's target function resolves in. Absent means the
+        /// engine's default namespace, independent of the connection's namespace.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,
@@ -283,6 +287,19 @@ pub struct RegisterTriggerInput {
     /// Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the trigger's target function resolves in. `None` means the
+    /// engine's default namespace, independent of this connection's namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+impl RegisterTriggerInput {
+    /// Resolve this trigger's target function in `namespace` instead of the
+    /// engine's default namespace.
+    pub fn in_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +310,8 @@ pub struct RegisterTriggerMessage {
     pub config: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl RegisterTriggerMessage {
@@ -303,6 +322,7 @@ impl RegisterTriggerMessage {
             function_id: self.function_id.clone(),
             config: self.config.clone(),
             metadata: self.metadata.clone(),
+            namespace: self.namespace.clone(),
         }
     }
 }

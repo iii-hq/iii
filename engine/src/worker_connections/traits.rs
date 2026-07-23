@@ -61,6 +61,8 @@ impl TriggerRegistrator for WorkerConnection {
                     function_id: trigger.function_id,
                     config: trigger.config,
                     metadata: trigger.metadata,
+                    namespace: (trigger.namespace != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.namespace),
                 }))
                 .await;
             if let Err(err) = sent {
@@ -110,6 +112,8 @@ impl TriggerRegistrator for WorkerConnection {
                     function_id: trigger.function_id,
                     config: trigger.config,
                     metadata: trigger.metadata,
+                    namespace: (trigger.namespace != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.namespace),
                 }))
                 .await
                 .map_err(|err| {
