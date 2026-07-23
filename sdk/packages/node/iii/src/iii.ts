@@ -194,6 +194,10 @@ class Sdk implements IIIClient {
   private reconnectAttempt = 0
   private connectionState: IIIConnectionState = 'disconnected'
   private isShuttingDown = false
+  // Set when the engine fatally rejects this worker's registration (e.g. a
+  // namespace/name collision). Terminal: no reconnect follows. Mirrors the
+  // Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
+  private fatalError?: RegistrationRejectedError
 
   constructor(
     private readonly address: string,
@@ -642,6 +646,20 @@ class Sdk implements IIIClient {
   }
 
   /**
+   * The current WebSocket connection state. `'failed'` is terminal — it follows
+   * a fatal registration rejection (see {@link getFatalError}). Mirrors the
+   * Python/Rust SDKs' `get_connection_state()`.
+   */
+  getConnectionState = (): IIIConnectionState => this.connectionState
+
+  /**
+   * The fatal registration rejection that terminated this connection, if any
+   * (e.g. a `WORKER_NAMESPACE_CONFLICT`). `undefined` while healthy. Mirrors the
+   * Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
+   */
+  getFatalError = (): RegistrationRejectedError | undefined => this.fatalError
+
+  /**
    * Gracefully shutdown the iii, cleaning up all resources.
    */
   shutdown = async (): Promise<void> => {
@@ -976,6 +994,9 @@ class Sdk implements IIIClient {
     }
 
     const error = new RegistrationRejectedError(init)
+    // Record it so callers can poll for the terminal cause (parity with the
+    // Python/Rust SDKs); the connection also transitions to `failed` below.
+    this.fatalError = error
     if (init.code === WORKER_NAMESPACE_CONFLICT) {
       this.logError('Registration rejected by engine', error)
     } else {
