@@ -379,6 +379,7 @@ async fn rbac_metadata_filters_see_the_function_from_the_requested_namespace() {
             middleware_function_id: None,
             rbac: Some(rbac),
             handshake_timeout_ms: 10_000,
+            registration_namespace_grace_ms: 5000,
         }),
         ip_address: "127.0.0.1".to_string(),
         session_id: uuid::Uuid::new_v4(),

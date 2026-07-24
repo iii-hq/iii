@@ -409,6 +409,11 @@ pub struct Engine {
     /// the SAME file the engine watches (a non-default name like
     /// `config.yml` otherwise silently splits the two).
     config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
+    /// Registration namespace grace in milliseconds, resolved from the
+    /// `iii-worker-manager` config by `EngineBuilder::build`. Read through
+    /// [`Engine::registration_namespace_grace`], where the `III_NAMESPACE_GRACE_MS`
+    /// env var takes precedence and an unset lock falls back to the 5s default.
+    registration_namespace_grace_ms: Arc<std::sync::OnceLock<u64>>,
 }
 
 fn resolve_registration_id(worker: &WorkerConnection, id: &str) -> String {
@@ -446,7 +451,31 @@ impl Engine {
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
             config_path: Arc::new(std::sync::OnceLock::new()),
+            registration_namespace_grace_ms: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// The effective registration namespace grace. Precedence: the
+    /// `III_NAMESPACE_GRACE_MS` env var (runtime override), then the value
+    /// resolved from the `iii-worker-manager` config by `EngineBuilder::build`,
+    /// then [`REGISTRATION_NAMESPACE_GRACE`] (5s).
+    pub fn registration_namespace_grace(&self) -> Duration {
+        if let Some(ms) = std::env::var("III_NAMESPACE_GRACE_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            return Duration::from_millis(ms);
+        }
+        match self.registration_namespace_grace_ms.get().copied() {
+            Some(ms) => Duration::from_millis(ms),
+            None => REGISTRATION_NAMESPACE_GRACE,
+        }
+    }
+
+    /// Records the configured grace in milliseconds. Called once by
+    /// `EngineBuilder::build`; later calls are ignored (OnceLock semantics).
+    pub fn set_registration_namespace_grace_ms(&self, ms: u64) {
+        let _ = self.registration_namespace_grace_ms.set(ms);
     }
 
     /// Returns the effective `iii-worker-manager` port. Resolved from config
@@ -811,7 +840,8 @@ impl Engine {
     }
 
     /// Starts buffering `worker`'s registrations until its namespace is known,
-    /// and arms the [`REGISTRATION_NAMESPACE_GRACE`] fallback.
+    /// and arms the [registration namespace grace](Engine::registration_namespace_grace)
+    /// fallback.
     ///
     /// Called once per accepted WS connection. Connections that never call this
     /// (in-process workers, tests driving `router_msg` directly) keep
@@ -823,14 +853,40 @@ impl Engine {
 
         let engine = self.clone();
         let worker = worker.clone();
+        let grace = self.registration_namespace_grace();
         tokio::spawn(async move {
-            tokio::time::sleep(REGISTRATION_NAMESPACE_GRACE).await;
-            // A no-op unless this connection is still `Pending` — i.e. unless
-            // `engine::workers::register` never arrived.
+            tokio::time::sleep(grace).await;
+            // The resolve below is a no-op unless this connection is still
+            // `Pending` — i.e. unless `engine::workers::register` never arrived.
+            // Warn on that path so an operator sees the fallback happen and how
+            // to widen the window.
+            if engine.namespace_is_pending(&worker) {
+                tracing::warn!(
+                    worker_id = %worker.id,
+                    grace_ms = grace.as_millis() as u64,
+                    "namespace registration grace of {}ms expired without an \
+                     `engine::workers::register` announce; draining this connection's \
+                     buffered registrations into the `{}` namespace. To allow more time, \
+                     raise the `iii-worker-manager` `registration_namespace_grace_ms` config \
+                     or set the `III_NAMESPACE_GRACE_MS` env var.",
+                    grace.as_millis(),
+                    DEFAULT_NAMESPACE,
+                );
+            }
             engine
                 .resolve_connection_namespace(&worker, DEFAULT_NAMESPACE)
                 .await;
         });
+    }
+
+    /// True while `worker`'s connection is still waiting on its namespace
+    /// announce (registrations are buffered). Used by the grace timer to warn
+    /// only when the fallback actually fires.
+    fn namespace_is_pending(&self, worker: &WorkerConnection) -> bool {
+        matches!(
+            self.namespace_states.get(&worker.id).as_deref(),
+            Some(NamespaceState::Pending(_))
+        )
     }
 
     /// The namespace `worker`'s registrations belong to.
@@ -2601,7 +2657,13 @@ impl Engine {
                     && self.worker_registry.workers.contains_key(&previous)
                     && !self.is_connection_tearing_down(&previous)
                 {
-                    return Err(Self::conflict(kind_label, namespace, function_id, previous));
+                    return Err(self.conflict(
+                        kind_label,
+                        namespace,
+                        function_id,
+                        worker_id,
+                        previous,
+                    ));
                 }
                 occupied.insert((worker_id, kind));
             }
@@ -2613,21 +2675,40 @@ impl Engine {
     }
 
     fn conflict(
+        &self,
         kind: &str,
         namespace: &str,
         function_id: &str,
-        previous: Uuid,
+        rejected: Uuid,
+        owner: Uuid,
     ) -> NamespaceConflict {
+        use colored::Colorize;
+        let owner_name = self.worker_registry.get_worker_name(&owner);
+        let rejected_name = self.worker_registry.get_worker_name(&rejected);
+        let owner_label = owner_name.as_deref().unwrap_or("<unknown>");
+        let rejected_label = rejected_name.as_deref().unwrap_or("<unknown>");
+        // Colored inline; the structured fields below stay plain for parsing.
+        // `colored` auto-disables when the sink is not a TTY (e.g. a log file).
+        let fid_c = function_id.yellow();
+        let ns_c = namespace.cyan();
+        let owner_c = owner_label.green();
+        let rejected_c = rejected_label.red();
         tracing::warn!(
-            owner = %previous,
             namespace = %namespace,
             function_id = %function_id,
-            "{kind} id already owned by a live worker in this namespace — registration rejected"
+            owner_worker_name = %owner_label,
+            owner_worker_id = %owner,
+            rejected_worker_name = %rejected_label,
+            rejected_worker_id = %rejected,
+            "{kind} '{fid_c}' in namespace '{ns_c}' is already owned by live worker \
+             '{owner_c}' ({owner}); rejecting registration from worker '{rejected_c}' \
+             ({rejected}). Only one worker per namespace may own a function id — rename the \
+             function or use a different namespace."
         );
         NamespaceConflict {
             namespace: namespace.to_string(),
             worker_name: function_id.to_string(),
-            owner_worker_id: previous.to_string(),
+            owner_worker_id: owner.to_string(),
         }
     }
 
@@ -3225,6 +3306,34 @@ mod tests {
         engine
             .claim_function("orders", a.id, "svc::g")
             .expect_err("an id already owned via the external path must block the regular claim");
+    }
+
+    /// The same worker re-registering the same id is idempotent, not a conflict:
+    /// the `previous == worker_id` branch in `claim_in` re-claims instead of
+    /// rejecting, so a hot-reload that re-exports a function keeps ownership and
+    /// the registry's last-write-wins overwrite applies.
+    #[tokio::test]
+    async fn claim_function_is_idempotent_for_the_same_worker() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let a = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(a.clone());
+
+        engine
+            .claim_function("orders", a.id, "svc::f")
+            .expect("first claim by A");
+        // Same worker, same (namespace, id): must succeed, not conflict.
+        engine
+            .claim_function("orders", a.id, "svc::f")
+            .expect("re-claim by the same worker must be idempotent, not rejected");
+
+        let owner = engine
+            .function_owners
+            .get(&("orders".to_string(), "svc::f".to_string()))
+            .map(|e| e.value().0);
+        assert_eq!(owner, Some(a.id), "the same worker must still own the id");
     }
 
     #[tokio::test]

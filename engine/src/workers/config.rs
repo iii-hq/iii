@@ -744,14 +744,20 @@ impl EngineBuilder {
         // unambiguous "primary" beyond declaration order. Fall back to
         // DEFAULT_PORT if no entry is present or its config is shaped
         // unexpectedly; that matches the legacy hardcoded behavior.
-        let resolved_port = workers
+        let manager_config = workers
             .iter()
             .find(|e| e.worker_type() == "iii-worker-manager")
             .and_then(|e| e.config.clone())
-            .and_then(|v| serde_json::from_value::<super::worker::WorkerManagerConfig>(v).ok())
+            .and_then(|v| serde_json::from_value::<super::worker::WorkerManagerConfig>(v).ok());
+        let resolved_port = manager_config
+            .as_ref()
             .map(|c| c.port)
             .unwrap_or(super::worker::DEFAULT_PORT);
         self.engine.set_worker_manager_port(resolved_port);
+        if let Some(ref c) = manager_config {
+            self.engine
+                .set_registration_namespace_grace_ms(c.registration_namespace_grace_ms);
+        }
 
         // Publish the absolute config path so worker-spawning code can hand
         // it to child processes (III_CONFIG_PATH). Absolutized because the
