@@ -12,7 +12,7 @@ How a call flows: every worker opens a WebSocket to one engine process (default 
 
 ## Extending
 
-If a capability is missing, the gap is filled by a worker, never by changing the engine: `iii worker add <name>` installs one from the registry (browse it in-mesh with `directory::registry::workers::list` / `::info`), and writing one is a small contract in any language that speaks WebSocket and JSON. Before writing worker code, fetch the SDK reference page for your language as markdown; https://iii.dev/docs/llms.txt is the generated index of every doc page (Node.js, Python, Rust, browser SDKs, and the raw engine wire protocol). Do not write SDK code from memory.
+If a capability is missing, the gap is filled by a worker, never by changing the engine. Find one first: browse the public registry in-mesh with `directory::registry::workers::list` / `::info`, then install it by calling the `worker::add` function with `{ source: { kind: "registry", name: "<name>" } }` (a human at a terminal uses `iii worker add <name>` for the same thing). Writing a worker is a small contract in any language that speaks WebSocket and JSON. Before writing worker code, fetch the SDK reference page for your language as markdown; https://iii.dev/docs/llms.txt is the generated index of every doc page (Node.js, Python, Rust, browser SDKs, and the raw engine wire protocol). Do not write SDK code from memory.
 
 ## Operating
 
