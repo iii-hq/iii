@@ -16,7 +16,7 @@ If a capability is missing, the gap is filled by a worker, never by changing the
 
 ## Operating
 
-Bare `iii` starts the engine from `./config.yaml`; the file is watched, and only added, removed, or changed workers restart on an edit. Per-worker settings are a separate layer owned by the configuration worker: seeded from `config.yaml` once at first boot, then edited live from disk, `configuration::set`, or the console Workers tab with no engine reload. `iii console` is the visual UI (live traces, workers, functions, settings forms); `iii trigger <fn> key=value` invokes any registered function from the terminal. The docs describe the latest release line; on an older engine, read the upgrading guide before applying release-specific instructions.
+Bare `iii` starts the engine from `./config.yaml`; the file is watched, and only added, removed, or changed workers restart on an edit. Per-worker settings are a separate layer owned by the configuration worker: `config.yaml` values are only the initial seed, and the live settings persist under `./config/` (one file per worker). Edit those files directly, call `configuration::set`, or use the console Workers tab; all three apply without an engine reload, and an invalid edit is rejected with the previous valid value staying in effect. `iii console` is the visual UI (live traces, workers, functions, settings forms); `iii trigger <fn> key=value` invokes any registered function from the terminal. The docs describe the latest release line; on an older engine, read the upgrading guide before applying release-specific instructions.
 
 ## Where the depth lives
 
