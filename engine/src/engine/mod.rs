@@ -1480,8 +1480,13 @@ impl Engine {
                         return Ok(());
                     }
 
+                    // Bypass middleware only for the exact builtin infrastructure
+                    // ids, NOT the whole `engine::*` prefix: a worker-registered
+                    // `engine::foo` must not skip the operator's middleware.
                     if let Some(middleware_id) = &session.config.middleware_function_id
-                        && !function_id.starts_with("engine::")
+                        && !crate::workers::worker::rbac_config::is_infrastructure_function(
+                            function_id,
+                        )
                     {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
                         // Resolve the middleware in the caller's namespace and hand

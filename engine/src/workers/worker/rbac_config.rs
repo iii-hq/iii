@@ -348,10 +348,12 @@ impl<'de> Deserialize<'de> for FunctionFilter {
 //                       ▼
 //                     DENY (FORBIDDEN)
 //
-// Two independent rules define "infrastructure": the RBAC carve-out (this
-// slice, specific IDs) and the middleware bypass (prefix match on
-// `engine::*`, broader — see engine/src/engine/mod.rs). They diverge on
-// purpose: the threat models differ, so do NOT unify them.
+// Both the RBAC carve-out AND the middleware bypass (see
+// engine/src/engine/mod.rs) now key on this exact slice, via
+// [`is_infrastructure_function`]. They used to diverge — the bypass matched the
+// broad `engine::*` prefix — but that let any worker register a function named
+// `engine::foo` and skip the operator's middleware. Keying both on the exact
+// list closes that: only these specific builtin ids are privileged.
 //
 // INFRASTRUCTURE_FUNCTIONS is part of iii's public contract. Within a
 // major version, it is additive-only: IDs are never removed from the
@@ -372,6 +374,13 @@ const INFRASTRUCTURE_FUNCTIONS: &[&str] = &[
     "engine::baggage::set",
     "engine::baggage::get_all",
 ];
+
+/// Whether `function_id` is one of the privileged builtin infrastructure ids.
+/// Both the RBAC carve-out and the middleware bypass key on this exact list, so
+/// a worker-registered `engine::foo` is neither auto-allowed nor middleware-exempt.
+pub(crate) fn is_infrastructure_function(function_id: &str) -> bool {
+    INFRASTRUCTURE_FUNCTIONS.contains(&function_id)
+}
 
 /// Namespace awareness is deliberately partial:
 ///

@@ -13,8 +13,9 @@
 //!   cover them;
 //! - discovery IDs stay gated;
 //! - `forbidden_functions` still wins over the carve-out;
-//! - the middleware bypass for `engine::*` is preserved so infrastructure
-//!   calls do not recurse through user middleware.
+//! - the middleware bypass is preserved for the EXACT infrastructure ids so
+//!   those calls do not recurse through user middleware, but a worker-registered
+//!   `engine::*` id (not in the list) does go through middleware.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -368,12 +369,10 @@ async fn listener_middleware_runs_in_caller_namespace() {
 
 #[tokio::test]
 async fn middleware_bypass_preserved_for_infrastructure_functions() {
-    // Guards the existing prefix-based bypass at engine/src/engine/mod.rs
-    // (`!function_id.starts_with("engine::")`). With the carve-out,
-    // infrastructure calls become reachable on restricted sessions — if the
-    // bypass ever regressed, those calls would start recursing through user
-    // middleware, which is silent surprise behavior. Verify the middleware
-    // handler is NOT invoked when the target is `engine::log::info`.
+    // Guards the exact-list bypass at engine/src/engine/mod.rs
+    // (`!is_infrastructure_function(id)`). `engine::log::info` IS on the list, so
+    // its call must not recurse through user middleware. (The complementary case
+    // — a non-list `engine::*` id going THROUGH middleware — is the next test.)
 
     ensure_default_meter();
     let engine = Arc::new(Engine::new());
@@ -414,5 +413,54 @@ async fn middleware_bypass_preserved_for_infrastructure_functions() {
         middleware_calls.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "middleware must NOT be invoked for engine::* infrastructure calls"
+    );
+}
+
+/// Complement: a worker-registered `engine::*` id that is NOT on the exact
+/// infrastructure list must go THROUGH the operator's middleware, so naming a
+/// function `engine::foo` cannot evade it.
+#[tokio::test]
+async fn middleware_runs_for_non_infrastructure_engine_prefix() {
+    ensure_default_meter();
+    let engine = Arc::new(Engine::new());
+    register_echo_handler(&engine, "engine::custom::probe");
+
+    let middleware_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let middleware_calls_for_handler = middleware_calls.clone();
+    engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: "mw::guard".to_string(),
+            description: Some("middleware that counts calls".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |_input| {
+            let counter = middleware_calls_for_handler.clone();
+            async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                FunctionResult::Success(Some(json!({ "allow": true })))
+            }
+        }),
+    );
+
+    // Expose the id so it clears RBAC and reaches the middleware gate.
+    let rbac = RbacConfig {
+        auth_function_id: None,
+        expose_functions: vec![FunctionFilter::match_pattern("engine::custom::*")],
+        on_trigger_registration_function_id: None,
+        on_trigger_type_registration_function_id: None,
+        on_function_registration_function_id: None,
+    };
+    let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+    let session = session_with(engine.clone(), rbac, vec![], Some("mw::guard".to_string()));
+    let worker = WorkerConnection::with_session(tx, session);
+
+    let (_function_id, _result, error) =
+        expect_result(&engine, &worker, &mut rx, "engine::custom::probe").await;
+    assert!(error.is_none(), "the exposed call must succeed");
+    assert!(
+        middleware_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "a non-infrastructure engine::* id must go through middleware"
     );
 }
