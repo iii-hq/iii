@@ -1164,6 +1164,121 @@ mod tests {
         adapter.unsubscribe("events", "sub").await;
     }
 
+    /// Restart-path coverage for the legacy-queue migration: unlike the
+    /// in-memory test above (which drains a queue seeded in the same store),
+    /// this persists a pre-upgrade `{topic}::{fid}` queue to disk with one
+    /// store instance, then reconstructs a fresh store over the same directory
+    /// and runs the exact production sequence `make_adapter` performs on boot
+    /// (`rebuild_from_storage` → `migrate_legacy_subscriber_queues`). It proves
+    /// the auto-migration recovers a durable message left by a pre-namespace
+    /// engine and delivers it under the `@default` identity.
+    #[tokio::test]
+    async fn restart_rebuild_migrates_persisted_legacy_queue_into_default() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+
+        let dir = std::env::temp_dir().join(format!("iii-queue-migr-{}", uuid::Uuid::new_v4()));
+        let file_path = dir.to_string_lossy().to_string();
+        let cfg = json!({
+            "store_method": "file_based",
+            "file_path": file_path,
+            "save_interval_ms": 50,
+        });
+
+        let legacy_queue = "events::fn.shared";
+        let new_queue = "events::fn.shared@default";
+
+        // Phase 1 — a pre-upgrade engine persists a durable message under the
+        // namespace-less internal queue name, then goes away.
+        {
+            let base_kv = Arc::new(BuiltinKvStore::new(Some(cfg.clone())));
+            let kv_store = Arc::new(QueueKvStore::new(base_kv, Some(cfg.clone())));
+            let pubsub = Arc::new(BuiltInPubSubLite::new(Some(cfg.clone())));
+            let engine = Arc::new(Engine::new());
+            let adapter =
+                BuiltinQueueAdapter::new(kv_store, pubsub, engine, QueueConfig::default());
+            adapter
+                .queue
+                .push(legacy_queue, json!({ "msg": "old" }), None, None)
+                .await;
+            assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 1);
+            // Let the interval saver flush lists+jobs to disk before the store
+            // is dropped, mirroring a running engine that persisted the queue.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        // Phase 2 — the new engine boots over the same directory. Register the
+        // handler in `default`, where a legacy message would have run.
+        let hits = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&hits);
+        let function = Function {
+            handler: Arc::new(move |_id, _input, _session, _meta| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move {
+                    sink.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: "fn.shared".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        let engine = Arc::new(Engine::new());
+        engine
+            .functions
+            .register_function("fn.shared".to_string(), function);
+
+        let base_kv = Arc::new(BuiltinKvStore::new(Some(cfg.clone())));
+        let kv_store = Arc::new(QueueKvStore::new(base_kv, Some(cfg.clone())));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(Some(cfg.clone())));
+        let adapter = BuiltinQueueAdapter::new(
+            kv_store,
+            pubsub,
+            Arc::clone(&engine),
+            QueueConfig::default(),
+        );
+
+        // The exact sequence `make_adapter` runs at construction.
+        adapter
+            .queue
+            .rebuild_from_storage()
+            .await
+            .expect("rebuild queue state from disk");
+        assert_eq!(
+            adapter.queue.queue_depth(legacy_queue).await,
+            1,
+            "the persisted legacy queue should be recovered from disk"
+        );
+        let drained = adapter
+            .queue
+            .migrate_legacy_subscriber_queues(NS_SEP, crate::protocol::DEFAULT_NAMESPACE)
+            .await;
+        assert_eq!(drained, 1, "the recovered legacy queue should be migrated");
+        assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 0);
+        assert_eq!(adapter.queue.queue_depth(new_queue).await, 1);
+
+        // A default-namespace consumer attaches after the drain and processes
+        // the migrated message under the new identity.
+        adapter
+            .subscribe("events", "sub", "fn.shared", "default", None, None)
+            .await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while hits.load(Ordering::SeqCst) < 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the migrated durable message should be processed after restart"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        adapter.unsubscribe("events", "sub").await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // =========================================================================
     // Function queue transport integration tests
     // =========================================================================
