@@ -134,6 +134,11 @@ class OnTriggerRegistrationInput(BaseModel):
     function_id: str = Field(description="ID of the function this trigger is bound to.")
     config: Any = Field(default=None, description="Trigger-specific configuration.")
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the trigger.")
+    namespace: str = Field(
+        default="default",
+        description="Namespace the trigger's target resolves in (explicit, or `default` when absent); "
+        "the same id can exist in several namespaces, so the hook needs this to authorize per namespace.",
+    )
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 

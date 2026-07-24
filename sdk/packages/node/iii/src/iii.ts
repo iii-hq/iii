@@ -251,12 +251,17 @@ class Sdk implements IIIClient {
 
     return {
       id: triggerType.id,
+      // This typed helper pairs a function with its trigger, so it defaults the
+      // trigger's namespace to this worker's — otherwise the function would land
+      // in the worker's namespace and the trigger in `default`, and never resolve
+      // it. The low-level `registerTrigger` keeps the engine default (`default`).
       registerTrigger: (functionId: string, config: TConfig, metadata?: Record<string, unknown>) => {
         return this.registerTrigger({
           type: triggerType.id,
           function_id: functionId,
           config,
           metadata,
+          namespace: this.namespace,
         })
       },
       registerFunction: (functionId, handler, config, metadata?) => {
@@ -266,6 +271,7 @@ class Sdk implements IIIClient {
           function_id: functionId,
           config,
           metadata,
+          namespace: this.namespace,
         })
         return ref
       },
@@ -1166,13 +1172,22 @@ class Sdk implements IIIClient {
     }
   }
 
-  private async onRegisterTrigger(message: { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> }) {
-    const { trigger_type, id, function_id, config, metadata } = message
+  private async onRegisterTrigger(message: {
+    trigger_type: string
+    id: string
+    function_id: string
+    config: unknown
+    metadata?: Record<string, unknown>
+    namespace?: string
+  }) {
+    const { trigger_type, id, function_id, config, metadata, namespace } = message
     const triggerTypeData = this.triggerTypes.get(trigger_type)
 
     if (triggerTypeData) {
       try {
-        await triggerTypeData.handler.registerTrigger({ id, function_id, config, metadata })
+        // Surface the namespace to the handler: a provider that fires the target
+        // later needs it to resolve in the right namespace, not `default`.
+        await triggerTypeData.handler.registerTrigger({ id, function_id, config, metadata, namespace })
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
           message_type: MessageType.TriggerRegistrationResult,

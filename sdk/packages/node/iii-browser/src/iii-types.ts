@@ -52,6 +52,11 @@ export type RegisterTriggerMessage = {
   function_id: string
   /** Trigger-type-specific configuration, matching the shape the trigger type expects. */
   config: unknown
+  /**
+   * Namespace the trigger's target function resolves in. Omit for the engine's
+   * default namespace, independent of this connection's namespace.
+   */
+  namespace?: string
 }
 
 export type RegisterFunctionFormat = {

@@ -186,6 +186,11 @@ class III:
         >>> worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
 
+    def _worker_namespace(self) -> str | None:
+        """Effective worker namespace: explicit option, then ``III_NAMESPACE`` env,
+        else ``None`` (the engine applies its ``default`` namespace)."""
+        return self._options.namespace or os.environ.get("III_NAMESPACE") or None
+
     def __init__(self, address: str, options: InitOptions | None = None) -> None:
         self._address = address
         self._options = options or InitOptions()
@@ -832,6 +837,7 @@ class III:
         function_id = data.get("function_id", "")
         config = data.get("config")
         metadata = data.get("metadata")
+        namespace = data.get("namespace")
 
         result_base = {
             "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
@@ -845,7 +851,13 @@ class III:
 
         try:
             await handler_data.handler.register_trigger(
-                TriggerConfig(id=trigger_id, function_id=function_id, config=config, metadata=metadata)
+                TriggerConfig(
+                    id=trigger_id,
+                    function_id=function_id,
+                    config=config,
+                    metadata=metadata,
+                    namespace=namespace,
+                )
             )
             await self._send(result_base)
         except Exception as e:

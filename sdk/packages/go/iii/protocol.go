@@ -139,6 +139,9 @@ type RegisterTriggerMessage struct {
 	FunctionID  string          `json:"function_id"`
 	Config      json.RawMessage `json:"config"`
 	Metadata    json.RawMessage `json:"metadata,omitempty"`
+	// Namespace the trigger's target FunctionID resolves in. Absent means the
+	// engine's default namespace, independent of the connection's namespace.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // TriggerRegistrationResult is the engine's ack for a RegisterTrigger; Error is set

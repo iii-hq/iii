@@ -276,6 +276,12 @@ impl RegisterTriggerTypeMessage {
 
 /// Input for [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
 /// The `id` is auto-generated internally.
+///
+/// **Breaking change:** the `namespace` field was added. Code that constructs
+/// this with a struct literal must now set it (use `namespace: None` for the
+/// engine default). To avoid struct-literal churn, prefer the builder:
+/// `IIITrigger::Http(..).for_function(id).in_namespace(ns)`, which fills every
+/// field including `namespace`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterTriggerInput {
     /// Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).

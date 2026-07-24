@@ -54,6 +54,7 @@ async fn register_healthcheck_function_and_trigger() {
                 "description": "Healthcheck endpoint",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 

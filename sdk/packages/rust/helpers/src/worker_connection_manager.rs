@@ -87,6 +87,12 @@ pub struct OnTriggerTypeRegistrationResult {
     pub description: Option<String>,
 }
 
+/// Wire-compat default for [`OnTriggerRegistrationInput::namespace`] when an
+/// older engine omits the field.
+fn default_namespace_field() -> String {
+    "default".to_string()
+}
+
 /// Input passed to the `on_trigger_registration_function_id` hook
 /// when a worker attempts to register a trigger through the RBAC port.
 /// Return an [`OnTriggerRegistrationResult`] with the (possibly mapped)
@@ -104,6 +110,11 @@ pub struct OnTriggerRegistrationInput {
     /// Arbitrary metadata attached to the trigger.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the trigger's target resolves in (explicit, or `default` when
+    /// absent). The same function id can exist in several namespaces, so the hook
+    /// needs this to authorize per target namespace.
+    #[serde(default = "default_namespace_field")]
+    pub namespace: String,
     /// Auth context from `AuthResult.context` for this session.
     pub context: Value,
 }

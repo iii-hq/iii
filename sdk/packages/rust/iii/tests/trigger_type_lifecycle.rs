@@ -170,6 +170,7 @@ async fn create_consumer(state: &LifecycleState) -> iii_sdk::IIIClient {
         function_id: CONSUMER_FN.to_string(),
         config: json!({ "tag": "test" }),
         metadata: None,
+        namespace: None,
     })
     .expect("register trigger");
 

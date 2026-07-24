@@ -154,6 +154,7 @@ async fn mixed_registration_types_each_sent_once() {
             function_id: "dedup::mixed::fn".to_string(),
             config: json!({"foo": "bar"}),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
     drop(trigger);

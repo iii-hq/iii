@@ -184,6 +184,11 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
     }
 
     /// Register a trigger with compile-time validated trigger config and optional metadata.
+    ///
+    /// This typed helper pairs a function with its trigger, so it defaults the
+    /// trigger's namespace to this worker's — otherwise the function lands in the
+    /// worker's namespace and the trigger in `default`, never resolving it. The
+    /// low-level [`IIIClient::register_trigger`] keeps the engine default.
     pub fn register_trigger_with_metadata(
         &self,
         function_id: impl Into<String>,
@@ -195,7 +200,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
             function_id: function_id.into(),
             config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
             metadata,
-            namespace: None,
+            namespace: self.iii.namespace(),
         })
     }
 }
@@ -884,6 +889,16 @@ impl IIIClient {
         }
     }
 
+    /// The effective worker namespace (resolved from `InitOptions.namespace` /
+    /// `III_NAMESPACE`), or `None` for the engine's `default`.
+    pub fn namespace(&self) -> Option<String> {
+        self.inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .and_then(|md| md.namespace.clone())
+    }
+
     /// Fatal error that stopped the worker, if any. Set when the engine rejects
     /// registration (see [`Error::RegistrationRejected`]); the worker does not
     /// reconnect once this is populated.
@@ -1220,6 +1235,7 @@ impl IIIClient {
     ///     function_id: "greet".to_string(),
     ///     config: json!({ "api_path": "/greet", "http_method": "GET" }),
     ///     metadata: None,
+    ///     namespace: None,
     /// })?;
     /// // Later...
     /// trigger.unregister();
@@ -1805,11 +1821,19 @@ impl IIIClient {
                 function_id,
                 config,
                 metadata,
-                // Routing namespace is resolved engine-side; a custom trigger-type
-                // handler does not need it.
-                namespace: _,
+                // Surfaced to the handler via `TriggerConfig.namespace`: a custom
+                // provider that stores the config and later calls `trigger()`
+                // needs it to fire the target in the right namespace.
+                namespace,
             } => {
-                self.handle_register_trigger(id, trigger_type, function_id, config, metadata);
+                self.handle_register_trigger(
+                    id,
+                    trigger_type,
+                    function_id,
+                    config,
+                    metadata,
+                    namespace,
+                );
             }
             Message::UnregisterTrigger { id, trigger_type } => {
                 self.handle_unregister_trigger(id, trigger_type);
@@ -2189,6 +2213,7 @@ impl IIIClient {
         function_id: String,
         config: Value,
         metadata: Option<Value>,
+        namespace: Option<String>,
     ) {
         let handler = self
             .inner
@@ -2206,6 +2231,7 @@ impl IIIClient {
                     function_id: function_id.clone(),
                     config,
                     metadata,
+                    namespace,
                 };
 
                 match handler.register_trigger(config).await {
@@ -2261,6 +2287,8 @@ impl IIIClient {
                 function_id: String::new(),
                 config: Value::Null,
                 metadata: None,
+                // Unregister carries only the trigger id; no namespace to surface.
+                namespace: None,
             };
 
             if let Err(err) = handler.unregister_trigger(config).await {
@@ -2490,6 +2518,7 @@ mod tests {
                 function_id: "functions.echo".to_string(),
                 config: json!({ "foo": "bar" }),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
 
@@ -2967,6 +2996,7 @@ mod tests {
             function_id: "fn".to_string(),
             config: json!({}),
             metadata: None,
+            namespace: None,
         }
     }
 

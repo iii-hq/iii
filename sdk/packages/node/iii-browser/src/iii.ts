@@ -161,11 +161,16 @@ class Sdk implements ISdk {
 
     return {
       id: triggerType.id,
+      // Pairs a function with its trigger, so it defaults the trigger's namespace
+      // to this worker's — otherwise the function lands in the worker's namespace
+      // and the trigger in `default`, never resolving it. The low-level
+      // `registerTrigger` keeps the engine default (`default`).
       registerTrigger: (functionId: string, config: TConfig) => {
         return this.registerTrigger({
           type: triggerType.id,
           function_id: functionId,
           config,
+          namespace: this.namespace,
         })
       },
       registerFunction: (functionId, handler, config) => {
@@ -174,6 +179,7 @@ class Sdk implements ISdk {
           type: triggerType.id,
           function_id: functionId,
           config,
+          namespace: this.namespace,
         })
         return ref
       },
@@ -767,13 +773,19 @@ class Sdk implements ISdk {
     }
   }
 
-  private async onRegisterTrigger(message: { trigger_type: string; id: string; function_id: string; config: unknown }) {
-    const { trigger_type, id, function_id, config } = message
+  private async onRegisterTrigger(message: {
+    trigger_type: string
+    id: string
+    function_id: string
+    config: unknown
+    namespace?: string
+  }) {
+    const { trigger_type, id, function_id, config, namespace } = message
     const triggerTypeData = this.triggerTypes.get(trigger_type)
 
     if (triggerTypeData) {
       try {
-        await triggerTypeData.handler.registerTrigger({ id, function_id, config })
+        await triggerTypeData.handler.registerTrigger({ id, function_id, config, namespace })
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
           message_type: MessageType.TriggerRegistrationResult,
