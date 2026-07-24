@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 
 use serde::de::{self, MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::function::Function;
@@ -40,6 +41,10 @@ impl WildcardPattern {
 
     pub fn matches(&self, value: &str) -> bool {
         wildcard_match(&self.raw, value)
+    }
+
+    pub fn raw(&self) -> &str {
+        &self.raw
     }
 }
 
@@ -81,10 +86,28 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub enum MetadataValue {
     Exact(Value),
     Wildcard(WildcardPattern),
+}
+
+impl Serialize for MetadataValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Round-trip with `parse_metadata_value`: an exact value serializes as
+        // the raw JSON (so `Exact(true)` -> `true`, not `{"Exact":true}`), and a
+        // wildcard as the `match("...")` string it is parsed back from. The
+        // derived enum-tagged form did NOT round-trip.
+        match self {
+            MetadataValue::Exact(value) => value.serialize(serializer),
+            MetadataValue::Wildcard(pattern) => {
+                serializer.serialize_str(&format!("match(\"{}\")", pattern.raw()))
+            }
+        }
+    }
 }
 
 impl MetadataValue {
@@ -102,17 +125,63 @@ impl MetadataValue {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub enum FunctionFilter {
+#[derive(Debug, Clone)]
+enum FilterMatcher {
     Match(WildcardPattern),
     Metadata(HashMap<String, MetadataValue>),
 }
 
+/// One `expose_functions` rule: a matcher plus an optional namespace scope.
+///
+/// The namespace is optional and additive. When present, the rule applies only
+/// to that namespace; when absent it applies to the `default` namespace only —
+/// a rule without a namespace does NOT match a function reached in another
+/// namespace.
+#[derive(Debug, Clone)]
+pub struct FunctionFilter {
+    matcher: FilterMatcher,
+    namespace: Option<String>,
+}
+
 impl FunctionFilter {
-    pub fn matches(&self, function_id: &str, metadata: Option<&Value>) -> bool {
-        match self {
-            FunctionFilter::Match(pattern) => pattern.matches(function_id),
-            FunctionFilter::Metadata(expected) => {
+    /// A wildcard-id rule scoped to the `default` namespace. Chain
+    /// [`FunctionFilter::in_namespace`] to scope it elsewhere.
+    pub fn match_pattern(pattern: &str) -> Self {
+        Self {
+            matcher: FilterMatcher::Match(WildcardPattern::new(pattern)),
+            namespace: None,
+        }
+    }
+
+    /// A metadata rule scoped to the `default` namespace. Chain
+    /// [`FunctionFilter::in_namespace`] to scope it elsewhere.
+    pub fn metadata(map: HashMap<String, MetadataValue>) -> Self {
+        Self {
+            matcher: FilterMatcher::Metadata(map),
+            namespace: None,
+        }
+    }
+
+    /// Scope this rule to `namespace` instead of the `default` one.
+    pub fn in_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// Whether this rule exposes `function_id` reached in `namespace`. A rule
+    /// scoped to a namespace (explicit, or `default` when absent) only matches
+    /// a request in that same namespace.
+    pub fn matches(&self, function_id: &str, namespace: &str, metadata: Option<&Value>) -> bool {
+        let rule_ns = self
+            .namespace
+            .as_deref()
+            .unwrap_or(crate::protocol::DEFAULT_NAMESPACE);
+        if rule_ns != namespace {
+            return false;
+        }
+        match &self.matcher {
+            FilterMatcher::Match(pattern) => pattern.matches(function_id),
+            FilterMatcher::Metadata(expected) => {
                 let Some(metadata) = metadata else {
                     return false;
                 };
@@ -122,6 +191,35 @@ impl FunctionFilter {
                 expected
                     .iter()
                     .all(|(key, matcher)| obj.get(key).is_some_and(|v| matcher.matches(v)))
+            }
+        }
+    }
+}
+
+impl Serialize for FunctionFilter {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // A namespace-less `match` rule keeps the compact string form; anything
+        // carrying a namespace (or a metadata matcher) uses the map form so it
+        // round-trips through `Deserialize`.
+        match (&self.matcher, &self.namespace) {
+            (FilterMatcher::Match(pattern), None) => {
+                serializer.serialize_str(&format!("match(\"{}\")", pattern.raw()))
+            }
+            _ => {
+                let mut map = serializer.serialize_map(None)?;
+                match &self.matcher {
+                    FilterMatcher::Match(pattern) => map.serialize_entry("match", pattern.raw())?,
+                    FilterMatcher::Metadata(expected) => {
+                        map.serialize_entry("metadata", expected)?
+                    }
+                }
+                if let Some(namespace) = &self.namespace {
+                    map.serialize_entry("namespace", namespace)?;
+                }
+                map.end()
             }
         }
     }
@@ -166,7 +264,10 @@ impl<'de> Deserialize<'de> for FunctionFilter {
                 E: de::Error,
             {
                 if let Some(pattern) = parse_match_pattern(v) {
-                    Ok(FunctionFilter::Match(WildcardPattern::new(&pattern)))
+                    Ok(FunctionFilter {
+                        matcher: FilterMatcher::Match(WildcardPattern::new(&pattern)),
+                        namespace: None,
+                    })
                 } else {
                     Err(de::Error::custom(format!(
                         "expected match(\"pattern\"), got: {}",
@@ -180,25 +281,47 @@ impl<'de> Deserialize<'de> for FunctionFilter {
                 M: MapAccess<'de>,
             {
                 let mut metadata_map: HashMap<String, MetadataValue> = HashMap::new();
+                let mut match_pattern: Option<WildcardPattern> = None;
+                let mut namespace: Option<String> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
-                    if key == "metadata" {
-                        let inner: HashMap<String, Value> = map.next_value()?;
-                        for (k, v) in inner {
-                            metadata_map.insert(k, parse_metadata_value(v));
+                    match key.as_str() {
+                        "metadata" => {
+                            let inner: HashMap<String, Value> = map.next_value()?;
+                            for (k, v) in inner {
+                                metadata_map.insert(k, parse_metadata_value(v));
+                            }
                         }
-                    } else {
-                        let _: Value = map.next_value()?;
+                        // Map form of a wildcard rule, e.g. `{ match: "svc::*" }`.
+                        // The raw pattern is taken as-is (no `match("...")` wrapper).
+                        "match" => {
+                            let raw: String = map.next_value()?;
+                            match_pattern = Some(WildcardPattern::new(&raw));
+                        }
+                        "namespace" => {
+                            namespace = Some(map.next_value()?);
+                        }
+                        _ => {
+                            let _: Value = map.next_value()?;
+                        }
                     }
                 }
 
-                if metadata_map.is_empty() {
-                    Err(de::Error::custom(
-                        "expected a 'metadata' key with filter conditions",
-                    ))
-                } else {
-                    Ok(FunctionFilter::Metadata(metadata_map))
-                }
+                let matcher = match (match_pattern, metadata_map.is_empty()) {
+                    (Some(pattern), true) => FilterMatcher::Match(pattern),
+                    (None, false) => FilterMatcher::Metadata(metadata_map),
+                    (Some(_), false) => {
+                        return Err(de::Error::custom(
+                            "a filter has either a 'match' or a 'metadata' key, not both",
+                        ));
+                    }
+                    (None, true) => {
+                        return Err(de::Error::custom(
+                            "expected a 'match' or 'metadata' key with filter conditions",
+                        ));
+                    }
+                };
+                Ok(FunctionFilter { matcher, namespace })
             }
         }
 
@@ -250,8 +373,19 @@ const INFRASTRUCTURE_FUNCTIONS: &[&str] = &[
     "engine::baggage::get_all",
 ];
 
+/// Namespace awareness is deliberately partial:
+///
+/// - `forbidden_functions` and `allowed_functions` match on the bare function id
+///   and are **global** — a grant or denial of an id applies in every namespace.
+///   These come from the session/auth result, which has no notion of namespace,
+///   so scoping them would be a wider protocol change; they are intentionally not
+///   namespace-aware.
+/// - `expose_functions` filters ARE namespace-scoped: a rule matches only in the
+///   namespace it names (or `default` when it names none). `namespace` here is the
+///   namespace the request resolves the target in.
 pub fn is_function_allowed(
     function_id: &str,
+    namespace: &str,
     config: Option<RbacConfig>,
     allowed_functions: &[String],
     forbidden_functions: &[String],
@@ -282,7 +416,7 @@ pub fn is_function_allowed(
         config
             .expose_functions
             .iter()
-            .any(|filter| filter.matches(function_id, metadata))
+            .any(|filter| filter.matches(function_id, namespace, metadata))
     } else {
         true
     }
@@ -368,20 +502,20 @@ mod tests {
 
     #[test]
     fn filter_match_pattern() {
-        let filter = FunctionFilter::Match(WildcardPattern::new("test::ew::*"));
-        assert!(filter.matches("test::ew::echo", None));
-        assert!(!filter.matches("test::other::echo", None));
+        let filter = FunctionFilter::match_pattern("test::ew::*");
+        assert!(filter.matches("test::ew::echo", "default", None));
+        assert!(!filter.matches("test::other::echo", "default", None));
     }
 
     #[test]
     fn filter_metadata() {
         let mut meta = HashMap::new();
         meta.insert("public".to_string(), MetadataValue::Exact(json!(true)));
-        let filter = FunctionFilter::Metadata(meta);
+        let filter = FunctionFilter::metadata(meta);
 
-        assert!(filter.matches("any", Some(&json!({"public": true}))));
-        assert!(!filter.matches("any", Some(&json!({"public": false}))));
-        assert!(!filter.matches("any", None));
+        assert!(filter.matches("any", "default", Some(&json!({"public": true}))));
+        assert!(!filter.matches("any", "default", Some(&json!({"public": false}))));
+        assert!(!filter.matches("any", "default", None));
     }
 
     #[test]
@@ -443,7 +577,7 @@ mod tests {
     fn access_resolution_forbidden_takes_precedence() {
         let config = RbacConfig {
             auth_function_id: None,
-            expose_functions: vec![FunctionFilter::Match(WildcardPattern::new("*"))],
+            expose_functions: vec![FunctionFilter::match_pattern("*")],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
@@ -452,6 +586,7 @@ mod tests {
         let forbidden = vec!["test::fn".to_string()];
         assert!(!is_function_allowed(
             "test::fn",
+            crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
             &allowed,
             &forbidden,
@@ -471,6 +606,7 @@ mod tests {
         let allowed = vec!["test::fn".to_string()];
         assert!(is_function_allowed(
             "test::fn",
+            crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
             &allowed,
             &[],
@@ -489,6 +625,7 @@ mod tests {
         };
         assert!(is_function_allowed(
             "engine::channels::create",
+            crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
             &[],
             &[],
@@ -500,13 +637,14 @@ mod tests {
     fn access_resolution_deny_by_default() {
         let config = RbacConfig {
             auth_function_id: None,
-            expose_functions: vec![FunctionFilter::Match(WildcardPattern::new("api::*"))],
+            expose_functions: vec![FunctionFilter::match_pattern("api::*")],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
         };
         assert!(!is_function_allowed(
             "internal::fn",
+            crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
             &[],
             &[],
@@ -519,7 +657,7 @@ mod tests {
             auth_function_id: None,
             expose_functions: patterns
                 .iter()
-                .map(|p| FunctionFilter::Match(WildcardPattern::new(p)))
+                .map(|p| FunctionFilter::match_pattern(p))
                 .collect(),
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
@@ -533,7 +671,14 @@ mod tests {
             // Empty expose_functions
             let config = rbac_config_with_expose(&[]);
             assert!(
-                is_function_allowed(id, Some(config), &[], &[], None),
+                is_function_allowed(
+                    id,
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    Some(config),
+                    &[],
+                    &[],
+                    None
+                ),
                 "expected {} to be allowed with empty expose_functions",
                 id
             );
@@ -541,11 +686,113 @@ mod tests {
             // Unrelated expose pattern
             let config = rbac_config_with_expose(&["api::*"]);
             assert!(
-                is_function_allowed(id, Some(config), &[], &[], None),
+                is_function_allowed(
+                    id,
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    Some(config),
+                    &[],
+                    &[],
+                    None
+                ),
                 "expected {} to be allowed when only api::* exposed",
                 id
             );
         }
+    }
+
+    #[test]
+    fn expose_filter_without_namespace_matches_only_default() {
+        let config = rbac_config_with_expose(&["svc::*"]);
+        // In `default`, the namespace-less rule exposes the id.
+        assert!(is_function_allowed(
+            "svc::get",
+            crate::protocol::DEFAULT_NAMESPACE,
+            Some(config.clone()),
+            &[],
+            &[],
+            None,
+        ));
+        // In another namespace it does NOT — a rule without a namespace is
+        // scoped to `default`.
+        assert!(!is_function_allowed(
+            "svc::get",
+            "orders",
+            Some(config),
+            &[],
+            &[],
+            None,
+        ));
+    }
+
+    #[test]
+    fn expose_filter_with_namespace_matches_only_that_namespace() {
+        let config = RbacConfig {
+            auth_function_id: None,
+            expose_functions: vec![FunctionFilter::match_pattern("svc::*").in_namespace("orders")],
+            on_trigger_registration_function_id: None,
+            on_trigger_type_registration_function_id: None,
+            on_function_registration_function_id: None,
+        };
+        // Exposed in the rule's namespace.
+        assert!(is_function_allowed(
+            "svc::get",
+            "orders",
+            Some(config.clone()),
+            &[],
+            &[],
+            None,
+        ));
+        // Not in `default`, nor in any other namespace.
+        assert!(!is_function_allowed(
+            "svc::get",
+            crate::protocol::DEFAULT_NAMESPACE,
+            Some(config.clone()),
+            &[],
+            &[],
+            None,
+        ));
+        assert!(!is_function_allowed(
+            "svc::get",
+            "analytics",
+            Some(config),
+            &[],
+            &[],
+            None,
+        ));
+    }
+
+    #[test]
+    fn function_filter_round_trips_through_serde() {
+        // A metadata filter (exact + wildcard) scoped to a namespace.
+        let mut map = HashMap::new();
+        map.insert(
+            "public".to_string(),
+            MetadataValue::Exact(Value::Bool(true)),
+        );
+        map.insert(
+            "scope".to_string(),
+            MetadataValue::Wildcard(WildcardPattern::new("team-*")),
+        );
+        let filter = FunctionFilter::metadata(map).in_namespace("team");
+
+        let text = serde_json::to_string(&filter).expect("serialize");
+        let back: FunctionFilter = serde_json::from_str(&text).expect("deserialize");
+
+        // The metadata match survives the round-trip: `Exact(true)` stays `true`,
+        // not `{"Exact":true}` (the derived enum form's bug).
+        let meta = serde_json::json!({ "public": true, "scope": "team-alpha" });
+        assert!(back.matches("svc::get", "team", Some(&meta)));
+        // A wrong exact value no longer matches.
+        let wrong = serde_json::json!({ "public": false, "scope": "team-alpha" });
+        assert!(!back.matches("svc::get", "team", Some(&wrong)));
+        // The namespace scope is preserved through the round-trip.
+        assert!(!back.matches("svc::get", "default", Some(&meta)));
+
+        // A namespace-less `match` rule round-trips as the compact string form.
+        let m = FunctionFilter::match_pattern("api::*");
+        let mt = serde_json::to_string(&m).expect("serialize match");
+        let mb: FunctionFilter = serde_json::from_str(&mt).expect("deserialize match");
+        assert!(mb.matches("api::x", crate::protocol::DEFAULT_NAMESPACE, None));
     }
 
     #[test]
@@ -554,7 +801,14 @@ mod tests {
             let config = rbac_config_with_expose(&[]);
             let forbidden = vec![id.to_string()];
             assert!(
-                !is_function_allowed(id, Some(config), &[], &forbidden, None),
+                !is_function_allowed(
+                    id,
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    Some(config),
+                    &[],
+                    &forbidden,
+                    None
+                ),
                 "expected {} to be denied when present in forbidden_functions",
                 id
             );
@@ -567,7 +821,14 @@ mod tests {
             let config = rbac_config_with_expose(&[]);
             let allowed = vec![id.to_string()];
             assert!(
-                is_function_allowed(id, Some(config), &allowed, &[], None),
+                is_function_allowed(
+                    id,
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    Some(config),
+                    &allowed,
+                    &[],
+                    None
+                ),
                 "expected {} to remain allowed when also in allowed_functions",
                 id
             );
@@ -593,7 +854,14 @@ mod tests {
         for id in discovery_ids {
             let config = rbac_config_with_expose(&[]);
             assert!(
-                !is_function_allowed(id, Some(config), &[], &[], None),
+                !is_function_allowed(
+                    id,
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    Some(config),
+                    &[],
+                    &[],
+                    None
+                ),
                 "expected discovery id {} to be denied with empty expose_functions",
                 id
             );
@@ -605,6 +873,7 @@ mod tests {
         let config = rbac_config_with_expose(&["engine::functions::*"]);
         assert!(is_function_allowed(
             "engine::functions::list",
+            crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
             &[],
             &[],
@@ -621,10 +890,10 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![
-                FunctionFilter::Match(WildcardPattern::new("api::*")),
-                FunctionFilter::Match(WildcardPattern::new("session::*")),
-                FunctionFilter::Match(WildcardPattern::new("stream::*")),
-                FunctionFilter::Match(WildcardPattern::new("state::*")),
+                FunctionFilter::match_pattern("api::*"),
+                FunctionFilter::match_pattern("session::*"),
+                FunctionFilter::match_pattern("stream::*"),
+                FunctionFilter::match_pattern("state::*"),
             ],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
@@ -638,7 +907,14 @@ mod tests {
             "engine::baggage::set",
         ] {
             assert!(
-                is_function_allowed(id, Some(config.clone()), &[], &[], None),
+                is_function_allowed(
+                    id,
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    Some(config.clone()),
+                    &[],
+                    &[],
+                    None
+                ),
                 "FIX REGRESSION: expected {} to be ALLOWED on the fix branch with reporter's config",
                 id
             );
@@ -657,7 +933,7 @@ mod tests {
             .iter(),
         ) {
             assert!(
-                is_function_allowed(id, None, &[], &[], None),
+                is_function_allowed(id, crate::protocol::DEFAULT_NAMESPACE, None, &[], &[], None),
                 "expected {} to be allowed when config is None",
                 id
             );

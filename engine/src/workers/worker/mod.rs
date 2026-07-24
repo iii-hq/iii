@@ -136,6 +136,12 @@ impl Worker for WorkerManager {
             .transpose()?
             .unwrap_or_default();
 
+        // Apply the configured grace here too, not only in `EngineBuilder::build`:
+        // a manager constructed directly (embedders, tests) must honor its config
+        // rather than silently fall back to the engine's default. OnceLock makes
+        // this idempotent with the builder path (same value, first write wins).
+        engine.set_registration_namespace_grace_ms(config.registration_namespace_grace_ms);
+
         Ok(Box::new(WorkerManager {
             engine,
             config,

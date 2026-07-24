@@ -215,9 +215,10 @@ pub struct Trigger {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     /// Namespace the target `function_id` resolves in when this trigger fires.
-    /// Captured from the registering connection (via `connection_namespace`) at
-    /// the point the trigger is actually applied — see `Engine::fire_triggers`.
-    /// Defaults to [`crate::protocol::DEFAULT_NAMESPACE`] for engine-internal /
+    /// Taken from the `RegisterTrigger` message's `namespace` (not the registering
+    /// connection): the trigger names its target namespace explicitly, and an
+    /// absent value means [`crate::protocol::DEFAULT_NAMESPACE`] — see
+    /// `Engine::fire_triggers`. Also defaults to `default` for engine-internal /
     /// durable registrations and for wire payloads that predate the field.
     #[serde(default = "crate::protocol::default_namespace")]
     pub namespace: String,

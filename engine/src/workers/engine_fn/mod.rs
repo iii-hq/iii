@@ -1023,6 +1023,7 @@ impl EngineFunctionsWorker {
         let function = self.engine.functions.get(namespace, function_id);
         crate::workers::worker::rbac_config::is_function_allowed(
             function_id,
+            namespace,
             session.config.rbac.clone(),
             &session.allowed_functions,
             &session.forbidden_functions,

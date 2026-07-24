@@ -280,8 +280,8 @@ pub trait EngineTrait: Send + Sync {
 
     /// Like [`Self::call_with_metadata`] but resolves the target function in an
     /// explicit `namespace`. `fire_triggers` uses this to run a trigger's target
-    /// in the namespace of the worker that registered the trigger, rather than
-    /// unconditionally in `default`.
+    /// in the namespace the trigger named (explicit, or `default` when absent),
+    /// rather than unconditionally in `default`.
     async fn call_with_metadata_ns(
         &self,
         namespace: &str,
@@ -856,16 +856,19 @@ impl Engine {
         let grace = self.registration_namespace_grace();
         tokio::spawn(async move {
             tokio::time::sleep(grace).await;
-            // The resolve below is a no-op unless this connection is still
-            // `Pending` — i.e. unless `engine::workers::register` never arrived.
-            // Warn on that path so an operator sees the fallback happen and how
-            // to widen the window.
-            if engine.namespace_is_pending(&worker) {
+            // `resolve_connection_namespace` transitions `Pending` -> `Draining`
+            // atomically and returns whether THIS call won. Warn only when the
+            // timer actually performed the fallback — never on a false positive
+            // where `engine::workers::register` resolved the namespace first.
+            let fired = engine
+                .resolve_connection_namespace(&worker, DEFAULT_NAMESPACE)
+                .await;
+            if fired {
                 tracing::warn!(
                     worker_id = %worker.id,
                     grace_ms = grace.as_millis() as u64,
                     "namespace registration grace of {}ms expired without an \
-                     `engine::workers::register` announce; draining this connection's \
+                     `engine::workers::register` announce; drained this connection's \
                      buffered registrations into the `{}` namespace. To allow more time, \
                      raise the `iii-worker-manager` `registration_namespace_grace_ms` config \
                      or set the `III_NAMESPACE_GRACE_MS` env var.",
@@ -873,20 +876,7 @@ impl Engine {
                     DEFAULT_NAMESPACE,
                 );
             }
-            engine
-                .resolve_connection_namespace(&worker, DEFAULT_NAMESPACE)
-                .await;
         });
-    }
-
-    /// True while `worker`'s connection is still waiting on its namespace
-    /// announce (registrations are buffered). Used by the grace timer to warn
-    /// only when the fallback actually fires.
-    fn namespace_is_pending(&self, worker: &WorkerConnection) -> bool {
-        matches!(
-            self.namespace_states.get(&worker.id).as_deref(),
-            Some(NamespaceState::Pending(_))
-        )
     }
 
     /// The namespace `worker`'s registrations belong to.
@@ -968,14 +958,23 @@ impl Engine {
     /// concurrent `abort_namespace_resolution` (i.e. `cleanup_worker`) stops
     /// the drain at the next message rather than registering into a connection
     /// that is being torn down.
+    ///
+    /// Returns `true` when THIS call performed the `Pending` -> `Draining`
+    /// transition (i.e. won the race). The grace timer uses this to warn only
+    /// when the timeout actually fired — never when `engine::workers::register`
+    /// resolved the namespace first.
     #[doc(hidden)]
-    pub async fn resolve_connection_namespace(&self, worker: &WorkerConnection, namespace: &str) {
+    pub async fn resolve_connection_namespace(
+        &self,
+        worker: &WorkerConnection,
+        namespace: &str,
+    ) -> bool {
         {
             let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
-                return;
+                return false;
             };
             let NamespaceState::Pending(queue) = &mut *state else {
-                return;
+                return false;
             };
             let queue = std::mem::take(queue);
             *state = NamespaceState::Draining(namespace.to_string(), queue);
@@ -993,10 +992,10 @@ impl Engine {
             // be able to append to the queue we are consuming.
             let next = {
                 let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
-                    return;
+                    return true;
                 };
                 let NamespaceState::Draining(ns, queue) = &mut *state else {
-                    return;
+                    return true;
                 };
                 match queue.pop_front() {
                     Some(msg) => msg,
@@ -1004,7 +1003,7 @@ impl Engine {
                         // Publish `Resolved` only with an empty queue, so no
                         // arrival can bypass the drain and overtake it.
                         *state = NamespaceState::Resolved(ns.clone());
-                        return;
+                        return true;
                     }
                 }
             };
@@ -1271,6 +1270,10 @@ impl Engine {
                             "function_id": function_id,
                             "config": config,
                             "metadata": metadata,
+                            // The namespace the trigger's target will resolve in
+                            // (the message's, or `default` when absent), so the
+                            // hook can authorize per target namespace.
+                            "namespace": crate::protocol::effective_namespace(&namespace),
                             "context": session.context,
                         });
                         match self.call(hook_fn_id, hook_input).await {
@@ -1327,6 +1330,7 @@ impl Engine {
                         .ok();
                     if !crate::workers::worker::rbac_config::is_function_allowed(
                         &reg_function_id,
+                        &trigger_namespace,
                         session.config.rbac.clone(),
                         &session.allowed_functions,
                         &session.forbidden_functions,
@@ -1441,6 +1445,7 @@ impl Engine {
                         .ok();
                     if !crate::workers::worker::rbac_config::is_function_allowed(
                         function_id,
+                        crate::protocol::effective_namespace(&namespace),
                         session.config.rbac.clone(),
                         &session.allowed_functions,
                         &session.forbidden_functions,
@@ -1843,6 +1848,11 @@ impl Engine {
                             "function_id": id,
                             "description": description,
                             "metadata": metadata,
+                            // The namespace this function registers in (RegisterFunction
+                            // is buffered until the connection namespace resolves, so
+                            // this is the real one), letting the hook authorize per
+                            // namespace since the same id can exist in several.
+                            "namespace": self.connection_namespace(worker),
                             "context": session.context,
                         });
                         match self.call(hook_fn_id, hook_input).await {
@@ -1873,6 +1883,24 @@ impl Engine {
                 reg_id = resolve_registration_id(worker, &reg_id);
 
                 let namespace = self.connection_namespace(worker);
+
+                // `engine::*` is reserved for engine/builtin infrastructure, which
+                // lives in `default`. Refuse a worker registering an `engine::*`
+                // id in any other namespace: otherwise it would inherit the
+                // infrastructure RBAC carve-out AND the `engine::*` middleware
+                // bypass (both keyed by bare id) that are meant only for the real
+                // builtins. In `default` the ownership conflict with the builtin
+                // already blocks the shadow; outside it there is nothing to
+                // conflict with, so reserve the prefix here.
+                if reg_id.starts_with("engine::") && namespace != DEFAULT_NAMESPACE {
+                    tracing::warn!(
+                        worker_id = %worker.id,
+                        function_id = %reg_id,
+                        namespace = %namespace,
+                        "refusing a reserved `engine::*` function id outside the `default` namespace"
+                    );
+                    return Ok(());
+                }
 
                 // Claim ownership BEFORE mutating any engine-global state. An
                 // old worker's `cleanup_worker` running on another task can
@@ -3588,6 +3616,72 @@ mod tests {
         assert!(
             engine.trigger_registry.triggers.is_empty(),
             "forbidden trigger must not enter the registry"
+        );
+    }
+
+    /// `engine::*` is reserved for infrastructure (which lives in `default`). A
+    /// worker registering an `engine::*` id in another namespace is refused, so
+    /// it cannot inherit the infra RBAC carve-out / middleware bypass keyed by
+    /// bare id. In `default` the ownership conflict with the real builtin guards
+    /// it instead, so `engine::*` there is allowed.
+    #[tokio::test]
+    async fn register_function_reserves_engine_prefix_outside_default() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // A worker resolved to a non-default namespace.
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        let reserved = Message::RegisterFunction {
+            id: "engine::log::info".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine
+            .dispatch_msg(&worker, &reserved)
+            .await
+            .expect("dispatch");
+        assert!(
+            engine
+                .functions
+                .get("orders", "engine::log::info")
+                .is_none(),
+            "a reserved engine::* id must not register outside default"
+        );
+
+        // The same-shaped id in `default` is allowed.
+        let (tx2, _rx2) = mpsc::channel::<Outbound>(8);
+        let dflt = WorkerConnection::new(tx2);
+        engine.worker_registry.register_worker(dflt.clone());
+        engine.begin_namespace_resolution(&dflt);
+        engine
+            .resolve_connection_namespace(&dflt, DEFAULT_NAMESPACE)
+            .await;
+        let allowed = Message::RegisterFunction {
+            id: "engine::custom::probe".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine
+            .dispatch_msg(&dflt, &allowed)
+            .await
+            .expect("dispatch");
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "engine::custom::probe")
+                .is_some(),
+            "engine::* in default is allowed"
         );
     }
 
