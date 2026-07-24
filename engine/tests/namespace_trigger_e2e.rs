@@ -10,10 +10,11 @@
 //!
 //! Everything here drives the real `WorkerManager` axum router over live
 //! WebSockets, in the message order the SDKs use. Nothing hand-builds a
-//! `Trigger` and pokes `.namespace`: the trigger's namespace is captured from
-//! the connection the way it really is, and the fire is driven through the real
-//! `Engine::fire_triggers`. Reverting the fix turns the decisive test RED with
-//! the `default` worker receiving the invocation.
+//! `Trigger` and pokes `.namespace`: each `RegisterTrigger` names its target
+//! namespace explicitly (absent, the engine resolves the target in `default`),
+//! and the fire is driven through the real `Engine::fire_triggers`. Reverting
+//! the fix turns the decisive test RED with the `default` worker receiving the
+//! invocation.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -130,7 +131,15 @@ async fn send_register_function(ws: &mut Client, id: &str, description: &str) {
     .expect("send RegisterFunction");
 }
 
-async fn send_register_trigger(ws: &mut Client, id: &str, trigger_type: &str, function_id: &str) {
+async fn send_register_trigger(
+    ws: &mut Client,
+    namespace: &str,
+    id: &str,
+    trigger_type: &str,
+    function_id: &str,
+) {
+    // The trigger's target namespace is named in the message; absent, the engine
+    // would resolve the target in `default` rather than the worker's namespace.
     ws.send(WsMessage::Text(
         json!({
             "type": "registertrigger",
@@ -138,6 +147,7 @@ async fn send_register_trigger(ws: &mut Client, id: &str, trigger_type: &str, fu
             "trigger_type": trigger_type,
             "function_id": function_id,
             "config": {},
+            "namespace": namespace,
         })
         .to_string()
         .into(),
@@ -194,6 +204,7 @@ async fn registered_trigger_info_resolves_its_target_in_the_triggers_namespace()
     send_register_function(&mut orders, "orders::handler", "the orders handler").await;
     send_register_trigger(
         &mut orders,
+        "orders",
         "t-info",
         TRIGGER_FUNCTIONS_AVAILABLE,
         "orders::handler",
@@ -244,6 +255,7 @@ async fn fired_trigger_invokes_the_function_in_the_registering_workers_namespace
     send_register_function(&mut orders, "state::set", "from-orders").await;
     send_register_trigger(
         &mut orders,
+        "orders",
         "t-orders",
         TRIGGER_FUNCTIONS_AVAILABLE,
         "state::set",
@@ -298,6 +310,7 @@ async fn trigger_registered_before_workers_register_resolves_in_the_real_namespa
     send_register_function(&mut orders, "state::set", "from-orders").await;
     send_register_trigger(
         &mut orders,
+        "orders",
         "t-early",
         TRIGGER_FUNCTIONS_AVAILABLE,
         "state::set",

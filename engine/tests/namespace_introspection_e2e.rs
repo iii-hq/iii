@@ -150,18 +150,19 @@ async fn connect_worker_with_metadata(
 }
 
 /// Registers a trigger type and one trigger instance over an already-open,
-/// namespace-resolved worker socket. The trigger's namespace is captured by the
-/// engine from the connection at apply time (`connection_namespace`), so this is
-/// the real path a trigger gets its namespace — not a doctored field. Returns
-/// the trigger instance id.
+/// namespace-resolved worker socket. The trigger's target namespace is taken
+/// from the `RegisterTrigger` message (`namespace`), so the caller names it
+/// explicitly — absent, the engine would resolve the target in `default`.
+/// Returns the trigger instance id.
 ///
 /// The caller must have driven `engine::workers::register` and waited until the
-/// worker's function landed, so the connection namespace is already resolved and
-/// the `RegisterTrigger` applies immediately rather than buffering.
+/// worker's function landed so the `RegisterTrigger` applies immediately rather
+/// than buffering.
 async fn register_trigger_over_ws(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
+    namespace: &str,
     trigger_type: &str,
     function_id: &str,
     config: Value,
@@ -179,6 +180,8 @@ async fn register_trigger_over_ws(
     .expect("send RegisterTriggerType");
 
     let trigger_id = uuid::Uuid::new_v4().to_string();
+    // The trigger's target namespace comes from the message; name it explicitly
+    // so the trigger resolves in `namespace` rather than the engine's `default`.
     ws.send(WsMessage::Text(
         json!({
             "type": "registertrigger",
@@ -186,6 +189,7 @@ async fn register_trigger_over_ws(
             "trigger_type": trigger_type,
             "function_id": function_id,
             "config": config,
+            "namespace": namespace,
         })
         .to_string()
         .into(),
@@ -225,7 +229,12 @@ async fn call_engine_fn_raw(
 /// metadata))`, and a `Metadata` filter returns `false` outright when `metadata`
 /// is `None`. So a caller that re-fetches the function from the wrong namespace
 /// hands it `None` and the function is silently DENIED — fail-closed, but wrong.
-fn session_exposing_metadata(engine: Arc<Engine>, key: &str, value: &str) -> Arc<Session> {
+fn session_exposing_metadata(
+    engine: Arc<Engine>,
+    namespace: &str,
+    key: &str,
+    value: &str,
+) -> Arc<Session> {
     let mut expected = HashMap::new();
     expected.insert(
         key.to_string(),
@@ -235,7 +244,7 @@ fn session_exposing_metadata(engine: Arc<Engine>, key: &str, value: &str) -> Arc
     let config = WorkerManagerConfig {
         rbac: Some(RbacConfig {
             auth_function_id: None,
-            expose_functions: vec![FunctionFilter::Metadata(expected)],
+            expose_functions: vec![FunctionFilter::metadata(expected).in_namespace(namespace)],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
@@ -492,7 +501,7 @@ async fn functions_list_rbac_allows_a_namespaced_function_matched_by_metadata_fi
     let landed = eventually(|| engine.functions.get("orders", "orders::create").is_some()).await;
     assert!(landed, "the worker's function must register");
 
-    let session = session_exposing_metadata(engine.clone(), "scope", "public");
+    let session = session_exposing_metadata(engine.clone(), "orders", "scope", "public");
     let result = match call_engine_fn_raw(
         &engine,
         "engine::functions::list",
@@ -536,7 +545,7 @@ async fn functions_info_rbac_allows_a_namespaced_function_matched_by_metadata_fi
     let landed = eventually(|| engine.functions.get("orders", "orders::create").is_some()).await;
     assert!(landed, "the worker's function must register");
 
-    let session = session_exposing_metadata(engine.clone(), "scope", "public");
+    let session = session_exposing_metadata(engine.clone(), "orders", "scope", "public");
     match call_engine_fn_raw(
         &engine,
         "engine::functions::info",
@@ -834,6 +843,7 @@ async fn functions_info_lists_only_the_triggers_in_its_own_namespace() {
 
     let _orders_trig = register_trigger_over_ws(
         &mut orders,
+        "orders",
         "orders-tt",
         "svc::f",
         json!({ "tag": "orders" }),
@@ -841,6 +851,7 @@ async fn functions_info_lists_only_the_triggers_in_its_own_namespace() {
     .await;
     let _analytics_trig = register_trigger_over_ws(
         &mut analytics,
+        "analytics",
         "analytics-tt",
         "svc::f",
         json!({ "tag": "analytics" }),
@@ -911,9 +922,16 @@ async fn workers_info_scopes_trigger_types_and_reports_namespace_by_namespace() 
 
     // Each worker provides its own trigger type over its own connection, so the
     // type's `worker_id` is that connection's id — the disambiguator.
-    let _o = register_trigger_over_ws(&mut orders, "tt-orders", "orders::f", json!({})).await;
-    let _a =
-        register_trigger_over_ws(&mut analytics, "tt-analytics", "analytics::f", json!({})).await;
+    let _o =
+        register_trigger_over_ws(&mut orders, "orders", "tt-orders", "orders::f", json!({})).await;
+    let _a = register_trigger_over_ws(
+        &mut analytics,
+        "analytics",
+        "tt-analytics",
+        "analytics::f",
+        json!({}),
+    )
+    .await;
 
     let both = eventually(|| {
         engine
@@ -1011,7 +1029,8 @@ async fn workers_info_excludes_connectionless_trigger_types_from_a_namespaced_ws
     let mut worker = connect_worker(port, "internalonly", Some("orders"), "orders::f", 4601).await;
     let landed = eventually(|| engine.functions.get("orders", "orders::f").is_some()).await;
     assert!(landed, "the namespaced worker must finish registering");
-    let _own = register_trigger_over_ws(&mut worker, "tt-own", "orders::f", json!({})).await;
+    let _own =
+        register_trigger_over_ws(&mut worker, "orders", "tt-own", "orders::f", json!({})).await;
     let both = eventually(|| {
         engine
             .trigger_registry

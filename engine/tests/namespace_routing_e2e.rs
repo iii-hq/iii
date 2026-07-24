@@ -360,7 +360,7 @@ async fn rbac_metadata_filters_see_the_function_from_the_requested_namespace() {
     // `default` copy, never the `analytics` one.
     let rbac = RbacConfig {
         auth_function_id: None,
-        expose_functions: vec![FunctionFilter::Metadata(HashMap::from([(
+        expose_functions: vec![FunctionFilter::metadata(HashMap::from([(
             "tier".to_string(),
             MetadataValue::Exact(json!("public")),
         )]))],

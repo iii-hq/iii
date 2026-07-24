@@ -83,7 +83,7 @@ fn session_with(
 fn restrictive_rbac() -> RbacConfig {
     RbacConfig {
         auth_function_id: None,
-        expose_functions: vec![FunctionFilter::Match(WildcardPattern::new("api::*"))],
+        expose_functions: vec![FunctionFilter::match_pattern("api::*")],
         on_trigger_registration_function_id: None,
         on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
@@ -300,9 +300,18 @@ async fn listener_middleware_runs_in_caller_namespace() {
     }
 
     let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+    // The caller invokes in `orders`, so the `api::*` rule must be scoped there:
+    // a rule without a namespace only exposes the `default` namespace.
+    let orders_rbac = RbacConfig {
+        auth_function_id: None,
+        expose_functions: vec![FunctionFilter::match_pattern("api::*").in_namespace("orders")],
+        on_trigger_registration_function_id: None,
+        on_trigger_type_registration_function_id: None,
+        on_function_registration_function_id: None,
+    };
     let session = session_with(
         engine.clone(),
-        restrictive_rbac(),
+        orders_rbac,
         vec![],
         Some("mw::guard".to_string()),
     );
