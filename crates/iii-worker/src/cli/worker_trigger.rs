@@ -200,6 +200,10 @@ pub fn matches(req: &WorkerCallRequest, cfg: &WorkerTriggerConfig) -> bool {
 pub struct Subscription {
     pub function_id: String,
     pub config: WorkerTriggerConfig,
+    /// Namespace the target `function_id` resolves in, from the binding. Applied
+    /// to the fired `TriggerRequest`, so a binding for `orders` fires in `orders`
+    /// rather than `default`.
+    pub namespace: Option<String>,
 }
 
 /// Shared subscription map: trigger id → subscription.
@@ -234,6 +238,7 @@ impl TriggerHandler for WorkerTriggerHandler {
             Subscription {
                 function_id: config.function_id.clone(),
                 config: parsed,
+                namespace: config.namespace.clone(),
             },
         );
         Ok(())
@@ -260,13 +265,13 @@ impl TriggerHandler for WorkerTriggerHandler {
 pub struct IIIEventSink {
     subs: Subscriptions,
     caller_mode: CallerMode,
-    dispatch_tx: tokio::sync::mpsc::UnboundedSender<(String, serde_json::Value)>,
+    dispatch_tx: tokio::sync::mpsc::UnboundedSender<(String, serde_json::Value, Option<String>)>,
 }
 
 impl IIIEventSink {
     pub fn new(iii: IIIClient, subs: Subscriptions, caller_mode: CallerMode) -> Self {
         let (dispatch_tx, mut dispatch_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(String, serde_json::Value)>();
+            tokio::sync::mpsc::unbounded_channel::<(String, serde_json::Value, Option<String>)>();
         // Spawn the dispatcher only when a tokio runtime is available.
         // Callers outside a runtime (rare; mostly defensive for tests
         // that construct the sink without ever emitting) just drop
@@ -280,15 +285,19 @@ impl IIIEventSink {
         // beyond what's necessary and complicate shutdown.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                while let Some((function_id, payload)) = dispatch_rx.recv().await {
-                    let _ = iii
-                        .trigger(TriggerRequest {
-                            function_id,
-                            payload,
-                            action: Some(TriggerAction::Void),
-                            timeout_ms: None,
-                        })
-                        .await;
+                while let Some((function_id, payload, namespace)) = dispatch_rx.recv().await {
+                    // Fire in the binding's namespace so a namespaced target
+                    // resolves there, not in `default`.
+                    let request = TriggerRequest {
+                        function_id,
+                        payload,
+                        action: Some(TriggerAction::Void),
+                        timeout_ms: None,
+                    };
+                    let _ = match namespace {
+                        Some(ns) => iii.trigger(request.namespace(ns)).await,
+                        None => iii.trigger(request).await,
+                    };
                 }
             });
         }
@@ -323,7 +332,9 @@ impl EventSink for IIIEventSink {
             // Synchronous enqueue preserves emit-order across the whole
             // operation lifecycle (started → downloading → downloaded →
             // done). The dispatcher task drains FIFO.
-            let _ = self.dispatch_tx.send((sub.function_id, payload.clone()));
+            let _ = self
+                .dispatch_tx
+                .send((sub.function_id, payload.clone(), sub.namespace));
         }
     }
 }
@@ -546,6 +557,7 @@ mod tests {
             function_id: "myapp::on_event".into(),
             config: json!({ "operations": ["add"], "stages": ["downloaded"] }),
             metadata: None,
+            namespace: None,
         };
         handler.register_trigger(cfg.clone()).await.unwrap();
         assert_eq!(subs.lock().unwrap().len(), 1);
@@ -564,6 +576,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handler_keeps_the_binding_namespace() {
+        let subs = make_subs();
+        let handler = WorkerTriggerHandler::new(subs.clone());
+        let cfg = TriggerConfig {
+            id: "t-ns".into(),
+            function_id: "orders::on_event".into(),
+            config: json!({}),
+            metadata: None,
+            namespace: Some("orders".into()),
+        };
+        handler.register_trigger(cfg).await.unwrap();
+        let stored = subs.lock().unwrap().get("t-ns").cloned().unwrap();
+        assert_eq!(
+            stored.namespace.as_deref(),
+            Some("orders"),
+            "the provider must keep the binding namespace to fire the target there, not in default"
+        );
+    }
+
+    #[tokio::test]
     async fn handler_accepts_null_config_as_default() {
         let subs = make_subs();
         let handler = WorkerTriggerHandler::new(subs.clone());
@@ -572,6 +604,7 @@ mod tests {
             function_id: "myapp::all".into(),
             config: serde_json::Value::Null,
             metadata: None,
+            namespace: None,
         };
         handler.register_trigger(cfg).await.unwrap();
         let stored = subs.lock().unwrap().get("t2").cloned().unwrap();
@@ -589,6 +622,7 @@ mod tests {
             function_id: "myapp::bad".into(),
             config: json!({ "operations": "add" }), // should be array
             metadata: None,
+            namespace: None,
         };
         let err = handler.register_trigger(cfg).await.unwrap_err();
         assert!(matches!(err, Error::Handler(_)));
@@ -754,6 +788,7 @@ mod tests {
             Subscription {
                 function_id: "any".into(),
                 config: WorkerTriggerConfig::default(),
+                namespace: None,
             },
         );
         let sink = IIIEventSink::new(iii.clone(), subs, CallerMode::Trigger);
