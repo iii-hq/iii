@@ -84,7 +84,7 @@ async fn enqueue(
 ) -> anyhow::Result<()> {
     let message_id = uuid::Uuid::new_v4().to_string();
     worker
-        .enqueue_to_function_queue(queue_name, function_id, data, &message_id, None, None)
+        .enqueue_to_function_queue(queue_name, function_id, data, &message_id, None, None, None)
         .await
 }
 
@@ -102,7 +102,7 @@ async fn invoke_redrive(
 ) -> FunctionResult<Option<Value>, ErrorBody> {
     let function = engine
         .functions
-        .get("iii::queue::redrive")
+        .get(iii::protocol::DEFAULT_NAMESPACE, "iii::queue::redrive")
         .expect("iii::queue::redrive should be registered");
     function
         .call_handler(None, json!({ "queue": queue_name }), None)

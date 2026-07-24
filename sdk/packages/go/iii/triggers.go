@@ -36,6 +36,10 @@ type TriggerConfig struct {
 	Config json.RawMessage `json:"config"`
 	// Metadata is arbitrary metadata attached to the trigger instance.
 	Metadata json.RawMessage `json:"metadata,omitempty"`
+	// Namespace the target FunctionID resolves in. A provider that stores this
+	// config and later fires the target must pass this namespace, or it fires in
+	// the engine's default namespace. Empty means default.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // TriggerHandler is implemented by a worker that owns a custom trigger type. When the

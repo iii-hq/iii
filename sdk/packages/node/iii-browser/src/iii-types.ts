@@ -8,6 +8,7 @@ export enum MessageType {
   UnregisterTrigger = 'unregistertrigger',
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
+  RegistrationRejected = 'registrationrejected',
   WorkerRegistered = 'workerregistered',
   Reattach = 'reattach',
 }
@@ -51,6 +52,11 @@ export type RegisterTriggerMessage = {
   function_id: string
   /** Trigger-type-specific configuration, matching the shape the trigger type expects. */
   config: unknown
+  /**
+   * Namespace the trigger's target function resolves in. Omit for the engine's
+   * default namespace, independent of this connection's namespace.
+   */
+  namespace?: string
 }
 
 export type RegisterFunctionFormat = {
@@ -161,6 +167,11 @@ export type MiddlewareFunctionInput = {
   action?: TriggerAction
   /** Auth context returned by the auth function for this session. */
   context: Record<string, unknown>
+  /**
+   * Target namespace the invoke addressed; forward the call here to stay in the
+   * caller's namespace. Absent → the engine's default namespace.
+   */
+  namespace?: string
 }
 
 /**
@@ -205,6 +216,12 @@ export type OnTriggerRegistrationInput = {
   function_id: string
   /** Trigger-specific configuration. */
   config: unknown
+  /**
+   * Namespace the trigger's target resolves in (explicit, or `default` when
+   * absent). The same id can exist in several namespaces, so the hook needs this
+   * to authorize per target namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
@@ -238,6 +255,11 @@ export type OnFunctionRegistrationInput = {
   description?: string
   /** Arbitrary metadata attached to the function. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the function registers in. The same id can exist in several
+   * namespaces, so the hook needs this to authorize per namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
@@ -278,6 +300,8 @@ export type TriggerRequest<TInput = unknown> = {
   action?: TriggerAction
   /** Override the default invocation timeout, in milliseconds. */
   timeoutMs?: number
+  /** Namespace to route this invocation to. Omit to use the engine's default namespace. */
+  namespace?: string
 }
 
 export type InvokeFunctionMessage = {
@@ -306,6 +330,10 @@ export type InvokeFunctionMessage = {
    * Trigger action for queue routing or fire-and-forget
    */
   action?: TriggerAction
+  /**
+   * Namespace to route this invocation to. Omitted when routing within the default namespace.
+   */
+  namespace?: string
 }
 
 export type InvocationResultMessage = {

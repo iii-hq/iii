@@ -407,7 +407,10 @@ impl Worker for StreamWorker {
         if self
             .engine
             .functions
-            .get(super::configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                super::configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -909,8 +912,13 @@ impl StreamWorker {
                                 condition_function_id = %condition_id,
                                 "Checking trigger conditions"
                             );
-                            match check_condition(engine.as_ref(), condition_id, event_data.clone())
-                                .await
+                            match check_condition(
+                                engine.as_ref(),
+                                &trigger.namespace,
+                                condition_id,
+                                event_data.clone(),
+                            )
+                            .await
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
@@ -939,7 +947,8 @@ impl StreamWorker {
                         );
 
                         let call_result = engine
-                            .call_with_metadata(
+                            .call_with_metadata_ns(
+                                &trigger.namespace,
                                 &trigger.function_id,
                                 event_data.clone(),
                                 trigger.metadata.clone(),
@@ -989,7 +998,10 @@ impl StreamWorker {
         let data = input.data;
 
         let function_id = format!("stream::set({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<StreamSetResult> = match function {
@@ -1076,7 +1088,10 @@ impl StreamWorker {
         let item_id = input.item_id;
 
         let function_id = format!("stream::get({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         crate::workers::telemetry::collector::track_stream_get();
@@ -1126,7 +1141,10 @@ impl StreamWorker {
         let group_id = input.group_id;
         let item_id = input.item_id;
         let function_id = format!("stream::delete({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<StreamDeleteResult> = match function {
@@ -1202,7 +1220,10 @@ impl StreamWorker {
         let group_id = input.group_id;
 
         let function_id = format!("stream::list({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         crate::workers::telemetry::collector::track_stream_list();
@@ -1254,7 +1275,10 @@ impl StreamWorker {
         let stream_name = input.stream_name;
 
         let function_id = format!("stream::list_groups({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         match function {
@@ -1368,7 +1392,10 @@ impl StreamWorker {
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
         let function_id = format!("stream::update({})", stream_name);
-        let function = self.engine.functions.get(&function_id);
+        let function = self
+            .engine
+            .functions
+            .get(crate::protocol::DEFAULT_NAMESPACE, &function_id);
         let adapter = self.adapter_snapshot();
 
         let result: anyhow::Result<StreamUpdateResult> = match function {
@@ -2457,6 +2484,7 @@ mod tests {
                     config: serde_json::json!({}),
                     worker_id: None,
                     metadata: None,
+                    namespace: "default".to_string(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2476,6 +2504,7 @@ mod tests {
                     config: serde_json::json!({}),
                     worker_id: None,
                     metadata: None,
+                    namespace: "default".to_string(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2495,6 +2524,7 @@ mod tests {
                     config: serde_json::json!({}),
                     worker_id: None,
                     metadata: None,
+                    namespace: "default".to_string(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2514,6 +2544,7 @@ mod tests {
                     config: serde_json::json!({}),
                     worker_id: None,
                     metadata: None,
+                    namespace: "default".to_string(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2533,6 +2564,7 @@ mod tests {
                     config: serde_json::json!({}),
                     worker_id: None,
                     metadata: None,
+                    namespace: "default".to_string(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2581,6 +2613,102 @@ mod tests {
         // - "skip-error":  condition returns error                -> skipped
         // - "handler-error": no condition, handler fails (no add) -> +0
         assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// BUG 1 (real-user path): a stream trigger registered by a namespaced
+    /// worker must fire the target — and evaluate its condition — in that
+    /// worker's namespace. `stream::react` exists in both `orders`
+    /// ("from-orders") and `default` ("from-default"); the `orders` trigger must
+    /// fire "from-orders". `stream::cond` exists ONLY in `orders`, so a
+    /// condition resolved in `default` is not-found → the handler is skipped
+    /// (also RED). Drives the real mechanism: `invoke_triggers`.
+    #[tokio::test]
+    async fn stream_trigger_fires_target_and_condition_in_registering_namespace() {
+        let module = create_test_module();
+        let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
+            let fired = fired.clone();
+            module.engine.register_function_handler_ns(
+                ns,
+                RegisterFunctionRequest {
+                    function_id: "stream::react".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                Handler::new(move |_input| {
+                    let fired = fired.clone();
+                    async move {
+                        fired.lock().unwrap().push(tag.to_string());
+                        FunctionResult::Success(None)
+                    }
+                }),
+            );
+        }
+        module.engine.register_function_handler_ns(
+            "orders",
+            RegisterFunctionRequest {
+                function_id: "stream::cond".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(
+                |_input| async move { FunctionResult::Success(Some(serde_json::json!(true))) },
+            ),
+        );
+
+        module.triggers.stream_triggers.write().await.insert(
+            "ns-trig".to_string(),
+            StreamTrigger {
+                trigger: Trigger {
+                    id: "ns-trig".to_string(),
+                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
+                    function_id: "stream::react".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: None,
+                    metadata: None,
+                    namespace: "orders".to_string(),
+                },
+                config: StreamTriggerConfig {
+                    stream_name: Some("events".to_string()),
+                    group_id: None,
+                    item_id: None,
+                    condition_function_id: Some("stream::cond".to_string()),
+                },
+            },
+        );
+        module
+            .triggers
+            .stream_triggers_by_name
+            .write()
+            .await
+            .insert("events".to_string(), vec!["ns-trig".to_string()]);
+
+        module
+            .invoke_triggers(StreamWrapperMessage {
+                event_type: "stream".to_string(),
+                timestamp: Utc::now().timestamp_millis(),
+                stream_name: "events".to_string(),
+                group_id: "group".to_string(),
+                id: Some("item-1".to_string()),
+                event: StreamOutboundMessage::Create {
+                    data: serde_json::json!({ "x": 1 }),
+                },
+            })
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let fired = fired.lock().unwrap().clone();
+        assert_eq!(
+            fired,
+            vec!["from-orders".to_string()],
+            "the orders stream trigger must fire the orders target via its orders condition; \
+             got: {fired:?}"
+        );
     }
 
     #[tokio::test]

@@ -174,7 +174,12 @@ def _make_connected_client() -> III:
 def _make_integration_client() -> III:
     """Create a real III client connected to the engine; skips if unavailable."""
     ws_url = os.environ.get("III_URL", "ws://localhost:49199")
-    client = III(ws_url, InitOptions(reconnection_config=None))
+    # Explicit name: keeps this client from clashing with the shared `iii_client`
+    # fixture, since the engine allows one live worker per (namespace, name).
+    client = III(
+        ws_url,
+        InitOptions(reconnection_config=None, worker_name="http-external-integration-client"),
+    )
     client._wait_until_connected()
     time.sleep(0.1)
 

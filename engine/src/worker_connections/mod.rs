@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     engine::Outbound,
-    protocol::ErrorBody,
+    protocol::{DEFAULT_NAMESPACE, ErrorBody, effective_namespace},
     workers::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
 };
 
@@ -78,6 +78,15 @@ impl WorkerConnectionRegistry {
     /// ownership by name.
     pub fn get_worker_name(&self, id: &Uuid) -> Option<String> {
         self.workers.get(id).and_then(|w| w.value().name.clone())
+    }
+
+    /// Effective namespace of a connection: the namespace it registered with,
+    /// or [`DEFAULT_NAMESPACE`] when it sent none (or is unknown).
+    pub fn get_namespace(&self, id: &Uuid) -> String {
+        self.workers
+            .get(id)
+            .map(|w| effective_namespace(&w.value().namespace).to_string())
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string())
     }
 
     pub fn register_worker(&self, worker: WorkerConnection) {
@@ -150,6 +159,7 @@ impl WorkerConnectionRegistry {
         telemetry: Option<WorkerConnectionTelemetryMeta>,
         pid: Option<u32>,
         isolation: Option<String>,
+        namespace: Option<String>,
     ) {
         if let Some(mut worker) = self.workers.get_mut(worker_id) {
             worker.runtime = Some(runtime);
@@ -169,6 +179,9 @@ impl WorkerConnectionRegistry {
             }
             if isolation.is_some() {
                 worker.isolation = isolation;
+            }
+            if namespace.is_some() {
+                worker.namespace = namespace;
             }
         }
     }
@@ -244,6 +257,11 @@ pub struct WorkerConnection {
     pub telemetry: Option<WorkerConnectionTelemetryMeta>,
     pub pid: Option<u32>,
     pub isolation: Option<String>,
+    /// Namespace this connection registered with, reported via
+    /// `engine::workers::register`. `None` means the worker sent no namespace
+    /// and is treated as [`DEFAULT_NAMESPACE`] — read it through
+    /// [`WorkerConnectionRegistry::get_namespace`] rather than directly.
+    pub namespace: Option<String>,
     pub session: Option<Arc<Session>>,
     /// In-flight `Message::RegisterTrigger` deliveries awaiting this worker's
     /// `TriggerRegistrationResult` ack, keyed by trigger id. Only ownerless
@@ -295,6 +313,7 @@ impl WorkerConnection {
             telemetry: None,
             pid: None,
             isolation: None,
+            namespace: None,
             session: None,
             pending_trigger_acks: Arc::new(DashMap::new()),
             evict: Arc::new(Notify::new()),
@@ -323,6 +342,7 @@ impl WorkerConnection {
             telemetry: None,
             pid: None,
             isolation: None,
+            namespace: None,
             session: Some(Arc::new(session)),
             pending_trigger_acks: Arc::new(DashMap::new()),
             evict: Arc::new(Notify::new()),
@@ -546,6 +566,7 @@ mod tests {
             Some(telemetry.clone()),
             None,
             None,
+            None,
         );
         registry.update_worker_status(&worker_id, WorkerConnectionStatus::Busy);
         registry.update_worker_status(&Uuid::new_v4(), WorkerConnectionStatus::Available);
@@ -587,11 +608,48 @@ mod tests {
             None,
             Some(1234u32),
             Some("libkrun".to_string()),
+            None,
         );
 
         let stored = registry.get_worker(&worker_id).expect("worker exists");
         assert_eq!(stored.pid, Some(1234u32));
         assert_eq!(stored.isolation.as_deref(), Some("libkrun"));
+    }
+
+    #[test]
+    fn get_namespace_falls_back_to_default() {
+        crate::workers::observability::metrics::ensure_default_meter();
+        let registry = WorkerConnectionRegistry::new();
+        let worker = make_worker();
+        let worker_id = worker.id;
+        assert!(worker.namespace.is_none());
+        registry.register_worker(worker);
+
+        assert_eq!(registry.get_namespace(&worker_id), DEFAULT_NAMESPACE);
+    }
+
+    #[test]
+    fn get_namespace_returns_connection_namespace() {
+        crate::workers::observability::metrics::ensure_default_meter();
+        let registry = WorkerConnectionRegistry::new();
+        let worker = make_worker();
+        let worker_id = worker.id;
+        registry.register_worker(worker);
+
+        registry.update_worker_metadata(
+            &worker_id,
+            "node".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("orders".to_string()),
+        );
+
+        assert_eq!(registry.get_namespace(&worker_id), "orders");
     }
 
     #[test]

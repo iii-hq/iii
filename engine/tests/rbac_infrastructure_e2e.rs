@@ -13,8 +13,9 @@
 //!   cover them;
 //! - discovery IDs stay gated;
 //! - `forbidden_functions` still wins over the carve-out;
-//! - the middleware bypass for `engine::*` is preserved so infrastructure
-//!   calls do not recurse through user middleware.
+//! - the middleware bypass is preserved for the EXACT infrastructure ids so
+//!   those calls do not recurse through user middleware, but a worker-registered
+//!   `engine::*` id (not in the list) does go through middleware.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -83,7 +84,7 @@ fn session_with(
 fn restrictive_rbac() -> RbacConfig {
     RbacConfig {
         auth_function_id: None,
-        expose_functions: vec![FunctionFilter::Match(WildcardPattern::new("api::*"))],
+        expose_functions: vec![FunctionFilter::match_pattern("api::*")],
         on_trigger_registration_function_id: None,
         on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
@@ -107,6 +108,7 @@ async fn expect_result(
         baggage: None,
         action: None,
         metadata: None,
+        namespace: None,
     };
     engine
         .router_msg(worker, &msg)
@@ -263,14 +265,114 @@ async fn forbidden_list_still_wins_over_infrastructure_carve_out() {
     assert!(result.is_none());
 }
 
+/// The listener middleware (`session.config.middleware_function_id`) must be
+/// resolved in the namespace the caller targeted, and must be told that
+/// namespace so it can re-target the caller's function correctly. `mw::guard`
+/// exists in both `orders` (echoes "from-orders-mw") and `default`
+/// ("from-default-mw"); an invoke carrying `namespace = orders` through a
+/// session with the middleware configured must hit the `orders` middleware and
+/// receive `namespace = "orders"` in its input.
+///
+/// RED when reverted: `call_with_metadata` (default) hits "from-default-mw";
+/// dropping `"namespace"` from `middleware_input` makes `received_ns` null.
+/// Drives the real path via `router_msg`.
+#[tokio::test]
+async fn listener_middleware_runs_in_caller_namespace() {
+    ensure_default_meter();
+    let engine = Arc::new(Engine::new());
+
+    for (ns, tag) in [("orders", "from-orders-mw"), ("default", "from-default-mw")] {
+        engine.register_function_handler_ns(
+            ns,
+            RegisterFunctionRequest {
+                function_id: "mw::guard".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: serde_json::Value| async move {
+                FunctionResult::Success(Some(json!({
+                    "mw": tag,
+                    "received_ns": input.get("namespace").cloned(),
+                })))
+            }),
+        );
+    }
+
+    let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+    // The caller invokes in `orders`, so the `api::*` rule must be scoped there:
+    // a rule without a namespace only exposes the `default` namespace.
+    let orders_rbac = RbacConfig {
+        auth_function_id: None,
+        expose_functions: vec![FunctionFilter::match_pattern("api::*").in_namespace("orders")],
+        on_trigger_registration_function_id: None,
+        on_trigger_type_registration_function_id: None,
+        on_function_registration_function_id: None,
+    };
+    let session = session_with(
+        engine.clone(),
+        orders_rbac,
+        vec![],
+        Some("mw::guard".to_string()),
+    );
+    let worker = WorkerConnection::with_session(tx, session);
+
+    let invocation_id = Uuid::new_v4();
+    let msg = Message::InvokeFunction {
+        invocation_id: Some(invocation_id),
+        function_id: "api::thing".to_string(),
+        data: json!({ "hello": "world" }),
+        traceparent: None,
+        baggage: None,
+        action: None,
+        metadata: None,
+        namespace: Some("orders".to_string()),
+    };
+    engine
+        .router_msg(&worker, &msg)
+        .await
+        .expect("router_msg must not error");
+
+    let result = loop {
+        let outbound = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for InvocationResult")
+            .expect("worker channel closed");
+        if let Outbound::Protocol(Message::InvocationResult {
+            invocation_id: got,
+            result,
+            error,
+            ..
+        }) = outbound
+            && got == invocation_id
+        {
+            assert!(
+                error.is_none(),
+                "middleware invocation must succeed: {error:?}"
+            );
+            break result.expect("middleware must return a result");
+        }
+    };
+
+    assert_eq!(
+        result.get("mw").and_then(|v| v.as_str()),
+        Some("from-orders-mw"),
+        "the orders middleware must run for an orders-targeted invoke; got: {result:?}"
+    );
+    assert_eq!(
+        result.get("received_ns").and_then(|v| v.as_str()),
+        Some("orders"),
+        "the middleware must receive the caller's namespace in its input; got: {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn middleware_bypass_preserved_for_infrastructure_functions() {
-    // Guards the existing prefix-based bypass at engine/src/engine/mod.rs
-    // (`!function_id.starts_with("engine::")`). With the carve-out,
-    // infrastructure calls become reachable on restricted sessions — if the
-    // bypass ever regressed, those calls would start recursing through user
-    // middleware, which is silent surprise behavior. Verify the middleware
-    // handler is NOT invoked when the target is `engine::log::info`.
+    // Guards the exact-list bypass at engine/src/engine/mod.rs
+    // (`!is_infrastructure_function(id)`). `engine::log::info` IS on the list, so
+    // its call must not recurse through user middleware. (The complementary case
+    // — a non-list `engine::*` id going THROUGH middleware — is the next test.)
 
     ensure_default_meter();
     let engine = Arc::new(Engine::new());
@@ -311,5 +413,54 @@ async fn middleware_bypass_preserved_for_infrastructure_functions() {
         middleware_calls.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "middleware must NOT be invoked for engine::* infrastructure calls"
+    );
+}
+
+/// Complement: a worker-registered `engine::*` id that is NOT on the exact
+/// infrastructure list must go THROUGH the operator's middleware, so naming a
+/// function `engine::foo` cannot evade it.
+#[tokio::test]
+async fn middleware_runs_for_non_infrastructure_engine_prefix() {
+    ensure_default_meter();
+    let engine = Arc::new(Engine::new());
+    register_echo_handler(&engine, "engine::custom::probe");
+
+    let middleware_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let middleware_calls_for_handler = middleware_calls.clone();
+    engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: "mw::guard".to_string(),
+            description: Some("middleware that counts calls".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |_input| {
+            let counter = middleware_calls_for_handler.clone();
+            async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                FunctionResult::Success(Some(json!({ "allow": true })))
+            }
+        }),
+    );
+
+    // Expose the id so it clears RBAC and reaches the middleware gate.
+    let rbac = RbacConfig {
+        auth_function_id: None,
+        expose_functions: vec![FunctionFilter::match_pattern("engine::custom::*")],
+        on_trigger_registration_function_id: None,
+        on_trigger_type_registration_function_id: None,
+        on_function_registration_function_id: None,
+    };
+    let (tx, mut rx) = mpsc::channel::<Outbound>(16);
+    let session = session_with(engine.clone(), rbac, vec![], Some("mw::guard".to_string()));
+    let worker = WorkerConnection::with_session(tx, session);
+
+    let (_function_id, _result, error) =
+        expect_result(&engine, &worker, &mut rx, "engine::custom::probe").await;
+    assert!(error.is_none(), "the exposed call must succeed");
+    assert!(
+        middleware_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "a non-infrastructure engine::* id must go through middleware"
     );
 }

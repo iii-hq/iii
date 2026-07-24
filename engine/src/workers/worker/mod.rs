@@ -77,6 +77,13 @@ pub struct WorkerManagerConfig {
     /// are closed and logged instead of leaking the fd (MOT-3967).
     #[serde(default = "default_handshake_timeout_ms")]
     pub handshake_timeout_ms: u64,
+
+    /// How long (milliseconds) a freshly connected worker's registrations wait
+    /// for its `engine::workers::register` namespace announce before the engine
+    /// gives up and files them under the `default` namespace. Overridable at
+    /// runtime by the `III_NAMESPACE_GRACE_MS` env var, which takes precedence.
+    #[serde(default = "default_registration_namespace_grace_ms")]
+    pub registration_namespace_grace_ms: u64,
 }
 
 fn default_port() -> u16 {
@@ -91,6 +98,12 @@ fn default_handshake_timeout_ms() -> u64 {
     DEFAULT_HANDSHAKE_TIMEOUT_MS
 }
 
+/// Default registration namespace grace: 5000ms. Mirrors
+/// [`crate::engine::REGISTRATION_NAMESPACE_GRACE`].
+pub fn default_registration_namespace_grace_ms() -> u64 {
+    5000
+}
+
 impl Default for WorkerManagerConfig {
     fn default() -> Self {
         Self {
@@ -99,6 +112,7 @@ impl Default for WorkerManagerConfig {
             middleware_function_id: None,
             rbac: None,
             handshake_timeout_ms: default_handshake_timeout_ms(),
+            registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
         }
     }
 }
@@ -121,6 +135,12 @@ impl Worker for WorkerManager {
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
+
+        // Apply the configured grace here too, not only in `EngineBuilder::build`:
+        // a manager constructed directly (embedders, tests) must honor its config
+        // rather than silently fall back to the engine's default. OnceLock makes
+        // this idempotent with the builder path (same value, first write wins).
+        engine.set_registration_namespace_grace_ms(config.registration_namespace_grace_ms);
 
         Ok(Box::new(WorkerManager {
             engine,

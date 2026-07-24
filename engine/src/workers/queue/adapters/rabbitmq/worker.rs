@@ -60,6 +60,7 @@ impl Worker {
         condition_function_id: Option<String>,
         consumer_tag: String,
         queue_name: String,
+        trigger_id: String,
     ) {
         // Apply per-consumer prefetch (QoS) so the broker keeps a backlog in the
         // queue instead of shipping everything to this consumer at once. Without
@@ -103,6 +104,7 @@ impl Worker {
                     let topic_clone = topic.clone();
                     let function_id_clone = function_id.clone();
                     let condition_function_id_clone = condition_function_id.clone();
+                    let trigger_id_clone = trigger_id.clone();
 
                     match self.queue_mode {
                         QueueMode::Fifo => {
@@ -112,6 +114,7 @@ impl Worker {
                                     &topic_clone,
                                     &function_id_clone,
                                     condition_function_id_clone.as_deref(),
+                                    &trigger_id_clone,
                                 )
                                 .await
                             {
@@ -137,6 +140,7 @@ impl Worker {
                                         &topic_clone,
                                         &function_id_clone,
                                         condition_function_id_clone.as_deref(),
+                                        &trigger_id_clone,
                                     )
                                     .await
                                 {
@@ -169,11 +173,17 @@ impl Worker {
         topic: &str,
         function_id: &str,
         condition_function_id: Option<&str>,
+        trigger_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
+        // Route retry/DLQ to the same namespace-scoped subscriber queue this
+        // consumer drains, so a requeued or dead-lettered message stays in its
+        // namespace instead of landing in another namespace's queue.
+        let namespace = self.engine.trigger_registry.namespace_of(trigger_id);
+
         match self
-            .process_job(&job, function_id, condition_function_id)
+            .process_job(&job, function_id, condition_function_id, trigger_id)
             .await
         {
             Ok(_) => {
@@ -197,7 +207,13 @@ impl Worker {
                     .map_err(|e| format!("Failed to nack message: {}", e))?;
 
                 self.retry_handler
-                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(function_id))
+                    .handle_failure(
+                        topic,
+                        &mut job,
+                        &format!("{:?}", e),
+                        Some(function_id),
+                        &namespace,
+                    )
                     .await
                     .map_err(|e| format!("Failed to handle failure: {}", e))?;
             }
@@ -211,6 +227,7 @@ impl Worker {
         job: &Job,
         function_id: &str,
         condition_function_id: Option<&str>,
+        trigger_id: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let span = tracing::info_span!(
             "queue_job",
@@ -224,13 +241,17 @@ impl Worker {
         async {
             let engine = Arc::clone(&self.engine);
             let data = job.data.clone();
+            // Resolve the subscribing trigger's namespace LIVE by id.
+            let namespace = engine.trigger_registry.namespace_of(trigger_id);
 
             if let Some(condition_path) = condition_function_id {
                 tracing::debug!(
                     condition_function_id = %condition_path,
                     "Checking trigger conditions"
                 );
-                match check_condition(engine.as_ref(), condition_path, data.clone()).await {
+                match check_condition(engine.as_ref(), &namespace, condition_path, data.clone())
+                    .await
+                {
                     Ok(true) => {}
                     Ok(false) => {
                         tracing::debug!(
@@ -252,7 +273,10 @@ impl Worker {
                 }
             }
 
-            match engine.call(function_id, data).await {
+            match engine
+                .call_with_metadata_ns(&namespace, function_id, data, None)
+                .await
+            {
                 Ok(_) => {
                     tracing::debug!(job_id = %job.id, "Job processed successfully");
                     tracing::Span::current().record("otel.status_code", "OK");

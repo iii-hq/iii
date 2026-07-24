@@ -263,6 +263,16 @@ func (c *Client) RegisterTriggerType(id, description string, handler TriggerHand
 // RegisterTrigger registers a trigger instance: fire functionID when a trigger of
 // triggerType matches config. config and optional metadata are raw JSON (may be nil).
 func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json.RawMessage, metadata ...json.RawMessage) error {
+	return c.registerTrigger(id, triggerType, functionID, "", config, metadata...)
+}
+
+// RegisterTriggerNamespaced is like [Client.RegisterTrigger] but resolves the
+// target functionID in namespace. An empty namespace means the engine's default.
+func (c *Client) RegisterTriggerNamespaced(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
+	return c.registerTrigger(id, triggerType, functionID, namespace, config, metadata...)
+}
+
+func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
 	if config == nil {
 		config = json.RawMessage("{}")
 	}
@@ -279,6 +289,7 @@ func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json
 		FunctionID:  functionID,
 		Config:      config,
 		Metadata:    meta,
+		Namespace:   namespace,
 	}
 	c.mu.Lock()
 	c.triggers[id] = msg
@@ -913,6 +924,7 @@ func (c *Client) handleRegisterTrigger(ctx context.Context, msg *RegisterTrigger
 			FunctionID: msg.FunctionID,
 			Config:     msg.Config,
 			Metadata:   msg.Metadata,
+			Namespace:  msg.Namespace,
 		}
 		if err := tt.handler.RegisterTrigger(ctx, cfg); err != nil {
 			res.Error = &ErrorBody{Code: "trigger_registration_failed", Message: err.Error()}

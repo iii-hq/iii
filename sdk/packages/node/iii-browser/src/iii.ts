@@ -2,6 +2,7 @@ import { ChannelReader, ChannelWriter } from './channels'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
+  EngineFunctions,
   type IIIConnectionState,
   type IIIReconnectionConfig,
 } from './iii-constants'
@@ -52,6 +53,21 @@ export type TelemetryOptions = {
  * ```
  */
 export type InitOptions = {
+  /**
+   * Name this worker announces to the engine. Defaults to a unique
+   * `browser:<random>` per client: a browser has no pid to disambiguate by, and
+   * the engine allows only one live worker per name in a namespace, so two tabs
+   * sharing a fixed name would evict each other.
+   */
+  workerName?: string
+  /**
+   * Namespace this worker registers under. When omitted the engine applies its
+   * `default` namespace. Scopes worker and function registrations so
+   * identically-named entries can coexist across namespaces. The browser has no
+   * `process.env`, so there is no environment-variable fallback -- pass the
+   * option explicitly.
+   */
+  namespace?: string
   /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
@@ -62,6 +78,20 @@ export type InitOptions = {
   reconnectionConfig?: Partial<IIIReconnectionConfig>
   /** Browser WebSocket connections authenticate via query parameters or cookies; the `headers` option is ignored. */
   headers?: Record<string, string>
+}
+
+/** Short random suffix; `crypto.randomUUID` is unavailable on insecure origins. */
+function randomId(): string {
+  const c = globalThis.crypto
+  if (c?.randomUUID) {
+    return c.randomUUID().slice(0, 8)
+  }
+  if (c?.getRandomValues) {
+    return Array.from(c.getRandomValues(new Uint8Array(4)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+  }
+  return Math.random().toString(16).slice(2, 10)
 }
 
 class Sdk implements ISdk {
@@ -78,6 +108,8 @@ class Sdk implements ISdk {
   private connectionState: IIIConnectionState = 'disconnected'
   private connectionListeners = new Set<(state: IIIConnectionState) => void>()
   private isShuttingDown = false
+  private readonly workerName: string
+  private readonly namespace?: string
   private workerId?: string
   private reattachToken?: string
 
@@ -85,6 +117,9 @@ class Sdk implements ISdk {
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
+    this.workerName = options?.workerName ?? `browser:${randomId()}`
+    // No env fallback: the browser has no `process.env`.
+    this.namespace = options?.namespace
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
       ...DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -126,11 +161,16 @@ class Sdk implements ISdk {
 
     return {
       id: triggerType.id,
+      // Pairs a function with its trigger, so it defaults the trigger's namespace
+      // to this worker's — otherwise the function lands in the worker's namespace
+      // and the trigger in `default`, never resolving it. The low-level
+      // `registerTrigger` keeps the engine default (`default`).
       registerTrigger: (functionId: string, config: TConfig) => {
         return this.registerTrigger({
           type: triggerType.id,
           function_id: functionId,
           config,
+          namespace: this.namespace,
         })
       },
       registerFunction: (functionId, handler, config) => {
@@ -139,6 +179,7 @@ class Sdk implements ISdk {
           type: triggerType.id,
           function_id: functionId,
           config,
+          namespace: this.namespace,
         })
         return ref
       },
@@ -326,7 +367,7 @@ class Sdk implements ISdk {
   trigger = async <TInput = unknown, TOutput = any>(
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs } = request
+    const { function_id, payload, action, timeoutMs, namespace } = request
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     if (action?.type === 'void') {
@@ -334,6 +375,8 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
+        // Omit when absent so the engine routes within its default namespace.
+        ...(namespace !== undefined ? { namespace } : {}),
       })
       return undefined as TOutput
     }
@@ -366,6 +409,8 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
+        // Omit when absent so the engine routes within its default namespace.
+        ...(namespace !== undefined ? { namespace } : {}),
       })
     })
   }
@@ -509,6 +554,14 @@ class Sdk implements ISdk {
     }
     this.ws = undefined
 
+    // A fatal registration rejection (or shutdown) sets `isShuttingDown` and a
+    // terminal state before closing the socket. Do not overwrite that state with
+    // `disconnected`, and do not schedule a reconnect the engine would only
+    // reject again. `scheduleReconnect` already no-ops while shutting down.
+    if (this.isShuttingDown) {
+      return
+    }
+
     this.setConnectionState('disconnected')
     this.scheduleReconnect()
   }
@@ -523,9 +576,12 @@ class Sdk implements ISdk {
     }
 
     // Reconnect: present the previous engine-assigned identity BEFORE the
-    // registration replay so the engine retires the old connection and the
-    // replay lands on a clean slate instead of racing its cleanup. The
-    // token proves we ARE that worker (ids alone are publicly listable).
+    // metadata announce and registration replay so the engine retires the old
+    // connection and the replay lands on a clean slate instead of racing its
+    // cleanup. This must precede registerWorkerMetadata(): otherwise the old
+    // connection still holds this (namespace, worker_name) and the announce
+    // would trip WORKER_NAMESPACE_CONFLICT against ourselves. The token proves
+    // we ARE that worker (ids alone are publicly listable).
     if (this.workerId) {
       this.sendMessageRaw(
         JSON.stringify({
@@ -535,6 +591,13 @@ class Sdk implements ISdk {
         }),
       )
     }
+
+    // Announce before registering anything. The engine buffers a connection's
+    // registrations until it knows the connection's namespace, which it takes
+    // from this call — or, failing that, only after a grace period. Registering
+    // first would stall every function behind that grace.
+    this.registerWorkerMetadata()
+
 
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
@@ -589,6 +652,25 @@ class Sdk implements ISdk {
       return { type: messageType, ...resultRest, trigger_type: triggerType }
     }
     return { type: messageType, ...rest } as Record<string, unknown>
+  }
+
+  /**
+   * Tells the engine who this connection is. Sent on every open, before any
+   * registration, so the engine can resolve this connection's namespace and
+   * drain its buffered registrations immediately.
+   */
+  private registerWorkerMetadata(): void {
+    this.sendMessage(MessageType.InvokeFunction, {
+      function_id: EngineFunctions.REGISTER_WORKER,
+      data: {
+        runtime: 'browser',
+        name: this.workerName,
+        os: globalThis.navigator?.userAgent ?? 'browser',
+        // Omit when absent so the engine falls back to its `default` namespace.
+        ...(this.namespace !== undefined ? { namespace: this.namespace } : {}),
+      },
+      action: { type: 'void' },
+    } as unknown as Omit<IIIMessage, 'message_type'>)
   }
 
   private sendMessage(messageType: MessageType, message: Omit<IIIMessage, 'message_type'>, skipIfClosed = false): void {
@@ -691,13 +773,19 @@ class Sdk implements ISdk {
     }
   }
 
-  private async onRegisterTrigger(message: { trigger_type: string; id: string; function_id: string; config: unknown }) {
-    const { trigger_type, id, function_id, config } = message
+  private async onRegisterTrigger(message: {
+    trigger_type: string
+    id: string
+    function_id: string
+    config: unknown
+    namespace?: string
+  }) {
+    const { trigger_type, id, function_id, config, namespace } = message
     const triggerTypeData = this.triggerTypes.get(trigger_type)
 
     if (triggerTypeData) {
       try {
-        await triggerTypeData.handler.registerTrigger({ id, function_id, config })
+        await triggerTypeData.handler.registerTrigger({ id, function_id, config, namespace })
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
           message_type: MessageType.TriggerRegistrationResult,
@@ -770,11 +858,62 @@ class Sdk implements ISdk {
       this.onUnregisterTrigger(
         message as { trigger_type?: string; id: string; function_id?: string; config?: unknown },
       )
+    } else if (msgType === MessageType.RegistrationRejected) {
+      this.onRegistrationRejected(
+        message as { code: string; namespace: string; worker_name: string; owner_worker_id: string },
+      )
     } else if (msgType === MessageType.WorkerRegistered) {
       const { worker_id, reattach_token } = message as { worker_id: string; reattach_token?: string }
       this.workerId = worker_id
       this.reattachToken = reattach_token
     }
+  }
+
+  /**
+   * The engine rejected a registration. A `FUNCTION_NAMESPACE_CONFLICT` costs
+   * one function and leaves the connection open, so log and keep serving. A
+   * `WORKER_NAMESPACE_CONFLICT` means another live worker owns this name in the
+   * namespace: it is terminal — stop and do not reconnect (otherwise the engine
+   * would only reject the same name again, which with `maxRetries: -1` loops
+   * forever).
+   */
+  private onRegistrationRejected(init: {
+    code: string
+    namespace: string
+    worker_name: string
+    owner_worker_id: string
+  }): void {
+    if (init.code === 'FUNCTION_NAMESPACE_CONFLICT') {
+      console.warn(
+        `[iii] Function registration rejected: function "${init.worker_name}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. Staying connected and serving the rest.`,
+      )
+      return
+    }
+
+    console.error(
+      `[iii] Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}. Not reconnecting.`,
+    )
+    // Terminal: suppress reconnect so neither onSocketClose nor scheduleReconnect
+    // revives a connection the engine would only reject again.
+    this.isShuttingDown = true
+    this.clearReconnectTimeout()
+
+    // Reject every in-flight invocation now rather than leaving them to time out.
+    const error = new Error(
+      `[iii] Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}.`,
+    )
+    for (const [, invocation] of this.invocations) {
+      if (invocation.timeout) {
+        clearTimeout(invocation.timeout)
+      }
+      invocation.reject(error)
+    }
+    this.invocations.clear()
+
+    // Drop the socket. onSocketClose sees `isShuttingDown` and leaves the
+    // terminal `failed` state in place instead of overwriting it.
+    this.setConnectionState('failed')
+    this.ws?.close()
   }
 }
 

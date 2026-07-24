@@ -70,13 +70,14 @@ impl TopologyManager {
     pub async fn setup_subscriber_queue(
         &self,
         topic: &str,
+        namespace: &str,
         function_id: &str,
         max_priority: Option<u8>,
     ) -> Result<()> {
         let names = RabbitNames::new(topic);
 
-        let queue_name = names.function_queue(function_id);
-        let dlq_name = names.function_dlq(function_id);
+        let queue_name = names.function_queue(namespace, function_id);
+        let dlq_name = names.function_dlq(namespace, function_id);
 
         self.channel
             .queue_declare(
@@ -115,6 +116,7 @@ impl TopologyManager {
 
         tracing::debug!(
             topic = %topic,
+            namespace = %namespace,
             function_id = %function_id,
             queue = %queue_name,
             "RabbitMQ per-function queue setup complete"

@@ -24,6 +24,36 @@ use crate::builtins::pubsub_lite::BuiltInPubSubLite;
 
 use super::queue_kv::QueueKvStore;
 
+/// Escape character used by [`escape_ns_segment`]. Chosen so it can itself be
+/// escaped, keeping the encoding injective even when a segment contains it.
+const NS_ESCAPE: char = '\\';
+
+/// Escapes the namespace separator `sep` (and the escape char `\`) inside a
+/// single queue-name segment so that segments joined by a *literal* `sep` are
+/// unambiguous. The escape char is escaped first, so decoding is unambiguous
+/// and the map `segment -> escaped` is injective for any content — including
+/// content that already contains `sep` or `\`.
+pub(crate) fn escape_ns_segment(segment: &str, sep: char) -> String {
+    segment
+        .replace(NS_ESCAPE, &format!("{NS_ESCAPE}{NS_ESCAPE}"))
+        .replace(sep, &format!("{NS_ESCAPE}{sep}"))
+}
+
+/// Injectively folds a namespace onto a queue-name `prefix`: escapes both
+/// operands, then joins them with a single *unescaped* `sep`. Because each
+/// operand's own `sep` occurrences are escaped, the one unescaped `sep` is
+/// always the true boundary, so distinct `(prefix, namespace)` pairs always
+/// produce distinct strings — for ANY content, including operands containing
+/// `sep` itself. This closes the collision where `(fid="a@x", ns="y")` and
+/// `(fid="a", ns="x@y")` folded to the same name under a bare `@` join.
+pub(crate) fn join_ns(prefix: &str, namespace: &str, sep: char) -> String {
+    format!(
+        "{}{sep}{}",
+        escape_ns_segment(prefix, sep),
+        escape_ns_segment(namespace, sep)
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
@@ -45,6 +75,11 @@ pub struct Job {
     pub function_id: Option<String>,
     #[serde(default)]
     pub message_id: Option<String>,
+    /// Target namespace the enqueued function must resolve in. Persisted so it
+    /// survives retries and the DLQ. Absent on jobs written before this field
+    /// existed, which correctly resolve to the default namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl Job {
@@ -93,6 +128,7 @@ impl Job {
             baggage,
             function_id: None,
             message_id: None,
+            namespace: None,
         }
     }
 
@@ -301,6 +337,133 @@ impl BuiltinQueue {
         }
 
         Ok(())
+    }
+
+    /// One-time upgrade migration: drain durable subscriber queues that predate
+    /// namespace-scoped identity into their namespaced name.
+    ///
+    /// Before durable subscriptions were keyed by `(namespace, function_id)`, a
+    /// subscriber's internal queue was `{topic}::{function_id}` with no
+    /// namespace. Those names now carry a `{ns_sep}{namespace}` suffix, so
+    /// anything left in the old name is orphaned. A legacy message carries no
+    /// origin namespace, so it is migrated into `default_ns` — the namespace
+    /// everything ran under before this change, and therefore where the message
+    /// would have executed.
+    ///
+    /// Runs at adapter construction, before any consumer subscribes, so nothing
+    /// concurrently produces or consumes the old queue (the builtin queue is
+    /// owned by a single process). Idempotent: a completed drain deletes the old
+    /// structures, and a re-run (or a crash-interrupted drain) never duplicates
+    /// — every write is remove-then-add / overwrite keyed by job id or DLQ
+    /// payload. Returns the number of legacy queues drained.
+    pub async fn migrate_legacy_subscriber_queues(&self, ns_sep: char, default_ns: &str) -> usize {
+        // Suffix appended to a queue's base name for each of its structures.
+        const SUFFIXES: [&str; 4] = [":waiting", ":active", ":delayed", ":dlq"];
+
+        // Discover queue base names from every persisted structure — this covers
+        // DLQ-only queues, whose job records were deleted on dead-lettering.
+        let structure_keys = self.kv_store.list_structure_keys("queue:").await;
+        let mut legacy: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for key in structure_keys {
+            let Some(rest) = key.strip_prefix("queue:") else {
+                continue;
+            };
+            let base = SUFFIXES
+                .iter()
+                .find_map(|s| rest.strip_suffix(s))
+                .unwrap_or(rest);
+            if Self::is_legacy_subscriber_queue(base, ns_sep) {
+                legacy.insert(base.to_string());
+            }
+        }
+
+        let mut drained = 0;
+        for old in legacy {
+            // Target the injective namespaced identity. `old` is the verbatim
+            // legacy `{topic}::{fid}` prefix, so `join_ns` here produces exactly
+            // what a `default`-namespace consumer subscribes to (see the builtin
+            // adapter's `internal_queue`).
+            let new = join_ns(&old, default_ns, ns_sep);
+            self.migrate_subscriber_queue(&old, &new).await;
+            drained += 1;
+            tracing::info!(old = %old, new = %new, "Drained legacy subscriber queue into its namespace");
+        }
+        drained
+    }
+
+    /// A pre-namespace subscriber queue: `{topic}::{function_id}` — carries the
+    /// `::` subscriber join, has no namespace separator (so it is not already
+    /// migrated), and is not a `__fn_queue::` transport queue (keyed
+    /// differently). A pathological topic containing `::` but no subscriber is a
+    /// possible false positive; the drain only moves messages between durable
+    /// names, so the blast radius is a stranded (never lost) message.
+    fn is_legacy_subscriber_queue(name: &str, ns_sep: char) -> bool {
+        name.contains("::") && !name.contains(ns_sep) && !name.starts_with("__fn_queue::")
+    }
+
+    /// Moves every structure of `old` into `new`, rewriting each job record's
+    /// `queue` field. In-flight (`active`) jobs are re-queued as `waiting` so
+    /// the new consumer reprocesses them. Exactly-once per item: job records are
+    /// overwritten by key, list/zset entries are remove-then-add.
+    async fn migrate_subscriber_queue(&self, old: &str, new: &str) {
+        let waiting_new = self.waiting_key(new);
+
+        // waiting + active -> new waiting (re-queue in-flight for reprocessing).
+        for src_key in [self.waiting_key(old), self.active_key(old)] {
+            for id in self.kv_store.lrange(&src_key, 0, usize::MAX).await {
+                self.move_job_record(old, new, &id).await;
+                self.kv_store.lrem(&waiting_new, 0, &id).await;
+                self.kv_store.rpush(&waiting_new, id.clone()).await;
+                self.kv_store.lrem(&src_key, 0, &id).await;
+            }
+        }
+
+        // delayed -> new delayed, preserving the scheduled time (job.process_at).
+        let delayed_old = self.delayed_key(old);
+        let delayed_new = self.delayed_key(new);
+        for id in self
+            .kv_store
+            .zrangebyscore(&delayed_old, i64::MIN, i64::MAX)
+            .await
+        {
+            let process_at = self
+                .move_job_record(old, new, &id)
+                .await
+                .and_then(|j| j.process_at)
+                .unwrap_or(0);
+            self.kv_store.zrem(&delayed_new, &id).await;
+            self.kv_store
+                .zadd(&delayed_new, process_at as i64, id.clone())
+                .await;
+            self.kv_store.zrem(&delayed_old, &id).await;
+        }
+
+        // dlq -> new dlq. DLQ entries are self-contained JSON (no job record).
+        let dlq_old = self.dlq_key(old);
+        let dlq_new = self.dlq_key(new);
+        for payload in self.kv_store.lrange(&dlq_old, 0, usize::MAX).await {
+            self.kv_store.lrem(&dlq_new, 0, &payload).await;
+            self.kv_store.lpush(&dlq_new, payload.clone()).await;
+            self.kv_store.lrem(&dlq_old, 0, &payload).await;
+        }
+    }
+
+    /// Moves a job record from `old` to `new`, rewriting `job.queue = new`.
+    /// Idempotent: reads from whichever side still holds it (so a re-run after a
+    /// partial move still resolves the record). Returns the rewritten job.
+    async fn move_job_record(&self, old: &str, new: &str, id: &str) -> Option<Job> {
+        let old_key = self.job_key(old, id);
+        let new_key = self.job_key(new, id);
+        let value = match self.kv_store.get_job(&old_key).await {
+            Some(v) => v,
+            None => self.kv_store.get_job(&new_key).await?,
+        };
+        let mut job: Job = serde_json::from_value(value).ok()?;
+        job.queue = new.to_string();
+        let json = serde_json::to_value(&job).ok()?;
+        self.kv_store.set_job(&new_key, json).await;
+        self.kv_store.delete_job(&old_key).await;
+        Some(job)
     }
 
     pub(crate) fn job_key(&self, queue: &str, job_id: &str) -> String {

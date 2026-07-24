@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket},
@@ -23,7 +23,10 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    protocol::{ErrorBody, Message},
+    protocol::{
+        DEFAULT_NAMESPACE, ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message,
+        WORKER_NAMESPACE_CONFLICT, effective_namespace,
+    },
     services::{Service, ServicesRegistry},
     telemetry::{
         ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
@@ -55,6 +58,69 @@ const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// actions. The engine owns receipt generation and uses this function only as
 /// the durable transport boundary.
 const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
+
+/// How long a freshly connected worker's registrations wait for the namespace
+/// to arrive before the engine gives up and files them under
+/// [`DEFAULT_NAMESPACE`].
+///
+/// A connection's namespace does not arrive as a protocol message: it rides on
+/// the `engine::workers::register` engine call. SDKs that predate the reorder
+/// flush their `RegisterFunction` queue *before* that call, so registrations
+/// routinely arrive while the namespace is still unknown. Every real SDK does
+/// send `engine::workers::register` eventually, so the buffer drains in
+/// microseconds; this grace only bounds a hand-rolled client that never sends
+/// it at all.
+pub const REGISTRATION_NAMESPACE_GRACE: Duration = Duration::from_secs(5);
+
+/// Per-connection namespace resolution state.
+///
+/// `Draining` is not just bookkeeping: the drain runs on the task handling
+/// `engine::workers::register` (or on the grace timer), concurrently with the
+/// connection's WS read loop. Flipping straight to `Resolved` before the queue
+/// empties would let a message arriving mid-drain register immediately and
+/// overtake the ones still queued ahead of it. Keeping the connection in
+/// `Draining` routes those arrivals to the back of the same queue, so the
+/// drainer applies everything in arrival order and only publishes `Resolved`
+/// once the queue is empty.
+enum NamespaceState {
+    /// Namespace unknown; registration messages queue in arrival order.
+    Pending(VecDeque<Message>),
+    /// Namespace known, queue not yet empty.
+    Draining(String, VecDeque<Message>),
+    /// Namespace known and queue drained; registrations take the direct path.
+    Resolved(String),
+    /// The connection is being torn down. Carries the namespace so
+    /// `cleanup_worker` still releases registrations from where the drain put
+    /// them. A drain observing this stops rather than registering functions
+    /// for a worker that is already gone.
+    Aborted(String),
+}
+
+/// Registration messages are the only ones whose effect depends on the
+/// connection's namespace, so they are the only ones worth buffering.
+///
+/// `UnregisterFunction` is included even though it is not itself a
+/// registration: leaving it unbuffered would let it run against an empty
+/// registry while the matching `RegisterFunction` still sits in the queue,
+/// inverting the pair and resurrecting a function the worker retired.
+///
+/// `RegisterTrigger` is buffered too, to preserve arrival order relative to the
+/// same connection's `RegisterFunction`s. A trigger carries an explicit target
+/// namespace from the message (absent means `default`), not the connection's, so
+/// buffering is no longer about capturing the connection namespace. Instead it
+/// keeps an earlier-arrived `RegisterFunction` visible when the trigger's RBAC
+/// gate resolves its target: draining in order means the function this trigger
+/// exposes is already in the registry by the time the gate inspects it.
+fn is_namespaced_registration(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::RegisterFunction { .. }
+            | Message::RegisterService { .. }
+            | Message::UnregisterFunction { .. }
+            | Message::RegisterTrigger { .. }
+            | Message::UnregisterTrigger { .. }
+    )
+}
 
 /// Handles binary frames with OTEL telemetry prefixes.
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
@@ -107,6 +173,20 @@ async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
 pub enum Outbound {
     Protocol(Message),
     Raw(WsMessage),
+}
+
+/// A registration refused because a live worker already holds the name in the
+/// target namespace.
+///
+/// `worker_name` carries the name that collided — today always a function id,
+/// since worker-name conflicts are deferred to Task 9.5. It maps straight onto
+/// [`Message::RegistrationRejected`]'s field of the same name, which is why it
+/// keeps that name rather than `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceConflict {
+    pub namespace: String,
+    pub worker_name: String,
+    pub owner_worker_id: String,
 }
 
 #[derive(Debug)]
@@ -186,20 +266,67 @@ pub trait EngineTrait: Send + Sync {
         self.call_with_metadata(function_id, input, None).await
     }
 
+    /// Engine-orchestration call in the default namespace. Hooks and middleware
+    /// use this: they are engine-internal and not namespace-aware.
     async fn call_with_metadata(
         &self,
         function_id: &str,
         input: impl Serialize + Send,
         metadata: Option<Value>,
+    ) -> Result<Option<Value>, ErrorBody> {
+        self.call_with_metadata_ns(DEFAULT_NAMESPACE, function_id, input, metadata)
+            .await
+    }
+
+    /// Like [`Self::call_with_metadata`] but resolves the target function in an
+    /// explicit `namespace`. `fire_triggers` uses this to run a trigger's target
+    /// in the namespace the trigger named (explicit, or `default` when absent),
+    /// rather than unconditionally in `default`.
+    async fn call_with_metadata_ns(
+        &self,
+        namespace: &str,
+        function_id: &str,
+        input: impl Serialize + Send,
+        metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
+
+    /// Registers into [`DEFAULT_NAMESPACE`]. Convenience for builtin /
+    /// engine-internal workers that are not namespace-aware.
     fn register_function(
         &self,
         request: RegisterFunctionRequest,
         handler: Box<dyn FunctionHandler + Send + Sync>,
-    );
-    fn register_function_handler<H, F>(
+    ) {
+        self.register_function_ns(DEFAULT_NAMESPACE, request, handler);
+    }
+
+    /// Registers into `namespace`. Callers holding a `WorkerConnection` must
+    /// use this with the connection's effective namespace, so the registration
+    /// lands where the unregister/cleanup paths will look for it.
+    fn register_function_ns(
         &self,
+        namespace: &str,
+        request: RegisterFunctionRequest,
+        handler: Box<dyn FunctionHandler + Send + Sync>,
+    );
+    /// Registers into [`DEFAULT_NAMESPACE`]. Convenience for builtin /
+    /// engine-internal workers that are not namespace-aware.
+    fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
+    where
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
+    {
+        self.register_function_handler_ns(DEFAULT_NAMESPACE, request, handler);
+    }
+    /// Registers into `namespace`. Callers acting on behalf of a WS connection
+    /// (today: `HttpFunctionsWorker`, for HTTP-invocation registrations) must
+    /// use this with the connection's effective namespace, so the function lands
+    /// where the service registry, the unregister path and `resolve_function`
+    /// all agree to look for it.
+    fn register_function_handler_ns<H, F>(
+        &self,
+        namespace: &str,
         request: RegisterFunctionRequest,
         handler: Handler<H>,
     ) where
@@ -214,6 +341,17 @@ pub trait EngineTrait: Send + Sync {
         F: Future<Output = HandlerOutput> + Send + 'static;
 }
 
+/// How the owner of a `function_owners` entry registered the function: over the
+/// regular WebSocket invocation path, or as an HTTP-invocation (external)
+/// function. Recorded alongside the owner so a release can assert or branch on
+/// it; the two kinds still share one `FunctionsRegistry`, which is why they must
+/// share one owner map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationKind {
+    Regular,
+    External,
+}
+
 #[derive(Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerConnectionRegistry>,
@@ -223,16 +361,41 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
-    /// Records the current owning WS worker for each registered function id.
+    /// Records the current owning WS worker for each registered function,
+    /// keyed by `(namespace, function_id)` to match `FunctionsRegistry`.
     /// Populated when a worker sends `Message::RegisterFunction`; used by
     /// `cleanup_worker` and `remove_worker_registrations` to atomically skip
     /// removal of registrations that have been overwritten by a different,
     /// still-live worker (the fast-restart race). In-process workers do not
     /// populate this map, so the absence of an entry means "no WS owner."
-    pub(crate) function_owners: Arc<DashMap<String, Uuid>>,
-    /// HTTP-invocation variant of `function_owners`, separate because external
-    /// functions live in their own per-worker set on `WorkerConnection`.
-    pub(crate) external_function_owners: Arc<DashMap<String, Uuid>>,
+    ///
+    /// The namespace is part of the key, not decoration: keying by bare id
+    /// would let a worker in one namespace take the lease on an id another
+    /// namespace's worker legitimately owns, leaving the loser's registration
+    /// orphaned when it disconnects (its CAS release would never match).
+    ///
+    /// The value carries the owning worker plus the [`InvocationKind`] it
+    /// registered under. Regular and HTTP-invocation registrations share this
+    /// ONE map (and one `FunctionsRegistry`), so claim and release are a single
+    /// `DashMap` entry operation — check-and-write atomic by construction. Two
+    /// concurrent claims of the same key, one Regular and one External, cannot
+    /// both observe a free lease: whichever wins the entry lock is seen by the
+    /// other. The `kind` records how the current owner registered so a release
+    /// can branch on it if needed; the CAS key for release is the owner id.
+    pub(crate) function_owners: Arc<DashMap<(String, String), (Uuid, InvocationKind)>>,
+    /// Records the current owning WS connection for each live worker name,
+    /// keyed by `(namespace, worker_name)`. Populated when a worker sends
+    /// `engine::workers::register` (see `claim_worker_name`) and CAS-released by
+    /// `cleanup_worker`. One live name per namespace: a second live connection
+    /// claiming a name already held is rejected and closed. A lease held by a
+    /// worker that has gone away — or whose connection is tearing down — is
+    /// taken over, so a worker restart reclaims its own name.
+    pub(crate) worker_name_owners: Arc<DashMap<(String, String), Uuid>>,
+    /// Namespace resolution state per WS connection, seeded by
+    /// `begin_namespace_resolution` when the connection is accepted and dropped
+    /// by `cleanup_worker`. A connection with no entry here (in-process
+    /// workers, direct `router_msg` callers) never buffers.
+    namespace_states: Arc<DashMap<Uuid, NamespaceState>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
     /// Effective `iii-worker-manager` port, resolved from config at build
     /// time. Set once by `EngineBuilder::build`; subsequent reads see the
@@ -246,6 +409,11 @@ pub struct Engine {
     /// the SAME file the engine watches (a non-default name like
     /// `config.yml` otherwise silently splits the two).
     config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
+    /// Registration namespace grace in milliseconds, resolved from the
+    /// `iii-worker-manager` config by `EngineBuilder::build`. Read through
+    /// [`Engine::registration_namespace_grace`], where the `III_NAMESPACE_GRACE_MS`
+    /// env var takes precedence and an unset lock falls back to the 5s default.
+    registration_namespace_grace_ms: Arc<std::sync::OnceLock<u64>>,
 }
 
 fn resolve_registration_id(worker: &WorkerConnection, id: &str) -> String {
@@ -278,11 +446,36 @@ impl Engine {
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
             function_owners: Arc::new(DashMap::new()),
-            external_function_owners: Arc::new(DashMap::new()),
+            worker_name_owners: Arc::new(DashMap::new()),
+            namespace_states: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
             config_path: Arc::new(std::sync::OnceLock::new()),
+            registration_namespace_grace_ms: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// The effective registration namespace grace. Precedence: the
+    /// `III_NAMESPACE_GRACE_MS` env var (runtime override), then the value
+    /// resolved from the `iii-worker-manager` config by `EngineBuilder::build`,
+    /// then [`REGISTRATION_NAMESPACE_GRACE`] (5s).
+    pub fn registration_namespace_grace(&self) -> Duration {
+        if let Some(ms) = std::env::var("III_NAMESPACE_GRACE_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            return Duration::from_millis(ms);
+        }
+        match self.registration_namespace_grace_ms.get().copied() {
+            Some(ms) => Duration::from_millis(ms),
+            None => REGISTRATION_NAMESPACE_GRACE,
+        }
+    }
+
+    /// Records the configured grace in milliseconds. Called once by
+    /// `EngineBuilder::build`; later calls are ignored (OnceLock semantics).
+    pub fn set_registration_namespace_grace_ms(&self, ms: u64) {
+        let _ = self.registration_namespace_grace_ms.set(ms);
     }
 
     /// Returns the effective `iii-worker-manager` port. Resolved from config
@@ -368,26 +561,28 @@ impl Engine {
     /// Removes every registration recorded in `regs` from the engine's global
     /// registries. Used during in-process worker destroy and reload.
     ///
-    /// Skips ids currently owned by a WS worker via `function_owners`
-    /// (non-invocation path) or `external_function_owners` (HTTP-invocation
-    /// path) — without this, destroying an in-process worker that happened
-    /// to share a function id with a connected WS worker would tear out the
-    /// WS worker's live registration (or its `service_registry` entry, in
-    /// the HTTP case). In-process workers themselves do not populate either
-    /// owner map, so the absence of an entry in both is the "no WS owner"
-    /// signal that means we can safely remove.
+    /// Skips ids currently owned by a WS worker via `function_owners` (regular
+    /// or HTTP-invocation, now one map) — without this, destroying an in-process
+    /// worker that happened to share a function id with a connected WS worker
+    /// would tear out the WS worker's live registration (or its
+    /// `service_registry` entry, in the HTTP case). In-process workers
+    /// themselves do not populate the owner map, so the absence of an entry is
+    /// the "no WS owner" signal that means we can safely remove.
     pub fn remove_worker_registrations(&self, regs: &crate::workers::reload::WorkerRegistrations) {
         for id in &regs.function_ids {
-            if self.function_owners.contains_key(id)
-                || self.external_function_owners.contains_key(id)
-            {
+            // In-process workers only ever register into the default namespace,
+            // so only a WS owner of the *same* `(default, id)` key can be
+            // clobbered by the removal below.
+            let key = (DEFAULT_NAMESPACE.to_string(), id.clone());
+            if self.function_owners.contains_key(&key) {
                 tracing::debug!(
                     function_id = %id,
                     "Skipping in-process registration removal — a WS worker currently owns this id"
                 );
                 continue;
             }
-            self.remove_function_from_engine(id);
+            // In-process workers always register into the default namespace.
+            self.remove_function_from_engine(DEFAULT_NAMESPACE, id);
         }
     }
 
@@ -395,21 +590,63 @@ impl Engine {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
-    fn remove_function(&self, function_id: &str) {
-        self.functions.remove(function_id);
+    fn remove_function(&self, namespace: &str, function_id: &str) {
+        self.functions.remove(namespace, function_id);
     }
 
-    fn remove_function_from_engine(&self, function_id: &str) {
-        self.remove_function(function_id);
+    fn remove_function_from_engine(&self, namespace: &str, function_id: &str) {
+        self.remove_function(namespace, function_id);
         self.service_registry
-            .remove_function_from_services(function_id);
+            .remove_function_from_services(namespace, function_id);
     }
 
+    /// Resolves `function_id` in exactly one namespace.
+    ///
+    /// `Some(ns)` resolves only in `ns`; `None` resolves only in
+    /// [`DEFAULT_NAMESPACE`]. There is deliberately no best-fit and no
+    /// cross-namespace search, and the *caller's* namespace never participates:
+    /// a worker in `analytics` that invokes without naming a namespace gets the
+    /// `default` function, not its own. Namespaces are a routing dimension the
+    /// caller addresses explicitly, not an ambient scope — anything else makes
+    /// the target of an invoke depend on who is asking, which is exactly the
+    /// ambiguity namespaces exist to remove.
+    ///
+    /// A miss keeps the pre-existing `function_not_found` code (SDKs and the
+    /// `Enqueue` provider-missing DX branch both match on it) and only enriches
+    /// the message with the namespaces where the id *does* exist.
+    fn resolve_function(
+        &self,
+        requested_ns: Option<&str>,
+        function_id: &str,
+    ) -> Result<Function, ErrorBody> {
+        let namespace = requested_ns.unwrap_or(DEFAULT_NAMESPACE);
+        if let Some(function) = self.functions.get(namespace, function_id) {
+            return Ok(function);
+        }
+
+        let known = self.functions.namespaces_for(function_id);
+        let hint = if known.is_empty() {
+            String::new()
+        } else {
+            format!(" It is registered in namespace(s): {}.", known.join(", "))
+        };
+        Err(ErrorBody {
+            code: "function_not_found".into(),
+            message: format!(
+                "Function {} not found in namespace {}.{}",
+                function_id, namespace, hint
+            ),
+            stacktrace: None,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn remember_invocation(
         &self,
         worker: &WorkerConnection,
         invocation_id: Option<Uuid>,
         function_id: &str,
+        namespace: Option<&str>,
         body: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
@@ -419,43 +656,46 @@ impl Engine {
             worker_id = %worker.id,
             invocation_id = %crate::logging::display_option(&invocation_id),
             function_id = function_id,
+            namespace = %namespace.unwrap_or(DEFAULT_NAMESPACE),
             traceparent = %crate::logging::display_option(&traceparent),
             baggage = %crate::logging::display_option(&baggage),
             "Remembering invocation for worker"
         );
 
-        if let Some(function) = self.functions.get(function_id) {
-            if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
-                crate::workers::telemetry::collector::notify_user_function_invoked();
+        match self.resolve_function(namespace, function_id) {
+            Ok(function) => {
+                if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
+                    crate::workers::telemetry::collector::notify_user_function_invoked();
+                }
+
+                if let Some(invocation_id) = invocation_id {
+                    worker.add_invocation(invocation_id).await;
+                }
+
+                let session = worker.session.clone();
+
+                self.invocations
+                    .handle_invocation(
+                        invocation_id,
+                        Some(worker.id),
+                        function_id.to_string(),
+                        body,
+                        function,
+                        traceparent,
+                        baggage,
+                        session,
+                        metadata,
+                    )
+                    .await
             }
-
-            if let Some(invocation_id) = invocation_id {
-                worker.add_invocation(invocation_id).await;
+            Err(err) => {
+                tracing::error!(
+                    function_id = %function_id,
+                    namespace = %namespace.unwrap_or(DEFAULT_NAMESPACE),
+                    "Function not found"
+                );
+                Ok(Err(err))
             }
-
-            let session = worker.session.clone();
-
-            self.invocations
-                .handle_invocation(
-                    invocation_id,
-                    Some(worker.id),
-                    function_id.to_string(),
-                    body,
-                    function,
-                    traceparent,
-                    baggage,
-                    session,
-                    metadata,
-                )
-                .await
-        } else {
-            tracing::error!(function_id = %function_id, "Function not found");
-
-            Ok(Err(ErrorBody {
-                code: "function_not_found".into(),
-                message: format!("Function {} not found", function_id),
-                stacktrace: None,
-            }))
         }
     }
 
@@ -464,10 +704,15 @@ impl Engine {
     /// When `invocation_id` is `Some`, an `InvocationResult` is sent back
     /// to the caller once the function completes.  When `None`, the call
     /// is fire-and-forget (used by the `Void` action).
+    ///
+    /// `namespace` is the namespace the *invoke message* asked for, not the
+    /// caller connection's — see [`Self::resolve_function`].
+    #[allow(clippy::too_many_arguments)]
     fn spawn_invoke_function(
         &self,
         worker: &WorkerConnection,
         function_id: &str,
+        namespace: Option<&str>,
         data: &Value,
         traceparent: &Option<String>,
         baggage: &Option<String>,
@@ -486,6 +731,7 @@ impl Engine {
         let engine = self.clone();
         let worker = worker.clone();
         let function_id = function_id.to_string();
+        let namespace = namespace.map(str::to_string);
 
         // Add caller's worker_id to invocation data as standard metadata
         let data = {
@@ -513,6 +759,7 @@ impl Engine {
                         &worker,
                         invocation_id,
                         &function_id,
+                        namespace.as_deref(),
                         data,
                         downstream_traceparent.clone(),
                         downstream_baggage.clone(),
@@ -592,8 +839,208 @@ impl Engine {
         );
     }
 
+    /// Starts buffering `worker`'s registrations until its namespace is known,
+    /// and arms the [registration namespace grace](Engine::registration_namespace_grace)
+    /// fallback.
+    ///
+    /// Called once per accepted WS connection. Connections that never call this
+    /// (in-process workers, tests driving `router_msg` directly) keep
+    /// registering immediately.
+    #[doc(hidden)]
+    pub fn begin_namespace_resolution(&self, worker: &WorkerConnection) {
+        self.namespace_states
+            .insert(worker.id, NamespaceState::Pending(VecDeque::new()));
+
+        let engine = self.clone();
+        let worker = worker.clone();
+        let grace = self.registration_namespace_grace();
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+            // `resolve_connection_namespace` transitions `Pending` -> `Draining`
+            // atomically and returns whether THIS call won. Warn only when the
+            // timer actually performed the fallback — never on a false positive
+            // where `engine::workers::register` resolved the namespace first.
+            let fired = engine
+                .resolve_connection_namespace(&worker, DEFAULT_NAMESPACE)
+                .await;
+            if fired {
+                tracing::warn!(
+                    worker_id = %worker.id,
+                    grace_ms = grace.as_millis() as u64,
+                    "namespace registration grace of {}ms expired without an \
+                     `engine::workers::register` announce; drained this connection's \
+                     buffered registrations into the `{}` namespace. To allow more time, \
+                     raise the `iii-worker-manager` `registration_namespace_grace_ms` config \
+                     or set the `III_NAMESPACE_GRACE_MS` env var.",
+                    grace.as_millis(),
+                    DEFAULT_NAMESPACE,
+                );
+            }
+        });
+    }
+
+    /// The namespace `worker`'s registrations belong to.
+    ///
+    /// Deliberately ignores `worker.namespace`. The `WorkerConnection` handed
+    /// to `router_msg` and `cleanup_worker` is a snapshot taken at connect
+    /// time, and `engine::workers::register` writes the namespace into the
+    /// *registry's* copy, not that one — so reading the field would silently
+    /// yield `None` for the entire life of every WS connection. The resolution
+    /// state is the only source that reflects what the worker declared.
+    ///
+    /// No entry means a connection that never entered the state machine
+    /// (in-process workers, direct `router_msg` callers); those have no
+    /// declared namespace, so they belong in [`DEFAULT_NAMESPACE`].
+    fn connection_namespace(&self, worker: &WorkerConnection) -> String {
+        match self.namespace_states.get(&worker.id).as_deref() {
+            Some(
+                NamespaceState::Resolved(ns)
+                | NamespaceState::Draining(ns, _)
+                | NamespaceState::Aborted(ns),
+            ) => ns.clone(),
+            // `Pending` is unreachable: `router_msg` buffers those messages
+            // instead of dispatching them.
+            _ => DEFAULT_NAMESPACE.to_string(),
+        }
+    }
+
+    /// Queues `msg` when the connection's namespace is not known yet.
+    /// Returns `true` when the message was queued and must not be dispatched.
+    fn buffer_until_namespace_known(&self, worker: &WorkerConnection, msg: &Message) -> bool {
+        if !is_namespaced_registration(msg) {
+            return false;
+        }
+        let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+            return false;
+        };
+        match &mut *state {
+            NamespaceState::Pending(queue) | NamespaceState::Draining(_, queue) => {
+                queue.push_back(msg.clone());
+                true
+            }
+            NamespaceState::Resolved(_) => false,
+            // Teardown has started; swallow rather than dispatch, so a late
+            // message cannot register into a connection being cleaned up.
+            NamespaceState::Aborted(_) => true,
+        }
+    }
+
+    /// Marks the connection as torn down, so a drain racing `cleanup_worker`
+    /// stops instead of registering functions cleanup has already released.
+    ///
+    /// Returns without effect when the connection was never tracked.
+    #[doc(hidden)]
+    pub fn abort_namespace_resolution(&self, worker: &WorkerConnection) {
+        let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+            return;
+        };
+        // A connection torn down before its namespace ever resolved has no
+        // declared namespace; nothing it queued will be registered, so the
+        // value only has to be consistent for the teardown that follows.
+        let namespace = match &*state {
+            NamespaceState::Resolved(ns)
+            | NamespaceState::Draining(ns, _)
+            | NamespaceState::Aborted(ns) => ns.clone(),
+            NamespaceState::Pending(_) => DEFAULT_NAMESPACE.to_string(),
+        };
+        *state = NamespaceState::Aborted(namespace);
+    }
+
+    /// Pins the connection to `namespace` and replays everything buffered for
+    /// it, in arrival order.
+    ///
+    /// Racing callers — `engine::workers::register` and the grace timer — are
+    /// serialized by the `Pending` -> `Draining` transition below: exactly one
+    /// observes `Pending`, and the loser returns without draining. First writer
+    /// wins, and a connection never leaves `Draining`/`Resolved` afterwards.
+    ///
+    /// Both the transition and the per-message pop re-read the state, so a
+    /// concurrent `abort_namespace_resolution` (i.e. `cleanup_worker`) stops
+    /// the drain at the next message rather than registering into a connection
+    /// that is being torn down.
+    ///
+    /// Returns `true` when THIS call performed the `Pending` -> `Draining`
+    /// transition (i.e. won the race). The grace timer uses this to warn only
+    /// when the timeout actually fired — never when `engine::workers::register`
+    /// resolved the namespace first.
+    #[doc(hidden)]
+    pub async fn resolve_connection_namespace(
+        &self,
+        worker: &WorkerConnection,
+        namespace: &str,
+    ) -> bool {
+        {
+            let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+                return false;
+            };
+            let NamespaceState::Pending(queue) = &mut *state else {
+                return false;
+            };
+            let queue = std::mem::take(queue);
+            *state = NamespaceState::Draining(namespace.to_string(), queue);
+        }
+
+        tracing::debug!(
+            worker_id = %worker.id,
+            namespace = %namespace,
+            "Connection namespace resolved; draining buffered registrations"
+        );
+
+        loop {
+            // The map guard is taken and dropped around each message, never
+            // held across the dispatch await: messages arriving mid-drain must
+            // be able to append to the queue we are consuming.
+            let next = {
+                let Some(mut state) = self.namespace_states.get_mut(&worker.id) else {
+                    return true;
+                };
+                let NamespaceState::Draining(ns, queue) = &mut *state else {
+                    return true;
+                };
+                match queue.pop_front() {
+                    Some(msg) => msg,
+                    None => {
+                        // Publish `Resolved` only with an empty queue, so no
+                        // arrival can bypass the drain and overtake it.
+                        *state = NamespaceState::Resolved(ns.clone());
+                        return true;
+                    }
+                }
+            };
+
+            // Behavior change worth naming: on the direct path a failing
+            // registration propagates out of `router_msg` via `?` and drops the
+            // connection. A buffered one cannot — the drain runs on the
+            // `engine::workers::register` task (or the grace timer), where
+            // there is no connection to drop and returning early would strand
+            // every message still queued behind this one. So the drain logs and
+            // continues, and one bad registration no longer kills a worker that
+            // happened to register before its namespace was known.
+            if let Err(err) = self.dispatch_msg(worker, &next).await {
+                tracing::warn!(
+                    worker_id = %worker.id,
+                    error = ?err,
+                    "Buffered registration failed to apply"
+                );
+            }
+        }
+    }
+
     #[doc(hidden)]
     pub async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
+        if self.buffer_until_namespace_known(worker, msg) {
+            tracing::debug!(
+                worker_id = %worker.id,
+                "Buffering registration until the connection namespace is known"
+            );
+            return Ok(());
+        }
+        self.dispatch_msg(worker, msg).await
+    }
+
+    /// Applies `msg` unconditionally. The drain calls this directly to bypass
+    /// the buffer check that `router_msg` performs.
+    async fn dispatch_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
                 id,
@@ -784,6 +1231,7 @@ impl Engine {
                 function_id,
                 config,
                 metadata,
+                namespace,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
@@ -822,6 +1270,10 @@ impl Engine {
                             "function_id": function_id,
                             "config": config,
                             "metadata": metadata,
+                            // The namespace the trigger's target will resolve in
+                            // (the message's, or `default` when absent), so the
+                            // hook can authorize per target namespace.
+                            "namespace": crate::protocol::effective_namespace(&namespace),
                             "context": session.context,
                         });
                         match self.call(hook_fn_id, hook_input).await {
@@ -860,6 +1312,54 @@ impl Engine {
                     reg_function_id = format!("{prefix}::{reg_function_id}");
                 }
 
+                // The trigger's target namespace comes from the message, not the
+                // connection: absent means the engine's default namespace. A
+                // worker can therefore expose a function in any namespace, and
+                // must opt in explicitly to reach its own namespaced functions.
+                let trigger_namespace = namespace
+                    .clone()
+                    .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string());
+
+                // Gate the target the same way `InvokeFunction` does: RBAC is
+                // keyed by function id but inspects the `Function` this trigger
+                // would actually reach in `trigger_namespace`. Without this a
+                // worker could expose any namespace's function over a trigger.
+                if let Some(session) = &worker.session {
+                    let function = self
+                        .resolve_function(Some(&trigger_namespace), &reg_function_id)
+                        .ok();
+                    if !crate::workers::worker::rbac_config::is_function_allowed(
+                        &reg_function_id,
+                        &trigger_namespace,
+                        session.config.rbac.clone(),
+                        &session.allowed_functions,
+                        &session.forbidden_functions,
+                        function.as_ref(),
+                    ) {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            trigger_id = %reg_trigger_id,
+                            function_id = %reg_function_id,
+                            namespace = %trigger_namespace,
+                            "trigger registration denied by RBAC"
+                        );
+                        let result_msg = Message::TriggerRegistrationResult {
+                            id: reg_trigger_id,
+                            trigger_type: reg_trigger_type,
+                            function_id: reg_function_id,
+                            error: Some(crate::protocol::ErrorBody::new(
+                                "FORBIDDEN",
+                                format!(
+                                    "function '{}' not allowed in namespace '{}'",
+                                    function_id, trigger_namespace
+                                ),
+                            )),
+                        };
+                        let _ = self.send_msg(worker, result_msg).await;
+                        return Ok(());
+                    }
+                }
+
                 match self
                     .trigger_registry
                     .register_trigger(Trigger {
@@ -869,6 +1369,7 @@ impl Engine {
                         config: reg_config,
                         worker_id: Some(worker.id),
                         metadata: metadata.clone(),
+                        namespace: trigger_namespace,
                     })
                     .await
                 {
@@ -918,11 +1419,13 @@ impl Engine {
                 baggage,
                 action,
                 metadata,
+                namespace,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
                     invocation_id = %crate::logging::display_option(invocation_id),
                     function_id = %function_id,
+                    namespace = %crate::logging::display_option(namespace),
                     traceparent = %crate::logging::display_option(traceparent),
                     baggage = %crate::logging::display_option(baggage),
                     action = ?action,
@@ -931,9 +1434,18 @@ impl Engine {
                 );
 
                 if let Some(session) = &worker.session {
-                    let function = self.functions.get(function_id);
+                    // Resolve strictly in the requested namespace first: RBAC is
+                    // still keyed by function id, but the `Function` it inspects
+                    // must be the one this invoke would actually reach. A miss
+                    // hands RBAC `None` exactly as before, so a forbidden id that
+                    // does not exist still answers FORBIDDEN rather than leaking
+                    // its absence.
+                    let function = self
+                        .resolve_function(namespace.as_deref(), function_id)
+                        .ok();
                     if !crate::workers::worker::rbac_config::is_function_allowed(
                         function_id,
+                        crate::protocol::effective_namespace(&namespace),
                         session.config.rbac.clone(),
                         &session.allowed_functions,
                         &session.forbidden_functions,
@@ -968,15 +1480,25 @@ impl Engine {
                         return Ok(());
                     }
 
+                    // Bypass middleware only for the exact builtin infrastructure
+                    // ids, NOT the whole `engine::*` prefix: a worker-registered
+                    // `engine::foo` must not skip the operator's middleware.
                     if let Some(middleware_id) = &session.config.middleware_function_id
-                        && !function_id.starts_with("engine::")
+                        && !crate::workers::worker::rbac_config::is_infrastructure_function(
+                            function_id,
+                        )
                     {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        // Resolve the middleware in the caller's namespace and hand
+                        // it that namespace, so a namespaced invoke reaches the
+                        // matching middleware and can re-target the same namespace.
+                        let ns = effective_namespace(&namespace).to_string();
                         let middleware_input = serde_json::json!({
                             "function_id": function_id,
                             "payload": data,
                             "action": action,
                             "context": session.context,
+                            "namespace": ns,
                         });
                         let engine = self.clone();
                         let w = worker.clone();
@@ -988,7 +1510,8 @@ impl Engine {
 
                         tokio::spawn(async move {
                             let response = match engine
-                                .call_with_metadata(
+                                .call_with_metadata_ns(
+                                    &ns,
                                     &middleware_id,
                                     middleware_input,
                                     middleware_metadata,
@@ -1027,6 +1550,10 @@ impl Engine {
                         let queue = queue.to_string();
                         let message_receipt_id = Uuid::new_v4().to_string();
                         let data = data.clone();
+                        // Capture the invoke's namespace so the queue provider
+                        // enqueues (and the consumer later resolves) the target
+                        // in the caller's namespace rather than `default`.
+                        let target_namespace = effective_namespace(&namespace).to_string();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
                         let queued_baggage = crate::telemetry::baggage_with_function_id(
@@ -1069,6 +1596,7 @@ impl Engine {
                                             "queue": queue.clone(),
                                             "function_id": function_id.clone(),
                                             "data": data,
+                                            "namespace": target_namespace.clone(),
                                             "messageReceiptId": message_receipt_id.clone(),
                                             "traceparent": traceparent.clone(),
                                             "baggage": queued_baggage,
@@ -1146,6 +1674,7 @@ impl Engine {
                         self.spawn_invoke_function(
                             worker,
                             function_id,
+                            namespace.as_deref(),
                             data,
                             traceparent,
                             baggage,
@@ -1160,6 +1689,7 @@ impl Engine {
                         self.spawn_invoke_function(
                             worker,
                             function_id,
+                            namespace.as_deref(),
                             data,
                             traceparent,
                             baggage,
@@ -1217,6 +1747,10 @@ impl Engine {
                 );
 
                 let resolved_id = resolve_registration_id(worker, id);
+                // Resolved once: every removal below must target the same
+                // namespace the registration was written to, and re-reading it
+                // per call site invites the two halves to drift apart.
+                let namespace = self.connection_namespace(worker);
                 if worker.has_external_function_id(&resolved_id).await {
                     worker.remove_external_function_id(&resolved_id).await;
                     // Only tear down the engine-global registration if this
@@ -1225,7 +1759,11 @@ impl Engine {
                     // hijacked by a fresher worker would wipe the live
                     // worker's http_module + service_registry entries — the
                     // same bug shape `cleanup_worker` guards against.
-                    if !self.release_external_function_if_owner(&worker.id, &resolved_id) {
+                    if !self.release_external_function_if_owner(
+                        &worker.id,
+                        &namespace,
+                        &resolved_id,
+                    ) {
                         tracing::debug!(
                             worker_id = %worker.id,
                             function_id = %id,
@@ -1237,7 +1775,10 @@ impl Engine {
                         .service_registry
                         .get_service::<HttpFunctionsWorker>("http_functions")
                     {
-                        match http_module.unregister_http_function(&resolved_id).await {
+                        match http_module
+                            .unregister_http_function(&namespace, &resolved_id)
+                            .await
+                        {
                             Ok(()) => {
                                 tracing::debug!(
                                     worker_id = %worker.id,
@@ -1255,14 +1796,14 @@ impl Engine {
                             }
                         }
                         self.service_registry
-                            .remove_function_from_services(&resolved_id);
+                            .remove_function_from_services(&namespace, &resolved_id);
                     } else {
-                        self.remove_function_from_engine(&resolved_id);
+                        self.remove_function_from_engine(&namespace, &resolved_id);
                     }
                 } else {
                     worker.remove_function_id(&resolved_id).await;
                     // Same ownership gate as the external branch above.
-                    if !self.release_function_if_owner(&worker.id, &resolved_id) {
+                    if !self.release_function_if_owner(&worker.id, &namespace, &resolved_id) {
                         tracing::debug!(
                             worker_id = %worker.id,
                             function_id = %id,
@@ -1312,6 +1853,11 @@ impl Engine {
                             "function_id": id,
                             "description": description,
                             "metadata": metadata,
+                            // The namespace this function registers in (RegisterFunction
+                            // is buffered until the connection namespace resolves, so
+                            // this is the real one), letting the hook authorize per
+                            // namespace since the same id can exist in several.
+                            "namespace": self.connection_namespace(worker),
                             "context": session.context,
                         });
                         match self.call(hook_fn_id, hook_input).await {
@@ -1341,20 +1887,59 @@ impl Engine {
 
                 reg_id = resolve_registration_id(worker, &reg_id);
 
+                let namespace = self.connection_namespace(worker);
+
+                // `engine::*` is reserved for engine/builtin infrastructure, which
+                // lives in `default`. Refuse a worker registering an `engine::*`
+                // id in any other namespace: otherwise it would inherit the
+                // infrastructure RBAC carve-out AND the `engine::*` middleware
+                // bypass (both keyed by bare id) that are meant only for the real
+                // builtins. In `default` the ownership conflict with the builtin
+                // already blocks the shadow; outside it there is nothing to
+                // conflict with, so reserve the prefix here.
+                if reg_id.starts_with("engine::") && namespace != DEFAULT_NAMESPACE {
+                    tracing::warn!(
+                        worker_id = %worker.id,
+                        function_id = %reg_id,
+                        namespace = %namespace,
+                        "refusing a reserved `engine::*` function id outside the `default` namespace"
+                    );
+                    return Ok(());
+                }
+
                 // Claim ownership BEFORE mutating any engine-global state. An
                 // old worker's `cleanup_worker` running on another task can
                 // see the pre-claim `function_owners` entry, match its own
                 // id, and tear down the registration we're about to write.
                 // Claiming first makes the CAS release in cleanup see the new
                 // owner and bail out for every subsequent step.
-                if invocation.is_some() {
-                    self.claim_external_function(worker.id, &reg_id);
+                //
+                // It is also the gate: a rejected claim must leave every
+                // registry untouched, so nothing below this point runs.
+                let claim = if invocation.is_some() {
+                    self.claim_external_function(&namespace, worker.id, &reg_id)
                 } else {
-                    self.claim_function(worker.id, &reg_id);
+                    self.claim_function(&namespace, worker.id, &reg_id)
+                };
+                if let Err(conflict) = claim {
+                    // Unlike a worker-name conflict, this costs the worker one
+                    // function, not its connection: the rest of its exports are
+                    // still valid, so it stays connected and serving them.
+                    self.send_msg(
+                        worker,
+                        Message::RegistrationRejected {
+                            code: FUNCTION_NAMESPACE_CONFLICT.to_string(),
+                            namespace: conflict.namespace,
+                            worker_name: conflict.worker_name,
+                            owner_worker_id: conflict.owner_worker_id,
+                        },
+                    )
+                    .await;
+                    return Ok(());
                 }
 
                 self.service_registry
-                    .register_service_from_function_id(&reg_id);
+                    .register_service_from_function_id(&namespace, &reg_id);
 
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self
@@ -1366,7 +1951,7 @@ impl Engine {
                             function_id = %reg_id,
                             "HTTP functions module not loaded"
                         );
-                        self.release_external_function_if_owner(&worker.id, &reg_id);
+                        self.release_external_function_if_owner(&worker.id, &namespace, &reg_id);
                         return Ok(());
                     };
 
@@ -1385,14 +1970,14 @@ impl Engine {
                         updated_at: None,
                     };
 
-                    if let Err(err) = http_module.register_http_function(config).await {
+                    if let Err(err) = http_module.register_http_function(&namespace, config).await {
                         tracing::error!(
                             worker_id = %worker.id,
                             function_id = %reg_id,
                             error = ?err,
                             "Failed to register HTTP invocation function"
                         );
-                        self.release_external_function_if_owner(&worker.id, &reg_id);
+                        self.release_external_function_if_owner(&worker.id, &namespace, &reg_id);
                         return Ok(());
                     }
 
@@ -1400,7 +1985,10 @@ impl Engine {
                     return Ok(());
                 }
 
-                self.register_function(
+                // Must match the namespace used for the service above, and the
+                // one the unregister/cleanup paths resolve from the connection.
+                self.register_function_ns(
+                    &namespace,
                     RegisterFunctionRequest {
                         function_id: reg_id.clone(),
                         description: reg_description,
@@ -1436,11 +2024,14 @@ impl Engine {
                     .collect::<Vec<_>>();
                 tracing::debug!(services = ?services, "Current services");
 
-                self.service_registry.insert_service(Service::with_parent(
-                    effective_name.to_string(),
-                    id.clone(),
-                    parent_service_id.clone(),
-                ));
+                self.service_registry.insert_service(
+                    &self.connection_namespace(worker),
+                    Service::with_parent(
+                        effective_name.to_string(),
+                        id.clone(),
+                        parent_service_id.clone(),
+                    ),
+                );
 
                 Ok(())
             }
@@ -1522,6 +2113,11 @@ impl Engine {
                 // If we receive it here, just ignore it
                 Ok(())
             }
+            Message::RegistrationRejected { .. } => {
+                // This message is sent from engine to worker, not the other way around
+                // If we receive it here, just ignore it
+                Ok(())
+            }
         }
     }
 
@@ -1539,13 +2135,17 @@ impl Engine {
         for trigger in triggers {
             let engine = self.clone();
             let function_id = trigger.function_id.clone();
+            let namespace = trigger.namespace.clone();
             let metadata = trigger.metadata.clone();
             let data = data.clone();
             let parent = current_span.clone();
             let span_function_id = function_id.clone();
             tokio::spawn(
                 async move {
-                    match engine.call_with_metadata(&function_id, data, metadata).await {
+                    match engine
+                        .call_with_metadata_ns(&namespace, &function_id, data, metadata)
+                        .await
+                    {
                         Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
                         Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
                     }
@@ -1616,6 +2216,10 @@ impl Engine {
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
+        // Must precede the read loop: the connection's namespace arrives later,
+        // on `engine::workers::register`, and registrations sent before it must
+        // queue rather than land in `DEFAULT_NAMESPACE`.
+        self.begin_namespace_resolution(&worker);
 
         // Send worker ID back to the worker, along with the secret it must
         // present to reattach (retire this connection) after a reconnect.
@@ -1789,12 +2393,24 @@ impl Engine {
             return;
         }
 
+        // Before snapshotting anything: a drain can be running concurrently on
+        // the `engine::workers::register` task (worker disconnects right after
+        // sending it), and would otherwise keep registering functions for the
+        // rest of the teardown — after the snapshot below has decided what to
+        // release. Those would leak, with `function_owners` pointing at a dead
+        // worker. Aborting stops the drain at its next message.
+        self.abort_namespace_resolution(worker);
+
         let regular_functions = worker.get_regular_function_ids().await;
         let external_functions = worker.get_external_function_ids().await;
 
         tracing::debug!(worker_id = %worker.id, functions = ?regular_functions, "Worker registered functions");
         for function_id in regular_functions.iter() {
-            if !self.release_function_if_owner(&worker.id, function_id) {
+            if !self.release_function_if_owner(
+                &worker.id,
+                &self.connection_namespace(worker),
+                function_id,
+            ) {
                 tracing::debug!(
                     worker_id = %worker.id,
                     function_id = %function_id,
@@ -1807,7 +2423,9 @@ impl Engine {
             let http_module = self
                 .service_registry
                 .get_service::<HttpFunctionsWorker>("http_functions");
+            let namespace = self.connection_namespace(worker);
             for function_id in external_functions.iter() {
+                let owner_key = (namespace.clone(), function_id.clone());
                 // Snapshot ownership without releasing — releasing first would
                 // open a window where a racing `RegisterFunction` can claim
                 // ownership mid-teardown, and the remaining teardown steps
@@ -1816,9 +2434,9 @@ impl Engine {
                 // CAS-release at the end so a racing claim reliably aborts
                 // us at the next ownership check.
                 if self
-                    .external_function_owners
-                    .get(function_id)
-                    .is_none_or(|r| *r != worker.id)
+                    .function_owners
+                    .get(&owner_key)
+                    .is_none_or(|r| r.0 != worker.id)
                 {
                     tracing::debug!(
                         worker_id = %worker.id,
@@ -1829,14 +2447,17 @@ impl Engine {
                 }
                 match &http_module {
                     Some(module) => {
-                        if let Err(err) = module.unregister_http_function(function_id).await {
+                        if let Err(err) = module
+                            .unregister_http_function(&namespace, function_id)
+                            .await
+                        {
                             tracing::error!(
                                 worker_id = %worker.id,
                                 function_id = %function_id,
                                 error = ?err,
                                 "Failed to unregister external function during worker cleanup"
                             );
-                            self.remove_function(function_id);
+                            self.remove_function(&namespace, function_id);
                         }
                         // Re-check before wiping service_registry: the
                         // `.await` above is a yield point a racing claim can
@@ -1844,21 +2465,21 @@ impl Engine {
                         // the claimant's setup path (router_msg populates it
                         // before claim completes).
                         if self
-                            .external_function_owners
-                            .get(function_id)
-                            .is_some_and(|r| *r == worker.id)
+                            .function_owners
+                            .get(&owner_key)
+                            .is_some_and(|r| r.0 == worker.id)
                         {
                             self.service_registry
-                                .remove_function_from_services(function_id);
+                                .remove_function_from_services(&namespace, function_id);
                         }
                     }
-                    None => self.remove_function_from_engine(function_id),
+                    None => self.remove_function_from_engine(&namespace, function_id),
                 }
                 // CAS-release ownership. A racing claim will have overwritten
                 // the entry with a new owner id; that predicate fails and we
                 // leave their ownership intact.
-                self.external_function_owners
-                    .remove_if(function_id, |_, owner| *owner == worker.id);
+                self.function_owners
+                    .remove_if(&owner_key, |_, (owner, _kind)| *owner == worker.id);
             }
         }
 
@@ -1871,7 +2492,21 @@ impl Engine {
 
         self.trigger_registry.unregister_worker(&worker.id).await;
         self.channel_manager.remove_channels_by_worker(&worker.id);
+        // Release the worker-name lease before the registry entry (its source of
+        // truth for the name) is gone. Read the name back through the registry:
+        // the `worker` snapshot handed to `cleanup_worker` never carries it —
+        // `engine::workers::register` writes into the registry's copy. CAS so a
+        // restart that already reclaimed the name is not clobbered.
+        if let Some(worker_name) = self.worker_registry.get_worker_name(&worker.id) {
+            let namespace = self.connection_namespace(worker);
+            self.release_worker_name_if_owner(&worker.id, &namespace, &worker_name);
+        }
         self.worker_registry.unregister_worker(&worker.id);
+        // Dropped last: every teardown step above resolves the connection's
+        // namespace through `connection_namespace`, which reads this entry.
+        // Any registration still buffered here dies with the connection — its
+        // worker is gone, so there is nothing to register.
+        self.namespace_states.remove(&worker.id);
 
         let workers_data = serde_json::json!({
             "event": "worker_disconnected",
@@ -1884,41 +2519,229 @@ impl Engine {
         tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
     }
 
-    /// Records `worker_id` as the current owner of `function_id`. Logs a warning
-    /// when the previous owner was a different worker still in the registry —
-    /// that is the cross-worker overwrite shape that, post-defensive-cleanup,
-    /// can leave a hijacked entry behind. Operators can grep for this WARN
-    /// to detect potential function-id squatting.
-    fn claim_function(&self, worker_id: Uuid, function_id: &str) {
-        if let Some(previous) = self
-            .function_owners
-            .insert(function_id.to_string(), worker_id)
-            && previous != worker_id
-            && self.worker_registry.workers.contains_key(&previous)
-        {
-            tracing::warn!(
-                new_owner = %worker_id,
-                previous_owner = %previous,
-                function_id = %function_id,
-                "Function ownership transferred between two live workers — possible cross-worker overwrite"
-            );
+    /// Takes the ownership lease on `(namespace, function_id)` for `worker_id`.
+    ///
+    /// Fails when a *different* worker still present in `worker_registry` holds
+    /// the lease: two live workers in one namespace exporting the same id is
+    /// ambiguous routing, and silently letting the newcomer win would strand
+    /// the incumbent's handler. A lease held by a worker that has already gone
+    /// away is taken over (the fast-restart path), and a re-claim by the same
+    /// worker is idempotent.
+    ///
+    /// The check and the write share one `DashMap` entry lock, so two
+    /// concurrent claims cannot both observe a free lease.
+    fn claim_function(
+        &self,
+        namespace: &str,
+        worker_id: Uuid,
+        function_id: &str,
+    ) -> Result<(), NamespaceConflict> {
+        self.claim_in(
+            namespace,
+            worker_id,
+            function_id,
+            InvocationKind::Regular,
+            "Function",
+        )
+    }
+
+    /// True when `worker_id`'s connection has entered teardown — its namespace
+    /// resolution has been `Aborted` (the first step of `cleanup_worker`). Such
+    /// a connection is on its way out even if `worker_registry` has not swept it
+    /// yet, so it must not block a fresh claim on the name it held.
+    fn is_connection_tearing_down(&self, worker_id: &Uuid) -> bool {
+        matches!(
+            self.namespace_states.get(worker_id).as_deref(),
+            Some(NamespaceState::Aborted(_))
+        )
+    }
+
+    /// Takes the ownership lease on `(namespace, worker_name)` for `worker_id`.
+    ///
+    /// Fails when a *different* worker that is still live in this namespace holds
+    /// the name: one live worker name per namespace, period (this includes the
+    /// SDK's default `hostname:pid`). The loser is rejected and its connection
+    /// closed by the caller.
+    ///
+    /// "Live" is deliberately narrower than "present in `worker_registry`": an
+    /// owner whose connection is tearing down (`is_connection_tearing_down`) is
+    /// treated as gone, so a worker that reconnects during its own teardown
+    /// window reclaims its name instead of being rejected. A lease held by a
+    /// worker already removed from the registry is likewise taken over, and a
+    /// re-claim by the same worker is idempotent.
+    ///
+    /// The check and the write share one `DashMap` entry lock, so two concurrent
+    /// claims cannot both observe a free lease.
+    pub(crate) fn claim_worker_name(
+        &self,
+        namespace: &str,
+        worker_id: Uuid,
+        worker_name: &str,
+    ) -> Result<(), NamespaceConflict> {
+        let key = (namespace.to_string(), worker_name.to_string());
+        match self.worker_name_owners.entry(key) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                let previous = *occupied.get();
+                if previous != worker_id
+                    && self.worker_registry.workers.contains_key(&previous)
+                    && !self.is_connection_tearing_down(&previous)
+                {
+                    tracing::warn!(
+                        rejected_worker = %worker_id,
+                        owner = %previous,
+                        namespace = %namespace,
+                        worker_name = %worker_name,
+                        "Worker name already held by a live worker in this namespace — registration rejected"
+                    );
+                    return Err(NamespaceConflict {
+                        namespace: namespace.to_string(),
+                        worker_name: worker_name.to_string(),
+                        owner_worker_id: previous.to_string(),
+                    });
+                }
+                occupied.insert(worker_id);
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                vacant.insert(worker_id);
+            }
         }
+        Ok(())
+    }
+
+    /// CAS-releases a worker-name lease held by `worker_id`. A racing restart
+    /// that already took the name over will have overwritten the owner, so the
+    /// predicate fails and its claim is left intact.
+    fn release_worker_name_if_owner(&self, worker_id: &Uuid, namespace: &str, worker_name: &str) {
+        self.worker_name_owners.remove_if(
+            &(namespace.to_string(), worker_name.to_string()),
+            |_, owner| owner == worker_id,
+        );
+    }
+
+    /// Rejects a worker registration that lost a `(namespace, worker_name)`
+    /// conflict: tells the loser why, then closes its connection. Unlike a
+    /// function-id conflict (one refused id, connection kept), a duplicate live
+    /// worker name is fatal — the SDKs treat `RegistrationRejected` as a
+    /// no-reconnect error.
+    pub(crate) async fn reject_worker_registration(
+        &self,
+        worker_id: Uuid,
+        conflict: NamespaceConflict,
+    ) {
+        let Some(worker) = self.worker_registry.get_worker(&worker_id) else {
+            return;
+        };
+        self.send_msg(
+            &worker,
+            Message::RegistrationRejected {
+                code: WORKER_NAMESPACE_CONFLICT.to_string(),
+                namespace: conflict.namespace,
+                worker_name: conflict.worker_name,
+                owner_worker_id: conflict.owner_worker_id,
+            },
+        )
+        .await;
+        // Close the connection: the writer task forwards this Close frame, the
+        // read loop then ends and `cleanup_worker` runs.
+        let _ = worker
+            .channel
+            .send(Outbound::Raw(WsMessage::Close(None)))
+            .await;
     }
 
     /// HTTP-invocation variant of `claim_function`.
-    fn claim_external_function(&self, worker_id: Uuid, function_id: &str) {
-        if let Some(previous) = self
-            .external_function_owners
-            .insert(function_id.to_string(), worker_id)
-            && previous != worker_id
-            && self.worker_registry.workers.contains_key(&previous)
-        {
-            tracing::warn!(
-                new_owner = %worker_id,
-                previous_owner = %previous,
-                function_id = %function_id,
-                "External function ownership transferred between two live workers — possible cross-worker overwrite"
-            );
+    fn claim_external_function(
+        &self,
+        namespace: &str,
+        worker_id: Uuid,
+        function_id: &str,
+    ) -> Result<(), NamespaceConflict> {
+        self.claim_in(
+            namespace,
+            worker_id,
+            function_id,
+            InvocationKind::External,
+            "External function",
+        )
+    }
+
+    /// Claims `(namespace, function_id)` for `worker_id` under `kind`, rejecting
+    /// if a DIFFERENT live worker already owns it — regardless of the kind that
+    /// owner registered under. Regular and HTTP-invocation registrations share
+    /// this one owner map (and one `FunctionsRegistry`), so the check and the
+    /// write are a single `DashMap` entry lock: two concurrent claims of the
+    /// same key — one Regular, one External — cannot both observe a free lease,
+    /// which is what the prior two-map design allowed. On takeover (a departed
+    /// or tearing-down previous owner) the entry is overwritten with the new
+    /// `(worker_id, kind)`, so a later restart that changes kind is reflected.
+    fn claim_in(
+        &self,
+        namespace: &str,
+        worker_id: Uuid,
+        function_id: &str,
+        kind: InvocationKind,
+        kind_label: &str,
+    ) -> Result<(), NamespaceConflict> {
+        let key = (namespace.to_string(), function_id.to_string());
+        match self.function_owners.entry(key) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                let (previous, _prev_kind) = *occupied.get();
+                if previous != worker_id
+                    && self.worker_registry.workers.contains_key(&previous)
+                    && !self.is_connection_tearing_down(&previous)
+                {
+                    return Err(self.conflict(
+                        kind_label,
+                        namespace,
+                        function_id,
+                        worker_id,
+                        previous,
+                    ));
+                }
+                occupied.insert((worker_id, kind));
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                vacant.insert((worker_id, kind));
+            }
+        }
+        Ok(())
+    }
+
+    fn conflict(
+        &self,
+        kind: &str,
+        namespace: &str,
+        function_id: &str,
+        rejected: Uuid,
+        owner: Uuid,
+    ) -> NamespaceConflict {
+        use colored::Colorize;
+        let owner_name = self.worker_registry.get_worker_name(&owner);
+        let rejected_name = self.worker_registry.get_worker_name(&rejected);
+        let owner_label = owner_name.as_deref().unwrap_or("<unknown>");
+        let rejected_label = rejected_name.as_deref().unwrap_or("<unknown>");
+        // Colored inline; the structured fields below stay plain for parsing.
+        // `colored` auto-disables when the sink is not a TTY (e.g. a log file).
+        let fid_c = function_id.yellow();
+        let ns_c = namespace.cyan();
+        let owner_c = owner_label.green();
+        let rejected_c = rejected_label.red();
+        tracing::warn!(
+            namespace = %namespace,
+            function_id = %function_id,
+            owner_worker_name = %owner_label,
+            owner_worker_id = %owner,
+            rejected_worker_name = %rejected_label,
+            rejected_worker_id = %rejected,
+            "{kind} '{fid_c}' in namespace '{ns_c}' is already owned by live worker \
+             '{owner_c}' ({owner}); rejecting registration from worker '{rejected_c}' \
+             ({rejected}). Only one worker per namespace may own a function id — rename the \
+             function or use a different namespace."
+        );
+        NamespaceConflict {
+            namespace: namespace.to_string(),
+            worker_name: function_id.to_string(),
+            owner_worker_id: owner.to_string(),
         }
     }
 
@@ -1931,10 +2754,22 @@ impl Engine {
     /// connection's cleanup delete its reconnected successor's fresh
     /// registration. NOTE: `remove_function_from_engine` must never touch
     /// `function_owners`, or this deadlocks.
-    fn release_function_if_owner(&self, worker_id: &Uuid, function_id: &str) -> bool {
-        match self.function_owners.entry(function_id.to_string()) {
-            dashmap::mapref::entry::Entry::Occupied(entry) if entry.get() == worker_id => {
-                self.remove_function_from_engine(function_id);
+    /// `namespace` must be the owning connection's effective namespace — the
+    /// caller holds the `WorkerConnection`, so it is passed in rather than
+    /// re-derived from the registry (which would silently fall back to
+    /// `DEFAULT_NAMESPACE` for a connection already unregistered).
+    fn release_function_if_owner(
+        &self,
+        worker_id: &Uuid,
+        namespace: &str,
+        function_id: &str,
+    ) -> bool {
+        match self
+            .function_owners
+            .entry((namespace.to_string(), function_id.to_string()))
+        {
+            dashmap::mapref::entry::Entry::Occupied(entry) if entry.get().0 == *worker_id => {
+                self.remove_function_from_engine(namespace, function_id);
                 entry.remove();
                 true
             }
@@ -1945,9 +2780,22 @@ impl Engine {
     /// External-function variant of `release_function_if_owner`. Caller is
     /// responsible for unregistering from `http_functions` and the service
     /// registry on success — this helper only releases the owner index.
-    fn release_external_function_if_owner(&self, worker_id: &Uuid, function_id: &str) -> bool {
-        self.external_function_owners
-            .remove_if(function_id, |_, owner| owner == worker_id)
+    ///
+    /// The CAS predicate matches on the OWNER, not the kind: once a restart that
+    /// changes invocation kind has overwritten the entry with the new worker's
+    /// `(new_id, new_kind)`, this old-kind release finds `owner != worker_id`
+    /// and leaves the new registration intact.
+    fn release_external_function_if_owner(
+        &self,
+        worker_id: &Uuid,
+        namespace: &str,
+        function_id: &str,
+    ) -> bool {
+        self.function_owners
+            .remove_if(
+                &(namespace.to_string(), function_id.to_string()),
+                |_, (owner, _kind)| owner == worker_id,
+            )
             .is_some()
     }
 }
@@ -1959,8 +2807,15 @@ impl EngineTrait for Engine {
     /// orchestration; the boot-heartbeat wakeup should only fire for actual
     /// user-initiated invocations arriving via `remember_invocation` and not
     /// things the engine can fire itself without user involvement, such as cron.
-    async fn call_with_metadata(
+    ///
+    /// `namespace` is the namespace the target function is resolved in. Hooks
+    /// and middleware pass [`DEFAULT_NAMESPACE`] (via `call_with_metadata`);
+    /// `fire_triggers` passes the trigger's own namespace so a trigger runs the
+    /// function of the worker that registered it, not a same-named function in
+    /// `default`.
+    async fn call_with_metadata_ns(
         &self,
+        namespace: &str,
         function_id: &str,
         input: impl Serialize + Send,
         metadata: Option<Value>,
@@ -1970,7 +2825,7 @@ impl EngineTrait for Engine {
             message: e.to_string(),
             stacktrace: None,
         })?;
-        let function_opt = self.functions.get(function_id);
+        let function_opt = self.functions.get(namespace, function_id);
 
         if let Some(function) = function_opt {
             // Inject current trace context and baggage to link spans as parent-child
@@ -2005,7 +2860,10 @@ impl EngineTrait for Engine {
         } else {
             Err(ErrorBody {
                 code: "function_not_found".into(),
-                message: format!("Function {} not found", function_id),
+                message: format!(
+                    "Function {} not found in namespace {}",
+                    function_id, namespace
+                ),
                 stacktrace: None,
             })
         }
@@ -2039,8 +2897,9 @@ impl EngineTrait for Engine {
             .await;
     }
 
-    fn register_function(
+    fn register_function_ns(
         &self,
+        namespace: &str,
         request: RegisterFunctionRequest,
         handler: Box<dyn FunctionHandler + Send + Sync>,
     ) {
@@ -2072,12 +2931,17 @@ impl EngineTrait for Engine {
             metadata,
         };
 
-        self.functions.register_function(function_id, function);
+        self.functions
+            .register_function_ns(namespace, function_id, function);
         crate::workers::telemetry::collector::track_function_registered();
     }
 
-    fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
-    where
+    fn register_function_handler_ns<H, F>(
+        &self,
+        namespace: &str,
+        request: RegisterFunctionRequest,
+        handler: Handler<H>,
+    ) where
         H: HandlerFn<F>,
         F: Future<Output = HandlerOutput> + Send + 'static,
     {
@@ -2096,7 +2960,7 @@ impl EngineTrait for Engine {
         };
 
         self.functions
-            .register_function(request.function_id, function);
+            .register_function_ns(namespace, request.function_id, function);
     }
 
     fn register_function_handler_with_session<H, F>(
@@ -2145,7 +3009,7 @@ mod tests {
     use crate::{
         config::SecurityConfig,
         function::FunctionResult,
-        protocol::{HttpInvocationRef, Message},
+        protocol::{DEFAULT_NAMESPACE, HttpInvocationRef, Message},
         worker_connections::WorkerConnection,
         workers::{
             engine_fn::TRIGGER_WORKERS_AVAILABLE,
@@ -2155,7 +3019,7 @@ mod tests {
         },
     };
 
-    use super::{Engine, EngineTrait, Outbound};
+    use super::{Engine, EngineTrait, Outbound, REGISTRATION_NAMESPACE_GRACE};
 
     fn make_request(function_id: &str) -> crate::engine::RegisterFunctionRequest {
         crate::engine::RegisterFunctionRequest {
@@ -2246,7 +3110,12 @@ mod tests {
             .await
             .expect("register function");
 
-        assert!(engine.functions.get("external.my_lambda").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "external.my_lambda")
+                .is_some()
+        );
         assert!(worker.has_external_function_id("external.my_lambda").await);
 
         let http_module = engine
@@ -2254,21 +3123,24 @@ mod tests {
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
 
-        assert!(
-            http_module
-                .http_functions()
-                .contains_key("external.my_lambda")
-        );
+        assert!(http_module.http_functions().contains_key(&(
+            DEFAULT_NAMESPACE.to_string(),
+            "external.my_lambda".to_string()
+        )));
 
         engine.cleanup_worker(&worker).await;
 
-        assert!(engine.functions.get("external.my_lambda").is_none());
-
         assert!(
-            !http_module
-                .http_functions()
-                .contains_key("external.my_lambda")
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "external.my_lambda")
+                .is_none()
         );
+
+        assert!(!http_module.http_functions().contains_key(&(
+            DEFAULT_NAMESPACE.to_string(),
+            "external.my_lambda".to_string()
+        )));
     }
 
     // ---------------------------------------------------------------
@@ -2298,7 +3170,10 @@ mod tests {
 
         // Function should be registered in the engine
         assert!(
-            engine.functions.get("my_func").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "my_func")
+                .is_some(),
             "function should be registered"
         );
 
@@ -2307,6 +3182,312 @@ mod tests {
         assert!(
             function_ids.contains(&"my_func".to_string()),
             "worker should track the function id"
+        );
+    }
+
+    /// A worker that declared a namespace must have its function AND its
+    /// service land in that namespace — the two halves of the write path have
+    /// to agree, or unregister/cleanup (which resolve the connection's
+    /// namespace) miss and leak the registration.
+    #[tokio::test]
+    async fn router_msg_register_function_uses_connection_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        // Drive the real mechanism rather than doctoring `worker.namespace`:
+        // that field is never set on a connection the engine dispatches
+        // against, so writing it would prove nothing about production.
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        let msg = Message::RegisterFunction {
+            id: "svc::my_func".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+
+        engine
+            .router_msg(&worker, &msg)
+            .await
+            .expect("register function should succeed");
+
+        assert!(
+            engine.functions.get("orders", "svc::my_func").is_some(),
+            "function must be registered in the connection's namespace"
+        );
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "svc::my_func")
+                .is_none(),
+            "function must NOT leak into the default namespace"
+        );
+        assert!(
+            engine.service_registry.get("orders", "svc").is_some(),
+            "service must be registered in the same namespace as its function"
+        );
+    }
+
+    /// `claim_worker_name` enforces one live name per namespace: a second live
+    /// worker is refused, a re-claim by the incumbent is idempotent, and a name
+    /// keyed to a worker no longer in the registry is taken over (restart).
+    #[test]
+    fn claim_worker_name_rejects_live_duplicate_and_takes_over_dead_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+
+        engine
+            .claim_worker_name("orders", owner.id, "state")
+            .expect("first claim must succeed");
+
+        // A different live worker cannot take a held name.
+        let other = uuid::Uuid::new_v4();
+        let conflict = engine
+            .claim_worker_name("orders", other, "state")
+            .expect_err("a second live worker must be rejected");
+        assert_eq!(conflict.namespace, "orders");
+        assert_eq!(conflict.worker_name, "state");
+        assert_eq!(conflict.owner_worker_id, owner.id.to_string());
+
+        // The incumbent re-claiming its own name is idempotent.
+        engine
+            .claim_worker_name("orders", owner.id, "state")
+            .expect("re-claim by the same worker must succeed");
+
+        // A lease pointing at a worker that is not in the registry is taken over.
+        let dead = uuid::Uuid::new_v4();
+        engine
+            .worker_name_owners
+            .insert(("analytics".to_string(), "state".to_string()), dead);
+        engine
+            .claim_worker_name("analytics", uuid::Uuid::new_v4(), "state")
+            .expect("a dead owner's name must be claimable (worker restart)");
+    }
+
+    /// A held name whose owner's connection is tearing down
+    /// (`abort_namespace_resolution` ran) must not block a fresh claim, even
+    /// though the owner is still present in the registry — the fast-restart
+    /// window.
+    #[tokio::test]
+    async fn claim_worker_name_takes_over_a_tearing_down_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+        engine.begin_namespace_resolution(&owner);
+        engine.resolve_connection_namespace(&owner, "orders").await;
+        engine
+            .claim_worker_name("orders", owner.id, "state")
+            .expect("owner claims the name");
+
+        // While still live, the owner blocks a fresh claim.
+        let restart = uuid::Uuid::new_v4();
+        engine
+            .claim_worker_name("orders", restart, "state")
+            .expect_err("a live owner must block the claim");
+
+        // Once its connection begins teardown, it must not block anymore.
+        engine.abort_namespace_resolution(&owner);
+        assert!(
+            engine.worker_registry.workers.contains_key(&owner.id),
+            "precondition: the owner is still in the registry, only tearing down"
+        );
+        engine
+            .claim_worker_name("orders", restart, "state")
+            .expect("a tearing-down owner must not block a restart");
+    }
+
+    #[tokio::test]
+    async fn a_function_id_owned_via_one_invocation_path_blocks_the_other() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let a = WorkerConnection::new(tx_a);
+        engine.worker_registry.register_worker(a.clone());
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(b.clone());
+
+        // A owns the id as a REGULAR function.
+        engine
+            .claim_function("orders", a.id, "svc::f")
+            .expect("A claims the regular function");
+
+        // B tries to own the SAME (ns, id) as an HTTP-invocation function.
+        // Different owner map, but the same registry entry would be
+        // overwritten — so it must be rejected, not silently accepted.
+        let conflict = engine
+            .claim_external_function("orders", b.id, "svc::f")
+            .expect_err("an id already owned via the regular path must block the external claim");
+        assert_eq!(conflict.owner_worker_id, a.id.to_string());
+
+        // ...and symmetrically.
+        engine
+            .claim_external_function("orders", b.id, "svc::g")
+            .expect("B claims an external function");
+        engine
+            .claim_function("orders", a.id, "svc::g")
+            .expect_err("an id already owned via the external path must block the regular claim");
+    }
+
+    /// The same worker re-registering the same id is idempotent, not a conflict:
+    /// the `previous == worker_id` branch in `claim_in` re-claims instead of
+    /// rejecting, so a hot-reload that re-exports a function keeps ownership and
+    /// the registry's last-write-wins overwrite applies.
+    #[tokio::test]
+    async fn claim_function_is_idempotent_for_the_same_worker() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let a = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(a.clone());
+
+        engine
+            .claim_function("orders", a.id, "svc::f")
+            .expect("first claim by A");
+        // Same worker, same (namespace, id): must succeed, not conflict.
+        engine
+            .claim_function("orders", a.id, "svc::f")
+            .expect("re-claim by the same worker must be idempotent, not rejected");
+
+        let owner = engine
+            .function_owners
+            .get(&("orders".to_string(), "svc::f".to_string()))
+            .map(|e| e.value().0);
+        assert_eq!(owner, Some(a.id), "the same worker must still own the id");
+    }
+
+    #[tokio::test]
+    async fn claim_function_takes_over_a_tearing_down_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+        engine.begin_namespace_resolution(&owner);
+        engine.resolve_connection_namespace(&owner, "orders").await;
+        engine
+            .claim_function("orders", owner.id, "state::get")
+            .expect("owner claims the function");
+
+        // While still live, the owner blocks a fresh claim of the same function.
+        let restart = uuid::Uuid::new_v4();
+        engine
+            .claim_function("orders", restart, "state::get")
+            .expect_err("a live owner must block the function claim");
+
+        // Once its connection begins teardown, it must not block the restart's
+        // functions any more than it blocks the restart's name.
+        engine.abort_namespace_resolution(&owner);
+        assert!(
+            engine.worker_registry.workers.contains_key(&owner.id),
+            "precondition: the owner is still in the registry, only tearing down"
+        );
+        engine
+            .claim_function("orders", restart, "state::get")
+            .expect("a tearing-down owner must not block a restart's function");
+    }
+
+    /// `cleanup_worker` releases the worker-name lease, reading the name back
+    /// from the registry (the connection snapshot never carries it).
+    #[tokio::test]
+    async fn cleanup_worker_releases_the_name_lease() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.worker_registry.update_worker_metadata(
+            &worker.id,
+            "node".to_string(),
+            None,
+            Some("state".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("orders".to_string()),
+        );
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+        engine
+            .claim_worker_name("orders", worker.id, "state")
+            .expect("claim the name");
+
+        assert!(
+            engine
+                .worker_name_owners
+                .contains_key(&("orders".to_string(), "state".to_string())),
+            "precondition: the name lease is held"
+        );
+
+        engine.cleanup_worker(&worker).await;
+
+        assert!(
+            !engine
+                .worker_name_owners
+                .contains_key(&("orders".to_string(), "state".to_string())),
+            "cleanup_worker must release the name lease"
+        );
+    }
+
+    /// The removal path must find what the registration path wrote. Before the
+    /// write path agreed on a namespace, this leaked the function permanently.
+    #[tokio::test]
+    async fn router_msg_unregister_function_in_namespace_removes_it() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        // See `router_msg_register_function_uses_connection_namespace`: the
+        // namespace must reach the connection the way production delivers it.
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterFunction {
+                    id: "svc::my_func".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("register should succeed");
+        assert!(engine.functions.get("orders", "svc::my_func").is_some());
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::UnregisterFunction {
+                    id: "svc::my_func".to_string(),
+                },
+            )
+            .await
+            .expect("unregister should succeed");
+
+        assert!(
+            engine.functions.get("orders", "svc::my_func").is_none(),
+            "function must be removed from the namespace it was registered in"
         );
     }
 
@@ -2331,7 +3512,12 @@ mod tests {
             .await
             .expect("register should succeed");
 
-        assert!(engine.functions.get("removable_func").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "removable_func")
+                .is_some()
+        );
 
         // Now unregister it
         let unregister_msg = Message::UnregisterFunction {
@@ -2343,7 +3529,10 @@ mod tests {
             .expect("unregister should succeed");
 
         assert!(
-            engine.functions.get("removable_func").is_none(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "removable_func")
+                .is_none(),
             "function should be removed after unregister"
         );
 
@@ -2375,6 +3564,132 @@ mod tests {
         }
     }
 
+    fn session_forbidding(function_id: &str) -> crate::workers::worker::rbac_session::Session {
+        use crate::workers::worker::{WorkerManagerConfig, rbac_session::Session};
+        use uuid::Uuid;
+        Session {
+            engine: Arc::new(Engine::new()),
+            config: Arc::new(WorkerManagerConfig::default()),
+            ip_address: "127.0.0.1".to_string(),
+            session_id: Uuid::new_v4(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![function_id.to_string()],
+            allowed_trigger_types: None,
+            allow_function_registration: true,
+            allow_trigger_type_registration: true,
+            context: serde_json::json!({}),
+            function_registration_prefix: None,
+        }
+    }
+
+    /// The RBAC gate on `RegisterTrigger` rejects a trigger whose target the
+    /// session forbids, mirroring `InvokeFunction`: without it a worker could
+    /// expose a forbidden function over a trigger. The registration is refused
+    /// with a `FORBIDDEN` `TriggerRegistrationResult` and never enters the
+    /// registry.
+    #[tokio::test]
+    async fn test_register_trigger_denied_when_target_forbidden() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::with_session(tx, session_forbidding("secret::charge"));
+
+        let msg = Message::RegisterTrigger {
+            id: "t-forbidden".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "secret::charge".to_string(),
+            config: serde_json::json!({ "api_path": "charge", "http_method": "POST" }),
+            metadata: None,
+            namespace: Some("default".to_string()),
+        };
+        // dispatch directly to skip the namespace buffer (test worker never
+        // announces a namespace); we only exercise the RBAC gate.
+        engine
+            .dispatch_msg(&worker, &msg)
+            .await
+            .expect("dispatch RegisterTrigger");
+
+        match rx
+            .try_recv()
+            .expect("a TriggerRegistrationResult should be sent")
+        {
+            Outbound::Protocol(Message::TriggerRegistrationResult { error: Some(e), .. }) => {
+                assert_eq!(e.code, "FORBIDDEN", "expected FORBIDDEN, got {e:?}");
+            }
+            other => panic!("expected FORBIDDEN TriggerRegistrationResult, got {other:?}"),
+        }
+        assert!(
+            engine.trigger_registry.triggers.is_empty(),
+            "forbidden trigger must not enter the registry"
+        );
+    }
+
+    /// `engine::*` is reserved for infrastructure (which lives in `default`). A
+    /// worker registering an `engine::*` id in another namespace is refused, so
+    /// it cannot inherit the infra RBAC carve-out / middleware bypass keyed by
+    /// bare id. In `default` the ownership conflict with the real builtin guards
+    /// it instead, so `engine::*` there is allowed.
+    #[tokio::test]
+    async fn register_function_reserves_engine_prefix_outside_default() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // A worker resolved to a non-default namespace.
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        let reserved = Message::RegisterFunction {
+            id: "engine::log::info".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine
+            .dispatch_msg(&worker, &reserved)
+            .await
+            .expect("dispatch");
+        assert!(
+            engine
+                .functions
+                .get("orders", "engine::log::info")
+                .is_none(),
+            "a reserved engine::* id must not register outside default"
+        );
+
+        // The same-shaped id in `default` is allowed.
+        let (tx2, _rx2) = mpsc::channel::<Outbound>(8);
+        let dflt = WorkerConnection::new(tx2);
+        engine.worker_registry.register_worker(dflt.clone());
+        engine.begin_namespace_resolution(&dflt);
+        engine
+            .resolve_connection_namespace(&dflt, DEFAULT_NAMESPACE)
+            .await;
+        let allowed = Message::RegisterFunction {
+            id: "engine::custom::probe".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine
+            .dispatch_msg(&dflt, &allowed)
+            .await
+            .expect("dispatch");
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "engine::custom::probe")
+                .is_some(),
+            "engine::* in default is allowed"
+        );
+    }
+
     /// Regression: `function.unregister()` must honor
     /// `function_registration_prefix`. Before the fix, register prepended the
     /// prefix but unregister looked up the raw id, so the entry stayed in
@@ -2402,12 +3717,18 @@ mod tests {
         assert!(
             engine
                 .functions
-                .get("test-prefix::removable_func")
+                .get(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "test-prefix::removable_func"
+                )
                 .is_some(),
             "function should be stored under the prefixed id"
         );
         assert!(
-            engine.functions.get("removable_func").is_none(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "removable_func")
+                .is_none(),
             "raw (unprefixed) id must not be used as the storage key"
         );
 
@@ -2422,7 +3743,10 @@ mod tests {
         assert!(
             engine
                 .functions
-                .get("test-prefix::removable_func")
+                .get(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "test-prefix::removable_func"
+                )
                 .is_none(),
             "prefixed function must be removed after unregister (iii-hq/iii#1508)"
         );
@@ -2483,7 +3807,12 @@ mod tests {
             .await
             .expect("register external function should succeed");
 
-        assert!(engine.functions.get("test-prefix::my_lambda").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "test-prefix::my_lambda")
+                .is_some()
+        );
         assert!(
             worker
                 .has_external_function_id("test-prefix::my_lambda")
@@ -2495,9 +3824,10 @@ mod tests {
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
         assert!(
-            http_module
-                .http_functions()
-                .contains_key("test-prefix::my_lambda"),
+            http_module.http_functions().contains_key(&(
+                DEFAULT_NAMESPACE.to_string(),
+                "test-prefix::my_lambda".to_string()
+            )),
             "http module should have the prefixed registration"
         );
 
@@ -2516,9 +3846,10 @@ mod tests {
             "worker must no longer track the prefixed external id"
         );
         assert!(
-            !http_module
-                .http_functions()
-                .contains_key("test-prefix::my_lambda"),
+            !http_module.http_functions().contains_key(&(
+                DEFAULT_NAMESPACE.to_string(),
+                "test-prefix::my_lambda".to_string()
+            )),
             "http module must drop the prefixed registration on unregister (iii-hq/iii#1508)"
         );
     }
@@ -2593,6 +3924,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({"key": "value"}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -2635,6 +3967,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -2706,6 +4039,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -2755,6 +4089,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -2832,6 +4167,7 @@ mod tests {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,
+                    namespace: None,
                 },
             )
             .await
@@ -2894,6 +4230,7 @@ mod tests {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,
+                    namespace: None,
                 },
             )
             .await
@@ -2946,6 +4283,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -2995,6 +4333,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -3197,6 +4536,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
         engine.trigger_registry.triggers.insert(
@@ -3208,6 +4548,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -3246,7 +4587,15 @@ mod tests {
             .await
             .expect("register message should not fail");
 
-        assert!(engine.functions.get("external.without_module").is_none());
+        assert!(
+            engine
+                .functions
+                .get(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "external.without_module"
+                )
+                .is_none()
+        );
         assert!(
             !worker
                 .has_external_function_id("external.without_module")
@@ -3265,16 +4614,23 @@ mod tests {
             make_request("external.cleanup"),
             super::Handler::new(|_input| async move { FunctionResult::Success(None) }),
         );
-        engine
-            .service_registry
-            .register_service_from_function_id("external.cleanup");
+        engine.service_registry.register_service_from_function_id(
+            crate::protocol::DEFAULT_NAMESPACE,
+            "external.cleanup",
+        );
         worker
             .include_external_function_id("external.cleanup")
             .await;
         // Ownership gate on UnregisterFunction requires the worker to be the
         // recorded owner. This test sidesteps `router_msg` to seed state, so
         // populate the owner map directly to match the production invariant.
-        engine.claim_external_function(worker.id, "external.cleanup");
+        engine
+            .claim_external_function(
+                crate::protocol::DEFAULT_NAMESPACE,
+                worker.id,
+                "external.cleanup",
+            )
+            .expect("uncontested claim");
 
         engine
             .router_msg(
@@ -3286,9 +4642,17 @@ mod tests {
             .await
             .expect("unregister should succeed");
 
-        assert!(engine.functions.get("external.cleanup").is_none());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "external.cleanup")
+                .is_none()
+        );
         assert!(!worker.has_external_function_id("external.cleanup").await);
-        assert!(!engine.service_registry.services.contains_key("external"));
+        assert!(!engine.service_registry.services.contains_key(&(
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "external".to_string()
+        )));
     }
 
     #[tokio::test]
@@ -3305,6 +4669,7 @@ mod tests {
                 &worker,
                 Some(uuid::Uuid::new_v4()),
                 "nonexistent_func",
+                None,
                 serde_json::json!({}),
                 None,
                 None,
@@ -3344,13 +4709,21 @@ mod tests {
             .await
             .expect("register should succeed");
 
-        assert!(engine.functions.get("to_remove").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "to_remove")
+                .is_some()
+        );
 
         // Remove it directly
-        engine.remove_function("to_remove");
+        engine.remove_function(crate::protocol::DEFAULT_NAMESPACE, "to_remove");
 
         assert!(
-            engine.functions.get("to_remove").is_none(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "to_remove")
+                .is_none(),
             "function should be removed"
         );
     }
@@ -3385,24 +4758,48 @@ mod tests {
                 .expect("register should succeed");
         }
 
-        assert!(engine.functions.get("cleanup_func_a").is_some());
-        assert!(engine.functions.get("cleanup_func_b").is_some());
-        assert!(engine.functions.get("cleanup_func_c").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func_a")
+                .is_some()
+        );
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func_b")
+                .is_some()
+        );
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func_c")
+                .is_some()
+        );
 
         // Cleanup the worker
         engine.cleanup_worker(&worker).await;
 
         // All functions should be removed
         assert!(
-            engine.functions.get("cleanup_func_a").is_none(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func_a")
+                .is_none(),
             "cleanup_func_a should be removed"
         );
         assert!(
-            engine.functions.get("cleanup_func_b").is_none(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func_b")
+                .is_none(),
             "cleanup_func_b should be removed"
         );
         assert!(
-            engine.functions.get("cleanup_func_c").is_none(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func_c")
+                .is_none(),
             "cleanup_func_c should be removed"
         );
 
@@ -3441,6 +4838,7 @@ mod tests {
             function_id: "some_func".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -3665,6 +5063,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(user.id),
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -3765,6 +5164,7 @@ mod tests {
                     config: serde_json::json!({}),
                     worker_id: Some(user.id),
                     metadata: None,
+                    namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 },
             );
 
@@ -3831,6 +5231,7 @@ mod tests {
                     config: serde_json::json!({}),
                     worker_id: Some(user.id),
                     metadata: None,
+                    namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 },
             );
 
@@ -3905,6 +5306,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(user.id),
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -3975,6 +5377,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(user.id),
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -4017,6 +5420,7 @@ mod tests {
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
 
         engine
@@ -4057,6 +5461,7 @@ mod tests {
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -4112,6 +5517,7 @@ mod tests {
             function_id: "fn-1".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -4185,6 +5591,7 @@ mod tests {
             function_id: "b::echo".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker_b, &reg_msg)
@@ -4251,6 +5658,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: Some(dead_worker),
                 metadata: None,
+                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             },
         );
 
@@ -4306,7 +5714,10 @@ mod tests {
 
         // Verify the service was registered
         assert!(
-            engine.service_registry.services.contains_key("my-service"),
+            engine.service_registry.services.contains_key(&(
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "my-service".to_string()
+            )),
             "Service should be registered in the service registry"
         );
     }
@@ -4330,12 +5741,10 @@ mod tests {
             .await
             .expect("RegisterService without description should succeed");
 
-        assert!(
-            engine
-                .service_registry
-                .services
-                .contains_key("minimal-service")
-        );
+        assert!(engine.service_registry.services.contains_key(&(
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "minimal-service".to_string()
+        )));
     }
 
     // =========================================================================
@@ -4421,13 +5830,23 @@ mod tests {
             .await
             .expect("register should succeed");
 
-        assert!(engine.functions.get("cleanup_func").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func")
+                .is_some()
+        );
 
         // Now cleanup
         engine.cleanup_worker(&worker).await;
 
         // Function should be removed
-        assert!(engine.functions.get("cleanup_func").is_none());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "cleanup_func")
+                .is_none()
+        );
         // Worker should be unregistered
         assert!(!engine.worker_registry.workers.contains_key(&worker.id));
     }
@@ -4462,12 +5881,22 @@ mod tests {
             .router_msg(&old_worker, &register_msg)
             .await
             .expect("old worker register should succeed");
-        assert!(engine.functions.get("shared_func").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "shared_func")
+                .is_some()
+        );
 
-        // NEW worker connects, re-registers the same function_id. This
-        // simulates the fast-restart race where the host watcher
-        // spawns a new VM process that races the engine's disconnect
-        // handling for the old process.
+        // The old connection drops out of the registry, but its
+        // `cleanup_worker` has not run yet — the fast-restart race, where
+        // the host watcher spawns a new VM process that beats the engine's
+        // disconnect handling for the old one. Only a departed incumbent's
+        // lease is takeable; while it is still registered, the newcomer is a
+        // namespace conflict and `claim_function` rejects it.
+        engine.worker_registry.unregister_worker(&old_worker.id);
+
+        // NEW worker connects, re-registers the same function_id.
         let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
         let new_worker = WorkerConnection::new(tx_new);
         engine.worker_registry.register_worker(new_worker.clone());
@@ -4476,7 +5905,10 @@ mod tests {
             .await
             .expect("new worker register should succeed");
         assert!(
-            engine.functions.get("shared_func").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "shared_func")
+                .is_some(),
             "new worker's registration should be in the function_registry"
         );
 
@@ -4488,7 +5920,10 @@ mod tests {
 
         // Function must still be registered: the new worker owns it.
         assert!(
-            engine.functions.get("shared_func").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "shared_func")
+                .is_some(),
             "cleanup of old worker must not remove a function owned by a live new worker"
         );
         // The old worker itself should be unregistered.
@@ -4551,12 +5986,26 @@ mod tests {
             .router_msg(&old_worker, &make_msg())
             .await
             .expect("old worker register should succeed");
-        assert!(engine.functions.get("external.shared").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "external.shared")
+                .is_some()
+        );
         let http_module = engine
             .service_registry
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
-        assert!(http_module.http_functions().contains_key("external.shared"));
+        assert!(
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "external.shared".to_string()))
+        );
+
+        // As in the regular-function variant: the old connection is gone from
+        // the registry but its cleanup has not fired yet, which is what makes
+        // the new worker's claim a takeover rather than a conflict.
+        engine.worker_registry.unregister_worker(&old_worker.id);
 
         let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
         let new_worker = WorkerConnection::new(tx_new);
@@ -4569,11 +6018,16 @@ mod tests {
         engine.cleanup_worker(&old_worker).await;
 
         assert!(
-            engine.functions.get("external.shared").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "external.shared")
+                .is_some(),
             "cleanup of old worker must not remove an external function still owned by a live new worker"
         );
         assert!(
-            http_module.http_functions().contains_key("external.shared"),
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "external.shared".to_string())),
             "http_functions module must still have the entry the new worker owns"
         );
         assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
@@ -4609,9 +6063,10 @@ mod tests {
         // Seed the global functions registry as if the new worker had
         // registered it (the http_functions branch is what would normally
         // populate this; the fallback path's job is to avoid clobbering it).
-        engine
-            .service_registry
-            .register_service_from_function_id("external.shared.no_http");
+        engine.service_registry.register_service_from_function_id(
+            crate::protocol::DEFAULT_NAMESPACE,
+            "external.shared.no_http",
+        );
 
         engine.cleanup_worker(&old_worker).await;
 
@@ -4637,11 +6092,9 @@ mod tests {
     async fn test_remove_worker_registrations_skips_ws_owned_ids() {
         // The in-process reload path calls `remove_worker_registrations`
         // with a set of function_ids captured during a scope. If a WS
-        // worker is currently the owner of one of those ids (either
-        // non-invocation via `function_owners` or HTTP-invocation via
-        // `external_function_owners`), the removal must be skipped so
-        // the live WS registration survives. This covers the new
-        // ownership-aware branch added at engine/src/engine/mod.rs:347.
+        // worker is currently the owner of one of those ids (regular or
+        // HTTP-invocation — now one `function_owners` map), the removal
+        // must be skipped so the live WS registration survives.
         ensure_default_meter();
         let engine = Engine::new();
 
@@ -4663,17 +6116,28 @@ mod tests {
             )
             .await
             .expect("WS worker register should succeed");
-        assert!(engine.functions.get("ws_fn").is_some());
-        assert!(engine.function_owners.contains_key("ws_fn"));
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "ws_fn")
+                .is_some()
+        );
+        assert!(engine.function_owners.contains_key(&(
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "ws_fn".to_string()
+        )));
 
-        // Also seed an external-owned id directly — we don't run the
+        // Also seed an External-owned id directly — we don't run the
         // HTTP registration path here (it requires the http_functions
-        // service), so we populate `external_function_owners` by hand
-        // to exercise the `|| external_function_owners` leg of the
-        // skip branch.
-        engine
-            .external_function_owners
-            .insert("ext_fn".to_string(), ws_worker.id);
+        // service), so we populate `function_owners` with an External
+        // entry by hand to exercise the skip branch for that kind.
+        engine.function_owners.insert(
+            (
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "ext_fn".to_string(),
+            ),
+            (ws_worker.id, super::InvocationKind::External),
+        );
 
         // Simulate an in-process worker teardown whose scope captured
         // both ids. Before the ownership check was added, this loop
@@ -4685,15 +6149,24 @@ mod tests {
         engine.remove_worker_registrations(&regs);
 
         assert!(
-            engine.functions.get("ws_fn").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "ws_fn")
+                .is_some(),
             "WS-owned non-invocation function must survive in-process teardown"
         );
         assert!(
-            engine.function_owners.contains_key("ws_fn"),
+            engine.function_owners.contains_key(&(
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "ws_fn".to_string()
+            )),
             "ownership entry for the WS worker must be intact"
         );
         assert!(
-            engine.external_function_owners.contains_key("ext_fn"),
+            engine.function_owners.contains_key(&(
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "ext_fn".to_string()
+            )),
             "external ownership entry for the WS worker must be intact"
         );
     }
@@ -4734,6 +6207,11 @@ mod tests {
                 .await
                 .expect("old worker register should succeed");
 
+            // The old connection has dropped out of the registry — that is
+            // what makes its lease claimable at all — but its `cleanup_worker`
+            // has not run yet. That gap is the TOCTOU window under test.
+            engine.worker_registry.unregister_worker(&old_worker.id);
+
             let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
             let new_worker = WorkerConnection::new(tx_new);
             engine.worker_registry.register_worker(new_worker.clone());
@@ -4769,15 +6247,21 @@ mod tests {
             cleanup_handle.await.expect("cleanup task");
 
             assert!(
-                engine.functions.get("raced_fn").is_some(),
+                engine
+                    .functions
+                    .get(crate::protocol::DEFAULT_NAMESPACE, "raced_fn")
+                    .is_some(),
                 "new worker's registration must survive concurrent cleanup of old worker"
             );
             let owner = engine
                 .function_owners
-                .get("raced_fn")
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "raced_fn".to_string(),
+                ))
                 .expect("function_owners must still have raced_fn");
             assert_eq!(
-                *owner, new_worker.id,
+                owner.0, new_worker.id,
                 "the new worker should be the recorded owner after the race"
             );
         }
@@ -4812,7 +6296,12 @@ mod tests {
             )
             .await
             .expect("old register");
-        assert!(engine.functions.get("fn1").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_some()
+        );
 
         // NEW connection reattaches, presenting the old worker's id + token.
         let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
@@ -4833,7 +6322,10 @@ mod tests {
         // and its read loop woken to exit.
         assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
         assert!(
-            engine.functions.get("fn1").is_none(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_none(),
             "old connection's function released on reattach"
         );
         tokio::time::timeout(
@@ -4858,17 +6350,45 @@ mod tests {
             )
             .await
             .expect("new register");
-        assert!(engine.functions.get("fn1").is_some());
-        assert_eq!(*engine.function_owners.get("fn1").unwrap(), new_worker.id);
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_some()
+        );
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "fn1".to_string()
+                ))
+                .unwrap()
+                .0,
+            new_worker.id
+        );
 
         // The evicted old socket task now runs its own exit-path cleanup. It
         // must NOT tear down fn1 (now owned by the new connection).
         engine.cleanup_worker(&old_worker).await;
         assert!(
-            engine.functions.get("fn1").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "fn1")
+                .is_some(),
             "idempotent cleanup of the evicted old connection must not touch the live function"
         );
-        assert_eq!(*engine.function_owners.get("fn1").unwrap(), new_worker.id);
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "fn1".to_string()
+                ))
+                .unwrap()
+                .0,
+            new_worker.id
+        );
         assert!(engine.worker_registry.workers.contains_key(&new_worker.id));
     }
 
@@ -4930,7 +6450,12 @@ mod tests {
         // Reattach returned => the reader-driven cleanup COMPLETED: old
         // connection gone, its registration released.
         assert!(!engine.worker_registry.workers.contains_key(&old_worker.id));
-        assert!(engine.functions.get("reader_fn").is_none());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "reader_fn")
+                .is_none()
+        );
         assert!(*old_worker.cleanup_done.borrow());
         tokio::time::timeout(std::time::Duration::from_secs(1), reader)
             .await
@@ -5077,6 +6602,7 @@ mod tests {
                 function_id: "raced_fn".to_string(),
                 config: serde_json::json!({}),
                 metadata: None,
+                namespace: None,
             };
             engine
                 .router_msg(&old_worker, &reg_fn)
@@ -5094,9 +6620,24 @@ mod tests {
             let replay = {
                 let engine = engine.clone();
                 let new_worker = new_worker.clone();
+                let old_worker = old_worker.clone();
                 let reg_fn = reg_fn.clone();
                 let reg_trigger = reg_trigger.clone();
                 tokio::spawn(async move {
+                    // The reconnect replay opens with Reattach — the same first
+                    // message the SDK sends — so the engine retires the previous
+                    // connection and the registrations below take over on a clean
+                    // slate (one live worker per namespace still holds otherwise).
+                    engine
+                        .router_msg(
+                            &new_worker,
+                            &Message::Reattach {
+                                previous_worker_id: old_worker.id.to_string(),
+                                reattach_token: Some(old_worker.reattach_token.to_string()),
+                            },
+                        )
+                        .await
+                        .expect("reattach");
                     engine
                         .router_msg(&new_worker, &reg_fn)
                         .await
@@ -5116,11 +6657,21 @@ mod tests {
             cleanup.await.expect("cleanup task");
 
             assert!(
-                engine.functions.get("raced_fn").is_some(),
+                engine
+                    .functions
+                    .get(crate::protocol::DEFAULT_NAMESPACE, "raced_fn")
+                    .is_some(),
                 "function must survive concurrent cleanup"
             );
             assert_eq!(
-                *engine.function_owners.get("raced_fn").unwrap(),
+                engine
+                    .function_owners
+                    .get(&(
+                        crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                        "raced_fn".to_string()
+                    ))
+                    .unwrap()
+                    .0,
                 new_worker.id
             );
             let t1 = engine
@@ -5159,6 +6710,12 @@ mod tests {
             .await
             .expect("A register should succeed");
 
+        // A's connection drops — the fast-restart shape. Ownership is only
+        // transferable once the incumbent is out of the registry; a live
+        // incumbent is a namespace conflict and B would be rejected instead
+        // (see `claim_function`).
+        engine.worker_registry.unregister_worker(&worker_a.id);
+
         let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
         let worker_b = WorkerConnection::new(tx_b);
         engine.worker_registry.register_worker(worker_b.clone());
@@ -5180,10 +6737,14 @@ mod tests {
         // Ownership has transferred to B even though A still has the id in
         // its local function_ids set (A's set was not cleared by B's register).
         assert_eq!(
-            *engine
+            engine
                 .function_owners
-                .get("reg_hijacked")
-                .expect("owner present"),
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "reg_hijacked".to_string(),
+                ))
+                .expect("owner present")
+                .0,
             worker_b.id,
             "owner should be B after hijacking register"
         );
@@ -5202,14 +6763,21 @@ mod tests {
             .expect("A's stale unregister should not error");
 
         assert!(
-            engine.functions.get("reg_hijacked").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "reg_hijacked")
+                .is_some(),
             "B's live registration must survive A's stale UnregisterFunction"
         );
         assert_eq!(
-            *engine
+            engine
                 .function_owners
-                .get("reg_hijacked")
-                .expect("owner still present"),
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "reg_hijacked".to_string(),
+                ))
+                .expect("owner still present")
+                .0,
             worker_b.id,
             "owner entry must remain B — gate must not release B's ownership"
         );
@@ -5267,6 +6835,9 @@ mod tests {
             .await
             .expect("A register should succeed");
 
+        // As above: only a departed incumbent's lease can be taken over.
+        engine.worker_registry.unregister_worker(&worker_a.id);
+
         let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
         let worker_b = WorkerConnection::new(tx_b);
         engine.worker_registry.register_worker(worker_b.clone());
@@ -5276,10 +6847,14 @@ mod tests {
             .expect("B register should succeed");
 
         assert_eq!(
-            *engine
-                .external_function_owners
-                .get("ext_hijacked")
-                .expect("external owner present"),
+            engine
+                .function_owners
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "ext_hijacked".to_string(),
+                ))
+                .expect("external owner present")
+                .0,
             worker_b.id,
             "external owner should be B after hijacking register"
         );
@@ -5287,7 +6862,11 @@ mod tests {
             .service_registry
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
-        assert!(http_module.http_functions().contains_key("ext_hijacked"));
+        assert!(
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "ext_hijacked".to_string()))
+        );
 
         // A's stale UnregisterFunction — A still has the id in its local
         // external_function_ids set. Before the gate, the teardown would
@@ -5304,20 +6883,96 @@ mod tests {
             .expect("A's stale external unregister should not error");
 
         assert!(
-            engine.functions.get("ext_hijacked").is_some(),
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "ext_hijacked")
+                .is_some(),
             "B's live engine.functions entry must survive A's stale UnregisterFunction"
         );
         assert!(
-            http_module.http_functions().contains_key("ext_hijacked"),
+            http_module
+                .http_functions()
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "ext_hijacked".to_string())),
             "B's http_module entry must survive A's stale UnregisterFunction"
         );
         assert_eq!(
-            *engine
-                .external_function_owners
-                .get("ext_hijacked")
-                .expect("external owner still present"),
+            engine
+                .function_owners
+                .get(&(
+                    crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    "ext_hijacked".to_string(),
+                ))
+                .expect("external owner still present")
+                .0,
             worker_b.id,
             "external owner entry must remain B"
+        );
+    }
+
+    /// A worker restart that changes a function's invocation kind must not let
+    /// the OLD registration's release remove the NEW registration. With two
+    /// owner maps this leaked: the old Regular entry lived in `function_owners`
+    /// while the new External entry lived in `external_function_owners`, so the
+    /// old-kind release matched its own stale entry and could tear down state
+    /// the new owner had just written. One `(owner, kind)` map plus a
+    /// CAS-on-owner release closes it — after takeover the entry names the new
+    /// worker, so the old worker's release predicate no longer matches.
+    #[tokio::test]
+    async fn release_after_restart_changing_kind_does_not_remove_new_registration() {
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // A_old registers `svc::f` as a REGULAR function, then its connection
+        // begins teardown (aborted namespace resolution) — the fast-restart
+        // window where the incumbent is still in the registry but on its way out.
+        let (tx_old, _rx_old) = mpsc::channel::<Outbound>(8);
+        let a_old = WorkerConnection::new(tx_old);
+        engine.worker_registry.register_worker(a_old.clone());
+        engine.begin_namespace_resolution(&a_old);
+        engine.resolve_connection_namespace(&a_old, "orders").await;
+        engine
+            .claim_function("orders", a_old.id, "svc::f")
+            .expect("A_old claims the regular function");
+        engine.abort_namespace_resolution(&a_old);
+
+        // A_new takes over the SAME id as an EXTERNAL function — allowed because
+        // A_old's connection is tearing down.
+        let (tx_new, _rx_new) = mpsc::channel::<Outbound>(8);
+        let a_new = WorkerConnection::new(tx_new);
+        engine.worker_registry.register_worker(a_new.clone());
+        engine
+            .claim_external_function("orders", a_new.id, "svc::f")
+            .expect("A_new takes over as an external function");
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&("orders".to_string(), "svc::f".to_string()))
+                .expect("owner present")
+                .0,
+            a_new.id,
+            "precondition: A_new is the recorded owner after takeover"
+        );
+
+        // A_old's late (regular) release must NOT match — the entry names A_new.
+        assert!(
+            !engine.release_function_if_owner(&a_old.id, "orders", "svc::f"),
+            "A_old's stale release must not fire — it no longer owns the id"
+        );
+        // The external release path (had A_old been external) is the same CAS.
+        assert!(
+            !engine.release_external_function_if_owner(&a_old.id, "orders", "svc::f"),
+            "A_old's stale external release must not fire either"
+        );
+
+        // A_new's registration is intact and still owned by A_new.
+        assert_eq!(
+            engine
+                .function_owners
+                .get(&("orders".to_string(), "svc::f".to_string()))
+                .expect("A_new's ownership entry must survive A_old's stale release")
+                .0,
+            a_new.id,
+            "owner must remain A_new — the old-kind release must not remove it"
         );
     }
 
@@ -5349,6 +7004,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
             metadata: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &t_msg)
@@ -5429,7 +7085,12 @@ mod tests {
         ensure_default_meter();
         let engine = Engine::new();
 
-        assert!(engine.functions.get("nonexistent").is_none());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "nonexistent")
+                .is_none()
+        );
         assert!(!engine.trigger_registry.triggers.contains_key("anything"));
         assert!(
             !engine
@@ -5511,6 +7172,7 @@ mod tests {
             function_id: "handler_func".to_string(),
             config: serde_json::json!({"key": "value"}),
             metadata: Some(serde_json::json!({"team": "platform", "env": "staging"})),
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -5534,5 +7196,375 @@ mod tests {
         );
 
         while rx.try_recv().is_ok() {}
+    }
+
+    // ── namespace registration buffering ────────────────────────────────
+
+    fn register_function_msg(id: &str) -> Message {
+        Message::RegisterFunction {
+            id: id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        }
+    }
+
+    /// A worker that declares `namespace: "orders"` sends its
+    /// `RegisterFunction` messages before `engine::workers::register` on every
+    /// SDK that predates the reorder. The registration must wait for the
+    /// namespace rather than land in `default`.
+    #[tokio::test]
+    async fn registrations_before_the_namespace_is_known_land_in_the_resolved_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+
+        // Nothing is registered yet: the namespace is still unknown.
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+        assert!(engine.service_registry.get("orders", "orders").is_some());
+        assert!(
+            engine
+                .service_registry
+                .get(DEFAULT_NAMESPACE, "orders")
+                .is_none()
+        );
+    }
+
+    /// The buffer is a queue, not a set: replaying it out of order would
+    /// resurrect a function the worker already unregistered.
+    #[tokio::test]
+    async fn buffered_registrations_drain_in_arrival_order() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        for msg in [
+            register_function_msg("orders::create"),
+            register_function_msg("orders::cancel"),
+            Message::UnregisterFunction {
+                id: "orders::create".to_string(),
+            },
+        ] {
+            engine.router_msg(&worker, &msg).await.expect("buffer");
+        }
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        // `create` was registered and then unregistered; inverting the drain
+        // would leave it alive.
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+        assert!(engine.functions.get("orders", "orders::cancel").is_some());
+    }
+
+    /// `UnregisterTrigger` must be buffered alongside `RegisterTrigger`. If it
+    /// runs immediately while the register is still buffered, it no-ops against
+    /// an empty registry and the later drain re-registers the trigger that was
+    /// meant to be removed.
+    #[tokio::test]
+    async fn a_buffered_register_then_unregister_trigger_does_not_resurrect_it() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        for msg in [
+            Message::RegisterTrigger {
+                id: "t1".to_string(),
+                trigger_type: "unknown-type".to_string(),
+                function_id: "orders::handler".to_string(),
+                config: serde_json::json!({}),
+                metadata: None,
+                namespace: None,
+            },
+            Message::UnregisterTrigger {
+                id: "t1".to_string(),
+                trigger_type: None,
+            },
+        ] {
+            engine.router_msg(&worker, &msg).await.expect("buffer");
+        }
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        // Registered (parked pending, since its type is absent) and then
+        // unregistered in the same buffered batch — inverting the drain would
+        // leave it parked.
+        assert!(
+            !engine.trigger_registry.pending_triggers.contains_key("t1"),
+            "the unregister must survive the drain and remove the parked trigger"
+        );
+        assert!(!engine.trigger_registry.triggers.contains_key("t1"));
+    }
+
+    /// Safety net for a hand-rolled client that never sends
+    /// `engine::workers::register`: the buffer must not hold registrations
+    /// forever.
+    #[tokio::test(start_paused = true)]
+    async fn registrations_fall_back_to_default_when_the_grace_expires() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("legacy::ping"))
+            .await
+            .expect("buffer register");
+
+        // Paused time auto-advances only once no task is runnable, so this
+        // sleep resumes strictly after the (earlier-deadline) grace timer has
+        // fired and its drain has run to completion. No wall-clock time passes.
+        tokio::time::sleep(REGISTRATION_NAMESPACE_GRACE + Duration::from_secs(1)).await;
+
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "legacy::ping")
+                .is_some()
+        );
+    }
+
+    /// Whichever resolver fires first wins; the loser must be a no-op rather
+    /// than a second drain.
+    #[tokio::test]
+    async fn a_second_resolution_neither_re_drains_nor_moves_the_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+        // The grace timer firing late must not move the function to `default`
+        // nor register it twice.
+        engine
+            .resolve_connection_namespace(&worker, DEFAULT_NAMESPACE)
+            .await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+    }
+
+    /// Once resolved, a connection stays resolved: later registrations take
+    /// the direct path with no buffering.
+    #[tokio::test]
+    async fn registrations_after_resolution_are_not_buffered() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("register");
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+    }
+
+    /// Connections that never enter the state machine (in-process workers,
+    /// direct `router_msg` callers) must keep registering immediately.
+    #[tokio::test]
+    async fn registrations_on_an_untracked_connection_are_not_buffered() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(&worker, &register_function_msg("plain::ping"))
+            .await
+            .expect("register");
+
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "plain::ping")
+                .is_some()
+        );
+    }
+
+    /// `cleanup_worker` must release from the namespace the drain registered
+    /// into, not from `default`.
+    #[tokio::test]
+    async fn cleanup_releases_functions_from_the_resolved_namespace() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+        engine.resolve_connection_namespace(&worker, "orders").await;
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+
+        engine.cleanup_worker(&worker).await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+    }
+
+    /// A worker can disconnect while its drain is still running (it dropped
+    /// right after sending `engine::workers::register`). `cleanup_worker`
+    /// snapshots the function ids it will release up front, so a drain that
+    /// keeps going registers functions nobody will ever release: they leak with
+    /// `function_owners` pointing at a dead worker. Cleanup aborts the
+    /// resolution first to stop that.
+    #[tokio::test]
+    async fn aborting_a_connection_stops_its_drain_from_registering() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(&worker, &register_function_msg("orders::create"))
+            .await
+            .expect("buffer register");
+
+        // What `cleanup_worker` does before it snapshots anything.
+        engine.abort_namespace_resolution(&worker);
+
+        // The in-flight `engine::workers::register` lands after teardown began.
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        assert!(
+            engine.functions.get("orders", "orders::create").is_none(),
+            "a drain must not register into a connection being torn down"
+        );
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+    }
+
+    /// `aborting_a_connection_stops_its_drain_from_registering` proves the
+    /// mechanism; this proves `cleanup_worker` actually *uses* it, and uses it
+    /// early enough. Deleting `abort_namespace_resolution` from `cleanup_worker`
+    /// must fail a test — otherwise the call site is a no-op nobody notices.
+    ///
+    /// The naive "cleanup, then resolve" version passes either way, because
+    /// cleanup removes the state entry on its way out and an absent entry stops
+    /// the drain regardless. So instead this pins cleanup mid-flight, at the
+    /// only point where the ordering is observable.
+    #[tokio::test]
+    async fn cleanup_aborts_the_resolution_before_it_snapshots_functions() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+
+        // Deliberately a service registration, not a function one: the drain's
+        // `RegisterService` arm writes only to `service_registry`, so it cannot
+        // contend for the `function_ids` guard held below. `RegisterFunction`
+        // would block in `include_function_id` and hang the test instead of
+        // failing it cleanly.
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterService {
+                    id: "svc".to_string(),
+                    name: "svc".to_string(),
+                    description: None,
+                    parent_service_id: None,
+                },
+            )
+            .await
+            .expect("buffer register service");
+
+        // Pin `cleanup_worker` at its first await: `get_regular_function_ids`
+        // takes a read guard on `function_ids`, so holding the write guard
+        // parks the task AFTER `abort_namespace_resolution` and BEFORE the
+        // snapshot that decides what to release — exactly the interleaving the
+        // abort exists to establish.
+        let snapshot_block = worker.function_ids.write().await;
+
+        let cleanup = {
+            let engine = engine.clone();
+            let worker = worker.clone();
+            tokio::spawn(async move { engine.cleanup_worker(&worker).await })
+        };
+
+        // Current-thread runtime: yielding hands control to the spawned task,
+        // which runs to its first pending await and parks on the guard above.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        // The worker's in-flight `engine::workers::register` lands mid-teardown.
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        assert!(
+            engine.service_registry.get("orders", "svc").is_none(),
+            "cleanup must abort the resolution before it snapshots, so a drain \
+             racing teardown registers nothing it will not release"
+        );
+
+        drop(snapshot_block);
+        cleanup.await.expect("cleanup should complete");
+    }
+
+    /// The abort must not cost `cleanup_worker` the namespace it needs to
+    /// release from — `Aborted` carries it.
+    #[tokio::test]
+    async fn aborting_preserves_the_resolved_namespace_for_teardown() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&worker);
+        engine.resolve_connection_namespace(&worker, "orders").await;
+
+        engine.abort_namespace_resolution(&worker);
+
+        assert_eq!(engine.connection_namespace(&worker), "orders");
     }
 }

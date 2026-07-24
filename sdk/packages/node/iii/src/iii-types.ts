@@ -24,6 +24,7 @@ export enum MessageType {
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
   WorkerRegistered = 'workerregistered',
+  RegistrationRejected = 'registrationrejected',
   Reattach = 'reattach',
 }
 
@@ -73,6 +74,11 @@ export type RegisterTriggerMessage = {
   config: unknown
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the trigger's target function resolves in. Omit for the engine's
+   * default namespace, independent of this connection's namespace.
+   */
+  namespace?: string
 }
 
 export type RegisterFunctionFormat = {
@@ -154,6 +160,11 @@ export type MiddlewareFunctionInput = {
   action?: TriggerAction
   /** Auth context returned by the auth function for this session. */
   context: Record<string, unknown>
+  /**
+   * Target namespace the invoke addressed; forward the call here to stay in the
+   * caller's namespace. Absent → the engine's default namespace.
+   */
+  namespace?: string
 }
 
 /**
@@ -172,6 +183,12 @@ export type TriggerRequest<TInput = unknown> = {
   timeoutMs?: number
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: unknown
+  /**
+   * Target namespace for routing. Omit to route within the engine's default
+   * namespace. Serialized into the {@link InvokeFunctionMessage} `namespace`
+   * field; omitted from the wire when undefined.
+   */
+  namespace?: string
 }
 
 export type InvokeFunctionMessage = {
@@ -206,6 +223,12 @@ export type InvokeFunctionMessage = {
    * inbound means "no metadata" (backward compatible with older engines).
    */
   metadata?: JsonValue
+  /**
+   * Target namespace for routing. Optional and additive: omitted from the JSON
+   * when undefined, and absence on inbound means the engine's default
+   * namespace (backward compatible with older engines).
+   */
+  namespace?: string
 }
 
 export type InvocationResultMessage = {
@@ -237,6 +260,30 @@ export type WorkerRegisteredMessage = {
   reattach_token?: string
 }
 
+/**
+ * Sent by the engine when this worker's registration collides with a live
+ * worker in `namespace`. The `code` decides severity:
+ *
+ * - `WORKER_NAMESPACE_CONFLICT`: another worker already holds this
+ *   `(namespace, worker_name)`. The engine closes the connection -- fatal: the
+ *   SDK stops the worker and does not reconnect.
+ * - `FUNCTION_NAMESPACE_CONFLICT`: another worker already exports this one
+ *   function id (carried in `worker_name`). The engine keeps the connection
+ *   open -- non-fatal: only that registration is refused and the worker keeps
+ *   serving its other functions.
+ */
+export type RegistrationRejectedMessage = {
+  message_type: MessageType.RegistrationRejected
+  /** Machine-readable rejection code (`WORKER_NAMESPACE_CONFLICT` | `FUNCTION_NAMESPACE_CONFLICT`). */
+  code: string
+  /** Namespace in which the collision occurred. */
+  namespace: string
+  /** The contested identity: the worker name, or (FUNCTION conflict) the function id. */
+  worker_name: string
+  /** ID of the live worker that already owns the contested identity. */
+  owner_worker_id: string
+}
+
 export type UnregisterFunctionMessage = {
   message_type: MessageType.UnregisterFunction
   id: string
@@ -266,3 +313,4 @@ export type IIIMessage =
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
   | WorkerRegisteredMessage
+  | RegistrationRejectedMessage

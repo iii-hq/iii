@@ -38,7 +38,7 @@ pub struct RedisAdapter {
 }
 
 struct SubscriptionInfo {
-    id: String,
+    topic: String,
     #[allow(dead_code)]
     condition_function_id: Option<String>,
     task_handle: JoinHandle<()>,
@@ -134,6 +134,10 @@ impl QueueAdapter for RedisAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        // Redis pub/sub is fanout: subscriptions are keyed by (topic, trigger
+        // id) and each dispatches in its own namespace, resolved live by id at
+        // delivery. There is no durable per-namespace queue to name here.
+        _namespace: &str,
         condition_function_id: Option<String>,
         _queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -144,10 +148,15 @@ impl QueueAdapter for RedisAdapter {
         let engine = Arc::clone(&self.engine);
         let subscriptions = Arc::clone(&self.subscriptions);
 
-        // Check if already subscribed
+        // Key by (topic, trigger id) rather than topic alone: Redis pub/sub
+        // broadcasts, so several subscribers can listen on one channel and each
+        // dispatches in its own namespace (resolved live from the trigger id).
+        // Keying by topic alone would reject a second namespace's subscriber and
+        // silently starve it of events.
+        let sub_key = format!("{}:{}", topic, id);
         let already_subscribed = {
             let subs = subscriptions.read().await;
-            subs.contains_key(&topic)
+            subs.contains_key(&sub_key)
         };
 
         if already_subscribed {
@@ -234,13 +243,18 @@ impl QueueAdapter for RedisAdapter {
                 let engine = Arc::clone(&engine);
                 let function_id = function_id_for_task.clone();
                 let topic_for_span = topic_for_task.clone();
+                // Resolve the subscribing trigger's namespace LIVE by id, used
+                // for both the condition and the target.
+                let namespace = engine.trigger_registry.namespace_of(&id_for_task);
 
                 if let Some(ref condition_id) = condition_function_id_for_task {
                     tracing::debug!(
                         condition_function_id = %condition_id,
                         "Checking trigger conditions"
                     );
-                    match check_condition(engine.as_ref(), condition_id, data.clone()).await {
+                    match check_condition(engine.as_ref(), &namespace, condition_id, data.clone())
+                        .await
+                    {
                         Ok(true) => {}
                         Ok(false) => {
                             tracing::debug!(
@@ -275,7 +289,10 @@ impl QueueAdapter for RedisAdapter {
 
                 tokio::spawn(
                     async move {
-                        match engine.call(&function_id, data).await {
+                        match engine
+                            .call_with_metadata_ns(&namespace, &function_id, data, None)
+                            .await
+                        {
                             Ok(_) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                             }
@@ -302,9 +319,9 @@ impl QueueAdapter for RedisAdapter {
         // Store the subscription
         let mut subs = subscriptions.write().await;
         subs.insert(
-            topic,
+            sub_key,
             SubscriptionInfo {
-                id,
+                topic,
                 condition_function_id,
                 task_handle,
             },
@@ -314,20 +331,14 @@ impl QueueAdapter for RedisAdapter {
     async fn unsubscribe(&self, topic: &str, id: &str) {
         tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
 
-        let topic = topic.to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
-        let id = id.to_string();
+        let sub_key = format!("{}:{}", topic, id);
 
         let mut subs = subscriptions.write().await;
 
-        if let Some(sub_info) = subs.remove(&topic) {
-            if sub_info.id == id {
-                tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
-                sub_info.task_handle.abort();
-            } else {
-                tracing::warn!(topic = %topic, id = %id, "Subscription ID mismatch, not unsubscribing");
-                subs.insert(topic, sub_info);
-            }
+        if let Some(sub_info) = subs.remove(&sub_key) {
+            tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
+            sub_info.task_handle.abort();
         } else {
             tracing::warn!(topic = %topic, id = %id, "No active subscription found for topic");
         }
@@ -368,12 +379,16 @@ impl QueueAdapter for RedisAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         // RabbitMQ-only feature; the redis pub/sub adapter ignores it.
         _priority: Option<u8>,
     ) {
         let channel = format!("__queue::{}", queue_name);
         let publisher = Arc::clone(&self.publisher);
 
+        // `namespace` rides the envelope so a consumer (once implemented) can
+        // resolve the target in the enqueuer's namespace. Omitted when absent to
+        // keep the envelope stable for pre-namespace consumers.
         let envelope = serde_json::json!({
             "__trace": {
                 "traceparent": traceparent,
@@ -381,6 +396,7 @@ impl QueueAdapter for RedisAdapter {
             },
             "function_id": function_id,
             "message_id": message_id,
+            "namespace": namespace,
             "data": data,
         });
 
@@ -410,13 +426,13 @@ impl QueueAdapter for RedisAdapter {
     }
 
     async fn list_topics(&self) -> anyhow::Result<Vec<crate::workers::queue::TopicInfo>> {
-        // Redis adapter keys subscriptions by topic name directly.
-        // Multiple subscriptions can exist per topic, so count them.
+        // Subscriptions are keyed by "{topic}:{id}"; count by the stored topic
+        // so multiple subscribers (across namespaces) roll up per topic.
         let subs = self.subscriptions.read().await;
         let mut topic_counts: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
-        for topic in subs.keys() {
-            *topic_counts.entry(topic.clone()).or_insert(0) += 1;
+        for info in subs.values() {
+            *topic_counts.entry(info.topic.clone()).or_insert(0) += 1;
         }
         Ok(topic_counts
             .into_iter()

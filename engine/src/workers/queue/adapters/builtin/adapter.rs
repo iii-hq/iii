@@ -42,12 +42,44 @@ struct DeliveryInfo {
     job_id: String,
 }
 
+/// Separator that folds the subscribing namespace onto a durable
+/// subscription's internal queue identity.
+///
+/// The pre-existing prefix is `{topic}::{fid}`. A bare `@` join
+/// (`{topic}::{fid}@{ns}`) is NOT collision-free: `namespace`, `topic` and
+/// `function_id` are all user-controlled and may contain `@`, so
+/// `(fid="a@x", ns="y")` and `(fid="a", ns="x@y")` fold to the same name. The
+/// identity is instead built with [`join_ns`], which escapes every `@` inside
+/// each operand and joins with a single unescaped `@` — making the fold
+/// injective over `(prefix, namespace)` for any content. (The residual
+/// `topic`/`fid` ambiguity across the `::` join predates namespaces and is
+/// preserved verbatim so the legacy-queue drain can still recover it.)
+const NS_SEP: char = '@';
+
+/// Builds the namespace-scoped internal queue identity for a durable
+/// subscription. The `{topic}::{fid}` prefix is kept verbatim (the legacy
+/// drain relies on it) and the namespace is folded in injectively via
+/// [`join_ns`]. See [`NS_SEP`] for the rationale.
+fn internal_queue(topic: &str, namespace: &str, function_id: &str) -> String {
+    crate::builtins::queue::join_ns(&format!("{topic}::{function_id}"), namespace, NS_SEP)
+}
+
+/// Topic -> set of `(namespace, function_id)` fan-out destinations.
+type TopicFunctions = Arc<RwLock<HashMap<String, HashSet<(String, String)>>>>;
+/// `"{topic}:{trigger_id}"` -> `(topic, namespace, function_id)`.
+type TriggerFunctionMap = Arc<RwLock<HashMap<String, (String, String, String)>>>;
+
 pub struct BuiltinQueueAdapter {
     queue: Arc<BuiltinQueue>,
     engine: Arc<Engine>,
     subscriptions: Arc<RwLock<HashMap<String, SubscriptionHandle>>>,
-    topic_functions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    trigger_function_map: Arc<RwLock<HashMap<String, (String, String)>>>,
+    /// Topic -> set of `(namespace, function_id)` destinations subscribed to it.
+    /// Keyed by the pair so two subscribers with the same `function_id` in
+    /// different namespaces are distinct fan-out targets, not one shared queue.
+    topic_functions: TopicFunctions,
+    /// `"{topic}:{trigger_id}"` -> `(topic, namespace, function_id)` captured at
+    /// subscribe time, so unsubscribe can drop the exact destination.
+    trigger_function_map: TriggerFunctionMap,
     delivery_map: Arc<RwLock<HashMap<u64, DeliveryInfo>>>,
     delivery_counter: Arc<AtomicU64>,
     poll_intervals: Arc<RwLock<HashMap<String, u64>>>,
@@ -57,6 +89,10 @@ struct FunctionHandler {
     engine: Arc<Engine>,
     function_id: String,
     condition_function_id: Option<String>,
+    /// Trigger id of the subscribing `durable:subscriber`, used to resolve the
+    /// target/condition namespace LIVE at fire time (see
+    /// `TriggerRegistry::namespace_of`).
+    trigger_id: String,
 }
 
 #[async_trait]
@@ -87,6 +123,9 @@ impl JobHandler for FunctionHandler {
         let function_id = self.function_id.clone();
         let condition_function_id = self.condition_function_id.clone();
         let data = job.data.clone();
+        // Resolve the subscribing trigger's namespace LIVE by id, so target and
+        // condition both run in the registering worker's namespace.
+        let namespace = engine.trigger_registry.namespace_of(&self.trigger_id);
 
         async move {
             if let Some(ref condition_id) = condition_function_id {
@@ -94,7 +133,8 @@ impl JobHandler for FunctionHandler {
                     condition_function_id = %condition_id,
                     "Checking trigger conditions"
                 );
-                match check_condition(engine.as_ref(), condition_id, data.clone()).await {
+                match check_condition(engine.as_ref(), &namespace, condition_id, data.clone()).await
+                {
                     Ok(true) => {}
                     Ok(false) => {
                         tracing::debug!(
@@ -116,7 +156,9 @@ impl JobHandler for FunctionHandler {
                 }
             }
 
-            let result = engine.call(&function_id, data).await;
+            let result = engine
+                .call_with_metadata_ns(&namespace, &function_id, data, None)
+                .await;
             match &result {
                 Ok(_) => {
                     tracing::Span::current().record("otel.status_code", "OK");
@@ -187,6 +229,23 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterF
             tracing::error!(error = ?e, "Failed to rebuild queue state from storage");
         }
 
+        // Upgrade migration: drain durable subscriber queues that predate
+        // namespace-scoped identity (`{topic}::{fid}`) into their namespaced
+        // name (`{topic}::{fid}@default`). Runs here, before any consumer
+        // subscribes, so there is no concurrent producer/consumer on the old
+        // queue. Legacy messages carry no origin namespace, so they land in the
+        // default namespace — where everything ran before this change.
+        let drained = adapter
+            .queue
+            .migrate_legacy_subscriber_queues(NS_SEP, crate::protocol::DEFAULT_NAMESPACE)
+            .await;
+        if drained > 0 {
+            tracing::info!(
+                drained,
+                "Drained legacy (namespace-less) subscriber queues into the default namespace"
+            );
+        }
+
         Ok(adapter as Arc<dyn QueueAdapter>)
     })
 }
@@ -216,9 +275,9 @@ impl QueueAdapter for BuiltinQueueAdapter {
         baggage: Option<String>,
     ) {
         let tf = self.topic_functions.read().await;
-        if let Some(function_ids) = tf.get(topic) {
-            for fid in function_ids {
-                let internal_queue = format!("{}::{}", topic, fid);
+        if let Some(destinations) = tf.get(topic) {
+            for (ns, fid) in destinations {
+                let internal_queue = internal_queue(topic, ns, fid);
                 self.queue
                     .push(
                         &internal_queue,
@@ -238,15 +297,22 @@ impl QueueAdapter for BuiltinQueueAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        namespace: &str,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
-        let internal_queue = format!("{}::{}", topic, function_id);
+        // Scope the internal queue identity to the trigger's namespace so two
+        // subscribers with the same topic+function_id in different namespaces
+        // are distinct queues. `namespace` comes straight from the trigger (the
+        // handler re-resolves it live by id at dispatch, which agrees once the
+        // trigger is registered).
+        let internal_queue = internal_queue(topic, namespace, function_id);
 
         let handler: Arc<dyn JobHandler> = Arc::new(FunctionHandler {
             engine: Arc::clone(&self.engine),
             function_id: function_id.to_string(),
             condition_function_id,
+            trigger_id: id.to_string(),
         });
 
         let subscription_config = queue_config.map(to_subscription_config);
@@ -260,7 +326,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
             let mut tf = self.topic_functions.write().await;
             tf.entry(topic.to_string())
                 .or_default()
-                .insert(function_id.to_string());
+                .insert((namespace.to_string(), function_id.to_string()));
         }
 
         {
@@ -268,13 +334,17 @@ impl QueueAdapter for BuiltinQueueAdapter {
             let mut tfm = self.trigger_function_map.write().await;
             tfm.insert(
                 sub_key.clone(),
-                (topic.to_string(), function_id.to_string()),
+                (
+                    topic.to_string(),
+                    namespace.to_string(),
+                    function_id.to_string(),
+                ),
             );
             let mut subs = self.subscriptions.write().await;
             subs.insert(sub_key, handle);
         }
 
-        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, internal_queue = %internal_queue, "Subscribed to queue via BuiltinQueueAdapter");
+        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, namespace = %namespace, internal_queue = %internal_queue, "Subscribed to queue via BuiltinQueueAdapter");
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -295,18 +365,18 @@ impl QueueAdapter for BuiltinQueueAdapter {
             }
         }
 
-        if let Some((mapped_topic, mapped_fid)) = removed_mapping {
+        if let Some((mapped_topic, mapped_ns, mapped_fid)) = removed_mapping {
             let still_has_triggers = {
                 let tfm = self.trigger_function_map.read().await;
                 tfm.values()
-                    .any(|(t, f)| t == &mapped_topic && f == &mapped_fid)
+                    .any(|(t, n, f)| t == &mapped_topic && n == &mapped_ns && f == &mapped_fid)
             };
 
             if !still_has_triggers {
                 let mut tf = self.topic_functions.write().await;
-                if let Some(fids) = tf.get_mut(&mapped_topic) {
-                    fids.remove(&mapped_fid);
-                    if fids.is_empty() {
+                if let Some(dests) = tf.get_mut(&mapped_topic) {
+                    dests.remove(&(mapped_ns, mapped_fid));
+                    if dests.is_empty() {
                         tf.remove(&mapped_topic);
                     }
                 }
@@ -316,10 +386,10 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
         let tf = self.topic_functions.read().await;
-        if let Some(fids) = tf.get(topic) {
+        if let Some(dests) = tf.get(topic) {
             let mut total = 0u64;
-            for fid in fids {
-                let iq = format!("{}::{}", topic, fid);
+            for (ns, fid) in dests {
+                let iq = internal_queue(topic, ns, fid);
                 total += self.queue.dlq_redrive(&iq).await;
             }
             Ok(total)
@@ -330,9 +400,9 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
     async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
         let tf = self.topic_functions.read().await;
-        if let Some(fids) = tf.get(topic) {
-            for fid in fids {
-                let iq = format!("{}::{}", topic, fid);
+        if let Some(dests) = tf.get(topic) {
+            for (ns, fid) in dests {
+                let iq = internal_queue(topic, ns, fid);
                 if self.queue.dlq_redrive_message(&iq, message_id).await {
                     return Ok(true);
                 }
@@ -345,9 +415,9 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
     async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
         let tf = self.topic_functions.read().await;
-        if let Some(fids) = tf.get(topic) {
-            for fid in fids {
-                let iq = format!("{}::{}", topic, fid);
+        if let Some(dests) = tf.get(topic) {
+            for (ns, fid) in dests {
+                let iq = internal_queue(topic, ns, fid);
                 if self.queue.dlq_discard_message(&iq, message_id).await {
                     return Ok(true);
                 }
@@ -360,10 +430,10 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
         let tf = self.topic_functions.read().await;
-        if let Some(fids) = tf.get(topic) {
+        if let Some(dests) = tf.get(topic) {
             let mut total = 0u64;
-            for fid in fids {
-                let iq = format!("{}::{}", topic, fid);
+            for (ns, fid) in dests {
+                let iq = internal_queue(topic, ns, fid);
                 total += self.queue.dlq_count(&iq).await;
             }
             Ok(total)
@@ -378,10 +448,10 @@ impl QueueAdapter for BuiltinQueueAdapter {
         count: usize,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         let tf = self.topic_functions.read().await;
-        if let Some(fids) = tf.get(topic) {
+        if let Some(dests) = tf.get(topic) {
             let mut all = Vec::new();
-            for fid in fids {
-                let iq = format!("{}::{}", topic, fid);
+            for (ns, fid) in dests {
+                let iq = internal_queue(topic, ns, fid);
                 all.extend(self.queue.dlq_messages(&iq, count).await);
             }
             Ok(all)
@@ -413,6 +483,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
         backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         // Priority is a RabbitMQ-only feature; the in-process builtin queue
         // ignores it.
         _priority: Option<u8>,
@@ -421,6 +492,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
         let job = Job {
             function_id: Some(function_id.to_string()),
             message_id: Some(message_id.to_string()),
+            namespace,
             ..Job::new(
                 &namespaced_queue,
                 data,
@@ -496,6 +568,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
                         message_id: job.message_id,
                         traceparent: job.traceparent,
                         baggage: job.baggage,
+                        namespace: job.namespace,
                     };
 
                     if tx.send(msg).await.is_err() {
@@ -567,7 +640,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
         {
             let tfm = self.trigger_function_map.read().await;
-            for (topic, _fid) in tfm.values() {
+            for (topic, _ns, _fid) in tfm.values() {
                 *topic_counts.entry(topic.clone()).or_insert(0) += 1;
             }
         }
@@ -593,15 +666,15 @@ impl QueueAdapter for BuiltinQueueAdapter {
     async fn topic_stats(&self, topic: &str) -> anyhow::Result<crate::workers::queue::TopicStats> {
         let consumer_count = {
             let tfm = self.trigger_function_map.read().await;
-            tfm.values().filter(|(t, _)| t == topic).count() as u64
+            tfm.values().filter(|(t, _, _)| t == topic).count() as u64
         };
 
         let tf = self.topic_functions.read().await;
         let mut depth = 0u64;
         let mut dlq_depth = 0u64;
-        if let Some(fids) = tf.get(topic) {
-            for fid in fids {
-                let iq = format!("{}::{}", topic, fid);
+        if let Some(dests) = tf.get(topic) {
+            for (ns, fid) in dests {
+                let iq = internal_queue(topic, ns, fid);
                 depth += self.queue.queue_depth(&iq).await;
                 dlq_depth += self.queue.dlq_count(&iq).await;
             }
@@ -625,10 +698,10 @@ impl QueueAdapter for BuiltinQueueAdapter {
         limit: u64,
     ) -> anyhow::Result<Vec<crate::workers::queue::DlqMessage>> {
         let tf = self.topic_functions.read().await;
-        if let Some(fids) = tf.get(topic) {
+        if let Some(dests) = tf.get(topic) {
             let mut all = Vec::new();
-            for fid in fids {
-                let iq = format!("{}::{}", topic, fid);
+            for (ns, fid) in dests {
+                let iq = internal_queue(topic, ns, fid);
                 all.extend(self.queue.dlq_peek(&iq, 0, offset + limit).await);
             }
             all.sort_by(|a, b| b.failed_at.cmp(&a.failed_at));
@@ -803,6 +876,7 @@ mod tests {
             engine: Arc::clone(&engine),
             function_id: "queue.success".to_string(),
             condition_function_id: None,
+            trigger_id: String::new(),
         };
         success
             .handle(&job)
@@ -813,6 +887,7 @@ mod tests {
             engine,
             function_id: "queue.failure".to_string(),
             condition_function_id: None,
+            trigger_id: String::new(),
         };
         let err = failure
             .handle(&job)
@@ -841,7 +916,14 @@ mod tests {
             max_priority: None,
         };
         adapter
-            .subscribe("jobs", "sub-fifo", "queue.success", None, Some(fifo_config))
+            .subscribe(
+                "jobs",
+                "sub-fifo",
+                "queue.success",
+                "default",
+                None,
+                Some(fifo_config),
+            )
             .await;
 
         let standard_config = SubscriberQueueConfig {
@@ -859,6 +941,7 @@ mod tests {
                 "jobs",
                 "sub-standard",
                 "queue.success",
+                "default",
                 None,
                 Some(standard_config),
             )
@@ -885,6 +968,315 @@ mod tests {
             .enqueue("jobs", json!({ "task": "queued" }), None, None)
             .await;
         assert_eq!(adapter.dlq_count("jobs").await.unwrap(), 0);
+    }
+
+    /// Two durable subscribers for the SAME topic+function_id in DIFFERENT
+    /// namespaces must be two distinct queues, so one published event reaches
+    /// BOTH. Before keying the queue identity by `(namespace, function_id)`,
+    /// both collapsed onto one internal queue and became competing consumers,
+    /// so only one namespace received each event (this asserts count == 2 and
+    /// goes RED — count == 1 — if the namespace is dropped from the identity).
+    #[tokio::test]
+    async fn two_namespaces_same_topic_fid_are_distinct_queues() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let hits = Arc::new(AtomicU64::new(0));
+        // Same function id, registered once per namespace, both counting into
+        // the shared tally.
+        for ns in ["orders", "analytics"] {
+            let hits = Arc::clone(&hits);
+            let function = Function {
+                handler: Arc::new(move |_id, _input, _session, _meta| {
+                    let hits = Arc::clone(&hits);
+                    Box::pin(async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        FunctionResult::Success(Some(json!({ "ok": true })))
+                    })
+                }),
+                _function_id: "fn.shared".to_string(),
+                _description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            };
+            engine
+                .functions
+                .register_function_ns(ns, "fn.shared".to_string(), function);
+        }
+
+        // Seed the trigger registry so `namespace_of` resolves each subscriber
+        // to its namespace (the identity source used by `subscribe`).
+        for (id, ns) in [("sub-orders", "orders"), ("sub-analytics", "analytics")] {
+            engine.trigger_registry.triggers.insert(
+                id.to_string(),
+                crate::trigger::Trigger {
+                    id: id.to_string(),
+                    trigger_type: "durable:subscriber".to_string(),
+                    function_id: "fn.shared".to_string(),
+                    config: json!({ "topic": "events" }),
+                    worker_id: None,
+                    metadata: None,
+                    namespace: ns.to_string(),
+                },
+            );
+        }
+
+        let adapter = make_adapter(Arc::clone(&engine));
+        adapter
+            .subscribe("events", "sub-orders", "fn.shared", "orders", None, None)
+            .await;
+        adapter
+            .subscribe(
+                "events",
+                "sub-analytics",
+                "fn.shared",
+                "analytics",
+                None,
+                None,
+            )
+            .await;
+
+        adapter
+            .enqueue("events", json!({ "msg": "hi" }), None, None)
+            .await;
+
+        // Both distinct queues must deliver the single event: tally reaches 2.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while hits.load(Ordering::SeqCst) < 2 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "both namespaces should receive the event, got {}",
+                hits.load(Ordering::SeqCst)
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // And no more than 2 (no accidental extra fan-out).
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        adapter.unsubscribe("events", "sub-orders").await;
+        adapter.unsubscribe("events", "sub-analytics").await;
+    }
+
+    /// The namespace fold in `internal_queue` must be injective even when the
+    /// function id or the namespace themselves contain the `@` separator. Under
+    /// the old bare `{topic}::{fid}@{ns}` join, `(fid="task@blue", ns="green")`
+    /// and `(fid="task", ns="blue@green")` both produce
+    /// `T::task@blue@green` — two distinct namespaces colliding on ONE physical
+    /// queue and becoming competing consumers. The escape-join keeps them
+    /// distinct. Reverting `internal_queue` to the bare join makes this RED
+    /// (equal names).
+    #[test]
+    fn internal_queue_namespace_fold_is_collision_free() {
+        let a = internal_queue("T", "green", "task@blue");
+        let b = internal_queue("T", "blue@green", "task");
+        assert_ne!(
+            a, b,
+            "distinct (fid, ns) tuples must not fold to the same internal queue"
+        );
+    }
+
+    /// A message left in a pre-upgrade, namespace-less subscriber queue
+    /// (`{topic}::{fid}`) must be drained into its namespaced name
+    /// (`{topic}::{fid}@default`) and processed exactly once by the new
+    /// consumer. Draining twice must not duplicate (idempotent). Reverting the
+    /// drain to a no-op strands the message under the old name — the new
+    /// consumer subscribes to the namespaced queue and never sees it — so the
+    /// processing assertion goes RED.
+    #[tokio::test]
+    async fn drain_migrates_legacy_subscriber_queue_into_default_namespace() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let hits = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&hits);
+        let function = Function {
+            handler: Arc::new(move |_id, _input, _session, _meta| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move {
+                    sink.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: "fn.shared".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        // Registered in the default namespace — where a legacy message ran.
+        engine
+            .functions
+            .register_function("fn.shared".to_string(), function);
+
+        let adapter = make_adapter(Arc::clone(&engine));
+
+        // Seed a pre-upgrade message under the OLD namespace-less internal queue.
+        let legacy_queue = "events::fn.shared";
+        let new_queue = "events::fn.shared@default";
+        adapter
+            .queue
+            .push(legacy_queue, json!({ "msg": "old" }), None, None)
+            .await;
+        assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 1);
+
+        // Drain twice: migrates exactly once, never duplicates.
+        let drained = adapter
+            .queue
+            .migrate_legacy_subscriber_queues('@', "default")
+            .await;
+        assert_eq!(drained, 1, "one legacy queue should be drained");
+        adapter
+            .queue
+            .migrate_legacy_subscriber_queues('@', "default")
+            .await;
+
+        // Old queue emptied; the namespaced queue holds exactly one job.
+        assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 0);
+        assert_eq!(adapter.queue.queue_depth(new_queue).await, 1);
+
+        // Consumer attaches after the drain (as in make_adapter) and processes
+        // the migrated message exactly once under the new identity.
+        adapter
+            .subscribe("events", "sub", "fn.shared", "default", None, None)
+            .await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while hits.load(Ordering::SeqCst) < 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "migrated message should be processed under the namespaced queue"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "the migrated message must be processed exactly once, not duplicated"
+        );
+
+        adapter.unsubscribe("events", "sub").await;
+    }
+
+    /// Restart-path coverage for the legacy-queue migration: unlike the
+    /// in-memory test above (which drains a queue seeded in the same store),
+    /// this persists a pre-upgrade `{topic}::{fid}` queue to disk with one
+    /// store instance, then reconstructs a fresh store over the same directory
+    /// and runs the exact production sequence `make_adapter` performs on boot
+    /// (`rebuild_from_storage` → `migrate_legacy_subscriber_queues`). It proves
+    /// the auto-migration recovers a durable message left by a pre-namespace
+    /// engine and delivers it under the `@default` identity.
+    #[tokio::test]
+    async fn restart_rebuild_migrates_persisted_legacy_queue_into_default() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        crate::workers::observability::metrics::ensure_default_meter();
+
+        let dir = std::env::temp_dir().join(format!("iii-queue-migr-{}", uuid::Uuid::new_v4()));
+        let file_path = dir.to_string_lossy().to_string();
+        let cfg = json!({
+            "store_method": "file_based",
+            "file_path": file_path,
+            "save_interval_ms": 50,
+        });
+
+        let legacy_queue = "events::fn.shared";
+        let new_queue = "events::fn.shared@default";
+
+        // Phase 1 — a pre-upgrade engine persists a durable message under the
+        // namespace-less internal queue name, then goes away.
+        {
+            let base_kv = Arc::new(BuiltinKvStore::new(Some(cfg.clone())));
+            let kv_store = Arc::new(QueueKvStore::new(base_kv, Some(cfg.clone())));
+            let pubsub = Arc::new(BuiltInPubSubLite::new(Some(cfg.clone())));
+            let engine = Arc::new(Engine::new());
+            let adapter =
+                BuiltinQueueAdapter::new(kv_store, pubsub, engine, QueueConfig::default());
+            adapter
+                .queue
+                .push(legacy_queue, json!({ "msg": "old" }), None, None)
+                .await;
+            assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 1);
+            // Let the interval saver flush lists+jobs to disk before the store
+            // is dropped, mirroring a running engine that persisted the queue.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        // Phase 2 — the new engine boots over the same directory. Register the
+        // handler in `default`, where a legacy message would have run.
+        let hits = Arc::new(AtomicU64::new(0));
+        let sink = Arc::clone(&hits);
+        let function = Function {
+            handler: Arc::new(move |_id, _input, _session, _meta| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move {
+                    sink.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: "fn.shared".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        let engine = Arc::new(Engine::new());
+        engine
+            .functions
+            .register_function("fn.shared".to_string(), function);
+
+        let base_kv = Arc::new(BuiltinKvStore::new(Some(cfg.clone())));
+        let kv_store = Arc::new(QueueKvStore::new(base_kv, Some(cfg.clone())));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(Some(cfg.clone())));
+        let adapter = BuiltinQueueAdapter::new(
+            kv_store,
+            pubsub,
+            Arc::clone(&engine),
+            QueueConfig::default(),
+        );
+
+        // The exact sequence `make_adapter` runs at construction.
+        adapter
+            .queue
+            .rebuild_from_storage()
+            .await
+            .expect("rebuild queue state from disk");
+        assert_eq!(
+            adapter.queue.queue_depth(legacy_queue).await,
+            1,
+            "the persisted legacy queue should be recovered from disk"
+        );
+        let drained = adapter
+            .queue
+            .migrate_legacy_subscriber_queues(NS_SEP, crate::protocol::DEFAULT_NAMESPACE)
+            .await;
+        assert_eq!(drained, 1, "the recovered legacy queue should be migrated");
+        assert_eq!(adapter.queue.queue_depth(legacy_queue).await, 0);
+        assert_eq!(adapter.queue.queue_depth(new_queue).await, 1);
+
+        // A default-namespace consumer attaches after the drain and processes
+        // the migrated message under the new identity.
+        adapter
+            .subscribe("events", "sub", "fn.shared", "default", None, None)
+            .await;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while hits.load(Ordering::SeqCst) < 1 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the migrated durable message should be processed after restart"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        adapter.unsubscribe("events", "sub").await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // =========================================================================
@@ -915,6 +1307,7 @@ mod tests {
                 "test-msg-id",
                 3,
                 1000,
+                None,
                 None,
                 None,
                 None,
@@ -963,6 +1356,7 @@ mod tests {
                 "msg-1",
                 1,
                 1000,
+                None,
                 None,
                 None,
                 None,
@@ -1038,6 +1432,7 @@ mod tests {
                     &format!("msg-{i}"),
                     1,
                     1000,
+                    None,
                     None,
                     None,
                     None,
@@ -1118,6 +1513,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -1159,6 +1555,7 @@ mod tests {
                 "test-msg-id",
                 3,
                 1000,
+                None,
                 None,
                 None,
                 None,
@@ -1206,6 +1603,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                     None,
@@ -1265,6 +1663,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
         }
@@ -1307,6 +1706,7 @@ mod tests {
                 1000,
                 Some("00-abc-def-01".to_string()),
                 Some("key=value".to_string()),
+                None,
                 None,
             )
             .await;
@@ -1507,10 +1907,10 @@ mod tests {
         let adapter = make_adapter(Arc::clone(&engine));
 
         adapter
-            .subscribe("orders", "sub1", "fn.handler", None, None)
+            .subscribe("orders", "sub1", "fn.handler", "default", None, None)
             .await;
         adapter
-            .subscribe("payments", "sub2", "fn.handler", None, None)
+            .subscribe("payments", "sub2", "fn.handler", "default", None, None)
             .await;
 
         let topics = adapter.list_topics().await.unwrap();
@@ -1537,13 +1937,13 @@ mod tests {
         let adapter = make_adapter(Arc::clone(&engine));
 
         adapter
-            .subscribe("events", "sub-a", "fn.handler", None, None)
+            .subscribe("events", "sub-a", "fn.handler", "default", None, None)
             .await;
         adapter
-            .subscribe("events", "sub-b", "fn.handler", None, None)
+            .subscribe("events", "sub-b", "fn.handler", "default", None, None)
             .await;
         adapter
-            .subscribe("events", "sub-c", "fn.handler", None, None)
+            .subscribe("events", "sub-c", "fn.handler", "default", None, None)
             .await;
 
         let topics = adapter.list_topics().await.unwrap();
@@ -1597,10 +1997,10 @@ mod tests {
         let adapter = make_adapter(Arc::clone(&engine));
 
         adapter
-            .subscribe("stats-topic", "s1", "fn.handler", None, None)
+            .subscribe("stats-topic", "s1", "fn.handler", "default", None, None)
             .await;
         adapter
-            .subscribe("stats-topic", "s2", "fn.handler", None, None)
+            .subscribe("stats-topic", "s2", "fn.handler", "default", None, None)
             .await;
 
         let stats = adapter.topic_stats("stats-topic").await.unwrap();

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from iii import TriggerAction, register_worker
+from iii import InitOptions, TriggerAction, register_worker
 from iii.iii import III
 from iii.trigger import TriggerConfig, TriggerHandler
 
@@ -16,6 +16,7 @@ TRIGGER_TYPE_ID = "test.tt-lifecycle.python"
 CONSUMER_FN = "test.tt-lifecycle.python.consumer"
 FIRE_FN = "test.tt-lifecycle.python.fire"
 TRIGGER_CONFIG = {"tag": "test"}
+PROVIDER_RECONNECT_NAME = "tt-lifecycle-reconnect-provider"
 
 
 class LifecycleTriggerHandler(TriggerHandler[Any]):
@@ -37,8 +38,10 @@ def _wait() -> None:
     time.sleep(0.4)
 
 
-def _create_provider(handler: LifecycleTriggerHandler) -> III:
-    client = register_worker(ENGINE_WS_URL)
+def _create_provider(handler: LifecycleTriggerHandler, worker_name: str) -> III:
+    # Explicit name: the engine allows one live worker per (namespace, name), and
+    # pytest runs every worker in this suite under the same default identity.
+    client = register_worker(ENGINE_WS_URL, InitOptions(worker_name=worker_name))
     client._wait_until_connected()
     time.sleep(0.3)
 
@@ -62,8 +65,8 @@ def _create_provider(handler: LifecycleTriggerHandler) -> III:
     return client
 
 
-def _create_consumer(handler_calls: list[Any]) -> III:
-    client = register_worker(ENGINE_WS_URL)
+def _create_consumer(handler_calls: list[Any], worker_name: str) -> III:
+    client = register_worker(ENGINE_WS_URL, InitOptions(worker_name=worker_name))
     client._wait_until_connected()
     time.sleep(0.3)
 
@@ -89,9 +92,9 @@ def trigger_handler() -> LifecycleTriggerHandler:
 
 
 def test_fire_invokes_bound_function(trigger_handler: LifecycleTriggerHandler) -> None:
-    provider = _create_provider(trigger_handler)
+    provider = _create_provider(trigger_handler, "tt-lifecycle-fire-provider")
     handler_calls: list[Any] = []
-    consumer = _create_consumer(handler_calls)
+    consumer = _create_consumer(handler_calls, "tt-lifecycle-fire-consumer")
 
     try:
         assert len(trigger_handler.register_calls) == 1
@@ -108,9 +111,9 @@ def test_fire_invokes_bound_function(trigger_handler: LifecycleTriggerHandler) -
 
 
 def test_provider_reconnect_rebinds_trigger(trigger_handler: LifecycleTriggerHandler) -> None:
-    provider = _create_provider(trigger_handler)
+    provider = _create_provider(trigger_handler, PROVIDER_RECONNECT_NAME)
     handler_calls: list[Any] = []
-    consumer = _create_consumer(handler_calls)
+    consumer = _create_consumer(handler_calls, "tt-lifecycle-reconnect-consumer")
 
     try:
         bound_trigger_id = trigger_handler.register_calls[0].id
@@ -119,7 +122,9 @@ def test_provider_reconnect_rebinds_trigger(trigger_handler: LifecycleTriggerHan
         provider.shutdown()
         _wait()
 
-        provider = _create_provider(trigger_handler)
+        # Same name on purpose: this asserts the provider reclaims its own
+        # identity after disconnecting, which is what "reconnect" means here.
+        provider = _create_provider(trigger_handler, PROVIDER_RECONNECT_NAME)
         _wait()
 
         assert len(trigger_handler.register_calls) == 1
@@ -140,9 +145,9 @@ def test_provider_reconnect_rebinds_trigger(trigger_handler: LifecycleTriggerHan
 def test_consumer_disconnect_invokes_unregister_trigger(
     trigger_handler: LifecycleTriggerHandler,
 ) -> None:
-    provider = _create_provider(trigger_handler)
+    provider = _create_provider(trigger_handler, "tt-lifecycle-unregister-provider")
     handler_calls: list[Any] = []
-    consumer = _create_consumer(handler_calls)
+    consumer = _create_consumer(handler_calls, "tt-lifecycle-unregister-consumer")
 
     try:
         trigger_handler.unregister_calls.clear()

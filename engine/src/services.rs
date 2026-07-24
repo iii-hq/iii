@@ -9,7 +9,12 @@ use std::{any::Any, collections::HashSet, sync::Arc};
 use dashmap::DashMap;
 #[derive(Default)]
 pub struct ServicesRegistry {
-    pub services: Arc<DashMap<String, Service>>,
+    /// Keyed by `(namespace, service_name)`. The same service name may exist
+    /// once per namespace.
+    pub services: Arc<DashMap<(String, String), Service>>,
+    /// Module services are engine-global singletons (the HTTP module, the
+    /// stream module, ...), not per-namespace worker state — they stay keyed by
+    /// name alone.
     module_services: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
 }
 impl ServicesRegistry {
@@ -34,7 +39,13 @@ impl ServicesRegistry {
             .ok()
     }
 
-    pub fn remove_function_from_services(&self, function_id: &str) {
+    pub fn get(&self, namespace: &str, service_name: &str) -> Option<Service> {
+        self.services
+            .get(&(namespace.to_string(), service_name.to_string()))
+            .map(|entry| entry.value().clone())
+    }
+
+    pub fn remove_function_from_services(&self, namespace: &str, function_id: &str) {
         let service_name = match Self::get_service_name_from_function_id(function_id) {
             Some(name) => name,
             None => {
@@ -50,9 +61,12 @@ impl ServicesRegistry {
             }
         };
 
+        let key = (namespace.to_string(), service_name.clone());
+
         let mut should_remove_service = false;
-        if let Some(mut service) = self.services.get_mut(&service_name) {
+        if let Some(mut service) = self.services.get_mut(&key) {
             tracing::debug!(
+                namespace = %namespace,
                 service_name = %service_name,
                 function_name = %function_name,
                 "Removing function from service"
@@ -64,10 +78,11 @@ impl ServicesRegistry {
 
         if should_remove_service {
             tracing::debug!(
+                namespace = %namespace,
                 service_name = %service_name,
                 "Removing service as it has no more functions"
             );
-            self.services.remove(&service_name);
+            self.services.remove(&key);
         }
     }
 
@@ -87,7 +102,7 @@ impl ServicesRegistry {
         Some(parts[1..].join("::"))
     }
 
-    pub fn register_service_from_function_id(&self, function_id: &str) {
+    pub fn register_service_from_function_id(&self, namespace: &str, function_id: &str) {
         let Some(service_name) = Self::get_service_name_from_function_id(function_id) else {
             return;
         };
@@ -95,29 +110,40 @@ impl ServicesRegistry {
             return;
         };
 
-        if !self.services.contains_key(&service_name) {
+        if !self
+            .services
+            .contains_key(&(namespace.to_string(), service_name.clone()))
+        {
             let service = Service::new(service_name.clone(), "".to_string());
-            self.insert_service(service);
+            self.insert_service(namespace, service);
         }
 
-        self.insert_function_to_service(&service_name, &function_name);
+        self.insert_function_to_service(namespace, &service_name, &function_name);
     }
 
-    pub fn insert_service(&self, service: Service) {
-        if self.services.contains_key(&service.name) {
-            tracing::warn!(service_name = %service.name, "Service already exists");
+    pub fn insert_service(&self, namespace: &str, service: Service) {
+        let key = (namespace.to_string(), service.name.clone());
+        if self.services.contains_key(&key) {
+            tracing::warn!(
+                namespace = %namespace,
+                service_name = %service.name,
+                "Service already exists"
+            );
         }
-        self.services.insert(service.name.clone(), service);
+        self.services.insert(key, service);
     }
 
-    pub fn insert_function_to_service(&self, service_name: &String, function: &str) {
-        if let Some(mut service) = self.services.get_mut(service_name) {
+    pub fn insert_function_to_service(&self, namespace: &str, service_name: &str, function: &str) {
+        if let Some(mut service) = self
+            .services
+            .get_mut(&(namespace.to_string(), service_name.to_string()))
+        {
             service.insert_function(function.to_string());
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Service {
     _id: String,
     name: String,
@@ -166,6 +192,7 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::DEFAULT_NAMESPACE;
 
     // =========================================================================
     // Service struct tests
@@ -261,27 +288,35 @@ mod tests {
     fn registry_insert_service() {
         let reg = ServicesRegistry::new();
         let svc = Service::new("svc_a".to_string(), "id_a".to_string());
-        reg.insert_service(svc);
-        assert!(reg.services.contains_key("svc_a"));
+        reg.insert_service(DEFAULT_NAMESPACE, svc);
+        assert!(
+            reg.services
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "svc_a".to_string()))
+        );
     }
 
     #[test]
-    fn registry_insert_service_duplicate_overwrites() {
+    fn distinct_namespaces_coexist() {
         let reg = ServicesRegistry::new();
-        let svc1 = Service::new("svc_a".to_string(), "id_1".to_string());
-        let svc2 = Service::new("svc_a".to_string(), "id_2".to_string());
-        reg.insert_service(svc1);
-        reg.insert_service(svc2); // should overwrite without panic
-        assert!(reg.services.contains_key("svc_a"));
+        reg.insert_service(
+            "orders",
+            Service::new("state".to_string(), "s1".to_string()),
+        );
+        reg.insert_service(
+            "analytics",
+            Service::new("state".to_string(), "s2".to_string()),
+        );
+        assert!(reg.get("orders", "state").is_some());
+        assert!(reg.get("analytics", "state").is_some());
     }
 
     #[test]
     fn registry_insert_function_to_service() {
         let reg = ServicesRegistry::new();
         let svc = Service::new("svc".to_string(), "".to_string());
-        reg.insert_service(svc);
-        reg.insert_function_to_service(&"svc".to_string(), "func");
-        let entry = reg.services.get("svc").unwrap();
+        reg.insert_service(DEFAULT_NAMESPACE, svc);
+        reg.insert_function_to_service(DEFAULT_NAMESPACE, "svc", "func");
+        let entry = reg.get(DEFAULT_NAMESPACE, "svc").unwrap();
         assert!(entry.functions.contains("func"));
     }
 
@@ -289,7 +324,7 @@ mod tests {
     fn registry_insert_function_to_nonexistent_service() {
         let reg = ServicesRegistry::new();
         // Should not panic
-        reg.insert_function_to_service(&"nonexistent".to_string(), "func");
+        reg.insert_function_to_service(DEFAULT_NAMESPACE, "nonexistent", "func");
     }
 
     // =========================================================================
@@ -339,18 +374,21 @@ mod tests {
     #[test]
     fn register_service_from_function_id_creates_service_and_function() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("my_svc::my_func");
-        assert!(reg.services.contains_key("my_svc"));
-        let entry = reg.services.get("my_svc").unwrap();
+        reg.register_service_from_function_id(DEFAULT_NAMESPACE, "my_svc::my_func");
+        assert!(
+            reg.services
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "my_svc".to_string()))
+        );
+        let entry = reg.get(DEFAULT_NAMESPACE, "my_svc").unwrap();
         assert!(entry.functions.contains("my_func"));
     }
 
     #[test]
     fn register_service_from_function_id_adds_to_existing_service() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("svc::func_a");
-        reg.register_service_from_function_id("svc::func_b");
-        let entry = reg.services.get("svc").unwrap();
+        reg.register_service_from_function_id(DEFAULT_NAMESPACE, "svc::func_a");
+        reg.register_service_from_function_id(DEFAULT_NAMESPACE, "svc::func_b");
+        let entry = reg.get(DEFAULT_NAMESPACE, "svc").unwrap();
         assert!(entry.functions.contains("func_a"));
         assert!(entry.functions.contains("func_b"));
     }
@@ -358,7 +396,7 @@ mod tests {
     #[test]
     fn register_service_from_function_id_invalid_id_no_panic() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("no_dot");
+        reg.register_service_from_function_id(DEFAULT_NAMESPACE, "no_dot");
         assert!(reg.services.is_empty());
     }
 
@@ -369,10 +407,10 @@ mod tests {
     #[test]
     fn remove_function_removes_function_from_service() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("svc::func_a");
-        reg.register_service_from_function_id("svc::func_b");
-        reg.remove_function_from_services("svc::func_a");
-        let entry = reg.services.get("svc").unwrap();
+        reg.register_service_from_function_id(DEFAULT_NAMESPACE, "svc::func_a");
+        reg.register_service_from_function_id(DEFAULT_NAMESPACE, "svc::func_b");
+        reg.remove_function_from_services(DEFAULT_NAMESPACE, "svc::func_a");
+        let entry = reg.get(DEFAULT_NAMESPACE, "svc").unwrap();
         assert!(!entry.functions.contains("func_a"));
         assert!(entry.functions.contains("func_b"));
     }
@@ -380,20 +418,23 @@ mod tests {
     #[test]
     fn remove_function_removes_service_when_empty() {
         let reg = ServicesRegistry::new();
-        reg.register_service_from_function_id("svc::func_a");
-        reg.remove_function_from_services("svc::func_a");
-        assert!(!reg.services.contains_key("svc"));
+        reg.register_service_from_function_id(DEFAULT_NAMESPACE, "svc::func_a");
+        reg.remove_function_from_services(DEFAULT_NAMESPACE, "svc::func_a");
+        assert!(
+            !reg.services
+                .contains_key(&(DEFAULT_NAMESPACE.to_string(), "svc".to_string()))
+        );
     }
 
     #[test]
     fn remove_function_invalid_id_no_panic() {
         let reg = ServicesRegistry::new();
-        reg.remove_function_from_services("no_dot");
+        reg.remove_function_from_services(DEFAULT_NAMESPACE, "no_dot");
     }
 
     #[test]
     fn remove_function_nonexistent_service_no_panic() {
         let reg = ServicesRegistry::new();
-        reg.remove_function_from_services("nonexistent::func");
+        reg.remove_function_from_services(DEFAULT_NAMESPACE, "nonexistent::func");
     }
 }

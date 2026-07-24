@@ -285,6 +285,7 @@ impl QueueAdapter for RabbitMQAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        namespace: &str,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -293,6 +294,7 @@ impl QueueAdapter for RabbitMQAdapter {
         let topic = topic.to_string();
         let id = id.to_string();
         let function_id = function_id.to_string();
+        let namespace = namespace.to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
 
         let already_subscribed = {
@@ -314,15 +316,21 @@ impl QueueAdapter for RabbitMQAdapter {
             return;
         }
 
+        // Scope the subscriber queue to the trigger's namespace so two
+        // subscribers with the same topic+function_id in different namespaces
+        // are distinct durable queues, not competing consumers of one. The
+        // worker re-resolves the dispatch namespace live by id, which agrees
+        // once the trigger is registered.
         let subscriber_max_priority = queue_config.as_ref().and_then(|c| c.max_priority);
         if let Err(e) = self
             .topology
-            .setup_subscriber_queue(&topic, &function_id, subscriber_max_priority)
+            .setup_subscriber_queue(&topic, &namespace, &function_id, subscriber_max_priority)
             .await
         {
             tracing::error!(
                 error = ?e,
                 topic = %topic,
+                namespace = %namespace,
                 function_id = %function_id,
                 "Failed to setup RabbitMQ per-function queue"
             );
@@ -330,7 +338,7 @@ impl QueueAdapter for RabbitMQAdapter {
         }
 
         let names = RabbitNames::new(&topic);
-        let per_function_queue = names.function_queue(&function_id);
+        let per_function_queue = names.function_queue(&namespace, &function_id);
         let consumer_tag = format!("consumer-{}", Uuid::new_v4());
 
         let effective_queue_mode = queue_config
@@ -357,6 +365,7 @@ impl QueueAdapter for RabbitMQAdapter {
         let function_id_clone = function_id.clone();
         let consumer_tag_clone = consumer_tag.clone();
         let queue_name_clone = per_function_queue.clone();
+        let trigger_id_clone = id.to_string();
 
         let task_handle = tokio::spawn(async move {
             worker
@@ -366,6 +375,7 @@ impl QueueAdapter for RabbitMQAdapter {
                     condition_function_id,
                     consumer_tag_clone,
                     queue_name_clone,
+                    trigger_id_clone,
                 )
                 .await;
         });
@@ -850,6 +860,7 @@ impl QueueAdapter for RabbitMQAdapter {
         _backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         priority: Option<u8>,
     ) {
         use super::naming::FnQueueNames;
@@ -879,6 +890,15 @@ impl QueueAdapter for RabbitMQAdapter {
             headers.insert(
                 "baggage".into(),
                 lapin::types::AMQPValue::LongString(bg.as_str().into()),
+            );
+        }
+        // Carry the target namespace on the message header so the consumer
+        // resolves the function in the enqueuer's namespace. The retry path
+        // copies all headers verbatim, so it survives requeue and DLQ redrive.
+        if let Some(ns) = &namespace {
+            headers.insert(
+                "namespace".into(),
+                lapin::types::AMQPValue::LongString(ns.as_str().into()),
             );
         }
 
@@ -1001,6 +1021,13 @@ impl QueueAdapter for RabbitMQAdapter {
                                     _ => None,
                                 });
 
+                        let namespace = headers.and_then(|h| h.inner().get("namespace")).and_then(
+                            |v| match v {
+                                lapin::types::AMQPValue::LongString(s) => Some(s.to_string()),
+                                _ => None,
+                            },
+                        );
+
                         let attempt = headers
                             .and_then(|h| h.inner().get("x-attempt"))
                             .and_then(|v| match v {
@@ -1025,6 +1052,7 @@ impl QueueAdapter for RabbitMQAdapter {
                             message_id,
                             traceparent,
                             baggage,
+                            namespace,
                         };
 
                         if tx.send(msg).await.is_err() {

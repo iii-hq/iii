@@ -29,6 +29,7 @@ pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 /// Maximum length of `config_summary` strings produced by
 /// `engine::registered-triggers::list`.
 const CONFIG_SUMMARY_MAX_LEN: usize = 80;
+
 /// Self-reported worker descriptions are untrusted free text rendered by
 /// consoles, CLIs, and LLM agents — cap the length and strip control
 /// characters at the ingest boundary.
@@ -113,6 +114,16 @@ pub struct FunctionInfoInput {
     /// single-id round-trips.
     #[serde(default)]
     pub function_ids: Option<Vec<String>>,
+    /// Optional target namespace, applied to every requested id. When set, each
+    /// id resolves *strictly* in this namespace — the same semantics as
+    /// `Engine::resolve_function`'s explicit-namespace path — so an id
+    /// duplicated across several non-default namespaces becomes addressable. A
+    /// miss in this namespace is NOT_FOUND naming where the id does exist, never
+    /// a resolution elsewhere. When absent, resolution mirrors invoke routing's
+    /// bare-id behavior (`default` wins; a unique non-default id resolves; an id
+    /// in several non-default namespaces is ambiguous).
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 /// Hard cap on `function_ids` per call — a batch exists to save round-trips,
@@ -184,6 +195,17 @@ pub struct WorkersListInput {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct WorkerInfoInput {
     pub name: String,
+    /// Optional target namespace. A worker name is unique only *within* a
+    /// namespace, so the same name can identify two different workers once they
+    /// register into different namespaces. When set, the lookup resolves
+    /// strictly to the worker of that name in this namespace. When absent,
+    /// resolution mirrors `engine::functions::info`'s bare-id behavior: a
+    /// `default` worker wins, a name unique to one non-default namespace
+    /// resolves, and a name that lives in several non-default namespaces at once
+    /// is ambiguous — reported as an error naming the candidate namespaces
+    /// rather than silently picking one.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 // ── Outputs ─────────────────────────────────────────────────────────────
@@ -191,6 +213,11 @@ pub struct WorkerInfoInput {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FunctionSummary {
     pub function_id: String,
+    /// Namespace the function is registered in — the `(namespace, function_id)`
+    /// key it lives under in the registry. The same `function_id` may appear
+    /// once per namespace, so this is what tells two same-named rows apart.
+    /// [`crate::protocol::DEFAULT_NAMESPACE`] for workers that declared none.
+    pub namespace: String,
     pub worker_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -211,6 +238,11 @@ pub struct RegisteredTriggerRef {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FunctionDetail {
     pub function_id: String,
+    /// Namespace of the registry entry this detail describes. A bare
+    /// `function_id` can name a function in more than one namespace, so the
+    /// answer states which one it resolved to rather than leaving the caller
+    /// to assume.
+    pub namespace: String,
     pub worker_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -319,6 +351,11 @@ pub struct WorkerSummary {
     pub description: Option<String>,
     pub version: Option<String>,
     pub id: String,
+    /// Routing namespace the worker declared on `engine::workers::register`,
+    /// or [`crate::protocol::DEFAULT_NAMESPACE`] when it declared none. Two
+    /// workers may expose the same function ids in different namespaces; this
+    /// is what distinguishes them.
+    pub namespace: String,
     pub runtime: Option<String>,
     pub os: Option<String>,
     pub status: String,
@@ -335,6 +372,10 @@ pub struct WorkerDetailEnvelope {
     pub description: Option<String>,
     pub version: Option<String>,
     pub id: String,
+    /// Routing namespace this worker resolved to. A worker name is unique only
+    /// *within* a namespace, so the same name can identify two different
+    /// workers across namespaces; this is what tells them apart.
+    pub namespace: String,
     pub runtime: Option<String>,
     pub os: Option<String>,
     pub status: String,
@@ -414,6 +455,11 @@ pub struct RegisterWorkerInput {
     /// Isolation backend used to run the worker (e.g. `vm`, `oci`).
     #[serde(default)]
     pub isolation: Option<String>,
+    /// Routing namespace this worker registers its functions into. Absent means
+    /// [`crate::protocol::DEFAULT_NAMESPACE`], so workers built against older
+    /// SDKs keep registering unchanged.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -487,11 +533,12 @@ impl EngineFunctionsWorker {
         for trigger in triggers_to_fire {
             let engine = self.engine.clone();
             let function_id = trigger.function_id.clone();
+            let namespace = trigger.namespace.clone();
             let metadata = trigger.metadata.clone();
             let data = data.clone();
             tokio::spawn(async move {
                 let _ = engine
-                    .call_with_metadata(&function_id, data, metadata)
+                    .call_with_metadata_ns(&namespace, &function_id, data, metadata)
                     .await;
             });
         }
@@ -541,17 +588,26 @@ impl EngineFunctionsWorker {
         }
     }
 
-    /// Builds a `function_id -> worker_name` map by scanning both the WS
-    /// worker registry and in-process runtime workers. The first entry wins
-    /// on collisions so that runtime workers (more stable identifiers) take
-    /// precedence.
-    async fn function_owner_index(&self) -> HashMap<String, String> {
-        let mut map: HashMap<String, String> = HashMap::new();
+    /// Builds a `(namespace, function_id) -> worker_name` map by scanning both
+    /// the WS worker registry and in-process runtime workers. The first entry
+    /// wins on collisions so that runtime workers (more stable identifiers)
+    /// take precedence.
+    ///
+    /// Keyed by `(namespace, function_id)` to match `FunctionsRegistry`. A bare
+    /// id is not a key: once the same id can be registered once per namespace,
+    /// a bare-id map collapses both owners into whichever entry landed first —
+    /// and DashMap iteration order makes that nondeterministic, so a listing
+    /// could attribute `orders`'s `state::get` to `billing-worker`. That is a
+    /// wrong answer, not a missing one.
+    async fn function_owner_index(&self) -> HashMap<(String, String), String> {
+        let mut map: HashMap<(String, String), String> = HashMap::new();
 
         for runtime in self.engine.list_runtime_workers() {
             let name = runtime.name.clone();
             for fn_id in runtime.function_ids {
-                map.entry(fn_id).or_insert_with(|| name.clone());
+                // In-process workers always register into the default namespace.
+                map.entry((crate::protocol::DEFAULT_NAMESPACE.to_string(), fn_id))
+                    .or_insert_with(|| name.clone());
             }
         }
 
@@ -559,19 +615,186 @@ impl EngineFunctionsWorker {
             let Some(name) = worker.name.clone() else {
                 continue;
             };
+            // Registry-sourced: this is the copy `engine::workers::register`
+            // writes the namespace into, so it is the connection's real one.
+            let namespace = self.engine.worker_registry.get_namespace(&worker.id);
             for fn_id in worker.get_function_ids().await {
-                map.entry(fn_id).or_insert_with(|| name.clone());
+                map.entry((namespace.clone(), fn_id))
+                    .or_insert_with(|| name.clone());
             }
         }
 
         map
     }
 
-    fn worker_name_for_function_id(index: &HashMap<String, String>, function_id: &str) -> String {
-        if let Some(name) = index.get(function_id) {
+    fn worker_name_for_function_id(
+        index: &HashMap<(String, String), String>,
+        namespace: &str,
+        function_id: &str,
+    ) -> String {
+        if let Some(name) = index.get(&(namespace.to_string(), function_id.to_string())) {
             return name.clone();
         }
         Self::first_segment(function_id)
+    }
+
+    /// The namespace an introspection lookup of a bare `function_id` resolves
+    /// to, or `None` when the id names no function this engine can identify.
+    ///
+    /// Mirrors invoke routing first: a bare id means [`DEFAULT_NAMESPACE`]
+    /// (`Engine::resolve_function`), so a `default` entry always wins and
+    /// single-namespace engines behave exactly as before. Only when the id is
+    /// absent from `default` does this look wider — and then it resolves solely
+    /// when the id is unambiguous. An engine whose every worker is namespaced
+    /// would otherwise be blind to all of its own contracts.
+    ///
+    /// A bare id registered in several non-default namespaces is a genuine
+    /// ambiguity: this returns `None` rather than guess an owner. Callers
+    /// surface that as a not-found naming the candidates, the same way
+    /// `resolve_function` does.
+    /// The `NOT_FOUND` body for an id [`Self::introspection_namespace`] would
+    /// not resolve. When the id *is* registered — just in several non-default
+    /// namespaces at once — a bare "not registered" would be a lie, so the
+    /// candidates are named, mirroring `Engine::resolve_function`'s hint.
+    fn function_not_found(&self, function_id: &str) -> ErrorBody {
+        let namespaces = self.engine.functions.namespaces_for(function_id);
+        let message = if namespaces.is_empty() {
+            format!("Function '{function_id}' is not registered.")
+        } else {
+            format!(
+                "Function '{function_id}' is ambiguous: it is registered in namespace(s): {}.",
+                namespaces.join(", ")
+            )
+        };
+        ErrorBody {
+            code: "NOT_FOUND".into(),
+            message,
+            stacktrace: None,
+        }
+    }
+
+    fn introspection_namespace(&self, function_id: &str) -> Option<String> {
+        let namespaces = self.engine.functions.namespaces_for(function_id);
+        if namespaces
+            .iter()
+            .any(|ns| ns == crate::protocol::DEFAULT_NAMESPACE)
+        {
+            return Some(crate::protocol::DEFAULT_NAMESPACE.to_string());
+        }
+        match namespaces.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
+    /// The namespace an `engine::functions::info` lookup resolves in, given the
+    /// caller's optional explicit `namespace`.
+    ///
+    /// An explicit namespace resolves *strictly* there (mirroring
+    /// `Engine::resolve_function`): the id is looked up in that namespace alone,
+    /// and a miss returns `None` so the caller reports NOT_FOUND naming where the
+    /// id actually exists — never a resolution in some other namespace. Absent an
+    /// explicit namespace, this defers to [`Self::introspection_namespace`].
+    fn info_namespace(&self, explicit: Option<&str>, function_id: &str) -> Option<String> {
+        match explicit {
+            Some(ns) => self
+                .engine
+                .functions
+                .get(ns, function_id)
+                .map(|_| ns.to_string()),
+            None => self.introspection_namespace(function_id),
+        }
+    }
+
+    /// The namespaces a worker `name` is currently connected in. In-process
+    /// runtime workers always live in [`DEFAULT_NAMESPACE`]; WS workers carry
+    /// the namespace they declared on `engine::workers::register`. At most one
+    /// worker per namespace can hold a given name (the engine rejects duplicate
+    /// names within a namespace), so the result is deduplicated.
+    fn worker_namespaces_for_name(&self, name: &str) -> Vec<String> {
+        let mut namespaces: Vec<String> = Vec::new();
+        if self
+            .engine
+            .list_runtime_workers()
+            .iter()
+            .any(|w| w.name == name)
+        {
+            namespaces.push(crate::protocol::DEFAULT_NAMESPACE.to_string());
+        }
+        for worker in self.engine.worker_registry.list_workers() {
+            if worker.name.as_deref() == Some(name) {
+                let ns = self.engine.worker_registry.get_namespace(&worker.id);
+                if !namespaces.contains(&ns) {
+                    namespaces.push(ns);
+                }
+            }
+        }
+        namespaces
+    }
+
+    /// Resolves which namespace a `engine::workers::info` lookup addresses,
+    /// given the caller's optional explicit `namespace`. Mirrors
+    /// [`Self::info_namespace`] for functions: an explicit namespace resolves
+    /// strictly there (a miss is NOT_FOUND); a bare name prefers `default`,
+    /// then resolves when the name is unique to one namespace, and is otherwise
+    /// ambiguous — surfaced as an error naming the candidate namespaces so the
+    /// engine never silently picks one same-named worker over another.
+    fn resolve_worker_namespace(
+        &self,
+        name: &str,
+        explicit: Option<&str>,
+    ) -> Result<String, ErrorBody> {
+        let candidates = self.worker_namespaces_for_name(name);
+        match explicit {
+            Some(ns) => {
+                if candidates.iter().any(|c| c == ns) {
+                    Ok(ns.to_string())
+                } else {
+                    Err(self.worker_not_found(name, &candidates))
+                }
+            }
+            None => {
+                if candidates
+                    .iter()
+                    .any(|ns| ns == crate::protocol::DEFAULT_NAMESPACE)
+                {
+                    return Ok(crate::protocol::DEFAULT_NAMESPACE.to_string());
+                }
+                match candidates.as_slice() {
+                    [] => Err(self.worker_not_found(name, &candidates)),
+                    [only] => Ok(only.clone()),
+                    _ => Err(ErrorBody {
+                        code: "NOT_FOUND".into(),
+                        message: format!(
+                            "Worker '{name}' is ambiguous: it is connected in namespace(s): {}. \
+                             Pass `namespace` to disambiguate.",
+                            candidates.join(", ")
+                        ),
+                        stacktrace: None,
+                    }),
+                }
+            }
+        }
+    }
+
+    /// NOT_FOUND body for a worker lookup that resolved nothing. When the name
+    /// *is* connected — just not in the requested namespace — the candidates are
+    /// named so the caller can retry, mirroring [`Self::function_not_found`].
+    fn worker_not_found(&self, name: &str, candidates: &[String]) -> ErrorBody {
+        let message = if candidates.is_empty() {
+            format!("Worker '{name}' is not connected.")
+        } else {
+            format!(
+                "Worker '{name}' is not connected in the requested namespace; \
+                 it is connected in namespace(s): {}.",
+                candidates.join(", ")
+            )
+        };
+        ErrorBody {
+            code: "NOT_FOUND".into(),
+            message,
+            stacktrace: None,
+        }
     }
 
     /// Resolves the worker name that owns a trigger type from an
@@ -607,12 +830,23 @@ impl EngineFunctionsWorker {
             .count()
     }
 
-    fn registered_trigger_refs_for_function(&self, function_id: &str) -> Vec<RegisteredTriggerRef> {
+    /// Triggers bound to `(namespace, function_id)`. The namespace is part of
+    /// the key on purpose: the same `function_id` can be registered once per
+    /// namespace, so filtering by bare id would splice `analytics`'s triggers
+    /// onto the `orders` function detail.
+    fn registered_trigger_refs_for_function(
+        &self,
+        namespace: &str,
+        function_id: &str,
+    ) -> Vec<RegisteredTriggerRef> {
         self.engine
             .trigger_registry
             .triggers
             .iter()
-            .filter(|entry| entry.value().function_id == function_id)
+            .filter(|entry| {
+                let t = entry.value();
+                t.namespace == namespace && t.function_id == function_id
+            })
             .map(|entry| {
                 let t = entry.value();
                 RegisteredTriggerRef {
@@ -632,10 +866,16 @@ impl EngineFunctionsWorker {
             .functions
             .iter()
             .map(|entry| {
+                // The registry key IS the namespace: `functions` is keyed by
+                // `(namespace, function_id)`. No worker field can stand in for
+                // it — a function is in the namespace it was registered under.
+                let namespace = entry.key().0.clone();
                 let f = entry.value();
-                let worker_name = Self::worker_name_for_function_id(&index, &f._function_id);
+                let worker_name =
+                    Self::worker_name_for_function_id(&index, &namespace, &f._function_id);
                 FunctionSummary {
                     function_id: f._function_id.clone(),
+                    namespace,
                     worker_name,
                     description: f._description.clone(),
                     metadata: f.metadata.clone(),
@@ -673,7 +913,11 @@ impl EngineFunctionsWorker {
                     id: t.id.clone(),
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
-                    worker_name: Self::worker_name_for_function_id(&index, &t.function_id),
+                    worker_name: Self::worker_name_for_function_id(
+                        &index,
+                        &t.namespace,
+                        &t.function_id,
+                    ),
                     config: t.config.clone(),
                     config_summary: Self::config_summary(&t.config),
                 }
@@ -706,6 +950,10 @@ impl EngineFunctionsWorker {
                 description: w.description.clone(),
                 version: w.version.clone(),
                 id: worker_id,
+                // Read back through the registry rather than off `w`: only the
+                // registry's entry is the one `engine::workers::register`
+                // writes the namespace into.
+                namespace: self.engine.worker_registry.get_namespace(&w.id),
                 runtime: w.runtime.clone(),
                 os: w.os.clone(),
                 status: w.status.as_str().to_string(),
@@ -730,6 +978,9 @@ impl EngineFunctionsWorker {
                 description: runtime_worker.description.clone(),
                 version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 id: runtime_worker.id.clone(),
+                // In-process workers never declare a namespace; they always
+                // register into the default one.
+                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 runtime: Some("engine".to_string()),
                 os: None,
                 status: "available".to_string(),
@@ -757,10 +1008,22 @@ impl EngineFunctionsWorker {
 
     /// The per-id RBAC visibility check `functions_info` applies for
     /// session-scoped callers (single and batch paths share it).
-    fn session_allows_function(&self, session: &Arc<Session>, function_id: &str) -> bool {
-        let function = self.engine.functions.get(function_id);
+    ///
+    /// `namespace` must be the one the id actually resolves to. The re-fetch
+    /// here is not decorative: `is_function_allowed` reads the function's
+    /// `metadata`, and `expose_functions` is an allow-list — a `Metadata`
+    /// filter evaluated against `None` matches nothing, so re-fetching from the
+    /// wrong namespace silently DENIES a function the session is entitled to.
+    fn session_allows_function(
+        &self,
+        session: &Arc<Session>,
+        namespace: &str,
+        function_id: &str,
+    ) -> bool {
+        let function = self.engine.functions.get(namespace, function_id);
         crate::workers::worker::rbac_config::is_function_allowed(
             function_id,
+            namespace,
             session.config.rbac.clone(),
             &session.allowed_functions,
             &session.forbidden_functions,
@@ -768,9 +1031,13 @@ impl EngineFunctionsWorker {
         )
     }
 
-    async fn build_function_detail(&self, function_id: &str) -> Option<FunctionDetail> {
+    async fn build_function_detail(
+        &self,
+        namespace: &str,
+        function_id: &str,
+    ) -> Option<FunctionDetail> {
         let index = self.function_owner_index().await;
-        self.build_function_detail_indexed(&index, function_id)
+        self.build_function_detail_indexed(&index, namespace, function_id)
     }
 
     /// Like [`Self::build_function_detail`] but with the owner index built
@@ -778,20 +1045,22 @@ impl EngineFunctionsWorker {
     /// the O(workers × functions) index per id.
     fn build_function_detail_indexed(
         &self,
-        index: &HashMap<String, String>,
+        index: &HashMap<(String, String), String>,
+        namespace: &str,
         function_id: &str,
     ) -> Option<FunctionDetail> {
-        let function = self.engine.functions.get(function_id)?;
-        let worker_name = Self::worker_name_for_function_id(index, function_id);
+        let function = self.engine.functions.get(namespace, function_id)?;
+        let worker_name = Self::worker_name_for_function_id(index, namespace, function_id);
 
         Some(FunctionDetail {
             function_id: function_id.to_string(),
+            namespace: namespace.to_string(),
             worker_name,
             description: function._description.clone(),
             request_schema: function.request_format.clone(),
             response_schema: function.response_format.clone(),
             metadata: function.metadata.clone(),
-            registered_triggers: self.registered_trigger_refs_for_function(function_id),
+            registered_triggers: self.registered_trigger_refs_for_function(namespace, function_id),
         })
     }
 
@@ -818,10 +1087,13 @@ impl EngineFunctionsWorker {
             .map(|entry| entry.value().clone())?;
 
         let index = self.function_owner_index().await;
-        let worker_name = Self::worker_name_for_function_id(&index, &trigger.function_id);
+        let worker_name =
+            Self::worker_name_for_function_id(&index, &trigger.namespace, &trigger.function_id);
 
         let trigger_detail = self.build_trigger_type_detail(&trigger.trigger_type);
-        let function_detail = self.build_function_detail(&trigger.function_id).await;
+        let function_detail = self
+            .build_function_detail(&trigger.namespace, &trigger.function_id)
+            .await;
 
         Some(RegisteredTriggerDetail {
             id: trigger.id.clone(),
@@ -838,6 +1110,7 @@ impl EngineFunctionsWorker {
     fn worker_detail_envelope_from_connection(
         &self,
         w: &WorkerConnection,
+        namespace: String,
         function_count: usize,
         active_invocations: usize,
         ip_address: Option<String>,
@@ -848,6 +1121,7 @@ impl EngineFunctionsWorker {
             description: w.description.clone(),
             version: w.version.clone(),
             id: w.id.to_string(),
+            namespace,
             runtime: w.runtime.clone(),
             os: w.os.clone(),
             status: w.status.as_str().to_string(),
@@ -862,13 +1136,18 @@ impl EngineFunctionsWorker {
         }
     }
 
-    fn worker_detail_envelope_from_runtime(&self, w: &RuntimeWorkerInfo) -> WorkerDetailEnvelope {
+    fn worker_detail_envelope_from_runtime(
+        &self,
+        w: &RuntimeWorkerInfo,
+        namespace: String,
+    ) -> WorkerDetailEnvelope {
         let functions = w.function_ids.clone();
         WorkerDetailEnvelope {
             name: Some(w.name.clone()),
             description: w.description.clone(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             id: w.id.clone(),
+            namespace,
             runtime: Some("engine".to_string()),
             os: None,
             status: "available".to_string(),
@@ -883,34 +1162,60 @@ impl EngineFunctionsWorker {
         }
     }
 
-    async fn build_worker_detail(&self, name: &str) -> Option<WorkerInfoOutput> {
+    /// `worker_namespace` is the already-resolved namespace of the target
+    /// worker (see [`Self::resolve_worker_namespace`]). A worker is selected
+    /// only if its name AND namespace both match — two workers can share a name
+    /// across namespaces, so name alone would pick an arbitrary one.
+    async fn build_worker_detail(
+        &self,
+        name: &str,
+        worker_namespace: &str,
+    ) -> Option<WorkerInfoOutput> {
         use crate::workers::observability::metrics::get_worker_metrics_from_storage;
 
         let envelope: WorkerDetailEnvelope;
         let function_ids: Vec<String>;
+        // The connection id of the resolved worker, when it is a WebSocket
+        // worker. `None` for in-process runtime workers (which have no
+        // connection Uuid). This is what disambiguates same-named workers in
+        // different namespaces when scoping their trigger types below.
+        let resolved_worker_id: Option<uuid::Uuid>;
+        // The namespace this worker's functions live in. Its own namespace is
+        // the only correct place to look them up: a `default` lookup finds
+        // nothing for a namespaced worker and silently reports it as owning no
+        // functions at all.
+        let worker_namespace = worker_namespace.to_string();
 
         if let Some(runtime) = self
             .engine
             .list_runtime_workers()
             .into_iter()
-            .find(|w| w.name == name)
+            // Runtime workers only ever live in `default`; only match them when
+            // that is the namespace being asked for.
+            .find(|w| w.name == name && worker_namespace == crate::protocol::DEFAULT_NAMESPACE)
         {
-            envelope = self.worker_detail_envelope_from_runtime(&runtime);
+            envelope = self.worker_detail_envelope_from_runtime(&runtime, worker_namespace.clone());
             function_ids = runtime.function_ids;
-        } else if let Some(worker) = self
-            .engine
-            .worker_registry
-            .list_workers()
-            .into_iter()
-            .find(|w| w.name.as_deref() == Some(name))
+            resolved_worker_id = None;
+        } else if let Some(worker) =
+            self.engine
+                .worker_registry
+                .list_workers()
+                .into_iter()
+                .find(|w| {
+                    w.name.as_deref() == Some(name)
+                        && self.engine.worker_registry.get_namespace(&w.id) == worker_namespace
+                })
         {
             let function_count_async = worker.get_function_ids().await;
             let function_count = function_count_async.len();
             let active_invocations = worker.invocation_count().await;
             let ip_address = worker.session.as_ref().map(|s| s.ip_address.clone());
             let latest_metrics = get_worker_metrics_from_storage(&worker.id.to_string());
+            resolved_worker_id = Some(worker.id);
             envelope = self.worker_detail_envelope_from_connection(
                 &worker,
+                worker_namespace.clone(),
                 function_count,
                 active_invocations,
                 ip_address,
@@ -926,10 +1231,17 @@ impl EngineFunctionsWorker {
         let mut functions: Vec<FunctionSummary> = function_ids
             .into_iter()
             .filter_map(|fn_id| {
-                let func = self.engine.functions.get(&fn_id)?;
+                let func = self.engine.functions.get(&worker_namespace, &fn_id)?;
                 Some(FunctionSummary {
                     function_id: fn_id.clone(),
-                    worker_name: Self::worker_name_for_function_id(&index, &fn_id),
+                    // Mirrors the lookup directly above: this row *is* the
+                    // entry keyed under the worker's own namespace.
+                    namespace: worker_namespace.clone(),
+                    worker_name: Self::worker_name_for_function_id(
+                        &index,
+                        &worker_namespace,
+                        &fn_id,
+                    ),
                     description: func._description.clone(),
                     metadata: func.metadata.clone(),
                 })
@@ -966,6 +1278,26 @@ impl EngineFunctionsWorker {
                 if worker_name.as_deref() != Some(owner.as_str()) {
                     return None;
                 }
+                // Namespace scoping. The owner-name match above is necessary
+                // but not sufficient: same-named workers across namespaces
+                // share an owner NAME while holding distinct connection ids, so
+                // name alone would splice another namespace's types in here.
+                // When we resolved a WebSocket worker (`Some`), only trigger
+                // types pinned to THIS exact connection are its own: internal /
+                // known-provider types (`worker_id == None`) and types pinned to
+                // a different connection must not splice in by name coincidence
+                // with a same-named worker in another namespace. When we
+                // resolved the in-process runtime worker (`None`, only ever in
+                // `default`), it has no connection id and its trigger types are
+                // attributed by owner NAME — matching `engine::triggers::list`,
+                // including the stale-daemon case where a same-named WS
+                // connection registered the type. The name check above already
+                // gated that, so only the WS case narrows further here.
+                if let Some(resolved_wid) = resolved_worker_id
+                    && tt.worker_id != Some(resolved_wid)
+                {
+                    return None;
+                }
                 Some(TriggerTypeSummary {
                     id: tt.id.clone(),
                     worker_name: owner,
@@ -983,14 +1315,24 @@ impl EngineFunctionsWorker {
             .trigger_registry
             .triggers
             .iter()
-            .filter(|entry| function_id_set.contains(&entry.value().function_id))
+            // Scope by `(namespace, function_id)`: a trigger bound to the same
+            // id in another namespace belongs to a different worker's function,
+            // not this one.
+            .filter(|entry| {
+                let t = entry.value();
+                t.namespace == worker_namespace && function_id_set.contains(&t.function_id)
+            })
             .map(|entry| {
                 let t = entry.value();
                 RegisteredTriggerSummary {
                     id: t.id.clone(),
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
-                    worker_name: Self::worker_name_for_function_id(&index, &t.function_id),
+                    worker_name: Self::worker_name_for_function_id(
+                        &index,
+                        &t.namespace,
+                        &t.function_id,
+                    ),
                     config: t.config.clone(),
                     config_summary: Self::config_summary(&t.config),
                 }
@@ -1027,6 +1369,7 @@ impl EngineFunctionsWorker {
             input.telemetry,
             input.pid,
             input.isolation,
+            input.namespace,
         );
         crate::workers::telemetry::collector::track_worker_registered();
     }
@@ -1142,11 +1485,18 @@ impl Worker for EngineFunctionsWorker {
                             for trigger in triggers_to_fire {
                                 let engine = engine.clone();
                                 let function_id = trigger.function_id.clone();
+                                let namespace = trigger.namespace.clone();
                                 let metadata = trigger.metadata.clone();
                                 let data = functions_data.clone();
                                 tokio::spawn(async move {
-                                    let _ =
-                                        engine.call_with_metadata(&function_id, data, metadata).await;
+                                    let _ = engine
+                                        .call_with_metadata_ns(
+                                            &namespace,
+                                            &function_id,
+                                            data,
+                                            metadata,
+                                        )
+                                        .await;
                                 });
                             }
                         }
@@ -1254,16 +1604,10 @@ impl EngineFunctionsWorker {
         }
 
         if let Some(session) = &session {
-            functions.retain(|f| {
-                let function = self.engine.functions.get(&f.function_id);
-                crate::workers::worker::rbac_config::is_function_allowed(
-                    &f.function_id,
-                    session.config.rbac.clone(),
-                    &session.allowed_functions,
-                    &session.forbidden_functions,
-                    function.as_ref(),
-                )
-            });
+            // `f.namespace` is the row's own registry key, so the re-fetch hits
+            // the entry the row was built from and RBAC sees its real metadata.
+            functions
+                .retain(|f| self.session_allows_function(session, &f.namespace, &f.function_id));
         }
 
         match input.search.as_deref().filter(|s| !s.is_empty()) {
@@ -1296,6 +1640,7 @@ impl EngineFunctionsWorker {
         input: FunctionInfoInput,
         session: Option<Arc<Session>>,
     ) -> FunctionResult<FunctionInfoOutput, ErrorBody> {
+        let explicit_ns = input.namespace.clone();
         let function_ids = match (input.function_id, input.function_ids) {
             (Some(_), Some(_)) => {
                 return FunctionResult::Failure(ErrorBody {
@@ -1313,8 +1658,15 @@ impl EngineFunctionsWorker {
             }
             // Single id: keep the historical flat shape and error codes.
             (Some(function_id), None) => {
+                // Resolve once, then use the same namespace for the RBAC check
+                // and the detail — otherwise the two could disagree about which
+                // function they are talking about.
+                let Some(namespace) = self.info_namespace(explicit_ns.as_deref(), &function_id)
+                else {
+                    return FunctionResult::Failure(self.function_not_found(&function_id));
+                };
                 if let Some(session) = &session
-                    && !self.session_allows_function(session, &function_id)
+                    && !self.session_allows_function(session, &namespace, &function_id)
                 {
                     return FunctionResult::Failure(ErrorBody {
                         code: "FORBIDDEN".into(),
@@ -1324,15 +1676,11 @@ impl EngineFunctionsWorker {
                         stacktrace: None,
                     });
                 }
-                return match self.build_function_detail(&function_id).await {
+                return match self.build_function_detail(&namespace, &function_id).await {
                     Some(detail) => {
                         FunctionResult::Success(FunctionInfoOutput::Single(Box::new(detail)))
                     }
-                    None => FunctionResult::Failure(ErrorBody {
-                        code: "NOT_FOUND".into(),
-                        message: format!("Function '{function_id}' is not registered."),
-                        stacktrace: None,
-                    }),
+                    None => FunctionResult::Failure(self.function_not_found(&function_id)),
                 };
             }
             (None, Some(function_ids)) => function_ids,
@@ -1365,15 +1713,24 @@ impl EngineFunctionsWorker {
         let functions = ids
             .into_iter()
             .map(|function_id| {
+                // Unresolvable (absent, or ambiguous across several non-default
+                // namespaces) is reported per-id, exactly like the single path.
+                let Some(namespace) = self.info_namespace(explicit_ns.as_deref(), &function_id)
+                else {
+                    return FunctionInfoEntry::Unavailable {
+                        function_id,
+                        error: "not_found".into(),
+                    };
+                };
                 if let Some(session) = &session
-                    && !self.session_allows_function(session, &function_id)
+                    && !self.session_allows_function(session, &namespace, &function_id)
                 {
                     return FunctionInfoEntry::Unavailable {
                         function_id,
                         error: "forbidden".into(),
                     };
                 }
-                match self.build_function_detail_indexed(&index, &function_id) {
+                match self.build_function_detail_indexed(&index, &namespace, &function_id) {
                     Some(detail) => FunctionInfoEntry::Detail(Box::new(detail)),
                     None => FunctionInfoEntry::Unavailable {
                         function_id,
@@ -1539,13 +1896,17 @@ impl EngineFunctionsWorker {
         &self,
         input: WorkerInfoInput,
     ) -> FunctionResult<WorkerInfoOutput, ErrorBody> {
-        match self.build_worker_detail(&input.name).await {
+        // Resolve the namespace first: a bare name can identify two different
+        // workers once they register into different namespaces, so returning the
+        // first match would be arbitrary.
+        let namespace = match self.resolve_worker_namespace(&input.name, input.namespace.as_deref())
+        {
+            Ok(ns) => ns,
+            Err(err) => return FunctionResult::Failure(err),
+        };
+        match self.build_worker_detail(&input.name, &namespace).await {
             Some(detail) => FunctionResult::Success(detail),
-            None => FunctionResult::Failure(ErrorBody {
-                code: "NOT_FOUND".into(),
-                message: format!("Worker '{}' is not connected.", input.name),
-                stacktrace: None,
-            }),
+            None => FunctionResult::Failure(self.worker_not_found(&input.name, &[])),
         }
     }
 
@@ -1558,7 +1919,36 @@ impl EngineFunctionsWorker {
         input: RegisterWorkerInput,
     ) -> FunctionResult<RegisterWorkerResult, ErrorBody> {
         let worker_id = input.worker_id.clone();
+        let namespace = crate::protocol::effective_namespace(&input.namespace).to_string();
+
+        // One live worker name per namespace. Sanitize the name the same way
+        // `register_worker_metadata` will store it, so the lease key matches what
+        // `cleanup_worker` later releases. A worker that sends no usable name
+        // cannot collide, so it skips the claim.
+        let worker_name = input.name.clone().and_then(sanitize_worker_text);
+        if let Some(worker_name) = &worker_name
+            && let Ok(uuid) = uuid::Uuid::parse_str(&worker_id)
+            && let Err(conflict) = self.engine.claim_worker_name(&namespace, uuid, worker_name)
+        {
+            // Fatal, unlike a function-id conflict: reject and close. Return
+            // before writing any metadata or draining buffered registrations —
+            // the loser leaves no trace.
+            self.engine.reject_worker_registration(uuid, conflict).await;
+            return FunctionResult::Success(RegisterWorkerResult { success: false });
+        }
+
         self.register_worker_metadata(input).await;
+
+        // This call is the only moment the connection's namespace becomes
+        // known. Registrations the worker sent ahead of it are queued on the
+        // connection; release them now, into `namespace`.
+        if let Ok(uuid) = uuid::Uuid::parse_str(&worker_id)
+            && let Some(worker) = self.engine.worker_registry.get_worker(&uuid)
+        {
+            self.engine
+                .resolve_connection_namespace(&worker, &namespace)
+                .await;
+        }
 
         let data = serde_json::json!({
             "event": "worker_metadata_updated",
@@ -1631,6 +2021,10 @@ impl EngineFunctionsWorker {
             config: input.config,
             worker_id: None,
             metadata: input.metadata,
+            // Function-path (durable) registrations are engine orchestration and
+            // resolve their target in the default namespace, matching the
+            // `fire_triggers` behavior they predate.
+            namespace: crate::protocol::default_namespace(),
         };
 
         if let Err(err) = self.engine.trigger_registry.register_trigger(trigger).await {
@@ -1728,6 +2122,7 @@ mod tests {
                 config,
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
     }
@@ -1800,6 +2195,27 @@ mod tests {
         assert!(input.name.is_none());
         assert!(input.os.is_none());
         assert!(input.telemetry.is_none());
+    }
+
+    /// Wire compatibility: a payload from an SDK that predates namespaces has
+    /// no `namespace` key and must still deserialize.
+    #[test]
+    fn register_worker_input_without_namespace_deserializes() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000"
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert!(input.namespace.is_none());
+    }
+
+    #[test]
+    fn register_worker_input_accepts_namespace() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+            "namespace": "orders"
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(input.namespace.as_deref(), Some("orders"));
     }
 
     #[test]
@@ -2021,6 +2437,7 @@ mod tests {
             telemetry: None,
             pid: None,
             isolation: None,
+            namespace: None,
         };
         module.register_worker_metadata(input).await;
     }
@@ -2043,6 +2460,7 @@ mod tests {
             telemetry: None,
             pid: None,
             isolation: Some("libkrun".to_string()),
+            namespace: None,
         };
 
         module.register_worker_metadata(input).await;
@@ -2054,6 +2472,153 @@ mod tests {
         assert_eq!(workers[0].name.as_deref(), Some("my-worker"));
         assert_eq!(workers[0].os.as_deref(), Some("darwin"));
         assert_eq!(workers[0].isolation.as_deref(), Some("libkrun"));
+    }
+
+    fn register_worker_input_with_namespace(
+        worker_id: &str,
+        namespace: Option<String>,
+    ) -> RegisterWorkerInput {
+        RegisterWorkerInput {
+            worker_id: worker_id.to_string(),
+            runtime: Some("node".to_string()),
+            version: None,
+            name: None,
+            description: None,
+            os: None,
+            telemetry: None,
+            pid: None,
+            isolation: None,
+            namespace,
+        }
+    }
+
+    /// End-to-end wire compatibility: a worker that sends no namespace over
+    /// `engine::workers::register` lands in `DEFAULT_NAMESPACE` on the
+    /// connection.
+    #[tokio::test]
+    async fn register_worker_metadata_without_namespace_lands_in_default() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker);
+
+        module
+            .register_worker_metadata(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                None,
+            ))
+            .await;
+
+        assert_eq!(
+            engine.worker_registry.get_namespace(&worker_uuid),
+            crate::protocol::DEFAULT_NAMESPACE
+        );
+    }
+
+    /// The namespace a worker declares reaches its connection, which is what
+    /// every registration and cleanup path resolves against.
+    #[tokio::test]
+    async fn register_worker_metadata_stores_declared_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker);
+
+        module
+            .register_worker_metadata(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                Some("orders".to_string()),
+            ))
+            .await;
+
+        assert_eq!(engine.worker_registry.get_namespace(&worker_uuid), "orders");
+    }
+
+    /// End-to-end: an SDK that flushes `RegisterFunction` before
+    /// `engine::workers::register` still lands its functions in the namespace
+    /// it declares.
+    #[tokio::test]
+    async fn register_worker_drains_buffered_registrations_into_its_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(
+                &worker,
+                &crate::protocol::Message::RegisterFunction {
+                    id: "orders::create".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("buffer register");
+        assert!(engine.functions.get("orders", "orders::create").is_none());
+
+        module
+            .register_worker(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                Some("orders".to_string()),
+            ))
+            .await;
+
+        assert!(engine.functions.get("orders", "orders::create").is_some());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "orders::create")
+                .is_none()
+        );
+    }
+
+    /// A worker that sends `engine::workers::register` with no namespace
+    /// drains into `DEFAULT_NAMESPACE`.
+    #[tokio::test]
+    async fn register_worker_without_a_namespace_drains_into_default() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(
+                &worker,
+                &crate::protocol::Message::RegisterFunction {
+                    id: "legacy::ping".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("buffer register");
+
+        module
+            .register_worker(register_worker_input_with_namespace(
+                &worker_uuid.to_string(),
+                None,
+            ))
+            .await;
+
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "legacy::ping")
+                .is_some()
+        );
     }
 
     // ── TriggerRegistrator implementation tests ─────────────────────────
@@ -2069,6 +2634,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let result = module.register_trigger(trigger.clone()).await;
@@ -2093,6 +2659,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             };
             module.register_trigger(trigger).await.unwrap();
         }
@@ -2112,6 +2679,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -2157,6 +2725,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -2173,12 +2742,79 @@ mod tests {
         assert_eq!(received, data);
     }
 
+    /// BUG 1 on the third fire path: `EngineFunctionsWorker::fire_triggers`
+    /// keeps its own trigger map and dispatches the target. It must resolve in
+    /// the trigger's namespace, not `default` — otherwise a namespaced worker's
+    /// `on_functions_available` callback silently never runs. `test::on_fns`
+    /// exists in both `orders` ("from-orders") and `default` ("from-default");
+    /// the trigger bound in `orders` must fire "from-orders". Reverting either
+    /// dispatch site to `DEFAULT_NAMESPACE` turns this RED.
+    #[tokio::test]
+    async fn engine_functions_worker_fires_trigger_in_its_namespace() {
+        use std::sync::Mutex as StdMutex;
+
+        let (engine, module) = setup_engine_and_module();
+
+        let fired: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
+            let fired = fired.clone();
+            engine.register_function_handler_ns(
+                ns,
+                crate::engine::RegisterFunctionRequest {
+                    function_id: "test::on_fns".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                crate::engine::Handler::new(move |_input: Value| {
+                    let fired = fired.clone();
+                    async move {
+                        fired.lock().unwrap().push(tag.to_string());
+                        FunctionResult::Success(None)
+                    }
+                }),
+            );
+        }
+
+        module
+            .register_trigger(crate::trigger::Trigger {
+                id: "trig-fns-orders".to_string(),
+                trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
+                function_id: "test::on_fns".to_string(),
+                config: serde_json::json!({}),
+                worker_id: None,
+                metadata: None,
+                namespace: "orders".to_string(),
+            })
+            .await
+            .unwrap();
+
+        module
+            .fire_triggers(
+                TRIGGER_FUNCTIONS_AVAILABLE,
+                serde_json::json!({"event": "fns"}),
+            )
+            .await;
+
+        // fire_triggers spawns the dispatch; give it a moment to run.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let fired = fired.lock().unwrap().clone();
+        assert_eq!(
+            fired,
+            vec!["from-orders".to_string()],
+            "the orders-bound functions-available trigger must fire the orders target; got: {fired:?}"
+        );
+    }
+
     // ── Serialization tests ─────────────────────────────────────────────
 
     #[test]
     fn function_summary_serializes() {
         let summary = FunctionSummary {
             function_id: "my::func".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             worker_name: "my".to_string(),
             description: Some("desc".to_string()),
             metadata: None,
@@ -2193,6 +2829,7 @@ mod tests {
     fn function_summary_omits_null_description() {
         let summary = FunctionSummary {
             function_id: "my::func".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             worker_name: "my".to_string(),
             description: None,
             metadata: None,
@@ -2206,6 +2843,7 @@ mod tests {
         // None metadata is omitted from the wire (skip_serializing_if).
         let without = FunctionSummary {
             function_id: "my::func".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             worker_name: "my".to_string(),
             description: None,
             metadata: None,
@@ -2219,6 +2857,7 @@ mod tests {
         // Some metadata is surfaced so callers can distinguish internal handlers.
         let with = FunctionSummary {
             function_id: "my::on-config-change".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             worker_name: "my".to_string(),
             description: None,
             metadata: Some(serde_json::json!({ "internal": true })),
@@ -2273,6 +2912,7 @@ mod tests {
             description: None,
             version: Some("0.4.0".to_string()),
             id: "w-abc".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             runtime: Some("rust".to_string()),
             os: Some("darwin".to_string()),
             status: "connected".to_string(),
@@ -2648,6 +3288,7 @@ mod tests {
                 FunctionInfoInput {
                     function_id: Some("test::detailed".to_string()),
                     function_ids: None,
+                    namespace: None,
                 },
                 None,
             )
@@ -2682,6 +3323,7 @@ mod tests {
                 FunctionInfoInput {
                     function_id: Some("does::not::exist".to_string()),
                     function_ids: None,
+                    namespace: None,
                 },
                 None,
             )
@@ -2720,6 +3362,7 @@ mod tests {
                         "does::not::exist".to_string(),
                         "test::batched".to_string(),
                     ]),
+                    namespace: None,
                 },
                 None,
             )
@@ -2749,18 +3392,22 @@ mod tests {
             FunctionInfoInput {
                 function_id: Some("a::b".to_string()),
                 function_ids: Some(vec!["a::b".to_string()]),
+                namespace: None,
             },
             FunctionInfoInput {
                 function_id: None,
                 function_ids: None,
+                namespace: None,
             },
             FunctionInfoInput {
                 function_id: None,
                 function_ids: Some(vec![]),
+                namespace: None,
             },
             FunctionInfoInput {
                 function_id: None,
                 function_ids: Some((0..33).map(|i| format!("f::{i}")).collect()),
+                namespace: None,
             },
         ] {
             match module.functions_info(input, None).await {
@@ -3163,6 +3810,71 @@ mod tests {
         }
     }
 
+    /// In-process (runtime) workers never declare a namespace — they register
+    /// into `default`. Their `engine::workers::list` row must say so rather
+    /// than carry a blank or a foreign namespace.
+    #[tokio::test]
+    async fn workers_list_reports_default_namespace_for_runtime_workers() {
+        let (engine, module) = setup_engine_and_module();
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            description: None,
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string()],
+            internal: false,
+        });
+
+        match module.workers_list(WorkersListInput::default()).await {
+            FunctionResult::Success(result) => {
+                let worker = result
+                    .workers
+                    .iter()
+                    .find(|w| w.name.as_deref() == Some("iii-state"))
+                    .expect("runtime worker must be listed");
+                assert_eq!(worker.namespace, crate::protocol::DEFAULT_NAMESPACE);
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    /// `engine::workers::info` denormalizes the worker's functions as
+    /// `FunctionSummary` rows; those must report the namespace they were looked
+    /// up in, consistently with `engine::functions::list`.
+    #[tokio::test]
+    async fn workers_info_function_rows_report_their_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
+            id: "iii-state".to_string(),
+            name: "iii-state".to_string(),
+            description: None,
+            worker_type: "iii-state".to_string(),
+            connected_at: chrono::Utc::now(),
+            function_ids: vec!["state::get".to_string()],
+            internal: false,
+        });
+        register_simple_function(&engine, "state::get", None);
+
+        match module
+            .workers_info(WorkerInfoInput {
+                name: "iii-state".to_string(),
+                namespace: None,
+            })
+            .await
+        {
+            FunctionResult::Success(result) => {
+                let function = result
+                    .functions
+                    .iter()
+                    .find(|f| f.function_id == "state::get")
+                    .expect("state::get must be listed");
+                assert_eq!(function.namespace, crate::protocol::DEFAULT_NAMESPACE);
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
     #[tokio::test]
     async fn workers_info_returns_full_surface() {
         let (engine, module) = setup_engine_and_module();
@@ -3188,6 +3900,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "iii-state".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3235,6 +3948,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let tt = crate::trigger::TriggerType::new(
             "worker",
@@ -3251,6 +3965,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "ops-worker".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3323,6 +4038,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let tt = crate::trigger::TriggerType::new(
             "foreign",
@@ -3339,6 +4055,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "ops-worker".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3358,6 +4075,7 @@ mod tests {
         let result = module
             .workers_info(WorkerInfoInput {
                 name: "nope".to_string(),
+                namespace: None,
             })
             .await;
         assert!(matches!(result, FunctionResult::Failure(_)));
@@ -3387,6 +4105,7 @@ mod tests {
             Some("linux".to_string()),
             None,
             Some(4242),
+            None,
             None,
         );
 
@@ -3431,6 +4150,7 @@ mod tests {
         let info_result = module
             .workers_info(WorkerInfoInput {
                 name: "named-worker".to_string(),
+                namespace: None,
             })
             .await;
         match info_result {
@@ -3480,6 +4200,7 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             },
         );
 
@@ -3499,6 +4220,7 @@ mod tests {
                 telemetry: None,
                 pid: None,
                 isolation: None,
+                namespace: None,
             })
             .await;
         assert!(matches!(

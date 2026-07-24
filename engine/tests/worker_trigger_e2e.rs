@@ -29,6 +29,18 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
 use iii_worker::cli::app::WorkerManagerDaemonArgs;
 use iii_worker::cli::worker_manager_daemon;
 use serde_json::{Value, json};
+
+/// `InitOptions` carrying an explicit worker name, so two clients in one process
+/// do not collide on the default `hostname:pid` name.
+fn named_worker(name: &str) -> InitOptions {
+    InitOptions {
+        metadata: Some(iii_sdk::iii::WorkerMetadata {
+            name: name.to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
 use serial_test::serial;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -199,6 +211,7 @@ fn register_subscriber(iii: &IIIClient, function_id: &str, filter: Value) -> Sub
         function_id: function_id.to_string(),
         config: filter,
         metadata: None,
+        namespace: None,
     })
     .expect("register worker trigger");
     Subscriber { rx }
@@ -315,7 +328,10 @@ async fn worker_trigger_fires_add_lifecycle_events_to_subscribers() {
     //    `engine::functions::list`. This proves the daemon connected,
     //    registered its trigger type, and registered every `worker::*`
     //    function — i.e. the trigger surface is ready to drive.
-    let probe = register_worker(&ws_url, InitOptions::default());
+    // Two III clients live in this one process; under "one live worker name per
+    // namespace" they must not share the default `hostname:pid` name, or the
+    // second is rejected and hung up on. Give each an explicit distinct name.
+    let probe = register_worker(&ws_url, named_worker("trigger-e2e-probe"));
     wait_for_worker_add_function(&probe).await;
 
     // 7. Subscriber + driver share one III client. Three subscriptions
@@ -325,7 +341,7 @@ async fn worker_trigger_fires_add_lifecycle_events_to_subscribers() {
     //    - `downloaded_subscriber` (stages:["downloaded"]) sees exactly
     //      one event.
     //    - `remove_subscriber` (operations:["remove"]) sees zero events.
-    let test_client = register_worker(&ws_url, InitOptions::default());
+    let test_client = register_worker(&ws_url, named_worker("trigger-e2e-driver"));
 
     let mut add_subscriber = register_subscriber(
         &test_client,

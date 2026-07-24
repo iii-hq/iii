@@ -21,6 +21,7 @@ class MessageType(str, Enum):
     UNREGISTER_TRIGGER_TYPE = "unregistertriggertype"
     TRIGGER_REGISTRATION_RESULT = "triggerregistrationresult"
     WORKER_REGISTERED = "workerregistered"
+    REGISTRATION_REJECTED = "registrationrejected"
     REATTACH = "reattach"
 
 
@@ -106,6 +107,13 @@ class RegisterTriggerInput(BaseModel):
             "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
         ),
     )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Namespace the trigger's target function resolves in. Omit for the engine's "
+            "default namespace, independent of this connection's namespace."
+        ),
+    )
 
 
 class RegisterTriggerMessage(BaseModel):
@@ -116,6 +124,7 @@ class RegisterTriggerMessage(BaseModel):
     function_id: str = Field()
     config: Any
     metadata: Any | None = Field(default=None)
+    namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
 
 
@@ -216,6 +225,9 @@ class MiddlewareFunctionInput(BaseModel):
         payload: Payload sent by the caller.
         action: Routing action, if any.
         context: Auth context returned by the auth function for this session.
+        namespace: Target namespace the invoke addressed; forward the call here
+            to stay in the caller's namespace. Absent -> the engine's default
+            namespace.
     """
 
     function_id: str = Field(description="ID of the function being invoked.")
@@ -225,6 +237,14 @@ class MiddlewareFunctionInput(BaseModel):
     )
     context: dict[str, Any] = Field(
         description="Auth context returned by the auth function for this session.",
+    )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Target namespace the invoke addressed; forward the call here to "
+            "stay in the caller's namespace. Absent -> the engine's default "
+            "namespace."
+        ),
     )
 
 
@@ -240,6 +260,8 @@ class TriggerRequest(BaseModel):
         timeout_ms: Override the default invocation timeout, in milliseconds.
         metadata: Arbitrary user-specifiable metadata supplied to the triggered
             handler function on every invocation.
+        namespace: Target namespace for routing. Omit to resolve in the engine's
+            default namespace.
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
@@ -261,6 +283,12 @@ class TriggerRequest(BaseModel):
             "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
         ),
     )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Target namespace for routing. Omit to resolve in the engine's default namespace."
+        ),
+    )
 
 
 class InvokeFunctionMessage(BaseModel):
@@ -273,6 +301,7 @@ class InvokeFunctionMessage(BaseModel):
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
     action: TriggerActionEnqueue | TriggerActionVoid | None = Field(default=None)
+    namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.INVOKE_FUNCTION, alias="type")
 
 

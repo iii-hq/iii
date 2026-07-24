@@ -134,7 +134,10 @@ impl Worker for StateWorker {
         if self
             .engine
             .functions
-            .get(configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -501,8 +504,13 @@ impl StateWorker {
                                 condition_function_id = %condition_id,
                                 "Checking trigger conditions"
                             );
-                            match check_condition(engine.as_ref(), condition_id, event_data.clone())
-                                .await
+                            match check_condition(
+                                engine.as_ref(),
+                                &trigger.trigger.namespace,
+                                condition_id,
+                                event_data.clone(),
+                            )
+                            .await
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
@@ -531,7 +539,8 @@ impl StateWorker {
                         );
 
                         let call_result = engine
-                            .call_with_metadata(
+                            .call_with_metadata_ns(
+                                &trigger.trigger.namespace,
                                 &trigger.trigger.function_id,
                                 event_data.clone(),
                                 trigger.trigger.metadata.clone(),
@@ -976,6 +985,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
             trigger.config.clone(),
@@ -1099,6 +1109,114 @@ mod tests {
             crate::engine::Handler::new(|_input: Value| async move {
                 panic!("handler should not be called")
             }),
+        );
+    }
+
+    /// Registers a handler under `function_id` in `namespace` that records `tag`
+    /// into `recorder` when invoked.
+    fn register_recording_handler(
+        engine: &Arc<Engine>,
+        namespace: &str,
+        function_id: &str,
+        tag: &'static str,
+        recorder: Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        engine.register_function_handler_ns(
+            namespace,
+            crate::engine::RegisterFunctionRequest {
+                function_id: function_id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(move |_input: Value| {
+                let recorder = recorder.clone();
+                async move {
+                    recorder.lock().unwrap().push(tag.to_string());
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+    }
+
+    /// BUG 1 (real-user path): a namespaced worker's state trigger must fire the
+    /// target — and evaluate its condition — in the REGISTERING worker's
+    /// namespace, not `default`. Two workers register the same id `state::react`
+    /// ("from-orders" in `orders`, "from-default" in `default`); the `orders`
+    /// trigger must fire "from-orders". The condition `state::cond` exists ONLY
+    /// in `orders`, so if the condition dispatch resolves in `default` it is
+    /// not-found → handler skipped → nothing fires (also RED). Drives the real
+    /// mechanism: `module.set` → `invoke_triggers`.
+    #[tokio::test]
+    async fn state_trigger_fires_target_and_condition_in_registering_namespace() {
+        use super::super::trigger::{StateTrigger, StateTriggerConfig};
+        let (engine, module) = setup();
+
+        let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        register_recording_handler(
+            &engine,
+            "orders",
+            "state::react",
+            "from-orders",
+            fired.clone(),
+        );
+        register_recording_handler(
+            &engine,
+            crate::protocol::DEFAULT_NAMESPACE,
+            "state::react",
+            "from-default",
+            fired.clone(),
+        );
+
+        // Condition lives ONLY in `orders`; returns true (proceed).
+        engine.register_function_handler_ns(
+            "orders",
+            crate::engine::RegisterFunctionRequest {
+                function_id: "state::cond".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(|_input: Value| async move {
+                FunctionResult::Success(Some(serde_json::json!(true)))
+            }),
+        );
+
+        let trigger = crate::trigger::Trigger {
+            id: "state-ns-trig".to_string(),
+            trigger_type: "state".to_string(),
+            function_id: "state::react".to_string(),
+            config: serde_json::json!({ "condition_function_id": "state::cond" }),
+            worker_id: None,
+            metadata: None,
+            namespace: "orders".to_string(),
+        };
+        let config = serde_json::from_value::<StateTriggerConfig>(trigger.config.clone()).unwrap();
+        module
+            .triggers
+            .list
+            .write()
+            .await
+            .insert(trigger.id.clone(), StateTrigger { config, trigger });
+
+        module
+            .set(StateSetInput {
+                scope: "s".to_string(),
+                key: "k".to_string(),
+                value: serde_json::json!(1),
+            })
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let fired = fired.lock().unwrap().clone();
+        assert_eq!(
+            fired,
+            vec!["from-orders".to_string()],
+            "the orders state trigger must fire the orders target via its orders condition, \
+             not the default worker's same-named function"
         );
     }
 
@@ -1312,6 +1430,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         {
@@ -1361,6 +1480,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         {
@@ -1427,6 +1547,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         {
@@ -1677,6 +1798,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
@@ -1759,6 +1881,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
@@ -1816,6 +1939,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(

@@ -2,7 +2,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { registerWorker } from '../src/iii'
+import { registerWorker, TriggerAction } from '../src/iii'
+import { MessageType } from '../src/iii-types'
 
 type InternalSdk = {
   trigger: ReturnType<typeof vi.fn>
@@ -192,5 +193,174 @@ describe('registerWorkerMetadata — project_name auto-detection', () => {
 
     const call = sdk.trigger.mock.calls[0][0]
     expect(call.payload.telemetry.project_name).toBe('explicit-override')
+  })
+})
+
+describe('registerWorkerMetadata — namespace', () => {
+  let previous: string | undefined
+
+  beforeEach(() => {
+    previous = process.env.III_NAMESPACE
+    delete process.env.III_NAMESPACE
+  })
+
+  afterEach(() => {
+    if (previous === undefined) {
+      delete process.env.III_NAMESPACE
+    } else {
+      process.env.III_NAMESPACE = previous
+    }
+  })
+
+  it('forwards the III_NAMESPACE value into the payload', () => {
+    process.env.III_NAMESPACE = 'orders'
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect(call.payload.namespace).toBe('orders')
+  })
+
+  it('explicit namespace option wins over III_NAMESPACE', () => {
+    process.env.III_NAMESPACE = 'orders'
+    const sdk = registerWorker('ws://127.0.0.1:0', {
+      namespace: 'payments',
+    }) as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect(call.payload.namespace).toBe('payments')
+  })
+
+  it('omits namespace when neither option nor III_NAMESPACE is set', () => {
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect('namespace' in call.payload).toBe(false)
+  })
+
+  it('ignores an empty III_NAMESPACE', () => {
+    process.env.III_NAMESPACE = ''
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
+    sdk.trigger = vi.fn()
+
+    sdk.registerWorkerMetadata()
+
+    const call = sdk.trigger.mock.calls[0][0]
+    expect('namespace' in call.payload).toBe(false)
+  })
+})
+
+describe('trigger — namespace targeting', () => {
+  type TriggerSdk = {
+    trigger: (req: {
+      function_id: string
+      payload: unknown
+      action?: unknown
+      namespace?: string
+    }) => Promise<unknown>
+    messagesToSend: Record<string, unknown>[]
+  }
+
+  it('serializes namespace into the InvokeFunction message', () => {
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as TriggerSdk
+
+    sdk.trigger({
+      function_id: 'orders::get',
+      payload: { id: 1 },
+      action: TriggerAction.Void(),
+      namespace: 'orders',
+    })
+
+    const invoke = sdk.messagesToSend.find((m) => m.type === MessageType.InvokeFunction)
+    expect(invoke?.namespace).toBe('orders')
+  })
+
+  it('omits namespace from the InvokeFunction message when not provided', () => {
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as TriggerSdk
+
+    sdk.trigger({
+      function_id: 'orders::get',
+      payload: { id: 1 },
+      action: TriggerAction.Void(),
+    })
+
+    const invoke = sdk.messagesToSend.find((m) => m.type === MessageType.InvokeFunction)
+    expect(invoke).toBeDefined()
+    expect('namespace' in (invoke as object)).toBe(false)
+  })
+})
+
+describe('registrationrejected — code decides severity', () => {
+  type RejectableSdk = {
+    trigger: (req: { function_id: string; payload: unknown; timeoutMs?: number }) => Promise<unknown>
+    onMessage: (data: string) => void
+    isShuttingDown: boolean
+    connectionState: string
+  }
+
+  it('WORKER_NAMESPACE_CONFLICT is fatal: rejects pending invocations, stops, no reconnect', async () => {
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as RejectableSdk
+
+    const pending = sdk.trigger({ function_id: 'orders::get', payload: {}, timeoutMs: 5000 })
+
+    sdk.onMessage(
+      JSON.stringify({
+        type: 'registrationrejected',
+        code: 'WORKER_NAMESPACE_CONFLICT',
+        namespace: 'orders',
+        worker_name: 'w1',
+        owner_worker_id: 'abc',
+      }),
+    )
+
+    await expect(pending).rejects.toThrow(/WORKER_NAMESPACE_CONFLICT/)
+    expect(sdk.isShuttingDown).toBe(true)
+    expect(sdk.connectionState).toBe('failed')
+  })
+
+  it('FUNCTION_NAMESPACE_CONFLICT is non-fatal: worker keeps serving, no shutdown, no reconnect disable', async () => {
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as RejectableSdk
+
+    // An in-flight invocation for a *different*, valid function.
+    const pending = sdk.trigger({ function_id: 'orders::list', payload: {}, timeoutMs: 5000 })
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+
+    sdk.onMessage(
+      JSON.stringify({
+        type: 'registrationrejected',
+        code: 'FUNCTION_NAMESPACE_CONFLICT',
+        namespace: 'orders',
+        // For the FUNCTION case worker_name carries the contested function id.
+        worker_name: 'orders::get',
+        owner_worker_id: 'abc',
+      }),
+    )
+
+    // Let any queued microtasks/timers flush.
+    await Promise.resolve()
+
+    // The worker is still alive: not shutting down (so reconnect stays enabled --
+    // scheduleReconnect only bails when isShuttingDown), the connection is not
+    // marked failed, and the in-flight invocation for the *other* function is
+    // untouched and still serving.
+    expect(sdk.isShuttingDown).toBe(false)
+    expect(sdk.connectionState).not.toBe('failed')
+    expect(settled).toBe(false)
   })
 })

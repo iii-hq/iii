@@ -169,6 +169,8 @@ async fn main() -> Result<()> {
             }),
             otel: otel_config,
             headers: None,
+            // Resolved from III_NAMESPACE by the SDK when unset.
+            namespace: None,
         },
     );
 

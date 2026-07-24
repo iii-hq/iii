@@ -34,7 +34,11 @@ describe('Trigger fault tolerance (deferred registration)', () => {
       bindings.set(cfg.id, cfg)
     })
 
+    // Named off the per-test trigger type id: unique against every other live
+    // worker, yet stable across this test's provider restart — the restarted
+    // provider is meant to be the same identity coming back.
     const sdk = registerWorker(engineWsUrl, {
+      workerName: `${triggerTypeId}::provider`,
       reconnectionConfig: { maxRetries: 3, initialDelayMs: 100, maxDelayMs: 1000 },
     })
     clients.push(sdk)
@@ -74,6 +78,7 @@ describe('Trigger fault tolerance (deferred registration)', () => {
   ): { sdk: IIIClient; handlerSpy: ReturnType<typeof vi.fn> } {
     const handlerSpy = vi.fn(async (payload: Record<string, unknown>) => ({ ok: true, payload }))
     const sdk = registerWorker(engineWsUrl, {
+      workerName: `${triggerTypeId}::consumer`,
       reconnectionConfig: { maxRetries: 3, initialDelayMs: 100, maxDelayMs: 1000 },
     })
     clients.push(sdk)

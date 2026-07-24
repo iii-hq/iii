@@ -187,6 +187,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         module
@@ -223,6 +224,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let error = module

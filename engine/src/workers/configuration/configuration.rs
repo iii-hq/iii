@@ -204,8 +204,13 @@ impl ConfigurationWorker {
                     }
 
                     if let Some(condition_id) = trigger.config.condition_function_id.as_ref() {
-                        match check_condition(engine.as_ref(), condition_id, event_value.clone())
-                            .await
+                        match check_condition(
+                            engine.as_ref(),
+                            &trigger.trigger.namespace,
+                            condition_id,
+                            event_value.clone(),
+                        )
+                        .await
                         {
                             Ok(true) => {}
                             Ok(false) => {
@@ -227,7 +232,8 @@ impl ConfigurationWorker {
                     }
 
                     if let Err(err) = engine
-                        .call_with_metadata(
+                        .call_with_metadata_ns(
+                            &trigger.trigger.namespace,
                             &trigger.trigger.function_id,
                             event_value.clone(),
                             trigger.trigger.metadata.clone(),

@@ -13,6 +13,18 @@ pub fn error_response(error: Error) -> Value {
         Error::Serde(msg) => (500, format!("Serialization error: {}", msg)),
         Error::WebSocket(msg) => (503, format!("WebSocket error: {}", msg)),
         Error::Runtime(msg) => (500, format!("Runtime error: {}", msg)),
+        Error::RegistrationRejected {
+            code,
+            namespace,
+            worker_name,
+            owner_worker_id,
+        } => (
+            409,
+            format!(
+                "Registration rejected ({}): worker '{}' in namespace '{}' is already owned by '{}'",
+                code, worker_name, namespace, owner_worker_id
+            ),
+        ),
     };
 
     json!({

@@ -70,6 +70,10 @@ pub struct InitOptions {
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
     pub otel: Option<iii_helpers::observability::OtelConfig>,
+    /// Namespace this worker registers under. Resolution order:
+    /// `namespace` > env `III_NAMESPACE` > `None` (the engine then applies its
+    /// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+    pub namespace: Option<String>,
 }
 
 /// Register the worker with a iii instance, returns a connected worker client.
@@ -98,6 +102,7 @@ pub fn register_worker(address: &str, options: InitOptions) -> IIIClient {
         metadata,
         headers,
         otel,
+        namespace,
     } = options;
 
     let iii = if let Some(metadata) = metadata {
@@ -105,6 +110,11 @@ pub fn register_worker(address: &str, options: InitOptions) -> IIIClient {
     } else {
         IIIClient::new(address)
     };
+
+    // options.namespace > III_NAMESPACE > None (engine applies its default).
+    if let Some(ns) = iii::resolve_namespace(namespace) {
+        iii.set_namespace(ns);
+    }
 
     if let Some(h) = headers {
         iii.set_headers(h);

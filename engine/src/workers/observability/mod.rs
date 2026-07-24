@@ -3260,7 +3260,10 @@ impl Worker for ObservabilityWorker {
         if self
             .engine
             .functions
-            .get(configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -3654,6 +3657,7 @@ mod tests {
                 config: serde_json::json!({ "level": "all" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
             guard.insert(Trigger {
                 id: "t-error".to_string(),
@@ -3662,6 +3666,7 @@ mod tests {
                 config: serde_json::json!({ "level": "error" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
         }
 

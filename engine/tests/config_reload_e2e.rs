@@ -259,7 +259,10 @@ async fn config_reload_removes_worker_function_registrations() {
 
     // Sanity: the worker's function must be present after build().
     assert!(
-        engine.functions.get(TEST_EPHEMERAL_FUNCTION_ID).is_some(),
+        engine
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, TEST_EPHEMERAL_FUNCTION_ID)
+            .is_some(),
         "expected '{}' to be registered after build()",
         TEST_EPHEMERAL_FUNCTION_ID
     );
@@ -280,7 +283,10 @@ async fn config_reload_removes_worker_function_registrations() {
     );
 
     assert!(
-        engine.functions.get(TEST_EPHEMERAL_FUNCTION_ID).is_none(),
+        engine
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, TEST_EPHEMERAL_FUNCTION_ID)
+            .is_none(),
         "expected '{}' to be removed from engine.functions after reload",
         TEST_EPHEMERAL_FUNCTION_ID
     );

@@ -194,6 +194,7 @@ mod tests {
             config,
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         }
     }
 

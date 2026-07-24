@@ -84,9 +84,30 @@ async fn wait_handler_calls(state: &LifecycleState, at_least: usize) {
     panic!("timed out waiting for handler invocations");
 }
 
+/// Named worker options.
+///
+/// Provider and consumer are connected at the same time, so the SDK's default
+/// `{hostname}:{pid}` name would put both in the same
+/// `(namespace, worker_name)` lease — the engine fatally rejects the second
+/// claimant. The names are stable per role: `provider_reconnect_rebinds_trigger`
+/// re-creates the provider under the same identity after shutting the first one
+/// down, which is the reconnect the test is asserting.
+fn named_options(worker_name: &str) -> InitOptions {
+    InitOptions {
+        metadata: Some(iii_sdk::runtime::WorkerMetadata {
+            name: worker_name.to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 async fn create_provider(state: &LifecycleState) -> iii_sdk::IIIClient {
     let handler_state = state.clone();
-    let iii = register_worker(&common::engine_ws_url(), InitOptions::default());
+    let iii = register_worker(
+        &common::engine_ws_url(),
+        named_options("rust-sdk-lifecycle-provider"),
+    );
     wait_connected(&iii).await;
 
     let fire_state = state.clone();
@@ -127,7 +148,10 @@ async fn create_provider(state: &LifecycleState) -> iii_sdk::IIIClient {
 
 async fn create_consumer(state: &LifecycleState) -> iii_sdk::IIIClient {
     let handler_state = state.clone();
-    let iii = register_worker(&common::engine_ws_url(), InitOptions::default());
+    let iii = register_worker(
+        &common::engine_ws_url(),
+        named_options("rust-sdk-lifecycle-consumer"),
+    );
     wait_connected(&iii).await;
 
     iii.register_function(
@@ -146,6 +170,7 @@ async fn create_consumer(state: &LifecycleState) -> iii_sdk::IIIClient {
         function_id: CONSUMER_FN.to_string(),
         config: json!({ "tag": "test" }),
         metadata: None,
+        namespace: None,
     })
     .expect("register trigger");
 

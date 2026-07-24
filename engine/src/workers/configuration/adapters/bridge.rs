@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
+use iii_sdk::{IIIClient, RegisterFunction, register_worker};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -54,7 +54,10 @@ impl BridgeAdapter {
             bridge_url = %bridge_url,
             "Connecting configuration bridge to remote engine"
         );
-        let bridge = Arc::new(register_worker(&bridge_url, InitOptions::default()));
+        let bridge = Arc::new(register_worker(
+            &bridge_url,
+            crate::workers::bridge_client::bridge_init_options("iii-configuration-bridge"),
+        ));
         Ok(Self {
             bridge,
             relay_trigger: Mutex::new(None),
@@ -278,6 +281,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                 function_id: RELAY_FUNCTION_ID.to_string(),
                 config: serde_json::json!({}),
                 metadata: None,
+                namespace: None,
             })
             .map_err(|e| {
                 anyhow::anyhow!("failed to subscribe to remote configuration trigger: {}", e)

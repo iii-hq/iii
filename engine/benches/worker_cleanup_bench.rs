@@ -61,8 +61,9 @@ async fn simulate_cleanup(
     // Step 1: Read function_ids, remove each function and service
     let function_ids: Vec<String> = worker.function_ids.read().await.iter().cloned().collect();
     for function_id in &function_ids {
-        functions.remove(function_id);
-        service_registry.remove_function_from_services(function_id);
+        functions.remove(iii::protocol::DEFAULT_NAMESPACE, function_id);
+        service_registry
+            .remove_function_from_services(iii::protocol::DEFAULT_NAMESPACE, function_id);
     }
 
     // Step 2: Read invocations, halt each.
@@ -116,7 +117,10 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                                 tokio::runtime::Handle::current()
                                     .block_on(worker.include_function_id(&function_id));
                             });
-                            service_registry.register_service_from_function_id(&function_id);
+                            service_registry.register_service_from_function_id(
+                                iii::protocol::DEFAULT_NAMESPACE,
+                                &function_id,
+                            );
                         }
 
                         worker_registry.register_worker(worker.clone());
@@ -254,6 +258,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                                             config: serde_json::json!({}),
                                             worker_id: Some(worker.id),
                                             metadata: None,
+                                            namespace: "default".to_string(),
                                         })
                                         .await
                                         .expect("register trigger");

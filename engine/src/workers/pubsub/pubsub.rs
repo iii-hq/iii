@@ -270,7 +270,10 @@ impl Worker for PubSubWorker {
         if self
             .engine
             .functions
-            .get(configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -687,6 +690,7 @@ mod tests {
             config: json!({ "topic": "orders" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         module
@@ -726,6 +730,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger without topic");
@@ -851,6 +856,7 @@ mod tests {
                 config: json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register subscribe trigger");
@@ -880,6 +886,7 @@ mod tests {
                 config: json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register subscribe trigger");

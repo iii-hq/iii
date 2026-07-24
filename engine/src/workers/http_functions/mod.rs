@@ -33,7 +33,12 @@ type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, E
 pub struct HttpFunctionsWorker {
     engine: Arc<Engine>,
     http_invoker: Arc<HttpInvoker>,
-    http_functions: Arc<DashMap<String, HttpFunctionConfig>>,
+    /// Keyed by `(namespace, function_path)`, matching `FunctionsRegistry`.
+    /// The same function id may legitimately be exported by workers in two
+    /// different namespaces; a bare-path key would let the second registration
+    /// clobber the first's config, and the first worker's unregister would then
+    /// drop the survivor's entry.
+    http_functions: Arc<DashMap<(String, String), HttpFunctionConfig>>,
     #[allow(dead_code)]
     config: HttpFunctionsConfig,
 }
@@ -86,8 +91,16 @@ impl HttpFunctionsWorker {
         })
     }
 
+    /// Registers an HTTP-invocation function into `namespace`.
+    ///
+    /// `namespace` must be the effective namespace of the connection that sent
+    /// the `RegisterFunction` (`Engine::connection_namespace`). It is not a
+    /// decoration: the service registry, `external_function_owners`, the
+    /// unregister path and invoke-time resolution are all keyed by it, so a
+    /// registration written anywhere else is unreachable and un-removable.
     pub async fn register_http_function(
         &self,
+        namespace: &str,
         config: HttpFunctionConfig,
     ) -> Result<(), ErrorBody> {
         self.http_invoker
@@ -104,7 +117,8 @@ impl HttpFunctionsWorker {
 
         let handler = self.create_handler_wrapper(config.clone(), auth);
 
-        self.engine.register_function_handler(
+        self.engine.register_function_handler_ns(
+            namespace,
             RegisterFunctionRequest {
                 function_id: config.function_path.clone(),
                 description: config.description.clone(),
@@ -115,15 +129,24 @@ impl HttpFunctionsWorker {
             handler,
         );
 
-        self.http_functions
-            .insert(config.function_path.clone(), config);
+        self.http_functions.insert(
+            (namespace.to_string(), config.function_path.clone()),
+            config,
+        );
 
         Ok(())
     }
 
-    pub async fn unregister_http_function(&self, function_path: &str) -> Result<(), ErrorBody> {
-        self.http_functions.remove(function_path);
-        self.engine.functions.remove(function_path);
+    /// Removes an HTTP-invocation function from `namespace`. Must be given the
+    /// same namespace [`Self::register_http_function`] wrote to.
+    pub async fn unregister_http_function(
+        &self,
+        namespace: &str,
+        function_path: &str,
+    ) -> Result<(), ErrorBody> {
+        self.http_functions
+            .remove(&(namespace.to_string(), function_path.to_string()));
+        self.engine.functions.remove(namespace, function_path);
         Ok(())
     }
 
@@ -131,7 +154,7 @@ impl HttpFunctionsWorker {
         &self.http_invoker
     }
 
-    pub fn http_functions(&self) -> &Arc<DashMap<String, HttpFunctionConfig>> {
+    pub fn http_functions(&self) -> &Arc<DashMap<(String, String), HttpFunctionConfig>> {
         &self.http_functions
     }
 }
@@ -372,11 +395,19 @@ mod tests {
             .insert("x-custom".to_string(), "present".to_string());
 
         module
-            .register_http_function(config.clone())
+            .register_http_function(crate::protocol::DEFAULT_NAMESPACE, config.clone())
             .await
             .expect("register http function");
-        assert!(module.http_functions.contains_key("remote.echo"));
-        assert!(engine.functions.get("remote.echo").is_some());
+        assert!(module.http_functions.contains_key(&(
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "remote.echo".to_string()
+        )));
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "remote.echo")
+                .is_some()
+        );
 
         let result = engine
             .call("remote.echo", json!({ "hello": "world" }))
@@ -397,11 +428,19 @@ mod tests {
         }
 
         module
-            .unregister_http_function("remote.echo")
+            .unregister_http_function(crate::protocol::DEFAULT_NAMESPACE, "remote.echo")
             .await
             .expect("unregister http function");
-        assert!(!module.http_functions.contains_key("remote.echo"));
-        assert!(engine.functions.get("remote.echo").is_none());
+        assert!(!module.http_functions.contains_key(&(
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "remote.echo".to_string()
+        )));
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "remote.echo")
+                .is_none()
+        );
 
         server.abort();
     }
@@ -414,10 +453,10 @@ mod tests {
         let (base_url, _capture, server) = spawn_http_server().await;
 
         module
-            .register_http_function(make_function_config(
-                "remote.invalid",
-                format!("{base_url}/invalid"),
-            ))
+            .register_http_function(
+                crate::protocol::DEFAULT_NAMESPACE,
+                make_function_config("remote.invalid", format!("{base_url}/invalid")),
+            )
             .await
             .expect("register invalid response function");
         let invalid_result = engine.call("remote.invalid", json!({ "test": true })).await;
@@ -427,10 +466,10 @@ mod tests {
         }
 
         module
-            .register_http_function(make_function_config(
-                "remote.error",
-                format!("{base_url}/error"),
-            ))
+            .register_http_function(
+                crate::protocol::DEFAULT_NAMESPACE,
+                make_function_config("remote.error", format!("{base_url}/error")),
+            )
             .await
             .expect("register upstream error function");
         let error_result = engine.call("remote.error", json!({ "test": true })).await;
@@ -443,10 +482,10 @@ mod tests {
         }
 
         module
-            .register_http_function(make_function_config(
-                "remote.empty",
-                format!("{base_url}/empty"),
-            ))
+            .register_http_function(
+                crate::protocol::DEFAULT_NAMESPACE,
+                make_function_config("remote.empty", format!("{base_url}/empty")),
+            )
             .await
             .expect("register empty response function");
         let empty_result = engine
@@ -465,14 +504,20 @@ mod tests {
         let module = build_module(engine);
 
         let result = module
-            .register_http_function(make_function_config("remote.bad", "://bad-url".to_string()))
+            .register_http_function(
+                crate::protocol::DEFAULT_NAMESPACE,
+                make_function_config("remote.bad", "://bad-url".to_string()),
+            )
             .await;
 
         match result {
             Err(err) => assert_eq!(err.code, "url_validation_failed"),
             _ => panic!("expected url validation failure"),
         }
-        assert!(!module.http_functions.contains_key("remote.bad"));
+        assert!(!module.http_functions.contains_key(&(
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "remote.bad".to_string()
+        )));
     }
 
     #[tokio::test]
@@ -492,7 +537,7 @@ mod tests {
         });
 
         module
-            .register_http_function(config)
+            .register_http_function(crate::protocol::DEFAULT_NAMESPACE, config)
             .await
             .expect("register auth protected function");
 

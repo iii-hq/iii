@@ -168,6 +168,7 @@ pub async fn register_config_trigger(engine: &Engine) -> anyhow::Result<()> {
             }),
             worker_id: None,
             metadata: None,
+            namespace: crate::protocol::default_namespace(),
         })
         .await
         .map_err(|err| anyhow!("failed to register configuration trigger: {err:?}"))?;
