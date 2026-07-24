@@ -151,6 +151,10 @@ pub struct OnFunctionRegistrationInput {
     /// Arbitrary metadata attached to the function.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the function registers in. The same id can exist in several
+    /// namespaces, so the hook needs this to authorize per namespace.
+    #[serde(default = "default_namespace_field")]
+    pub namespace: String,
     /// Auth context from `AuthResult.context` for this session.
     pub context: Value,
 }

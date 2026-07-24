@@ -175,6 +175,11 @@ class OnFunctionRegistrationInput(BaseModel):
     function_id: str = Field(description="ID of the function being registered.")
     description: str | None = Field(default=None, description="Human-readable description of the function.")
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
+    namespace: str = Field(
+        default="default",
+        description="Namespace the function registers in; the same id can exist in several namespaces, "
+        "so the hook needs this to authorize per namespace.",
+    )
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 
