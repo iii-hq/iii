@@ -56,15 +56,23 @@ pub async fn handle_dispatch(
         }
     };
 
-    // Resolve the binary path: check managed dir, then existing installations, then download
-    let binary_path = if platform::binary_path(spec.name).exists() {
-        platform::binary_path(spec.name)
-    } else if let Some(existing) = platform::find_existing_binary(spec.name) {
+    // Resolve the binary to execute (PATH first, then managed dir), else download.
+    let binary_path = if let Some(existing) = platform::find_existing_binary(spec.name) {
         tracing::debug!(binary = %existing.display(), name = spec.name, "found existing binary");
         existing
     } else {
         // Auto-download if binary is not present anywhere
-        let managed_path = platform::binary_path(spec.name);
+        let managed_path = match platform::binary_path(spec.name) {
+            Some(p) => p,
+            None => {
+                eprintln!(
+                    "{} Could not resolve home directory to install {}",
+                    "error:".red(),
+                    spec.name
+                );
+                return 1;
+            }
+        };
         eprintln!("  Retrieving dependencies for {}...", command.bold());
 
         let client = match github::build_client() {
