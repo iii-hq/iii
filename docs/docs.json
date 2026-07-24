@@ -151,7 +151,9 @@
                   "next/tutorials/linkly/durable-execution",
                   "next/tutorials/linkly/streaming",
                   "next/tutorials/linkly/channels",
-                  "next/tutorials/linkly/frontend"
+                  "next/tutorials/linkly/frontend",
+                  "next/tutorials/linkly/safety-agent",
+                  "next/tutorials/linkly/scheduling"
                 ]
               }
             ]
