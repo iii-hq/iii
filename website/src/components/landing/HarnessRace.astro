@@ -1,0 +1,46 @@
+---
+// HARNESS — the split-race animation: a traditional coding agent (left) against
+// the same prompt run through iii (right). The animation is a React island over
+// the vendored omelette timeline engine in ./animation/; client:only because the
+// engine publishes its API on globalThis at import time.
+import SplitRaceStyled from './animation/split-race-styled.jsx'
+---
+
+<section class="xp" id="harness" aria-label="Same prompt, two harnesses">
+  <header class="xp-head">
+    <h2 class="xp-title">
+      <span class="accent">same prompt.</span>
+      <span class="mute"
+        ><b style="color:var(--ink); font-weight:500">two harnesses.</b><br />One
+        agent researches a stack and resolves merge conflicts. The other finds
+        the workers it needs and ships.</span
+      >
+    </h2>
+  </header>
+
+  <div class="harness-race">
+    <SplitRaceStyled client:only="react" />
+  </div>
+</section>
+
+<style is:global>
+  .harness-race {
+    position: relative;
+    margin: 0 36px;
+    aspect-ratio: 1920 / 1200;
+  }
+  /* The engine's own transport bar is authoring chrome — the page just loops. */
+  /* !important: the engine sets display:flex inline on both of these. */
+  .harness-race [data-omelette-chrome] {
+    display: none !important;
+  }
+  /* Stage root paints its editor backdrop; let the page show through instead. */
+  .harness-race [data-om-starter='animations-v2'] {
+    background: transparent !important;
+  }
+  @media (max-width: 720px) {
+    .harness-race {
+      margin: 0 16px;
+    }
+  }
+</style>

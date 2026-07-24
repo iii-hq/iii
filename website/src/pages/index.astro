@@ -4,6 +4,7 @@
 // with set:html so Astro's template compiler never reinterprets their braces
 // or reorders their tags. The header is the shared SiteNav component. Edit
 // the fragments directly; this file only assembles them.
+import HarnessRace from '../components/landing/HarnessRace.astro'
 import ScrollNav from '../components/ScrollNav.astro'
 import SiteNav from '../components/SiteNav.astro'
 import HtmlShell from '../layouts/HtmlShell.astro'
@@ -32,8 +33,9 @@ import tweaksPanel from '../components/landing/scripts/07-tweaks-panel.html?raw'
 
 // Fragments are consecutive line ranges of the original page; each ends with
 // a newline, so plain concatenation reproduces the source region exactly.
+// The harness animation sits between the hero and the rest, so the fragments
+// are assembled in two runs with that component in between.
 const body = [
-  hero,
   experience,
   workers,
   helloWorld,
@@ -70,5 +72,7 @@ const body = [
       { id: 'console', label: 'console' },
     ]}
   />
+  <Fragment set:html={hero} />
+  <HarnessRace />
   <Fragment set:html={body} />
 </HtmlShell>
