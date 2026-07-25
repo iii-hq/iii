@@ -41,6 +41,23 @@ export type TriggerRegistrationResultMessage = {
   error?: unknown
 }
 
+/**
+ * The engine refused a registration. `FUNCTION_NAMESPACE_CONFLICT` costs one
+ * function and leaves the connection open; `WORKER_NAMESPACE_CONFLICT` is
+ * terminal — another live worker owns this name in the namespace.
+ */
+export type RegistrationRejectedMessage = {
+  message_type: MessageType.RegistrationRejected
+  /** Rejection code: `FUNCTION_NAMESPACE_CONFLICT` or `WORKER_NAMESPACE_CONFLICT`. */
+  code: string
+  /** Namespace the conflict occurred in. */
+  namespace: string
+  /** Name of the rejected worker or function. */
+  worker_name: string
+  /** ID of the worker that already owns the name. */
+  owner_worker_id: string
+}
+
 export type RegisterTriggerMessage = {
   /** Wire discriminator; always `MessageType.RegisterTrigger`. */
   message_type: MessageType.RegisterTrigger
@@ -386,3 +403,4 @@ export type IIIMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
+  | RegistrationRejectedMessage

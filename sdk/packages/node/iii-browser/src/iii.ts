@@ -32,6 +32,7 @@ import type {
   TriggerTypeRef,
 } from './types'
 import { isChannelRef, randomUUID } from './utils'
+import { RegistrationRejectedError } from './errors'
 
 /** @internal */
 export type TelemetryOptions = {
@@ -112,6 +113,7 @@ class Sdk implements ISdk {
   private readonly namespace?: string
   private workerId?: string
   private reattachToken?: string
+  private fatalError?: RegistrationRejectedError
 
   constructor(
     private readonly address: string,
@@ -429,6 +431,13 @@ class Sdk implements ISdk {
     this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
     this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
   }
+
+  /**
+   * The terminal rejection that closed this connection for good, if any. Set
+   * only for a non-retryable registration rejection (e.g. a worker-name
+   * collision). Mirrors the Node SDK.
+   */
+  getFatalError = (): RegistrationRejectedError | undefined => this.fatalError
 
   /**
    * Gracefully shutdown the SDK, cleaning up all resources.
@@ -899,9 +908,8 @@ class Sdk implements ISdk {
     this.clearReconnectTimeout()
 
     // Reject every in-flight invocation now rather than leaving them to time out.
-    const error = new Error(
-      `[iii] Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}.`,
-    )
+    const error = new RegistrationRejectedError(init)
+    this.fatalError = error
     for (const [, invocation] of this.invocations) {
       if (invocation.timeout) {
         clearTimeout(invocation.timeout)
