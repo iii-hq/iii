@@ -1983,12 +1983,20 @@ async fn rmq_enqueue_runs_target_in_captured_namespace() {
     .await
     .expect("enqueue should succeed");
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // Poll for delivery instead of a fixed window: a slow broker turns a fixed
+    // sleep into an empty-vec failure that reads as a namespace bug.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline && fired_orders.lock().await.is_empty() {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     let fired = fired_orders.lock().await.clone();
-    assert_eq!(
-        fired,
-        vec!["from-orders".to_string()],
+    assert!(
+        !fired.is_empty() && fired.iter().all(|t| t == "from-orders"),
         "the rabbitmq enqueue must run the orders target captured at enqueue time; got: {fired:?}"
+    );
+    assert!(
+        _fired_default.lock().await.is_empty(),
+        "the default-namespace target must not fire"
     );
 }

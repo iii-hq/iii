@@ -1209,7 +1209,12 @@ mod tests {
             })
             .await;
 
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Poll for the spawned trigger task instead of a fixed sleep: the delay
+        // could otherwise assert before the dispatch runs.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && fired.lock().unwrap().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
 
         let fired = fired.lock().unwrap().clone();
         assert_eq!(

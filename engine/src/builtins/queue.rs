@@ -398,7 +398,21 @@ impl BuiltinQueue {
     /// possible false positive; the drain only moves messages between durable
     /// names, so the blast radius is a stranded (never lost) message.
     fn is_legacy_subscriber_queue(name: &str, ns_sep: char) -> bool {
-        name.contains("::") && !name.contains(ns_sep) && !name.starts_with("__fn_queue::")
+        if !name.contains("::") || name.starts_with("__fn_queue::") {
+            return false;
+        }
+        if name.contains(ns_sep) {
+            // Ambiguous: either an already-migrated `…@ns` name, or a legacy name
+            // whose topic/function_id itself contains `ns_sep` (both are
+            // user-controlled). Left in place (never lost) but surfaced so it can
+            // be hand-migrated rather than silently stranded.
+            tracing::warn!(
+                queue = %name,
+                "Queue name contains the namespace separator; skipped by the legacy subscriber-queue drain"
+            );
+            return false;
+        }
+        true
     }
 
     /// Moves every structure of `old` into `new`, rewriting each job record's

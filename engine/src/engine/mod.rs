@@ -1343,16 +1343,20 @@ impl Engine {
                             namespace = %trigger_namespace,
                             "trigger registration denied by RBAC"
                         );
+                        // Name the id that was actually authorized (post-prefix),
+                        // matching the result's `function_id`; `reg_function_id`
+                        // is moved into the struct below, so build the text first.
+                        let denied_message = format!(
+                            "function '{}' not allowed in namespace '{}'",
+                            reg_function_id, trigger_namespace
+                        );
                         let result_msg = Message::TriggerRegistrationResult {
                             id: reg_trigger_id,
                             trigger_type: reg_trigger_type,
                             function_id: reg_function_id,
                             error: Some(crate::protocol::ErrorBody::new(
                                 "FORBIDDEN",
-                                format!(
-                                    "function '{}' not allowed in namespace '{}'",
-                                    function_id, trigger_namespace
-                                ),
+                                denied_message,
                             )),
                         };
                         let _ = self.send_msg(worker, result_msg).await;
@@ -1904,6 +1908,19 @@ impl Engine {
                         namespace = %namespace,
                         "refusing a reserved `engine::*` function id outside the `default` namespace"
                     );
+                    // Tell the worker (non-fatal, same shape as the conflict path):
+                    // otherwise it believes the registration succeeded and only
+                    // learns otherwise when invocations return function_not_found.
+                    self.send_msg(
+                        worker,
+                        Message::RegistrationRejected {
+                            code: FUNCTION_NAMESPACE_CONFLICT.to_string(),
+                            namespace: namespace.clone(),
+                            worker_name: reg_id.clone(),
+                            owner_worker_id: worker.id.to_string(),
+                        },
+                    )
+                    .await;
                     return Ok(());
                 }
 

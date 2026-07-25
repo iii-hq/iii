@@ -638,20 +638,6 @@ impl EngineFunctionsWorker {
         Self::first_segment(function_id)
     }
 
-    /// The namespace an introspection lookup of a bare `function_id` resolves
-    /// to, or `None` when the id names no function this engine can identify.
-    ///
-    /// Mirrors invoke routing first: a bare id means [`DEFAULT_NAMESPACE`]
-    /// (`Engine::resolve_function`), so a `default` entry always wins and
-    /// single-namespace engines behave exactly as before. Only when the id is
-    /// absent from `default` does this look wider — and then it resolves solely
-    /// when the id is unambiguous. An engine whose every worker is namespaced
-    /// would otherwise be blind to all of its own contracts.
-    ///
-    /// A bare id registered in several non-default namespaces is a genuine
-    /// ambiguity: this returns `None` rather than guess an owner. Callers
-    /// surface that as a not-found naming the candidates, the same way
-    /// `resolve_function` does.
     /// The `NOT_FOUND` body for an id [`Self::introspection_namespace`] would
     /// not resolve. When the id *is* registered — just in several non-default
     /// namespaces at once — a bare "not registered" would be a lie, so the
@@ -673,6 +659,18 @@ impl EngineFunctionsWorker {
         }
     }
 
+    /// The namespace an introspection lookup of a bare `function_id` resolves
+    /// to, or `None` when the id names no function this engine can identify.
+    ///
+    /// Mirrors invoke routing first: a bare id means [`DEFAULT_NAMESPACE`]
+    /// (`Engine::resolve_function`), so a `default` entry always wins and
+    /// single-namespace engines behave exactly as before. Only when the id is
+    /// absent from `default` does this look wider — and then it resolves solely
+    /// when the id is unambiguous. An engine whose every worker is namespaced
+    /// would otherwise be blind to all of its own contracts.
+    ///
+    /// A bare id registered in several non-default namespaces is a genuine
+    /// ambiguity: this returns `None` rather than guess an owner.
     fn introspection_namespace(&self, function_id: &str) -> Option<String> {
         let namespaces = self.engine.functions.namespaces_for(function_id);
         if namespaces

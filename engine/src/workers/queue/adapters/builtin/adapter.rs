@@ -89,10 +89,12 @@ struct FunctionHandler {
     engine: Arc<Engine>,
     function_id: String,
     condition_function_id: Option<String>,
-    /// Trigger id of the subscribing `durable:subscriber`, used to resolve the
-    /// target/condition namespace LIVE at fire time (see
-    /// `TriggerRegistry::namespace_of`).
-    trigger_id: String,
+    /// Namespace of the subscribing `durable:subscriber`, captured at subscribe
+    /// time. Must NOT be re-resolved from the registry at fire time: the trigger
+    /// may already be gone (unsubscribe / config reload / worker disconnect)
+    /// while jobs remain durable under this queue identity, and a
+    /// default-namespace fallback would run the job in the wrong namespace.
+    namespace: String,
 }
 
 #[async_trait]
@@ -123,9 +125,9 @@ impl JobHandler for FunctionHandler {
         let function_id = self.function_id.clone();
         let condition_function_id = self.condition_function_id.clone();
         let data = job.data.clone();
-        // Resolve the subscribing trigger's namespace LIVE by id, so target and
-        // condition both run in the registering worker's namespace.
-        let namespace = engine.trigger_registry.namespace_of(&self.trigger_id);
+        // The namespace this queue identity was created for; target and
+        // condition both resolve in the registering worker's namespace.
+        let namespace = self.namespace.clone();
 
         async move {
             if let Some(ref condition_id) = condition_function_id {
@@ -303,16 +305,16 @@ impl QueueAdapter for BuiltinQueueAdapter {
     ) {
         // Scope the internal queue identity to the trigger's namespace so two
         // subscribers with the same topic+function_id in different namespaces
-        // are distinct queues. `namespace` comes straight from the trigger (the
-        // handler re-resolves it live by id at dispatch, which agrees once the
-        // trigger is registered).
+        // are distinct queues. The handler captures this same namespace, so a
+        // durable job always fires in the namespace its queue identity encodes,
+        // even after the trigger is gone.
         let internal_queue = internal_queue(topic, namespace, function_id);
 
         let handler: Arc<dyn JobHandler> = Arc::new(FunctionHandler {
             engine: Arc::clone(&self.engine),
             function_id: function_id.to_string(),
             condition_function_id,
-            trigger_id: id.to_string(),
+            namespace: namespace.to_string(),
         });
 
         let subscription_config = queue_config.map(to_subscription_config);
@@ -876,7 +878,7 @@ mod tests {
             engine: Arc::clone(&engine),
             function_id: "queue.success".to_string(),
             condition_function_id: None,
-            trigger_id: String::new(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
         };
         success
             .handle(&job)
@@ -887,7 +889,7 @@ mod tests {
             engine,
             function_id: "queue.failure".to_string(),
             condition_function_id: None,
-            trigger_id: String::new(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
         };
         let err = failure
             .handle(&job)

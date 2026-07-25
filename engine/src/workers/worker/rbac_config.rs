@@ -301,8 +301,16 @@ impl<'de> Deserialize<'de> for FunctionFilter {
                         "namespace" => {
                             namespace = Some(map.next_value()?);
                         }
-                        _ => {
+                        // Reject unknown keys: a typo like `namesapce` would
+                        // otherwise be discarded, silently leaving the rule
+                        // scoped to `default` — an authz misconfiguration. Fail
+                        // at parse time instead.
+                        other => {
                             let _: Value = map.next_value()?;
+                            return Err(de::Error::custom(format!(
+                                "unknown key '{other}' in expose_functions filter; \
+                                 expected 'match', 'metadata', or 'namespace'"
+                            )));
                         }
                     }
                 }

@@ -8,14 +8,14 @@
 //! `handle_worker` builds, whose `namespace` field is `None` for life — so a
 //! fix that only works on a doctored connection cannot pass this file.
 //!
-//! Two behaviors are covered:
+//! Three behaviors are covered:
 //!   * `FUNCTION_NAMESPACE_CONFLICT` — a second live worker in the same
 //!     namespace is refused that one function id, and keeps its connection.
 //!   * the `(namespace, function_id)` owner re-key — the same id in *different*
 //!     namespaces is legitimate, and dropping one owner must not orphan it.
-//!
-//! Worker-name collisions (`WORKER_NAMESPACE_CONFLICT`) are deferred to Task
-//! 9.5; those tests are parked at the bottom of this file with the reasoning.
+//!   * `WORKER_NAMESPACE_CONFLICT` — one live worker name per namespace: the
+//!     loser is told why and hung up on, the name is reclaimable after the
+//!     owner is reaped, and a same-name restart during teardown is accepted.
 
 use std::sync::Arc;
 use std::time::Duration;
