@@ -191,6 +191,40 @@ def test_registration_rejected_is_fatal_and_does_not_reconnect() -> None:
     assert err.owner_worker_id == "owner-123"
 
 
+def test_fatal_state_survives_socket_close() -> None:
+    import websockets
+
+    stub = III.__new__(III)
+    # Post-rejection terminal state, as `_handle_registration_rejected` leaves it.
+    stub._running = False
+    stub._fatal_error = RegistrationRejectedError(
+        code="WORKER_NAMESPACE_CONFLICT",
+        namespace="orders",
+        worker_name="state",
+        owner_worker_id="owner-123",
+    )
+    stub._connection_state = "failed"
+    observed: list[str] = []
+    stub._connection_listeners = [lambda state: observed.append(state)]
+
+    class _ClosingWs:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            # Raise the close the fatal handler's `ws.close()` produces, without
+            # constructing a version-specific ConnectionClosed payload.
+            raise websockets.ConnectionClosed.__new__(websockets.ConnectionClosed)
+
+    stub._ws = _ClosingWs()
+
+    asyncio.run(stub._receive_loop())
+
+    # The close must not regress the terminal state, and no reconnect follows.
+    assert stub._connection_state == "failed"
+    assert "disconnected" not in observed
+
+
 def test_function_namespace_conflict_keeps_worker_serving() -> None:
     stub = III.__new__(III)
     stub._running = True

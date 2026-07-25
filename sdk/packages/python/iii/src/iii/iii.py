@@ -453,7 +453,11 @@ class III:
         except websockets.ConnectionClosed:
             log.debug("Connection closed")
             self._ws = None
-            self._set_connection_state("disconnected")
+            # A fatal registration rejection already set the terminal `failed`
+            # state and cleared `_running`; the socket close it triggers must not
+            # regress the state back to `disconnected`.
+            if self._fatal_error is None:
+                self._set_connection_state("disconnected")
             if self._running:
                 self._schedule_reconnect()
 
