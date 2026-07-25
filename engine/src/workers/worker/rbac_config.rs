@@ -356,12 +356,17 @@ impl<'de> Deserialize<'de> for FunctionFilter {
 //                       ▼
 //                     DENY (FORBIDDEN)
 //
-// Both the RBAC carve-out AND the middleware bypass (see
-// engine/src/engine/mod.rs) now key on this exact slice, via
-// [`is_infrastructure_function`]. They used to diverge — the bypass matched the
-// broad `engine::*` prefix — but that let any worker register a function named
-// `engine::foo` and skip the operator's middleware. Keying both on the exact
-// list closes that: only these specific builtin ids are privileged.
+// The RBAC carve-out keys on this exact slice via
+// [`is_infrastructure_function`]: only these specific builtin ids are always
+// allowed regardless of `expose_functions`.
+//
+// The middleware bypass (see engine/src/engine/mod.rs) keys on a different,
+// broader predicate — `Engine::is_engine_owned_builtin` — which lets ALL
+// engine-registered `engine::*` builtins (introspection, queue ops, …) skip
+// the operator's middleware, while a worker-registered `engine::foo` (which
+// owns a `function_owners` entry) still goes through it. Ownership, not the
+// `engine::` prefix, is what makes the bypass safe: naming a worker function
+// `engine::foo` cannot evade the middleware.
 //
 // INFRASTRUCTURE_FUNCTIONS is part of iii's public contract. Within a
 // major version, it is additive-only: IDs are never removed from the

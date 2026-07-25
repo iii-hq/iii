@@ -423,7 +423,28 @@ async fn middleware_bypass_preserved_for_infrastructure_functions() {
 async fn middleware_runs_for_non_infrastructure_engine_prefix() {
     ensure_default_meter();
     let engine = Arc::new(Engine::new());
-    register_echo_handler(&engine, "engine::custom::probe");
+
+    // Register `engine::custom::probe` through the WS `RegisterFunction` path so
+    // it is recorded as worker-owned (a `function_owners` entry). That ownership
+    // — not the `engine::` prefix — is what forces it through middleware: an
+    // engine builtin the engine registers in-process would bypass, a worker's
+    // `engine::foo` must not.
+    let (owner_tx, mut _owner_rx) = mpsc::channel::<Outbound>(16);
+    let owner = WorkerConnection::new(owner_tx);
+    engine
+        .router_msg(
+            &owner,
+            &Message::RegisterFunction {
+                id: "engine::custom::probe".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+            },
+        )
+        .await
+        .expect("worker RegisterFunction must not error");
 
     let middleware_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let middleware_calls_for_handler = middleware_calls.clone();
