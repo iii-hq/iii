@@ -115,6 +115,7 @@ def _capture_triggered_message(request: dict[str, object]) -> dict[str, object]:
     """Drive the real ``trigger_async`` void path and return the serialized wire dict."""
     stub = III.__new__(III)
     stub._options = InitOptions()
+    stub._fatal_error = None
     captured: dict[str, object] = {}
 
     async def fake_send(msg: object) -> None:
