@@ -46,6 +46,7 @@ const (
 	MsgPong                      MessageType = "pong"
 	MsgWorkerRegistered          MessageType = "workerregistered"
 	MsgReattach                  MessageType = "reattach"
+	MsgRegistrationRejected      MessageType = "registrationrejected"
 )
 
 // ErrorBody is the wire representation of a remote error
@@ -201,6 +202,20 @@ type InvokeFunctionMessage struct {
 	Traceparent  *string         `json:"traceparent,omitempty"`
 	Baggage      *string         `json:"baggage,omitempty"`
 	Action       *TriggerAction  `json:"action,omitempty"`
+	// Namespace routes this invocation to a specific namespace. Absent means the
+	// engine's default namespace, independent of the caller's own namespace.
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// RegistrationRejectedMessage is the engine's refusal of a registration.
+// A FUNCTION_NAMESPACE_CONFLICT costs one function and leaves the connection
+// open; a WORKER_NAMESPACE_CONFLICT is terminal — another live worker owns this
+// name in the namespace (engine/src/protocol.rs).
+type RegistrationRejectedMessage struct {
+	Code          string `json:"code"`
+	Namespace     string `json:"namespace"`
+	WorkerName    string `json:"worker_name"`
+	OwnerWorkerID string `json:"owner_worker_id"`
 }
 
 // InvocationResult is the worker's reply to a non-fire-and-forget InvokeFunction.
@@ -302,6 +317,8 @@ func MarshalMessage(msg any) ([]byte, error) {
 		return marshalEnvelope(MsgRegisterService, m)
 	case *WorkerRegisteredMessage:
 		return marshalEnvelope(MsgWorkerRegistered, m)
+	case *RegistrationRejectedMessage:
+		return marshalEnvelope(MsgRegistrationRejected, m)
 	case *ReattachMessage:
 		return marshalEnvelope(MsgReattach, m)
 	case *PingMessage:
@@ -359,6 +376,7 @@ type DecodedMessage struct {
 	InvocationResult          *InvocationResultMessage
 	RegisterService           *RegisterServiceMessage
 	WorkerRegistered          *WorkerRegisteredMessage
+	RegistrationRejected      *RegistrationRejectedMessage
 	Ping                      *PingMessage
 	Pong                      *PongMessage
 }
@@ -405,6 +423,9 @@ func UnmarshalMessage(data []byte) (*DecodedMessage, error) {
 	case MsgWorkerRegistered:
 		out.WorkerRegistered = &WorkerRegisteredMessage{}
 		return out, decodeInto(data, out.WorkerRegistered)
+	case MsgRegistrationRejected:
+		out.RegistrationRejected = &RegistrationRejectedMessage{}
+		return out, decodeInto(data, out.RegistrationRejected)
 	case MsgPing:
 		out.Ping = &PingMessage{}
 		return out, nil
