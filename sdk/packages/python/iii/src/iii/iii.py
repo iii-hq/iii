@@ -241,11 +241,18 @@ class III:
 
     def _wait_until_connected(self) -> None:
         """Block until the WebSocket connection to the engine is established."""
+        # A terminal registration rejection (e.g. a worker-name collision) is not
+        # retryable: surface the typed error so callers observe the export
+        # contract instead of a generic ConnectionError or a hung trigger.
+        if self._fatal_error is not None:
+            raise self._fatal_error
         if self._connection_state == "connected":
             return
         if self._connection_state == "failed":
             raise ConnectionError(f"Connection to {self._address} failed")
         connected = self._connected_event.wait(timeout=30)
+        if self._fatal_error is not None:
+            raise self._fatal_error
         if cast(IIIConnectionState, self._connection_state) == "failed":
             raise ConnectionError(
                 f"Connection to {self._address} failed after max retries"
@@ -1348,6 +1355,8 @@ class III:
             >>> result = await worker.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> await worker.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
+        if self._fatal_error is not None:
+            raise self._fatal_error
         req = request if isinstance(request, dict) else request.model_dump()
         function_id = req["function_id"]
         payload = req.get("payload")
