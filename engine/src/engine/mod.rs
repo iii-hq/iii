@@ -586,6 +586,18 @@ impl Engine {
         }
     }
 
+    /// Whether `function_id` is an `engine::*` builtin the engine registered
+    /// in-process. Only WS/HTTP worker registrations populate `function_owners`,
+    /// so an absent entry is the "engine-owned, not worker-owned" signal that
+    /// lets trusted engine builtins bypass the operator's middleware while a
+    /// worker-registered `engine::foo` does not.
+    fn is_engine_owned_builtin(&self, namespace: &str, function_id: &str) -> bool {
+        function_id.starts_with("engine::")
+            && !self
+                .function_owners
+                .contains_key(&(namespace.to_string(), function_id.to_string()))
+    }
+
     async fn send_msg(&self, worker: &WorkerConnection, msg: Message) -> bool {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
@@ -1484,13 +1496,17 @@ impl Engine {
                         return Ok(());
                     }
 
-                    // Bypass middleware only for the exact builtin infrastructure
-                    // ids, NOT the whole `engine::*` prefix: a worker-registered
-                    // `engine::foo` must not skip the operator's middleware.
+                    // Bypass middleware for the engine's own `engine::*` builtins
+                    // (introspection, logging, queue ops). Proxying those through
+                    // the operator's middleware re-invokes them from the middleware
+                    // worker's connection, discarding the caller's RBAC session so
+                    // a filtered surface like `engine::functions::list` leaks every
+                    // function. A worker-registered `engine::foo` still owns a
+                    // `function_owners` entry, so it does NOT bypass — the operator's
+                    // middleware keeps intercepting user code.
                     if let Some(middleware_id) = &session.config.middleware_function_id
-                        && !crate::workers::worker::rbac_config::is_infrastructure_function(
-                            function_id,
-                        )
+                        && !self
+                            .is_engine_owned_builtin(effective_namespace(&namespace), function_id)
                     {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
                         // Resolve the middleware in the caller's namespace and hand
@@ -3163,6 +3179,28 @@ mod tests {
     // ---------------------------------------------------------------
     // 1. router_msg tests for different message types
     // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn is_engine_owned_builtin_distinguishes_engine_from_worker() {
+        use super::InvocationKind;
+        ensure_default_meter();
+        let engine = Engine::new();
+
+        // Engine builtins never populate `function_owners`, so an `engine::*` id
+        // with no owner entry is engine-owned and bypasses middleware.
+        assert!(engine.is_engine_owned_builtin(DEFAULT_NAMESPACE, "engine::functions::list"));
+
+        // A worker-registered `engine::foo` owns a `function_owners` entry, so it
+        // must NOT bypass — the operator's middleware keeps intercepting it.
+        engine.function_owners.insert(
+            (DEFAULT_NAMESPACE.to_string(), "engine::foo".to_string()),
+            (uuid::Uuid::new_v4(), InvocationKind::Regular),
+        );
+        assert!(!engine.is_engine_owned_builtin(DEFAULT_NAMESPACE, "engine::foo"));
+
+        // Non-`engine::` ids are never engine-owned builtins.
+        assert!(!engine.is_engine_owned_builtin(DEFAULT_NAMESPACE, "state::get"));
+    }
 
     #[tokio::test]
     async fn test_router_msg_register_function() {
