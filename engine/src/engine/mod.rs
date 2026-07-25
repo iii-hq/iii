@@ -230,6 +230,19 @@ pub struct Engine {
     /// still-live worker (the fast-restart race). In-process workers do not
     /// populate this map, so the absence of an entry means "no WS owner."
     pub(crate) function_owners: Arc<DashMap<String, Uuid>>,
+    /// Registrations for a function id that a later worker SUPERSEDED, oldest
+    /// first. `function_owners` holds one owner per id and `FunctionsRegistry`
+    /// one handler, so a second worker registering the same id overwrites the
+    /// first. Without this, that second worker disconnecting deletes the id
+    /// outright and the first worker — still connected, still believing it is
+    /// registered — becomes unreachable: every call returns
+    /// `function_not_found`.
+    ///
+    /// Pushed by `claim_function`, which runs BEFORE the overwrite so the
+    /// outgoing handler is still readable, and drained by
+    /// `release_function_if_owner`, which restores the newest entry whose
+    /// worker is still connected instead of removing the id.
+    pub(crate) superseded_functions: Arc<DashMap<String, Vec<(Uuid, crate::function::Function)>>>,
     /// HTTP-invocation variant of `function_owners`, separate because external
     /// functions live in their own per-worker set on `WorkerConnection`.
     pub(crate) external_function_owners: Arc<DashMap<String, Uuid>>,
@@ -278,6 +291,7 @@ impl Engine {
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
             function_owners: Arc::new(DashMap::new()),
+            superseded_functions: Arc::new(DashMap::new()),
             external_function_owners: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
@@ -1902,6 +1916,19 @@ impl Engine {
                 function_id = %function_id,
                 "Function ownership transferred between two live workers — possible cross-worker overwrite"
             );
+            // Runs BEFORE `register_function` overwrites the entry, so this
+            // still reads the outgoing worker's handler. Keeping it lets
+            // `release_function_if_owner` hand the id back when the new owner
+            // disconnects, instead of deleting a function the previous worker
+            // still serves.
+            if let Some(outgoing) = self.functions.get(function_id) {
+                let mut stack = self
+                    .superseded_functions
+                    .entry(function_id.to_string())
+                    .or_default();
+                stack.retain(|(owner, _)| *owner != previous);
+                stack.push((previous, outgoing));
+            }
         }
     }
 
@@ -1933,12 +1960,56 @@ impl Engine {
     /// `function_owners`, or this deadlocks.
     fn release_function_if_owner(&self, worker_id: &Uuid, function_id: &str) -> bool {
         match self.function_owners.entry(function_id.to_string()) {
-            dashmap::mapref::entry::Entry::Occupied(entry) if entry.get() == worker_id => {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) if entry.get() == worker_id => {
+                // Hand the id back to the newest still-connected worker that
+                // registered it before this one, rather than deleting a
+                // function another worker is still serving. Only the owner
+                // index moves; the service registry keeps its entry because
+                // the function never actually goes away.
+                if let Some((fallback_owner, fallback)) = self.take_live_superseded(function_id) {
+                    self.functions
+                        .register_function(function_id.to_string(), fallback);
+                    entry.insert(fallback_owner);
+                    tracing::info!(
+                        function_id = %function_id,
+                        departing_owner = %worker_id,
+                        fallback_owner = %fallback_owner,
+                        "Function ownership fell back to a still-connected worker"
+                    );
+                    return false;
+                }
                 self.remove_function_from_engine(function_id);
                 entry.remove();
+                self.superseded_functions.remove(function_id);
                 true
             }
-            _ => false,
+            _ => {
+                // Not the owner: this worker's registration was already
+                // superseded, so drop only its standby entry.
+                self.forget_superseded(worker_id, function_id);
+                false
+            }
+        }
+    }
+
+    /// Pops the newest superseded registration for `function_id` whose worker
+    /// is still connected, discarding entries for workers that have since
+    /// disconnected. `None` when no live worker is left holding this id.
+    fn take_live_superseded(&self, function_id: &str) -> Option<(Uuid, crate::function::Function)> {
+        let mut stack = self.superseded_functions.get_mut(function_id)?;
+        while let Some((owner, function)) = stack.pop() {
+            if self.worker_registry.workers.contains_key(&owner) {
+                return Some((owner, function));
+            }
+        }
+        None
+    }
+
+    /// Drops `worker_id`'s standby registration for `function_id`, so a
+    /// disconnected worker can never be failed over to.
+    fn forget_superseded(&self, worker_id: &Uuid, function_id: &str) {
+        if let Some(mut stack) = self.superseded_functions.get_mut(function_id) {
+            stack.retain(|(owner, _)| owner != worker_id);
         }
     }
 
@@ -3358,6 +3429,98 @@ mod tests {
     // ---------------------------------------------------------------
     // 3. Worker cleanup tests
     // ---------------------------------------------------------------
+
+    /// Two workers registering the SAME id: the second overwrites the first,
+    /// and when the second disconnects the id must fall back to the first —
+    /// which is still connected and still serving it. Before this, the engine
+    /// deleted the id outright and every later call got `function_not_found`
+    /// even though a live worker was registered for it.
+    #[tokio::test]
+    async fn superseded_registration_fails_over_when_the_owner_disconnects() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(tx_a);
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(worker_a.clone());
+        engine.worker_registry.register_worker(worker_b.clone());
+
+        let msg = || Message::RegisterFunction {
+            id: "shared::fn".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine.router_msg(&worker_a, &msg()).await.unwrap();
+        engine.router_msg(&worker_b, &msg()).await.unwrap();
+        assert_eq!(
+            engine.function_owners.get("shared::fn").map(|o| *o),
+            Some(worker_b.id),
+            "the later registration owns the id"
+        );
+
+        engine.cleanup_worker(&worker_b).await;
+
+        assert!(
+            engine.functions.get("shared::fn").is_some(),
+            "the id must survive: worker A is still connected and serving it"
+        );
+        assert_eq!(
+            engine.function_owners.get("shared::fn").map(|o| *o),
+            Some(worker_a.id),
+            "ownership must fall back to the still-connected worker"
+        );
+
+        // With the last holder gone the id finally goes away.
+        engine.cleanup_worker(&worker_a).await;
+        assert!(
+            engine.functions.get("shared::fn").is_none(),
+            "no worker left registered — the id is removed"
+        );
+        assert!(engine.function_owners.get("shared::fn").is_none());
+    }
+
+    /// A standby whose worker has ALSO disconnected must never be restored —
+    /// failing over to a dead connection would make the id resolvable but
+    /// uncallable, which is worse than removing it.
+    #[tokio::test]
+    async fn failover_skips_workers_that_already_disconnected() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx_a, _rx_a) = mpsc::channel::<Outbound>(8);
+        let worker_a = WorkerConnection::new(tx_a);
+        let (tx_b, _rx_b) = mpsc::channel::<Outbound>(8);
+        let worker_b = WorkerConnection::new(tx_b);
+        engine.worker_registry.register_worker(worker_a.clone());
+        engine.worker_registry.register_worker(worker_b.clone());
+
+        let msg = || Message::RegisterFunction {
+            id: "doomed::fn".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+        engine.router_msg(&worker_a, &msg()).await.unwrap();
+        engine.router_msg(&worker_b, &msg()).await.unwrap();
+
+        // A goes first (it is only a standby, so the id keeps working), then
+        // the owner B goes: nothing live is left to fall back to.
+        engine.cleanup_worker(&worker_a).await;
+        assert!(
+            engine.functions.get("doomed::fn").is_some(),
+            "the owner is still connected"
+        );
+        engine.cleanup_worker(&worker_b).await;
+        assert!(
+            engine.functions.get("doomed::fn").is_none(),
+            "a dead standby must not be resurrected"
+        );
+    }
 
     #[tokio::test]
     async fn test_cleanup_worker_removes_functions() {
