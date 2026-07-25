@@ -1916,8 +1916,38 @@ impl EngineFunctionsWorker {
         &self,
         input: RegisterWorkerInput,
     ) -> FunctionResult<RegisterWorkerResult, ErrorBody> {
+        let mut input = input;
         let worker_id = input.worker_id.clone();
-        let namespace = crate::protocol::effective_namespace(&input.namespace).to_string();
+        let declared = crate::protocol::effective_namespace(&input.namespace).to_string();
+
+        // The grace timer fixes a connection to `default` when no
+        // `workers::register` arrives in time. If it already fired, the buffered
+        // functions have drained into that fixed namespace — so a *late*
+        // `workers::register` declaring a different namespace cannot be honored
+        // without splitting state (functions in one namespace, lease + metadata
+        // in another). Bind the lease, metadata, and drain to the namespace the
+        // connection was actually fixed to, and warn on a mismatch. While the
+        // namespace is still `Pending` (the normal, in-time case) this is `None`
+        // and the declared namespace is used verbatim.
+        let namespace = match uuid::Uuid::parse_str(&worker_id)
+            .ok()
+            .and_then(|uuid| self.engine.already_fixed_namespace(&uuid))
+        {
+            Some(fixed) if fixed != declared => {
+                tracing::warn!(
+                    worker_id = %worker_id,
+                    declared = %declared,
+                    fixed = %fixed,
+                    "late engine::workers::register: connection namespace already fixed (grace timer); \
+                     honoring the fixed namespace so lease, metadata, and functions stay in one namespace"
+                );
+                fixed
+            }
+            Some(fixed) => fixed,
+            None => declared,
+        };
+        // Keep the stored metadata's namespace consistent with the lease above.
+        input.namespace = Some(namespace.clone());
 
         // One live worker name per namespace. Sanitize the name the same way
         // `register_worker_metadata` will store it, so the lease key matches what
@@ -2575,6 +2605,83 @@ mod tests {
                 .functions
                 .get(crate::protocol::DEFAULT_NAMESPACE, "orders::create")
                 .is_none()
+        );
+    }
+
+    /// A *late* `engine::workers::register` — arriving after the grace timer
+    /// already fixed the connection to `default` and drained its buffered
+    /// functions there — must not split state. The declared namespace is ignored
+    /// in favor of the already-fixed one, so functions, the name lease, and the
+    /// stored metadata namespace all stay in `default`.
+    #[tokio::test(start_paused = true)]
+    async fn late_register_worker_honors_the_grace_fixed_namespace() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        let worker_uuid = worker.id;
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+
+        engine
+            .router_msg(
+                &worker,
+                &crate::protocol::Message::RegisterFunction {
+                    id: "orders::create".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+            )
+            .await
+            .expect("buffer register");
+
+        // Grace expires: the connection is fixed to `default` and the buffered
+        // function drains there. Paused time auto-advances once nothing else is
+        // runnable, so this resumes strictly after the grace drain completes.
+        tokio::time::sleep(
+            crate::engine::REGISTRATION_NAMESPACE_GRACE + std::time::Duration::from_secs(1),
+        )
+        .await;
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "orders::create")
+                .is_some(),
+            "grace drain must land the function in default"
+        );
+
+        // Late announce declaring a *different* namespace, with a name so the
+        // lease is exercised.
+        let mut input = register_worker_input_with_namespace(
+            &worker_uuid.to_string(),
+            Some("orders".to_string()),
+        );
+        input.name = Some("state".to_string());
+        module.register_worker(input).await;
+
+        // No split: the stored metadata namespace is the grace-fixed `default`,
+        // not the late-declared `orders`.
+        assert_eq!(
+            engine.worker_registry.get_namespace(&worker_uuid),
+            crate::protocol::DEFAULT_NAMESPACE,
+            "metadata namespace must follow the grace-fixed namespace, not the late declaration"
+        );
+
+        // The name lease sits in `default`, never in `orders`: a fresh worker can
+        // still claim `state` in `orders`, but not in `default`.
+        let other = uuid::Uuid::new_v4();
+        assert!(
+            engine.claim_worker_name("orders", other, "state").is_ok(),
+            "no lease should have leaked into the declared `orders` namespace"
+        );
+        let other2 = uuid::Uuid::new_v4();
+        assert!(
+            engine
+                .claim_worker_name(crate::protocol::DEFAULT_NAMESPACE, other2, "state")
+                .is_err(),
+            "the name must be leased in the grace-fixed `default` namespace"
         );
     }
 

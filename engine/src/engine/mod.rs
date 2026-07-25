@@ -916,6 +916,23 @@ impl Engine {
         }
     }
 
+    /// The namespace this connection was already committed to, or `None` while it
+    /// is still `Pending`. Unlike [`Self::connection_namespace`], this
+    /// distinguishes "not yet fixed" (`Pending` → `None`) from "fixed to
+    /// `default`" (`Some("default")`), which is what tells a *late*
+    /// `engine::workers::register` (arriving after the grace timer fired) apart
+    /// from the normal in-time one.
+    pub(crate) fn already_fixed_namespace(&self, worker_id: &Uuid) -> Option<String> {
+        match self.namespace_states.get(worker_id).as_deref() {
+            Some(
+                NamespaceState::Resolved(ns)
+                | NamespaceState::Draining(ns, _)
+                | NamespaceState::Aborted(ns),
+            ) => Some(ns.clone()),
+            _ => None,
+        }
+    }
+
     /// Queues `msg` when the connection's namespace is not known yet.
     /// Returns `true` when the message was queued and must not be dispatched.
     fn buffer_until_namespace_known(&self, worker: &WorkerConnection, msg: &Message) -> bool {
