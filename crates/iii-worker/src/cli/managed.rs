@@ -32,8 +32,9 @@ use super::builtin_defaults::{
 use super::config_file::ResolvedWorkerType;
 use super::lifecycle::build_container_spec;
 use super::registry::{
-    BinaryWorkerResponse, BundleWorkerResponse, MANIFEST_PATH, ResolvedWorkerGraph,
-    WorkerInfoResponse, fetch_resolved_worker_graph, fetch_worker_info, parse_worker_input,
+    BinaryWorkerResponse, BundleWorkerResponse, DependencyGraphStats, MANIFEST_PATH,
+    ResolvedWorkerGraph, WorkerInfoResponse, fetch_resolved_worker_graph, fetch_worker_info,
+    parse_worker_input,
 };
 use super::worker_manager::state::WorkerDef;
 use std::collections::BTreeMap;
@@ -1121,7 +1122,10 @@ pub async fn handle_worker_update(worker_name: Option<&str>) -> i32 {
             }
         };
 
-        let rc = handle_resolved_graph_add(&graph, false).await;
+        // `worker update` is an explicit request to apply the new graph for
+        // an already-pinned root. Do not introduce an unrelated interactive
+        // prompt into that maintenance path.
+        let rc = handle_resolved_graph_add(&graph, false, true, false).await;
         if rc != 0 {
             fail_count += 1;
         }
@@ -1420,13 +1424,69 @@ fn populate_manifest_hash_fields(lockfile: &mut super::lockfile::WorkerLockfile)
     lockfile.declared_dependencies = Some(deps);
 }
 
-async fn handle_resolved_graph_add(graph: &ResolvedWorkerGraph, brief: bool) -> i32 {
-    // Enforce client-side dependency-graph bounds BEFORE touching any
-    // filesystem state. A compromised or malformed registry response
-    // must not be able to drive thousands of installs from a single
-    // `iii worker add`. See registry::enforce_dep_graph_bounds
-    // (MAX_DEPENDENCY_DEPTH, MAX_TRANSITIVE_DEPS).
-    if let Err(e) = super::registry::enforce_dep_graph_bounds(graph) {
+fn confirm_large_dependency_graph(
+    stats: DependencyGraphStats,
+    assume_yes: bool,
+    can_prompt: bool,
+) -> Result<(), crate::core::error::WorkerOpError> {
+    use crate::core::error::WorkerOpError;
+
+    if !stats.requires_confirmation() {
+        return Ok(());
+    }
+
+    let dependency_count = stats.node_count.saturating_sub(1);
+    eprintln!(
+        "  {} this worker resolves to {} dependencies ({} workers total, {} dependency edges).",
+        "warning:".yellow(),
+        dependency_count,
+        stats.node_count,
+        stats.edge_count,
+    );
+    if assume_yes {
+        return Ok(());
+    }
+    if !can_prompt {
+        return Err(WorkerOpError::ConsentRequired {
+            op: format!(
+                "install large dependency graph ({} workers); pass yes:true or --yes",
+                stats.node_count
+            ),
+        });
+    }
+
+    use std::io::{BufRead as _, Write as _};
+    eprint!(
+        "Continue installing all {} workers? [y/N] ",
+        stats.node_count
+    );
+    let _ = std::io::stderr().flush();
+    let mut response = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut response);
+    if matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err(WorkerOpError::Cancelled)
+    }
+}
+
+async fn handle_resolved_graph_add(
+    graph: &ResolvedWorkerGraph,
+    brief: bool,
+    assume_yes: bool,
+    can_prompt: bool,
+) -> i32 {
+    // Validate the complete graph BEFORE touching filesystem state. Long
+    // acyclic chains are legitimate; cycles, dangling edges, duplicate nodes,
+    // and resolver-injected disconnected nodes are not.
+    let stats = match super::registry::validate_dependency_graph(graph) {
+        Ok(stats) => stats,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+    if let Err(e) = confirm_large_dependency_graph(stats, assume_yes, can_prompt) {
         eprintln!("{} {}", "error:".red(), e);
         return 1;
     }
@@ -1656,6 +1716,8 @@ pub(crate) fn merge_resolved_graphs(
 pub(crate) async fn install_manifest_dependencies(
     deps: &std::collections::BTreeMap<String, String>,
     brief: bool,
+    assume_yes: bool,
+    can_prompt: bool,
 ) -> Result<(), String> {
     if deps.is_empty() {
         return Ok(());
@@ -1688,7 +1750,7 @@ pub(crate) async fn install_manifest_dependencies(
 
     let merged = merge_resolved_graphs(graphs)?;
 
-    let rc = handle_resolved_graph_add(&merged, brief).await;
+    let rc = handle_resolved_graph_add(&merged, brief, assume_yes, can_prompt).await;
     if rc != 0 {
         return Err(format!(
             "failed to install merged dependency graph (exit {rc}); no partial \
@@ -1705,6 +1767,29 @@ pub async fn handle_managed_add(
     reset_config: bool,
     wait: bool,
 ) -> i32 {
+    use std::io::IsTerminal as _;
+
+    handle_managed_add_with_consent(
+        image_or_name,
+        brief,
+        force,
+        reset_config,
+        wait,
+        false,
+        std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+    )
+    .await
+}
+
+pub async fn handle_managed_add_with_consent(
+    image_or_name: &str,
+    brief: bool,
+    force: bool,
+    reset_config: bool,
+    wait: bool,
+    assume_yes: bool,
+    can_prompt: bool,
+) -> i32 {
     // Local path workers: starts with '.', '/', or '~'
     if super::local_worker::is_local_path(image_or_name) {
         return super::local_worker::handle_local_add(
@@ -1713,6 +1798,8 @@ pub async fn handle_managed_add(
             reset_config,
             brief,
             wait,
+            assume_yes,
+            can_prompt,
         )
         .await;
     }
@@ -1876,7 +1963,7 @@ pub async fn handle_managed_add(
 
     match fetch_resolved_worker_graph(&name, version.as_deref(), None).await {
         Ok(graph) => {
-            let rc = handle_resolved_graph_add(&graph, brief).await;
+            let rc = handle_resolved_graph_add(&graph, brief, assume_yes, can_prompt).await;
             return finish_add(&name, rc, wait, brief).await;
         }
         Err(e) if should_fallback_to_legacy_registry_error(&name, &e) => {
@@ -4016,6 +4103,40 @@ mod tests {
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
 
+    #[test]
+    fn large_graph_requires_consent_when_non_interactive() {
+        let stats = DependencyGraphStats {
+            node_count: super::super::registry::LARGE_DEPENDENCY_GRAPH_THRESHOLD + 1,
+            edge_count: 40,
+        };
+        let err = confirm_large_dependency_graph(stats, false, false)
+            .expect_err("non-interactive large graph needs explicit consent");
+        assert!(matches!(
+            err,
+            crate::core::error::WorkerOpError::ConsentRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn large_graph_yes_bypasses_prompt() {
+        let stats = DependencyGraphStats {
+            node_count: super::super::registry::LARGE_DEPENDENCY_GRAPH_THRESHOLD + 1,
+            edge_count: 40,
+        };
+        confirm_large_dependency_graph(stats, true, false)
+            .expect("--yes must allow a structurally valid large graph");
+    }
+
+    #[test]
+    fn graph_at_warning_threshold_needs_no_consent() {
+        let stats = DependencyGraphStats {
+            node_count: super::super::registry::LARGE_DEPENDENCY_GRAPH_THRESHOLD,
+            edge_count: 40,
+        };
+        confirm_large_dependency_graph(stats, false, false)
+            .expect("threshold is a soft boundary, not a hard failure");
+    }
+
     /// Run an async closure with CWD set to a temp dir, then restore.
     /// Uses a drop guard so CWD is restored even if the closure panics.
     async fn in_temp_dir_async<F, Fut>(f: F)
@@ -4728,7 +4849,7 @@ workers:
                 edges: Vec::new(),
             };
 
-            let rc = handle_resolved_graph_add(&graph, true).await;
+            let rc = handle_resolved_graph_add(&graph, true, true, false).await;
 
             assert_eq!(rc, 1);
             assert!(!std::path::Path::new("config.yaml").exists());
@@ -4786,7 +4907,7 @@ workers:
                 edges: Vec::new(),
             };
 
-            let rc = handle_resolved_graph_add(&graph, true).await;
+            let rc = handle_resolved_graph_add(&graph, true, true, false).await;
 
             assert_eq!(rc, 1);
             assert_eq!(
@@ -4868,7 +4989,7 @@ workers:
                 }],
             };
 
-            let rc = handle_resolved_graph_add(&graph, true).await;
+            let rc = handle_resolved_graph_add(&graph, true, true, false).await;
 
             assert_eq!(rc, 1);
             assert_eq!(
@@ -4976,7 +5097,7 @@ workers:
                 ],
             };
 
-            let rc = handle_resolved_graph_add(&graph, true).await;
+            let rc = handle_resolved_graph_add(&graph, true, true, false).await;
 
             assert_eq!(rc, 0);
             let config = std::fs::read_to_string("config.yaml").unwrap();
@@ -5314,7 +5435,7 @@ workers:
             );
             let graph = graph_with(resolved_binary_worker(worker_name, "1.0.0", binaries));
 
-            let rc = handle_resolved_graph_add(&graph, true).await;
+            let rc = handle_resolved_graph_add(&graph, true, true, false).await;
 
             assert_eq!(rc, 0, "binary resolve add should succeed");
             assert!(
@@ -5343,7 +5464,7 @@ workers:
         in_temp_dir_async(|_| async move {
             let graph = graph_with(resolved_engine_worker("iii-exec", "2.0.0"));
 
-            let rc = handle_resolved_graph_add(&graph, true).await;
+            let rc = handle_resolved_graph_add(&graph, true, true, false).await;
 
             assert_eq!(rc, 0);
             assert!(
@@ -7065,7 +7186,7 @@ dependencies:
     #[tokio::test]
     async fn install_manifest_dependencies_empty_is_noop() {
         let deps: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-        let result = super::install_manifest_dependencies(&deps, true).await;
+        let result = super::install_manifest_dependencies(&deps, true, false, false).await;
         assert!(result.is_ok(), "empty deps must succeed as noop");
     }
 
@@ -7075,7 +7196,7 @@ dependencies:
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
         let mut deps = std::collections::BTreeMap::new();
         deps.insert("math-worker".to_string(), "^0.1.0".to_string());
-        let result = super::install_manifest_dependencies(&deps, true).await;
+        let result = super::install_manifest_dependencies(&deps, true, false, false).await;
         match prev {
             Some(v) => unsafe { std::env::set_var("III_API_URL", v) },
             None => unsafe { std::env::remove_var("III_API_URL") },
@@ -7097,7 +7218,7 @@ dependencies:
         unsafe { std::env::set_var("III_API_URL", "http://127.0.0.1:1") };
         let mut deps = std::collections::BTreeMap::new();
         deps.insert("math-worker".to_string(), "1.0.0-beta.1".to_string());
-        let result = super::install_manifest_dependencies(&deps, true).await;
+        let result = super::install_manifest_dependencies(&deps, true, false, false).await;
         match prev {
             Some(v) => unsafe { std::env::set_var("III_API_URL", v) },
             None => unsafe { std::env::remove_var("III_API_URL") },

@@ -37,6 +37,12 @@ pub struct AddArgs {
     /// local engine) instead of creating an orphan config file here.
     #[arg(long, value_name = "HOST[:PORT]")]
     pub host: Option<String>,
+
+    /// Proceed without prompting when the resolved dependency graph contains
+    /// more than 32 workers. Required for large-graph installs in CI or other
+    /// non-interactive environments.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Parser, Debug)]

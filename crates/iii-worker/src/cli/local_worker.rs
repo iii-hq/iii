@@ -469,6 +469,8 @@ pub async fn handle_local_add(
     reset_config: bool,
     brief: bool,
     wait: bool,
+    assume_yes: bool,
+    can_prompt: bool,
 ) -> i32 {
     // 1. Resolve path to absolute
     let project_path = match std::fs::canonicalize(path) {
@@ -701,7 +703,13 @@ pub async fn handle_local_add(
         None => std::collections::BTreeMap::new(),
     };
     if !declared_deps.is_empty()
-        && let Err(e) = super::managed::install_manifest_dependencies(&declared_deps, brief).await
+        && let Err(e) = super::managed::install_manifest_dependencies(
+            &declared_deps,
+            brief,
+            assume_yes,
+            can_prompt,
+        )
+        .await
     {
         eprintln!(
             "{} {}\n  \
@@ -1855,6 +1863,8 @@ resources:
             /*reset_config=*/ false,
             /*brief=*/ false,
             /*wait=*/ false,
+            /*assume_yes=*/ false,
+            /*can_prompt=*/ false,
         )
         .await;
 

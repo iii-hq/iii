@@ -48,6 +48,11 @@ pub struct AddOptions {
         description = "Reset the worker's config.yaml block before re-adding. Combine with force=true for a clean reinstall."
     )]
     pub reset_config: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Proceed without confirmation when a registry dependency graph contains more than 32 workers. Required for large-graph installs over the trigger or in non-interactive environments."
+    )]
+    pub yes: bool,
     #[serde(default = "default_wait")]
     #[schemars(
         description = "Block until the worker reports ready. Default true. Over the trigger surface installs routinely exceed bus invocation timeouts (npm install etc.) — prefer wait:false and poll worker::status. If a wait:true call times out, the install KEEPS RUNNING server-side: do not re-issue blindly (the project lock will be busy, W120); poll worker::status instead."
@@ -60,6 +65,7 @@ fn add_options_example() -> serde_json::Value {
         "source": {"kind": "registry", "name": "pdfkit", "version": "1.0.0"},
         "force": false,
         "reset_config": false,
+        "yes": false,
         "wait": true
     })
 }
@@ -436,6 +442,7 @@ mod tests {
             },
             force: false,
             reset_config: false,
+            yes: false,
             wait: true,
         };
         let v = serde_json::to_value(&opts).unwrap();

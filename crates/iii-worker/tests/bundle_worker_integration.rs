@@ -50,8 +50,8 @@ use iii_worker::cli::config_file::{
 };
 use iii_worker::cli::managed::handle_bundle_add;
 use iii_worker::cli::registry::{
-    BundleWorkerResponse, MAX_DEPENDENCY_DEPTH, MAX_TRANSITIVE_DEPS, ResolvedEdge, ResolvedRoot,
-    ResolvedWorker, ResolvedWorkerGraph, enforce_dep_graph_bounds,
+    BundleWorkerResponse, LARGE_DEPENDENCY_GRAPH_THRESHOLD, ResolvedEdge, ResolvedRoot,
+    ResolvedWorker, ResolvedWorkerGraph, validate_dependency_graph,
 };
 use iii_worker::core::error::WorkerOpError;
 
@@ -556,7 +556,10 @@ fn dep_graph_accepts_within_bounds() {
             },
         ],
     };
-    enforce_dep_graph_bounds(&graph).expect("within bounds");
+    let stats = validate_dependency_graph(&graph).expect("valid graph");
+    assert_eq!(stats.node_count, 4);
+    assert_eq!(stats.edge_count, 4);
+    assert!(!stats.requires_confirmation());
 }
 
 #[test]
@@ -612,19 +615,15 @@ fn dep_graph_accepts_wide_shared_dependencies() {
         graph: nodes,
         edges,
     };
-    enforce_dep_graph_bounds(&graph).expect("wide shared-dependency graph is within bounds");
+    validate_dependency_graph(&graph).expect("wide shared-dependency graph is valid");
 }
 
 #[test]
 fn dep_graph_accepts_dense_layered_graph() {
-    // Regression for the backstop itself. `walked` counts frontier pops,
-    // and a dense DAG pushes each node once per parent, so pops grow
-    // roughly with node_count squared while distinct nodes stay small.
-    // A budget that is only linear in node_count therefore rejects a
-    // valid dense graph. This is the maximal shape within bounds: four
-    // fully-connected layers of width 8 — 32 nodes (the transitive_count
-    // cap), longest path 4 (under the depth cap) — which produces ~200
-    // pops and tripped the first linear budget.
+    // Regression for dense but valid DAGs. Four fully-connected layers of
+    // width 8 produce many more edges than nodes. Validation must remain
+    // linear in the payload size and classify the 33-node graph (including
+    // the root) for confirmation instead of rejecting it.
     const WIDTH: usize = 8;
     let layers: Vec<Vec<String>> = (0..4)
         .map(|l| (0..WIDTH).map(|w| format!("l{l}_{w}")).collect())
@@ -660,7 +659,8 @@ fn dep_graph_accepts_dense_layered_graph() {
         graph: nodes,
         edges,
     };
-    enforce_dep_graph_bounds(&graph).expect("dense in-bounds layered graph is accepted");
+    let stats = validate_dependency_graph(&graph).expect("dense layered graph is valid");
+    assert!(stats.requires_confirmation());
 }
 
 #[test]
@@ -681,16 +681,19 @@ fn dep_graph_tolerates_repeated_edges() {
             })
             .collect(),
     };
-    enforce_dep_graph_bounds(&graph).expect("repeated identical edges collapse to one");
+    let stats = validate_dependency_graph(&graph).expect("repeated identical edges collapse");
+    assert_eq!(stats.edge_count, 1);
 }
 
 #[test]
-fn dep_graph_rejects_excessive_depth() {
-    // Linear chain root → n0 → n1 → ... → n_{depth}.
-    let mut nodes = vec![make_resolved_worker("root")];
+fn dep_graph_accepts_long_acyclic_chain() {
+    // Regression for eval@0.1.0, whose legitimate six-node chain was rejected
+    // by the old hard depth-5 guard. Exercise a substantially longer chain to
+    // prove validation is iterative rather than recursion/depth based.
+    let mut nodes = vec![];
     let mut edges = vec![];
     let mut prev = "root".to_string();
-    for i in 0..(MAX_DEPENDENCY_DEPTH + 2) {
+    for i in 0..64 {
         let n = format!("n{i}");
         nodes.push(make_resolved_worker(&n));
         edges.push(ResolvedEdge {
@@ -706,28 +709,14 @@ fn dep_graph_rejects_excessive_depth() {
         graph: nodes,
         edges,
     };
-    let err = enforce_dep_graph_bounds(&graph).expect_err("depth cap fires");
-    let WorkerOpError::BundleDepGraphExceeded {
-        dimension, limit, ..
-    } = err
-    else {
-        panic!("expected BundleDepGraphExceeded");
-    };
-    // Either the depth-cap fires, or the edge-traversal guard fires
-    // first on a malformed/over-long graph. Both are acceptable as
-    // long as the rejection carries a sensible dimension.
-    assert!(
-        dimension == "depth" || dimension == "edge_traversal" || dimension == "transitive_count",
-        "dimension was: {dimension}"
-    );
-    assert!(limit > 0);
+    let stats = validate_dependency_graph(&graph).expect("long acyclic graph is valid");
+    assert_eq!(stats.node_count, 65);
+    assert!(stats.requires_confirmation());
 }
 
 #[test]
-fn dep_graph_rejects_excessive_breadth() {
-    // root with MAX_TRANSITIVE_DEPS+1 direct dependencies (depth 1 but
-    // node count over cap).
-    let extra = (MAX_TRANSITIVE_DEPS as usize) + 5;
+fn dep_graph_large_breadth_requires_confirmation_instead_of_failing() {
+    let extra = (LARGE_DEPENDENCY_GRAPH_THRESHOLD as usize) + 5;
     let nodes: Vec<_> = (0..extra)
         .map(|i| make_resolved_worker(&format!("dep{i}")))
         .collect();
@@ -744,11 +733,73 @@ fn dep_graph_rejects_excessive_breadth() {
         graph: nodes,
         edges,
     };
-    let err = enforce_dep_graph_bounds(&graph).expect_err("breadth cap fires");
+    let stats = validate_dependency_graph(&graph).expect("wide graph remains structurally valid");
+    assert!(stats.requires_confirmation());
+}
+
+#[test]
+fn dep_graph_rejects_cycle() {
+    let graph = ResolvedWorkerGraph {
+        root: make_root_worker("root"),
+        target: None,
+        graph: vec![make_resolved_worker("a"), make_resolved_worker("b")],
+        edges: vec![
+            ResolvedEdge {
+                from: "root".into(),
+                to: "a".into(),
+                range: "*".into(),
+            },
+            ResolvedEdge {
+                from: "a".into(),
+                to: "b".into(),
+                range: "*".into(),
+            },
+            ResolvedEdge {
+                from: "b".into(),
+                to: "a".into(),
+                range: "*".into(),
+            },
+        ],
+    };
+    let err = validate_dependency_graph(&graph).expect_err("cycle must be rejected");
     assert!(
-        matches!(err, WorkerOpError::BundleDepGraphExceeded { .. }),
-        "expected BundleDepGraphExceeded, got {err:?}"
+        matches!(err, WorkerOpError::DependencyGraphInvalid { ref reason } if reason.contains("cycle")),
+        "expected cycle error, got {err:?}"
     );
+}
+
+#[test]
+fn dep_graph_accepts_eval_0_1_0_shape() {
+    let names = [
+        "harness",
+        "context-manager",
+        "llm-router",
+        "state",
+        "configuration",
+    ];
+    let graph = ResolvedWorkerGraph {
+        root: ResolvedRoot {
+            name: "eval".into(),
+            version: "0.1.0".into(),
+        },
+        target: None,
+        graph: std::iter::once(make_resolved_worker("eval"))
+            .chain(names.iter().map(|name| make_resolved_worker(name)))
+            .collect(),
+        edges: std::iter::once("eval")
+            .chain(names.iter().copied())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|pair| ResolvedEdge {
+                from: pair[0].into(),
+                to: pair[1].into(),
+                range: "*".into(),
+            })
+            .collect(),
+    };
+    let stats = validate_dependency_graph(&graph).expect("eval@0.1.0 graph must be accepted");
+    assert_eq!(stats.node_count, 6);
+    assert!(!stats.requires_confirmation());
 }
 
 // =============================================================================

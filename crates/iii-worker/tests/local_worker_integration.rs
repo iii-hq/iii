@@ -384,8 +384,16 @@ async fn handle_local_add_valid_path() {
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::write(project_dir.join("package.json"), "{}").unwrap();
 
-        let result =
-            handle_local_add(project_dir.to_str().unwrap(), false, false, true, false).await;
+        let result = handle_local_add(
+            project_dir.to_str().unwrap(),
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )
+        .await;
         assert_eq!(result, 0, "handle_local_add should return 0 for valid path");
 
         // Without manifest, resolve_worker_name falls back to directory name
@@ -431,7 +439,16 @@ async fn handle_local_add_rejects_duplicate_without_force() {
             .build(&cwd);
 
         let result =
-            handle_local_add(project_dir.to_str().unwrap(), false, false, true, false).await;
+            handle_local_add(
+                project_dir.to_str().unwrap(),
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+            )
+            .await;
         assert_eq!(
             result, 1,
             "should return 1 when worker exists and force=false"
@@ -462,7 +479,16 @@ async fn handle_local_add_force_replaces_existing() {
             .build(&cwd);
 
         let result =
-            handle_local_add(project_dir.to_str().unwrap(), true, true, true, false).await;
+            handle_local_add(
+                project_dir.to_str().unwrap(),
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            )
+            .await;
         assert_eq!(result, 0, "should return 0 with force=true");
 
         let stored_path = get_worker_path("my-worker");
@@ -533,7 +559,16 @@ async fn handle_local_add_force_removes_prepared_marker() {
         std::fs::create_dir_all(managed_dir.join("var/iii/deps/node_modules")).unwrap();
 
         let result =
-            handle_local_add(project_dir.to_str().unwrap(), true, false, true, false).await;
+            handle_local_add(
+                project_dir.to_str().unwrap(),
+                true,
+                false,
+                true,
+                false,
+                false,
+                false,
+            )
+            .await;
         assert_eq!(result, 0, "force add should succeed");
 
         // Config entry replaced with the new canonical path.
@@ -641,7 +676,16 @@ async fn handle_local_add_force_removes_marker_when_dir_wipe_fails() {
         let _restore = RestorePerms(&managed_dir);
 
         let result =
-            handle_local_add(project_dir.to_str().unwrap(), true, false, true, false).await;
+            handle_local_add(
+                project_dir.to_str().unwrap(),
+                true,
+                false,
+                true,
+                false,
+                false,
+                false,
+            )
+            .await;
 
         assert_eq!(result, 0, "force add should still succeed when the dir wipe fails");
         assert!(
@@ -722,7 +766,16 @@ async fn handle_local_add_force_fails_when_marker_removal_errors() {
         let _restore = RestorePerms(&var_dir);
 
         let result =
-            handle_local_add(project_dir.to_str().unwrap(), true, false, true, false).await;
+            handle_local_add(
+                project_dir.to_str().unwrap(),
+                true,
+                false,
+                true,
+                false,
+                false,
+                false,
+            )
+            .await;
 
         assert_eq!(
             result, 1,
@@ -747,7 +800,8 @@ async fn handle_local_add_canonicalizes_relative_path() {
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::write(project_dir.join("package.json"), "{}").unwrap();
 
-        let result = handle_local_add("./rel-worker", false, false, true, false).await;
+        let result =
+            handle_local_add("./rel-worker", false, false, true, false, false, false).await;
         assert_eq!(result, 0, "should succeed with relative path");
 
         // Without manifest, name falls back to directory name "rel-worker"
@@ -767,8 +821,16 @@ async fn handle_local_add_canonicalizes_relative_path() {
 #[tokio::test]
 async fn handle_local_add_invalid_path_returns_error() {
     in_temp_dir_async(|| async {
-        let result =
-            handle_local_add("/nonexistent/path/to/worker", false, false, true, false).await;
+        let result = handle_local_add(
+            "/nonexistent/path/to/worker",
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )
+        .await;
         assert_eq!(result, 1, "should return 1 for nonexistent path");
     })
     .await;
