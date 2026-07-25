@@ -155,7 +155,8 @@ pub async fn run_background_check(
 
 /// Check if a managed binary is installed on disk.
 fn is_binary_installed(name: &str) -> bool {
-    platform::binary_path(name).exists() || platform::find_existing_binary(name).is_some()
+    platform::binary_path(name).is_some_and(|p| p.exists())
+        || platform::find_existing_binary(name).is_some()
 }
 
 /// Detect the actual version of an installed binary by running it with `--version`.
@@ -163,10 +164,9 @@ fn is_binary_installed(name: &str) -> bool {
 /// never stalls the async reactor.
 /// Returns None if the binary doesn't exist, times out, or output can't be parsed.
 async fn detect_binary_version(name: &str) -> Option<Version> {
-    let path = if platform::binary_path(name).exists() {
-        platform::binary_path(name)
-    } else {
-        platform::find_existing_binary(name)?
+    let path = match platform::binary_path(name) {
+        Some(p) if p.exists() => p,
+        _ => platform::find_existing_binary(name)?,
     };
 
     let result = tokio::time::timeout(
@@ -290,7 +290,7 @@ pub async fn update_binary(
     telemetry::send_cli_update_started(spec.name, &from_version_str);
 
     // Download and install
-    let target_path = platform::binary_path(spec.name);
+    let target_path = platform::binary_path(spec.name).ok_or(UpdateError::NoBinDir)?;
     match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path)
         .await
     {
@@ -400,7 +400,7 @@ pub async fn self_update(
 
     // Install to the standard managed location (~/.local/bin/iii),
     // consistent with install.sh and other managed binaries.
-    let target_path = platform::binary_path(spec.name);
+    let target_path = platform::binary_path(spec.name).ok_or(UpdateError::NoBinDir)?;
 
     match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path)
         .await
@@ -471,6 +471,9 @@ pub enum UpdateError {
 
     #[error(transparent)]
     Download(#[from] download::DownloadAndInstallError),
+
+    #[error("Could not resolve home directory to locate the iii bin directory")]
+    NoBinDir,
 }
 
 /// Print the result of an update operation.

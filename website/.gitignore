@@ -6,3 +6,4 @@ dist/
 .DS_Store
 .env
 .env.local
+ds-bundle/
