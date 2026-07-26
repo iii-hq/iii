@@ -348,6 +348,8 @@ func MarshalMessage(msg any) ([]byte, error) {
 		return marshalEnvelope(MsgRegisterService, &m)
 	case WorkerRegisteredMessage:
 		return marshalEnvelope(MsgWorkerRegistered, &m)
+	case RegistrationRejectedMessage:
+		return marshalEnvelope(MsgRegistrationRejected, &m)
 	case ReattachMessage:
 		return marshalEnvelope(MsgReattach, &m)
 	case PingMessage:
