@@ -1936,6 +1936,20 @@ impl IIIClient {
             owner_worker_id,
         };
         tracing::error!(error = %err, "worker registration rejected; not reconnecting");
+        // Fail every in-flight invocation now with the fatal error, so a
+        // `trigger()` awaiting a response returns `RegistrationRejected`
+        // immediately instead of sitting on its oneshot until the invocation
+        // timeout elapses. Mirrors Go's `handleRegistrationRejected`.
+        let drained: Vec<PendingInvocation> = self
+            .inner
+            .pending
+            .lock_or_recover()
+            .drain()
+            .map(|(_, sender)| sender)
+            .collect();
+        for sender in drained {
+            let _ = sender.send(Err(err.clone()));
+        }
         *self.inner.fatal_error.lock_or_recover() = Some(err);
         self.set_connection_state(IIIConnectionState::Failed);
         self.inner.running.store(false, Ordering::SeqCst);
@@ -2852,6 +2866,31 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(Error::Timeout)));
+        assert!(iii.inner.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fatal_registration_rejection_fails_pending_invocations() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let id = uuid::Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+        iii.inner.pending.lock().unwrap().insert(id, tx);
+
+        iii.fail_registration_fatal(
+            "WORKER_NAMESPACE_CONFLICT".to_string(),
+            "orders".to_string(),
+            "state".to_string(),
+            "owner-1".to_string(),
+        );
+
+        // The in-flight invocation is failed fast with the typed error instead
+        // of sitting on its receiver until the invocation timeout.
+        match rx.await {
+            Ok(Err(Error::RegistrationRejected { code, .. })) => {
+                assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
+            }
+            other => panic!("expected RegistrationRejected, got {other:?}"),
+        }
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
 
