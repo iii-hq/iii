@@ -648,7 +648,8 @@ impl EngineFunctionsWorker {
             format!("Function '{function_id}' is not registered.")
         } else {
             format!(
-                "Function '{function_id}' is ambiguous: it is registered in namespace(s): {}.",
+                "Function '{function_id}' is ambiguous: it is registered in namespace(s): {}. \
+                 Pass `namespace` to select one.",
                 namespaces.join(", ")
             )
         };
@@ -1960,7 +1961,10 @@ impl EngineFunctionsWorker {
         {
             // Fatal, unlike a function-id conflict: reject and close. Return
             // before writing any metadata or draining buffered registrations —
-            // the loser leaves no trace.
+            // the loser leaves no trace. Cancel the grace timer first so it can
+            // never fire after the reject and drain this worker's buffered
+            // registrations into `default`.
+            self.engine.cancel_namespace_grace_timer(&uuid);
             self.engine.reject_worker_registration(uuid, conflict).await;
             return FunctionResult::Success(RegisterWorkerResult { success: false });
         }
@@ -1976,6 +1980,9 @@ impl EngineFunctionsWorker {
             self.engine
                 .resolve_connection_namespace(&worker, &namespace)
                 .await;
+            // Namespace is fixed by this in-time announce; the grace timer is no
+            // longer needed.
+            self.engine.cancel_namespace_grace_timer(&uuid);
         }
 
         let data = serde_json::json!({

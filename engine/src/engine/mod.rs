@@ -396,6 +396,12 @@ pub struct Engine {
     /// by `cleanup_worker`. A connection with no entry here (in-process
     /// workers, direct `router_msg` callers) never buffers.
     namespace_states: Arc<DashMap<Uuid, NamespaceState>>,
+    /// The per-connection namespace-grace timer task, so it can be cancelled the
+    /// moment the namespace is fixed (`engine::workers::register`), the worker is
+    /// rejected, or the connection tears down — instead of lingering (with its
+    /// `engine`/`worker` clones) for the full grace, or, worse, firing after a
+    /// rejection and draining a rejected worker's buffered registrations.
+    namespace_grace_tasks: Arc<DashMap<Uuid, tokio::task::JoinHandle<()>>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
     /// Effective `iii-worker-manager` port, resolved from config at build
     /// time. Set once by `EngineBuilder::build`; subsequent reads see the
@@ -448,6 +454,7 @@ impl Engine {
             function_owners: Arc::new(DashMap::new()),
             worker_name_owners: Arc::new(DashMap::new()),
             namespace_states: Arc::new(DashMap::new()),
+            namespace_grace_tasks: Arc::new(DashMap::new()),
             active_scope,
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
             config_path: Arc::new(std::sync::OnceLock::new()),
@@ -866,7 +873,8 @@ impl Engine {
         let engine = self.clone();
         let worker = worker.clone();
         let grace = self.registration_namespace_grace();
-        tokio::spawn(async move {
+        let worker_id = worker.id;
+        let handle = tokio::spawn(async move {
             tokio::time::sleep(grace).await;
             // `resolve_connection_namespace` transitions `Pending` -> `Draining`
             // atomically and returns whether THIS call won. Warn only when the
@@ -889,6 +897,20 @@ impl Engine {
                 );
             }
         });
+        self.namespace_grace_tasks.insert(worker_id, handle);
+    }
+
+    /// Cancel the namespace-grace timer task for `worker_id`, if still armed.
+    /// Called once the namespace is fixed by `engine::workers::register`, on a
+    /// fatal registration rejection, and from `cleanup_worker` — so the timer
+    /// and its captured `engine`/`worker` clones drop immediately and can never
+    /// fire after the connection is done with. Distinct from
+    /// [`Self::abort_namespace_resolution`], which flips the connection *state*
+    /// to `Aborted`; this cancels the spawned sleep task itself.
+    pub(crate) fn cancel_namespace_grace_timer(&self, worker_id: &Uuid) {
+        if let Some((_, handle)) = self.namespace_grace_tasks.remove(worker_id) {
+            handle.abort();
+        }
     }
 
     /// The namespace `worker`'s registrations belong to.
@@ -1950,7 +1972,10 @@ impl Engine {
                             code: FUNCTION_NAMESPACE_CONFLICT.to_string(),
                             namespace: namespace.clone(),
                             worker_name: reg_id.clone(),
-                            owner_worker_id: worker.id.to_string(),
+                            // Reserved-prefix refusal, not a real conflict: no
+                            // worker owns `engine::*` (the engine reserves it), so
+                            // don't name the rejected worker as its own owner.
+                            owner_worker_id: String::new(),
                         },
                     )
                     .await;
@@ -2552,6 +2577,12 @@ impl Engine {
             self.release_worker_name_if_owner(&worker.id, &namespace, &worker_name);
         }
         self.worker_registry.unregister_worker(&worker.id);
+        // Cancel the grace timer task (a no-op if it already fired) so its
+        // `engine`/`worker` clones drop now instead of at the grace deadline.
+        // (The connection state was already flipped to `Aborted` above, which is
+        // what stops a still-running drain; this frees the idle sleep task.)
+        self.cancel_namespace_grace_timer(&worker.id);
+
         // Dropped last: every teardown step above resolves the connection's
         // namespace through `connection_namespace`, which reads this entry.
         // Any registration still buffered here dies with the connection — its

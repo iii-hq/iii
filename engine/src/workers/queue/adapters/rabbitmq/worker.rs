@@ -183,7 +183,7 @@ impl Worker {
         let namespace = self.engine.trigger_registry.namespace_of(trigger_id);
 
         match self
-            .process_job(&job, function_id, condition_function_id, trigger_id)
+            .process_job(&job, function_id, condition_function_id, &namespace)
             .await
         {
             Ok(_) => {
@@ -227,7 +227,7 @@ impl Worker {
         job: &Job,
         function_id: &str,
         condition_function_id: Option<&str>,
-        trigger_id: &str,
+        namespace: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let span = tracing::info_span!(
             "queue_job",
@@ -241,15 +241,16 @@ impl Worker {
         async {
             let engine = Arc::clone(&self.engine);
             let data = job.data.clone();
-            // Resolve the subscribing trigger's namespace LIVE by id.
-            let namespace = engine.trigger_registry.namespace_of(trigger_id);
+            // `namespace` is resolved once in `process_delivery` and threaded in,
+            // so invoke, requeue, and DLQ all use the same snapshot even if the
+            // trigger reloads mid-delivery.
 
             if let Some(condition_path) = condition_function_id {
                 tracing::debug!(
                     condition_function_id = %condition_path,
                     "Checking trigger conditions"
                 );
-                match check_condition(engine.as_ref(), &namespace, condition_path, data.clone())
+                match check_condition(engine.as_ref(), namespace, condition_path, data.clone())
                     .await
                 {
                     Ok(true) => {}
@@ -274,7 +275,7 @@ impl Worker {
             }
 
             match engine
-                .call_with_metadata_ns(&namespace, function_id, data, None)
+                .call_with_metadata_ns(namespace, function_id, data, None)
                 .await
             {
                 Ok(_) => {
