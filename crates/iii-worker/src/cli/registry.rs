@@ -335,9 +335,27 @@ impl DependencyGraphStats {
 pub fn validate_dependency_graph(
     graph: &ResolvedWorkerGraph,
 ) -> Result<DependencyGraphStats, crate::core::error::WorkerOpError> {
+    validate_dependency_graph_roots(graph, std::slice::from_ref(&graph.root.name))
+}
+
+/// Validate a merged dependency forest from every explicitly requested root.
+///
+/// Manifest dependencies are resolved independently, so their merged graph
+/// can have multiple legitimate roots. Keeping the roots separate avoids
+/// inventing dependency edges while preserving the same reachability and
+/// cycle guarantees as [`validate_dependency_graph`].
+pub(crate) fn validate_dependency_graph_roots(
+    graph: &ResolvedWorkerGraph,
+    roots: &[String],
+) -> Result<DependencyGraphStats, crate::core::error::WorkerOpError> {
     use crate::core::error::WorkerOpError;
 
-    let root = graph.root.name.as_str();
+    if roots.is_empty() {
+        return Err(WorkerOpError::DependencyGraphInvalid {
+            reason: "dependency graph has no requested roots".to_string(),
+        });
+    }
+
     let mut graph_names = HashSet::with_capacity(graph.graph.len());
     for worker in &graph.graph {
         if !graph_names.insert(worker.name.as_str()) {
@@ -348,7 +366,8 @@ pub fn validate_dependency_graph(
     }
 
     let mut nodes = graph_names;
-    nodes.insert(root);
+    let roots = roots.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    nodes.extend(roots.iter().copied());
 
     let mut adjacency: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut indegree: HashMap<&str, u32> = nodes.iter().map(|&name| (name, 0)).collect();
@@ -372,11 +391,11 @@ pub fn validate_dependency_graph(
         }
     }
 
-    // Reject disconnected payload nodes. They are not dependencies of the
-    // requested root and must not be installed merely because the resolver
+    // Reject disconnected payload nodes. They are not dependencies of any
+    // requested root and must not be installed merely because a resolver
     // included them in its response.
     let mut reachable = HashSet::new();
-    let mut frontier = vec![root];
+    let mut frontier = roots.iter().copied().collect::<Vec<_>>();
     while let Some(node) = frontier.pop() {
         if !reachable.insert(node) {
             continue;
@@ -393,8 +412,18 @@ pub fn validate_dependency_graph(
             .into_iter()
             .collect::<Vec<_>>()
             .join(", ");
+        let root_description = if roots.len() == 1 {
+            format!("{:?}", roots.first().expect("non-empty roots"))
+        } else {
+            format!(
+                "declared roots [{}]",
+                roots.iter().copied().collect::<Vec<_>>().join(", ")
+            )
+        };
         return Err(WorkerOpError::DependencyGraphInvalid {
-            reason: format!("worker node(s) are unreachable from {root:?}: {unreachable}"),
+            reason: format!(
+                "worker node(s) are unreachable from {root_description}: {unreachable}"
+            ),
         });
     }
 

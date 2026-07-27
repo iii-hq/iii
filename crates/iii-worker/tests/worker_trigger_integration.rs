@@ -339,6 +339,14 @@ fn classify_not_found_lifts_to_w110() {
 }
 
 #[test]
+fn classify_declined_prompt_lifts_to_w170() {
+    let stderr = "error: operation cancelled\n";
+    let err = classify_handler_error(1, stderr, "add", "large-worker");
+    assert_eq!(err.kind(), WorkerOpErrorKind::Cancelled);
+    assert_eq!(parse_envelope(&err_payload(&err)).0, "W170");
+}
+
+#[test]
 fn classify_unknown_failure_is_w900_without_rc_leak() {
     let stderr = "error: HTTP 503 service unavailable\n";
     let err = classify_handler_error(2, stderr, "add", "anything");

@@ -246,6 +246,10 @@ pub fn classify_handler_error(rc: i32, captured: &str, op: &str, name_hint: &str
         return WorkerOpError::ConsentRequired { op: op.to_string() };
     }
 
+    if lower == "operation cancelled" {
+        return WorkerOpError::Cancelled;
+    }
+
     if let Some(reason) = detail.strip_prefix("dependency graph is invalid: ") {
         return WorkerOpError::DependencyGraphInvalid {
             reason: reason.to_string(),
@@ -1146,6 +1150,12 @@ mod tests {
             "large-worker",
         );
         assert_eq!(err.kind(), WorkerOpErrorKind::ConsentRequired);
+    }
+
+    #[test]
+    fn classify_handler_error_maps_declined_prompt_to_w170() {
+        let err = classify_handler_error(1, "error: operation cancelled\n", "add", "large-worker");
+        assert_eq!(err.kind(), WorkerOpErrorKind::Cancelled);
     }
 
     #[test]

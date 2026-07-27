@@ -1476,43 +1476,56 @@ async fn handle_resolved_graph_add(
     assume_yes: bool,
     can_prompt: bool,
 ) -> i32 {
-    // Validate the complete graph BEFORE touching filesystem state. Long
-    // acyclic chains are legitimate; cycles, dangling edges, duplicate nodes,
-    // and resolver-injected disconnected nodes are not.
-    let stats = match super::registry::validate_dependency_graph(graph) {
-        Ok(stats) => stats,
+    let roots = std::slice::from_ref(&graph.root.name);
+    let prepared = match preflight_resolved_graph(graph, roots, assume_yes, can_prompt) {
+        Ok(prepared) => prepared,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
             return 1;
         }
     };
-    if let Err(e) = confirm_large_dependency_graph(stats, assume_yes, can_prompt) {
-        eprintln!("{} {}", "error:".red(), e);
-        return 1;
-    }
+    handle_preflighted_resolved_graph_add(graph, prepared, brief).await
+}
+
+struct PreparedResolvedGraph {
+    graph_lockfile: super::lockfile::WorkerLockfile,
+}
+
+/// Complete every fallible, non-mutating graph check before an install may
+/// replace existing worker state. The returned value proves that validation
+/// and any required operator consent already succeeded, so callers can carry
+/// it across the `--force` cleanup boundary without resolving or prompting
+/// twice.
+fn preflight_resolved_graph(
+    graph: &ResolvedWorkerGraph,
+    roots: &[String],
+    assume_yes: bool,
+    can_prompt: bool,
+) -> Result<PreparedResolvedGraph, String> {
+    let stats = super::registry::validate_dependency_graph_roots(graph, roots)
+        .map_err(|e| e.to_string())?;
+    confirm_large_dependency_graph(stats, assume_yes, can_prompt).map_err(|e| e.to_string())?;
 
     for node in &graph.graph {
         if let Err(e) = super::registry::validate_worker_name(&node.name) {
-            eprintln!(
-                "{} invalid resolved worker '{}': {}",
-                "error:".red(),
-                node.name,
-                e
-            );
-            return 1;
+            return Err(format!("invalid resolved worker '{}': {}", node.name, e));
         }
     }
 
-    let graph_lockfile = match lockfile_from_graph(graph).and_then(|lockfile| {
+    let graph_lockfile = lockfile_from_graph(graph).and_then(|lockfile| {
         lockfile.to_yaml()?;
         Ok(lockfile)
-    }) {
-        Ok(lockfile) => lockfile,
-        Err(e) => {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-    };
+    })?;
+
+    Ok(PreparedResolvedGraph { graph_lockfile })
+}
+
+async fn handle_preflighted_resolved_graph_add(
+    graph: &ResolvedWorkerGraph,
+    prepared: PreparedResolvedGraph,
+    brief: bool,
+) -> i32 {
+    let PreparedResolvedGraph { graph_lockfile } = prepared;
 
     let lock_path = super::lockfile::lockfile_path();
     let mut lockfile = match read_lockfile_or_default(lock_path) {
@@ -1662,9 +1675,15 @@ async fn handle_resolved_graph_add(
 /// If the same name appears at different versions across graphs, returns an
 /// error naming the conflicting dep and both versions — this is the cross-dep
 /// version-conflict gate.
+#[derive(Debug)]
+pub(crate) struct ResolvedWorkerForest {
+    graph: ResolvedWorkerGraph,
+    roots: Vec<String>,
+}
+
 pub(crate) fn merge_resolved_graphs(
     graphs: Vec<(String, ResolvedWorkerGraph)>,
-) -> Result<ResolvedWorkerGraph, String> {
+) -> Result<ResolvedWorkerForest, String> {
     if graphs.is_empty() {
         return Err("merge_resolved_graphs: no graphs provided".to_string());
     }
@@ -1673,8 +1692,12 @@ pub(crate) fn merge_resolved_graphs(
         std::collections::BTreeMap::new();
     let mut edges: Vec<super::registry::ResolvedEdge> = Vec::new();
     let first_root = graphs[0].1.root.clone();
+    let mut roots = Vec::with_capacity(graphs.len());
 
     for (origin, graph) in graphs {
+        super::registry::validate_dependency_graph(&graph)
+            .map_err(|e| format!("invalid resolved graph for `{origin}`: {e}"))?;
+        roots.push(graph.root.name.clone());
         for node in graph.graph {
             if let Some(existing) = nodes_by_name.get(&node.name) {
                 if existing.version != node.version {
@@ -1695,12 +1718,22 @@ pub(crate) fn merge_resolved_graphs(
         edges.extend(graph.edges);
     }
 
-    Ok(ResolvedWorkerGraph {
-        root: first_root,
-        target: None,
-        graph: nodes_by_name.into_values().collect(),
-        edges,
+    roots.sort();
+    roots.dedup();
+    Ok(ResolvedWorkerForest {
+        graph: ResolvedWorkerGraph {
+            root: first_root,
+            target: None,
+            graph: nodes_by_name.into_values().collect(),
+            edges,
+        },
+        roots,
     })
+}
+
+pub(crate) struct PreparedManifestDependencies {
+    forest: ResolvedWorkerForest,
+    prepared: PreparedResolvedGraph,
 }
 
 /// Resolve every declared manifest dependency against the registry and install
@@ -1709,18 +1742,17 @@ pub(crate) fn merge_resolved_graphs(
 ///
 /// Pass-1: resolve each dep via `fetch_resolved_worker_graph` (serial — fine
 /// for ≤3 deps; parallel fan-out is a future optimization).
-/// Pass-2: merge all graphs into one synthetic graph (dedupes shared
+/// Pass-2: merge all graphs into one dependency forest (dedupes shared
 /// transitive deps, errors on cross-graph version conflicts).
-/// Pass-3: single call to `handle_resolved_graph_add`. Its snapshot/rollback
-/// boundary covers the whole chain — no partial-install state is possible.
-pub(crate) async fn install_manifest_dependencies(
+/// Pass-3: preflight the complete forest once; installation then uses one
+/// snapshot/rollback boundary, so no partial-install state is possible.
+pub(crate) async fn prepare_manifest_dependencies(
     deps: &std::collections::BTreeMap<String, String>,
-    brief: bool,
     assume_yes: bool,
     can_prompt: bool,
-) -> Result<(), String> {
+) -> Result<Option<PreparedManifestDependencies>, String> {
     if deps.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let mut graphs = Vec::with_capacity(deps.len());
@@ -1748,9 +1780,22 @@ pub(crate) async fn install_manifest_dependencies(
         graphs.push((name.clone(), graph));
     }
 
-    let merged = merge_resolved_graphs(graphs)?;
+    let forest = merge_resolved_graphs(graphs)?;
+    let prepared = preflight_resolved_graph(&forest.graph, &forest.roots, assume_yes, can_prompt)?;
 
-    let rc = handle_resolved_graph_add(&merged, brief, assume_yes, can_prompt).await;
+    Ok(Some(PreparedManifestDependencies { forest, prepared }))
+}
+
+pub(crate) async fn install_prepared_manifest_dependencies(
+    dependencies: PreparedManifestDependencies,
+    brief: bool,
+) -> Result<(), String> {
+    let rc = handle_preflighted_resolved_graph_add(
+        &dependencies.forest.graph,
+        dependencies.prepared,
+        brief,
+    )
+    .await;
     if rc != 0 {
         return Err(format!(
             "failed to install merged dependency graph (exit {rc}); no partial \
@@ -1758,6 +1803,19 @@ pub(crate) async fn install_manifest_dependencies(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn install_manifest_dependencies(
+    deps: &std::collections::BTreeMap<String, String>,
+    brief: bool,
+    assume_yes: bool,
+    can_prompt: bool,
+) -> Result<(), String> {
+    let Some(prepared) = prepare_manifest_dependencies(deps, assume_yes, can_prompt).await? else {
+        return Ok(());
+    };
+    install_prepared_manifest_dependencies(prepared, brief).await
 }
 
 pub async fn handle_managed_add(
@@ -1779,6 +1837,64 @@ pub async fn handle_managed_add(
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
     )
     .await
+}
+
+/// Apply the destructive half of `--force`.
+///
+/// Registry and manifest callers must invoke this only after their source has
+/// been resolved and preflighted, including any required operator consent.
+async fn apply_force_replacement(worker_name: &str, force: bool, reset_config: bool) -> i32 {
+    if !force {
+        return 0;
+    }
+
+    if let Err(e) = super::registry::validate_worker_name(worker_name) {
+        eprintln!("{} {}", "error:".red(), e);
+        return 1;
+    }
+
+    if is_worker_running(worker_name) {
+        eprintln!(
+            "  {} {} is running, stopping first...",
+            "⟳".cyan(),
+            worker_name.bold()
+        );
+        let stop_rc = handle_managed_stop(worker_name).await;
+        if stop_rc != 0 {
+            // Don't abort — artifacts will be wiped below anyway, and the
+            // most common "failure" is "already stopped between
+            // is_worker_running and the signal" which is benign.
+            eprintln!(
+                "  {} stop exited {} — continuing with force add anyway",
+                "warning:".yellow(),
+                stop_rc
+            );
+        }
+    }
+
+    if is_any_builtin(worker_name) {
+        eprintln!(
+            "  {} '{}' is a builtin worker, no artifacts to re-download.",
+            "info:".cyan(),
+            worker_name,
+        );
+    } else {
+        let freed = delete_worker_artifacts(worker_name);
+        if freed > 0 {
+            eprintln!(
+                "  {} Cleared {:.1} MB of artifacts for {}",
+                "✓".green(),
+                freed as f64 / 1_048_576.0,
+                worker_name.bold(),
+            );
+        }
+    }
+
+    if reset_config && let Err(e) = super::config_file::remove_worker(worker_name) {
+        tracing::debug!("remove_worker during force: {}", e);
+    }
+
+    0
 }
 
 pub async fn handle_managed_add_with_consent(
@@ -1804,73 +1920,12 @@ pub async fn handle_managed_add_with_consent(
         .await;
     }
 
-    // --force: stop if running, delete artifacts, then proceed with a fresh
-    // add. Before the fix this path errored out with "Stop it first" when a
-    // running worker was detected — which defeats the point of --force. The
-    // whole sequence (stop → clear → add) is what a user means by "force."
-    if force {
-        let (plain_name, _) = parse_worker_input(image_or_name);
-
-        let is_oci_ref = plain_name.contains('/') || plain_name.contains(':');
-        if !is_oci_ref && let Err(e) = super::registry::validate_worker_name(&plain_name) {
-            eprintln!("{} {}", "error:".red(), e);
-            return 1;
-        }
-
-        if is_worker_running(&plain_name) {
-            eprintln!(
-                "  {} {} is running, stopping first...",
-                "⟳".cyan(),
-                plain_name.bold()
-            );
-            let stop_rc = handle_managed_stop(&plain_name).await;
-            if stop_rc != 0 {
-                // Don't abort — artifacts will be wiped below anyway, and the
-                // most common "failure" is "already stopped between is_worker_running
-                // and the signal" which is benign. Surface it so a stuck worker
-                // doesn't silently confuse the user.
-                eprintln!(
-                    "  {} stop exited {} — continuing with force add anyway",
-                    "warning:".yellow(),
-                    stop_rc
-                );
-            }
-        }
-
-        if is_any_builtin(&plain_name) {
-            eprintln!(
-                "  {} '{}' is a builtin worker, no artifacts to re-download.",
-                "info:".cyan(),
-                plain_name,
-            );
-        } else {
-            let freed = delete_worker_artifacts(&plain_name);
-            if freed > 0 {
-                eprintln!(
-                    "  {} Cleared {:.1} MB of artifacts for {}",
-                    "✓".green(),
-                    freed as f64 / 1_048_576.0,
-                    plain_name.bold(),
-                );
-            }
-        }
-
-        if reset_config {
-            match super::config_file::remove_worker(&plain_name) {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::debug!("remove_worker during force: {}", e);
-                }
-            }
-        }
-    }
-
     // Direct OCI reference (contains '/' or ':') — passthrough, skip API
     if image_or_name.contains('/') || image_or_name.contains(':') {
         if !brief {
             eprintln!("  Resolving {}...", image_or_name.bold());
         }
-        let name = image_or_name
+        let name = super::oci_ref::canonical_cache_key(image_or_name)
             .rsplit('/')
             .next()
             .unwrap_or(image_or_name)
@@ -1879,6 +1934,9 @@ pub async fn handle_managed_add_with_consent(
             .unwrap_or(image_or_name);
         if !brief {
             eprintln!("  {} Resolved to {}", "✓".green(), image_or_name.dimmed());
+        }
+        if apply_force_replacement(name, force, reset_config).await != 0 {
+            return 1;
         }
         let rc = handle_oci_pull_and_add(name, image_or_name, brief).await;
         return finish_add(name, rc, wait, brief).await;
@@ -1890,6 +1948,9 @@ pub async fn handle_managed_add_with_consent(
     // Mandatory builtins are always injected by the engine with Rust defaults;
     // they must not be written into config.yaml via `iii worker add`.
     if MANDATORY_BUILTIN_NAMES.contains(&name.as_str()) {
+        if apply_force_replacement(&name, force, reset_config).await != 0 {
+            return 1;
+        }
         if !brief {
             eprintln!(
                 "  {} '{}' is a mandatory engine worker (always on; configure via the configuration worker, not config.yaml).",
@@ -1903,6 +1964,9 @@ pub async fn handle_managed_add_with_consent(
     // Check for engine-builtin workers first (no network needed).
     if let Some(default_yaml) = get_builtin_default(&name) {
         let builtin_version = resolve_builtin_version(version.as_deref());
+        if apply_force_replacement(&name, force, reset_config).await != 0 {
+            return 1;
+        }
         let already_exists = super::config_file::worker_exists(&name);
         // Bare `- name:` entry: builtins boot with their Rust defaults and
         // own their configuration through the configuration worker, so the
@@ -1963,7 +2027,18 @@ pub async fn handle_managed_add_with_consent(
 
     match fetch_resolved_worker_graph(&name, version.as_deref(), None).await {
         Ok(graph) => {
-            let rc = handle_resolved_graph_add(&graph, brief, assume_yes, can_prompt).await;
+            let roots = std::slice::from_ref(&graph.root.name);
+            let prepared = match preflight_resolved_graph(&graph, roots, assume_yes, can_prompt) {
+                Ok(prepared) => prepared,
+                Err(e) => {
+                    eprintln!("{} {}", "error:".red(), e);
+                    return 1;
+                }
+            };
+            if apply_force_replacement(&name, force, reset_config).await != 0 {
+                return 1;
+            }
+            let rc = handle_preflighted_resolved_graph_add(&graph, prepared, brief).await;
             return finish_add(&name, rc, wait, brief).await;
         }
         Err(e) if should_fallback_to_legacy_registry_error(&name, &e) => {
@@ -1982,6 +2057,10 @@ pub async fn handle_managed_add_with_consent(
             return 1;
         }
     };
+
+    if apply_force_replacement(&name, force, reset_config).await != 0 {
+        return 1;
+    }
 
     let rc = match response {
         WorkerInfoResponse::Binary(r) => handle_binary_add(&name, &r, brief).await,
@@ -4135,6 +4214,148 @@ mod tests {
         };
         confirm_large_dependency_graph(stats, false, false)
             .expect("threshold is a soft boundary, not a hard failure");
+    }
+
+    fn write_large_engine_graph_fixture(dir: &std::path::Path, root: &str) -> std::path::PathBuf {
+        let node_count = super::super::registry::LARGE_DEPENDENCY_GRAPH_THRESHOLD as usize + 1;
+        let names = std::iter::once(root.to_string())
+            .chain((1..node_count).map(|index| format!("dep-{index}")))
+            .collect::<Vec<_>>();
+        let graph = names
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "name": name,
+                    "type": "engine",
+                    "version": "1.0.0",
+                    "repo": "",
+                    "config": {},
+                    "dependencies": {}
+                })
+            })
+            .collect::<Vec<_>>();
+        let edges = names
+            .windows(2)
+            .map(|pair| {
+                serde_json::json!({
+                    "from": pair[0],
+                    "to": pair[1],
+                    "range": "^1.0.0"
+                })
+            })
+            .collect::<Vec<_>>();
+        let fixture = dir.join("large-graph.json");
+        std::fs::write(
+            &fixture,
+            serde_json::to_vec(&serde_json::json!({
+                "root": {"name": root, "version": "1.0.0"},
+                "graph": graph,
+                "edges": edges
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fixture
+    }
+
+    #[tokio::test]
+    async fn managed_force_waits_for_graph_consent_before_deleting_artifacts() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+            let fixture = write_large_engine_graph_fixture(&dir, "root-worker");
+            let _api_guard =
+                set_env_var_for_test("III_API_URL", format!("file://{}", fixture.display()));
+
+            std::fs::write("config.yaml", "workers:\n  - name: root-worker\n").unwrap();
+            let artifact = home.join(".iii/workers/root-worker/sentinel");
+            std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+            std::fs::write(&artifact, "preserve until consent").unwrap();
+
+            let rc = handle_managed_add_with_consent(
+                "root-worker",
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+            )
+            .await;
+
+            assert_eq!(rc, 1, "missing consent must reject a large graph");
+            assert!(
+                artifact.exists(),
+                "--force must not delete artifacts before consent"
+            );
+            assert!(
+                std::fs::read_to_string("config.yaml")
+                    .unwrap()
+                    .contains("root-worker"),
+                "the existing config entry must remain intact"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn local_force_waits_for_dependency_consent_before_cleanup() {
+        in_temp_dir_async(|dir| async move {
+            let _env_guard = crate::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let home = dir.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let _home_guard = set_env_var_for_test("HOME", &home);
+            let fixture = write_large_engine_graph_fixture(&dir, "registry-dep");
+            let _api_guard =
+                set_env_var_for_test("III_API_URL", format!("file://{}", fixture.display()));
+
+            let project = dir.join("local-worker");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(
+                project.join("iii.worker.yaml"),
+                "name: local-worker\nscripts:\n  start: \"bun src/index.ts\"\n\
+                 dependencies:\n  registry-dep: \"^1.0.0\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                "config.yaml",
+                "workers:\n  - name: local-worker\n    worker_path: /old/path\n",
+            )
+            .unwrap();
+            let marker = home.join(".iii/managed/local-worker/var/.iii-prepared");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, "preserve until consent").unwrap();
+
+            let rc = super::super::local_worker::handle_local_add(
+                project.to_str().unwrap(),
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            )
+            .await;
+
+            assert_eq!(rc, 1, "missing consent must reject a large graph");
+            assert!(
+                marker.exists(),
+                "local --force must not clear managed state before consent"
+            );
+            assert!(
+                std::fs::read_to_string("config.yaml")
+                    .unwrap()
+                    .contains("/old/path"),
+                "reset-config must not run before consent"
+            );
+        })
+        .await;
     }
 
     /// Run an async closure with CWD set to a temp dir, then restore.
@@ -7232,7 +7453,7 @@ dependencies:
 
     #[test]
     fn merge_graphs_unifies_shared_nodes_at_same_version() {
-        let a = graph_with_nodes(
+        let mut a = graph_with_nodes(
             "a",
             "1.0.0",
             vec![
@@ -7240,7 +7461,12 @@ dependencies:
                 resolved_binary_worker("shared", "1.2.3", StdHashMap::new()),
             ],
         );
-        let b = graph_with_nodes(
+        a.edges.push(cli_registry::ResolvedEdge {
+            from: "a".to_string(),
+            to: "shared".to_string(),
+            range: "^1.0.0".to_string(),
+        });
+        let mut b = graph_with_nodes(
             "b",
             "1.0.0",
             vec![
@@ -7248,19 +7474,50 @@ dependencies:
                 resolved_binary_worker("shared", "1.2.3", StdHashMap::new()),
             ],
         );
+        b.edges.push(cli_registry::ResolvedEdge {
+            from: "b".to_string(),
+            to: "shared".to_string(),
+            range: "^1.0.0".to_string(),
+        });
         let merged =
             super::merge_resolved_graphs(vec![("a".to_string(), a), ("b".to_string(), b)]).unwrap();
         let names: std::collections::BTreeSet<_> =
-            merged.graph.iter().map(|n| n.name.clone()).collect();
+            merged.graph.graph.iter().map(|n| n.name.clone()).collect();
         assert_eq!(
             names,
             ["a", "b", "shared"].iter().map(|s| s.to_string()).collect()
         );
+        let stats = cli_registry::validate_dependency_graph_roots(&merged.graph, &merged.roots)
+            .expect("both declared roots must make the merged forest reachable");
+        assert_eq!(stats.node_count, 3);
+    }
+
+    #[test]
+    fn merge_graphs_accepts_independent_declared_roots() {
+        let a = graph_with_nodes(
+            "alpha",
+            "1.0.0",
+            vec![resolved_binary_worker("alpha", "1.0.0", StdHashMap::new())],
+        );
+        let b = graph_with_nodes(
+            "beta",
+            "2.0.0",
+            vec![resolved_binary_worker("beta", "2.0.0", StdHashMap::new())],
+        );
+
+        let merged =
+            super::merge_resolved_graphs(vec![("alpha".to_string(), a), ("beta".to_string(), b)])
+                .expect("independent manifest dependencies should merge");
+        let stats = cli_registry::validate_dependency_graph_roots(&merged.graph, &merged.roots)
+            .expect("each declared dependency is a legitimate forest root");
+
+        assert_eq!(merged.roots, vec!["alpha", "beta"]);
+        assert_eq!(stats.node_count, 2);
     }
 
     #[test]
     fn merge_graphs_errors_on_cross_graph_version_mismatch() {
-        let a = graph_with_nodes(
+        let mut a = graph_with_nodes(
             "a",
             "1.0.0",
             vec![
@@ -7268,7 +7525,12 @@ dependencies:
                 resolved_binary_worker("shared", "1.2.3", StdHashMap::new()),
             ],
         );
-        let b = graph_with_nodes(
+        a.edges.push(cli_registry::ResolvedEdge {
+            from: "a".to_string(),
+            to: "shared".to_string(),
+            range: "^1.0.0".to_string(),
+        });
+        let mut b = graph_with_nodes(
             "b",
             "1.0.0",
             vec![
@@ -7276,6 +7538,11 @@ dependencies:
                 resolved_binary_worker("shared", "2.0.0", StdHashMap::new()),
             ],
         );
+        b.edges.push(cli_registry::ResolvedEdge {
+            from: "b".to_string(),
+            to: "shared".to_string(),
+            range: "^1.0.0".to_string(),
+        });
         let err = super::merge_resolved_graphs(vec![("a".to_string(), a), ("b".to_string(), b)])
             .unwrap_err();
         assert!(
