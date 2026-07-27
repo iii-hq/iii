@@ -28,7 +28,15 @@
       <span class="cdemo-label">the same run, from inside the harness</span>
       <button
         type="button"
-        class="cdemo-btn cdemo-theme"
+        class="cdemo-btn cdemo-spacer"
+        data-cdemo-replay
+        aria-label="replay the session"
+      >
+        replay
+      </button>
+      <button
+        type="button"
+        class="cdemo-btn"
         data-cdemo-theme
         aria-label="toggle light and dark"
       >
@@ -135,7 +143,7 @@
   .cdemo-btn span {
     color: var(--mute-2);
   }
-  .cdemo-theme {
+  .cdemo-spacer {
     margin-left: auto;
   }
   .cdemo-stage {
@@ -280,6 +288,13 @@
       .querySelector('[data-cdemo-theme]')
       ?.addEventListener('click', () => {
         document.getElementById('theme-btn')?.click();
+      });
+    // The session plays once and then stays put to be clicked through, so
+    // seeing it again is an explicit ask.
+    overlay
+      .querySelector('[data-cdemo-replay]')
+      ?.addEventListener('click', () => {
+        iframe.contentWindow?.postMessage({ type: 'iii-demo-replay' }, '*');
       });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !overlay.hidden) close();
