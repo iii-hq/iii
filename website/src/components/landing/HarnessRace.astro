@@ -4,6 +4,7 @@
 // the vendored omelette timeline engine in ./animation/; client:only because the
 // engine publishes its API on globalThis at import time.
 import SplitRaceStyled from './animation/split-race-styled.jsx'
+import ConsoleDemoOverlay from './ConsoleDemoOverlay.astro'
 ---
 
 <section class="xp" id="harness" aria-label="Same prompt, two harnesses">
@@ -18,10 +19,23 @@ import SplitRaceStyled from './animation/split-race-styled.jsx'
     </h2>
   </header>
 
-  <div class="harness-race">
-    <SplitRaceStyled client:only="react" />
-  </div>
+  <button
+    type="button"
+    class="harness-race-open"
+    data-cdemo-open
+    aria-label="Open the iii console and watch this run from inside the harness"
+  >
+    <div class="harness-race">
+      <SplitRaceStyled client:only="react" />
+    </div>
+    <div class="harness-race-cue">
+      <b>open the console</b>
+      <span>watch the same run from inside the harness, traces and all</span>
+    </div>
+  </button>
 </section>
+
+<ConsoleDemoOverlay />
 
 <style is:global>
   .harness-race {

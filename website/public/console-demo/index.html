@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" class="antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>iii console — recorded session</title>
+    <script>
+      /* Theme before first paint so the embed never flashes the wrong one. */
+      try {
+        const t = new URLSearchParams(location.search).get('theme');
+        document.documentElement.dataset.theme = t === 'dark' ? 'dark' : 'light';
+      } catch (_) {
+        document.documentElement.dataset.theme = 'light';
+      }
+    </script>
+    <script type="module" crossorigin src="./assets/demo-BL99HU3p.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/demo-DNqdaDrU.css">
+  </head>
+  <body class="bg-bg text-ink font-sans">
+    <div id="root"></div>
+  </body>
+</html>

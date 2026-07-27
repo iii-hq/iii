@@ -1,0 +1,246 @@
+---
+// CONSOLE DEMO OVERLAY — a near-fullscreen popover holding the real iii
+// console UI replaying a scripted turn: the same payments-ledger prompt the
+// race above runs, seen from inside the harness, with the trace waterfall
+// filling in beside the transcript.
+//
+// The demo is the console's own React app (workers/console/web/src/demo/),
+// built there and vendored into public/console-demo/. It loads in an iframe:
+// the console ships a Tailwind reset that would otherwise land on this page,
+// and an iframe also keeps its ~1MB bundle off the critical path — the src is
+// only set the first time the overlay opens.
+//
+// Regenerate the vendored build with ./scripts/sync-console-demo.sh
+---
+
+<div
+  class="cdemo"
+  id="console-demo"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-label="iii console, recorded session"
+>
+  <div class="cdemo-backdrop" data-cdemo-close></div>
+
+  <div class="cdemo-frame">
+    <div class="cdemo-bar">
+      <span class="cdemo-label">the same run, from inside the harness</span>
+      <button type="button" class="cdemo-close" data-cdemo-close aria-label="close">
+        close <span aria-hidden="true">esc</span>
+      </button>
+    </div>
+    <div class="cdemo-stage">
+      <iframe
+        title="iii console replaying a payments ledger session"
+        loading="lazy"
+        data-cdemo-iframe
+        data-src="/console-demo/index.html"></iframe>
+    </div>
+  </div>
+</div>
+
+<style is:global>
+  /* The id keeps this above `.sheet > *{position:relative; z-index:1}` in
+     landing.css, which the overlay would otherwise tie with and lose to. */
+  #console-demo.cdemo {
+    position: fixed;
+    inset: 0;
+    /* Above the cookie-consent bar (10050 in landing.css) — a modal that
+       something else floats over is not a modal. */
+    z-index: 10100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+  }
+  #console-demo.cdemo[hidden] {
+    display: none;
+  }
+  .cdemo-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 10, 10, 0.55);
+    opacity: 0;
+    transition: opacity 220ms ease;
+  }
+  .cdemo[data-open='true'] .cdemo-backdrop {
+    opacity: 1;
+  }
+  .cdemo-frame {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    box-shadow: 0 40px 120px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+    transition:
+      opacity 220ms ease,
+      transform 220ms ease;
+  }
+  .cdemo[data-open='true'] .cdemo-frame {
+    opacity: 1;
+    transform: none;
+  }
+  .cdemo-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--paper-2);
+    flex-shrink: 0;
+  }
+  .cdemo-label {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--mute);
+  }
+  .cdemo-close {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border: 1px solid var(--rule);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .cdemo-close:hover {
+    border-color: var(--ink);
+  }
+  .cdemo-close span {
+    color: var(--mute-2);
+  }
+  .cdemo-stage {
+    flex: 1;
+    min-height: 0;
+  }
+  .cdemo-stage iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+  @media (max-width: 720px) {
+    .cdemo {
+      padding: 10px;
+    }
+  }
+
+  /* The race above is the trigger. */
+  .harness-race-open {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: inherit;
+    cursor: pointer;
+  }
+  .harness-race-cue {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin: 14px 36px 0;
+    padding: 12px 16px;
+    border: 1px solid var(--rule);
+    background: var(--paper-2);
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--ink);
+    transition:
+      border-color 160ms ease,
+      background 160ms ease;
+  }
+  .harness-race-open:hover .harness-race-cue,
+  .harness-race-open:focus-visible .harness-race-cue {
+    border-color: var(--accent);
+    background: var(--bg);
+  }
+  .harness-race-cue b {
+    font-weight: 500;
+    color: var(--accent);
+  }
+  .harness-race-cue span {
+    color: var(--mute);
+  }
+  @media (max-width: 720px) {
+    .harness-race-cue {
+      margin: 12px 16px 0;
+    }
+  }
+</style>
+
+<script>
+  (function () {
+    const overlay = document.getElementById('console-demo');
+    if (!overlay) return;
+    const iframe = overlay.querySelector('[data-cdemo-iframe]') as HTMLIFrameElement | null;
+    if (!iframe) return;
+
+    let lastFocus: HTMLElement | null = null;
+
+    /** The demo pauses itself when told; a closed overlay burns no timers. */
+    function setActive(active: boolean) {
+      iframe?.contentWindow?.postMessage({ type: 'iii-demo', active }, '*');
+    }
+
+    function open() {
+      if (!overlay.hidden) return;
+      lastFocus = document.activeElement as HTMLElement | null;
+      overlay.hidden = false;
+      // Load on first open only, with the page's current theme.
+      if (!iframe.getAttribute('src')) {
+        const theme =
+          document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+        iframe.setAttribute('src', `${iframe.dataset.src}?theme=${theme}`);
+      } else {
+        setActive(true);
+      }
+      document.body.style.overflow = 'hidden';
+      requestAnimationFrame(() => overlay.setAttribute('data-open', 'true'));
+      overlay.querySelector<HTMLButtonElement>('.cdemo-close')?.focus();
+    }
+
+    function close() {
+      if (overlay.hidden) return;
+      overlay.removeAttribute('data-open');
+      setActive(false);
+      document.body.style.overflow = '';
+      window.setTimeout(() => {
+        overlay.hidden = true;
+      }, 220);
+      lastFocus?.focus();
+    }
+
+    for (const el of overlay.querySelectorAll('[data-cdemo-close]')) {
+      el.addEventListener('click', close);
+    }
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !overlay.hidden) close();
+    });
+    // Escape pressed with focus inside the frame — the demo forwards it,
+    // because that keydown never reaches this document.
+    window.addEventListener('message', (e) => {
+      if (e.source !== iframe.contentWindow) return;
+      if (e.data && e.data.type === 'iii-demo-close') close();
+    });
+    for (const el of document.querySelectorAll('[data-cdemo-open]')) {
+      el.addEventListener('click', open);
+    }
+  })();
+</script>
