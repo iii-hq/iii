@@ -1169,7 +1169,36 @@ impl Worker for QueueWorker {
             // restart. On failure keep the seed (already validated in
             // `initialize`), matching the runtime apply gate.
             Ok(config) => match config.validate() {
-                Ok(()) => self.set_config(config),
+                // The stored entry is the runtime source of truth and the
+                // config.yaml block is seed-only (it is stripped after the
+                // first boot), so on a later boot `create` may have resolved
+                // the default adapter while the stored value names another
+                // one. The stored selection must drive the transport too:
+                // rebuild it here, before consumers spawn below. Adopting only
+                // the config value would also erase the old-vs-new adapter
+                // diff that `apply_config` relies on, silently pinning the
+                // queue to the wrong transport for the process lifetime.
+                Ok(()) => {
+                    if Self::effective_adapter(&self.config_snapshot())
+                        != Self::effective_adapter(&config)
+                    {
+                        match Self::resolve_adapter(&self.engine, &config).await {
+                            // No consumers exist yet, so unlike the hot-swap in
+                            // `apply_config` there is nothing to rebind.
+                            Ok(adapter) => self.set_live(config, adapter),
+                            // Keep the seed config alongside the seed adapter
+                            // (all-or-nothing, matching the `apply_config`
+                            // gate) so the two can never disagree.
+                            Err(err) => tracing::warn!(
+                                error = %err,
+                                "iii-queue: failed to build the adapter named by the stored \
+                                 configuration; continuing with static config"
+                            ),
+                        }
+                    } else {
+                        self.set_config(config);
+                    }
+                }
                 Err(err) => tracing::warn!(
                     error = %err,
                     "iii-queue: stored configuration is invalid; continuing with static config"

@@ -5,6 +5,76 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.22.0" description="July 2026">
+  ## Recoverable triggers survive startup races and provider restarts
+
+  `RegisterTrigger` no longer fails when its trigger type isn't registered yet. Consumers that connect before providers, and provider restarts that used to drop other workers' bindings, are now both safe.
+
+  The engine optimistically stores the registration intent in `pending_triggers`, logs `[PENDING]`, and acks success; when the trigger type registers — or a provider re-registers after a restart — the triggers are registered appropriately to the worker.
+
+  A provider disconnect moves its live bindings back to pending (`[DISABLED]`) and they recover on re-register. A bind that reaches the engine while the type *is* registered but whose activation fails because the provider connection is closing is now stored optimistically and replayed on the next type registration too.
+
+  ## `TriggerAction.Enqueue` routes through the standalone queue worker
+
+  Enqueue actions are delivered to the registered `engine::queue::enqueue` provider instead of the in-process queue worker. Engine-owned receipt IDs are preserved and `traceparent` / `baggage` propagate to queued work; a missing or failing provider fails closed with `enqueue_error` — there is no silent in-process fallback. `durable:subscriber` and `TriggerAction.Enqueue` now require the standalone `queue` worker. The legacy in-engine `iii-queue` builtin was retired from the default config but remains available **opt-in**: an explicit `iii-queue` entry in `config.yaml` still boots it (`enabled_by_default = false`).
+
+  ## Per-subscriber queue retry tuning is corrected
+
+  The builtin queue adapter now applies `queue_config.maxRetries` and `queue_config.backoffDelayMs` per `durable:subscriber` trigger; previously every failing delivery got a fixed 3 attempts with default backoff regardless of config. Tuning is overlaid at retry-decision time, so it also covers jobs enqueued before the subscriber connected. `maxRetries: N` means N retries after the initial attempt (N+1 attempts total); `maxRetries: 0` fails to the DLQ after one attempt, matching the RabbitMQ adapter's counting.
+
+  ## `engine::observability` is now a required engine worker
+
+  Observability is always injected — like `configuration` — with defaults living in `ObservabilityWorkerConfig::default()`. `iii worker add` no longer writes an observability `config:` block into `config.yaml`, and first boot always gets a valid configuration seeded to `./config/iii-observability.yaml`. `${VAR:default}` placeholders (including `__III_ENGINE_VERSION__`) are expanded when publishing the live OTEL config.
+
+  ## `engine::functions::list` filters by multiple workers
+
+  The call gains a `workers: [...]` filter alongside the existing single `worker: String` field, listing functions owned by any of several workers in one request. When both are set they OR-combine.
+
+  ## Registry tags in worker manifests
+
+  `iii.worker.yaml` now accepts optional `tags` metadata: a list of strings surfaced in the generated schema for registry discovery. It does not change worker runtime behavior.
+
+  ## Reconnect and worker-lifecycle hardening
+
+  A batch of fixes closes reconnect and first-boot failure modes:
+
+  - Worker reconnects no longer trip an ownership kill loop that could tear down a freshly reconnected worker.
+  - First-boot worker zombies from VM transport wake starvation and SDK reconnect death are fixed; external workers are supervised and the Rust SDK reconnect path is hardened.
+  - Accepted worker WebSocket sockets that never complete the upgrade are no longer held open by the idle timeout.
+  - The Node SDK bounds WebSocket connect attempts and detects half-open sockets.
+  - Spawned builtin daemons receive the engine's actual WebSocket address.
+  - Registry binary workers now inherit the engine's `III_ENGINE_URL` / `III_URL` when the `iii-worker-manager` runs on a non-default port, so they connect instead of assuming the default port; `iii-worker start`/`restart` resolve the manager port from `config.yaml` when `--port` is omitted.
+
+  ## Managed worker names propagate to the SDKs via `III_WORKER_NAME`
+
+  `iii-worker` injects the `config.yaml` entry name as `III_WORKER_NAME` into every managed start path (libkrun, OCI, binary), and the Node, Python, and Rust SDKs default their reported worker name from it. A worker whose code sets no name now matches its config entry instead of self-reporting `hostname:pid` and timing out on `iii worker add --wait`. An explicit `workerName` / `worker_name` still wins; the manifest `env:` block cannot override the injected value.
+
+  ## `iii worker` CLI audit
+
+  A full pass over the CLI surface (every operation except `add`) fixed: `remove` now deletes the `iii.lock` entry so removed workers stay removed; `status` terminates on `EngineDown` instead of hanging forever and returns non-zero exit codes so it works as a scriptable readiness probe; `clear` (all) also wipes `~/.iii/managed`; `update` takes the same project lock as `sync` and prints a friendly message when `iii.lock` is missing; `logs` drops the dead `--address`/`--port` flags and returns consistent exit codes; `sandbox create`/`run` fail fast when the engine is down instead of pulling a full image first. `iii worker list` / `status` also reflect engine truth rather than local config. A hostless `iii worker add` run from a non-project directory (no config file, no exported `III_CONFIG_PATH`) now installs through the running local engine instead.
+
+  ## Python SDK: connection-state listener
+
+  `III.add_connection_state_listener` subscribes to connection-state changes, and the SDK warns when the initial connect wait times out.
+
+  ## Security: SSRF via IPv4-mapped IPv6 addresses
+
+  `is_private_ip` in the URL validator classified IPv4 and IPv6 separately, so an IPv4-mapped IPv6 address like `::ffff:169.254.169.254` bypassed the private-range checks and could reach loopback, RFC1918 ranges, or the cloud metadata endpoint. Mapped addresses are now unwrapped to their underlying IPv4 and classified with the same rules.
+
+  ## Breaking: `RegisterFunction::new_async_with_bad_request` removed (Rust SDK)
+
+  The `new_async_with_bad_request` constructor is removed from the Rust SDK — source-breaking for external consumers that constructed it directly. Wire behavior is unchanged: malformed `worker::*` payloads still return the W105 `BadRequest` envelope with a `worker::schema` hint, a policy that now lives entirely in the worker daemon rather than the SDK.
+
+  ## Additional fixes
+
+  - Node and browser SDKs default trigger generics so untyped `trigger` calls compile under `tsc`.
+  - The browser SDK exports `IIIReconnectionConfig` and `RegisterFunctionFormat`, and generates invocation UUIDs in insecure (non-HTTPS) contexts.
+  - The engine rejects duplicate migrated builtin workers and warns on deprecated builtin names.
+  - The Docker image boots cleanly: `/app/config` is pre-created for the non-root user, and the config seed-strip no longer logs spurious warnings on a read-only mount.
+  - `iii worker add` no longer rejects a valid bundle whose transitive dependencies share nodes — the dependency-graph bounds check counts unique nodes instead of distinct paths, so a wide shared graph stops overflowing the `edge_traversal` guard (`limit 64, found 65`).
+  - Some workers drop the `iii-` prefix: `http`, `state`, `queue`, `cron`, and `pubsub` names.
+</Update>
+
 <Update label="0.21.3" description="July 2026">
   ## Register triggers from anywhere: `engine::register_trigger` + invocation metadata
 

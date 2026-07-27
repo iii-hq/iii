@@ -18,9 +18,23 @@ interface Props {
   ogType?: 'website' | 'article'
   publishedTime?: Date
   modifiedTime?: Date
+  /** Absolute URL to the post's own banner image; falls back to the site-wide default. */
+  ogImage?: string
+  ogImageWidth?: number
+  ogImageHeight?: number
 }
 
-const { title, description, canonicalPath, ogType = 'website', publishedTime, modifiedTime } = Astro.props
+const {
+  title,
+  description,
+  canonicalPath,
+  ogType = 'website',
+  publishedTime,
+  modifiedTime,
+  ogImage = 'https://iii.dev/og-image.png',
+  ogImageWidth,
+  ogImageHeight,
+} = Astro.props
 const canonical = new URL(canonicalPath, Astro.site).toString()
 ---
 
@@ -42,11 +56,13 @@ const canonical = new URL(canonicalPath, Astro.site).toString()
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
-    <meta property="og:image" content="https://iii.dev/og-image.png" />
+    <meta property="og:image" content={ogImage} />
+    {ogImageWidth && <meta property="og:image:width" content={ogImageWidth.toString()} />}
+    {ogImageHeight && <meta property="og:image:height" content={ogImageHeight.toString()} />}
     {publishedTime && <meta property="article:published_time" content={publishedTime.toISOString()} />}
     {modifiedTime && <meta property="article:modified_time" content={modifiedTime.toISOString()} />}
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="https://iii.dev/og-image.png" />
+    <meta name="twitter:image" content={ogImage} />
     <slot name="head" />
   </head>
   <body>

@@ -28,9 +28,10 @@ mkdir -p data
 ```
 
 The engine has been running since Chapter 1, so it starts the `database` worker as soon as it is
-added, and the worker's settings are managed in `./config/database.yaml` from that point on (see
-[Configuration](/using-iii/configuration)). Adjust the fields under `value:` in that file so it
-looks like the below and save; the change applies without a restart.
+added, and generates its settings file at `./config/database.yaml` (see
+[Configuration](/using-iii/configuration)). Open that file: the generated defaults already point at
+a SQLite database at `./data/iii.db`, so there's nothing to change here. This is what durable
+storage looks like:
 
 <Info>The database worker will automatically create `./data/iii.db` on first run.</Info>
 
@@ -39,9 +40,9 @@ looks like the below and save; the change applies without a restart.
   docs](https://workers.iii.dev/workers/database) for all supported databases.
 </Info>
 
-```yaml {3-10} config/database.yaml
+```yaml config/database.yaml
 id: database
-# ...
+name: Database
 value:
   databases:
     primary:
@@ -63,7 +64,7 @@ First add the `DB` constant **near the top of `link/src/index.ts`**:
 import { registerWorker } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 
-const DB = "primary"; // Matches db name in config.yaml
+const DB = "primary"; // Matches db name in config/database.yaml
 ```
 
 ### Make link storage persistent

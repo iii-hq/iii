@@ -4,6 +4,7 @@ description: 'The cloud is a bazaar, and that was okay until agents arrived and 
 pubDate: 2026-05-07
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'workers', 'cloudflare']
+ogImage: ../../assets/blog/add-a-worker/banner.png
 ---
 
 ![Add a worker — every category collapses into the same primitive](../../assets/blog/add-a-worker/banner.png)

@@ -1,0 +1,150 @@
+---
+title: "Observability"
+description: "Traces, metrics, and logs for a iii system through the iii-observability worker."
+owner: "devrel"
+type: "how-to"
+---
+
+Every call in a iii system passes through the engine: function invocations, trigger firings, and
+channel messages all flow across it. Because every worker communicates through the engine, it can
+trace work as it moves from one worker to the next, giving you observability across the whole system
+without each worker instrumenting itself. The `iii-observability` worker turns that information into
+OpenTelemetry traces, metrics, and logs:
+
+```bash
+iii worker add iii-observability
+```
+
+<Note>
+  This page is a quick tour. For the complete configuration and the full list of query functions,
+  see the [iii-observability worker docs](https://workers.iii.dev/workers/iii-observability).
+</Note>
+
+## OpenTelemetry support
+
+`iii-observability` is OpenTelemetry-based: it produces distributed traces across worker hops,
+metrics, and structured logs, and it can export them to any OTel-compatible backend or keep them
+in-memory for local development. Sampling, retention, and exporter targets are configured on the
+worker; see the worker docs for the full set of options.
+
+## Logging
+
+Worker code emits structured logs through the `Logger` from the observability SDK, which routes them
+into the same OpenTelemetry pipeline (so log lines correlate with the trace they happened in) rather
+than to raw stdout.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { Logger } from "@iii-dev/helpers/observability";
+
+    const logger = new Logger();
+
+    // each level takes a message and optional structured data
+    logger.debug("cache lookup", { key });
+    logger.info("processing link", { slug });
+    logger.warn("retrying upstream", { attempt });
+    logger.error("failed to persist", { slug, err });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii_helpers.observability import Logger
+
+    logger = Logger()
+
+    # each level takes a message and optional structured data
+    logger.debug("cache lookup", {"key": key})
+    logger.info("processing link", {"slug": slug})
+    logger.warn("retrying upstream", {"attempt": attempt})
+    logger.error("failed to persist", {"slug": slug, "err": str(err)})
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_helpers::observability::Logger;
+    use serde_json::json;
+
+    let logger = Logger::new();
+
+    // each level takes a message and optional structured data
+    logger.debug("cache lookup", Some(json!({ "key": key })));
+    logger.info("processing link", Some(json!({ "slug": slug })));
+    logger.warn("retrying upstream", Some(json!({ "attempt": attempt })));
+    logger.error("failed to persist", Some(json!({ "slug": slug, "err": err.to_string() })));
+    ```
+
+  </Tab>
+</Tabs>
+
+You can also query recorded logs and emit one-off log lines through the observability worker's
+triggers, for example:
+
+```bash
+# emit a log line from the CLI
+iii trigger engine::log::info --json '{"message":"hello from the CLI"}'
+
+# find it in the stored logs
+iii trigger engine::logs::list | grep -C 10 hello
+```
+
+## Traces
+
+A trace captures the spans of a call as it moves across workers, the headline view for debugging a
+request end to end. Traces come from worker function invocations: a worker records a span each time
+it handles a call. Built-in `engine::*` functions are not traced by default (set
+`III_OTEL_TRACE_BUILTINS=true` to include them), so call a worker function first to produce a trace.
+The [sandbox](./sandboxes) worker's `sandbox::run` is an easy one to start with:
+
+```bash
+# add the sandbox worker if you don't have it yet
+iii worker add iii-sandbox
+
+# run something to produce a trace
+iii trigger sandbox::run image=python lang=python code='print(1)'
+
+# count the recorded spans (workers export them a moment after the call,
+# so re-run this until it reports a non-zero count)
+iii trigger engine::traces::list | jq '.total'
+
+# grab the most recent trace id and print its span tree
+TID=$(iii trigger engine::traces::list | jq -r '.spans[-1].trace_id')
+iii trigger engine::traces::tree trace_id=$TID
+```
+
+<Note>
+  `engine::traces::tree` needs a real `trace_id` and traces export on a short delay. If
+  `engine::traces::list` still reports `0` or the call above to get a `trace_id` resolves to `null`
+  and fails then wait a few seconds and try again.
+</Note>
+
+## Health and clearing
+
+Check engine health, or clear stored telemetry while developing:
+
+```bash
+# overall health status
+iii trigger engine::health::check | jq -r .status
+
+# clear stored logs
+iii trigger engine::logs::clear
+
+# the logs are now empty
+iii trigger engine::logs::list
+
+# clear stored traces
+iii trigger engine::traces::clear
+
+# the span count is now zero
+iii trigger engine::traces::list | jq '.total'
+```
+
+<Note>
+  Logs populate quickly. It is possible to call `engine::logs::clear` immediately followed by
+  `engine::logs::list` and still see new logs that were generated in between the two calls.
+</Note>
+
+## Seeing it in the console
+
+The [console](../using-iii/console) renders this telemetry visually, traces, logs, and metrics for a running
+system, so you usually do not query the functions above by hand during development.

@@ -75,59 +75,55 @@ pub fn asset_name(binary_name: &str) -> String {
 ///
 /// - Linux: $XDG_DATA_HOME/iii/ (fallback ~/.local/share/iii/)
 /// - macOS: ~/Library/Application Support/iii/
-/// - Windows: %LOCALAPPDATA%\iii\
+/// - Windows: %APPDATA%\iii\
 ///
 /// For backward compatibility, if the old `iii-cli` directory exists and the
 /// new `iii` directory does not, the old path is returned so existing state
 /// is preserved until the user migrates.
 pub fn data_dir() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local")
-            .join("share")
-    });
+    data_dir_opt().unwrap_or_else(|| {
+        iii::bin_resolve::resolve_iii_dir(PathBuf::from(".").join(".local").join("share"))
+    })
+}
 
-    let new_dir = base.join("iii");
-    let old_dir = base.join("iii-cli");
-
-    // Prefer the new directory; fall back to the old one for migration compat.
-    if !new_dir.exists() && old_dir.exists() {
-        old_dir
-    } else {
-        new_dir
-    }
+/// Option-returning variant of [`data_dir`]: `None` when neither the platform
+/// data directory nor the home directory can be resolved. Unlike [`data_dir`],
+/// this never falls back to the current directory, so it is safe for building
+/// the managed bin path (see [`bin_dir`]).
+fn data_dir_opt() -> Option<PathBuf> {
+    let base =
+        dirs::data_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))?;
+    Some(iii::bin_resolve::resolve_iii_dir(base))
 }
 
 /// Returns the directory where binaries are stored.
 ///
 /// On macOS/Linux: ~/.local/bin/ (matches install.sh convention).
-/// On Windows: %LOCALAPPDATA%\iii\bin\ (unchanged).
+/// On Windows: %APPDATA%\iii\bin\ (legacy %APPDATA%\iii-cli\bin\ during
+/// migration).
 ///
-/// Deliberately decoupled from data_dir() so that binaries live in a
-/// PATH-visible location shared with shell-script installers.
-pub fn bin_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        data_dir().join("bin")
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".local")
-            .join("bin")
-    }
+/// Delegates to [`iii::bin_resolve::managed_bin_dir`] so the install/update
+/// lifecycle and the execution resolver (`find_existing_binary`) can never
+/// disagree on where the managed copy lives.
+///
+/// Returns `None` when the home / data directory can't be resolved. We never
+/// fall back to the current directory: installing a managed `iii-*` binary
+/// into a CWD-relative path would let it be picked up and executed as a
+/// trusted helper from wherever the process happened to run.
+pub fn bin_dir() -> Option<PathBuf> {
+    iii::bin_resolve::managed_bin_dir()
 }
 
 /// Returns the path where a specific binary should be stored.
-pub fn binary_path(binary_name: &str) -> PathBuf {
+///
+/// `None` when the managed bin dir can't be resolved (see [`bin_dir`]).
+pub fn binary_path(binary_name: &str) -> Option<PathBuf> {
     let name = if cfg!(target_os = "windows") {
         format!("{}.exe", binary_name)
     } else {
         binary_name.to_string()
     };
-    bin_dir().join(name)
+    Some(bin_dir()?.join(name))
 }
 
 /// Returns the path to the state.json file.
@@ -172,37 +168,22 @@ fn format_target_human(target: &str) -> String {
     }
 }
 
-/// Find an existing installation of a binary.
+/// Resolve an existing `iii-*` binary to EXECUTE, PATH-first.
 ///
 /// Checks in order:
-/// 1. Our managed bin dir (~/.local/bin/ on macOS/Linux, data_dir/bin on Windows)
-/// 2. System PATH
+/// 1. System PATH (a dev/override build earlier on PATH wins)
+/// 2. Our managed bin dir (~/.local/bin/ on macOS/Linux, data_dir/bin on Windows)
 ///
 /// Returns the path to the binary if found, or None.
+///
+/// This is the single shared *execution* resolver: the CLI dispatcher
+/// (`mod.rs`) and the engine's worker spawners (`workers::registry_worker`,
+/// `workers::external`) all route through it so they can never disagree on
+/// which copy runs. The install/update lifecycle (`update.rs`) deliberately
+/// probes `binary_path()` — the managed `~/.local/bin` copy — first, because
+/// it manages that specific file regardless of what's on PATH.
 pub fn find_existing_binary(binary_name: &str) -> Option<PathBuf> {
-    let exe_name = if cfg!(target_os = "windows") {
-        format!("{}.exe", binary_name)
-    } else {
-        binary_name.to_string()
-    };
-
-    // 1. Check our managed bin dir (~/.local/bin/ on macOS/Linux)
-    let managed = bin_dir().join(&exe_name);
-    if managed.exists() {
-        return Some(managed);
-    }
-
-    // 2. Check system PATH
-    which_binary(&exe_name)
-}
-
-/// Look up a binary on the system PATH.
-fn which_binary(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(name))
-            .find(|p| p.exists())
-    })
+    iii::bin_resolve::find_existing_binary(binary_name)
 }
 
 /// Constructs the expected checksum asset filename for a binary.
@@ -216,7 +197,7 @@ pub fn checksum_asset_name(binary_name: &str) -> String {
 ///
 /// Creates both bin_dir() (~/.local/bin/) and data_dir() (for state.json).
 pub fn ensure_dirs() -> Result<(), super::error::StorageError> {
-    let bin = bin_dir();
+    let bin = bin_dir().ok_or(super::error::StorageError::NoBinDir)?;
     if !bin.exists() {
         std::fs::create_dir_all(&bin).map_err(|e| super::error::StorageError::CreateDir {
             path: bin.display().to_string(),
@@ -260,9 +241,69 @@ mod tests {
         assert!(!data_dir().as_os_str().is_empty());
     }
 
+    /// `ensure_dirs()` creates the managed bin dir (and data dir) under a fresh
+    /// HOME. Hermetic: relocates HOME to a tempdir so nothing touches the real
+    /// filesystem. `#[serial]` because it mutates the process env.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial]
+    fn test_ensure_dirs_creates_bin_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let orig_home = std::env::var_os("HOME");
+        let orig_xdg = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: #[serial] guarantees no parallel env mutation. Clear
+        // XDG_DATA_HOME so data_dir() falls back under the tempdir HOME.
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+
+        let result = ensure_dirs();
+        let bin = bin_dir();
+        let data = data_dir();
+
+        unsafe {
+            match orig_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match orig_xdg {
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+
+        assert!(result.is_ok(), "ensure_dirs failed: {:?}", result.err());
+        let bin = bin.unwrap();
+        assert!(bin.starts_with(home.path()), "bin dir escaped tempdir HOME");
+        assert!(bin.is_dir(), "bin dir was not created: {}", bin.display());
+        assert!(
+            data.is_dir(),
+            "data dir was not created: {}",
+            data.display()
+        );
+    }
+
+    #[test]
+    fn test_data_dir_opt_agrees_with_data_dir() {
+        // Wherever the platform dirs resolve, the option-returning variant
+        // must agree with data_dir(). When they don't resolve it is None,
+        // which bin_dir()/binary_path() propagate instead of installing
+        // under a CWD-relative path.
+        assert_eq!(data_dir_opt(), Some(data_dir()));
+    }
+
+    #[test]
+    fn test_resolve_iii_dir_never_bare_cwd() {
+        let d = iii::bin_resolve::resolve_iii_dir(PathBuf::from(".").join(".local").join("share"));
+        // Even the last-resort data_dir() fallback stays under .local/share,
+        // and the bin path never routes through it (data_dir_opt is None).
+        assert!(d.ends_with(PathBuf::from(".local").join("share").join("iii")));
+    }
+
     #[test]
     fn test_binary_path_format() {
-        let path = binary_path("iii-console");
+        let path = binary_path("iii-console").unwrap();
         assert!(path.to_str().unwrap().contains("iii-console"));
     }
 
@@ -278,7 +319,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_bin_dir_is_local_bin() {
-        let bd = bin_dir();
+        let bd = bin_dir().unwrap();
         let bd_str = bd.to_str().unwrap();
         assert!(
             bd_str.ends_with(".local/bin"),
@@ -290,7 +331,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_bin_dir_separate_from_data_dir() {
-        let bd = bin_dir();
+        let bd = bin_dir().unwrap();
         let dd = data_dir();
         assert!(
             !bd.starts_with(&dd),

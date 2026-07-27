@@ -67,11 +67,16 @@ iii worker add ./workers/math-worker
 You should see:
 
 ```
-✓ Worker math-worker added to config.yaml
-Path  /Users/tony/iii/projects/testing/quickstart/workers/math-worker
-✓ Using cached deps (use --force to reinstall)
-✓ math-worker started (pid: 12345)
-✓ Worker auto-started
+  ✓ math-worker ready (pid 12345)
+
+     engine:  running
+     config:  present type=local (.../quickstart/workers/math-worker)
+    sandbox:  prepared (rootfs + deps cached)
+    process:  alive pid=12345
+     worker:  registered (connected to engine)
+       logs:  available (tail with `iii worker logs math-worker -f`)
+
+  ✓ ready in 2.1s
 ```
 
 <Warning title="Linux: `KVM not accessible`">
@@ -105,11 +110,16 @@ iii worker add ./workers/caller-worker
 You should see:
 
 ```
-✓ Worker caller-worker added to config.yaml
-Path  /Users/tony/iii/projects/testing/quickstart/workers/caller-worker
-✓ Using cached deps (use --force to reinstall)
-✓ caller-worker started (pid: 23456)
-✓ Worker auto-started
+  ✓ caller-worker ready (pid 23456)
+
+     engine:  running
+     config:  present type=local (.../quickstart/workers/caller-worker)
+    sandbox:  prepared (rootfs + deps cached)
+    process:  alive pid=23456
+     worker:  registered (connected to engine)
+       logs:  available (tail with `iii worker logs caller-worker -f`)
+
+  ✓ ready in 2.1s
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.
