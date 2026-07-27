@@ -26,7 +26,20 @@
   <div class="cdemo-frame">
     <div class="cdemo-bar">
       <span class="cdemo-label">the same run, from inside the harness</span>
-      <button type="button" class="cdemo-close" data-cdemo-close aria-label="close">
+      <button
+        type="button"
+        class="cdemo-btn cdemo-theme"
+        data-cdemo-theme
+        aria-label="toggle light and dark"
+      >
+        theme
+      </button>
+      <button
+        type="button"
+        class="cdemo-btn"
+        data-cdemo-close
+        aria-label="close"
+      >
         close <span aria-hidden="true">esc</span>
       </button>
     </div>
@@ -102,8 +115,7 @@
     text-transform: uppercase;
     color: var(--mute);
   }
-  .cdemo-close {
-    margin-left: auto;
+  .cdemo-btn {
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -117,11 +129,14 @@
     text-transform: uppercase;
     cursor: pointer;
   }
-  .cdemo-close:hover {
+  .cdemo-btn:hover {
     border-color: var(--ink);
   }
-  .cdemo-close span {
+  .cdemo-btn span {
     color: var(--mute-2);
+  }
+  .cdemo-theme {
+    margin-left: auto;
   }
   .cdemo-stage {
     flex: 1;
@@ -199,21 +214,48 @@
       iframe?.contentWindow?.postMessage({ type: 'iii-demo', active }, '*');
     }
 
+    function currentTheme() {
+      return document.documentElement.dataset.theme === 'dark'
+        ? 'dark'
+        : 'light';
+    }
+
+    // The nav's theme button writes data-theme on <html>. The demo reads the
+    // theme once at load, so without this it keeps the theme the page had
+    // when the overlay first opened.
+    new MutationObserver(() => {
+      if (overlay.hidden) return;
+      iframe?.contentWindow?.postMessage(
+        { type: 'iii-demo-theme', theme: currentTheme() },
+        '*',
+      );
+    }).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+
     function open() {
       if (!overlay.hidden) return;
       lastFocus = document.activeElement as HTMLElement | null;
       overlay.hidden = false;
       // Load on first open only, with the page's current theme.
       if (!iframe.getAttribute('src')) {
-        const theme =
-          document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
-        iframe.setAttribute('src', `${iframe.dataset.src}?theme=${theme}`);
+        iframe.setAttribute(
+          'src',
+          `${iframe.dataset.src}?theme=${currentTheme()}`,
+        );
       } else {
         setActive(true);
+        iframe.contentWindow?.postMessage(
+          { type: 'iii-demo-theme', theme: currentTheme() },
+          '*',
+        );
       }
       document.body.style.overflow = 'hidden';
       requestAnimationFrame(() => overlay.setAttribute('data-open', 'true'));
-      overlay.querySelector<HTMLButtonElement>('.cdemo-close')?.focus();
+      overlay
+        .querySelector<HTMLButtonElement>('button[data-cdemo-close]')
+        ?.focus();
     }
 
     function close() {
@@ -230,6 +272,15 @@
     for (const el of overlay.querySelectorAll('[data-cdemo-close]')) {
       el.addEventListener('click', close);
     }
+    // The overlay covers the nav, so the site's own theme button is out of
+    // reach while the demo is open. Drive it from here rather than
+    // re-implementing the token swap it does; the observer above carries the
+    // result into the frame.
+    overlay
+      .querySelector('[data-cdemo-theme]')
+      ?.addEventListener('click', () => {
+        document.getElementById('theme-btn')?.click();
+      });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !overlay.hidden) close();
     });
