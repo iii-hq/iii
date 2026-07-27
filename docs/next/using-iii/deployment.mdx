@@ -49,6 +49,70 @@ The Dockerfile builds against `iiidev/iii:latest` (distroless, non-root). The co
 commented-out Redis and RabbitMQ services that can be uncommented when workers need external
 adapters.
 
+### Reaching external services from workers
+
+When a worker connects to a service defined in the same `docker-compose.yml` (Redis, RabbitMQ,
+Postgres, etc.), address it by the Compose **service name**, not `localhost` or an IP. Compose's
+internal DNS resolves the service name to the container on the shared network.
+
+```yaml
+# docker-compose.yml (excerpt)
+services:
+  iii:
+    # ...
+  rabbitmq:
+    image: rabbitmq:3-management
+```
+
+```yaml
+# ./data/configuration/iii-queue.yaml
+adapter:
+  name: rabbitmq
+  config:
+    amqp_url: amqp://guest:guest@rabbitmq:5672/
+```
+
+If you see `failed to lookup address information` or `Temporary failure in name resolution`, the
+worker container is not on the same Docker network as the target service. Attach both to a shared
+network (or the default network Compose creates for a single file) before retrying.
+
+## Scaling workers horizontally
+
+The engine treats every connected worker the same. To scale a worker's throughput, run more copies
+of it against the same engine — each copy connects over WebSocket, registers the same functions,
+and joins the routing pool for those functions. No coordination code is required on the worker
+side.
+
+<Steps>
+  <Step title="Point every replica at the same engine">
+    Set `III_URL` on each replica to the engine's SDK WebSocket (default port `49134`). Replicas
+    can run on any host that can reach that URL.
+  </Step>
+  <Step title="Use cross-instance adapters for shared state">
+    In-process defaults (`iii-queue`'s `builtin` adapter, `iii-pubsub`'s in-memory adapter,
+    `iii-cron`'s single-leader schedule, `iii-stream`'s in-memory streams) do not coordinate
+    across engines. When you run more than one engine, switch these workers to their Redis (or
+    equivalent) adapter so state, queues, schedules, and streams are shared. See
+    [Configuration](./configuration) for the per-worker adapter settings.
+  </Step>
+  <Step title="Set III_ISOLATION on containerized replicas">
+    Set `III_ISOLATION=docker` (or `kubernetes`) on each replica so the [Console](./console)
+    reports the right isolation badge for the worker.
+  </Step>
+  <Step title="Handle SIGTERM for graceful rollouts">
+    Trap `SIGTERM` in each replica and call `worker.shutdown()` before exiting. The engine then
+    drops the replica from the routing table cleanly and in-flight invocations fail fast with
+    `invocation_stopped` instead of hanging. See
+    [Shutting down a worker](../creating-workers/workers#shutting-down-a-worker).
+  </Step>
+</Steps>
+
+<Note>
+  On Kubernetes, model each worker as a Deployment with `replicas: N`, expose the engine as a
+  Service the replicas resolve via `III_URL`, and rely on the Deployment's rolling update strategy
+  plus the `SIGTERM` handler above for zero-downtime rollouts.
+</Note>
+
 ## Configure a reverse proxy
 
 The engine does not terminate TLS. Place a reverse proxy in front of it to handle TLS and route the

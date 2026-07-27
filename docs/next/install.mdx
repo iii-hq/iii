@@ -15,6 +15,18 @@ Install the iii engine:
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
+<Note title="Windows">
+  The install script targets Linux and macOS. On Windows, run it from a
+  [WSL2](https://learn.microsoft.com/windows/wsl/install) shell:
+
+  ```powershell
+  wsl --install
+  ```
+
+  Then open the WSL2 terminal and run the `curl … | sh` command above. A native Windows installer
+  is not yet available.
+</Note>
+
 ## 2. Verify installation
 
 Check that iii has installed correctly with the following command. It should return a version
