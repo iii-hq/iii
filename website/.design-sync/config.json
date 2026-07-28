@@ -1,0 +1,8 @@
+{
+  "projectId": "f47a3a9f-48d0-42f7-b2e3-e462097d94a0",
+  "readmeHeader": ".design-sync/conventions.md",
+  "projectName": "iii Design Language",
+  "shape": "static-html",
+  "scope": "design-language-only",
+  "notes": "Astro static site, no React component library. Sync ships tokens/fonts/styles/guidelines only; no _ds_bundle.js, no components/. Produced by hand to the upload format (outside converter envelope)."
+}
