@@ -18,8 +18,9 @@ from collections.abc import Iterator
 import pytest
 from iii_helpers.observability import ReconnectionConfig
 
-from iii import FunctionRef, InitOptions, TriggerAction
+from iii import InitOptions, TriggerAction
 from iii.iii import III, _resolve_function_target
+from iii.iii_constants import FunctionRef
 
 UNREACHABLE = "ws://127.0.0.1:1"
 
