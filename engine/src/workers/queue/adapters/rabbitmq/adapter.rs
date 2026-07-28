@@ -38,6 +38,7 @@ use super::{
 };
 
 pub struct RabbitMQAdapter {
+    connection: Arc<Connection>,
     publisher: Arc<Publisher>,
     retry_handler: Arc<RetryHandler>,
     topology: Arc<TopologyManager>,
@@ -67,6 +68,33 @@ impl RabbitMQAdapter {
         }
     }
 
+    /// Returns a channel reserved for probes and DLQ administration. RabbitMQ
+    /// closes a channel after a failed passive declaration, so these operations
+    /// must never share the long-lived channel used by consumers and publishers.
+    async fn inspection_channel(&self) -> anyhow::Result<Channel> {
+        self.connection
+            .create_channel()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create RabbitMQ inspection channel: {}", e))
+    }
+
+    async fn passive_queue_message_count(&self, queue_name: &str) -> anyhow::Result<u64> {
+        let channel = self.inspection_channel().await?;
+        let queue = channel
+            .queue_declare(
+                queue_name,
+                lapin::options::QueueDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get queue info: {}", e))?;
+
+        Ok(queue.message_count() as u64)
+    }
+
     /// Scan a DLQ for a specific message by ID, applying `on_found` when the target is located.
     /// Non-target messages are nacked back to the queue.
     ///
@@ -85,9 +113,9 @@ impl RabbitMQAdapter {
         Fut: std::future::Future<Output = anyhow::Result<()>>,
     {
         let (dlq_name, is_fn_queue) = Self::resolve_dlq_name(topic);
+        let channel = self.inspection_channel().await?;
 
-        let queue_info = self
-            .channel
+        let queue_info = channel
             .queue_declare(
                 &dlq_name,
                 lapin::options::QueueDeclareOptions {
@@ -102,8 +130,7 @@ impl RabbitMQAdapter {
         let count = queue_info.message_count();
 
         for _ in 0..count {
-            let get_result = self
-                .channel
+            let get_result = channel
                 .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
@@ -153,15 +180,17 @@ impl RabbitMQAdapter {
     }
 
     pub async fn new(config: RabbitMQConfig, engine: Arc<Engine>) -> anyhow::Result<Self> {
-        let connection = Connection::connect(&config.amqp_url, ConnectionProperties::default())
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to connect to RabbitMQ at {}: {}",
-                    config.amqp_url,
-                    e
-                )
-            })?;
+        let connection = Arc::new(
+            Connection::connect(&config.amqp_url, ConnectionProperties::default())
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to RabbitMQ at {}: {}",
+                        config.amqp_url,
+                        e
+                    )
+                })?,
+        );
 
         let channel = connection
             .create_channel()
@@ -184,6 +213,7 @@ impl RabbitMQAdapter {
         let retry_handler = Arc::new(RetryHandler::new(Arc::clone(&publisher)));
 
         Ok(Self {
+            connection,
             publisher,
             retry_handler,
             topology,
@@ -218,6 +248,7 @@ fn delivery_stable_id(delivery: &Delivery) -> String {
 impl Clone for RabbitMQAdapter {
     fn clone(&self) -> Self {
         Self {
+            connection: Arc::clone(&self.connection),
             publisher: Arc::clone(&self.publisher),
             retry_handler: Arc::clone(&self.retry_handler),
             topology: Arc::clone(&self.topology),
@@ -439,11 +470,11 @@ impl QueueAdapter for RabbitMQAdapter {
         use serde_json::Value;
 
         let (dlq_name, is_fn_queue) = Self::resolve_dlq_name(topic);
+        let channel = self.inspection_channel().await?;
         let mut count: u64 = 0;
 
         loop {
-            let get_result = self
-                .channel
+            let get_result = channel
                 .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
@@ -475,7 +506,7 @@ impl QueueAdapter for RabbitMQAdapter {
                                 properties
                             };
 
-                        self.channel
+                        channel
                             .basic_publish(
                                 &names.exchange(),
                                 queue_name,
@@ -627,28 +658,15 @@ impl QueueAdapter for RabbitMQAdapter {
         // while topic-based queues use RabbitNames (e.g., user.created -> .dlq).
         let (dlq_name, _is_fn_queue) = Self::resolve_dlq_name(topic);
 
-        let queue = self
-            .channel
-            .queue_declare(
-                &dlq_name,
-                lapin::options::QueueDeclareOptions {
-                    passive: true,
-                    ..Default::default()
-                },
-                lapin::types::FieldTable::default(),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to get DLQ info: {}", e))?;
-
-        Ok(queue.message_count() as u64)
+        self.passive_queue_message_count(&dlq_name).await
     }
 
     async fn dlq_messages(&self, topic: &str, count: usize) -> anyhow::Result<Vec<Value>> {
         let (dlq_name, _is_fn_queue) = Self::resolve_dlq_name(topic);
+        let channel = self.inspection_channel().await?;
 
         // Cap iteration at actual queue depth to avoid unnecessary basic_get calls
-        let queue_depth = match self
-            .channel
+        let queue_depth = match channel
             .queue_declare(
                 &dlq_name,
                 lapin::options::QueueDeclareOptions {
@@ -668,8 +686,7 @@ impl QueueAdapter for RabbitMQAdapter {
         let mut deliveries = Vec::new();
 
         for _ in 0..fetch_count {
-            let get_result = self
-                .channel
+            let get_result = channel
                 .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
@@ -704,10 +721,10 @@ impl QueueAdapter for RabbitMQAdapter {
         limit: u64,
     ) -> anyhow::Result<Vec<crate::workers::queue::DlqMessage>> {
         let (dlq_name, is_fn_queue) = Self::resolve_dlq_name(topic);
+        let channel = self.inspection_channel().await?;
 
         // Cap at actual queue depth
-        let queue_depth = match self
-            .channel
+        let queue_depth = match channel
             .queue_declare(
                 &dlq_name,
                 lapin::options::QueueDeclareOptions {
@@ -727,8 +744,7 @@ impl QueueAdapter for RabbitMQAdapter {
         let mut deliveries_to_nack = Vec::new();
 
         for i in 0..fetch_count {
-            let get_result = self
-                .channel
+            let get_result = channel
                 .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
@@ -1170,36 +1186,14 @@ impl QueueAdapter for RabbitMQAdapter {
         };
 
         // Get main queue depth (passive declare to inspect without creating)
-        let depth = match self
-            .channel
-            .queue_declare(
-                &queue_name,
-                lapin::options::QueueDeclareOptions {
-                    passive: true,
-                    ..Default::default()
-                },
-                lapin::types::FieldTable::default(),
-            )
-            .await
-        {
-            Ok(info) => info.message_count() as u64,
+        let depth = match self.passive_queue_message_count(&queue_name).await {
+            Ok(count) => count,
             Err(_) => 0,
         };
 
         // Get DLQ depth
-        let dlq_depth = match self
-            .channel
-            .queue_declare(
-                &dlq_name,
-                lapin::options::QueueDeclareOptions {
-                    passive: true,
-                    ..Default::default()
-                },
-                lapin::types::FieldTable::default(),
-            )
-            .await
-        {
-            Ok(info) => info.message_count() as u64,
+        let dlq_depth = match self.passive_queue_message_count(&dlq_name).await {
+            Ok(count) => count,
             Err(_) => 0,
         };
 

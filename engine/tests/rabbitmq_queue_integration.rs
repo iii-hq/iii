@@ -20,7 +20,10 @@ use uuid::Uuid;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    workers::{queue::QueueWorker, traits::Worker},
+    workers::{
+        queue::{FunctionQueueConfig, QueueWorker},
+        traits::Worker,
+    },
 };
 
 use common::queue_helpers::{
@@ -37,6 +40,71 @@ use common::rabbitmq_helpers::{
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn missing_dlq_inspection_does_not_close_function_queue_channel() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let missing_queue = format!("{prefix}-missing");
+    let function_queue = format!("{prefix}-function");
+    let engine = Arc::new(Engine::new());
+
+    // Deliberately start without function queues: the passive DLQ inspection
+    // below must observe a nonexistent broker queue before setup begins.
+    let module = QueueWorker::for_test(
+        engine,
+        Some(json!({
+            "adapter": {
+                "name": "rabbitmq",
+                "config": { "amqp_url": ctx.amqp_url }
+            }
+        })),
+    )
+    .await
+    .expect("RabbitMQ adapter should connect");
+
+    assert!(
+        module
+            .function_queue_dlq_count(&missing_queue)
+            .await
+            .is_err(),
+        "a nonexistent DLQ must report an inspection error"
+    );
+
+    let adapter = module.adapter_snapshot();
+    let config = FunctionQueueConfig::default();
+    adapter
+        .setup_function_queue(&function_queue, &config)
+        .await
+        .expect("a failed DLQ inspection must not close the function queue channel");
+    let mut receiver = adapter
+        .consume_function_queue(&function_queue, 1)
+        .await
+        .expect("a failed DLQ inspection must not prevent function queue consumption");
+
+    adapter
+        .publish_to_function_queue(
+            &function_queue,
+            "test::rmq_dlq_channel",
+            json!({"source": "dlq-channel-regression"}),
+            "dlq-channel-regression-message",
+            config.max_retries,
+            config.backoff_ms,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+    let message = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+        .await
+        .expect("function queue should receive a published message")
+        .expect("function queue receiver should remain open");
+    adapter
+        .ack_function_queue(&function_queue, message.delivery_id)
+        .await
+        .expect("function queue acknowledgement should succeed");
+}
 
 #[tokio::test]
 async fn full_roundtrip_enqueue_consume_invoke() {
