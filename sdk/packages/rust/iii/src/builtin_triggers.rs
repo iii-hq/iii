@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::protocol::RegisterTriggerInput;
+use crate::protocol::{FunctionTarget, RegisterTriggerInput};
 
 // ── HTTP ────────────────────────────────────────────────────────────────
 
@@ -316,13 +316,20 @@ impl IIITrigger {
     }
 
     /// Create a [`RegisterTriggerInput`] binding this trigger to a function.
-    pub fn for_function(self, function_id: impl Into<String>) -> RegisterTriggerInput {
+    ///
+    /// Accepts a bare id (`&str`/`String`) or a
+    /// [`FunctionRef`](crate::runtime::FunctionRef): a ref carries the namespace
+    /// the function registered in, so the trigger resolves to it. Override with
+    /// [`RegisterTriggerInput::in_namespace`]; a bare id falls back to the
+    /// worker's own namespace at registration.
+    pub fn for_function(self, target: impl Into<FunctionTarget>) -> RegisterTriggerInput {
+        let target = target.into();
         RegisterTriggerInput {
             trigger_type: self.trigger_type_id().to_string(),
-            function_id: function_id.into(),
+            function_id: target.function_id,
             config: serde_json::to_value(&self).unwrap(),
             metadata: None,
-            namespace: None,
+            namespace: target.namespace,
         }
     }
 }

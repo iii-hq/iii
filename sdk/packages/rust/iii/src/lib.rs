@@ -49,7 +49,7 @@ pub use error::{Error, InvocationError};
 pub use iii::TelemetryOptions;
 pub use iii::{IIIClient, RegisterFunction, RegisterTriggerType};
 pub use iii_helpers::queue::EnqueueResult;
-pub use protocol::{Message, TriggerAction};
+pub use protocol::{FunctionTarget, Message, TriggerAction};
 pub use stream_provider::IStream;
 pub use structs::MiddlewareFunctionInput;
 pub use types::{StreamRequest, StreamResponse};

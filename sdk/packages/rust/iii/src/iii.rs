@@ -37,7 +37,7 @@ use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::Error,
     protocol::{
-        ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message, RegisterFunctionMessage,
+        ErrorBody, FUNCTION_NAMESPACE_CONFLICT, FunctionTarget, Message, RegisterFunctionMessage,
         RegisterTriggerInput, RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction,
         TriggerRequest, TriggerRequestWithMetadata, UnregisterTriggerMessage,
         UnregisterTriggerTypeMessage, WORKER_NAMESPACE_CONFLICT,
@@ -424,12 +424,35 @@ pub enum IIIConnectionState {
 #[derive(Clone)]
 pub struct FunctionRef {
     pub id: String,
+    /// Namespace this function registered in (the worker's namespace at
+    /// registration time). `None` for the engine's default. Carried so the
+    /// handle can be handed back as a trigger/invocation target and route to
+    /// its own namespace via [`FunctionTarget`].
+    pub namespace: Option<String>,
     unregister_fn: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl FunctionRef {
     pub fn unregister(&self) {
         (self.unregister_fn)();
+    }
+}
+
+impl From<&FunctionRef> for FunctionTarget {
+    fn from(r: &FunctionRef) -> Self {
+        Self {
+            function_id: r.id.clone(),
+            namespace: r.namespace.clone(),
+        }
+    }
+}
+
+impl From<FunctionRef> for FunctionTarget {
+    fn from(r: FunctionRef) -> Self {
+        Self {
+            function_id: r.id,
+            namespace: r.namespace,
+        }
     }
 }
 
@@ -826,6 +849,10 @@ struct IIIInner {
     /// frame); required by the engine to authorize the reattach — ids alone
     /// are publicly discoverable.
     reattach_token: Mutex<Option<String>>,
+    /// Sibling worker views keyed by namespace, created lazily by
+    /// [`IIIClient::use_namespace`]. Each is a full connection registered under
+    /// the same worker name in that namespace; torn down with the parent.
+    namespace_views: Mutex<HashMap<String, IIIClient>>,
 }
 
 /// WebSocket client for communication with the III Engine.
@@ -864,6 +891,7 @@ impl IIIClient {
             timings: Mutex::new(ConnTimings::default()),
             worker_id: Mutex::new(None),
             reattach_token: Mutex::new(None),
+            namespace_views: Mutex::new(HashMap::new()),
         };
         Self {
             inner: Arc::new(inner),
@@ -897,6 +925,49 @@ impl IIIClient {
             .lock_or_recover()
             .as_ref()
             .and_then(|md| md.namespace.clone())
+    }
+
+    /// Return a sibling worker view bound to `namespace`: a NEW connection
+    /// registered under this worker's SAME name in the target namespace. Views
+    /// are cached per namespace, so repeated calls with the same namespace
+    /// return the same connection.
+    ///
+    /// A worker with no namespace already lives in the engine's `default`, so
+    /// requesting the worker's own namespace (`self.namespace()`, normalized to
+    /// `"default"`) returns a clone of `self` without opening a new connection.
+    ///
+    /// Sibling views inherit the parent's metadata (worker name, description,
+    /// telemetry) and handshake headers, and are torn down when the parent
+    /// [`shutdown`](Self::shutdown)s. Like [`register_worker`](crate::register_worker),
+    /// this connects immediately in a background thread.
+    pub fn use_namespace(&self, namespace: impl Into<String>) -> IIIClient {
+        let namespace = namespace.into();
+        // Normalize: an unset namespace maps to the engine's `default`.
+        let own = self.namespace().unwrap_or_else(|| "default".to_string());
+        if namespace == own {
+            return self.clone();
+        }
+
+        let mut views = self.inner.namespace_views.lock_or_recover();
+        if let Some(cached) = views.get(&namespace) {
+            return cached.clone();
+        }
+
+        // Reuse the parent's connection path: same metadata (name preserved),
+        // namespace overridden, same headers.
+        let metadata = self.inner.worker_metadata.lock_or_recover().clone();
+        let view = match metadata {
+            Some(md) => IIIClient::with_metadata(&self.inner.address, md),
+            None => IIIClient::new(&self.inner.address),
+        };
+        view.set_namespace(namespace.clone());
+        if let Some(headers) = self.inner.headers.lock_or_recover().clone() {
+            view.set_headers(headers);
+        }
+        view.connect();
+
+        views.insert(namespace, view.clone());
+        view
     }
 
     /// Fatal error that stopped the worker, if any. Set when the engine rejects
@@ -982,6 +1053,19 @@ impl IIIClient {
     /// worker.shutdown();
     /// ```
     pub fn shutdown(&self) {
+        // Tear down any namespace views this worker spawned (each its own
+        // connection); they have no lifecycle beyond their parent.
+        let views: Vec<IIIClient> = self
+            .inner
+            .namespace_views
+            .lock_or_recover()
+            .drain()
+            .map(|(_, view)| view)
+            .collect();
+        for view in views {
+            view.shutdown();
+        }
+
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
@@ -1012,6 +1096,19 @@ impl IIIClient {
     /// # }
     /// ```
     pub async fn shutdown_async(&self) {
+        // Tear down namespace views alongside the parent (see `shutdown`).
+        let views: Vec<IIIClient> = self
+            .inner
+            .namespace_views
+            .lock_or_recover()
+            .drain()
+            .map(|(_, view)| view)
+            .collect();
+        for view in views {
+            // Box the recursive async call (a view is itself an `IIIClient`).
+            Box::pin(view.shutdown_async()).await;
+        }
+
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
@@ -1051,7 +1148,14 @@ impl IIIClient {
             });
         });
 
-        FunctionRef { id, unregister_fn }
+        // Stamp the worker's namespace so the handle routes back to where the
+        // function lives when handed to `trigger`/`register_trigger`.
+        let namespace = self.namespace();
+        FunctionRef {
+            id,
+            namespace,
+            unregister_fn,
+        }
     }
 
     /// Register a function with the engine.
@@ -1243,13 +1347,18 @@ impl IIIClient {
     /// ```
     pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, Error> {
         let id = Uuid::new_v4().to_string();
+        // Route the trigger to its target's namespace: an explicit/ref
+        // namespace (already folded into `input.namespace`) wins, else this
+        // worker's own. Trigger and target must share a namespace for the
+        // engine to resolve it. Sent on the wire only when `Some`.
+        let namespace = input.namespace.or_else(|| self.namespace());
         let message = RegisterTriggerMessage {
             id: id.clone(),
             trigger_type: input.trigger_type,
             function_id: input.function_id,
             config: input.config,
             metadata: input.metadata,
-            namespace: input.namespace,
+            namespace,
         };
 
         self.inner
@@ -1331,9 +1440,32 @@ impl IIIClient {
         request: impl Into<TriggerRequestWithMetadata>,
     ) -> Result<Value, Error> {
         let request = request.into();
-        let req = request.request;
-        let metadata = request.metadata;
-        let namespace = request.namespace;
+        // Route to the target's namespace: explicit `namespace` wins, else the
+        // target ref's namespace, else this worker's own (inherited). Omitted
+        // from the wire when `None` so the engine routes within its default.
+        let namespace = request
+            .namespace
+            .or(request.target_namespace)
+            .or_else(|| self.namespace());
+        self.dispatch(request.request, request.metadata, namespace).await
+    }
+
+    /// Invoke an engine builtin without inheriting this worker's namespace.
+    /// Builtins live in `default`; internal SDK calls must route there even from
+    /// a namespaced worker/view.
+    pub(crate) async fn trigger_builtin_default(
+        &self,
+        req: TriggerRequest,
+    ) -> Result<Value, Error> {
+        self.dispatch(req, None, None).await
+    }
+
+    async fn dispatch(
+        &self,
+        req: TriggerRequest,
+        metadata: Option<Value>,
+        namespace: Option<String>,
+    ) -> Result<Value, Error> {
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response
@@ -2322,8 +2454,9 @@ pub(crate) async fn internal_create_channel(
     iii: &IIIClient,
     buffer_size: Option<usize>,
 ) -> Result<Channel, Error> {
+    // engine builtin lives in `default`; don't inherit this worker's namespace.
     let result = iii
-        .trigger(TriggerRequest {
+        .trigger_builtin_default(TriggerRequest {
             function_id: "engine::channels::create".to_string(),
             payload: serde_json::json!({ "buffer_size": buffer_size }),
             action: None,
@@ -3390,6 +3523,172 @@ mod tests {
             iii.fatal_error().is_none(),
             "a function-id conflict must not be fatal"
         );
+    }
+
+    #[tokio::test]
+    async fn register_function_ref_carries_worker_namespace() {
+        let iii = register_worker(
+            "ws://localhost:1234",
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+        let func_ref =
+            iii.register_function("orders::charge", RegisterFunction::new_async(|v: Value| async move { Ok(v) }));
+        // The handle records where it registered, so it can be handed back as a
+        // target and route to its own namespace.
+        assert_eq!(func_ref.namespace.as_deref(), Some("orders"));
+
+        // A bare-id worker leaves the ref's namespace unset (engine default).
+        let plain = register_worker("ws://localhost:1234", InitOptions::default());
+        let plain_ref =
+            plain.register_function("svc::echo", RegisterFunction::new_async(|v: Value| async move { Ok(v) }));
+        assert!(plain_ref.namespace.is_none());
+    }
+
+    // trigger resolution: explicit > ref.namespace > worker's own namespace.
+    #[tokio::test]
+    async fn trigger_namespace_resolution_prefers_explicit_then_ref_then_self() {
+        // Helper: run a void trigger and read the namespace put on the wire.
+        async fn sent_namespace(iii: &IIIClient, req: TriggerRequestWithMetadata) -> Option<String> {
+            iii.inner.running.store(true, Ordering::SeqCst);
+            iii.trigger(req).await.expect("void trigger enqueues");
+            let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
+            match rx.try_recv().expect("sent invoke") {
+                Outbound::Message(Message::InvokeFunction { namespace, .. }) => namespace,
+                _ => panic!("expected InvokeFunction"),
+            }
+        }
+
+        let base = || TriggerRequest {
+            function_id: "svc::work".to_string(),
+            payload: json!({}),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        };
+
+        // A ref registered in "billing"; used as a target.
+        let ref_billing = FunctionRef {
+            id: "svc::work".into(),
+            namespace: Some("billing".into()),
+            unregister_fn: Arc::new(|| {}),
+        };
+
+        // 1. self namespace only (no explicit, bare id target).
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.set_namespace("orders");
+        assert_eq!(
+            sent_namespace(&iii, base().into()).await.as_deref(),
+            Some("orders"),
+            "bare id falls back to the worker's own namespace"
+        );
+
+        // 2. ref namespace beats self.
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.set_namespace("orders");
+        assert_eq!(
+            sent_namespace(&iii, base().for_function(&ref_billing)).await.as_deref(),
+            Some("billing"),
+            "the target ref's namespace beats the worker's own"
+        );
+
+        // 3. explicit beats ref.
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.set_namespace("orders");
+        assert_eq!(
+            sent_namespace(&iii, base().for_function(&ref_billing).namespace("payments"))
+                .await
+                .as_deref(),
+            Some("payments"),
+            "an explicit namespace beats the ref's"
+        );
+
+        // 4. nothing anywhere -> None (engine default).
+        let iii = IIIClient::new("ws://localhost:1234");
+        assert!(
+            sent_namespace(&iii, base().into()).await.is_none(),
+            "no namespace anywhere omits it on the wire"
+        );
+    }
+
+    // register_trigger resolution: explicit (via ref/in_namespace) > self.
+    #[tokio::test]
+    async fn register_trigger_namespace_resolution_prefers_input_then_self() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.set_namespace("orders");
+
+        // Bare id -> falls back to the worker's own namespace.
+        iii.register_trigger(RegisterTriggerInput {
+            trigger_type: "http".into(),
+            function_id: "svc::work".into(),
+            config: json!({}),
+            metadata: None,
+            namespace: None,
+        })
+        .unwrap();
+
+        // Explicit input namespace wins over self.
+        iii.register_trigger(RegisterTriggerInput {
+            trigger_type: "http".into(),
+            function_id: "svc::work".into(),
+            config: json!({}),
+            metadata: None,
+            namespace: Some("billing".into()),
+        })
+        .unwrap();
+
+        let triggers = iii.inner.triggers.lock().unwrap();
+        let namespaces: HashSet<Option<String>> =
+            triggers.values().map(|t| t.namespace.clone()).collect();
+        assert!(namespaces.contains(&Some("orders".to_string())), "bare id inherits self");
+        assert!(namespaces.contains(&Some("billing".to_string())), "explicit wins");
+    }
+
+    // use_namespace normalizer: requesting the worker's own namespace (with the
+    // engine's `default` normalization) returns the same connection, not a view.
+    #[tokio::test]
+    async fn use_namespace_returns_self_for_own_namespace_and_caches_views() {
+        // No namespace -> lives in "default"; asking for "default" is self.
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        assert!(Arc::ptr_eq(&iii.inner, &iii.use_namespace("default").inner));
+
+        // Explicit namespace -> asking for it returns self.
+        let ns_iii = register_worker(
+            "ws://localhost:1234",
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+        assert!(Arc::ptr_eq(&ns_iii.inner, &ns_iii.use_namespace("orders").inner));
+
+        // A different namespace spawns a distinct, cached sibling under the
+        // same worker name.
+        let view = iii.use_namespace("billing");
+        assert!(!Arc::ptr_eq(&iii.inner, &view.inner));
+        assert_eq!(view.namespace().as_deref(), Some("billing"));
+        let again = iii.use_namespace("billing");
+        assert!(Arc::ptr_eq(&view.inner, &again.inner), "same namespace is cached");
+
+        iii.shutdown_async().await;
+        ns_iii.shutdown_async().await;
+    }
+
+    #[test]
+    fn function_target_from_bare_id_and_ref() {
+        let from_str: FunctionTarget = "svc::work".into();
+        assert_eq!(from_str.function_id, "svc::work");
+        assert!(from_str.namespace.is_none());
+
+        let r = FunctionRef {
+            id: "svc::work".into(),
+            namespace: Some("orders".into()),
+            unregister_fn: Arc::new(|| {}),
+        };
+        let from_ref: FunctionTarget = (&r).into();
+        assert_eq!(from_ref.function_id, "svc::work");
+        assert_eq!(from_ref.namespace.as_deref(), Some("orders"));
     }
 
     #[test]

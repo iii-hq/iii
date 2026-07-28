@@ -15,6 +15,45 @@ pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
 /// functions. Mirrors the engine constant of the same name.
 pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
 
+/// A trigger/invocation target: a function id plus the namespace it resolves
+/// in. Built from a bare id (`&str`/`String`, namespace unset) or from a
+/// [`FunctionRef`](crate::runtime::FunctionRef) (carrying the namespace the
+/// function registered in). Mirrors Node's `FunctionTarget` union so a
+/// registration handle can be handed straight back as a target and route to
+/// its own namespace.
+#[derive(Debug, Clone)]
+pub struct FunctionTarget {
+    pub function_id: String,
+    pub namespace: Option<String>,
+}
+
+impl From<String> for FunctionTarget {
+    fn from(function_id: String) -> Self {
+        Self {
+            function_id,
+            namespace: None,
+        }
+    }
+}
+
+impl From<&str> for FunctionTarget {
+    fn from(function_id: &str) -> Self {
+        Self {
+            function_id: function_id.to_string(),
+            namespace: None,
+        }
+    }
+}
+
+impl From<&String> for FunctionTarget {
+    fn from(function_id: &String) -> Self {
+        Self {
+            function_id: function_id.clone(),
+            namespace: None,
+        }
+    }
+}
+
 /// Routing action for [`TriggerRequest`]. Determines how the engine handles
 /// the invocation.
 ///
@@ -80,6 +119,22 @@ impl TriggerRequest {
             request: self,
             metadata: Some(metadata),
             namespace: None,
+            target_namespace: None,
+        }
+    }
+
+    /// Route this request at a registered function handle, inheriting the
+    /// namespace it registered in (overrides `function_id`). A bare
+    /// `function_id` string instead falls back to the worker's own namespace at
+    /// call time. An explicit [`namespace`](Self::namespace) still wins.
+    pub fn for_function(mut self, target: impl Into<FunctionTarget>) -> TriggerRequestWithMetadata {
+        let target = target.into();
+        self.function_id = target.function_id;
+        TriggerRequestWithMetadata {
+            request: self,
+            metadata: None,
+            namespace: None,
+            target_namespace: target.namespace,
         }
     }
 
@@ -92,6 +147,7 @@ impl TriggerRequest {
             request: self,
             metadata: None,
             namespace: Some(namespace.into()),
+            target_namespace: None,
         }
     }
 }
@@ -101,7 +157,13 @@ impl TriggerRequest {
 pub struct TriggerRequestWithMetadata {
     pub(crate) request: TriggerRequest,
     pub(crate) metadata: Option<Value>,
+    /// Explicit target namespace set via [`TriggerRequest::namespace`]. Wins
+    /// over both the target ref's namespace and the worker's own.
     pub(crate) namespace: Option<String>,
+    /// Namespace carried by a [`FunctionTarget`] ref (via
+    /// [`TriggerRequest::for_function`]). Used when no explicit namespace is
+    /// set, before falling back to the worker's own namespace.
+    pub(crate) target_namespace: Option<String>,
 }
 
 impl TriggerRequestWithMetadata {
@@ -127,6 +189,7 @@ where
             request: request.into(),
             metadata: None,
             namespace: None,
+            target_namespace: None,
         }
     }
 }
