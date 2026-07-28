@@ -38,6 +38,14 @@
           loading="lazy"
           data-ccon-iframe
           data-src="/console-demo/index.html"></iframe>
+        <button
+          type="button"
+          class="ccon-cover"
+          data-ccon-cover
+          aria-label="interact with the console"
+        >
+          <span class="ccon-cover-hint">click to interact</span>
+        </button>
       </div>
       <button
         type="button"
@@ -72,8 +80,9 @@
     pointer-events: none;
   }
   .ccon-frame {
-    /* Same cap as the overlay: wider and the console's columns stretch past
-       the width they were designed at. */
+    position: relative;
+    /* Wider than this and the console's columns stretch past the width they
+       were designed at. */
     width: min(1800px, 100vw - 24px);
     height: calc(100vh - 24px);
     height: calc(100dvh - 24px);
@@ -117,6 +126,39 @@
   .ccon-close span {
     color: var(--mute-2);
   }
+  /* Until the reader claims the console with a click, scroll keeps belonging
+     to the page: the cover is a plain button, so a wheel over it chains
+     straight out to the document and the zoom keeps tracking the scroll.
+     A pointer that happens to rest over the transcript is an accident of
+     position; the click is the signal of intent. */
+  /* Explicit: display:grid would otherwise override the UA's [hidden] rule
+     and the "claimed" cover would keep eating the wheel. */
+  .ccon-cover[hidden] {
+    display: none;
+  }
+  .ccon-cover {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: end center;
+    padding: 0 0 18px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  .ccon-cover-hint {
+    display: inline-block;
+    padding: 6px 12px;
+    border: 1px solid var(--rule);
+    background: var(--bg);
+    color: var(--mute);
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0;
+    visibility: hidden;
+  }
 
   @supports (animation-timeline: view()) {
     .ccon-track {
@@ -145,6 +187,11 @@
       animation-range: contain 0% contain 100%;
     }
     .ccon-close {
+      animation: ccon-close-fade linear both;
+      animation-timeline: --ccon-track;
+      animation-range: contain 0% contain 100%;
+    }
+    .ccon-cover-hint {
       animation: ccon-close-fade linear both;
       animation-timeline: --ccon-track;
       animation-range: contain 0% contain 100%;
@@ -227,6 +274,14 @@
     const currentTheme = () =>
       document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
 
+    // First click claims the console; from then on the wheel belongs to its
+    // inner scrollers. The cover comes back once the reader has moved on, so
+    // the next approach starts hands-off again.
+    const cover = document.querySelector<HTMLElement>('[data-ccon-cover]')
+    cover?.addEventListener('click', () => {
+      cover.hidden = true
+    })
+
     // "close" rides the scroll to the end of the track: the zoom-out plays
     // and the reader lands where scrolling past would have put them anyway.
     const closeBtn = document.querySelector<HTMLElement>('[data-ccon-close]')
@@ -238,6 +293,7 @@
         top: r.bottom + window.scrollY - window.innerHeight,
         behavior: 'smooth',
       })
+      if (cover) cover.hidden = false
     }
     closeBtn?.addEventListener('click', closeOut)
     document.addEventListener('keydown', (e) => {
@@ -265,6 +321,7 @@
             { type: 'iii-demo', active: entry.isIntersecting },
             '*',
           )
+          if (!entry.isIntersecting && cover) cover.hidden = false
         }
       },
       { rootMargin: '50% 0px' },
