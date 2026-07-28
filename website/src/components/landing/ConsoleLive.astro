@@ -47,14 +47,6 @@
           <span class="ccon-cover-hint">click to interact</span>
         </button>
       </div>
-      <button
-        type="button"
-        class="ccon-close"
-        data-ccon-close
-        aria-label="close the console and keep reading"
-      >
-        close <span aria-hidden="true">esc</span>
-      </button>
     </div>
   </div>
 </section>
@@ -97,35 +89,6 @@
     height: 100%;
     border: 0;
   }
-  /* The scroll gesture is the way out, and this is the way out for anyone
-     who does not realize that. Hidden until the console holds the screen;
-     without scroll timelines it never shows, and there is nothing to close. */
-  .ccon-close {
-    position: absolute;
-    top: 24px;
-    right: 24px;
-    pointer-events: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    border: 1px solid var(--rule);
-    background: var(--bg);
-    color: var(--ink);
-    font-family: var(--mono, ui-monospace, monospace);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    opacity: 0;
-    visibility: hidden;
-  }
-  .ccon-close:hover {
-    border-color: var(--ink);
-  }
-  .ccon-close span {
-    color: var(--mute-2);
-  }
   /* Until the reader claims the console with a click, scroll keeps belonging
      to the page: the cover is a plain button, so a wheel over it chains
      straight out to the document and the zoom keeps tracking the scroll.
@@ -138,7 +101,11 @@
   }
   .ccon-cover {
     position: absolute;
-    inset: 0;
+    /* The window chrome bar stays exposed: its close button (inside the
+       demo, next to the recorded dot) works on the first click, before the
+       console is claimed. Nothing up there scrolls, so the wheel still
+       chains out to the page. */
+    inset: 45px 0 0 0;
     display: grid;
     place-items: end center;
     padding: 0 0 18px;
@@ -186,18 +153,13 @@
       animation-timeline: --ccon-track;
       animation-range: contain 0% contain 100%;
     }
-    .ccon-close {
-      animation: ccon-close-fade linear both;
-      animation-timeline: --ccon-track;
-      animation-range: contain 0% contain 100%;
-    }
     .ccon-cover-hint {
-      animation: ccon-close-fade linear both;
+      animation: ccon-hint-fade linear both;
       animation-timeline: --ccon-track;
       animation-range: contain 0% contain 100%;
     }
   }
-  @keyframes ccon-close-fade {
+  @keyframes ccon-hint-fade {
     0%,
     18% {
       opacity: 0;
@@ -284,26 +246,26 @@
 
     // "close" rides the scroll to the end of the track: the zoom-out plays
     // and the reader lands where scrolling past would have put them anyway.
-    const closeBtn = document.querySelector<HTMLElement>('[data-ccon-close]')
-    const closable = () =>
-      closeBtn && getComputedStyle(closeBtn).visibility === 'visible'
+    // The button lives in the demo's own window chrome and posts
+    // iii-demo-close; Escape does the same from either document.
+    const pinned = () => {
+      const r = track.getBoundingClientRect()
+      return r.top <= 0 && r.bottom >= window.innerHeight
+    }
     const closeOut = () => {
-      const r = track!.getBoundingClientRect()
+      const r = track.getBoundingClientRect()
       window.scrollTo({
         top: r.bottom + window.scrollY - window.innerHeight,
         behavior: 'smooth',
       })
       if (cover) cover.hidden = false
     }
-    closeBtn?.addEventListener('click', closeOut)
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && closable()) closeOut()
+      if (e.key === 'Escape' && pinned()) closeOut()
     })
-    // Escape pressed with focus inside the frame: the demo forwards it,
-    // because that keydown never reaches this document.
     window.addEventListener('message', (e) => {
       if (e.source !== iframe.contentWindow) return
-      if (e.data?.type === 'iii-demo-close' && closable()) closeOut()
+      if (e.data?.type === 'iii-demo-close' && pinned()) closeOut()
     })
 
     // Load on approach, play while on screen, pause the rest of the time; a
