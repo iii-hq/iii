@@ -305,5 +305,8 @@ export default function SplitRaceStyled() {
   const map = {}; ["Prompt", "Find", "Early", "Iterate", "Test", "Worker", "Ship", "Result"].forEach(n => map[n] = World);
   // iii: bg transparent; the panel backdrop read as a card around the race,
   // and the windows sit straight on the page.
-  return <SceneStage width={1920} height={1200} bg="transparent" scenes={SCENES} playback={PLAYBACK}>{map}</SceneStage>;
+  // iii: reduced motion holds the first frame; the loop has no user-reachable
+  // pause on the site (the engine's transport bar is hidden).
+  const reduced = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  return <SceneStage width={1920} height={1200} bg="transparent" autoplay={!reduced} scenes={SCENES} playback={PLAYBACK}>{map}</SceneStage>;
 }

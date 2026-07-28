@@ -666,6 +666,9 @@ function Stage({
       typeof ReactDOM !== 'undefined' &&
       typeof ReactDOM.flushSync === 'function';
     const onSeek = (e) => {
+      // iii: a seek without a numeric time would pause the stage and then
+      // throw before retiming it; drop the event whole instead.
+      if (!e.detail || typeof e.detail.time !== 'number') return;
       const apply = () => {
         setPlaying(false);
         const hostPlay = !!(e.detail && e.detail.playing === true);

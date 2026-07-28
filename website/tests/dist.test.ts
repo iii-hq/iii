@@ -50,18 +50,27 @@ test('console demo entry uses absolute asset paths that exist', async () => {
     .map((m) => m[1])
     .filter((u) => u.includes('assets/'))
   assert.ok(refs.length >= 2, 'demo entry references no hashed assets')
+  const assetsRoot = path.resolve(DIST, 'console-demo/assets')
   for (const u of refs) {
     // Relative URLs break behind Vercel's cleanUrls: /console-demo/index.html
     // 308s to /console-demo (no trailing slash), so ./assets/* resolves to
     // the domain root and the bundle 404s on preview deploys.
     assert.ok(
-      u.startsWith('/console-demo/'),
-      `demo asset URL must be absolute under /console-demo/, got ${u}`,
+      u.startsWith('/console-demo/assets/'),
+      `demo asset URL must be absolute under /console-demo/assets/, got ${u}`,
+    )
+    // Resolve before touching the filesystem so an encoded or ../ path in a
+    // tampered artifact can't satisfy the check with a file outside the
+    // vendored directory.
+    const assetPath = path.resolve(
+      DIST,
+      decodeURIComponent(new URL(u, 'https://dist.invalid').pathname).slice(1),
     )
     assert.ok(
-      existsSync(path.join(DIST, u.replace(/^\//, ''))),
-      `demo asset missing from dist: ${u}`,
+      assetPath.startsWith(`${assetsRoot}${path.sep}`),
+      `demo asset URL escapes the asset directory: ${u}`,
     )
+    assert.ok(existsSync(assetPath), `demo asset missing from dist: ${u}`)
   }
 })
 

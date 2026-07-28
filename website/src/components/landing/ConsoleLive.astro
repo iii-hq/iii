@@ -122,8 +122,11 @@
     font-size: 11px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    opacity: 0;
-    visibility: hidden;
+    /* Visible by default: without scroll timelines (stable Firefox, reduced
+       motion) the cover would otherwise be an invisible click-trap. In
+       supported browsers the fill-both animation below governs instead. */
+    opacity: 1;
+    visibility: visible;
   }
 
   @supports (animation-timeline: view()) {

@@ -24,7 +24,7 @@ if [[ ! -f "$web/vite.demo.config.ts" ]]; then
 fi
 
 echo "building demo in $web"
-(cd "$web" && npm run build:demo)
+(cd "$web" && pnpm run build:demo)
 
 rm -rf "$dest"
 mkdir -p "$dest"
