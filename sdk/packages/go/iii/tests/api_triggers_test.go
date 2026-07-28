@@ -23,7 +23,7 @@ import (
 func TestHTTPTriggerRoundtrip(t *testing.T) {
 	c := connect(t)
 
-	if err := c.RegisterFunction("test::http::go::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::http::go::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Body struct {
 				Name string `json:"name"`
@@ -91,10 +91,10 @@ func TestConflictingRouteStructureIsRejected(t *testing.T) {
 	handler := func(_ context.Context, _ json.RawMessage) (any, error) {
 		return map[string]any{"status_code": 200, "body": map[string]bool{"ok": true}}, nil
 	}
-	if err := c.RegisterFunction("test::api::conflict::a::go", handler); err != nil {
+	if _, err := c.RegisterFunction("test::api::conflict::a::go", handler); err != nil {
 		t.Fatalf("RegisterFunction A: %v", err)
 	}
-	if err := c.RegisterFunction("test::api::conflict::b::go", handler); err != nil {
+	if _, err := c.RegisterFunction("test::api::conflict::b::go", handler); err != nil {
 		t.Fatalf("RegisterFunction B: %v", err)
 	}
 

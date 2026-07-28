@@ -97,6 +97,12 @@ type Client struct {
 	fatal     chan struct{}
 	fatalOnce sync.Once
 	fatalErr  error
+
+	// namespaceViews caches sibling worker views created by UseNamespace, keyed by
+	// namespace. Each is a full independent connection registered under the same name
+	// in that namespace. Guarded by viewsMu. Torn down by Close.
+	viewsMu        sync.Mutex
+	namespaceViews map[string]*Client
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
@@ -131,6 +137,51 @@ func resolveRegisterFunctionOptions(name, id string, opts []RegisterFunctionOpti
 type registeredFunction struct {
 	message *RegisterFunctionMessage
 	handler Handler
+}
+
+// FunctionRef is the handle returned by [Client.RegisterFunction]. It carries the
+// function id and the namespace the function registered in (the worker's namespace at
+// registration time). Pass it as a [TriggerRequest.FunctionID] or to
+// [Client.RegisterTrigger]/[Client.RegisterTriggerNamespaced] and the call routes to that
+// namespace unless an explicit namespace overrides it. Mirrors FunctionRef in the Node SDK.
+type FunctionRef struct {
+	// ID is the function identifier.
+	ID string
+	// Namespace is where the function registered; empty means the engine's default.
+	Namespace string
+}
+
+// resolveFunctionTarget normalizes a function target that may be a bare string id or a
+// [FunctionRef] (by value or pointer). A ref carries the namespace where the function
+// registered, so triggers and invocations can route to it without restating the
+// namespace. Mirrors resolveFunctionTarget in the Node SDK.
+func resolveFunctionTarget(target any) (functionID, namespace string, err error) {
+	switch t := target.(type) {
+	case string:
+		return t, "", nil
+	case FunctionRef:
+		return t.ID, t.Namespace, nil
+	case *FunctionRef:
+		if t == nil {
+			return "", "", fmt.Errorf("iii: function target is a nil *FunctionRef")
+		}
+		return t.ID, t.Namespace, nil
+	default:
+		return "", "", fmt.Errorf("iii: function target must be a string or FunctionRef, got %T", target)
+	}
+}
+
+// resolveTargetNamespace picks the namespace a call routes to: an explicit namespace wins,
+// else the target ref's namespace, else the worker's own. Empty means the engine's default
+// namespace (omitted from the wire). Mirrors the `??` chain in the Node SDK.
+func resolveTargetNamespace(explicit, refNamespace, own string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if refNamespace != "" {
+		return refNamespace
+	}
+	return own
 }
 
 type registeredTriggerType struct {
@@ -176,19 +227,20 @@ func WithNamespace(namespace string) Option {
 // [RegisterWorker] to create and connect in one step.
 func New(url string, opts ...Option) *Client {
 	c := &Client{
-		url:          url,
-		reconnect:    DefaultReconnectConfig(),
-		name:         defaultWorkerName(),
-		outbound:     make(chan []byte, 64),
-		state:        StateDisconnected,
-		functions:    map[string]registeredFunction{},
-		triggers:     map[string]*RegisterTriggerMessage{},
-		triggerTypes: map[string]registeredTriggerType{},
-		pending:      map[uuid.UUID]chan invocationOutcome{},
-		shutdown:     make(chan struct{}),
-		connected:    make(chan struct{}),
-		failed:       make(chan struct{}),
-		fatal:        make(chan struct{}),
+		url:            url,
+		reconnect:      DefaultReconnectConfig(),
+		name:           defaultWorkerName(),
+		outbound:       make(chan []byte, 64),
+		state:          StateDisconnected,
+		functions:      map[string]registeredFunction{},
+		triggers:       map[string]*RegisterTriggerMessage{},
+		triggerTypes:   map[string]registeredTriggerType{},
+		pending:        map[uuid.UUID]chan invocationOutcome{},
+		namespaceViews: map[string]*Client{},
+		shutdown:       make(chan struct{}),
+		connected:      make(chan struct{}),
+		failed:         make(chan struct{}),
+		fatal:          make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -249,17 +301,20 @@ func (c *Client) setState(s ConnectionState) {
 //
 // Handlers read the optional per-invocation metadata sidecar from their ctx with
 // [MetadataFromContext].
-func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFunctionOptions) error {
+//
+// It returns a [FunctionRef] carrying the id and this worker's namespace; pass the ref as
+// a trigger/invoke target to route back here without restating the namespace.
+func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFunctionOptions) (FunctionRef, error) {
 	if handler == nil {
-		return fmt.Errorf("iii: RegisterFunction(%q): handler is nil", id)
+		return FunctionRef{}, fmt.Errorf("iii: RegisterFunction(%q): handler is nil", id)
 	}
 	return c.registerFunction("RegisterFunction", id, handler, opts)
 }
 
-func (c *Client) registerFunction(name, id string, handler Handler, opts []RegisterFunctionOptions) error {
+func (c *Client) registerFunction(name, id string, handler Handler, opts []RegisterFunctionOptions) (FunctionRef, error) {
 	cfg, err := resolveRegisterFunctionOptions(name, id, opts)
 	if err != nil {
-		return err
+		return FunctionRef{}, err
 	}
 	msg := &RegisterFunctionMessage{ID: id, Metadata: cfg.Metadata}
 	c.mu.Lock()
@@ -268,7 +323,7 @@ func (c *Client) registerFunction(name, id string, handler Handler, opts []Regis
 	// Best-effort live send; if disconnected, the registry replay on reconnect covers
 	// it (registration frames are deliberately not buffered — see offline).
 	c.sendRegistration(msg)
-	return nil
+	return FunctionRef{ID: id, Namespace: c.namespace}, nil
 }
 
 // RegisterTriggerType registers a custom trigger-type handler (e.g. "cron"). The engine
@@ -286,18 +341,28 @@ func (c *Client) RegisterTriggerType(id, description string, handler TriggerHand
 }
 
 // RegisterTrigger registers a trigger instance: fire functionID when a trigger of
-// triggerType matches config. config and optional metadata are raw JSON (may be nil).
-func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json.RawMessage, metadata ...json.RawMessage) error {
+// triggerType matches config. functionID is a bare function id string or a [FunctionRef]
+// (which carries the namespace to route to). config and optional metadata are raw JSON
+// (may be nil). The trigger routes to the ref's namespace if given, else this worker's own.
+func (c *Client) RegisterTrigger(id, triggerType string, functionID any, config json.RawMessage, metadata ...json.RawMessage) error {
 	return c.registerTrigger(id, triggerType, functionID, "", config, metadata...)
 }
 
 // RegisterTriggerNamespaced is like [Client.RegisterTrigger] but resolves the
 // target functionID in namespace. An empty namespace means the engine's default.
-func (c *Client) RegisterTriggerNamespaced(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
+func (c *Client) RegisterTriggerNamespaced(id, triggerType string, functionID any, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
 	return c.registerTrigger(id, triggerType, functionID, namespace, config, metadata...)
 }
 
-func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
+func (c *Client) registerTrigger(id, triggerType string, functionID any, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
+	fnID, refNamespace, err := resolveFunctionTarget(functionID)
+	if err != nil {
+		return err
+	}
+	// Route the trigger to its target's namespace: explicit wins, else the ref's, else
+	// this worker's own. Trigger and target must share a namespace for the engine to
+	// resolve it.
+	namespace = resolveTargetNamespace(namespace, refNamespace, c.namespace)
 	if config == nil {
 		config = json.RawMessage("{}")
 	}
@@ -311,7 +376,7 @@ func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, 
 	msg := &RegisterTriggerMessage{
 		ID:          id,
 		TriggerType: triggerType,
-		FunctionID:  functionID,
+		FunctionID:  fnID,
 		Config:      config,
 		Metadata:    meta,
 		Namespace:   namespace,
@@ -323,12 +388,51 @@ func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, 
 	return nil
 }
 
+// UseNamespace returns a sibling worker view bound to namespace. The view keeps this
+// worker's name but registers under namespace through its own connection, so every
+// function, trigger, and invocation on it inherits namespace without the caller restating
+// it. Views are cached per namespace: repeated calls with the same namespace return the
+// same *Client, and passing this worker's own namespace returns the receiver. Because
+// default is the engine's implicit namespace, a worker with no namespace already lives
+// there; reach the engine builtins from a namespaced worker with UseNamespace("default").
+// [Client.Close] on this worker also closes every cached view. Mirrors useNamespace in the
+// Node SDK.
+func (c *Client) UseNamespace(namespace string) *Client {
+	// default is the engine's implicit namespace; a worker with no namespace already
+	// lives there, so normalize before comparing.
+	own := c.namespace
+	if own == "" {
+		own = "default"
+	}
+	if namespace == own {
+		return c
+	}
+	c.viewsMu.Lock()
+	defer c.viewsMu.Unlock()
+	if v, ok := c.namespaceViews[namespace]; ok {
+		return v
+	}
+	// A full independent worker under the same name, in the target namespace. It starts
+	// its own connection lifecycle in the background, like RegisterWorker.
+	view := New(c.url,
+		WithName(c.name),
+		WithDescription(c.description),
+		WithReconnectConfig(c.reconnect),
+		WithNamespace(namespace),
+	)
+	view.startSupervisor()
+	c.namespaceViews[namespace] = view
+	return view
+}
+
 // TriggerRequest is the input to [Client.Trigger]. The Action field selects the delivery
 // semantics: nil/await (default) waits for the result; [VoidAction] is fire-and-forget;
 // [EnqueueAction] routes through a named queue and awaits its receipt.
 type TriggerRequest struct {
-	// FunctionID is the engine function to invoke (e.g. an EngineFunctions constant).
-	FunctionID string
+	// FunctionID is the target to invoke: a bare function id string (e.g. an
+	// EngineFunctions constant) or a [FunctionRef], which carries the namespace to route
+	// to. A ref's namespace is used unless Namespace below overrides it.
+	FunctionID any
 	// Data is the JSON payload. nil is sent as {}.
 	Data json.RawMessage
 	// Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside Data
@@ -338,8 +442,9 @@ type TriggerRequest struct {
 	Action *TriggerAction
 	// Timeout overrides [DefaultInvocationTimeout] for an await/enqueue call.
 	Timeout time.Duration
-	// Namespace routes the invocation to a specific namespace. Empty means the
-	// engine's default namespace, independent of this worker's own namespace.
+	// Namespace routes the invocation to a specific namespace, overriding both a
+	// FunctionID ref's namespace and this worker's own. Empty falls back to the ref's
+	// namespace, then this worker's; empty at every level means the engine's default.
 	Namespace string
 }
 
@@ -351,22 +456,45 @@ type TriggerRequest struct {
 // ctx bounds the wait independently of [TriggerRequest.Timeout]: if ctx is cancelled
 // first, its error is returned and the pending entry is reclaimed.
 func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessage, error) {
+	return c.triggerWithOwn(ctx, req, c.namespace)
+}
+
+// triggerBuiltinDefault invokes an engine builtin without inheriting this worker's
+// namespace. Builtins live in the `default` namespace, so internal SDK calls must
+// route there even from a namespaced worker or view.
+func (c *Client) triggerBuiltinDefault(ctx context.Context, req TriggerRequest) (json.RawMessage, error) {
+	return c.triggerWithOwn(ctx, req, "")
+}
+
+// triggerWithOwn is Trigger with an explicit "own namespace" to inherit when the
+// request and target ref name none. Callers to engine builtins pass "" to route
+// to the default namespace.
+func (c *Client) triggerWithOwn(ctx context.Context, req TriggerRequest, own string) (json.RawMessage, error) {
 	data := req.Data
 	if data == nil {
 		data = json.RawMessage("{}")
 	}
 	tc := extractTraceContext(ctx)
 
+	// Resolve the target and its namespace: a FunctionID ref carries the namespace it
+	// registered in; an explicit req.Namespace overrides it, and both fall back to the
+	// worker's own namespace (empty for internal builtin calls).
+	functionID, refNamespace, err := resolveFunctionTarget(req.FunctionID)
+	if err != nil {
+		return nil, err
+	}
+	namespace := resolveTargetNamespace(req.Namespace, refNamespace, own)
+
 	// Void: fire-and-forget, no invocation_id, no pending entry, return immediately.
 	if req.Action != nil && req.Action.Type == "void" {
 		frame, err := MarshalMessage(&InvokeFunctionMessage{
-			FunctionID:  req.FunctionID,
+			FunctionID:  functionID,
 			Data:        data,
 			Metadata:    req.Metadata,
 			Action:      req.Action,
 			Traceparent: tc.traceparent,
 			Baggage:     tc.baggage,
-			Namespace:   req.Namespace,
+			Namespace:   namespace,
 		})
 		if err != nil {
 			return nil, err
@@ -386,13 +514,13 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 
 	frame, err := MarshalMessage(&InvokeFunctionMessage{
 		InvocationID: &id,
-		FunctionID:   req.FunctionID,
+		FunctionID:   functionID,
 		Data:         data,
 		Metadata:     req.Metadata,
 		Action:       req.Action,
 		Traceparent:  tc.traceparent,
 		Baggage:      tc.baggage,
-		Namespace:    req.Namespace,
+		Namespace:    namespace,
 	})
 	if err != nil {
 		c.clearPending(id)
@@ -1061,6 +1189,19 @@ func (c *Client) handleUnregisterTrigger(ctx context.Context, msg *UnregisterTri
 func (c *Client) Close() error {
 	c.shutOnce.Do(func() {
 		close(c.shutdown)
+
+		// Tear down any namespace views this worker spawned; each is its own connection
+		// with no independent lifecycle beyond its parent.
+		c.viewsMu.Lock()
+		views := make([]*Client, 0, len(c.namespaceViews))
+		for _, v := range c.namespaceViews {
+			views = append(views, v)
+		}
+		c.namespaceViews = nil
+		c.viewsMu.Unlock()
+		for _, v := range views {
+			_ = v.Close()
+		}
 
 		// Cancel all pending invocations.
 		c.mu.Lock()

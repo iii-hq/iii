@@ -19,7 +19,7 @@ func TestReconnectSendsReattach(t *testing.T) {
 		JitterFactor:      0,
 		MaxRetries:        -1,
 	}))
-	_ = c.RegisterFunction("reattach::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("reattach::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

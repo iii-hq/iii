@@ -55,7 +55,8 @@ func (c *Client) CreateChannel(ctx context.Context, bufferSize *int) (*Channel, 
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.Trigger(ctx, TriggerRequest{FunctionID: FnCreateChannel, Data: payload})
+	// engine builtin lives in `default`; don't inherit this worker's namespace.
+	res, err := c.triggerBuiltinDefault(ctx, TriggerRequest{FunctionID: FnCreateChannel, Data: payload})
 	if err != nil {
 		return nil, err
 	}

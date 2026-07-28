@@ -121,6 +121,99 @@ func TestTriggerOmitsNamespaceWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestResolveFunctionTarget checks a target is accepted as a bare string or a
+// FunctionRef (value or pointer), and that a ref surfaces its namespace.
+func TestResolveFunctionTarget(t *testing.T) {
+	if id, ns, err := resolveFunctionTarget("state::get"); err != nil || id != "state::get" || ns != "" {
+		t.Errorf("string target = (%q,%q,%v), want (state::get,,nil)", id, ns, err)
+	}
+	if id, ns, err := resolveFunctionTarget(FunctionRef{ID: "run", Namespace: "agent"}); err != nil || id != "run" || ns != "agent" {
+		t.Errorf("FunctionRef target = (%q,%q,%v), want (run,agent,nil)", id, ns, err)
+	}
+	if id, ns, err := resolveFunctionTarget(&FunctionRef{ID: "run", Namespace: "agent"}); err != nil || id != "run" || ns != "agent" {
+		t.Errorf("*FunctionRef target = (%q,%q,%v), want (run,agent,nil)", id, ns, err)
+	}
+	if _, _, err := resolveFunctionTarget(42); err == nil {
+		t.Error("resolveFunctionTarget(int) should error")
+	}
+	if _, _, err := resolveFunctionTarget((*FunctionRef)(nil)); err == nil {
+		t.Error("resolveFunctionTarget(nil *FunctionRef) should error")
+	}
+}
+
+// TestResolveTargetNamespace pins the precedence: explicit > ref's namespace > own.
+func TestResolveTargetNamespace(t *testing.T) {
+	cases := []struct {
+		explicit, ref, own, want string
+	}{
+		{"explicit", "ref", "own", "explicit"},
+		{"", "ref", "own", "ref"},
+		{"", "", "own", "own"},
+		{"", "", "", ""},
+	}
+	for _, tc := range cases {
+		if got := resolveTargetNamespace(tc.explicit, tc.ref, tc.own); got != tc.want {
+			t.Errorf("resolveTargetNamespace(%q,%q,%q) = %q, want %q", tc.explicit, tc.ref, tc.own, got, tc.want)
+		}
+	}
+}
+
+// TestRegisterFunctionRefCarriesNamespace verifies the returned ref carries the id and
+// the worker's namespace at registration, so it can route triggers/invocations back.
+func TestRegisterFunctionRefCarriesNamespace(t *testing.T) {
+	c := New("ws://localhost:1", WithNamespace("orders"))
+	ref, err := c.RegisterFunction("run", func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("RegisterFunction: %v", err)
+	}
+	if ref.ID != "run" || ref.Namespace != "orders" {
+		t.Errorf("ref = %+v, want {ID:run Namespace:orders}", ref)
+	}
+}
+
+// TestUseNamespaceReturnsReceiverForOwnNamespace verifies a view request for the worker's
+// own (normalized) namespace returns the receiver rather than a new connection.
+func TestUseNamespaceReturnsReceiverForOwnNamespace(t *testing.T) {
+	c := New("ws://localhost:1", WithNamespace("orders"))
+	if got := c.UseNamespace("orders"); got != c {
+		t.Error("UseNamespace(own) should return the receiver")
+	}
+	// An empty-namespace worker already lives in default.
+	d := New("ws://localhost:1")
+	if got := d.UseNamespace("default"); got != d {
+		t.Error("UseNamespace(default) on a default worker should return the receiver")
+	}
+}
+
+// TestUseNamespaceCachesViews verifies views are cached per namespace, keep the parent's
+// name, and are torn down by the parent's Close.
+func TestUseNamespaceCachesViews(t *testing.T) {
+	c := New("ws://localhost:1", WithName("w"))
+	t.Cleanup(func() { _ = c.Close() })
+
+	v1 := c.UseNamespace("orders")
+	v2 := c.UseNamespace("orders")
+	if v1 != v2 {
+		t.Error("UseNamespace should cache one view per namespace")
+	}
+	if v1 == c {
+		t.Error("a view for a different namespace must be a distinct client")
+	}
+	if v1.namespace != "orders" || v1.name != "w" {
+		t.Errorf("view namespace/name = %q/%q, want orders/w", v1.namespace, v1.name)
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-v1.shutdown:
+		// view torn down with the parent
+	default:
+		t.Error("parent Close should close cached views")
+	}
+}
+
 // TestRegistrationRejectedIsFatal verifies a WORKER_NAMESPACE_CONFLICT is
 // terminal: the client records the typed error, enters StateFailed, fails pending
 // invocations, and does not reconnect (which would loop forever under the default
