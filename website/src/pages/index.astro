@@ -4,6 +4,7 @@
 // with set:html so Astro's template compiler never reinterprets their braces
 // or reorders their tags. The header is the shared SiteNav component. Edit
 // the fragments directly; this file only assembles them.
+import ConsoleLive from '../components/landing/ConsoleLive.astro'
 import HarnessRace from '../components/landing/HarnessRace.astro'
 import ScrollNav from '../components/ScrollNav.astro'
 import SiteNav from '../components/SiteNav.astro'
@@ -74,5 +75,6 @@ const body = [
   />
   <Fragment set:html={hero} />
   <HarnessRace />
+  <ConsoleLive />
   <Fragment set:html={body} />
 </HtmlShell>

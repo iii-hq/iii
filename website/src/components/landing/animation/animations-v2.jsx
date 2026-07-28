@@ -639,7 +639,7 @@ function Stage({
     };
   }, [playing, duration, loopEff, playTimes]);
 
-  // iii: global keyboard shortcuts removed — Space must keep scrolling the page.
+  // iii: global keyboard shortcuts removed; Space must keep scrolling the page.
 
   // Video-export protocol + the editor's play bar: hosts dispatch this
   // event per frame; pause + sync the playhead so the frame shows exactly

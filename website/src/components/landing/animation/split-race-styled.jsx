@@ -167,7 +167,7 @@ function OpenCodeWindow({ step, progress, gl, dur }) {
 
 // ══ iii CONSOLE WINDOW ══════════════════════════════════════════════════════
 function IiiCaret() { return <span style={{ display: "inline-block", width: "0.55ch", height: "1em", background: "var(--ink)", marginLeft: 1, transform: "translateY(3px)" }} />; }
-// iii: `on` is the latch — a worker the agent has used stays filled orange with
+// iii: `on` is the latch; a worker the agent has used stays filled orange with
 // white text for the rest of the run; the flash only drives the glow.
 function Chip({ label, hl, on }) {
   const amt = hl || 0;

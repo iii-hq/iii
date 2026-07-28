@@ -1,10 +1,10 @@
 ---
-// HARNESS — the split-race animation: a traditional coding agent (left) against
+// HARNESS. The split-race animation: a traditional coding agent (left) against
 // the same prompt run through iii (right). The animation is a React island over
 // the vendored omelette timeline engine in ./animation/; client:only because the
-// engine publishes its API on globalThis at import time.
+// engine publishes its API on globalThis at import time. The console section
+// right below (ConsoleLive) shows the same run from inside the harness.
 import SplitRaceStyled from './animation/split-race-styled.jsx'
-import ConsoleDemoOverlay from './ConsoleDemoOverlay.astro'
 ---
 
 <section class="xp" id="harness" aria-label="Same prompt, two harnesses">
@@ -19,23 +19,10 @@ import ConsoleDemoOverlay from './ConsoleDemoOverlay.astro'
     </h2>
   </header>
 
-  <button
-    type="button"
-    class="harness-race-open"
-    data-cdemo-open
-    aria-label="Open the iii console and watch this run from inside the harness"
-  >
-    <div class="harness-race">
-      <SplitRaceStyled client:only="react" />
-    </div>
-    <div class="harness-race-cue">
-      <b>open the console</b>
-      <span>watch the same run from inside the harness, traces and all</span>
-    </div>
-  </button>
+  <div class="harness-race">
+    <SplitRaceStyled client:only="react" />
+  </div>
 </section>
-
-<ConsoleDemoOverlay />
 
 <style is:global>
   .harness-race {
@@ -43,7 +30,7 @@ import ConsoleDemoOverlay from './ConsoleDemoOverlay.astro'
     margin: 0 36px;
     aspect-ratio: 1920 / 1200;
   }
-  /* The engine's own transport bar is authoring chrome — the page just loops. */
+  /* The engine's own transport bar is authoring chrome; the page just loops. */
   /* !important: the engine sets display:flex inline on both of these. */
   .harness-race [data-omelette-chrome] {
     display: none !important;
