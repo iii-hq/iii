@@ -1447,7 +1447,8 @@ impl IIIClient {
             .namespace
             .or(request.target_namespace)
             .or_else(|| self.namespace());
-        self.dispatch(request.request, request.metadata, namespace).await
+        self.dispatch(request.request, request.metadata, namespace)
+            .await
     }
 
     /// Invoke an engine builtin without inheriting this worker's namespace.
@@ -3534,16 +3535,20 @@ mod tests {
                 ..Default::default()
             },
         );
-        let func_ref =
-            iii.register_function("orders::charge", RegisterFunction::new_async(|v: Value| async move { Ok(v) }));
+        let func_ref = iii.register_function(
+            "orders::charge",
+            RegisterFunction::new_async(|v: Value| async move { Ok(v) }),
+        );
         // The handle records where it registered, so it can be handed back as a
         // target and route to its own namespace.
         assert_eq!(func_ref.namespace.as_deref(), Some("orders"));
 
         // A bare-id worker leaves the ref's namespace unset (engine default).
         let plain = register_worker("ws://localhost:1234", InitOptions::default());
-        let plain_ref =
-            plain.register_function("svc::echo", RegisterFunction::new_async(|v: Value| async move { Ok(v) }));
+        let plain_ref = plain.register_function(
+            "svc::echo",
+            RegisterFunction::new_async(|v: Value| async move { Ok(v) }),
+        );
         assert!(plain_ref.namespace.is_none());
     }
 
@@ -3551,7 +3556,10 @@ mod tests {
     #[tokio::test]
     async fn trigger_namespace_resolution_prefers_explicit_then_ref_then_self() {
         // Helper: run a void trigger and read the namespace put on the wire.
-        async fn sent_namespace(iii: &IIIClient, req: TriggerRequestWithMetadata) -> Option<String> {
+        async fn sent_namespace(
+            iii: &IIIClient,
+            req: TriggerRequestWithMetadata,
+        ) -> Option<String> {
             iii.inner.running.store(true, Ordering::SeqCst);
             iii.trigger(req).await.expect("void trigger enqueues");
             let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
@@ -3588,7 +3596,9 @@ mod tests {
         let iii = IIIClient::new("ws://localhost:1234");
         iii.set_namespace("orders");
         assert_eq!(
-            sent_namespace(&iii, base().for_function(&ref_billing)).await.as_deref(),
+            sent_namespace(&iii, base().for_function(&ref_billing))
+                .await
+                .as_deref(),
             Some("billing"),
             "the target ref's namespace beats the worker's own"
         );
@@ -3597,9 +3607,12 @@ mod tests {
         let iii = IIIClient::new("ws://localhost:1234");
         iii.set_namespace("orders");
         assert_eq!(
-            sent_namespace(&iii, base().for_function(&ref_billing).namespace("payments"))
-                .await
-                .as_deref(),
+            sent_namespace(
+                &iii,
+                base().for_function(&ref_billing).namespace("payments")
+            )
+            .await
+            .as_deref(),
             Some("payments"),
             "an explicit namespace beats the ref's"
         );
@@ -3641,8 +3654,14 @@ mod tests {
         let triggers = iii.inner.triggers.lock().unwrap();
         let namespaces: HashSet<Option<String>> =
             triggers.values().map(|t| t.namespace.clone()).collect();
-        assert!(namespaces.contains(&Some("orders".to_string())), "bare id inherits self");
-        assert!(namespaces.contains(&Some("billing".to_string())), "explicit wins");
+        assert!(
+            namespaces.contains(&Some("orders".to_string())),
+            "bare id inherits self"
+        );
+        assert!(
+            namespaces.contains(&Some("billing".to_string())),
+            "explicit wins"
+        );
     }
 
     // use_namespace normalizer: requesting the worker's own namespace (with the
@@ -3661,7 +3680,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(Arc::ptr_eq(&ns_iii.inner, &ns_iii.use_namespace("orders").inner));
+        assert!(Arc::ptr_eq(
+            &ns_iii.inner,
+            &ns_iii.use_namespace("orders").inner
+        ));
 
         // A different namespace spawns a distinct, cached sibling under the
         // same worker name.
@@ -3669,7 +3691,10 @@ mod tests {
         assert!(!Arc::ptr_eq(&iii.inner, &view.inner));
         assert_eq!(view.namespace().as_deref(), Some("billing"));
         let again = iii.use_namespace("billing");
-        assert!(Arc::ptr_eq(&view.inner, &again.inner), "same namespace is cached");
+        assert!(
+            Arc::ptr_eq(&view.inner, &again.inner),
+            "same namespace is cached"
+        );
 
         iii.shutdown_async().await;
         ns_iii.shutdown_async().await;
