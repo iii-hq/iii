@@ -23,10 +23,24 @@ class FunctionRef:
     Attributes:
         id: The unique function identifier.
         unregister: Removes this function from the engine.
+        function_id: The function identifier, same value as ``id``. Present so a
+            ref can be passed directly as ``function_id`` to ``trigger`` or
+            ``register_trigger``. Defaults to ``id`` when omitted.
+        namespace: Namespace where this function was registered (the worker's
+            namespace at registration time). Triggers and invocations that receive
+            this ref route to this namespace unless an explicit ``namespace``
+            overrides it. ``None`` means the engine's ``default`` namespace.
     """
 
     id: str
     unregister: Callable[[], None]
+    function_id: str | None = None
+    namespace: str | None = None
+
+    def __post_init__(self) -> None:
+        # Mirror Node: a ref's function_id always equals its id.
+        if self.function_id is None:
+            self.function_id = self.id
 
 
 @dataclass

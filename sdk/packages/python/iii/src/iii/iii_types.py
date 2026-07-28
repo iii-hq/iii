@@ -6,6 +6,13 @@ from typing import Any, Literal
 from iii_helpers.http import HttpInvocationConfig
 from pydantic import BaseModel, ConfigDict, Field
 
+from .iii_constants import FunctionRef
+
+FunctionTarget = str | FunctionRef
+"""A ``function_id`` target: a bare id, or a :class:`FunctionRef` carrying the
+namespace where the function was registered. When a ref is passed, its namespace
+is used for routing unless an explicit ``namespace`` overrides it."""
+
 
 class MessageType(str, Enum):
     """Message types for iii communication."""
@@ -91,13 +98,17 @@ class RegisterTriggerInput(BaseModel):
         metadata: Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     type: str = Field(
         description=(
             "Identifier of the registered trigger type this trigger uses "
             "(e.g. ``storage::object-created``, ``http``)."
         )
     )
-    function_id: str = Field(description="ID of the function this trigger invokes when it fires.")
+    function_id: FunctionTarget = Field(
+        description="Target function id, or a ref carrying the namespace it registered in."
+    )
     config: Any = Field(
         default=None, description="Trigger-type-specific configuration, matching the shape the trigger type expects."
     )
@@ -264,7 +275,11 @@ class TriggerRequest(BaseModel):
             default namespace.
     """
 
-    function_id: str = Field(description="ID of the function to invoke.")
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    function_id: FunctionTarget = Field(
+        description="ID of the function to invoke, or a ref carrying its namespace."
+    )
     payload: Any = Field(default=None, description="Input data passed to the function.")
     action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
         default=None,

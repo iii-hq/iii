@@ -10,7 +10,7 @@ import random
 import threading
 import traceback
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import version
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
@@ -38,6 +38,7 @@ from .iii_constants import (
     InitOptions,
 )
 from .iii_types import (
+    FunctionTarget,
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
@@ -103,6 +104,21 @@ def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
     if len(positional) >= 2 and positional[1].name == "metadata":
         return "positional"
     return "none"
+
+
+def _resolve_function_target(fn: FunctionTarget) -> tuple[str, str | None]:
+    """Normalize a ``function_id`` that may be a bare string or a ``FunctionRef``.
+
+    A ref carries the namespace where the function was registered, so triggers and
+    invocations can target it without the caller restating the namespace. Returns
+    ``(function_id, namespace)``; ``namespace`` is ``None`` for a bare string.
+    """
+    if isinstance(fn, str):
+        return fn, None
+    if isinstance(fn, dict):
+        return fn["function_id"], fn.get("namespace")
+    function_id = getattr(fn, "function_id", None) or getattr(fn, "id", None)
+    return cast(str, function_id), getattr(fn, "namespace", None)
 
 
 def _resolve_format(fmt: Any) -> Any | None:
@@ -199,6 +215,10 @@ class III:
         self._pending: dict[str, _PendingInvocation] = {}
         self._triggers: dict[str, RegisterTriggerMessage] = {}
         self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
+        # Sibling worker views keyed by namespace, created lazily by
+        # use_namespace(). Each is a full connection registered under the same
+        # name in that namespace.
+        self._namespace_views: dict[str, III] = {}
         self._queue: list[dict[str, Any]] = []
         self._reconnect_task: asyncio.Task[None] | None = None
         self._running = False
@@ -276,6 +296,13 @@ class III:
             >>> # ... do work ...
             >>> worker.shutdown()
         """
+        # Tear down any namespace views this worker spawned (each is its own
+        # connection with its own loop thread); they have no independent
+        # lifecycle beyond their parent.
+        views = list(self._namespace_views.values())
+        self._namespace_views.clear()
+        for view in views:
+            view.shutdown()
         self._run_on_loop(self.shutdown_async())
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
@@ -1109,14 +1136,25 @@ class III:
         """
         if isinstance(trigger, dict):
             trigger = RegisterTriggerInput(**trigger)
+        function_id, target_ns = _resolve_function_target(trigger.function_id)
+        # Route the trigger to its target function's namespace: an explicit
+        # `namespace` wins, else the ref's namespace, else this worker's own.
+        # Trigger and target must share a namespace for the engine to resolve it.
+        namespace = (
+            trigger.namespace
+            if trigger.namespace is not None
+            else target_ns
+            if target_ns is not None
+            else self._worker_namespace()
+        )
         trigger_id = str(uuid.uuid4())
         msg = RegisterTriggerMessage(
             id=trigger_id,
             trigger_type=trigger.type,
-            function_id=trigger.function_id,
+            function_id=function_id,
             config=trigger.config,
             metadata=trigger.metadata,
-            namespace=trigger.namespace,
+            namespace=namespace,
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)
@@ -1297,7 +1335,51 @@ class III:
             self._functions.pop(func_id, None)
             self._send_if_connected(UnregisterFunctionMessage(id=func_id))
 
-        return FunctionRef(id=func_id, unregister=unregister)
+        # Carry the namespace this function registered in (this worker's) on the
+        # ref so triggers/invocations that receive it route here automatically.
+        return FunctionRef(
+            id=func_id,
+            unregister=unregister,
+            function_id=func_id,
+            namespace=self._worker_namespace(),
+        )
+
+    def use_namespace(self, namespace: str) -> "III":
+        """Return a worker view bound to ``namespace``.
+
+        The returned client keeps this worker's name but registers under
+        ``namespace`` through its own connection, so every function, trigger, and
+        invocation on it inherits ``namespace`` without the caller restating it.
+
+        Views are cached per namespace: repeated calls with the same ``namespace``
+        return the same instance, and ``shutdown()`` tears them all down. Passing
+        this worker's own namespace returns ``self``. To reach the engine's
+        builtins (``state::``, ``http::``, …), which live in the ``default``
+        namespace, obtain a ``default`` view explicitly:
+        ``worker.use_namespace("default")``.
+
+        Args:
+            namespace: Target namespace for the returned worker view.
+
+        Returns:
+            A cached ``III`` client bound to ``namespace``.
+
+        Examples:
+            >>> agent = worker.use_namespace("my-agent")
+            >>> ref = agent.register_function("run", handler)  # registers in 'my-agent'
+            >>> agent.trigger({"function_id": "run", "payload": {}})  # routes to 'my-agent'
+        """
+        # `default` is the engine's implicit namespace; a worker with no namespace
+        # already lives there, so normalize before comparing/caching.
+        own = self._worker_namespace() or "default"
+        if namespace == own:
+            return self
+        cached = self._namespace_views.get(namespace)
+        if cached is not None:
+            return cached
+        view = III(self._address, replace(self._options, namespace=namespace))
+        self._namespace_views[namespace] = view
+        return view
 
     def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.
@@ -1331,7 +1413,9 @@ class III:
         """
         return self._run_on_loop(self.trigger_async(request))
 
-    async def trigger_async(self, request: "dict[str, Any] | TriggerRequest") -> Any:
+    async def trigger_async(
+        self, request: "dict[str, Any] | TriggerRequest", *, _route_to_default: bool = False
+    ) -> Any:
         """Invoke a remote function.
 
         The routing behavior and return type depend on the ``action`` field:
@@ -1361,12 +1445,27 @@ class III:
         """
         if self._fatal_error is not None:
             raise self._fatal_error
-        req = request if isinstance(request, dict) else request.model_dump()
-        function_id = req["function_id"]
+        if isinstance(request, dict):
+            req = request
+        else:
+            # Exclude function_id from the dump so a FunctionRef target survives
+            # as the original object for resolution below.
+            req = request.model_dump(exclude={"function_id"})
+            req["function_id"] = request.function_id
+        function_id, target_ns = _resolve_function_target(req["function_id"])
         payload = req.get("payload")
         action = req.get("action")
         metadata = req.get("metadata")
-        namespace = req.get("namespace")
+        # Route to the target's namespace: explicit `namespace` wins, else the
+        # ref's namespace, else this worker's own namespace (inherited). Omitted
+        # from the wire when None so the engine routes within its `default`.
+        # Internal SDK calls to engine builtins (which live in `default`) set
+        # `_route_to_default` to skip inheriting this worker's namespace.
+        explicit_ns = req.get("namespace")
+        inherited_ns = None if _route_to_default else self._worker_namespace()
+        namespace = (
+            explicit_ns if explicit_ns is not None else target_ns if target_ns is not None else inherited_ns
+        )
 
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 
@@ -1444,11 +1543,13 @@ class III:
 
         Public callers must use the free function from ``iii.helpers``.
         """
+        # engine builtin lives in `default`; don't inherit this worker's namespace.
         result = await self.trigger_async(
             {
                 "function_id": "engine::channels::create",
                 "payload": {"buffer_size": buffer_size},
-            }
+            },
+            _route_to_default=True,
         )
         writer_ref = StreamChannelRef(**result["writer"])
         reader_ref = StreamChannelRef(**result["reader"])

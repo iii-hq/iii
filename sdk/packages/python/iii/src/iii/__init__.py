@@ -6,11 +6,13 @@ from .errors import InvocationError, RegistrationRejectedError
 from .iii import TriggerAction, register_worker
 from .iii_constants import (
     ConnectionStateCallback,
+    FunctionRef,
     IIIConnectionState,
     InitOptions,
     TelemetryOptions,
 )
 from .iii_types import (
+    FunctionTarget,
     MiddlewareFunctionInput,
     TriggerActionEnqueue,
     TriggerActionVoid,
@@ -28,6 +30,8 @@ __all__ = [
     "RegistrationRejectedError",
     # Core
     "ConnectionStateCallback",
+    "FunctionRef",
+    "FunctionTarget",
     "IIIConnectionState",
     "InitOptions",
     "register_worker",
