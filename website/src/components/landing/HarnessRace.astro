@@ -10,11 +10,11 @@ import SplitRaceStyled from './animation/split-race-styled.jsx'
 <section class="xp" id="harness" aria-label="Same prompt, two harnesses">
   <header class="xp-head">
     <h2 class="xp-title">
-      <span class="accent">same prompt.</span>
+      <span class="accent">same work.</span>
       <span class="mute"
-        ><b style="color:var(--ink); font-weight:500">two harnesses.</b><br />One
+        ><b style="color:var(--ink); font-weight:500">two outcomes.</b><br />One
         agent researches a stack and resolves merge conflicts. The other finds
-        the workers it needs and ships.</span
+        what it needs and ships in the same timeframe.</span
       >
     </h2>
   </header>
@@ -38,6 +38,10 @@ import SplitRaceStyled from './animation/split-race-styled.jsx'
   /* Stage root paints its editor backdrop; let the page show through instead. */
   .harness-race [data-om-starter='animations-v2'] {
     background: transparent !important;
+  }
+  /* The canvas ships an inline drop shadow that outlines it like a card. */
+  .harness-race [data-om-exportable-video-with-duration-secs] {
+    box-shadow: none !important;
   }
   @media (max-width: 720px) {
     .harness-race {

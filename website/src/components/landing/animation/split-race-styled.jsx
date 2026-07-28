@@ -284,7 +284,7 @@ function World() {
   const outro = step >= 7 ? Easing.easeOutCubic(clamp(progress / 0.6, 0, 1)) : 0;
   const dur = DUR[Math.min(step, DUR.length - 1)];
   return (
-    <div style={{ position: "absolute", inset: 0, background: "var(--panel)", fontFamily: MONO }}>
+    <div style={{ position: "absolute", inset: 0, background: "transparent" /* iii: was var(--panel); the slab read as a card around the race */, fontFamily: MONO }}>
       <OpenCodeWindow step={step} progress={progress} gl={gl} dur={dur} />
       <IiiWindow step={step} progress={progress} gl={gl} dur={dur} />
       {/* outro overlays */}
@@ -303,5 +303,7 @@ const PLAYBACK = '{"mode":"loop"}';
 
 export default function SplitRaceStyled() {
   const map = {}; ["Prompt", "Find", "Early", "Iterate", "Test", "Worker", "Ship", "Result"].forEach(n => map[n] = World);
-  return <SceneStage width={1920} height={1200} bg="var(--panel)" scenes={SCENES} playback={PLAYBACK}>{map}</SceneStage>;
+  // iii: bg transparent; the panel backdrop read as a card around the race,
+  // and the windows sit straight on the page.
+  return <SceneStage width={1920} height={1200} bg="transparent" scenes={SCENES} playback={PLAYBACK}>{map}</SceneStage>;
 }

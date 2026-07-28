@@ -24,14 +24,13 @@
       <span class="accent">same run.</span>
       <span class="mute"
         ><b style="color:var(--ink); font-weight:500">from inside the harness.</b
-        ><br />Every call opens a span. Keep scrolling; the console takes the
-        screen, plays the run, and hands the page back.</span
+        ><br />your agentic harness is part of your system. so it can move faster, better, and with less tokens than any other harness.</span
       >
     </h2>
   </header>
 
   <div class="ccon-track" data-ccon-track>
-    <div class="ccon-stage">
+    <div class="ccon-stage" data-ccon-stage>
       <div class="ccon-frame">
         <iframe
           title="iii console replaying a payments ledger session"
@@ -133,6 +132,12 @@
          screen, ~45vh zooming out. */
       height: 320vh;
       view-timeline-name: --ccon-track;
+      /* The frame renders at 0.62 scale at rest but its layout box is the
+         full viewport, so (100dvh - (100dvh - 24px) * 0.62) / 2, i.e.
+         19dvh + 7.4px, of the stage is visually empty on each side. Pull
+         the track in by exactly that, so title-to-console and
+         console-to-next-section read like every other section. */
+      margin-block: calc(-19dvh - 7px);
     }
     .ccon-stage {
       position: sticky;
@@ -209,6 +214,8 @@
     .ccon-track {
       height: auto;
       view-timeline-name: none;
+      /* Full-size frame here: there is no scale gap to compensate. */
+      margin-block: 0;
     }
     .ccon-stage {
       position: static;
@@ -268,26 +275,45 @@
       if (e.data?.type === 'iii-demo-close' && pinned()) closeOut()
     })
 
-    // Load on approach, play while on screen, pause the rest of the time; a
-    // console half a page away burns no timers.
+    // Load a viewport ahead (mounted paused), so the console is ready
+    // without the session having started while still off screen.
     new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting && !iframe.getAttribute('src')) {
             iframe.setAttribute(
               'src',
-              `${iframe.dataset.src}?theme=${currentTheme()}`,
+              `${iframe.dataset.src}?theme=${currentTheme()}&paused=1`,
             )
           }
-          iframe.contentWindow?.postMessage(
-            { type: 'iii-demo', active: entry.isIntersecting },
-            '*',
-          )
+        }
+      },
+      { rootMargin: '100% 0px' },
+    ).observe(track)
+
+    // Play only while the stage owns the viewport: the stage is viewport
+    // sized, so fully visible means pinned, with the console centered. The
+    // session starts there, pauses when the reader moves on, and resumes
+    // if they come back. shouldPlay is re-sent on iframe load for readers
+    // who arrive mid-track (reload, deep link).
+    const stage = document.querySelector('[data-ccon-stage]')!
+    let shouldPlay = false
+    const syncPlay = () =>
+      iframe.contentWindow?.postMessage(
+        { type: 'iii-demo', active: shouldPlay },
+        '*',
+      )
+    iframe.addEventListener('load', syncPlay)
+    new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          shouldPlay = entry.intersectionRatio >= 0.99
+          syncPlay()
           if (!entry.isIntersecting && cover) cover.hidden = false
         }
       },
-      { rootMargin: '50% 0px' },
-    ).observe(track)
+      { threshold: [0, 0.99] },
+    ).observe(stage)
 
     // The nav's theme button writes data-theme on <html>; the demo reads the
     // theme once at load, so carry later flips into the frame.

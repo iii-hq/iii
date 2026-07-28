@@ -574,7 +574,7 @@ function Stage({
     if (!stageRef.current) return;
     const el = stageRef.current;
     const measure = () => {
-      const barH = 44; // playback bar height
+      const barH = 0; // iii: was 44 for the transport bar; the site hides it, and reserving the height letterboxed the canvas.
       const s = Math.min(
         el.clientWidth / width,
         (el.clientHeight - barH) / height
