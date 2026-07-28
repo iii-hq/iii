@@ -172,9 +172,17 @@ export type MiddlewareFunctionInput = {
  *
  * @typeParam TInput - Type of the payload.
  */
+/**
+ * A `function_id` accepted wherever a target function is named: a bare string,
+ * or a ref (e.g. a `FunctionRef` from `registerFunction`) carrying the namespace
+ * where the function was registered. When a ref is passed, its namespace is used
+ * for routing unless an explicit `namespace` overrides it.
+ */
+export type FunctionTarget = string | { function_id: string; namespace?: string }
+
 export type TriggerRequest<TInput = unknown> = {
-  /** ID of the function to invoke. */
-  function_id: string
+  /** ID of the function to invoke, or a ref carrying its namespace. */
+  function_id: FunctionTarget
   /** Input data passed to the function. */
   payload: TInput
   /** Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `TriggerAction.Enqueue()`, `TriggerAction.Void()`). */

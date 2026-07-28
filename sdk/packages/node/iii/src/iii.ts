@@ -16,6 +16,7 @@ import {
 } from './iii-constants'
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import {
+  type FunctionTarget,
   type IIIMessage,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
@@ -55,6 +56,7 @@ import type {
   IIIClient,
   Invocation,
   RegisterFunctionOptions,
+  RegisterTriggerInput,
   RemoteFunctionData,
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
@@ -109,6 +111,18 @@ function resolveNamespace(optionNamespace?: string): string | undefined {
     return managedNamespace
   }
   return undefined
+}
+
+/**
+ * Normalizes a `function_id` that may be a bare string or a {@link FunctionRef}.
+ * A ref carries the namespace where the function was registered, so triggers and
+ * invocations can target it without the caller restating the namespace.
+ */
+function resolveFunctionTarget(fn: FunctionTarget): {
+  function_id: string
+  namespace?: string
+} {
+  return typeof fn === 'string' ? { function_id: fn } : { function_id: fn.function_id, namespace: fn.namespace }
 }
 
 /** Worker metadata reported to the engine (language, framework, project). */
@@ -194,6 +208,9 @@ class Sdk implements IIIClient {
   private reconnectAttempt = 0
   private connectionState: IIIConnectionState = 'disconnected'
   private isShuttingDown = false
+  // Sibling worker views keyed by namespace, created lazily by useNamespace().
+  // Each is a full connection registered under the same name in that namespace.
+  private namespaceViews = new Map<string, IIIClient>()
   // Set when the engine fatally rejects this worker's registration (e.g. a
   // namespace/name collision). Terminal: no reconnect follows. Mirrors the
   // Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
@@ -251,27 +268,24 @@ class Sdk implements IIIClient {
 
     return {
       id: triggerType.id,
-      // This typed helper pairs a function with its trigger, so it defaults the
-      // trigger's namespace to this worker's — otherwise the function would land
-      // in the worker's namespace and the trigger in `default`, and never resolve
-      // it. The low-level `registerTrigger` keeps the engine default (`default`).
+      // registerTrigger already defaults the trigger's namespace to this worker's
+      // (see resolveFunctionTarget), so function and trigger land in the same
+      // namespace and the engine can resolve it.
       registerTrigger: (functionId: string, config: TConfig, metadata?: Record<string, unknown>) => {
         return this.registerTrigger({
           type: triggerType.id,
           function_id: functionId,
           config,
           metadata,
-          namespace: this.namespace,
         })
       },
       registerFunction: (functionId, handler, config, metadata?) => {
         const ref = this.registerFunction(functionId, handler)
         this.registerTrigger({
           type: triggerType.id,
-          function_id: functionId,
+          function_id: ref,
           config,
           metadata,
-          namespace: this.namespace,
         })
         return ref
       },
@@ -313,10 +327,17 @@ class Sdk implements IIIClient {
    * trigger.unregister()
    * ```
    */
-  registerTrigger = (trigger: Omit<RegisterTriggerMessage, 'message_type' | 'id'>): Trigger => {
+  registerTrigger = (trigger: RegisterTriggerInput): Trigger => {
     const id = crypto.randomUUID()
+    const target = resolveFunctionTarget(trigger.function_id)
+    // Route the trigger to its target function's namespace: an explicit
+    // `namespace` wins, else the ref's namespace, else this worker's namespace.
+    // Trigger and target must share a namespace for the engine to resolve it.
+    const namespace = trigger.namespace ?? target.namespace ?? this.namespace
     const fullTrigger: RegisterTriggerMessage = {
       ...trigger,
+      function_id: target.function_id,
+      ...(namespace !== undefined ? { namespace } : {}),
       id,
       message_type: MessageType.RegisterTrigger,
     }
@@ -465,6 +486,10 @@ class Sdk implements IIIClient {
 
     return {
       id: functionId,
+      function_id: functionId,
+      // The namespace this function registered in (this worker's). Carried on the
+      // ref so triggers/invocations that receive it route here automatically.
+      namespace: this.namespace,
       unregister: () => {
         this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
         this.functions.delete(functionId)
@@ -483,6 +508,8 @@ class Sdk implements IIIClient {
   __helpers_create_channel = async (bufferSize?: number): Promise<import('./types').Channel> => {
     const result = await this.trigger<{ buffer_size?: number }, { writer: StreamChannelRef; reader: StreamChannelRef }>(
       { function_id: 'engine::channels::create', payload: { buffer_size: bufferSize } },
+      // engine builtin lives in `default`; don't inherit this worker's namespace.
+      { routeToDefault: true },
     )
 
     return {
@@ -537,8 +564,19 @@ class Sdk implements IIIClient {
   // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
   trigger = async <TInput = unknown, TOutput = any>(
     request: TriggerRequest<TInput>,
+    // Internal: the SDK's own calls to engine builtins (which live in `default`)
+    // must not inherit this worker's namespace. User calls never pass this.
+    opts?: { routeToDefault?: boolean },
   ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs, metadata, namespace } = request
+    const { function_id: functionTarget, payload, action, timeoutMs, metadata, namespace: explicitNamespace } = request
+    const target = resolveFunctionTarget(functionTarget)
+    const function_id = target.function_id
+    // Route to the target's namespace: explicit `namespace` wins, else the ref's
+    // namespace, else this worker's own namespace (inherited). Omitted from the
+    // wire when undefined so the engine routes within its `default` namespace.
+    const namespace = opts?.routeToDefault
+      ? explicitNamespace
+      : (explicitNamespace ?? target.namespace ?? this.namespace)
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     // Void is fire-and-forget, no invocation_id, no response
@@ -605,6 +643,22 @@ class Sdk implements IIIClient {
     })
   }
 
+  useNamespace = (namespace: string): IIIClient => {
+    // `default` is the engine's implicit namespace; a worker with no namespace
+    // already lives there, so normalize before comparing/caching.
+    const own = this.namespace ?? 'default'
+    if (namespace === own) {
+      return this
+    }
+    const cached = this.namespaceViews.get(namespace)
+    if (cached) {
+      return cached
+    }
+    const view = new Sdk(this.address, { ...this.options, namespace })
+    this.namespaceViews.set(namespace, view)
+    return view
+  }
+
   private registerWorkerMetadata(): void {
     const telemetryOpts = this.options?.telemetry
     const language =
@@ -630,7 +684,9 @@ class Sdk implements IIIClient {
         },
       },
       action: { type: 'void' },
-    })
+      // The worker's namespace rides in the payload above; the register builtin
+      // itself lives in `default`, so route there, not into this.namespace.
+    }, { routeToDefault: true })
   }
 
   /**
@@ -670,6 +726,12 @@ class Sdk implements IIIClient {
    */
   shutdown = async (): Promise<void> => {
     this.isShuttingDown = true
+
+    // Tear down any namespace views this worker spawned (each is its own
+    // connection); they have no independent lifecycle beyond their parent.
+    const views = [...this.namespaceViews.values()]
+    this.namespaceViews.clear()
+    await Promise.all(views.map((view) => view.shutdown()))
 
     this.stopMetricsReporting()
 

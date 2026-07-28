@@ -3,6 +3,7 @@ import type { ChannelReader, ChannelWriter } from './channels'
 import type { RegistrationRejectedError } from './errors'
 import type { IIIConnectionState } from './iii-constants'
 import type {
+  FunctionTarget,
   JsonValue,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
@@ -79,7 +80,10 @@ export type RemoteTriggerTypeData = {
   handler: TriggerHandler<any>
 }
 
-export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'message_type' | 'id'>
+export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'message_type' | 'id' | 'function_id'> & {
+  /** Target function id, or a ref carrying its namespace. */
+  function_id: FunctionTarget
+}
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
@@ -221,6 +225,30 @@ export interface IIIClient {
   unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
 
   /**
+   * Returns a worker view bound to `namespace`. The returned client keeps this
+   * worker's name but registers under `namespace` through its own connection, so
+   * every function, trigger, and invocation on it inherits `namespace` without
+   * the caller restating it.
+   *
+   * Views are cached per namespace: repeated calls with the same `namespace`
+   * return the same instance. Passing this worker's own namespace returns `this`.
+   * To reach the engine's builtins (`state::`, `http::`, …), which live in the
+   * `default` namespace, obtain a `default` view explicitly:
+   * `worker.useNamespace('default')`.
+   *
+   * @param namespace - Target namespace for the returned worker view.
+   * @returns A cached {@link IIIClient} bound to `namespace`.
+   *
+   * @example
+   * ```typescript
+   * const agent = worker.useNamespace('my-agent')
+   * const ref = agent.registerFunction('run', handler) // registers in 'my-agent'
+   * await agent.trigger({ function_id: 'run', payload: {} }) // routes to 'my-agent'
+   * ```
+   */
+  useNamespace(namespace: string): IIIClient
+
+  /**
    * Gracefully shutdown the iii, cleaning up all resources.
    *
    * @example
@@ -264,6 +292,19 @@ export type Trigger = {
 export type FunctionRef = {
   /** The unique function identifier. */
   id: string
+  /**
+   * The function identifier, same value as `id`. Present so a ref can be passed
+   * directly as a `function_id` to {@link IIIClient.trigger} or
+   * {@link IIIClient.registerTrigger}.
+   */
+  function_id: string
+  /**
+   * Namespace where this function was registered (the worker's namespace at
+   * registration time). Triggers and invocations that receive this ref route to
+   * this namespace unless an explicit `namespace` overrides it. `undefined`
+   * means the engine's `default` namespace.
+   */
+  namespace?: string
   /** Removes this function from the engine. */
   unregister: () => void
 }
