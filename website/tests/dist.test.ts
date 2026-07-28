@@ -35,11 +35,33 @@ test('every surface emits its entry page and static assets', () => {
     'favicon.svg',
     'og-image.png',
     'posthog-consent.js',
+    'console-demo/index.html',
     'fonts/ChivoMono-VariableFont_wght.ttf',
     'fonts/ChivoMono-Italic-VariableFont_wght.ttf',
   ]
   for (const rel of required) {
     assert.ok(existsSync(path.join(DIST, rel)), `missing dist/${rel}`)
+  }
+})
+
+test('console demo entry uses absolute asset paths that exist', async () => {
+  const html = await read('console-demo/index.html')
+  const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((u) => u.includes('assets/'))
+  assert.ok(refs.length >= 2, 'demo entry references no hashed assets')
+  for (const u of refs) {
+    // Relative URLs break behind Vercel's cleanUrls: /console-demo/index.html
+    // 308s to /console-demo (no trailing slash), so ./assets/* resolves to
+    // the domain root and the bundle 404s on preview deploys.
+    assert.ok(
+      u.startsWith('/console-demo/'),
+      `demo asset URL must be absolute under /console-demo/, got ${u}`,
+    )
+    assert.ok(
+      existsSync(path.join(DIST, u.replace(/^\//, ''))),
+      `demo asset missing from dist: ${u}`,
+    )
   }
 })
 
