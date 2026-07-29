@@ -249,9 +249,26 @@
     // First click claims the console; from then on the wheel belongs to its
     // inner scrollers. The cover comes back once the reader has moved on, so
     // the next approach starts hands-off again.
+    //
+    // The claim click is forwarded into the demo (same origin: both are
+    // served from this domain) at the same coordinates, and the frame takes
+    // keyboard focus — the first click acts on what the reader aimed at
+    // instead of only dissolving the shield.
     const cover = document.querySelector<HTMLElement>('[data-ccon-cover]')
-    cover?.addEventListener('click', () => {
+    cover?.addEventListener('click', (e) => {
       cover.hidden = true
+      try {
+        const doc = iframe.contentDocument
+        const r = iframe.getBoundingClientRect()
+        const target = doc?.elementFromPoint(e.clientX - r.left, e.clientY - r.top)
+        // Realm-safe: the demo's elements are not instances of this window's
+        // HTMLElement, so feature-detect instead of instanceof.
+        if (typeof (target as HTMLElement | null)?.click === 'function')
+          (target as HTMLElement).click()
+      } catch {
+        /* cross-origin dev setups: the claim still works, only unforwarded */
+      }
+      iframe.contentWindow?.focus()
     })
 
     // "close" rides the scroll to the end of the track: the zoom-out plays
