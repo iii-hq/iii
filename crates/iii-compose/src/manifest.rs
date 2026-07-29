@@ -105,13 +105,25 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     })
 }
 
+/// What one container would do on `up`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerPlan {
+    pub key: String,
+    pub start: StartSpec,
+    pub working_dir: PathBuf,
+    /// Configuration entry the daemon would fetch before starting it.
+    pub config_name: Option<String>,
+}
+
 /// Result of `iii compose validate`.
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
     pub project: String,
+    /// Namespace the project's workers would register under.
+    pub namespace: String,
     pub start_order: Vec<String>,
     /// Containers whose start command resolved, in start order.
-    pub resolved: Vec<(String, StartSpec)>,
+    pub resolved: Vec<ContainerPlan>,
     /// `package://` containers, skipped because registry resolution is not
     /// implemented yet.
     pub deferred_packages: Vec<String>,
@@ -119,7 +131,7 @@ pub struct ValidationReport {
 
 /// Validates everything that can be checked without an engine: schema, graph,
 /// worker directories, manifests and start commands.
-pub fn validate_offline(file: &ComposeFile) -> Result<ValidationReport> {
+pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<ValidationReport> {
     let start_order = file.start_order()?;
     let mut resolved = Vec::new();
     let mut deferred_packages = Vec::new();
@@ -128,15 +140,28 @@ pub fn validate_offline(file: &ComposeFile) -> Result<ValidationReport> {
         let Some(container) = file.containers.get(key) else {
             continue;
         };
-        if matches!(container.worker, WorkerSource::Package { .. }) {
-            deferred_packages.push(key.clone());
-            continue;
-        }
-        resolved.push((key.clone(), resolve_start(key, container)?));
+        let worker_dir = match &container.worker {
+            WorkerSource::Package { .. } => {
+                deferred_packages.push(key.clone());
+                continue;
+            }
+            WorkerSource::Path { dir, .. } => dir,
+        };
+        resolved.push(ContainerPlan {
+            key: key.clone(),
+            start: resolve_start(key, container)?,
+            working_dir: crate::spawn::resolve_working_dir(
+                container.working_dir.as_deref(),
+                Some(worker_dir),
+                &file.base_dir,
+            ),
+            config_name: container.config_name.clone(),
+        });
     }
 
     Ok(ValidationReport {
         project: file.name.clone(),
+        namespace: namespace.to_string(),
         start_order,
         resolved,
         deferred_packages,

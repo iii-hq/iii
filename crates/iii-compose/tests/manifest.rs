@@ -168,16 +168,26 @@ containers:
         &[("workers/api", Some(MANIFEST))],
     );
 
-    let report = iii_compose::manifest::validate_offline(&file).expect("project should validate");
+    let report = iii_compose::manifest::validate_offline(&file, "orders-abcd1234")
+        .expect("project should validate");
 
     assert_eq!(report.project, "orders");
+    assert_eq!(report.namespace, "orders-abcd1234");
     assert_eq!(report.start_order, vec!["queue", "api"]);
     assert_eq!(report.deferred_packages, vec!["queue"]);
+    assert_eq!(report.resolved.len(), 1);
+
+    let api = &report.resolved[0];
+    assert_eq!(api.key, "api");
     assert_eq!(
-        report.resolved,
-        vec![(
-            "api".to_string(),
-            StartSpec::Shell("cargo run --release".to_string())
-        )]
+        api.start,
+        StartSpec::Shell("cargo run --release".to_string())
+    );
+    assert_eq!(api.config_name, None);
+    // No working_dir declared, so the container runs in its own worker dir.
+    assert!(
+        api.working_dir.ends_with("workers/api"),
+        "unexpected dir: {}",
+        api.working_dir.display()
     );
 }
