@@ -2708,6 +2708,7 @@ dependencies = [
  "iana-time-zone",
  "iii",
  "iii-clap-docs",
+ "iii-compose",
  "iii-helpers",
  "iii-sdk",
  "iii-worker",
@@ -2766,6 +2767,22 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "regex",
+]
+
+[[package]]
+name = "iii-compose"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "indexmap 2.14.0",
+ "serde",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
