@@ -168,6 +168,9 @@ enum Commands {
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
+    /// Run a worker-compose project: supervise several workers as one graph
+    Compose(iii_compose::ComposeCli),
+
     /// Generate the committed MDX CLI reference page from this binary's
     /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
     #[command(name = "gen-cli-docs", hide = true)]
@@ -218,6 +221,10 @@ fn cli_usage_command_path(cli: &Cli) -> String {
         Some(Commands::Project(args)) => match args.action {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
+        },
+        Some(Commands::Compose(args)) => match args.action {
+            Some(iii_compose::ComposeAction::Validate) => "compose validate".to_string(),
+            None => "compose".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Update {
@@ -391,6 +398,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Project(args)) => {
             let exit_code = cli::project::run(args.clone()).await;
+            std::process::exit(exit_code);
+        }
+        // Compose owns its own lifecycle and never builds an engine: it is a
+        // client of one, exactly like any other worker.
+        Some(Commands::Compose(args)) => {
+            let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
         // Handled before telemetry above.
@@ -831,6 +844,54 @@ mod tests {
             !error_source.contains("iii-cli"),
             "error.rs should not contain 'iii-cli' references — the binary is now 'iii'"
         );
+    }
+
+    #[test]
+    fn compose_validate_parses_without_a_daemon_id() {
+        let cli = Cli::try_parse_from(["iii", "compose", "validate", "--file", "compose.yaml"])
+            .expect("should parse compose validate");
+        assert_eq!(cli_usage_command_path(&cli), "compose validate");
+        match cli.command {
+            Some(Commands::Compose(args)) => {
+                assert!(matches!(
+                    args.action,
+                    Some(iii_compose::ComposeAction::Validate)
+                ));
+                assert!(args.id.is_none());
+                assert_eq!(args.file.as_deref(), Some(std::path::Path::new("compose.yaml")));
+            }
+            _ => panic!("expected Compose subcommand"),
+        }
+    }
+
+    #[test]
+    fn compose_daemon_mode_parses() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "compose",
+            "--id",
+            "host-a",
+            "--file",
+            "/srv/app/worker-compose.yaml",
+        ])
+        .expect("should parse compose daemon mode");
+        assert_eq!(cli_usage_command_path(&cli), "compose");
+        match cli.command {
+            Some(Commands::Compose(args)) => {
+                assert!(args.action.is_none());
+                assert_eq!(args.id.as_deref(), Some("host-a"));
+            }
+            _ => panic!("expected Compose subcommand"),
+        }
+    }
+
+    /// The trigger alias shares the top-level argument space with every
+    /// subcommand, so a new one must not shadow it.
+    #[test]
+    fn compose_does_not_shadow_the_trigger_alias() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "compose::up", "id=host-a"])
+            .expect("trigger should still parse");
+        assert_eq!(cli_usage_command_path(&cli), "trigger");
     }
 
     #[test]
