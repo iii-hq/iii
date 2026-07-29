@@ -63,6 +63,19 @@ jobs:
             fi
           }
 
+          # Exact single-token headers: a substring check would pass a merged
+          # duplicate like "DENY, SAMEORIGIN".
+          assert_header_equals() {
+            local path="$1" header="$2" expected="$3"
+            local value
+            value=$(curl -sSI "$BASE_URL$path" | awk -v h="$header" 'BEGIN{IGNORECASE=1} tolower($1)==tolower(h)":" {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            if [ "$(printf '%s' "$value" | tr '[:lower:]' '[:upper:]')" = "$(printf '%s' "$expected" | tr '[:lower:]' '[:upper:]')" ]; then
+              pass "$path header '$header' = '$value'"
+            else
+              fail "$path header '$header' expected exactly '$expected', got '$value'"
+            fi
+          }
+
           echo "Smoke testing $BASE_URL"
           echo
 
@@ -80,7 +93,7 @@ jobs:
           # The landing page iframes its own console demo — X-Frame-Options
           # DENY would make the browser refuse to render it
           assert_status "/console-demo/index.html" 200
-          assert_header_contains "/console-demo/index.html" "x-frame-options" "SAMEORIGIN"
+          assert_header_equals "/console-demo/index.html" "x-frame-options" "SAMEORIGIN"
 
           # /api/search must return JSON, not HTML — catches SPA fallback leaking into /api/*
           content_type=$(curl -sSI "$BASE_URL/api/search?q=test" | awk 'BEGIN{IGNORECASE=1} /^content-type:/ {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1)
