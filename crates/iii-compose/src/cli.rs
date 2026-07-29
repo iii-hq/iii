@@ -56,6 +56,9 @@ pub enum ComposeAction {
 pub enum ComposeCommand {
     Validate {
         file: PathBuf,
+        /// Reported back so the operator can see which namespace the project
+        /// would land in before starting anything.
+        namespace: Option<String>,
     },
     Daemon {
         id: String,
@@ -74,7 +77,10 @@ impl ComposeCli {
             .ok_or(ComposeError::MissingFlag { flag: "--file" })?;
 
         match self.action {
-            Some(ComposeAction::Validate) => Ok(ComposeCommand::Validate { file }),
+            Some(ComposeAction::Validate) => Ok(ComposeCommand::Validate {
+                file,
+                namespace: self.namespace.clone(),
+            }),
             None => {
                 let id = self
                     .id

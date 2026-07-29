@@ -57,10 +57,7 @@ fn accepts_the_canonical_project() {
         std::time::Duration::from_secs(90)
     );
     assert_eq!(api.scripts.run.as_deref(), Some("cargo run --release"));
-    assert_eq!(
-        api.working_dir,
-        Some(PathBuf::from("/srv/app/./workers/api"))
-    );
+    assert_eq!(api.working_dir, Some(PathBuf::from("/srv/app/workers/api")));
 
     // config_name and the config_uri alias resolve to the same entry name.
     assert_eq!(

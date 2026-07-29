@@ -17,10 +17,13 @@
 
 pub mod cli;
 pub mod config;
+pub mod configuration;
 pub mod dag;
 pub mod error;
+pub mod hooks;
 pub mod manifest;
 pub mod namespace;
+pub mod process;
 pub mod spawn;
 
 pub use cli::{ComposeAction, ComposeCli, ComposeCommand};
@@ -29,10 +32,15 @@ pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport};
 
 /// Validates a compose project offline: schema, dependency graph, worker
-/// directories, manifests and start commands.
-pub fn validate_project(file: &std::path::Path) -> Result<ValidationReport> {
+/// directories, manifests and start commands. Also reports the namespace the
+/// project would register under.
+pub fn validate_project(
+    file: &std::path::Path,
+    namespace: Option<&str>,
+) -> Result<ValidationReport> {
     let compose = ComposeFile::load(file)?;
-    manifest::validate_offline(&compose)
+    let namespace = namespace::project_namespace(namespace, &compose.name, &compose.path);
+    manifest::validate_offline(&compose, &namespace)
 }
 
 /// Entry point behind `iii compose`. Returns the process exit code, matching
@@ -44,13 +52,15 @@ pub async fn run(cli: ComposeCli) -> i32 {
     };
 
     match command {
-        ComposeCommand::Validate { file } => match validate_project(&file) {
-            Ok(report) => {
-                print_report(&report);
-                0
+        ComposeCommand::Validate { file, namespace } => {
+            match validate_project(&file, namespace.as_deref()) {
+                Ok(report) => {
+                    print_report(&report);
+                    0
+                }
+                Err(err) => report_error(&err),
             }
-            Err(err) => report_error(&err),
-        },
+        }
         ComposeCommand::Daemon { .. } => report_error(&ComposeError::DaemonNotImplemented),
     }
 }
@@ -66,13 +76,19 @@ fn print_report(report: &ValidationReport) {
         report.project,
         report.start_order.len()
     );
+    println!("namespace: {}", report.namespace);
     println!("start order: {}", report.start_order.join(" -> "));
-    for (key, start) in &report.resolved {
-        match start {
-            StartSpec::Shell(command) => println!("  {key}: {command}"),
+    for plan in &report.resolved {
+        let command = match &plan.start {
+            StartSpec::Shell(command) => command.clone(),
             StartSpec::Exec { program, args } => {
-                println!("  {key}: {} {}", program.display(), args.join(" "))
+                format!("{} {}", program.display(), args.join(" "))
             }
+        };
+        println!("  {}: {command}", plan.key);
+        println!("    dir: {}", plan.working_dir.display());
+        if let Some(config_name) = &plan.config_name {
+            println!("    config: {config_name}");
         }
     }
     if !report.deferred_packages.is_empty() {
