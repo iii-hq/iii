@@ -71,6 +71,7 @@ fn validate_needs_no_id_and_accepts_the_file_after_the_subcommand() {
         cli.plan().unwrap(),
         ComposeCommand::Validate {
             file: PathBuf::from("/srv/app/worker-compose.yaml"),
+            namespace: None,
         }
     );
 }
@@ -90,6 +91,7 @@ fn the_short_file_flag_works() {
         cli.plan().unwrap(),
         ComposeCommand::Validate {
             file: PathBuf::from("compose.yaml"),
+            namespace: None,
         }
     );
 }
