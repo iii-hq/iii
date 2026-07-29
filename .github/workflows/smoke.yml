@@ -71,11 +71,14 @@ jobs:
           assert_header_contains "/" "strict-transport-security" "max-age"
           assert_header_contains "/" "x-content-type-options" "nosniff"
 
-          # /docs redirects preserve the /docs prefix (Mintlify serves only under /docs/*)
-          assert_redirect_to "/docs" "https://docs.iii.dev/docs"
-          assert_redirect_to "/docs/quickstart" "https://docs.iii.dev/docs/quickstart"
+          # /docs* is proxied to the docs origin on the same domain (no redirect)
+          assert_status "/docs" 200
+          assert_header_contains "/docs" "content-type" "text/html"
+          assert_status "/docs/quickstart" 200
 
-          assert_status "/llms.txt" 404
+          # llms.txt / AGENTS.md are generated into every deploy on purpose
+          assert_status "/llms.txt" 200
+          assert_status "/AGENTS.md" 200
 
           # /api/search must return JSON, not HTML — catches SPA fallback leaking into /api/*
           content_type=$(curl -sSI "$BASE_URL/api/search?q=test" | awk 'BEGIN{IGNORECASE=1} /^content-type:/ {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1)
@@ -87,7 +90,10 @@ jobs:
 
           assert_status "/this-file-does-not-exist.jpg" 404
 
-          assert_status "/some/client/route" 200
+          # Unknown extensionless paths are a real 404 by design (see
+          # cloudfront_functions/redirects.js — the old SPA fallback served
+          # homepage HTML as 200 and Google indexed it as soft duplicates)
+          assert_status "/some/client/route" 404
           assert_header_contains "/some/client/route" "content-type" "text/html"
 
           echo
