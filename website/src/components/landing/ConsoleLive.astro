@@ -42,9 +42,7 @@
           class="ccon-cover"
           data-ccon-cover
           aria-label="interact with the console"
-        >
-          <span class="ccon-cover-hint">click to interact</span>
-        </button>
+        ></button>
       </div>
     </div>
   </div>
@@ -105,28 +103,9 @@
        console is claimed. Nothing up there scrolls, so the wheel still
        chains out to the page. */
     inset: 45px 0 0 0;
-    display: grid;
-    place-items: end center;
-    padding: 0 0 18px;
     border: 0;
     background: transparent;
     cursor: pointer;
-  }
-  .ccon-cover-hint {
-    display: inline-block;
-    padding: 6px 12px;
-    border: 1px solid var(--rule);
-    background: var(--bg);
-    color: var(--mute);
-    font-family: var(--mono, ui-monospace, monospace);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    /* Visible by default: without scroll timelines (stable Firefox, reduced
-       motion) the cover would otherwise be an invisible click-trap. In
-       supported browsers the fill-both animation below governs instead. */
-    opacity: 1;
-    visibility: visible;
   }
 
   @supports (animation-timeline: view()) {
@@ -160,28 +139,6 @@
       animation: ccon-raise linear both;
       animation-timeline: --ccon-track;
       animation-range: contain 0% contain 100%;
-    }
-    .ccon-cover-hint {
-      animation: ccon-hint-fade linear both;
-      animation-timeline: --ccon-track;
-      animation-range: contain 0% contain 100%;
-    }
-  }
-  @keyframes ccon-hint-fade {
-    0%,
-    18% {
-      opacity: 0;
-      visibility: hidden;
-    }
-    26%,
-    84% {
-      opacity: 1;
-      visibility: visible;
-    }
-    92%,
-    100% {
-      opacity: 0;
-      visibility: hidden;
     }
   }
   @keyframes ccon-zoom {
