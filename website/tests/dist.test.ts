@@ -77,7 +77,8 @@ test('console demo entry uses absolute asset paths that exist', async () => {
 test('landing page keeps its interactive markup and canonical', async () => {
   const html = await read('index.html')
   assert.match(html, /id="hero-viz"/, 'hero viz mount missing')
-  assert.match(html, /id="cs-scroll"/, 'console side-scroll section missing')
+  assert.match(html, /id="console-live"/, 'console demo section missing')
+  assert.match(html, /id="harness"/, 'harness race section missing')
   assert.match(html, /<link rel="canonical" href="https:\/\/iii\.dev\/"/, 'canonical must stay https://iii.dev/')
   assert.match(html, /application\/ld\+json/, 'JSON-LD blocks missing')
   assert.match(html, /iii:mailmodo-form-url/, 'Mailmodo form-url meta missing')

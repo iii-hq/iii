@@ -38,8 +38,8 @@ import tweaksPanel from '../components/landing/scripts/07-tweaks-panel.html?raw'
 // are assembled in two runs with that component in between.
 const body = [
   experience,
-  workers,
   helloWorld,
+  workers,
   // agents,
   // consoleSection,
   nutshell,
@@ -66,11 +66,11 @@ const body = [
   <SiteNav />
   <ScrollNav
     links={[
+      { id: 'console-live', label: 'agents' },
+      { id: 'harness', label: 'harness' },
       { id: 'experience', label: 'why iii' },
-      { id: 'workers', label: 'workers' },
       { id: 'hello', label: 'languages' },
-      { id: 'agents', label: 'agents' },
-      { id: 'console', label: 'console' },
+      { id: 'workers', label: 'workers' },
     ]}
   />
   <Fragment set:html={hero} />

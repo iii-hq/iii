@@ -68,10 +68,6 @@ function textFrom(root: HTMLElement, selector: string, label: string): string {
   return collapseWhitespace(el.text)
 }
 
-function textsFrom(root: HTMLElement, selector: string): string[] {
-  return root.querySelectorAll(selector).map((el) => collapseWhitespace(el.text))
-}
-
 /** Plain-text extraction of homepage marketing copy (shared by llms.txt and AGENTS.md). */
 export function buildHomepageExtractFromHtml(html: string): string {
   const root = parse(html)
@@ -95,13 +91,9 @@ export function buildHomepageExtractFromHtml(html: string): string {
     if (headBits.length) chunks.push(headBits.join(' — '))
   }
 
-  chunks.push('### Agents', textFrom(root, '#agents .agent-head', 'agents head'), '')
+  chunks.push('### Agents / console', textFrom(root, '#console-live .xp-head', 'console-live head'), '')
 
-  chunks.push('### Console / observability', textFrom(root, '#cs-scroll .cs-section-head', 'console section head'))
-  for (const cap of textsFrom(root, '#cs-scroll p.cs-cap')) {
-    chunks.push(`- ${cap}`)
-  }
-  chunks.push('')
+  chunks.push('### Harness race', textFrom(root, '#harness .xp-head', 'harness head'), '')
 
   chunks.push('### iii in a nutshell', textFrom(root, '#nutshell .nut-head', 'nutshell head'))
   for (const cell of root.querySelectorAll('#nutshell .nut-cell')) {

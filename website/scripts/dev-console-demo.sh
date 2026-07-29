@@ -12,9 +12,10 @@ console="${1:-$here/../../workers/console}"
 web="$console/web"
 dest="$here/public/console-demo"
 
+# Content hash, not mtime: BSD and GNU stat disagree on flags.
 snap() {
   find "$web/src" "$web/demo.html" "$web/vite.demo.config.ts" -type f \
-    -exec stat -f '%m %N' {} + | sort | shasum
+    -exec shasum {} + | sort | shasum
 }
 
 last=""
@@ -23,9 +24,9 @@ while :; do
   if [[ "$cur" != "$last" ]]; then
     last="$cur"
     if (cd "$web" && pnpm exec vite build --config vite.demo.config.ts \
-      --outDir "$dest" --emptyOutDir >/dev/null 2>&1); then
-      mv "$dest/demo.html" "$dest/index.html"
-      rm -rf "$dest/vendor"
+      --outDir "$dest" --emptyOutDir >/dev/null 2>&1) &&
+      mv "$dest/demo.html" "$dest/index.html" &&
+      rm -rf "$dest/vendor"; then
       echo "built @ $(date +%T)"
     else
       echo "build failed @ $(date +%T) — rerun without >/dev/null to see why"
