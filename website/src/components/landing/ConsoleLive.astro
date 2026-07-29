@@ -216,8 +216,12 @@
       cover.hidden = true
       try {
         const doc = iframe.contentDocument
+        // The rect reflects the frame's animated scale; elementFromPoint
+        // works in the iframe's unscaled viewport, so convert.
         const r = iframe.getBoundingClientRect()
-        const target = doc?.elementFromPoint(e.clientX - r.left, e.clientY - r.top)
+        const x = (e.clientX - r.left) * (iframe.clientWidth / r.width)
+        const y = (e.clientY - r.top) * (iframe.clientHeight / r.height)
+        const target = doc?.elementFromPoint(x, y)
         // Realm-safe: the demo's elements are not instances of this window's
         // HTMLElement, so feature-detect instead of instanceof.
         if (typeof (target as HTMLElement | null)?.click === 'function')
