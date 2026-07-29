@@ -28,11 +28,42 @@ iii [OPTIONS] [COMMAND]
 | Command | Description |
 | ------- | ----------- |
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
+| [`compose`](#iii-compose) | Run a worker-compose project: supervise several workers as one graph |
 | [`console`](#iii-console) | Launch the iii web console. |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 | [`worker`](#iii-worker) | Manage workers (add, remove, list, info). |
+
+### `iii compose`
+
+Run a worker-compose project: supervise several workers as one graph
+
+```text
+iii compose [OPTIONS] [COMMAND]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--id <ID>` | Daemon identity. Required in daemon mode: it names the daemon in the engine and is the `id=` every remote `compose::*` call must match |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
+| `--namespace <NS>` | Namespace the project's workers register under. Defaults to a deterministic namespace derived from the project name and compose path |
+| `-f, --file <PATH>` | Path to the worker-compose.yaml this invocation is bound to |
+
+#### `iii compose validate`
+
+Validate a compose project without contacting an engine
+
+```text
+iii compose validate [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--id <ID>` | Daemon identity. Required in daemon mode: it names the daemon in the engine and is the `id=` every remote `compose::*` call must match |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
+| `--namespace <NS>` | Namespace the project's workers register under. Defaults to a deterministic namespace derived from the project name and compose path |
+| `-f, --file <PATH>` | Path to the worker-compose.yaml this invocation is bound to |
 
 ### `iii project`
 
