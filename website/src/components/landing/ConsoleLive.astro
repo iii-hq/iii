@@ -310,12 +310,15 @@
     new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          shouldPlay = entry.intersectionRatio >= 0.99
+          /* 0.9, not ~1: phone browsers resize the viewport against the
+             100dvh stage as their chrome collapses, and the ratio never
+             sustains 0.99 — the session would stall or keep restarting. */
+          shouldPlay = entry.intersectionRatio >= 0.9
           syncPlay()
           if (!entry.isIntersecting && cover) cover.hidden = false
         }
       },
-      { threshold: [0, 0.99] },
+      { threshold: [0, 0.9] },
     ).observe(stage)
 
     // The nav's theme button writes data-theme on <html>; the demo reads the
