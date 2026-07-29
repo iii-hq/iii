@@ -8,11 +8,13 @@ locals {
     "img-src 'self' data: https:",
     "font-src 'self' data:",
     "connect-src 'self' https://www.google-analytics.com https://analytics.google.com https://www.googletagmanager.com https://api.cr-relay.com https://api.mailmodo.com https://${var.search_api_origin}",
-    "frame-src https://www.googletagmanager.com",
+    # 'self': the landing page embeds its own /console-demo/index.html.
+    "frame-src 'self' https://www.googletagmanager.com",
     "form-action 'self' https://api.mailmodo.com",
     "object-src 'none'",
     "base-uri 'self'",
-    "frame-ancestors 'none'",
+    # 'self', not 'none': /console-demo/* is framed by the landing page.
+    "frame-ancestors 'self'",
     "upgrade-insecure-requests",
   ])
 }
@@ -54,8 +56,12 @@ resource "aws_cloudfront_response_headers_policy" "site" {
       override = true
     }
 
+    # SAMEORIGIN, not DENY: the landing page embeds /console-demo/index.html
+    # in an iframe, and this policy rides every S3-origin response. DENY made
+    # the browser refuse to render the site's own demo. Third-party embedding
+    # stays blocked.
     frame_options {
-      frame_option = "DENY"
+      frame_option = "SAMEORIGIN"
       override     = true
     }
 
