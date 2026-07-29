@@ -43,9 +43,10 @@ import SplitRaceStyled from './animation/split-race-styled.jsx'
   .harness-race [data-om-exportable-video-with-duration-secs] {
     box-shadow: none !important;
   }
+  /* The side-by-side race needs desktop width to read; hide it on phones. */
   @media (max-width: 720px) {
-    .harness-race {
-      margin: 0 16px;
+    #harness.xp {
+      display: none;
     }
   }
 </style>
