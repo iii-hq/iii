@@ -1,0 +1,28 @@
+[package]
+name = "iii-compose"
+version = "0.1.0"
+edition = "2024"
+license = "Elastic-2.0"
+description = "Compose daemon for iii: declarative multi-worker lifecycle"
+
+[lib]
+name = "iii_compose"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+# Container order is part of the diagnostics contract: validation errors and
+# topological output must be reproducible, which a HashMap cannot promise.
+indexmap = { version = "2", features = ["serde"] }
+# Project namespace is derived from the canonical compose path; the digest has
+# to be stable across machines and rust versions, so DefaultHasher is out.
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = { workspace = true }
