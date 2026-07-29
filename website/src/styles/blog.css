@@ -239,6 +239,20 @@ video {
   border-radius: 6px;
 }
 
+/* Video embeds (e.g. YouTube) are pasted as raw <iframe>s in post markdown;
+   force them to the same rounded/bordered treatment as img/video and keep
+   them responsive at a 16:9 aspect ratio instead of the embed's fixed size. */
+article iframe {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
+  max-width: 100%;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  margin: 1.6rem 0;
+}
+
 /* ============= TABLES ============= */
 /* Markdown tables render as a bare <table>; turn the table itself into a
    horizontal scroll container so wide tables never burst the layout on
