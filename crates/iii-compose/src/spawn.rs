@@ -24,6 +24,8 @@ use crate::manifest::StartSpec;
 /// Environment variables the daemon owns for every child.
 pub const RESERVED_ENV: [&str; 4] = ["III_URL", "III_NAMESPACE", "III_CONFIG", "III_WORKER_NAME"];
 
+/// Cloneable so hooks can reuse a container's context with a different command.
+#[derive(Debug, Clone)]
 pub struct SpawnCtx<'a> {
     pub engine_url: &'a str,
     pub namespace: &'a str,

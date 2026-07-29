@@ -15,7 +15,9 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
-tokio = { workspace = true }
+# io-util drains hook pipes while waiting; sync carries a child's exit status to
+# every waiter (stop and the lifecycle both need it).
+tokio = { workspace = true, features = ["io-util", "sync"] }
 # Container order is part of the diagnostics contract: validation errors and
 # topological output must be reproducible, which a HashMap cannot promise.
 indexmap = { version = "2", features = ["serde"] }
@@ -23,6 +25,10 @@ indexmap = { version = "2", features = ["serde"] }
 # to be stable across machines and rust versions, so DefaultHasher is out.
 sha2 = "0.10"
 hex = "0.4"
+
+# Teardown signals whole process groups, which std cannot express.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal", "process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

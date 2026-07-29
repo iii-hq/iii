@@ -257,10 +257,31 @@ fn parse_config_uri(key: &str, uri: &str) -> Result<String> {
 }
 
 fn resolve_relative(base_dir: &PathBuf, path: &PathBuf) -> PathBuf {
-    if path.is_absolute() {
+    let joined = if path.is_absolute() {
         path.clone()
     } else {
         base_dir.join(path)
+    };
+    normalize(&joined)
+}
+
+/// Drops `.` components so diagnostics read `/srv/app/workers/api` instead of
+/// `/srv/app/./workers/api`. `..` is left alone: resolving it lexically would
+/// lie in the presence of symlinks, and these paths are shown to operators.
+fn normalize(path: &PathBuf) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
     }
 }
 
@@ -390,7 +411,7 @@ mod tests {
             parse_worker_source("api", "path://./workers/api", &PathBuf::from("/srv/app")).unwrap();
         match source {
             WorkerSource::Path { dir, .. } => {
-                assert_eq!(dir, PathBuf::from("/srv/app/./workers/api"))
+                assert_eq!(dir, PathBuf::from("/srv/app/workers/api"))
             }
             other => panic!("expected a path source, got {other:?}"),
         }
