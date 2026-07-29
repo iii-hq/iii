@@ -100,7 +100,7 @@ tell whether a turn is complete.
 
 I started with this prompt:
 
-```
+```text
 Scan a GitHub repository for real security vulnerabilities and give me a live dashboard of the results.
 
 Repository and sub-tree: https://github.com/wonderwhy-er/DesktopCommanderMCP/tree/main/src/handlers
@@ -240,3 +240,7 @@ whose turns are controlled by triggers, whose validators are unit-tested
 functions, whose LLM calls are confined to the smallest parts that genuinely
 need judgment, and whose every component can be observed, tested, and
 swapped independently.
+
+iii is open source. The docs are at [iii.dev/docs](https://iii.dev/docs).
+Give it a try today, and you won't want to go back to other systems.
+
