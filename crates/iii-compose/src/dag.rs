@@ -124,6 +124,25 @@ pub fn topo_order(file: &ComposeFile) -> Result<Vec<String>> {
     Ok(order)
 }
 
+/// `key` plus everything it transitively depends on — what `up <key>` has to
+/// start for `key` to be usable.
+pub fn dependency_closure(file: &ComposeFile, key: &str) -> HashSet<String> {
+    let mut closure = HashSet::new();
+    let mut queue = VecDeque::from([key.to_string()]);
+
+    while let Some(current) = queue.pop_front() {
+        if !closure.insert(current.clone()) {
+            continue;
+        }
+        if let Some(container) = file.containers.get(&current) {
+            for dependency in &container.depends_on {
+                queue.push_back(dependency.clone());
+            }
+        }
+    }
+    closure
+}
+
 /// Local containers that must stop before `key` can stop: its transitive
 /// dependents, nearest first.
 pub fn transitive_dependents(file: &ComposeFile, key: &str) -> Vec<String> {

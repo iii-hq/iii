@@ -141,8 +141,12 @@ pub struct StateStore {
 }
 
 impl StateStore {
-    /// `~/.iii/compose/<daemon-id>`.
+    /// `~/.iii/compose/<daemon-id>`, or `$III_COMPOSE_STATE_DIR/<daemon-id>`
+    /// when the operator relocates it (a read-only home, a tmpfs, a test).
     pub fn for_daemon(daemon_id: &str) -> Result<Self> {
+        if let Some(root) = std::env::var_os("III_COMPOSE_STATE_DIR") {
+            return Ok(Self::at(PathBuf::from(root).join(daemon_id)));
+        }
         let home = dirs::home_dir().ok_or(ComposeError::StateDirUnavailable)?;
         Ok(Self::at(home.join(".iii").join("compose").join(daemon_id)))
     }
