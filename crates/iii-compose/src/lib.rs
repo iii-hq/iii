@@ -12,18 +12,24 @@
 //! greenfield crate: it shares no runtime code with `crates/iii-worker`, whose
 //! lifecycle system it is meant to replace rather than extend.
 //!
-//! Status: the offline path (`iii compose validate`) is complete. Daemon-mode
-//! supervision is not implemented yet and reports `DAEMON_NOT_IMPLEMENTED`.
+//! Status: `iii compose validate` is complete offline, and daemon mode
+//! connects, serves `compose::*` in its own namespace, and starts/stops the
+//! graph. Registry (`package://`) resolution and per-container log capture are
+//! the two declared gaps.
 
 pub mod cli;
 pub mod config;
 pub mod configuration;
+pub mod daemon;
 pub mod dag;
+pub mod engine;
 pub mod error;
 pub mod hooks;
+pub mod lifecycle;
 pub mod manifest;
 pub mod namespace;
 pub mod process;
+pub mod remote;
 pub mod spawn;
 pub mod state;
 
@@ -62,8 +68,71 @@ pub async fn run(cli: ComposeCli) -> i32 {
                 Err(err) => report_error(&err),
             }
         }
-        ComposeCommand::Daemon { .. } => report_error(&ComposeError::DaemonNotImplemented),
+        ComposeCommand::Daemon {
+            id,
+            file,
+            engine_url,
+            namespace,
+        } => match run_daemon(id, &file, engine_url, namespace.as_deref()).await {
+            Ok(()) => 0,
+            Err(err) => report_error(&err),
+        },
     }
+}
+
+/// Daemon mode: bind to one compose file, serve `compose::*`, and stop the
+/// children on the way out.
+///
+/// Starting the daemon does not implicitly `up` anything — that is a separate
+/// decision the operator makes.
+async fn run_daemon(
+    id: String,
+    file: &std::path::Path,
+    engine_url: String,
+    namespace: Option<&str>,
+) -> Result<()> {
+    let compose = ComposeFile::load(file)?;
+    // Validate before announcing: a daemon that is serving `compose::up` for a
+    // project that cannot start is worse than one that never came up.
+    manifest::validate_offline(&compose, "pending")?;
+
+    let daemon = daemon::Daemon::start(id, compose, engine_url, namespace).await?;
+    remote::register(&daemon);
+
+    println!(
+        "compose daemon '{}' bound to {}",
+        daemon.id,
+        daemon.file.path.display()
+    );
+    println!("  project namespace: {}", daemon.project_namespace);
+    println!(
+        "  reach it with: iii trigger compose::status --namespace {}",
+        daemon.id
+    );
+
+    // Serve until interrupted, or until the engine refuses this identity.
+    let interrupted = tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
+
+    loop {
+        tokio::select! {
+            _ = &mut interrupted => break,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                if let Some(error) = daemon.fatal_error() {
+                    eprintln!("error[REGISTRATION_REJECTED]: {error}");
+                    daemon.shutdown().await;
+                    return Err(ComposeError::EngineCallFailed {
+                        function: "engine::workers::register".to_string(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    println!("stopping {} container(s)...", daemon.file.containers.len());
+    daemon.shutdown().await;
+    Ok(())
 }
 
 fn report_error(err: &ComposeError) -> i32 {
