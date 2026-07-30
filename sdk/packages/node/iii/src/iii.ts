@@ -96,6 +96,27 @@ function getDefaultWorkerName(): string {
   return `${os.hostname()}:${process.pid}`
 }
 
+/**
+ * Engine address used when neither an explicit address nor `III_URL` is set.
+ * The IPv4 loopback is spelled out on purpose: `localhost` can resolve to `::1`
+ * on a host whose engine only listens on IPv4.
+ */
+export const DEFAULT_ENGINE_URL = 'ws://127.0.0.1:49134'
+
+function resolveAddress(address?: string): string {
+  // The supervisor that spawned this process -- `iii compose`, a container
+  // runtime, systemd -- sets III_URL, the same way it sets III_NAMESPACE and
+  // III_WORKER_NAME. An explicit address still wins.
+  if (address) {
+    return address
+  }
+  const fromEnv = process.env.III_URL
+  if (fromEnv) {
+    return fromEnv
+  }
+  return DEFAULT_ENGINE_URL
+}
+
 function resolveNamespace(optionNamespace?: string): string | undefined {
   // III_NAMESPACE carries the namespace for managed workers (set by iii-worker
   // at spawn), mirroring III_WORKER_NAME. An explicit option wins; otherwise
@@ -657,6 +678,13 @@ class Sdk implements IIIClient {
    * Python/Rust SDKs' `get_connection_state()`.
    */
   getConnectionState = (): IIIConnectionState => this.connectionState
+
+  /**
+   * Engine address this worker resolved to: the explicit argument, else
+   * `III_URL`, else {@link DEFAULT_ENGINE_URL}. Mirrors the Rust SDK's
+   * `address()` and the Python SDK's `get_address()`.
+   */
+  getAddress = (): string => this.address
 
   /**
    * The fatal registration rejection that terminated this connection, if any
@@ -1340,7 +1368,8 @@ export const TriggerAction = {
  * Register the worker with a iii instance, returns a connected worker client.
  * The WebSocket connection is established automatically.
  *
- * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
+ * @param address - WebSocket URL of the III engine. Omit to resolve it from
+ *   `process.env.III_URL`, falling back to {@link DEFAULT_ENGINE_URL}.
  * @param options - Optional {@link InitOptions} for worker name, timeouts, reconnection, and OTel.
  * @returns A connected {@link IIIClient} instance.
  *
@@ -1348,9 +1377,12 @@ export const TriggerAction = {
  * ```typescript
  * import { registerWorker } from 'iii-sdk'
  *
- * const worker = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
- *   workerName: 'my-worker',
- * })
+ * // Address from III_URL, set by whatever supervisor spawned this worker.
+ * const worker = registerWorker()
+ *
+ * // Or explicitly, which always wins over the environment.
+ * const other = registerWorker('ws://localhost:49134', { workerName: 'my-worker' })
  * ```
  */
-export const registerWorker = (address: string, options?: InitOptions): IIIClient => new Sdk(address, options)
+export const registerWorker = (address?: string, options?: InitOptions): IIIClient =>
+  new Sdk(resolveAddress(address), options)
