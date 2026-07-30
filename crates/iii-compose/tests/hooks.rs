@@ -33,10 +33,10 @@ fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> Spa
 
 async fn wait_for_file(path: &Path) -> String {
     for _ in 0..150 {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if !text.trim().is_empty() {
-                return text;
-            }
+        if let Ok(text) = std::fs::read_to_string(path)
+            && !text.trim().is_empty()
+        {
+            return text;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
