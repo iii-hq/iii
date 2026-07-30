@@ -25,6 +25,7 @@ pub mod manifest;
 pub mod namespace;
 pub mod process;
 pub mod spawn;
+pub mod state;
 
 pub use cli::{ComposeAction, ComposeCli, ComposeCommand};
 pub use config::{ComposeFile, Container, WorkerSource};

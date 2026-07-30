@@ -62,8 +62,9 @@ pub async fn run_pre_start(
 ) -> Result<(), HookError> {
     const HOOK: &str = "pre_start";
 
-    let mut child =
+    let mut hook =
         spawn_hook(ctx, script).map_err(|source| HookError::Spawn { hook: HOOK, source })?;
+    let child = &mut hook.child;
 
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
@@ -90,11 +91,10 @@ pub async fn run_pre_start(
             }
         }
         Err(_) => {
-            #[cfg(unix)]
-            if let Some(pid) = child.id() {
-                crate::process::unix::signal_group(pid as i32, nix::sys::signal::Signal::SIGKILL);
-            }
-            let _ = child.wait().await;
+            // Kill before waiting: the hook is hung by definition, so waiting
+            // first would never return.
+            hook.kill_tree();
+            let _ = hook.child.wait().await;
             Err(HookError::Timeout {
                 hook: HOOK,
                 timeout,
@@ -109,8 +109,8 @@ pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
     const HOOK: &str = "post_run";
 
     let container = ctx.container_key.to_string();
-    let mut child = match spawn_hook(ctx, script) {
-        Ok(child) => child,
+    let mut hook = match spawn_hook(ctx, script) {
+        Ok(hook) => hook,
         Err(err) => {
             eprintln!("[{HOOK}:{container}] could not start: {err}");
             return;
@@ -118,6 +118,7 @@ pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
     };
 
     tokio::spawn(async move {
+        let child = &mut hook.child;
         let mut stdout = child.stdout.take();
         let mut stderr = child.stderr.take();
         let (status, out, err) =
@@ -134,8 +135,33 @@ pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
     });
 }
 
+/// A hook process plus whatever the platform needs to take its descendants
+/// down: a process group on unix, a job object on windows.
+struct HookProcess {
+    child: tokio::process::Child,
+    #[cfg(windows)]
+    job: Option<crate::process::windows::JobHandle>,
+}
+
+impl HookProcess {
+    fn kill_tree(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            crate::process::unix::signal_group(pid as i32, nix::sys::signal::Signal::SIGKILL);
+        }
+        #[cfg(windows)]
+        match &self.job {
+            Some(job) => job.terminate(),
+            // No job: the hook itself still dies, its own children may not.
+            None => {
+                let _ = self.child.start_kill();
+            }
+        }
+    }
+}
+
 /// Builds a hook command that mirrors the container's environment and cwd.
-fn spawn_hook(ctx: &SpawnCtx<'_>, script: &str) -> std::io::Result<tokio::process::Child> {
+fn spawn_hook(ctx: &SpawnCtx<'_>, script: &str) -> std::io::Result<HookProcess> {
     let start = StartSpec::Shell(script.to_string());
     let mut hook_ctx = ctx.clone();
     hook_ctx.start = &start;
@@ -144,7 +170,16 @@ fn spawn_hook(ctx: &SpawnCtx<'_>, script: &str) -> std::io::Result<tokio::proces
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);
-    command.spawn()
+
+    let child = command.spawn()?;
+    #[cfg(windows)]
+    let job = crate::process::windows::attach_job(&child);
+
+    Ok(HookProcess {
+        child,
+        #[cfg(windows)]
+        job,
+    })
 }
 
 async fn read_all<R: AsyncReadExt + Unpin>(source: &mut Option<R>) -> String {

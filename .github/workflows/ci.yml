@@ -302,6 +302,36 @@ jobs:
           RUST_LOG: info
         run: cargo test -p iii --test rabbitmq_queue_integration -- --nocapture
 
+  # ──────────────────────────────────────────────────────────────
+  # Compose — supervision is platform code, so it is tested per OS
+  # ──────────────────────────────────────────────────────────────
+
+  compose-test-matrix:
+    name: Compose Tests - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: compose-test-${{ matrix.os }}
+
+      # Process-group and job-object behaviour cannot be cross-checked: only the
+      # host OS can prove that a teardown really reaches a worker's children.
+      # The unix suites are cfg-gated, so the windows run exercises the portable
+      # tests plus compilation of the job-object path.
+      - name: Run compose tests
+        run: cargo test -p iii-compose
+
   engine-build-matrix:
     name: Engine Build - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}

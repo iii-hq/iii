@@ -103,6 +103,12 @@ pub fn signal_group(pgid: i32, signal: Signal) {
     let _ = killpg(Pid::from_raw(pgid), signal);
 }
 
+/// Signal 0: asks the kernel whether the PID exists without delivering
+/// anything.
+pub fn is_running(pid: u32) -> bool {
+    nix::sys::signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
 /// Whether a PID recorded earlier still refers to the same process, and may
 /// therefore be signalled. A recycled or unverifiable PID answers `false`.
 pub fn is_same_process(pid: u32, recorded: &BirthIdentity) -> bool {
