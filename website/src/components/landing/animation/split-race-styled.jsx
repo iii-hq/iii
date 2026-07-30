@@ -4,6 +4,7 @@
 // the engine is imported for its side effect (it publishes on globalThis), the
 // scene list and playback mode are inline literals instead of window globals
 // set by the host document, and the component is a default export.
+import React from 'react'
 import './animations-v2.jsx'
 
 const { SceneStage, useScene, clamp, Easing } = globalThis;
@@ -185,10 +186,13 @@ function IiiRow({ item }) {
     return <div style={{ ...base, color: "var(--ink)", fontWeight: 500 }}><span style={{ color: "var(--ink-ghost)" }}>$ </span>{txt}{car}</div>;
   if (k === "chips")
     return <div style={{ display: "flex", gap: 10, flexWrap: "wrap", opacity: op }}>{line.t.map((c, i) => <Chip key={i} label={c} />)}</div>;
+  // iii: one column, the description under the signature. As a two-cell table
+  // both halves wrapped at the widths this window actually gets, and the row
+  // needed the full pane width to read; stacked, it needs neither.
   if (k === "fn")
-    return <div style={{ display: "flex", border: "1px solid var(--rule)", background: "var(--paper)", opacity: op }}>
-      <div style={{ flex: 1, padding: "9px 14px", ...base, opacity: 1, color: "var(--ink-2)", fontSize: 20 }}>{txt}{car}</div>
-      <div style={{ width: "44%", padding: "9px 14px", borderLeft: "1px solid var(--rule)", ...base, opacity: 1, color: "var(--ink-faint)", fontSize: 19 }}>{line.d}</div>
+    return <div style={{ borderLeft: "2px solid var(--rule)", paddingLeft: 14, opacity: op }}>
+      <div style={{ ...base, opacity: 1, color: "var(--ink-2)", fontSize: 20, lineHeight: 1.35 }}>{txt}{car}</div>
+      <div style={{ ...base, opacity: 1, color: "var(--ink-faint)", fontSize: 18, lineHeight: 1.35 }}>{line.d}</div>
     </div>;
   if (k === "worker")
     return <div style={{ border: "1px solid var(--rule)", background: "var(--panel)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 14, opacity: op }}>
@@ -308,5 +312,44 @@ export default function SplitRaceStyled() {
   // iii: reduced motion holds the first frame; the loop has no user-reachable
   // pause on the site (the engine's transport bar is hidden).
   const reduced = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-  return <SceneStage width={1920} height={1200} bg="transparent" autoplay={!reduced} scenes={SCENES} playback={PLAYBACK}>{map}</SceneStage>;
+  // iii: the scene is authored 1920 wide and its height follows the box the
+  // page gives it, because SceneStage scales by min(w/W, h/H): a fixed 1200
+  // would letterbox on a short viewport and shrink the terminal text with it.
+  // Both windows are top/bottom anchored, so a shorter scene just makes them
+  // shorter at full type size. Both transcripts are bottom-aligned under
+  // `overflow: hidden`, so what no longer fits leaves off the top, the way a
+  // terminal scrolls — the compromise a short viewport buys.
+  const box = React.useRef(null);
+  const [height, setHeight] = React.useState(1200);
+  React.useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const measure = () => {
+      const { clientWidth: w, clientHeight: h } = el;
+      if (!w || !h) return;
+      setHeight(Math.round(clamp((1920 * h) / w, 600, 1200)));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // iii: the stage takes `playing` from `autoplay` once, at mount, so the race
+  // is mounted on arrival instead: the reader meets step 0, not whatever step
+  // the clock reached while the section was still below the fold. Reduced
+  // motion mounts straight away — it holds the first frame either way.
+  const [entered, setEntered] = React.useState(reduced);
+  React.useEffect(() => {
+    const el = box.current;
+    if (!el || entered) return;
+    const io = new IntersectionObserver(
+      ([entry]) => entry.isIntersecting && setEntered(true),
+      { threshold: 0.3 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [entered]);
+  return <div ref={box} style={{ position: "absolute", inset: 0 }}>
+    {entered && <SceneStage width={1920} height={height} bg="transparent" autoplay={!reduced} scenes={SCENES} playback={PLAYBACK}>{map}</SceneStage>}
+  </div>;
 }

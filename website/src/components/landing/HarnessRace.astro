@@ -25,10 +25,31 @@ import SplitRaceStyled from './animation/split-race-styled.jsx'
 </section>
 
 <style is:global>
+  /* The race's height is a function of its own width, and `aspect-ratio` will
+     not do it: paired with a max-height it narrows the box instead of just
+     shortening it, which shrinks the whole race. Container query units give
+     the width without that side effect. */
+  #harness.xp {
+    container-type: inline-size;
+  }
   .harness-race {
     position: relative;
     margin: 0 36px;
-    aspect-ratio: 1920 / 1200;
+    /* Height only: at its authored 16:10 the race stands taller than a laptop
+       screen once the column is wide, so the two terminals never sit on
+       screen together. Keep the full column width and give back height. The
+       scene follows this box's proportions (see split-race-styled.jsx), so
+       the windows get shorter instead of the race getting smaller.
+
+       340px is the room the section header, the nav band and the gap between
+       them actually measure, so the title and the race land on screen together
+       from a laptop's height up; 500px is the floor, where the transcripts
+       still hold enough lines to read as terminals. Between the two the race
+       overflows a little rather than shrinking further. */
+    block-size: min(
+      calc((100cqw - 72px) * 0.625),
+      max(500px, calc(100dvh - 340px))
+    );
   }
   /* The engine's own transport bar is authoring chrome; the page just loops. */
   /* !important: the engine sets display:flex inline on both of these. */
