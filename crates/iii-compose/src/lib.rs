@@ -110,23 +110,46 @@ async fn run_daemon(
         daemon.id
     );
 
-    // Serve until interrupted, or until the engine refuses this identity.
+    // Serve until asked to stop, or until the engine refuses this identity.
+    //
+    // Both signals matter and for different reasons: an operator presses Ctrl-C
+    // (SIGINT), while every supervisor — systemd, docker, a `kill` in a script
+    // — sends SIGTERM. Handling only the first leaves the children orphaned on
+    // the path that production actually takes.
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
+    #[cfg(unix)]
+    let mut terminated =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|err| ComposeError::SpawnFailed {
+                container: "<daemon>".to_string(),
+                message: format!("could not listen for SIGTERM: {err}"),
+            })?;
 
     loop {
-        tokio::select! {
-            _ = &mut interrupted => break,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
-                if let Some(error) = daemon.fatal_error() {
-                    eprintln!("error[REGISTRATION_REJECTED]: {error}");
-                    daemon.shutdown().await;
-                    return Err(ComposeError::EngineCallFailed {
-                        function: "engine::workers::register".to_string(),
-                        message: error.to_string(),
-                    });
-                }
-            }
+        #[cfg(unix)]
+        let stop = tokio::select! {
+            _ = &mut interrupted => true,
+            _ = terminated.recv() => true,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => false,
+        };
+        #[cfg(not(unix))]
+        let stop = tokio::select! {
+            _ = &mut interrupted => true,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => false,
+        };
+
+        if stop {
+            break;
+        }
+
+        if let Some(error) = daemon.fatal_error() {
+            eprintln!("error[REGISTRATION_REJECTED]: {error}");
+            daemon.shutdown().await;
+            return Err(ComposeError::EngineCallFailed {
+                function: "engine::workers::register".to_string(),
+                message: error.to_string(),
+            });
         }
     }
 
