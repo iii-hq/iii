@@ -100,6 +100,22 @@ pub enum ComposeError {
     )]
     PackageResolutionUnimplemented { container: String },
 
+    #[error("{path} is not valid daemon state: {message}")]
+    InvalidState { path: PathBuf, message: String },
+
+    #[error(
+        "daemon '{daemon_id}' already holds state for {recorded}; it cannot be rebound to \
+         {requested}. Use a different --id"
+    )]
+    StateBindingMismatch {
+        daemon_id: String,
+        recorded: PathBuf,
+        requested: PathBuf,
+    },
+
+    #[error("cannot locate a home directory for the daemon state")]
+    StateDirUnavailable,
+
     #[error("`iii compose` requires {flag}")]
     MissingFlag { flag: &'static str },
 
@@ -133,6 +149,9 @@ impl ComposeError {
             Self::ManifestNameMismatch { .. } => "MANIFEST_NAME_MISMATCH",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
             Self::PackageResolutionUnimplemented { .. } => "PACKAGE_RESOLUTION_UNIMPLEMENTED",
+            Self::InvalidState { .. } => "INVALID_STATE_FILE",
+            Self::StateBindingMismatch { .. } => "STATE_BINDING_MISMATCH",
+            Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
             Self::MissingFlag { .. } => "MISSING_FLAG",
             Self::DaemonNotImplemented => "DAEMON_NOT_IMPLEMENTED",
         }
