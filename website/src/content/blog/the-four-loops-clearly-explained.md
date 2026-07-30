@@ -59,6 +59,10 @@ needs more input from a user or a loop to continue.
 
 **Ends when:** you say so.
 
+Here is the turn-based loop running end to end:
+
+<iframe src="https://www.youtube-nocookie.com/embed/6jjjA1mQSj0" title="Implementing a Turn-Based Agentic Loop in iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+
 **In traditional terms:** this is a REPL, a human at an interactive session.
 You run a command, read the result, decide the next command. No scheduler, no
 daemon, no shared state between runs, because you are the control loop.
@@ -109,15 +113,15 @@ End with:
 - the best next prompt for me to send.
 ```
 
-Here is the turn-based loop running end to end:
-
-<iframe src="https://www.youtube-nocookie.com/embed/6jjjA1mQSj0" title="Implementing a Turn-Based Agentic Loop in iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
-
 ## 2. Goal-based: the check moves off you
 
 **Trigger:** a task with success criteria.
 
 **Ends when:** an evaluator function says to.
+
+Here is the goal-based loop running end to end:
+
+<iframe src="https://www.youtube-nocookie.com/embed/XczdpAZ8_-c" title="Implementing a Goal-Based Agentic Loop in iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
 
 **In traditional terms:** this is a retry-until-valid control loop. Do work,
 run a validator, and either accept the result or feed the failure back and
@@ -206,15 +210,15 @@ Wire it as a validated loop, not a chat sequence:
 Return baseline note, evaluator subscription id, worker session id, budget state key, and how to cancel (unregister + delete state key).
 ```
 
-Here is the goal-based loop running end to end:
-
-<iframe src="https://www.youtube-nocookie.com/embed/XczdpAZ8_-c" title="Implementing a Goal-Based Agentic Loop in iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
-
 ## 3. Time-based: the trigger moves off you
 
 **Trigger:** a cron.
 
 **Ends when:** the fixed task finishes, then it waits for the next tick.
+
+Here is the time-based loop running end to end:
+
+<iframe src="https://www.youtube-nocookie.com/embed/gKqS7AVnnvY" title="Implementing a Time-Based Agentic Loop in iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
 
 **In traditional terms:** this is a cron job, a scheduled batch worker. A
 timer fires, a job runs a fixed task against fresh inputs, and it writes its
@@ -278,15 +282,15 @@ Create a recurring iii workflow that runs every weekday at [TIME AND TIMEZONE].
 Return both subscription ids, the state key layout, and how to disable each.
 ```
 
-Here is the time-based loop running end to end:
-
-<iframe src="https://www.youtube-nocookie.com/embed/gKqS7AVnnvY" title="Implementing a Time-Based Agentic Loop in iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
-
 ## 4. Proactive: neither question is yours
 
 **Trigger:** an event, with nobody watching.
 
 **Ends when:** an agentic reviewer approves.
+
+Here is the proactive loop running end to end:
+
+<iframe src="https://www.youtube-nocookie.com/embed/XYuRQbJTzXc" title="Implementing a Proactive Agentic Loop with iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
 
 **In traditional terms:** this is an event-driven pipeline. An event lands on
 a queue, a consumer picks it up, work flows through stages that pass state
@@ -385,10 +389,6 @@ Rules:
 
 Return: poller subscription id, intake subscription id, state key layout under issues/templates/, per-stage allow lists, escalation channel, disable instructions (unregister poller + intake, cancel any in-flight review validators, optionally delete state prefix).
 ```
-
-Here is the proactive loop running end to end:
-
-<iframe src="https://www.youtube-nocookie.com/embed/XYuRQbJTzXc" title="Implementing a Proactive Agentic Loop with iii" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
 
 ## One job at a time
 
