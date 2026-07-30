@@ -4,10 +4,10 @@
 // the run there, and zooms back out when the reader scrolls on. While it is
 // pinned the page underneath stays put; scrolling only advances the zoom.
 //
-// The wheel leaves fullscreen from surface that has nothing of its own to
-// scroll. Over the transcript or the trace list it scrolls those, and the
-// demo build contains its inner scrollports (workers/console demo main.tsx),
-// so bottoming one out never throws the reader off the console.
+// The wheel leaves fullscreen from surface that has nothing left to scroll.
+// Over the transcript or the trace list it scrolls those; once such a pane
+// sits at its top or bottom the wheel goes back to driving the zoom, since
+// the demo contains its scrollports and would otherwise trap the reader.
 //
 // The zoom is a CSS scroll-driven animation. The timeline lives on the tall
 // track, never on the sticky stage: a pinned element holds one viewport
@@ -230,6 +230,41 @@
         /* cross-origin dev setups: the claim still works, only unforwarded */
       }
       iframe.contentWindow?.focus()
+    })
+
+    // Bottoming out an inner pane hands the wheel back to the page. The demo
+    // contains its scrollports, so the event never chains on its own: when
+    // every scroller under the pointer is already at the end the reader is
+    // asking to leave, so drive the page scroll — and with it the zoom-out.
+    const canScroll = (el: Element, dy: number) => {
+      const view = el.ownerDocument.defaultView
+      const overflowY = view?.getComputedStyle(el).overflowY
+      if (overflowY !== 'auto' && overflowY !== 'scroll') return false
+      const room = el.scrollHeight - el.clientHeight
+      return room > 1 && (dy > 0 ? el.scrollTop < room - 1 : el.scrollTop > 1)
+    }
+    iframe.addEventListener('load', () => {
+      iframe.contentDocument?.addEventListener(
+        'wheel',
+        (e) => {
+          // Firefox reports lines/pages; the page scroll needs pixels.
+          const dy =
+            e.deltaMode === 1
+              ? e.deltaY * 16
+              : e.deltaMode === 2
+                ? e.deltaY * window.innerHeight
+                : e.deltaY
+          if (!dy) return
+          for (let el = e.target as Element | null; el; el = el.parentElement)
+            if (canScroll(el, dy)) return
+          // Leaving costs the rest of the 320vh track, so a 1:1 handoff reads
+          // as sticky. A focused console is the deliberate case and gets the
+          // faster exit; a wheel that only passed over it stays gentler.
+          const gain = iframe.contentDocument?.hasFocus() ? 2 : 1.6
+          window.scrollBy(0, dy * gain)
+        },
+        { passive: true },
+      )
     })
 
     // "close" rides the scroll to the end of the track: the zoom-out plays
