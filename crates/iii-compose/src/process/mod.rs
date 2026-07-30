@@ -20,14 +20,23 @@ use std::{process::ExitStatus, time::Duration};
 
 #[cfg(unix)]
 pub mod unix;
+#[cfg(windows)]
+pub mod windows;
 
 #[cfg(unix)]
 pub use unix::{Supervised, spawn_supervised};
+#[cfg(windows)]
+pub use windows::{Supervised, spawn_supervised};
 
 /// Fingerprint that distinguishes a live process from a recycled PID.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialized into the daemon's durable state, so the variant names are part of
+/// the on-disk format.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BirthIdentity {
-    /// Kernel start time, in clock ticks since boot (linux `/proc/<pid>/stat`).
+    /// Process start time: clock ticks since boot on linux, the creation
+    /// FILETIME on windows.
     StartTime(u64),
     /// The platform has no cheap fingerprint available. Treated as
     /// unverifiable: a recorded PID with this identity is never signalled.
@@ -64,12 +73,36 @@ pub fn birth_identity(pid: u32) -> BirthIdentity {
             .map(BirthIdentity::StartTime)
             .unwrap_or(BirthIdentity::Unavailable)
     }
+    #[cfg(windows)]
+    {
+        windows::creation_time(pid)
+            .map(BirthIdentity::StartTime)
+            .unwrap_or(BirthIdentity::Unavailable)
+    }
     // macOS needs libproc for the same fact; until that path is written and
-    // tested on a mac, every non-linux PID is deliberately unverifiable.
-    #[cfg(not(target_os = "linux"))]
+    // tested on a mac, its PIDs are deliberately unverifiable.
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = pid;
         BirthIdentity::Unavailable
+    }
+}
+
+/// Whether a PID currently belongs to a live process. Says nothing about
+/// *which* process: pair it with [`birth_identity`] before signalling.
+pub fn is_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unix::is_running(pid)
+    }
+    #[cfg(windows)]
+    {
+        windows::is_running(pid)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
     }
 }
 
