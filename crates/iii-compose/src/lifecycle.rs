@@ -305,27 +305,29 @@ async fn stop_one(
     };
     child.stop(ctx.file.stop_timeout).await;
 
-    if let Some(container) = ctx.file.containers.get(key) {
-        // post_run fires after the exit is confirmed, on every path out.
-        if let Ok(user_env) = container.resolve_user_env(key) {
-            if let Ok(start) = resolve_start(key, container) {
-                let working_dir = resolve_working_dir(
-                    container.working_dir.as_deref(),
-                    container.worker_dir(),
-                    &ctx.file.base_dir,
-                );
-                let spawn_ctx = SpawnCtx {
-                    engine_url: ctx.engine_url,
-                    namespace: ctx.project_namespace,
-                    container_key: key,
-                    start: &start,
-                    config_path: None,
-                    working_dir: &working_dir,
-                    user_env: &user_env,
-                };
-                fire_post_run(&spawn_ctx, container);
-            }
-        }
+    // post_run fires after the exit is confirmed, on every path out. Any step
+    // that cannot be rebuilt (a container that vanished from the file, an
+    // env_file that is gone) simply means no hook runs — teardown never fails
+    // because of its own cleanup hook.
+    if let Some(container) = ctx.file.containers.get(key)
+        && let Ok(user_env) = container.resolve_user_env(key)
+        && let Ok(start) = resolve_start(key, container)
+    {
+        let working_dir = resolve_working_dir(
+            container.working_dir.as_deref(),
+            container.worker_dir(),
+            &ctx.file.base_dir,
+        );
+        let spawn_ctx = SpawnCtx {
+            engine_url: ctx.engine_url,
+            namespace: ctx.project_namespace,
+            container_key: key,
+            start: &start,
+            config_path: None,
+            working_dir: &working_dir,
+            user_env: &user_env,
+        };
+        fire_post_run(&spawn_ctx, container);
     }
 
     if let Some(record) = records.get_mut(key) {
@@ -339,7 +341,7 @@ async fn rollback(
     children: &mut Children,
     records: &mut BTreeMap<String, ChildRecord>,
     started: &[String],
-    results: &mut Vec<ContainerResult>,
+    results: &mut [ContainerResult],
 ) {
     for key in started.iter().rev() {
         stop_one(ctx, children, records, key).await;
