@@ -109,6 +109,34 @@ pub enum ComposeError {
     )]
     ReservedEnvOverride { container: String, name: String },
 
+    #[error("configuration '{name}' could not be resolved: {message}")]
+    ConfigFetchFailed { name: String, message: String },
+
+    #[error("engine call {function} failed: {message}")]
+    EngineCallFailed { function: String, message: String },
+
+    #[error("container '{container}' was not ready after {seconds}s")]
+    ReadinessTimeout { container: String, seconds: u64 },
+
+    #[error("container '{container}' exited with {code} before it registered")]
+    ChildExitedBeforeReady { container: String, code: i32 },
+
+    #[error("container '{container}' could not start: {message}")]
+    SpawnFailed { container: String, message: String },
+
+    #[error("no container named '{container}' in this project")]
+    UnknownContainer { container: String },
+
+    #[error(
+        "this daemon is '{expected}', not '{got}'. Try: iii trigger compose::{function} \
+         --namespace {got}"
+    )]
+    WrongDaemon {
+        expected: String,
+        got: String,
+        function: String,
+    },
+
     #[error("{path} is not valid daemon state: {message}")]
     InvalidState { path: PathBuf, message: String },
 
@@ -160,6 +188,13 @@ impl ComposeError {
             Self::MissingEnvFile { .. } => "MISSING_ENV_FILE",
             Self::PackageResolutionUnimplemented { .. } => "PACKAGE_RESOLUTION_UNIMPLEMENTED",
             Self::ReservedEnvOverride { .. } => "RESERVED_ENV_OVERRIDE",
+            Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
+            Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
+            Self::ReadinessTimeout { .. } => "STARTUP_TIMEOUT",
+            Self::ChildExitedBeforeReady { .. } => "CHILD_EXITED_BEFORE_REGISTRATION",
+            Self::SpawnFailed { .. } => "SPAWN_FAILED",
+            Self::UnknownContainer { .. } => "UNKNOWN_CONTAINER",
+            Self::WrongDaemon { .. } => "WRONG_DAEMON",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::StateBindingMismatch { .. } => "STATE_BINDING_MISMATCH",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
