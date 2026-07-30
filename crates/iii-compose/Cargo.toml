@@ -13,6 +13,9 @@ path = "src/lib.rs"
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
+# Durable daemon state is JSON: it is machine state, not an operator-edited file.
+serde_json = { workspace = true }
+dirs = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 # io-util drains hook pipes while waiting; sync carries a child's exit status to
@@ -29,6 +32,18 @@ hex = "0.4"
 # Teardown signals whole process groups, which std cannot express.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal", "process"] }
+
+# Job Objects are the windows equivalent; console control events deliver the
+# graceful stop that unix gets from SIGTERM.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  # CreateJobObjectW takes SECURITY_ATTRIBUTES, so it lives behind Win32_Security.
+  "Win32_Security",
+  "Win32_System_Console",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
