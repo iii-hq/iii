@@ -94,11 +94,20 @@ pub enum ComposeError {
     #[error("container '{container}': worker directory {path} does not exist")]
     MissingWorkerDirectory { container: String, path: PathBuf },
 
+    #[error("container '{container}': env_file {path} does not exist")]
+    MissingEnvFile { container: String, path: PathBuf },
+
     #[error(
         "container '{container}': package:// resolution is not implemented yet. Point the \
          entry at a local path:// worker"
     )]
     PackageResolutionUnimplemented { container: String },
+
+    #[error(
+        "container '{container}': '{name}' is reserved for the daemon and cannot be set by \
+         environment or env_file"
+    )]
+    ReservedEnvOverride { container: String, name: String },
 
     #[error("{path} is not valid daemon state: {message}")]
     InvalidState { path: PathBuf, message: String },
@@ -148,7 +157,9 @@ impl ComposeError {
             Self::InvalidManifest { .. } => "INVALID_MANIFEST",
             Self::ManifestNameMismatch { .. } => "MANIFEST_NAME_MISMATCH",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
+            Self::MissingEnvFile { .. } => "MISSING_ENV_FILE",
             Self::PackageResolutionUnimplemented { .. } => "PACKAGE_RESOLUTION_UNIMPLEMENTED",
+            Self::ReservedEnvOverride { .. } => "RESERVED_ENV_OVERRIDE",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::StateBindingMismatch { .. } => "STATE_BINDING_MISMATCH",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
