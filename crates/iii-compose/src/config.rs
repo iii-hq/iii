@@ -14,7 +14,11 @@
 //! itself: source existence and manifest resolution live in [`crate::manifest`]
 //! so that schema tests stay hermetic.
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -171,7 +175,7 @@ impl ComposeFile {
 fn validate_container(
     key: &str,
     raw: &RawContainer,
-    base_dir: &PathBuf,
+    base_dir: &Path,
     file_startup_timeout: Duration,
 ) -> Result<Container> {
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
@@ -355,7 +359,7 @@ fn file_duration(field: &str, raw: &Option<String>, default: Duration) -> Result
     }
 }
 
-fn parse_worker_source(key: &str, value: &str, base_dir: &PathBuf) -> Result<WorkerSource> {
+fn parse_worker_source(key: &str, value: &str, base_dir: &Path) -> Result<WorkerSource> {
     if let Some(rest) = value.strip_prefix("path://") {
         if rest.is_empty() {
             return Err(ComposeError::UnsupportedWorkerSource {
@@ -399,9 +403,9 @@ fn parse_config_uri(key: &str, uri: &str) -> Result<String> {
         })
 }
 
-fn resolve_relative(base_dir: &PathBuf, path: &PathBuf) -> PathBuf {
+fn resolve_relative(base_dir: &Path, path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
-        path.clone()
+        path.to_path_buf()
     } else {
         base_dir.join(path)
     };
@@ -411,7 +415,7 @@ fn resolve_relative(base_dir: &PathBuf, path: &PathBuf) -> PathBuf {
 /// Drops `.` components so diagnostics read `/srv/app/workers/api` instead of
 /// `/srv/app/./workers/api`. `..` is left alone: resolving it lexically would
 /// lie in the presence of symlinks, and these paths are shown to operators.
-fn normalize(path: &PathBuf) -> PathBuf {
+fn normalize(path: &Path) -> PathBuf {
     use std::path::Component;
 
     let mut out = PathBuf::new();
@@ -432,15 +436,11 @@ fn normalize(path: &PathBuf) -> PathBuf {
 /// one person and milliseconds to the next.
 pub fn parse_duration(value: &str) -> Option<Duration> {
     let value = value.trim();
-    let (digits, factor_ms) = if let Some(rest) = value.strip_suffix("ms") {
-        (rest, 1_u64)
-    } else if let Some(rest) = value.strip_suffix('s') {
-        (rest, 1_000)
-    } else if let Some(rest) = value.strip_suffix('m') {
-        (rest, 60_000)
-    } else {
-        return None;
-    };
+    // `ms` first: `s` is a suffix of it.
+    let (digits, factor_ms) = None
+        .or_else(|| value.strip_suffix("ms").map(|rest| (rest, 1_u64)))
+        .or_else(|| value.strip_suffix('s').map(|rest| (rest, 1_000)))
+        .or_else(|| value.strip_suffix('m').map(|rest| (rest, 60_000)))?;
     let amount: u64 = digits.trim().parse().ok()?;
     amount.checked_mul(factor_ms).map(Duration::from_millis)
 }

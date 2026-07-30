@@ -47,10 +47,10 @@ async fn wait_until_gone(pid: u32) -> bool {
 
 async fn read_pid_file(path: &Path) -> u32 {
     for _ in 0..100 {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(pid) = text.trim().parse() {
-                return pid;
-            }
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
