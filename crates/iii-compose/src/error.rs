@@ -124,6 +124,16 @@ pub enum ComposeError {
     #[error("container '{container}' could not start: {message}")]
     SpawnFailed { container: String, message: String },
 
+    /// A container's hook refused to let it start. The hook's own code is
+    /// carried through: "your pre_start exited 3" and "the process would not
+    /// spawn" are different problems and must not share one code.
+    #[error("container '{container}': {message}")]
+    HookFailed {
+        container: String,
+        hook_code: &'static str,
+        message: String,
+    },
+
     #[error("no container named '{container}' in this project")]
     UnknownContainer { container: String },
 
@@ -193,6 +203,7 @@ impl ComposeError {
             Self::ReadinessTimeout { .. } => "STARTUP_TIMEOUT",
             Self::ChildExitedBeforeReady { .. } => "CHILD_EXITED_BEFORE_REGISTRATION",
             Self::SpawnFailed { .. } => "SPAWN_FAILED",
+            Self::HookFailed { hook_code, .. } => hook_code,
             Self::UnknownContainer { .. } => "UNKNOWN_CONTAINER",
             Self::WrongDaemon { .. } => "WRONG_DAEMON",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",

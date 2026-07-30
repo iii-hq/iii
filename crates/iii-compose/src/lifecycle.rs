@@ -258,8 +258,9 @@ async fn start_one(
     if let Some(script) = &container.scripts.pre_start {
         hooks::run_pre_start(&spawn_ctx, script, container.scripts.pre_start_timeout)
             .await
-            .map_err(|err| ComposeError::SpawnFailed {
+            .map_err(|err| ComposeError::HookFailed {
                 container: key.to_string(),
+                hook_code: err.code(),
                 message: err.to_string(),
             })?;
     }
