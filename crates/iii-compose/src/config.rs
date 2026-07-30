@@ -14,7 +14,7 @@
 //! itself: source existence and manifest resolution live in [`crate::manifest`]
 //! so that schema tests stay hermetic.
 
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -22,11 +22,19 @@ use serde::Deserialize;
 use crate::{
     dag,
     error::{ComposeError, Result},
+    spawn::RESERVED_ENV,
 };
 
 /// Default `pre_start` budget. A blocking migration or asset build routinely
 /// takes tens of seconds; anything past this is treated as hung.
 pub const DEFAULT_PRE_START_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Default readiness budget: how long `up` waits for a spawned container to
+/// show up in the engine before calling it failed.
+pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Default teardown grace between the polite stop and the forced kill.
+pub const DEFAULT_STOP_TIMEOUT: Duration = crate::process::DEFAULT_STOP_GRACE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerSource {
@@ -68,6 +76,15 @@ pub struct Container {
     /// Declared working directory, resolved against the compose file's
     /// directory. `None` means "the worker's own directory".
     pub working_dir: Option<PathBuf>,
+    /// Literal environment for this container. Never contains a reserved key:
+    /// those are rejected at parse time.
+    pub environment: BTreeMap<String, String>,
+    /// Env files in declaration order; a later file wins. Resolved against the
+    /// compose file's directory and read at spawn time, never at parse time —
+    /// they routinely hold secrets.
+    pub env_file: Vec<PathBuf>,
+    /// Readiness budget for this container: its own override, else the file's.
+    pub startup_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +95,10 @@ pub struct ComposeFile {
     pub path: PathBuf,
     /// Directory every relative path in the file resolves against.
     pub base_dir: PathBuf,
+    /// Project-wide readiness budget; a container may override it.
+    pub startup_timeout: Duration,
+    /// Grace between the polite stop and the forced kill, project-wide.
+    pub stop_timeout: Duration,
     pub containers: IndexMap<String, Container>,
 }
 
@@ -114,11 +135,18 @@ impl ComposeFile {
             return Err(ComposeError::EmptyContainers);
         }
 
+        let startup_timeout = file_duration(
+            "startup_timeout",
+            &raw.startup_timeout,
+            DEFAULT_STARTUP_TIMEOUT,
+        )?;
+        let stop_timeout = file_duration("stop_timeout", &raw.stop_timeout, DEFAULT_STOP_TIMEOUT)?;
+
         let mut containers = IndexMap::with_capacity(raw.containers.len());
         for (key, raw_container) in &raw.containers {
             containers.insert(
                 key.clone(),
-                validate_container(key, raw_container, &base_dir)?,
+                validate_container(key, raw_container, &base_dir, startup_timeout)?,
             );
         }
 
@@ -126,6 +154,8 @@ impl ComposeFile {
             name: raw.name,
             path,
             base_dir,
+            startup_timeout,
+            stop_timeout,
             containers,
         };
         dag::validate_dependencies(&file)?;
@@ -138,7 +168,12 @@ impl ComposeFile {
     }
 }
 
-fn validate_container(key: &str, raw: &RawContainer, base_dir: &PathBuf) -> Result<Container> {
+fn validate_container(
+    key: &str,
+    raw: &RawContainer,
+    base_dir: &PathBuf,
+    file_startup_timeout: Duration,
+) -> Result<Container> {
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
     let is_package = matches!(worker, WorkerSource::Package { .. });
 
@@ -198,6 +233,27 @@ fn validate_container(key: &str, raw: &RawContainer, base_dir: &PathBuf) -> Resu
         }
     };
 
+    // The reserved contract is the daemon's to set. Silently dropping a
+    // user-supplied III_URL would look like it took effect.
+    let mut environment = BTreeMap::new();
+    for (name, value) in &raw.environment {
+        if RESERVED_ENV.contains(&name.as_str()) {
+            return Err(ComposeError::ReservedEnvOverride {
+                container: key.to_string(),
+                name: name.clone(),
+            });
+        }
+        environment.insert(name.clone(), value.clone());
+    }
+
+    let startup_timeout = match &raw.startup_timeout {
+        None => file_startup_timeout,
+        Some(value) => parse_duration(value).ok_or_else(|| ComposeError::InvalidDuration {
+            container: key.to_string(),
+            value: value.clone(),
+        })?,
+    };
+
     Ok(Container {
         worker,
         version: raw.version.clone(),
@@ -209,7 +265,85 @@ fn validate_container(key: &str, raw: &RawContainer, base_dir: &PathBuf) -> Resu
             .working_dir
             .as_ref()
             .map(|dir| resolve_relative(base_dir, dir)),
+        environment,
+        env_file: raw
+            .env_file
+            .iter()
+            .map(|path| resolve_relative(base_dir, path))
+            .collect(),
+        startup_timeout,
     })
+}
+
+impl Container {
+    /// The user-defined environment for this container: env files in listed
+    /// order, then literal `environment` values on top.
+    ///
+    /// Read at spawn time, not at parse time: env files hold secrets, and
+    /// holding them in memory for the daemon's whole life buys nothing.
+    pub fn resolve_user_env(&self, container_key: &str) -> Result<BTreeMap<String, String>> {
+        let mut env = BTreeMap::new();
+        for path in &self.env_file {
+            let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            for (name, value) in parse_env_file(&text) {
+                if RESERVED_ENV.contains(&name.as_str()) {
+                    return Err(ComposeError::ReservedEnvOverride {
+                        container: container_key.to_string(),
+                        name,
+                    });
+                }
+                env.insert(name, value);
+            }
+        }
+        env.extend(self.environment.clone());
+        Ok(env)
+    }
+}
+
+/// `KEY=VALUE` lines. Blank lines and `#` comments are skipped, a leading
+/// `export ` is tolerated, and one layer of matching quotes is stripped.
+fn parse_env_file(text: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .or_else(|| {
+                value
+                    .strip_prefix('\'')
+                    .and_then(|rest| rest.strip_suffix('\''))
+            })
+            .unwrap_or(value);
+        entries.push((name.to_string(), value.to_string()));
+    }
+    entries
+}
+
+/// Parses a file-level duration, which has no container to blame in the error.
+fn file_duration(field: &str, raw: &Option<String>, default: Duration) -> Result<Duration> {
+    match raw {
+        None => Ok(default),
+        Some(value) => parse_duration(value).ok_or_else(|| ComposeError::InvalidDuration {
+            container: format!("<{field}>"),
+            value: value.clone(),
+        }),
+    }
 }
 
 fn parse_worker_source(key: &str, value: &str, base_dir: &PathBuf) -> Result<WorkerSource> {
@@ -306,6 +440,10 @@ pub fn parse_duration(value: &str) -> Option<Duration> {
 #[serde(deny_unknown_fields)]
 struct RawComposeFile {
     name: String,
+    #[serde(default)]
+    startup_timeout: Option<String>,
+    #[serde(default)]
+    stop_timeout: Option<String>,
     #[serde(deserialize_with = "deserialize_unique_map")]
     containers: IndexMap<String, RawContainer>,
 }
@@ -367,6 +505,12 @@ struct RawContainer {
     scripts: Option<RawScripts>,
     #[serde(default)]
     working_dir: Option<PathBuf>,
+    #[serde(default, deserialize_with = "deserialize_unique_map")]
+    environment: IndexMap<String, String>,
+    #[serde(default)]
+    env_file: Vec<PathBuf>,
+    #[serde(default)]
+    startup_timeout: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -88,8 +88,16 @@ fn print_report(report: &ValidationReport) {
         };
         println!("  {}: {command}", plan.key);
         println!("    dir: {}", plan.working_dir.display());
+        println!("    readiness: {}s", plan.startup_timeout.as_secs());
         if let Some(config_name) = &plan.config_name {
             println!("    config: {config_name}");
+        }
+        // Names only: an env_file's values are routinely secrets.
+        if !plan.environment.is_empty() {
+            println!("    env: {}", plan.environment.join(", "));
+        }
+        for env_file in &plan.env_file {
+            println!("    env_file: {}", env_file.display());
         }
     }
     if !report.deferred_packages.is_empty() {

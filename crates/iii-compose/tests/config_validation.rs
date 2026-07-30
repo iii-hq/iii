@@ -197,47 +197,152 @@ containers:
     );
 }
 
-/// Fields the other drafts of the v1 schema carry (`environment`, `env_file`,
-/// `startup_timeout`, `schema_version`, inline `config`). They are rejected
-/// until the schema decision lands; this test is the tripwire that will fail
-/// the day one of them is adopted, so nobody adds it silently.
+/// Fields still outside v1. `schema_version` needs a versioning story of its
+/// own, `config` inline duplicates `config_override`, and `image://` waits for
+/// the OCI runtime phase. This is the tripwire that fails the day one of them is
+/// adopted without a decision.
 #[test]
-fn rejects_fields_pending_the_schema_decision() {
-    let pending = [
-        "schema_version: 1",
-        "startup_timeout: 60s",
-        "stop_timeout: 10s",
-    ];
-    for field in pending {
-        let text = format!(
+fn rejects_fields_still_outside_v1() {
+    assert_eq!(
+        code(
             r#"
 name: orders
-{field}
+schema_version: 1
 containers:
   api:
     worker: path://./workers/api
 "#
-        );
-        assert_eq!(code(&text), "INVALID_COMPOSE_FILE", "field: {field}");
-    }
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+    assert_eq!(
+        code(
+            r#"
+name: orders
+containers:
+  api:
+    worker: path://./workers/api
+    config:
+      a: 1
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
 
-    let container_level = [
-        "environment:\n      LOG_LEVEL: info",
-        "env_file:\n      - .env",
-        "config:\n      a: 1",
-    ];
-    for field in container_level {
+#[test]
+fn accepts_environment_env_file_and_timeouts() {
+    let file = parse(
+        r#"
+name: orders
+startup_timeout: 45s
+stop_timeout: 5s
+containers:
+  api:
+    worker: path://./workers/api
+    environment:
+      RUST_LOG: info
+      PORT: "3000"
+    env_file:
+      - .env
+      - ./config/.env.production
+    startup_timeout: 90s
+"#,
+    )
+    .expect("environment, env_file and timeouts are part of v1");
+
+    assert_eq!(file.startup_timeout, std::time::Duration::from_secs(45));
+    assert_eq!(file.stop_timeout, std::time::Duration::from_secs(5));
+
+    let api = &file.containers["api"];
+    assert_eq!(api.environment["RUST_LOG"], "info");
+    assert_eq!(api.environment["PORT"], "3000");
+    assert_eq!(
+        api.env_file,
+        vec![
+            PathBuf::from("/srv/app/.env"),
+            PathBuf::from("/srv/app/config/.env.production"),
+        ],
+        "env files resolve against the compose directory, in declared order"
+    );
+    assert_eq!(
+        api.startup_timeout,
+        std::time::Duration::from_secs(90),
+        "a container override wins over the file default"
+    );
+}
+
+#[test]
+fn timeouts_fall_back_to_the_documented_defaults() {
+    let file = parse(
+        r#"
+name: orders
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(file.startup_timeout, std::time::Duration::from_secs(60));
+    assert_eq!(file.stop_timeout, std::time::Duration::from_secs(10));
+    assert_eq!(
+        file.containers["api"].startup_timeout,
+        std::time::Duration::from_secs(60),
+        "a container inherits the file's readiness budget"
+    );
+}
+
+#[test]
+fn rejects_a_user_environment_that_shadows_the_reserved_contract() {
+    // Silently dropping it would look like it took effect.
+    for reserved in ["III_URL", "III_NAMESPACE", "III_CONFIG", "III_WORKER_NAME"] {
         let text = format!(
             r#"
 name: orders
 containers:
   api:
     worker: path://./workers/api
-    {field}
+    environment:
+      {reserved}: mine
 "#
         );
-        assert_eq!(code(&text), "INVALID_COMPOSE_FILE", "field: {field}");
+        assert_eq!(code(&text), "RESERVED_ENV_OVERRIDE", "key: {reserved}");
     }
+}
+
+#[test]
+fn rejects_duplicate_environment_keys() {
+    assert_eq!(
+        code(
+            r#"
+name: orders
+containers:
+  api:
+    worker: path://./workers/api
+    environment:
+      RUST_LOG: info
+      RUST_LOG: debug
+"#
+        ),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+#[test]
+fn rejects_a_file_level_timeout_without_a_unit() {
+    assert_eq!(
+        code(
+            r#"
+name: orders
+startup_timeout: 60
+containers:
+  api:
+    worker: path://./workers/api
+"#
+        ),
+        "INVALID_DURATION"
+    );
 }
 
 #[test]
