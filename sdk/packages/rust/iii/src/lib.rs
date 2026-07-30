@@ -97,6 +97,40 @@ pub struct InitOptions {
 /// // register functions, handle events, etc.
 /// worker.shutdown(); // cleanly stops the connection thread
 /// ```
+/// Engine address used when neither an explicit address nor `III_URL` is set.
+///
+/// The IPv4 loopback is spelled out on purpose: `localhost` can resolve to
+/// `::1` on a host whose engine only listens on IPv4.
+pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
+
+/// Resolves the engine address from the environment: `III_URL`, else
+/// [`DEFAULT_ENGINE_URL`].
+pub fn engine_url_from_env() -> String {
+    std::env::var("III_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_ENGINE_URL.to_string())
+}
+
+/// Register the worker using the engine address from the environment.
+///
+/// The supervisor that spawned this process — `iii compose`, a container
+/// runtime, systemd — sets `III_URL`, the same way it sets `III_NAMESPACE` and
+/// `III_WORKER_NAME`. Rust has no default arguments, so this is the zero-address
+/// form; [`register_worker`] with an explicit address is unchanged.
+///
+/// # Examples
+/// ```rust,no_run
+/// use iii_sdk::{register_worker_from_env, InitOptions};
+///
+/// // III_URL when set, ws://127.0.0.1:49134 otherwise.
+/// let worker = register_worker_from_env(InitOptions::default());
+/// worker.shutdown();
+/// ```
+pub fn register_worker_from_env(options: InitOptions) -> IIIClient {
+    register_worker(&engine_url_from_env(), options)
+}
+
 pub fn register_worker(address: &str, options: InitOptions) -> IIIClient {
     let InitOptions {
         metadata,

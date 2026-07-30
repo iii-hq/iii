@@ -12,6 +12,11 @@ ConnectionStateCallback = Callable[["IIIConnectionState"], None]
 DEFAULT_INVOCATION_TIMEOUT_MS = 30000
 MAX_QUEUE_SIZE = 1000
 
+#: Engine address used when neither an explicit address nor ``III_URL`` is set.
+#: The IPv4 loopback is spelled out on purpose: ``localhost`` can resolve to
+#: ``::1`` on a host whose engine only listens on IPv4.
+DEFAULT_ENGINE_URL = "ws://127.0.0.1:49134"
+
 
 DEFAULT_RECONNECTION_CONFIG = ReconnectionConfig()
 

@@ -30,6 +30,7 @@ from .channels import ChannelReader, ChannelWriter
 from .errors import InvocationError, RegistrationRejectedError, _wrap_wire_error
 from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
+    DEFAULT_ENGINE_URL,
     DEFAULT_RECONNECTION_CONFIG,
     MAX_QUEUE_SIZE,
     ConnectionStateCallback,
@@ -975,6 +976,15 @@ class III:
 
         return unsubscribe
 
+    def get_address(self) -> str:
+        """Return the engine address this worker resolved to.
+
+        The explicit ``register_worker`` argument, else ``III_URL``, else
+        :data:`DEFAULT_ENGINE_URL`. Mirrors the Rust SDK's ``address()`` and the
+        Node SDK's ``getAddress()``.
+        """
+        return self._address
+
     def get_connection_state(self) -> IIIConnectionState:
         """Return the current WebSocket connection state.
 
@@ -1597,7 +1607,23 @@ class TriggerAction:
         return TriggerActionVoid()
 
 
-def register_worker(address: str, options: InitOptions | None = None) -> III:
+def resolve_engine_url(address: str | None = None) -> str:
+    """Resolve the engine address: explicit argument, then ``III_URL``, then
+    :data:`DEFAULT_ENGINE_URL`.
+
+    The supervisor that spawned this process -- ``iii compose``, a container
+    runtime, systemd -- sets ``III_URL``, the same way it sets ``III_NAMESPACE``
+    and ``III_WORKER_NAME``.
+    """
+    if address:
+        return address
+    from_env = os.environ.get("III_URL")
+    if from_env:
+        return from_env
+    return DEFAULT_ENGINE_URL
+
+
+def register_worker(address: str | None = None, options: InitOptions | None = None) -> III:
     """Register the worker with a iii instance, returns a connected worker client.
 
     Blocks up to 30 seconds for the WebSocket connection to be established.
@@ -1619,8 +1645,9 @@ def register_worker(address: str, options: InitOptions | None = None) -> III:
 
     Examples:
         >>> from iii import register_worker, InitOptions
-        >>> worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
+        >>> worker = register_worker()  # address from III_URL
+        >>> other = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
-    client = III(address, options)
+    client = III(resolve_engine_url(address), options)
     client._wait_until_connected()
     return client
