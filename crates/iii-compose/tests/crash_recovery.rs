@@ -11,6 +11,13 @@ use iii_compose::{
     state::{ChildRecord, ChildStatus, DaemonState, Reconciliation, StateStore},
 };
 
+/// Empty user environment for tests that only care about the reserved contract.
+fn empty_env() -> &'static std::collections::BTreeMap<String, String> {
+    static EMPTY: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(std::collections::BTreeMap::new)
+}
+
 fn spawn(script: &str, cwd: &Path) -> Supervised {
     let start = StartSpec::Shell(script.to_string());
     let ctx = SpawnCtx {
@@ -20,6 +27,7 @@ fn spawn(script: &str, cwd: &Path) -> Supervised {
         start: &start,
         config_path: None,
         working_dir: cwd,
+        user_env: empty_env(),
     };
     spawn_supervised(spawn_plan(&ctx).command()).expect("child should spawn")
 }

@@ -113,6 +113,10 @@ pub struct ContainerPlan {
     pub working_dir: PathBuf,
     /// Configuration entry the daemon would fetch before starting it.
     pub config_name: Option<String>,
+    /// Names only. Values may be secrets and are never reported.
+    pub environment: Vec<String>,
+    pub env_file: Vec<PathBuf>,
+    pub startup_timeout: std::time::Duration,
 }
 
 /// Result of `iii compose validate`.
@@ -147,6 +151,17 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
             }
             WorkerSource::Path { dir, .. } => dir,
         };
+        // Env files are read at spawn time, but a missing one must fail here:
+        // finding out at `up` means half the graph is already running.
+        for env_file in &container.env_file {
+            if !env_file.is_file() {
+                return Err(ComposeError::MissingEnvFile {
+                    container: key.clone(),
+                    path: env_file.clone(),
+                });
+            }
+        }
+
         resolved.push(ContainerPlan {
             key: key.clone(),
             start: resolve_start(key, container)?,
@@ -156,6 +171,9 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
                 &file.base_dir,
             ),
             config_name: container.config_name.clone(),
+            environment: container.environment.keys().cloned().collect(),
+            env_file: container.env_file.clone(),
+            startup_timeout: container.startup_timeout,
         });
     }
 

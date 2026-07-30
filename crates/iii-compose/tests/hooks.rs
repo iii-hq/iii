@@ -12,6 +12,13 @@ use iii_compose::{
 
 const IDLE: StartSpec = StartSpec::Shell(String::new());
 
+/// Empty user environment for tests that only care about the reserved contract.
+fn empty_env() -> &'static std::collections::BTreeMap<String, String> {
+    static EMPTY: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(std::collections::BTreeMap::new)
+}
+
 fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> SpawnCtx<'a> {
     SpawnCtx {
         engine_url: "ws://engine.test:49134",
@@ -20,6 +27,7 @@ fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> Spa
         start,
         config_path: config,
         working_dir: cwd,
+        user_env: empty_env(),
     }
 }
 
