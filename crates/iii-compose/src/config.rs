@@ -276,6 +276,15 @@ fn validate_container(
 }
 
 impl Container {
+    /// Directory of a `path://` worker. `None` for packages, which have no
+    /// local directory until registry resolution exists.
+    pub fn worker_dir(&self) -> Option<&std::path::Path> {
+        match &self.worker {
+            WorkerSource::Path { dir, .. } => Some(dir.as_path()),
+            WorkerSource::Package { .. } => None,
+        }
+    }
+
     /// The user-defined environment for this container: env files in listed
     /// order, then literal `environment` values on top.
     ///
