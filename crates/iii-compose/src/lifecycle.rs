@@ -174,17 +174,20 @@ pub async fn down(
         Err(error) => return failed_op(operation_id, target, &error),
     };
 
-    // A single target also takes its local dependents with it: stopping a
-    // dependency while its dependents keep running is the state compose exists
-    // to prevent.
-    if let Some(target) = target {
-        let mut with_dependents = dag::transitive_dependents(ctx.file, target);
-        with_dependents.push(target.to_string());
-        order = with_dependents;
+    // Both branches must end up dependents-first: nothing may stop while
+    // something that depends on it is still running.
+    match target {
+        // A single target takes its local dependents with it.
+        // `transitive_dependents` already returns them nearest-first, so the
+        // target goes last and the list needs no reversing.
+        Some(target) => {
+            let mut with_dependents = dag::transitive_dependents(ctx.file, target);
+            with_dependents.push(target.to_string());
+            order = with_dependents;
+        }
+        // The full plan comes back dependencies-first; teardown is its mirror.
+        None => order.reverse(),
     }
-
-    // Dependencies-first becomes dependents-first.
-    order.reverse();
     order.dedup();
 
     let mut results = Vec::new();
@@ -509,5 +512,46 @@ containers:
             json["containers"][0].get("error").is_none(),
             "a successful container carries no error key"
         );
+    }
+}
+
+#[cfg(test)]
+mod teardown_order_tests {
+    use super::*;
+
+    /// Regression: a targeted `down` was reversing an already dependents-first
+    /// list, stopping the target before the things that depend on it — the exact
+    /// state `down` exists to prevent. Found by the smoke-test project.
+    #[test]
+    fn a_targeted_down_stops_dependents_before_their_dependency() {
+        let file = ComposeFile::parse(
+            r#"
+name: orders
+containers:
+  web:
+    worker: path://./workers/web
+    depends_on: [api]
+  api:
+    worker: path://./workers/api
+    depends_on: [database]
+  database:
+    worker: path://./workers/database
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap();
+
+        let mut order = dag::transitive_dependents(&file, "api");
+        order.push("api".to_string());
+        assert_eq!(
+            order,
+            vec!["web", "api"],
+            "web depends on api, so web stops first"
+        );
+
+        // And the whole-project teardown is the mirror of the start order.
+        let mut full = file.start_order().unwrap();
+        full.reverse();
+        assert_eq!(full, vec!["web", "api", "database"]);
     }
 }
