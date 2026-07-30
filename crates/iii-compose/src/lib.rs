@@ -119,12 +119,11 @@ async fn run_daemon(
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
     #[cfg(unix)]
-    let mut terminated =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|err| ComposeError::SpawnFailed {
-                container: "<daemon>".to_string(),
-                message: format!("could not listen for SIGTERM: {err}"),
-            })?;
+    let mut terminated = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|err| ComposeError::SpawnFailed {
+            container: "<daemon>".to_string(),
+            message: format!("could not listen for SIGTERM: {err}"),
+        })?;
 
     loop {
         #[cfg(unix)]

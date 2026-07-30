@@ -79,18 +79,18 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     }
 
     let manifest = read_manifest(dir)?;
-    if let Some(manifest) = &manifest {
-        // A manifest that renames the container would split identity between
-        // the compose graph and the engine registration.
-        if let Some(name) = &manifest.name {
-            if name != key {
-                return Err(ComposeError::ManifestNameMismatch {
-                    container: key.to_string(),
-                    path: dir.join(MANIFEST_FILE),
-                    manifest_name: name.clone(),
-                });
-            }
-        }
+    // A manifest that renames the container would split identity between the
+    // compose graph and the engine registration.
+    if let Some(name) = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.name.as_ref())
+        && name != key
+    {
+        return Err(ComposeError::ManifestNameMismatch {
+            container: key.to_string(),
+            path: dir.join(MANIFEST_FILE),
+            manifest_name: name.clone(),
+        });
     }
 
     if let Some(run) = &container.scripts.run {
