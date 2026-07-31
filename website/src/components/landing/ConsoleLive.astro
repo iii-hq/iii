@@ -364,12 +364,13 @@
       { threshold: [0, 0.9] },
     ).observe(stage)
 
-    // No resting half-zoomed: when the scroll stops inside a ramp the zoom
-    // finishes itself, to whichever end is nearer in scale. The rest scale and
-    // the two ramp positions come from the ccon-zoom keyframes; each pair is
+    // A zoom that stops within a tenth of either end finishes itself, so the
+    // reader never rests just short of a definite state. Further in than that
+    // it stays where they left it: completing from the middle of a ramp moves
+    // them a long way they did not ask for, which reads as jumpy. Ramp
+    // positions come from the ccon-zoom keyframes; each pair is
     // [rest-scale progress, full-screen progress].
-    const REST = 0.62
-    const MID = (REST + 1) / 2
+    const EDGE = 0.1
     const RAMPS = [
       [0, 0.38], // zooming in
       [1, 0.6], // zooming out
@@ -383,10 +384,13 @@
       const r = track.getBoundingClientRect()
       const p = -r.top / span()
       for (const [small, full] of RAMPS) {
-        if (p <= Math.min(small, full) || p >= Math.max(small, full)) continue
-        const scale = REST + (1 - REST) * ((p - small) / (full - small))
+        // 0 at the rest scale, 1 at full screen, whichever way the ramp runs.
+        const t = (p - small) / (full - small)
+        if (t <= 0 || t >= 1) continue
+        const done = t > 1 - EDGE ? full : t < EDGE ? small : null
+        if (done === null) return
         window.scrollTo({
-          top: window.scrollY + r.top + (scale > MID ? full : small) * span(),
+          top: window.scrollY + r.top + done * span(),
           behavior: 'smooth',
         })
         return
