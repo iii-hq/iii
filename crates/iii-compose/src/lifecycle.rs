@@ -270,6 +270,18 @@ async fn start_one(
             container: key.to_string(),
         })?;
 
+    // Readiness is "a worker named `key` is registered in this namespace". If
+    // one already is before we spawn, that check would pass on the *stranger*:
+    // the container would be reported ready in milliseconds while the process
+    // we started loses the `(namespace, worker_name)` lease and dies rejected.
+    // Refuse instead, and say who is holding the name.
+    if ctx.engine.is_registered(ctx.project_namespace, key).await? {
+        return Err(ComposeError::ContainerNameTaken {
+            container: key.to_string(),
+            namespace: ctx.project_namespace.to_string(),
+        });
+    }
+
     let start = resolve_start(key, container)?;
     let user_env = container.resolve_user_env(key)?;
     let config = resolve_config(ctx, container, key).await?;
