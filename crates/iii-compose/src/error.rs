@@ -145,7 +145,10 @@ pub enum ComposeError {
          Another daemon owns this project, or a worker from an earlier run is still \
          connected. `iii trigger engine::workers::list` names it"
     )]
-    ContainerNameTaken { container: String, namespace: String },
+    ContainerNameTaken {
+        container: String,
+        namespace: String,
+    },
 
     /// The startup `up` of a `--up` run failed. The per-container detail was
     /// already printed by then; this carries the operation id so the two can be

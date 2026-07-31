@@ -253,23 +253,77 @@ fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
-/// Colours a container's output is tagged with, in the order they are handed
-/// out. Chosen to stay distinguishable on both light and dark terminals; red is
-/// deliberately absent, because in this output red means "this failed".
+/// Colours handed out to containers, in this order. Chosen to stay
+/// distinguishable on both light and dark terminals; red is deliberately
+/// absent, because in this output red means "this failed".
 const CONTAINER_COLORS: [Color; 6] = [
     Color::Cyan,
     Color::Magenta,
-    Color::Blue,
     Color::Green,
-    Color::Yellow,
     Color::BrightBlue,
+    Color::Yellow,
+    Color::BrightMagenta,
 ];
 
-/// A container's colour, derived from its name so it is the same on every run
-/// and in every daemon that has the same project.
+/// Which colour each container was given, and which one went out last.
+#[derive(Default)]
+struct Palette {
+    assigned: std::collections::HashMap<String, Color>,
+    last: Option<Color>,
+}
+
+fn palette() -> &'static Mutex<Palette> {
+    static PALETTE: OnceLock<Mutex<Palette>> = OnceLock::new();
+    PALETTE.get_or_init(|| Mutex::new(Palette::default()))
+}
+
+/// The colour a container's output is tagged with.
+///
+/// Assigned on first use rather than hashed from the name. Hashing looked
+/// tidier — same name, same colour, no state — but names in one project rhyme:
+/// `node-api` and `python-api` hashed to the same colour, and two of the three
+/// workers came out indistinguishable.
+///
+/// Assignment gives the guarantee that actually matters: no container ever
+/// carries the colour of the one before it, and while the palette lasts every
+/// container in a project is distinct. Containers are coloured in the order
+/// they first appear, which for a project is its start order — deterministic,
+/// so a container keeps its colour across restarts of the same project.
 pub fn container_color(key: &str) -> Color {
-    let sum: usize = key.bytes().map(|byte| byte as usize).sum();
-    CONTAINER_COLORS[sum % CONTAINER_COLORS.len()]
+    let palette = palette();
+    let mut state = palette
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(color) = state.assigned.get(key) {
+        return *color;
+    }
+
+    let taken: Vec<Color> = state.assigned.values().copied().collect();
+    let color = pick_color(&taken, state.last);
+
+    state.assigned.insert(key.to_string(), color);
+    state.last = Some(color);
+    color
+}
+
+/// The assignment policy, separated from the registry that holds it so it can
+/// be tested without process-wide state.
+///
+/// Prefers a colour nobody has. Once the palette is exhausted it repeats — but
+/// never with the colour that just went out, because two neighbours sharing a
+/// tag is the thing this exists to prevent.
+fn pick_color(taken: &[Color], last: Option<Color>) -> Color {
+    CONTAINER_COLORS
+        .iter()
+        .find(|candidate| !taken.contains(candidate))
+        .or_else(|| {
+            CONTAINER_COLORS
+                .iter()
+                .find(|candidate| Some(**candidate) != last)
+        })
+        .copied()
+        .unwrap_or(CONTAINER_COLORS[0])
 }
 
 /// Re-emits a child's output with a `[container]` tag in that container's
@@ -314,16 +368,60 @@ pub fn pump_output(
 mod tests {
     use super::*;
 
-    /// Same name, same colour, every run — a container keeps its identity
-    /// across restarts of the daemon.
+    /// A container keeps its colour once it has one, and red is never handed
+    /// out — in this output red means a failure.
     #[test]
     fn a_containers_colour_is_stable_and_never_red() {
-        assert_eq!(container_color("api"), container_color("api"));
-        for key in ["api", "database", "web", "queue", "todo", "worker-9"] {
+        assert_eq!(container_color("stable-a"), container_color("stable-a"));
+        for key in [
+            "red-1", "red-2", "red-3", "red-4", "red-5", "red-6", "red-7",
+        ] {
             assert_ne!(
                 container_color(key),
                 Color::Red,
                 "red is reserved for failures"
+            );
+        }
+    }
+
+    /// Drives the policy the way the registry does, without touching the
+    /// process-wide one: containers arrive one at a time, each seeing what the
+    /// ones before it took.
+    fn assign_in_sequence(count: usize) -> Vec<Color> {
+        let mut taken: Vec<Color> = Vec::new();
+        let mut last = None;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let color = pick_color(&taken, last);
+            taken.push(color);
+            last = Some(color);
+            out.push(color);
+        }
+        out
+    }
+
+    /// The bug this replaced a hash to fix: `node-api` and `python-api` summed
+    /// to the same byte value modulo the palette, so two of three workers in
+    /// one project came out indistinguishable.
+    #[test]
+    fn containers_of_one_project_do_not_share_a_colour() {
+        let colors = assign_in_sequence(CONTAINER_COLORS.len());
+        for (index, color) in colors.iter().enumerate() {
+            assert!(
+                !colors[..index].contains(color),
+                "a project within the palette size must have no repeats: {colors:?}"
+            );
+        }
+    }
+
+    /// Past the palette size colours must repeat, but never back to back.
+    #[test]
+    fn no_container_repeats_the_colour_of_the_one_before_it() {
+        let colors = assign_in_sequence(40);
+        for pair in colors.windows(2) {
+            assert_ne!(
+                pair[0], pair[1],
+                "adjacent containers must never share a colour"
             );
         }
     }
