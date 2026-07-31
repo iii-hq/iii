@@ -281,7 +281,7 @@ fn daemon_line(id: &str, message: &str, tone: Tone) {
     use colored::Colorize;
     let prefix = format!("[compose:{id}]").dimmed();
     match tone {
-        Tone::Plain => eprintln!("{prefix} {message}"),
-        Tone::Warn => eprintln!("{prefix} {}", message.yellow()),
+        Tone::Plain => crate::report::line(&format!("{prefix} {message}")),
+        Tone::Warn => crate::report::line(&format!("{prefix} {}", message.yellow())),
     }
 }

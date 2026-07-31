@@ -22,6 +22,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     manifest::StartSpec,
+    report,
     spawn::{SpawnCtx, spawn_plan},
 };
 
@@ -113,11 +114,11 @@ pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
     let mut hook = match spawn_hook(ctx, script) {
         Ok(hook) => hook,
         Err(err) => {
-            eprintln!(
+            report::line(&format!(
                 "{} {}",
                 format!("[{HOOK}:{container}]").dimmed(),
                 format!("could not start: {err}").red()
-            );
+            ));
             return;
         }
     };
@@ -131,16 +132,16 @@ pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
         log_output(HOOK, &container, &out, &err);
         match status {
             Ok(status) if status.success() => {}
-            Ok(status) => eprintln!(
+            Ok(status) => report::line(&format!(
                 "{} {}",
                 format!("[{HOOK}:{container}]").dimmed(),
                 format!("exited with {}", status.code().unwrap_or(-1)).yellow()
-            ),
-            Err(err) => eprintln!(
+            )),
+            Err(err) => report::line(&format!(
                 "{} {}",
                 format!("[{HOOK}:{container}]").dimmed(),
                 format!("could not be waited on: {err}").yellow()
-            ),
+            )),
         }
     });
 }
@@ -205,11 +206,13 @@ async fn read_all<R: AsyncReadExt + Unpin>(source: &mut Option<R>) -> String {
 /// operator's own output, not ours to restyle.
 fn log_output(hook: &str, container: &str, stdout: &str, stderr: &str) {
     for (stream, text) in [("out", stdout), ("err", stderr)] {
-        for line in text.lines() {
-            eprintln!(
-                "{} {line}",
+        for text in text.lines() {
+            // Through `report::line`, not `eprintln!`: a hook runs while its
+            // container's spinner is turning, and writing past it shreds both.
+            report::line(&format!(
+                "{} {text}",
                 format!("[{hook}:{container}:{stream}]").dimmed()
-            );
+            ));
         }
     }
 }
