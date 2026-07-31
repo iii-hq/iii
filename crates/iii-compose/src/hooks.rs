@@ -17,6 +17,7 @@
 
 use std::{process::Stdio, time::Duration};
 
+use colored::Colorize;
 use tokio::io::AsyncReadExt;
 
 use crate::{
@@ -112,7 +113,11 @@ pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
     let mut hook = match spawn_hook(ctx, script) {
         Ok(hook) => hook,
         Err(err) => {
-            eprintln!("[{HOOK}:{container}] could not start: {err}");
+            eprintln!(
+                "{} {}",
+                format!("[{HOOK}:{container}]").dimmed(),
+                format!("could not start: {err}").red()
+            );
             return;
         }
     };
@@ -127,10 +132,15 @@ pub fn fire_post_run(ctx: &SpawnCtx<'_>, script: &str) {
         match status {
             Ok(status) if status.success() => {}
             Ok(status) => eprintln!(
-                "[{HOOK}:{container}] exited with {}",
-                status.code().unwrap_or(-1)
+                "{} {}",
+                format!("[{HOOK}:{container}]").dimmed(),
+                format!("exited with {}", status.code().unwrap_or(-1)).yellow()
             ),
-            Err(err) => eprintln!("[{HOOK}:{container}] could not be waited on: {err}"),
+            Err(err) => eprintln!(
+                "{} {}",
+                format!("[{HOOK}:{container}]").dimmed(),
+                format!("could not be waited on: {err}").yellow()
+            ),
         }
     });
 }
@@ -190,10 +200,16 @@ async fn read_all<R: AsyncReadExt + Unpin>(source: &mut Option<R>) -> String {
     buffer
 }
 
+/// Prefixes every line a hook printed with where it came from. The prefix is
+/// dimmed and the line is left exactly as the script wrote it: this is the
+/// operator's own output, not ours to restyle.
 fn log_output(hook: &str, container: &str, stdout: &str, stderr: &str) {
     for (stream, text) in [("out", stdout), ("err", stderr)] {
         for line in text.lines() {
-            eprintln!("[{hook}:{container}:{stream}] {line}");
+            eprintln!(
+                "{} {line}",
+                format!("[{hook}:{container}:{stream}]").dimmed()
+            );
         }
     }
 }
