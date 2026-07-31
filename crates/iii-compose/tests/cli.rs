@@ -19,70 +19,61 @@ fn parse(args: &[&str]) -> ComposeCli {
 }
 
 #[test]
-fn daemon_mode_requires_an_id_and_a_file() {
+fn daemon_mode_requires_an_id() {
     let missing_id = parse(&["iii", "compose", "--file", "worker-compose.yaml"])
         .plan()
         .expect_err("daemon mode without --id is incomplete");
     assert_eq!(missing_id.code(), "MISSING_FLAG");
     assert!(missing_id.to_string().contains("--id"));
-
-    let missing_file = parse(&["iii", "compose", "--id", "host-a"])
-        .plan()
-        .expect_err("daemon mode without --file is incomplete");
-    assert_eq!(missing_file.code(), "MISSING_FLAG");
-    assert!(missing_file.to_string().contains("--file"));
 }
 
+/// The compose-file default, in one test: the current directory is
+/// process-wide state, and cargo runs tests in threads, so these assertions
+/// cannot be split into separate test functions without racing each other.
 #[test]
-fn daemon_mode_resolves_id_file_and_engine() {
-    let cli = parse(&[
-        "iii",
-        "compose",
-        "--id",
-        "host-a",
-        "--engine",
-        "wss://engine.example",
-        "--file",
-        "/srv/app/worker-compose.yaml",
-    ]);
+fn the_compose_file_defaults_to_the_one_in_this_directory() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("worker-compose.yaml"),
+        "name: x\ncontainers:\n  a:\n    worker: path://./a\n",
+    )
+    .unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let previous = std::env::current_dir().expect("cwd");
 
-    assert_eq!(
-        cli.plan().unwrap(),
-        ComposeCommand::Daemon {
-            id: "host-a".to_string(),
-            file: PathBuf::from("/srv/app/worker-compose.yaml"),
-            engine_url: "wss://engine.example".to_string(),
-            namespace: None,
-            up_on_start: false,
+    // In a project directory, naming the file is not required.
+    std::env::set_current_dir(project.path()).unwrap();
+    let defaulted = parse(&["iii", "compose", "--id", "host-a"]).plan();
+    let explicit = parse(&["iii", "compose", "--id", "host-a", "-f", "other.yaml"]).plan();
+    let validated = parse(&["iii", "compose", "validate"]).plan();
+
+    // Outside one, the error names the way out instead of blaming a path the
+    // operator never typed.
+    std::env::set_current_dir(empty.path()).unwrap();
+    let nowhere = parse(&["iii", "compose", "--id", "host-a"]).plan();
+
+    std::env::set_current_dir(previous).unwrap();
+
+    match defaulted.expect("a project directory needs no --file") {
+        ComposeCommand::Daemon { file, .. } => {
+            assert_eq!(file, PathBuf::from("worker-compose.yaml"))
         }
-    );
-}
-
-#[test]
-fn validate_needs_no_id_and_accepts_the_file_after_the_subcommand() {
-    let cli = parse(&[
-        "iii",
-        "compose",
-        "validate",
-        "--file",
-        "/srv/app/worker-compose.yaml",
-    ]);
-
-    assert_eq!(
-        cli.plan().unwrap(),
-        ComposeCommand::Validate {
-            file: PathBuf::from("/srv/app/worker-compose.yaml"),
-            namespace: None,
+        other => panic!("expected daemon mode, got {other:?}"),
+    }
+    match explicit.expect("an explicit file parses") {
+        ComposeCommand::Daemon { file, .. } => assert_eq!(file, PathBuf::from("other.yaml")),
+        other => panic!("expected daemon mode, got {other:?}"),
+    }
+    match validated.expect("validate shares the default") {
+        ComposeCommand::Validate { file, .. } => {
+            assert_eq!(file, PathBuf::from("worker-compose.yaml"))
         }
-    );
-}
+        other => panic!("expected validate, got {other:?}"),
+    }
 
-#[test]
-fn validate_still_requires_a_file() {
-    let err = parse(&["iii", "compose", "validate"])
-        .plan()
-        .expect_err("validate needs a file");
-    assert_eq!(err.code(), "MISSING_FLAG");
+    let err = nowhere.expect_err("there is no project in an empty directory");
+    assert_eq!(err.code(), "NO_COMPOSE_FILE");
+    assert!(err.to_string().contains("--file"), "{err}");
 }
 
 #[test]
