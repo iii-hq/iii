@@ -143,6 +143,14 @@ env:
   MY_API_KEY: replace-me
 ```
 
+`III_NAMESPACE` is the supported way to put a managed worker in a namespace: the SDK reads it when no
+explicit `namespace` option is passed. There is no per-worker `namespace:` key in `config.yaml`.
+
+```yaml
+env:
+  III_NAMESPACE: orders
+```
+
 ## `dependencies`
 
 Map of `<worker-name>: <semver range>` declaring other workers this worker depends on, resolved

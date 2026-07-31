@@ -1,0 +1,116 @@
+---
+title: "Upgrading from 0.22.x to 0.23.x"
+description:
+  "Redeclare RabbitMQ durable subscriber queues, then adopt namespaces on the surfaces your project
+  uses."
+owner: "devrel"
+type: "how-to"
+---
+
+0.23.x adds namespaces as a routing dimension. Workers that declare no namespace land in `default`
+and behave exactly as before, so most projects upgrade with no code change. The one hard break is
+durable queue naming on the RabbitMQ adapter. Apply the steps below that touch surfaces your project
+uses.
+
+## Step 1: Redeclare RabbitMQ durable subscriber queues
+
+Durable subscriber queue names are now namespace-qualified, so two subscribers of the same topic and
+function id in different namespaces get two queues instead of competing for one. The RabbitMQ adapter
+has no automatic migration: queues declared by a pre-0.23 deploy keep their old names and stop being
+addressed after the upgrade.
+
+| Version | Subscriber queue                        | Dead-letter queue                     |
+| ------- | --------------------------------------- | ------------------------------------- |
+| 0.22.x  | `iii.{topic}.{function_id}.queue`       | `iii.{topic}.{function_id}.dlq`       |
+| 0.23.x  | `iii.{topic}.{function_id}@{ns}.queue`  | `iii.{topic}.{function_id}@{ns}.dlq`  |
+
+`{ns}` is the subscriber's namespace, `default` when it declared none. Any `@` or `\` inside a
+topic, function id, or namespace is backslash-escaped before the join, so the single unescaped `@` is
+always the namespace boundary.
+
+<Warning>
+  Drain the old queues before upgrading. Messages left in a pre-0.23 queue are not migrated and no
+  consumer will read them afterwards.
+</Warning>
+
+For each affected subscriber:
+
+1. Stop publishing to the topic.
+2. Let the existing consumers drain the old queue to empty.
+3. Upgrade and restart. The adapter declares the new namespace-qualified queue on the next subscribe.
+4. Delete the drained queue and its dead-letter queue from the broker.
+
+## Step 2: Verify the builtin broker migrated
+
+The builtin broker migrates itself. On the first boot after the upgrade it drains each legacy
+subscriber queue into its namespaced identity and logs one line per queue:
+
+```text
+Drained legacy subscriber queue into its namespace
+```
+
+No action is needed. A queue name that already contains the separator is skipped and logged as such,
+because it cannot be told apart from an already-migrated name.
+
+## Step 3: Tune the registration grace, if needed
+
+A connection's namespace arrives on its `engine::workers::register` call, which SDKs send after their
+first registration frames. The engine buffers a connection's registrations until the namespace is
+known, or until a grace period expires and the connection is fixed to `default`.
+
+The default grace is 5000 ms. Raise it if workers on slow links register but land in `default`
+unexpectedly:
+
+```yaml config.yaml
+workers:
+  - name: iii-worker-manager
+    config:
+      registration_namespace_grace_ms: 10000
+```
+
+`III_NAMESPACE_GRACE_MS` overrides the configured value at runtime and takes precedence.
+
+## Step 4: Check for `engine::*` function ids outside `default`
+
+`engine::*` is reserved for engine and builtin infrastructure, which lives in `default`. A worker
+that registers an `engine::*` function id while running in another namespace now has that one
+registration refused with a `FUNCTION_NAMESPACE_CONFLICT`; the connection stays open and its other
+functions keep serving. Rename any such id to your own `service::name` prefix.
+
+This only affects workers that both use a namespace and register under the `engine::` prefix, so a
+project that has not adopted namespaces is unaffected.
+
+## Step 5: Scope RBAC expose rules when adopting a namespace
+
+`expose_functions` rules on the `iii-worker-manager` RBAC listener are namespace-scoped. A rule that
+names no namespace applies to `default` only, so it will not expose a function reached in another
+namespace. When you move a worker into a namespace, scope its rules to match:
+
+```yaml
+expose_functions:
+  - match: "orders::*"
+    namespace: orders
+```
+
+`forbidden_functions` and `allowed_functions` still match on the bare function id and apply in every
+namespace; they come from the session's auth result, which carries no namespace.
+
+## Migration checklist
+
+- [ ] Drain and delete pre-0.23 RabbitMQ subscriber and dead-letter queues (Step 1)
+- [ ] Confirm the builtin broker logged its legacy-queue drain on first boot (Step 2)
+- [ ] Raise `registration_namespace_grace_ms` if workers land in `default` unexpectedly (Step 3)
+- [ ] Rename `engine::*` function ids registered by namespaced workers (Step 4)
+- [ ] Add `namespace:` to `expose_functions` rules for namespaced workers (Step 5)
+
+## Result
+
+The project runs on 0.23.x with durable subscriptions consuming from namespace-qualified queues.
+Workers that declare no namespace keep routing through `default` exactly as they did on 0.22.x, and
+workers that declare one own their function ids inside it.
+
+<Note>
+  To put workers in namespaces, see [Isolate workers with
+  namespaces](../how-to/isolate-workers-with-namespaces). For why routing is strict, see
+  [Namespaces](../understanding-iii/namespaces).
+</Note>

@@ -1,0 +1,134 @@
+---
+title: "Namespaces"
+description:
+  "Why iii routes on a namespace dimension carried alongside the function id, instead of folding it
+  into the name."
+owner: "devrel"
+type: "explanation"
+---
+
+## What a namespace is
+
+A namespace is a routing dimension the engine carries alongside a function id and a worker name. It
+is not part of either. `state::get` is `state::get` whether it lives in `default`, in `orders`, or in
+`analytics`; what changes is the second coordinate the engine files it under.
+
+The registries are keyed by pairs rather than by strings: `(namespace, function_id)` for functions,
+`(namespace, worker_name)` for worker identity. A namespace is declared once per connection, and
+every registration that connection makes inherits it.
+
+## The problem it solves
+
+Before namespaces, a running engine had one flat registry. A function id was globally unique, and so
+was a worker name. That is a comfortable model right up to the moment two things legitimately want
+the same name.
+
+The concrete case is two projects on one engine, each declaring a `state` worker. Both are correct;
+neither is willing to rename. Without a second coordinate the engine has to pick one, and every
+option is bad: the second registration overwrites the first, or it is silently dropped, or callers
+get whichever worker happened to connect first. A system that routes by name alone cannot host two
+tenants that disagree about names.
+
+## Why a dimension and not a prefix
+
+The obvious cheaper fix is to rename on the way in: register `orders/state::get` instead of
+`state::get`. iii deliberately does not do this.
+
+A function id is not only a routing key. It appears in JSON Schemas, in agent-readable skills, in
+console listings, in `iii trigger` invocations typed by hand, and in the documentation of every
+worker published to the registry. Folding the namespace into the id would mean every one of those
+surfaces now carries a deployment detail, and every consumer would have to learn to parse it back
+out. A worker's published contract would change depending on where someone chose to run it.
+
+Keeping the id verbatim means the namespace stays a property of the deployment rather than of the
+contract. A worker author never writes a namespace into their function ids; an operator decides,
+at deploy time, which namespace the worker registers into. The two concerns stay separable, which is
+the whole point of having a second coordinate rather than a longer first one.
+
+## Why routing is strict
+
+Resolution never searches. A call with no namespace resolves in `default` and nowhere else; a call
+naming `orders` resolves in `orders` and nowhere else. In particular the caller's own namespace does
+not influence where its calls land: a worker registered in `analytics` that calls `state::get`
+without saying so reaches `default`, not its own neighbour.
+
+The tempting alternative is a best-fit search: try the caller's namespace, fall back to `default`,
+fall back to whatever exists. It reads as helpful and behaves as a hazard. Under best-fit, adding a
+worker to a namespace can silently re-target calls that were resolving somewhere else, and a typo in
+a function id can resolve to a real function in another tenant instead of failing. The failure is
+invisible, and it is a wrong answer rather than a missing one.
+
+Strictness makes the failure loud instead. A miss returns `function_not_found` and names the
+namespaces where the id does exist, so the caller learns both that the call was wrong and how to fix
+it, without the engine ever guessing on their behalf.
+
+Introspection is the one place where a looser rule earns its keep. Asking "what is this engine
+running?" with no namespace in hand is a reasonable question, and an engine whose every worker is
+namespaced would otherwise be unable to describe itself. So `engine::functions::info` and
+`engine::workers::info` prefer `default`, then resolve a name that is unique to one non-default
+namespace, and report an ambiguity when a name lives in several at once. They stop short of guessing
+for exactly the same reason invocation does: naming the candidates is useful, picking one silently is
+not. Passing an explicit namespace restores strict resolution.
+
+## Why a collision is a rejection
+
+When a worker claims a name another live worker already holds in the same namespace, the engine
+refuses the registration rather than accepting it.
+
+The alternative, last-write-wins, is how a flat registry degrades in practice: a second copy of a
+worker starts, quietly takes ownership of the name, and calls begin landing somewhere their author
+did not intend. Nothing errors. The symptom surfaces much later, as a behaviour change with no
+obvious cause.
+
+Refusal moves that discovery to the moment the mistake is made, and it distinguishes two severities.
+A contested **worker name** is an identity conflict: the worker cannot function as itself, so the
+engine closes the connection and the SDK stops rather than reconnecting into a rejection loop. A
+contested **function id** is narrower: only that one registration is refused, the connection stays
+open, and the worker keeps serving everything else it registered. Treating both as fatal would take
+a healthy worker offline over one duplicated function.
+
+There is a case that looks like a collision and is not: a worker restarting faster than the engine
+cleans up its previous connection, contending with itself. The engine treats a connection that has
+begun tearing down as no longer live, so a restart reclaims its own name immediately. Without that
+carve-out the default `hostname:pid` naming would make fast restarts fail against their own ghost.
+
+## Why it arrives per connection
+
+A namespace is declared on the `engine::workers::register` call rather than on each registration
+frame, because it describes the worker, not the individual function. One worker is one identity in
+one namespace; letting individual registrations disagree would create a worker that is partly in two
+places.
+
+That choice has a cost, and the cost is ordering. SDKs have always flushed their `RegisterFunction`
+frames as soon as the socket opens, before announcing worker metadata. If the engine filed those
+registrations as they arrived it would file them before knowing the namespace. So it buffers a
+connection's registrations until the namespace is known, then drains them in arrival order.
+
+The buffer is bounded by a grace period rather than waiting forever, because a worker might never
+announce itself at all. When the grace expires the connection is fixed to `default` and drained. This
+is what makes the whole feature backward compatible: a worker built against an older SDK sends no
+namespace, waits out the grace, lands in `default`, and behaves exactly as it always did. Every
+namespace field on the wire is optional for the same reason.
+
+## What it costs
+
+The dimension has to reach anything that stores an identity durably, and durable storage is where
+adding a coordinate stops being free.
+
+Durable queue identity is the visible case. A subscriber queue is now scoped by namespace, so two
+subscribers of the same topic and function id in different namespaces are two queues receiving the
+same event rather than two competing consumers of one queue. That is the correct behaviour, and it
+means the queue names changed. The builtin broker migrates its own queues; an external broker holds
+queues iii does not own, so those need operator action.
+
+<Note>
+  For the migration steps, see [Upgrading from 0.22.x](../upgrading/from-0-22-x).
+</Note>
+
+## Related
+
+<Note>
+  To put workers in namespaces and call across them, see [Isolate workers with
+  namespaces](../how-to/isolate-workers-with-namespaces). For the wire fields and resolution table,
+  see the [engine protocol reference](../reference/engine-protocol#namespaces).
+</Note>

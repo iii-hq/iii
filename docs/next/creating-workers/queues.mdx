@@ -238,6 +238,15 @@ The `durable:subscriber` trigger's `config` controls how each subscriber consume
 A failed delivery retries with exponential backoff (1 second, then 2 seconds) for up to 3 attempts,
 then the message dead-letters.
 
+Each subscriber's durable queue is scoped by the subscribing worker's namespace, so two subscribers
+of the same topic and function id in different namespaces are two queues that each receive every
+published event, rather than two competing consumers of one queue.
+
+<Warning>
+  RabbitMQ queue names changed in 0.23.x and are not migrated automatically. See [Upgrading from
+  0.22.x](../upgrading/from-0-22-x#step-1-redeclare-rabbitmq-durable-subscriber-queues).
+</Warning>
+
 `queue_config` accepts the following fields:
 
 | Field         | Default      | Description                                                                                               |

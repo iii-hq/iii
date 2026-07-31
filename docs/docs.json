@@ -89,6 +89,7 @@
               {
                 "group": "Upgrading",
                 "pages": [
+                  "next/upgrading/from-0-22-x",
                   "next/upgrading/from-0-21-x"
                 ]
               },
@@ -107,11 +108,18 @@
                 ]
               },
               {
+                "group": "How-to",
+                "pages": [
+                  "next/how-to/isolate-workers-with-namespaces"
+                ]
+              },
+              {
                 "group": "Understanding iii",
                 "expanded": false,
                 "pages": [
                   "next/understanding-iii/index",
                   "next/understanding-iii/engine",
+                  "next/understanding-iii/namespaces",
                   "next/understanding-iii/channels"
                 ]
               },

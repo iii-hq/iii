@@ -1,0 +1,232 @@
+---
+title: "Isolate workers with namespaces"
+description:
+  "Run two workers that share a name on one engine by declaring a namespace, then call and inspect
+  across namespaces."
+owner: "devrel"
+type: "how-to"
+---
+
+Use this when two projects on one engine both want the same worker name or the same function id, and
+neither can rename. Declaring a namespace scopes each worker's registrations so they coexist.
+
+<Note>
+  For why routing is strict and why a collision is refused rather than overwritten, see
+  [Namespaces](../understanding-iii/namespaces).
+</Note>
+
+## Declare the worker's namespace
+
+Pass `namespace` when registering the worker. The SDK resolves it in this order: the explicit option,
+then the `III_NAMESPACE` environment variable, then nothing at all, in which case the engine files
+the worker under `default`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL!, {
+      workerName: "state",
+      namespace: "orders",
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="state", namespace="orders"),
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{InitOptions, register_worker};
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Browser">
+    ```typescript
+    import { registerWorker } from "iii-browser-sdk";
+
+    const worker = registerWorker("ws://localhost:49135", {
+      workerName: "checkout-tab",
+      namespace: "orders",
+    });
+    ```
+
+  </Tab>
+</Tabs>
+
+<Warning>
+  The browser SDK has no environment to read, so `namespace` must be passed explicitly there.
+</Warning>
+
+Every function, service, and trigger type this worker registers now lands in `orders`. A second
+worker can register `state` in `analytics` on the same engine without either one displacing the
+other.
+
+## Namespace a worker iii starts for you
+
+Managed workers pick the value up from `III_NAMESPACE`, so set it in the worker's `iii.worker.yaml`
+manifest:
+
+```yaml iii.worker.yaml
+env:
+  III_NAMESPACE: orders
+```
+
+A worker whose manifest you don't control inherits `III_NAMESPACE` from the environment the engine
+runs in, which namespaces every managed worker in that project at once. There is no per-worker
+`namespace:` key in `config.yaml`.
+
+## Call a function in another namespace
+
+Set `namespace` on the invocation. Resolution is strict: the call resolves in the namespace you name
+and nowhere else, and omitting it means `default` rather than "the namespace I registered in".
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const result = await worker.trigger({
+      function_id: "state::get",
+      payload: { key: "cart" },
+      namespace: "orders",
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = worker.trigger({
+        "function_id": "state::get",
+        "payload": {"key": "cart"},
+        "namespace": "orders",
+    })
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::TriggerRequest;
+    use serde_json::json;
+
+    let result = worker
+        .trigger(
+            TriggerRequest {
+                function_id: "state::get".into(),
+                payload: json!({ "key": "cart" }),
+                action: None,
+                timeout_ms: None,
+            }
+            .namespace("orders"),
+        )
+        .await?;
+    ```
+  </Tab>
+</Tabs>
+
+A call that misses returns `function_not_found` naming the namespaces where the id does exist, which
+is usually enough to spot a call that should have carried a namespace and didn't.
+
+<Warning>
+  `iii trigger` has no namespace flag, so it reaches `default` only. Invoke through an SDK to target
+  another namespace.
+</Warning>
+
+## Point a trigger at a namespaced function
+
+The typed helpers returned by `registerTriggerType` pair a function with its trigger, so they bind
+the trigger in the worker's own namespace automatically. The low-level `registerTrigger` does not:
+it takes an explicit `namespace`, and leaving it out fires the target in `default`.
+
+```typescript
+worker.registerTrigger({
+  type: "http",
+  function_id: "state::get",
+  config: { api_path: "/orders/state", http_method: "GET" },
+  namespace: "orders",
+});
+```
+
+## See which namespace something landed in
+
+Every function and worker row returned by the engine's discovery functions carries a `namespace`
+field. `engine::workers::info` and `engine::functions::info` also accept a `namespace` in their
+payload to resolve strictly:
+
+```bash
+iii trigger engine::workers::list
+iii trigger engine::workers::info --json '{"name": "state", "namespace": "orders"}'
+```
+
+Without a `namespace`, those two lookups prefer `default`, then resolve a name that exists in exactly
+one non-default namespace, and report an ambiguity naming the candidates when it exists in several.
+The `list` functions take no namespace filter; they return every namespace.
+
+## Handle a rejected registration
+
+When a name is already held by a live worker in the same namespace, the engine refuses the
+registration with a `registrationrejected` frame. The code tells you how bad it is:
+
+| Code                          | Meaning                                                    | Effect                                                              |
+| ----------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- |
+| `WORKER_NAMESPACE_CONFLICT`   | Another live worker holds this worker name in this namespace. | Fatal. The engine closes the connection; the SDK stops and does not reconnect. |
+| `FUNCTION_NAMESPACE_CONFLICT` | Another live worker exports this function id in this namespace. | Only that registration is refused. The worker keeps serving its other functions. |
+
+Read the fatal error to report which identity collided and with whom:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const fatal = worker.getFatalError();
+    if (fatal) {
+      console.error(fatal.code, fatal.namespace, fatal.worker_name, fatal.owner_worker_id);
+    }
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii import RegistrationRejectedError
+
+    try:
+        worker.trigger({"function_id": "state::get", "payload": {}})
+    except RegistrationRejectedError as err:
+        print(err.code, err.namespace, err.worker_name, err.owner_worker_id)
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Error;
+
+    if let Some(Error::RegistrationRejected { code, namespace, worker_name, owner_worker_id }) =
+        worker.fatal_error()
+    {
+        eprintln!("{code}: {worker_name} in {namespace} owned by {owner_worker_id}");
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Fix a `WORKER_NAMESPACE_CONFLICT` by giving one of the two workers a different namespace or a
+different `workerName`. A worker restarting against its own not-yet-cleaned connection does not
+produce this error; the engine lets a restart reclaim its own name.
+
+## Result
+
+Two workers sharing a name run side by side on one engine, each owning its function ids inside its
+own namespace. Calls that name a namespace reach it and only it, calls that name none reach
+`default`, and a name collision fails at registration instead of silently re-routing traffic.

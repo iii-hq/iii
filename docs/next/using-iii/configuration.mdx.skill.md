@@ -121,6 +121,26 @@ without rewriting the stored value. A field that consists of a single placeholde
 schema's scalar type after expansion: `port: ${HTTP_PORT:3111}` validates as the integer `3111`, not
 a string. Pass `raw: true` to `configuration::get` to read the stored template form.
 
+## Registration namespace grace
+
+A connection's namespace arrives on its `engine::workers::register` call, which SDKs send after their
+first registration frames. The engine buffers a connection's registrations until the namespace is
+known, then drains them in arrival order. A worker that never announces one is fixed to `default`
+once a grace period expires.
+
+`iii-worker-manager` registers no configuration schema, so this setting stays in `config.yaml` and is
+read directly on every boot:
+
+```yaml config.yaml
+workers:
+  - name: iii-worker-manager
+    config:
+      registration_namespace_grace_ms: 10000
+```
+
+The default is `5000`. `III_NAMESPACE_GRACE_MS` overrides the configured value at runtime and takes
+precedence over both.
+
 ## How changes apply
 
 Most settings apply the moment they change such as `http`'s CORS, timeout, and port changes. A few
