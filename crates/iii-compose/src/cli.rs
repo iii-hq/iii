@@ -20,6 +20,11 @@ use crate::error::{ComposeError, Result};
 /// Engine address used when neither `--engine` nor `III_URL` is set.
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
+/// Compose file used when `--file` is not given: the one in the current
+/// directory. Running compose from inside a project should not require naming
+/// the file the project is made of.
+pub const DEFAULT_COMPOSE_FILE: &str = "worker-compose.yaml";
+
 #[derive(Args, Debug, Clone)]
 pub struct ComposeCli {
     #[command(subcommand)]
@@ -40,7 +45,8 @@ pub struct ComposeCli {
     #[arg(long, global = true, value_name = "NS")]
     pub namespace: Option<String>,
 
-    /// Path to the worker-compose.yaml this invocation is bound to.
+    /// Compose file this invocation is bound to. Defaults to
+    /// `worker-compose.yaml` in the current directory.
     #[arg(long, short = 'f', global = true, value_name = "PATH")]
     pub file: Option<PathBuf>,
 
@@ -80,10 +86,7 @@ pub enum ComposeCommand {
 impl ComposeCli {
     /// Resolves the invocation, rejecting incomplete flag combinations.
     pub fn plan(&self) -> Result<ComposeCommand> {
-        let file = self
-            .file
-            .clone()
-            .ok_or(ComposeError::MissingFlag { flag: "--file" })?;
+        let file = self.compose_file()?;
 
         match self.action {
             Some(ComposeAction::Validate) => Ok(ComposeCommand::Validate {
@@ -105,6 +108,24 @@ impl ComposeCli {
                 })
             }
         }
+    }
+
+    /// `--file`, else `worker-compose.yaml` in the current directory.
+    ///
+    /// When the default is used and there is no such file, say so directly: the
+    /// operator did not name a path, so reporting one back as "unreadable"
+    /// would answer a question they never asked.
+    fn compose_file(&self) -> Result<PathBuf> {
+        if let Some(file) = &self.file {
+            return Ok(file.clone());
+        }
+        let default = PathBuf::from(DEFAULT_COMPOSE_FILE);
+        if default.is_file() {
+            return Ok(default);
+        }
+        Err(ComposeError::NoComposeFileHere {
+            expected: DEFAULT_COMPOSE_FILE,
+        })
     }
 
     /// `--engine` > `III_URL` > [`DEFAULT_ENGINE_URL`]. The env var is part of

@@ -173,6 +173,12 @@ pub enum ComposeError {
     MissingFlag { flag: &'static str },
 
     #[error(
+        "no {expected} in this directory. Run compose from a project directory, or point it \
+         at one with --file <PATH>"
+    )]
+    NoComposeFileHere { expected: &'static str },
+
+    #[error(
         "daemon supervision is not implemented yet. `iii compose validate --file <PATH>` \
          validates a project offline"
     )]
@@ -217,6 +223,7 @@ impl ComposeError {
             Self::StateBindingMismatch { .. } => "STATE_BINDING_MISMATCH",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
             Self::MissingFlag { .. } => "MISSING_FLAG",
+            Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",
             Self::DaemonNotImplemented => "DAEMON_NOT_IMPLEMENTED",
         }
     }
