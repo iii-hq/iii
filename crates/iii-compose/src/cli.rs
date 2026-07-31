@@ -43,6 +43,12 @@ pub struct ComposeCli {
     /// Path to the worker-compose.yaml this invocation is bound to.
     #[arg(long, short = 'f', global = true, value_name = "PATH")]
     pub file: Option<PathBuf>,
+
+    /// Bring the project up as soon as the daemon connects, then keep serving.
+    /// The daemon exits with a non-zero code if that first `up` fails, which is
+    /// what makes compose usable from a script or a CI job.
+    #[arg(long)]
+    pub up: bool,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -65,6 +71,9 @@ pub enum ComposeCommand {
         file: PathBuf,
         engine_url: String,
         namespace: Option<String>,
+        /// Start the project immediately and fail the process if it does not
+        /// come up.
+        up_on_start: bool,
     },
 }
 
@@ -92,6 +101,7 @@ impl ComposeCli {
                     file,
                     engine_url: self.engine_url(),
                     namespace: self.namespace.clone(),
+                    up_on_start: self.up,
                 })
             }
         }
