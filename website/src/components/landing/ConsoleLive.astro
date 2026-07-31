@@ -110,11 +110,12 @@
 
   @supports (animation-timeline: view()) {
     .ccon-track {
-      /* 140vh of scrub while pinned: ~39vh zooming in, ~38vh held at full
-         screen, ~63vh zooming out. The held band is what a reader pays to
-         leave, so it stays short; the zoom-out ramp can be long because the
-         snap below finishes it about a third of the way in. */
-      height: 240vh;
+      /* 160vh of scrub while pinned: ~61vh zooming in, ~35vh held at full
+         screen, ~64vh zooming out. The zoom reads as a move the reader is
+         making, so each ramp gets real travel. The held band is what they pay
+         to leave with nothing changing on screen, so it stays short, and the
+         snap below finishes the out ramp about a third of the way in. */
+      height: 260vh;
       view-timeline-name: --ccon-track;
       /* The frame renders at 0.62 scale at rest but its layout box is the
          full viewport, so (100dvh - (100dvh - 24px) * 0.62) / 2, i.e.
@@ -147,10 +148,10 @@
     0% {
       transform: scale(0.62);
     }
-    28% {
+    38% {
       transform: scale(1);
     }
-    55% {
+    60% {
       transform: scale(1);
     }
     100% {
@@ -253,6 +254,25 @@
         (dy > 0 ? el.scrollTop < room - slack : el.scrollTop > slack)
       )
     }
+    // The forwarded wheel glides instead of teleporting. Instant scrolling is
+    // required (the page's global smooth scrolling restarts its animation on
+    // every tick and drops most of the distance), so the easing is ours: bank
+    // the delta and pay out a quarter of what is left each frame. Total travel
+    // stays 1:1 with the wheel, it just lands the way the rest of the page
+    // moves rather than in hard steps.
+    let banked = 0
+    let frame = 0
+    const flush = () => {
+      const step = Math.abs(banked) < 2 ? banked : banked * 0.25
+      banked -= step
+      window.scrollBy({ top: step, behavior: 'instant' })
+      frame = banked ? requestAnimationFrame(flush) : 0
+    }
+    const glide = (dy: number) => {
+      banked += dy
+      if (!frame) frame = requestAnimationFrame(flush)
+    }
+
     iframe.addEventListener('load', () => {
       iframe.contentDocument?.addEventListener(
         'wheel',
@@ -267,16 +287,7 @@
           if (!dy) return
           for (let el = e.target as Element | null; el; el = el.parentElement)
             if (canScroll(el, dy)) return
-          // 1:1, both directions: the wheel moves the page exactly as it does
-          // anywhere else. The demo contains its scrollports, so this handoff
-          // has to be manual.
-          //
-          // Instant, against the page's global smooth scrolling: a smooth
-          // scrollBy per wheel tick restarts its animation from wherever the
-          // last one reached, so most of the distance is dropped and the wheel
-          // feels like it is barely moving the page. That loss, not the rate,
-          // was what made leaving feel slow.
-          window.scrollBy({ top: dy, behavior: 'instant' })
+          glide(dy)
         },
         { passive: true },
       )
@@ -360,8 +371,8 @@
     const REST = 0.62
     const MID = (REST + 1) / 2
     const RAMPS = [
-      [0, 0.28], // zooming in
-      [1, 0.55], // zooming out
+      [0, 0.38], // zooming in
+      [1, 0.6], // zooming out
     ]
     const span = () => track.getBoundingClientRect().height - window.innerHeight
     let idle: ReturnType<typeof setTimeout>
@@ -384,8 +395,10 @@
     window.addEventListener(
       'scroll',
       () => {
+        // Lazy on purpose: at 120ms the completion landed on top of a reader
+        // who had merely paused, which read as the page grabbing the scroll.
         clearTimeout(idle)
-        idle = setTimeout(settle, 120)
+        idle = setTimeout(settle, 260)
       },
       { passive: true },
     )
