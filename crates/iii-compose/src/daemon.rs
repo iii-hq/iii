@@ -111,16 +111,21 @@ impl Daemon {
         for (key, record) in recorded {
             match reconcile(&record) {
                 Reconciliation::Adopt => {
-                    tracing_line(&format!(
-                        "[compose:{}] {key} survived (pid {}), still recorded as ready",
-                        self.id, record.pid
-                    ));
+                    daemon_line(
+                        &self.id,
+                        &format!(
+                            "{key} survived (pid {}), still recorded as ready",
+                            record.pid
+                        ),
+                        Tone::Plain,
+                    );
                 }
                 Reconciliation::Gone => {
-                    tracing_line(&format!(
-                        "[compose:{}] {key} exited while the daemon was away",
-                        self.id
-                    ));
+                    daemon_line(
+                        &self.id,
+                        &format!("{key} exited while the daemon was away"),
+                        Tone::Warn,
+                    );
                     if let Some(entry) = inner.state.containers.get_mut(&key) {
                         entry.status = ChildStatus::Failed;
                         entry.last_error = Some("exited while the daemon was away".to_string());
@@ -128,11 +133,15 @@ impl Daemon {
                 }
                 Reconciliation::Unverifiable => {
                     // Never signalled: the pid is alive but unproven.
-                    tracing_line(&format!(
-                        "[compose:{}] {key}: pid {} is alive but is not provably ours; \
-                         left running for manual cleanup",
-                        self.id, record.pid
-                    ));
+                    daemon_line(
+                        &self.id,
+                        &format!(
+                            "{key}: pid {} is alive but is not provably ours; left running \
+                             for manual cleanup",
+                            record.pid
+                        ),
+                        Tone::Warn,
+                    );
                     if let Some(entry) = inner.state.containers.get_mut(&key) {
                         entry.status = ChildStatus::Failed;
                         entry.last_error =
@@ -268,6 +277,8 @@ pub struct ContainerStatus {
 /// operator watching the daemon sees a project that silently never came up.
 /// Successful operations stay quiet — the caller already knows.
 pub fn report_failure(result: &OpResult) {
+    use colored::Colorize;
+
     if result.status != lifecycle::OpStatus::Failed {
         return;
     }
@@ -278,22 +289,29 @@ pub fn report_failure(result: &OpResult) {
         .find_map(|container| container.error.as_ref())
         .map(|error| error.code.as_str())
         .unwrap_or("UP_FAILED");
-    eprintln!("error[{code}] up failed:");
+    eprintln!(
+        "{} {}",
+        format!("error[{code}]").red().bold(),
+        "up failed:".red()
+    );
 
     for container in &result.containers {
         match &container.error {
             // The error's own Display already names the container; printing it
             // twice reads like two different things went wrong.
             Some(error) => eprintln!(
-                "  {}: {}",
-                container.container,
-                strip_container_prefix(&error.message, &container.container)
+                "  {} {}",
+                format!("{}:", container.container).bold(),
+                strip_container_prefix(&error.message, &container.container).red()
             ),
             // Everything this operation had started is undone; saying so is
-            // the difference between "it is down" and "it was never up".
-            None if container.state == ChildStatus::Stopped => {
-                eprintln!("  {}: rolled back", container.container)
-            }
+            // the difference between "it is down" and "it was never up". Amber,
+            // not red: nothing went wrong with this one.
+            None if container.state == ChildStatus::Stopped => eprintln!(
+                "  {} {}",
+                format!("{}:", container.container).bold(),
+                "rolled back".yellow()
+            ),
             None => {}
         }
     }
@@ -306,7 +324,20 @@ fn strip_container_prefix<'a>(message: &'a str, container: &str) -> &'a str {
     message.strip_prefix(&prefix).unwrap_or(message)
 }
 
+/// Severity of a daemon log line. Amber means "look at this", not "it broke".
+enum Tone {
+    Plain,
+    Warn,
+}
+
 /// The daemon runs in the foreground; its log is stderr, like its children's.
-fn tracing_line(message: &str) {
-    eprintln!("{message}");
+/// The `[compose:<id>]` prefix is dimmed so a project's own output stays the
+/// thing that stands out.
+fn daemon_line(id: &str, message: &str, tone: Tone) {
+    use colored::Colorize;
+    let prefix = format!("[compose:{id}]").dimmed();
+    match tone {
+        Tone::Plain => eprintln!("{prefix} {message}"),
+        Tone::Warn => eprintln!("{prefix} {}", message.yellow()),
+    }
 }
