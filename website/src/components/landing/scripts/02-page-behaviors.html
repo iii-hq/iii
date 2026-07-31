@@ -71,23 +71,36 @@
     });
   });
 
-  // ============= Hero rotating descriptor =============
-  const rotatingDescriptors = [
-    'simple','scalable','durable','extensible','fast',
-    'composable','observable','reliable','interoperable'
-  ];
-  const heroDesc = document.getElementById('hero-desc');
-  if (heroDesc){
-    let rotIdx = 0;
-    setInterval(() => {
-      heroDesc.classList.add('is-anim');
+  // ============= Hero rotating descriptors =============
+  // The headline reads "an agentic development environment" on arrival and
+  // holds it long enough to be read as a claim before anything starts moving.
+  const HERO_HOLD_MS = 10000;
+  function rotateWords(el, words, period){
+    if (!el) return;
+    let i = 0;
+    const tick = () => {
+      el.classList.add('is-anim');
       setTimeout(() => {
-        rotIdx = (rotIdx + 1) % rotatingDescriptors.length;
-        heroDesc.textContent = rotatingDescriptors[rotIdx];
-        heroDesc.classList.remove('is-anim');
+        i = (i + 1) % words.length;
+        el.textContent = words[i];
+        el.classList.remove('is-anim');
       }, 400);
-    }, 3000);
+    };
+    setTimeout(() => { tick(); setInterval(tick, period); }, HERO_HOLD_MS);
   }
+  // Two carousels on one headline. The subject turns slowly, and its period is
+  // not a multiple of the noun's, so the two keep landing on fresh pairings.
+  rotateWords(document.getElementById('hero-desc'), [
+    'development','production','testing','staging','debugging',
+    'orchestration','integration','deployment'
+  ], 3000);
+  // Held back with its markup in 03-hero.html — three rotating lines at once
+  // is too much motion. rotateWords no-ops on the missing element either way.
+  // rotateWords(document.getElementById('hero-for'), [
+  //   'building','architecting','experimenting','vibing','shipping',
+  //   'prototyping','refactoring','exploring'
+  // ], 5000);
+  rotateWords(document.getElementById('hero-subj'), ['an agentic','a human'], 8000);
 
   // ============= Email signup helpers =============
   function getMailmodoFormUrl(){
