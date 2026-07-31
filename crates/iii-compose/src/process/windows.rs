@@ -61,12 +61,43 @@ pub struct Supervised {
 
 /// Spawns `command` in its own job and console process group, and starts
 /// reaping it.
-pub fn spawn_supervised(mut command: tokio::process::Command) -> std::io::Result<Supervised> {
+pub fn spawn_supervised(command: tokio::process::Command) -> std::io::Result<Supervised> {
+    spawn_supervised_inner(command, false).map(|(child, _)| child)
+}
+
+/// Same, but with the child's stdout and stderr piped back instead of inherited,
+/// so compose can own the `[container]` tag on its output.
+pub fn spawn_supervised_piped(
+    command: tokio::process::Command,
+) -> std::io::Result<(Supervised, ChildOutput)> {
+    spawn_supervised_inner(command, true)
+}
+
+/// The child's output streams, when they were piped.
+#[derive(Debug, Default)]
+pub struct ChildOutput {
+    pub stdout: Option<tokio::process::ChildStdout>,
+    pub stderr: Option<tokio::process::ChildStderr>,
+}
+
+fn spawn_supervised_inner(
+    mut command: tokio::process::Command,
+    piped: bool,
+) -> std::io::Result<(Supervised, ChildOutput)> {
     // Its own console group: CTRL_BREAK can then be aimed at the child alone,
     // rather than at every process sharing the daemon's console.
     command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    if piped {
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+    }
 
     let mut child = command.spawn()?;
+    let output = ChildOutput {
+        stdout: child.stdout.take(),
+        stderr: child.stderr.take(),
+    };
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("child exited before its pid could be read"))?;
@@ -93,12 +124,15 @@ pub fn spawn_supervised(mut command: tokio::process::Command) -> std::io::Result
         let _ = tx.send(Some(status.unwrap_or_else(|_| exited_unknown())));
     });
 
-    Ok(Supervised {
-        pid,
-        birth: birth_identity(pid),
-        job,
-        exit,
-    })
+    Ok((
+        Supervised {
+            pid,
+            birth: birth_identity(pid),
+            job,
+            exit,
+        },
+        output,
+    ))
 }
 
 impl Supervised {

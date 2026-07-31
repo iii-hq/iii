@@ -32,11 +32,44 @@ pub struct Supervised {
 /// The caller must not have taken the child's exit status elsewhere: this
 /// function owns the reaping so that `stop` and `exit_watch` observe the same
 /// event.
-pub fn spawn_supervised(mut command: tokio::process::Command) -> std::io::Result<Supervised> {
+pub fn spawn_supervised(command: tokio::process::Command) -> std::io::Result<Supervised> {
+    spawn_supervised_inner(command, false).map(|(child, _)| child)
+}
+
+/// Same, but with the child's stdout and stderr piped back instead of inherited.
+///
+/// Compose owns the prefix on a child's output: a worker should not have to
+/// print its own name to be identifiable in a project of five.
+pub fn spawn_supervised_piped(
+    command: tokio::process::Command,
+) -> std::io::Result<(Supervised, ChildOutput)> {
+    spawn_supervised_inner(command, true)
+}
+
+/// The child's output streams, when they were piped.
+#[derive(Debug, Default)]
+pub struct ChildOutput {
+    pub stdout: Option<tokio::process::ChildStdout>,
+    pub stderr: Option<tokio::process::ChildStderr>,
+}
+
+fn spawn_supervised_inner(
+    mut command: tokio::process::Command,
+    piped: bool,
+) -> std::io::Result<(Supervised, ChildOutput)> {
     // Group leader: killpg then reaches the worker and everything it spawns.
     command.process_group(0);
+    if piped {
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+    }
 
     let mut child = command.spawn()?;
+    let output = ChildOutput {
+        stdout: child.stdout.take(),
+        stderr: child.stderr.take(),
+    };
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("child exited before its pid could be read"))?;
@@ -49,12 +82,15 @@ pub fn spawn_supervised(mut command: tokio::process::Command) -> std::io::Result
         let _ = tx.send(Some(status.unwrap_or_else(|_| exited_unknown())));
     });
 
-    Ok(Supervised {
-        pid,
-        pgid: pid as i32,
-        birth: birth_identity(pid),
-        exit,
-    })
+    Ok((
+        Supervised {
+            pid,
+            pgid: pid as i32,
+            birth: birth_identity(pid),
+            exit,
+        },
+        output,
+    ))
 }
 
 impl Supervised {
