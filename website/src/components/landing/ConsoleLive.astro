@@ -354,11 +354,11 @@
     ).observe(stage)
 
     // No resting half-zoomed: when the scroll stops inside a ramp the zoom
-    // finishes itself, to whichever end is nearer — past 0.8 scale it goes
-    // full screen, under it goes back to rest. Both figures and the two ramp
-    // positions come from the ccon-zoom keyframes; each pair is
+    // finishes itself, to whichever end is nearer in scale. The rest scale and
+    // the two ramp positions come from the ccon-zoom keyframes; each pair is
     // [rest-scale progress, full-screen progress].
     const REST = 0.62
+    const MID = (REST + 1) / 2
     const RAMPS = [
       [0, 0.28], // zooming in
       [1, 0.55], // zooming out
@@ -375,7 +375,7 @@
         if (p <= Math.min(small, full) || p >= Math.max(small, full)) continue
         const scale = REST + (1 - REST) * ((p - small) / (full - small))
         window.scrollTo({
-          top: window.scrollY + r.top + (scale > 0.8 ? full : small) * span(),
+          top: window.scrollY + r.top + (scale > MID ? full : small) * span(),
           behavior: 'smooth',
         })
         return
