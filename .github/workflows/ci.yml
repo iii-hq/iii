@@ -394,6 +394,9 @@ jobs:
           MIRROR=http://azure.ports.ubuntu.com/ubuntu-ports/
           echo "deb [arch=arm64] $MIRROR $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] $MIRROR $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          # libc6 is multi-arch and must match the security-patched version
+          # already installed for amd64 on the runner.
+          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs)-security main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
           # The amd64 cross toolchain is already indexed on the runner image, so
           # install it directly (full `apt-get update` only as a fallback).
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
