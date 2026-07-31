@@ -170,6 +170,9 @@ impl Daemon {
         let snapshot = state.clone();
         drop(inner);
         let _ = self.store.save(&snapshot);
+        // The caller of a remote `up` gets the structured result, but whoever
+        // is watching the daemon's terminal gets nothing unless we say it here.
+        report_failure(&result);
         result
     }
 
@@ -257,6 +260,50 @@ pub struct ContainerStatus {
     pub owned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+}
+
+/// Prints a failed operation to the daemon's own terminal.
+///
+/// A remote `compose::up` answers the caller and nobody else. Without this, an
+/// operator watching the daemon sees a project that silently never came up.
+/// Successful operations stay quiet — the caller already knows.
+pub fn report_failure(result: &OpResult) {
+    if result.status != lifecycle::OpStatus::Failed {
+        return;
+    }
+
+    let code = result
+        .containers
+        .iter()
+        .find_map(|container| container.error.as_ref())
+        .map(|error| error.code.as_str())
+        .unwrap_or("UP_FAILED");
+    eprintln!("error[{code}] up failed:");
+
+    for container in &result.containers {
+        match &container.error {
+            // The error's own Display already names the container; printing it
+            // twice reads like two different things went wrong.
+            Some(error) => eprintln!(
+                "  {}: {}",
+                container.container,
+                strip_container_prefix(&error.message, &container.container)
+            ),
+            // Everything this operation had started is undone; saying so is
+            // the difference between "it is down" and "it was never up".
+            None if container.state == ChildStatus::Stopped => {
+                eprintln!("  {}: rolled back", container.container)
+            }
+            None => {}
+        }
+    }
+}
+
+/// Drops a leading `container '<name>': ` from a message that is already being
+/// printed under that container's name.
+fn strip_container_prefix<'a>(message: &'a str, container: &str) -> &'a str {
+    let prefix = format!("container '{container}': ");
+    message.strip_prefix(&prefix).unwrap_or(message)
 }
 
 /// The daemon runs in the foreground; its log is stderr, like its children's.

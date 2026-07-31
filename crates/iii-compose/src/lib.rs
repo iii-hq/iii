@@ -73,7 +73,8 @@ pub async fn run(cli: ComposeCli) -> i32 {
             file,
             engine_url,
             namespace,
-        } => match run_daemon(id, &file, engine_url, namespace.as_deref()).await {
+            up_on_start,
+        } => match run_daemon(id, &file, engine_url, namespace.as_deref(), up_on_start).await {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -90,6 +91,7 @@ async fn run_daemon(
     file: &std::path::Path,
     engine_url: String,
     namespace: Option<&str>,
+    up_on_start: bool,
 ) -> Result<()> {
     let compose = ComposeFile::load(file)?;
     // Validate before announcing: a daemon that is serving `compose::up` for a
@@ -109,6 +111,20 @@ async fn run_daemon(
         "  reach it with: iii trigger compose::status --namespace {}",
         daemon.id
     );
+
+    // `--up` makes the daemon a one-shot: bring the project up, and if that
+    // fails there is nothing left to supervise, so stop with a non-zero code
+    // instead of idling over a project that never started.
+    if up_on_start {
+        let result = daemon.up(None, "startup".to_string()).await;
+        if result.status == lifecycle::OpStatus::Failed {
+            daemon.shutdown().await;
+            return Err(ComposeError::UpFailed {
+                operation_id: result.operation_id,
+            });
+        }
+        println!("started {} container(s)", result.containers.len());
+    }
 
     // Serve until asked to stop, or until the engine refuses this identity.
     //

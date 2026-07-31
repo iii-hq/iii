@@ -49,6 +49,7 @@ iii compose [OPTIONS] [COMMAND]
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
 | `--namespace <NS>` | Namespace the project's workers register under. Defaults to a deterministic namespace derived from the project name and compose path |
 | `-f, --file <PATH>` | Path to the worker-compose.yaml this invocation is bound to |
+| `--up` | Bring the project up as soon as the daemon connects, then keep serving. The daemon exits with a non-zero code if that first `up` fails, which is what makes compose usable from a script or a CI job |
 
 #### `iii compose validate`
 
