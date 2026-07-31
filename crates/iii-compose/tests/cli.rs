@@ -53,6 +53,7 @@ fn daemon_mode_resolves_id_file_and_engine() {
             file: PathBuf::from("/srv/app/worker-compose.yaml"),
             engine_url: "wss://engine.example".to_string(),
             namespace: None,
+            up_on_start: false,
         }
     );
 }
@@ -110,4 +111,34 @@ fn an_explicit_engine_beats_the_environment() {
     assert_eq!(from_flag, "ws://from-flag:2");
     assert_eq!(from_env, "ws://from-env:1");
     assert_eq!(from_default, "ws://127.0.0.1:49134");
+}
+
+/// `--up` is what makes compose usable from a script: bring the project up and
+/// fail the process if it does not come up.
+#[test]
+fn the_up_flag_is_carried_into_daemon_mode() {
+    let plain = parse(&["iii", "compose", "--id", "host-a", "--file", "c.yaml"])
+        .plan()
+        .unwrap();
+    let one_shot = parse(&[
+        "iii", "compose", "--id", "host-a", "--file", "c.yaml", "--up",
+    ])
+    .plan()
+    .unwrap();
+
+    match (plain, one_shot) {
+        (
+            ComposeCommand::Daemon {
+                up_on_start: plain, ..
+            },
+            ComposeCommand::Daemon {
+                up_on_start: one_shot,
+                ..
+            },
+        ) => {
+            assert!(!plain, "a daemon without --up must not start anything");
+            assert!(one_shot);
+        }
+        _ => panic!("expected daemon mode"),
+    }
 }
