@@ -140,6 +140,7 @@ async fn async_main() -> anyhow::Result<()> {
                                 source: remote_source_for_cli(name, host),
                                 force,
                                 reset_config: args.reset_config,
+                                yes: args.yes,
                                 wait: !no_wait,
                             },
                         )
@@ -179,6 +180,7 @@ async fn async_main() -> anyhow::Result<()> {
                     source,
                     force,
                     reset_config: args.reset_config,
+                    yes: args.yes,
                     wait: !no_wait,
                 };
 
@@ -278,6 +280,7 @@ async fn async_main() -> anyhow::Result<()> {
                                 source: remote_source_for_cli(name, host),
                                 force: true,
                                 reset_config: args.reset_config,
+                                yes: args.yes,
                                 wait: false,
                             },
                         )
@@ -295,6 +298,7 @@ async fn async_main() -> anyhow::Result<()> {
                     source: parse_source_for_cli(name),
                     force: true,
                     reset_config: args.reset_config,
+                    yes: args.yes,
                     wait: false,
                 };
 

@@ -156,6 +156,7 @@ mod tests {
             },
             force: false,
             reset_config: false,
+            yes: false,
             wait: false,
         };
         let outcome = shim.add(opts, &ctx, &NullSink).await.unwrap();

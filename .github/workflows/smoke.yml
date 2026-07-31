@@ -63,6 +63,19 @@ jobs:
             fi
           }
 
+          # Exact single-token headers: a substring check would pass a merged
+          # duplicate like "DENY, SAMEORIGIN".
+          assert_header_equals() {
+            local path="$1" header="$2" expected="$3"
+            local value
+            value=$(curl -sSI "$BASE_URL$path" | awk -v h="$header" 'BEGIN{IGNORECASE=1} tolower($1)==tolower(h)":" {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            if [ "$(printf '%s' "$value" | tr '[:lower:]' '[:upper:]')" = "$(printf '%s' "$expected" | tr '[:lower:]' '[:upper:]')" ]; then
+              pass "$path header '$header' = '$value'"
+            else
+              fail "$path header '$header' expected exactly '$expected', got '$value'"
+            fi
+          }
+
           echo "Smoke testing $BASE_URL"
           echo
 
@@ -71,11 +84,19 @@ jobs:
           assert_header_contains "/" "strict-transport-security" "max-age"
           assert_header_contains "/" "x-content-type-options" "nosniff"
 
-          # /docs redirects preserve the /docs prefix (Mintlify serves only under /docs/*)
-          assert_redirect_to "/docs" "https://docs.iii.dev/docs"
-          assert_redirect_to "/docs/quickstart" "https://docs.iii.dev/docs/quickstart"
+          # /docs* is proxied to the docs origin on the same domain (no redirect)
+          assert_status "/docs" 200
+          assert_header_contains "/docs" "content-type" "text/html"
+          assert_status "/docs/quickstart" 200
 
-          assert_status "/llms.txt" 404
+          # llms.txt / AGENTS.md are generated into every deploy on purpose
+          assert_status "/llms.txt" 200
+          assert_status "/AGENTS.md" 200
+
+          # The landing page iframes its own console demo — X-Frame-Options
+          # DENY would make the browser refuse to render it
+          assert_status "/console-demo/index.html" 200
+          assert_header_equals "/console-demo/index.html" "x-frame-options" "SAMEORIGIN"
 
           # /api/search must return JSON, not HTML — catches SPA fallback leaking into /api/*
           content_type=$(curl -sSI "$BASE_URL/api/search?q=test" | awk 'BEGIN{IGNORECASE=1} /^content-type:/ {for(i=2;i<=NF;i++) printf "%s ", $i; print ""}' | tr -d '\r' | head -1)
@@ -87,7 +108,10 @@ jobs:
 
           assert_status "/this-file-does-not-exist.jpg" 404
 
-          assert_status "/some/client/route" 200
+          # Unknown extensionless paths are a real 404 by design (see
+          # cloudfront_functions/redirects.js — the old SPA fallback served
+          # homepage HTML as 200 and Google indexed it as soft duplicates)
+          assert_status "/some/client/route" 404
           assert_header_contains "/some/client/route" "content-type" "text/html"
 
           echo

@@ -192,7 +192,17 @@ fn add_subcommand_fields() {
                 vec!["ghcr.io/iii-hq/node:latest".to_string()]
             );
             assert!(!force);
+            assert!(!args.yes);
         }
+        _ => panic!("expected Add"),
+    }
+}
+
+#[test]
+fn add_subcommand_accepts_yes_for_large_dependency_graphs() {
+    let cli = Cli::parse_from(["iii-worker", "add", "large-worker", "--yes"]);
+    match cli.command {
+        Commands::Add { args, .. } => assert!(args.yes),
         _ => panic!("expected Add"),
     }
 }

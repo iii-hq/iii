@@ -469,6 +469,8 @@ pub async fn handle_local_add(
     reset_config: bool,
     brief: bool,
     wait: bool,
+    assume_yes: bool,
+    can_prompt: bool,
 ) -> i32 {
     // 1. Resolve path to absolute
     let project_path = match std::fs::canonicalize(path) {
@@ -614,21 +616,64 @@ pub async fn handle_local_add(
         return 1;
     }
 
-    // 5. Check if already exists in config.yaml
-    if super::config_file::worker_exists(&worker_name) {
-        if !force {
-            eprintln!(
-                "{} Worker '{}' is already in config.yaml.\n  \
-                 Fix options:\n    \
-                   - Keep it: `iii worker status {}` to see how it's doing.\n    \
-                   - Replace it: rerun with --force (stops VM, clears artifacts).\n    \
-                   - Wipe the config entry too: --force --reset-config.",
-                "error:".red(),
-                worker_name,
-                worker_name
-            );
-            return 1;
-        }
+    // 5. Reject a duplicate before doing registry work unless this is an
+    // explicit replacement.
+    let worker_exists = super::config_file::worker_exists(&worker_name);
+    if worker_exists && !force {
+        eprintln!(
+            "{} Worker '{}' is already in config.yaml.\n  \
+             Fix options:\n    \
+               - Keep it: `iii worker status {}` to see how it's doing.\n    \
+               - Replace it: rerun with --force (stops VM, clears artifacts).\n    \
+               - Wipe the config entry too: --force --reset-config.",
+            "error:".red(),
+            worker_name,
+            worker_name
+        );
+        return 1;
+    }
+
+    // 5a. Parse, resolve, validate, and confirm every declared dependency
+    // before --force is allowed to stop the existing worker or delete its
+    // artifacts. Installation remains after cleanup, but it consumes this
+    // already-approved graph instead of resolving or prompting again.
+    let declared_deps = match manifest_doc.as_ref() {
+        Some(doc) => match super::project::manifest_dependencies_from_doc(doc) {
+            Ok(deps) => deps,
+            Err(e) => {
+                eprintln!(
+                    "{} {} in {}\n  \
+                     Fix: correct the `dependencies:` block and rerun \
+                     `iii worker add {}`.",
+                    "error:".red(),
+                    e,
+                    manifest_path.display(),
+                    path,
+                );
+                return 1;
+            }
+        },
+        None => std::collections::BTreeMap::new(),
+    };
+    let prepared_dependencies =
+        match super::managed::prepare_manifest_dependencies(&declared_deps, assume_yes, can_prompt)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                eprintln!(
+                    "{} {}\n  \
+                     No worker state was changed. Rerun `iii worker add {}` \
+                     after fixing the failure.",
+                    "error:".red(),
+                    e,
+                    path,
+                );
+                return 1;
+            }
+        };
+
+    if worker_exists {
         // --force: stop if running, clear artifacts
         if super::managed::is_worker_running(&worker_name) {
             eprintln!("  Stopping running worker {}...", worker_name.bold());
@@ -676,32 +721,12 @@ pub async fn handle_local_add(
         }
     }
 
-    // 5b. Resolve + install declared manifest dependencies BEFORE we touch
-    //     config.yaml. A failure here leaves the local worker NOT in
-    //     config.yaml and iii.lock unchanged — retry is just retry, no
-    //     `--force` dance required. This is load-bearing: reversing this
-    //     order recreates the "already in config.yaml" rerun trap.
-    //     Parsed from the single manifest doc read in step 3a.
-    let declared_deps = match manifest_doc.as_ref() {
-        Some(doc) => match super::project::manifest_dependencies_from_doc(doc) {
-            Ok(deps) => deps,
-            Err(e) => {
-                eprintln!(
-                    "{} {} in {}\n  \
-                     Fix: correct the `dependencies:` block and rerun \
-                     `iii worker add {}`.",
-                    "error:".red(),
-                    e,
-                    manifest_path.display(),
-                    path,
-                );
-                return 1;
-            }
-        },
-        None => std::collections::BTreeMap::new(),
-    };
-    if !declared_deps.is_empty()
-        && let Err(e) = super::managed::install_manifest_dependencies(&declared_deps, brief).await
+    // 5b. Install the graph approved above before appending the local worker
+    // to config.yaml. New adds retain the all-or-nothing behavior; force adds
+    // may now mutate only after resolution, validation, and consent succeed.
+    if let Some(prepared) = prepared_dependencies
+        && let Err(e) =
+            super::managed::install_prepared_manifest_dependencies(prepared, brief).await
     {
         eprintln!(
             "{} {}\n  \
@@ -1855,6 +1880,8 @@ resources:
             /*reset_config=*/ false,
             /*brief=*/ false,
             /*wait=*/ false,
+            /*assume_yes=*/ false,
+            /*can_prompt=*/ false,
         )
         .await;
 

@@ -239,6 +239,23 @@ pub fn classify_handler_error(rc: i32, captured: &str, op: &str, name_hint: &str
         return WorkerOpError::not_found(name);
     }
 
+    if lower.contains("requires confirmation")
+        || lower.contains("pass yes:true")
+        || lower.contains("pass --yes")
+    {
+        return WorkerOpError::ConsentRequired { op: op.to_string() };
+    }
+
+    if lower == "operation cancelled" {
+        return WorkerOpError::Cancelled;
+    }
+
+    if let Some(reason) = detail.strip_prefix("dependency graph is invalid: ") {
+        return WorkerOpError::DependencyGraphInvalid {
+            reason: reason.to_string(),
+        };
+    }
+
     // Everything else stays as W900 but without the "(rc N)" leak.
     let msg = if detail.is_empty() {
         format!("iii worker {op} exited with rc {rc}")
@@ -443,6 +460,11 @@ impl WorkerHostShim for CliHostShim {
         let force = opts.force;
         let reset_config = opts.reset_config;
         let wait = opts.wait;
+        let assume_yes = opts.yes;
+        let can_prompt = {
+            use std::io::IsTerminal as _;
+            std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+        };
         // Snapshot config workers BEFORE the install so we can diff and
         // recover the canonical worker name on success. For OCI installs
         // `source_label_name` returns a raw reference, which lockfile
@@ -462,15 +484,19 @@ impl WorkerHostShim for CliHostShim {
                     reset_config,
                     brief,
                     wait,
+                    assume_yes,
+                    can_prompt,
                 )
                 .await
             } else {
-                crate::cli::managed::handle_managed_add(
+                crate::cli::managed::handle_managed_add_with_consent(
                     &image_or_name_clone,
                     brief,
                     force,
                     reset_config,
                     wait,
+                    assume_yes,
+                    can_prompt,
                 )
                 .await
             }
@@ -1113,6 +1139,34 @@ mod tests {
         assert_eq!(err.kind(), WorkerOpErrorKind::InvalidName);
         // Must not say "internal:" anymore.
         assert!(!err.to_string().contains("internal:"));
+    }
+
+    #[test]
+    fn classify_handler_error_maps_large_graph_consent_to_w104() {
+        let err = classify_handler_error(
+            1,
+            "error: \"install large dependency graph\" requires confirmation: pass yes:true\n",
+            "add",
+            "large-worker",
+        );
+        assert_eq!(err.kind(), WorkerOpErrorKind::ConsentRequired);
+    }
+
+    #[test]
+    fn classify_handler_error_maps_declined_prompt_to_w170() {
+        let err = classify_handler_error(1, "error: operation cancelled\n", "add", "large-worker");
+        assert_eq!(err.kind(), WorkerOpErrorKind::Cancelled);
+    }
+
+    #[test]
+    fn classify_handler_error_maps_invalid_graph_to_w184() {
+        let err = classify_handler_error(
+            1,
+            "error: dependency graph is invalid: dependency cycle detected involving: a, b\n",
+            "add",
+            "cycle-worker",
+        );
+        assert_eq!(err.kind(), WorkerOpErrorKind::DependencyGraphInvalid);
     }
 
     #[test]

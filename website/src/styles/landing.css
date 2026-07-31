@@ -83,10 +83,12 @@
 
   .sheet{
     position:relative;
-    width:min(1200px, 100%);
+    width:min(1440px, 100%);
     background: var(--bg);
     padding:0 0 44px;
     border:1px solid var(--rule);
+    border-left:0;
+    border-right:0;
   }
   .sheet > *{position:relative; z-index:1}
 
@@ -99,7 +101,7 @@
   .hero-grid-bg{ display:none; }
   .hero-inner{
     position:relative;
-    max-width:1216px; margin:0 auto;
+    margin:0 auto;
     display:grid;
     grid-template-columns: 1fr 1fr;
     gap:64px;
@@ -861,7 +863,7 @@
 
   /* Sequencer frame (replaces the dark Slack-like card) */
   .seq{
-    max-width:1216px; margin:0 auto;
+    margin:0 auto;
     border:1px solid var(--rule);
     background:var(--bg);
     display:flex; flex-direction:column;
@@ -3575,7 +3577,7 @@
   /* Frame container — same width vocabulary as .seq / .hero-viz, but without
      the bordered card chrome — the animation sits naked in the section. */
   .agent-frame{
-    max-width:1216px; margin:0 auto;
+    margin:0 auto;
     background:transparent;
     display:flex; flex-direction:column;
     position:relative;

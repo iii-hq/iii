@@ -35,6 +35,7 @@ test('every surface emits its entry page and static assets', () => {
     'favicon.svg',
     'og-image.png',
     'posthog-consent.js',
+    'console-demo/index.html',
     'fonts/ChivoMono-VariableFont_wght.ttf',
     'fonts/ChivoMono-Italic-VariableFont_wght.ttf',
   ]
@@ -43,10 +44,41 @@ test('every surface emits its entry page and static assets', () => {
   }
 })
 
+test('console demo entry uses absolute asset paths that exist', async () => {
+  const html = await read('console-demo/index.html')
+  const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((u) => u.includes('assets/'))
+  assert.ok(refs.length >= 2, 'demo entry references no hashed assets')
+  const assetsRoot = path.resolve(DIST, 'console-demo/assets')
+  for (const u of refs) {
+    // Relative URLs break behind Vercel's cleanUrls: /console-demo/index.html
+    // 308s to /console-demo (no trailing slash), so ./assets/* resolves to
+    // the domain root and the bundle 404s on preview deploys.
+    assert.ok(
+      u.startsWith('/console-demo/assets/'),
+      `demo asset URL must be absolute under /console-demo/assets/, got ${u}`,
+    )
+    // Resolve before touching the filesystem so an encoded or ../ path in a
+    // tampered artifact can't satisfy the check with a file outside the
+    // vendored directory.
+    const assetPath = path.resolve(
+      DIST,
+      decodeURIComponent(new URL(u, 'https://dist.invalid').pathname).slice(1),
+    )
+    assert.ok(
+      assetPath.startsWith(`${assetsRoot}${path.sep}`),
+      `demo asset URL escapes the asset directory: ${u}`,
+    )
+    assert.ok(existsSync(assetPath), `demo asset missing from dist: ${u}`)
+  }
+})
+
 test('landing page keeps its interactive markup and canonical', async () => {
   const html = await read('index.html')
   assert.match(html, /id="hero-viz"/, 'hero viz mount missing')
-  assert.match(html, /id="cs-scroll"/, 'console side-scroll section missing')
+  assert.match(html, /id="console-live"/, 'console demo section missing')
+  assert.match(html, /id="harness"/, 'harness race section missing')
   assert.match(html, /<link rel="canonical" href="https:\/\/iii\.dev\/"/, 'canonical must stay https://iii.dev/')
   assert.match(html, /application\/ld\+json/, 'JSON-LD blocks missing')
   assert.match(html, /iii:mailmodo-form-url/, 'Mailmodo form-url meta missing')

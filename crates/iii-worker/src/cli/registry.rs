@@ -7,12 +7,19 @@
 //! OCI registry resolution for worker images.
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::LazyLock;
 
 pub const MANIFEST_PATH: &str = "/iii/worker.yaml";
 
 const DEFAULT_API_URL: &str = "https://api.workers.iii.dev";
+/// Maximum registry JSON response accepted by the client.
+///
+/// Dependency safety is primarily enforced structurally (cycle detection)
+/// and at artifact boundaries (download/extraction byte caps). Bounding the
+/// resolver response itself prevents an untrusted or buggy registry from
+/// allocating unbounded memory before those checks can run.
+pub const MAX_REGISTRY_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 /// Shared HTTP client for registry and download operations.
 /// Reuses connections and TLS sessions across requests.
@@ -198,8 +205,7 @@ pub async fn fetch_worker_info(
         #[cfg(debug_assertions)]
         {
             let path = base_or_file.strip_prefix("file://").unwrap();
-            std::fs::read_to_string(path)
-                .map_err(|e| format!("Failed to read local API fixture at {}: {}", path, e))?
+            read_local_registry_fixture(path)?
         }
     } else {
         let url = format!("{}/download/{}", base_or_file, name);
@@ -230,9 +236,7 @@ pub async fn fetch_worker_info(
             return Err(format!("Failed to resolve worker: HTTP {}", resp.status()));
         }
 
-        resp.text()
-            .await
-            .map_err(|e| format!("Failed to read API response: {}", e))?
+        read_registry_response(resp).await?
     };
 
     serde_json::from_str(&body).map_err(|e| format!("Failed to parse worker info: {}", e))
@@ -257,8 +261,7 @@ pub async fn fetch_resolved_worker_graph(
         #[cfg(debug_assertions)]
         {
             let path = base_or_file.strip_prefix("file://").unwrap();
-            std::fs::read_to_string(path)
-                .map_err(|e| format!("Failed to read local API fixture at {}: {}", path, e))?
+            read_local_registry_fixture(path)?
         }
     } else {
         let url = format!("{}/resolve", base_or_file);
@@ -289,116 +292,218 @@ pub async fn fetch_resolved_worker_graph(
             ));
         }
 
-        resp.text()
-            .await
-            .map_err(|e| format!("Failed to read API response: {}", e))?
+        read_registry_response(resp).await?
     };
 
     serde_json::from_str(&body).map_err(|e| format!("Failed to parse worker graph: {}", e))
 }
 
-/// Maximum number of `dependencies:` levels a single `iii worker add`
-/// install graph may traverse. A registry-resolved graph deeper than
-/// this is rejected before any install loop runs. The cap is a
-/// defense-in-depth measure: server-side resolution should already
-/// stop fork-bomb-shaped graphs, but a compromised or malformed
-/// resolver response should never let a client install thousands of
-/// workers from a single `iii worker add`.
-pub const MAX_DEPENDENCY_DEPTH: u32 = 5;
-
-/// Maximum total node count in a resolved install graph (root +
-/// transitives). Pairs with `MAX_DEPENDENCY_DEPTH`: a wide-but-shallow
-/// fan-out should also be refused before the install loop walks it.
-pub const MAX_TRANSITIVE_DEPS: u32 = 32;
-
-/// Validate a `ResolvedWorkerGraph` against client-side install bounds.
+/// A graph larger than this is valid, but requires explicit operator consent.
 ///
-/// This runs AFTER the registry returned the graph and BEFORE the
-/// install loop touches the filesystem. Rejecting at this seam means
-/// neither the lockfile nor `~/.iii/workers-bundle/` ever see the
-/// partial state of an oversized install attempt.
+/// This replaces the old hard `MAX_TRANSITIVE_DEPS = 32` rejection. A node
+/// count is useful for UX ("this command installs a lot"), but it is not a
+/// meaningful resource boundary by itself. Actual bytes are bounded by the
+/// binary and bundle download/extraction caps.
+pub const LARGE_DEPENDENCY_GRAPH_THRESHOLD: u32 = 32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DependencyGraphStats {
+    pub node_count: u32,
+    pub edge_count: u32,
+}
+
+impl DependencyGraphStats {
+    pub fn requires_confirmation(self) -> bool {
+        self.node_count > LARGE_DEPENDENCY_GRAPH_THRESHOLD
+    }
+}
+
+/// Validate a registry-resolved graph without imposing an arbitrary depth cap.
 ///
-/// Returns `Ok(())` when the graph is within bounds, or
-/// `WorkerOpError::BundleDepGraphExceeded` naming the dimension that
-/// failed. Only used by bundle workers today, but the bounds are
-/// independent of worker kind — every install flow that consumes a
-/// resolved graph is welcome to call this.
-pub fn enforce_dep_graph_bounds(
+/// The old depth-5 and node-count-32 hard failures rejected legitimate
+/// compositions such as `eval@0.1.0`. This validator instead enforces the
+/// structural properties the installer actually relies on:
+///
+/// - worker names are unique,
+/// - every edge references a declared node,
+/// - every declared node is reachable from the requested root,
+/// - the graph is acyclic.
+///
+/// Traversal is iterative and O(nodes + unique edges), so a long dependency
+/// chain does not consume call stack. Oversized registry responses and
+/// artifacts are bounded separately by byte limits.
+pub fn validate_dependency_graph(
     graph: &ResolvedWorkerGraph,
-) -> Result<(), crate::core::error::WorkerOpError> {
-    let node_count = graph.graph.len() as u32;
-    if node_count > MAX_TRANSITIVE_DEPS {
-        return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
-            dimension: "transitive_count".into(),
-            limit: MAX_TRANSITIVE_DEPS,
-            actual: node_count,
+) -> Result<DependencyGraphStats, crate::core::error::WorkerOpError> {
+    validate_dependency_graph_roots(graph, std::slice::from_ref(&graph.root.name))
+}
+
+/// Validate a merged dependency forest from every explicitly requested root.
+///
+/// Manifest dependencies are resolved independently, so their merged graph
+/// can have multiple legitimate roots. Keeping the roots separate avoids
+/// inventing dependency edges while preserving the same reachability and
+/// cycle guarantees as [`validate_dependency_graph`].
+pub(crate) fn validate_dependency_graph_roots(
+    graph: &ResolvedWorkerGraph,
+    roots: &[String],
+) -> Result<DependencyGraphStats, crate::core::error::WorkerOpError> {
+    use crate::core::error::WorkerOpError;
+
+    if roots.is_empty() {
+        return Err(WorkerOpError::DependencyGraphInvalid {
+            reason: "dependency graph has no requested roots".to_string(),
         });
     }
 
-    // Find the longest path from `root.name`. The graph is a DAG by
-    // construction (registry rejects cycles during resolve). Edges are
-    // deduped into a set-backed adjacency so a malformed response with
-    // repeated edges cannot inflate the traversal, and each node is
-    // re-expanded only when it is reached via a strictly deeper path.
-    // That memoization is what keeps a wide diamond DAG — many distinct
-    // paths, few distinct nodes — from being counted path-by-path: the
-    // old walk lacked it and rejected legitimate graphs (e.g. a bundle
-    // whose transitives shared a dependency) with a spurious
-    // `edge_traversal` error.
-    let mut adjacency: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
-        std::collections::HashMap::new();
-    for edge in &graph.edges {
-        adjacency.entry(&edge.from).or_default().insert(&edge.to);
+    let mut graph_names = HashSet::with_capacity(graph.graph.len());
+    for worker in &graph.graph {
+        if !graph_names.insert(worker.name.as_str()) {
+            return Err(WorkerOpError::DependencyGraphInvalid {
+                reason: format!("duplicate worker node {:?}", worker.name),
+            });
+        }
     }
 
-    // Deepest path on which each node has already been expanded. A DAG
-    // within bounds expands each node at most MAX_DEPENDENCY_DEPTH + 1
-    // times (once per strictly deeper path), so the number of expansions
-    // — the only work that pushes new frontier entries — is bounded by
-    // node_count * (depth + 1).
-    let mut best_depth: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    let mut frontier: Vec<(&str, u32)> = vec![(graph.root.name.as_str(), 0)];
-    // Backstop against a graph that is malformed in a way the DAG
-    // invariant should have prevented (self-reference, hidden cycle).
-    // It counts *expansions*, not frontier pops: a dense DAG pushes each
-    // node once per parent, so pops grow with node_count squared while
-    // expansions stay linear. Bounding pops here would reject a valid
-    // dense graph; bounding expansions does not. Memo-skipped pops are
-    // O(1) and cannot outnumber the pushes the expansions produced.
-    let mut expanded = 0u32;
-    let expansion_budget = node_count
-        .saturating_add(1)
-        .saturating_mul(MAX_DEPENDENCY_DEPTH + 1);
-    while let Some((node, depth)) = frontier.pop() {
-        if depth >= MAX_DEPENDENCY_DEPTH {
-            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
-                dimension: "depth".into(),
-                limit: MAX_DEPENDENCY_DEPTH,
-                actual: depth + 1,
+    let mut nodes = graph_names;
+    let roots = roots.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    nodes.extend(roots.iter().copied());
+
+    let mut adjacency: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut indegree: HashMap<&str, u32> = nodes.iter().map(|&name| (name, 0)).collect();
+    let mut unique_edge_count = 0u32;
+
+    for edge in &graph.edges {
+        let from = edge.from.as_str();
+        let to = edge.to.as_str();
+        if !nodes.contains(from) || !nodes.contains(to) {
+            return Err(WorkerOpError::DependencyGraphInvalid {
+                reason: format!(
+                    "edge {:?} -> {:?} references an undeclared worker",
+                    edge.from, edge.to
+                ),
             });
         }
-        // Skip nodes already reached via an equal-or-deeper path: the
-        // longest path through them is already accounted for.
-        if best_depth.get(node).is_some_and(|&seen| depth <= seen) {
+
+        if adjacency.entry(from).or_default().insert(to) {
+            unique_edge_count = unique_edge_count.saturating_add(1);
+            *indegree.get_mut(to).expect("validated dependency node") += 1;
+        }
+    }
+
+    // Reject disconnected payload nodes. They are not dependencies of any
+    // requested root and must not be installed merely because a resolver
+    // included them in its response.
+    let mut reachable = HashSet::new();
+    let mut frontier = roots.iter().copied().collect::<Vec<_>>();
+    while let Some(node) = frontier.pop() {
+        if !reachable.insert(node) {
             continue;
         }
-        best_depth.insert(node, depth);
-        expanded += 1;
-        if expanded > expansion_budget {
-            return Err(crate::core::error::WorkerOpError::BundleDepGraphExceeded {
-                dimension: "edge_traversal".into(),
-                limit: expansion_budget,
-                actual: expanded,
-            });
+        if let Some(children) = adjacency.get(node) {
+            frontier.extend(children.iter().copied());
         }
+    }
+    if reachable.len() != nodes.len() {
+        let unreachable = nodes
+            .difference(&reachable)
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let root_description = if roots.len() == 1 {
+            format!("{:?}", roots.first().expect("non-empty roots"))
+        } else {
+            format!(
+                "declared roots [{}]",
+                roots.iter().copied().collect::<Vec<_>>().join(", ")
+            )
+        };
+        return Err(WorkerOpError::DependencyGraphInvalid {
+            reason: format!(
+                "worker node(s) are unreachable from {root_description}: {unreachable}"
+            ),
+        });
+    }
+
+    // Kahn's algorithm provides explicit cycle detection without recursion.
+    let mut queue: VecDeque<&str> = indegree
+        .iter()
+        .filter_map(|(&name, &degree)| (degree == 0).then_some(name))
+        .collect();
+    let mut visited = 0usize;
+    while let Some(node) = queue.pop_front() {
+        visited += 1;
         if let Some(children) = adjacency.get(node) {
             for &child in children {
-                frontier.push((child, depth + 1));
+                let degree = indegree.get_mut(child).expect("validated dependency node");
+                *degree -= 1;
+                if *degree == 0 {
+                    queue.push_back(child);
+                }
             }
         }
     }
+    if visited != nodes.len() {
+        let cyclic = indegree
+            .iter()
+            .filter_map(|(&name, &degree)| (degree > 0).then_some(name))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(WorkerOpError::DependencyGraphInvalid {
+            reason: format!("dependency cycle detected involving: {cyclic}"),
+        });
+    }
 
-    Ok(())
+    Ok(DependencyGraphStats {
+        node_count: nodes.len().try_into().unwrap_or(u32::MAX),
+        edge_count: unique_edge_count,
+    })
+}
+
+#[cfg(debug_assertions)]
+fn read_local_registry_fixture(path: &str) -> Result<String, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| format!("Failed to read local API fixture at {path}: {e}"))?;
+    if metadata.len() > MAX_REGISTRY_RESPONSE_BYTES {
+        return Err(format!(
+            "Registry response too large: {} bytes, limit {}",
+            metadata.len(),
+            MAX_REGISTRY_RESPONSE_BYTES
+        ));
+    }
+    std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read local API fixture at {path}: {e}"))
+}
+
+async fn read_registry_response(response: reqwest::Response) -> Result<String, String> {
+    use futures::StreamExt as _;
+
+    if let Some(length) = response.content_length()
+        && length > MAX_REGISTRY_RESPONSE_BYTES
+    {
+        return Err(format!(
+            "Registry response too large: {length} bytes, limit {MAX_REGISTRY_RESPONSE_BYTES}"
+        ));
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Failed to read API response: {e}"))?;
+        let next_len = body.len().saturating_add(chunk.len());
+        if next_len as u64 > MAX_REGISTRY_RESPONSE_BYTES {
+            return Err(format!(
+                "Registry response too large: more than {MAX_REGISTRY_RESPONSE_BYTES} bytes"
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    String::from_utf8(body).map_err(|e| format!("Registry response is not valid UTF-8: {e}"))
 }
 
 #[cfg(test)]
@@ -652,6 +757,26 @@ mod tests {
         assert_eq!(graph.root.name, "hello-worker");
         assert_eq!(graph.graph.len(), 2);
         assert_eq!(graph.edges[0].to, "helper");
+    }
+
+    #[test]
+    fn registry_fixture_larger_than_response_budget_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let response_path = dir.path().join("oversized.json");
+        std::fs::write(
+            &response_path,
+            vec![b' '; MAX_REGISTRY_RESPONSE_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        let result = read_local_registry_fixture(
+            response_path
+                .to_str()
+                .expect("temporary fixture path is valid UTF-8"),
+        );
+
+        let err = result.expect_err("oversized registry response must be rejected");
+        assert!(err.contains("Registry response too large"), "{err}");
     }
 
     #[tokio::test]

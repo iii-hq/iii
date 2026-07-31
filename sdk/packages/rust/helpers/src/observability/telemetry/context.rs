@@ -100,7 +100,12 @@ pub fn inject_baggage() -> Option<String> {
 /// Extract baggage from a W3C baggage header string
 pub fn extract_baggage(baggage: &str) -> OtelContext {
     let mut carrier = HeaderMap(HashMap::new());
-    carrier.0.insert("baggage".to_string(), baggage.to_string());
+    // An empty header is treated as absent. A present-but-empty `baggage`
+    // header makes `BaggagePropagator::extract` log a per-call
+    // `InvalidKeyValueFormat` warning (empty split yields an unparsable entry).
+    if !baggage.is_empty() {
+        carrier.0.insert("baggage".to_string(), baggage.to_string());
+    }
 
     baggage_propagator().extract(&carrier)
 }
@@ -109,11 +114,14 @@ pub fn extract_baggage(baggage: &str) -> OtelContext {
 pub fn extract_context(traceparent: Option<&str>, baggage: Option<&str>) -> OtelContext {
     let mut carrier = HeaderMap(HashMap::new());
 
-    if let Some(tp) = traceparent {
+    // Empty values are treated as absent: a present-but-empty `baggage` header
+    // makes `BaggagePropagator::extract` emit a per-call `InvalidKeyValueFormat`
+    // warning, so callers passing `Some("")` must not seed the carrier.
+    if let Some(tp) = traceparent.filter(|s| !s.is_empty()) {
         carrier.0.insert("traceparent".to_string(), tp.to_string());
     }
 
-    if let Some(bg) = baggage {
+    if let Some(bg) = baggage.filter(|s| !s.is_empty()) {
         carrier.0.insert("baggage".to_string(), bg.to_string());
     }
 
@@ -286,6 +294,44 @@ mod tests {
         let _guard = cx.attach();
 
         assert_eq!(get_baggage_entry("user_id"), None);
+    }
+
+    #[test]
+    fn empty_baggage_header_does_not_emit_propagator_warning() {
+        use std::sync::{Arc, Mutex};
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
+
+        // Captures the metadata name of every event on this thread. The OTel
+        // `BaggagePropagator` logs `warn!(name: "BaggagePropagator.Extract
+        // .InvalidKeyValueFormat", ...)` when it parses an empty `baggage`
+        // header — exactly what a present-but-empty carrier entry produced
+        // before the fix.
+        #[derive(Clone, Default)]
+        struct WarnCapture(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> Layer<S> for WarnCapture {
+            fn on_event(&self, event: &tracing::Event<'_>, _cx: LayerContext<'_, S>) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(event.metadata().name().to_string());
+            }
+        }
+
+        let capture = WarnCapture::default();
+        let names = capture.0.clone();
+        let subscriber = tracing_subscriber::registry().with(capture);
+        with_default(subscriber, || {
+            let _ = extract_context(None, Some(""));
+            let _ = extract_baggage("");
+        });
+
+        let warned = names.lock().unwrap();
+        assert!(
+            !warned.iter().any(|n| n.contains("BaggagePropagator")),
+            "empty baggage must not trigger BaggagePropagator warnings, got: {warned:?}"
+        );
     }
 
     #[test]

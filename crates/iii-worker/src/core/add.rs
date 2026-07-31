@@ -168,6 +168,7 @@ mod tests {
             },
             force: false,
             reset_config: false,
+            yes: false,
             wait: true,
         };
         let outcome = run(opts, &ctx, &sink, &StubShim).await.unwrap();
@@ -186,6 +187,7 @@ mod tests {
             },
             force: false,
             reset_config: false,
+            yes: false,
             wait: true,
         };
         let outcome = run(opts, &ctx, &sink, &StubShim).await.unwrap();
@@ -204,6 +206,7 @@ mod tests {
             },
             force: false,
             reset_config: false,
+            yes: false,
             wait: true,
         };
         let _ = run(opts, &ctx, &sink, &StubShim).await.unwrap();
@@ -308,6 +311,7 @@ mod tests {
             },
             force: false,
             reset_config: false,
+            yes: false,
             wait: true,
         };
         let res = run(opts, &ctx, &sink, &FailingShim).await;

@@ -8,11 +8,13 @@ locals {
     "img-src 'self' data: https:",
     "font-src 'self' data:",
     "connect-src 'self' https://www.google-analytics.com https://analytics.google.com https://www.googletagmanager.com https://api.cr-relay.com https://api.mailmodo.com https://${var.search_api_origin}",
-    "frame-src https://www.googletagmanager.com",
+    # 'self': the landing page embeds its own /console-demo/index.html.
+    "frame-src 'self' https://www.googletagmanager.com",
     "form-action 'self' https://api.mailmodo.com",
     "object-src 'none'",
     "base-uri 'self'",
-    "frame-ancestors 'none'",
+    # 'self', not 'none': /console-demo/* is framed by the landing page.
+    "frame-ancestors 'self'",
     "upgrade-insecure-requests",
   ])
 }
@@ -54,8 +56,12 @@ resource "aws_cloudfront_response_headers_policy" "site" {
       override = true
     }
 
+    # SAMEORIGIN, not DENY: the landing page embeds /console-demo/index.html
+    # in an iframe, and this policy rides every S3-origin response. DENY made
+    # the browser refuse to render the site's own demo. Third-party embedding
+    # stays blocked.
     frame_options {
-      frame_option = "DENY"
+      frame_option = "SAMEORIGIN"
       override     = true
     }
 
@@ -94,6 +100,10 @@ locals {
   cache_policy_disabled_id     = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
   origin_request_cors_s3_id    = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf" # CORS-S3Origin
   origin_request_all_viewer_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
+  # Vercel routes requests by Host header, so a proxied *.vercel.app origin
+  # must receive its own hostname; forwarding the viewer's `Host: iii.dev`
+  # there makes CloudFront 502.
+  origin_request_all_viewer_except_host_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
 }
 
 resource "aws_cloudfront_distribution" "site" {
@@ -173,7 +183,7 @@ resource "aws_cloudfront_distribution" "site" {
     compress               = true
 
     cache_policy_id            = local.cache_policy_disabled_id
-    origin_request_policy_id   = local.origin_request_all_viewer_id
+    origin_request_policy_id   = local.origin_request_all_viewer_except_host_id
     response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
 
     # No function_association: SPA fallback must not rewrite /api/search responses.

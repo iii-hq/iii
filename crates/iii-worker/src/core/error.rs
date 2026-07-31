@@ -37,6 +37,7 @@ pub enum WorkerOpErrorKind {
     BundleArchiveUnsafe,           // W181
     BundleResourceClamped,         // W182  (carried by warn events, not Err returns)
     BundleDepGraphExceeded,        // W183
+    DependencyGraphInvalid,        // W184
     Internal,                      // W900
 }
 
@@ -70,6 +71,7 @@ impl WorkerOpErrorKind {
             Self::BundleArchiveUnsafe => "W181",
             Self::BundleResourceClamped => "W182",
             Self::BundleDepGraphExceeded => "W183",
+            Self::DependencyGraphInvalid => "W184",
             Self::Internal => "W900",
         }
     }
@@ -197,6 +199,9 @@ pub enum WorkerOpError {
         actual: u32,
     },
 
+    #[error("dependency graph is invalid: {reason}")]
+    DependencyGraphInvalid { reason: String },
+
     #[error("internal: {message}")]
     Internal { message: String },
 }
@@ -255,6 +260,7 @@ impl WorkerOpError {
             Self::BundleManifestRejected { .. } => K::BundleManifestRejected,
             Self::BundleArchiveUnsafe { .. } => K::BundleArchiveUnsafe,
             Self::BundleDepGraphExceeded { .. } => K::BundleDepGraphExceeded,
+            Self::DependencyGraphInvalid { .. } => K::DependencyGraphInvalid,
             Self::Internal { .. } => K::Internal,
         }
     }
@@ -337,6 +343,7 @@ impl WorkerOpError {
             } => {
                 json!({ "dimension": dimension, "limit": limit, "actual": actual })
             }
+            Self::DependencyGraphInvalid { reason } => json!({ "reason": reason }),
             Self::Internal { message } => json!({ "message": message }),
         };
         json!({
@@ -467,6 +474,19 @@ mod tests {
             "ConsentRequired must not reuse InvalidSource's 'invalid worker source' stem"
         );
         assert!(payload["message"].as_str().unwrap().contains("yes:true"));
+    }
+
+    #[test]
+    fn dependency_graph_invalid_is_w184() {
+        let err = WorkerOpError::DependencyGraphInvalid {
+            reason: "dependency cycle detected involving: a, b".into(),
+        };
+        let payload = err.to_payload();
+        assert_eq!(payload["code"], "W184");
+        assert_eq!(
+            payload["details"]["reason"],
+            "dependency cycle detected involving: a, b"
+        );
     }
 
     #[test]
