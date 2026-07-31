@@ -137,6 +137,16 @@ pub enum ComposeError {
     #[error("no container named '{container}' in this project")]
     UnknownContainer { container: String },
 
+    /// Something already answers to this container's name in this namespace.
+    /// Starting anyway would hand readiness a stranger and leave our own
+    /// process rejected by the engine's `(namespace, worker_name)` lease.
+    #[error(
+        "a worker named '{container}' is already registered in namespace '{namespace}'. \
+         Another daemon owns this project, or a worker from an earlier run is still \
+         connected. `iii trigger engine::workers::list` names it"
+    )]
+    ContainerNameTaken { container: String, namespace: String },
+
     /// The startup `up` of a `--up` run failed. The per-container detail was
     /// already printed by then; this carries the operation id so the two can be
     /// tied together in a log.
@@ -217,6 +227,7 @@ impl ComposeError {
             Self::SpawnFailed { .. } => "SPAWN_FAILED",
             Self::HookFailed { hook_code, .. } => hook_code,
             Self::UnknownContainer { .. } => "UNKNOWN_CONTAINER",
+            Self::ContainerNameTaken { .. } => "CONTAINER_NAME_TAKEN",
             Self::UpFailed { .. } => "UP_FAILED",
             Self::WrongDaemon { .. } => "WRONG_DAEMON",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
