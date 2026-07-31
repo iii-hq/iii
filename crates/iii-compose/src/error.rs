@@ -137,6 +137,12 @@ pub enum ComposeError {
     #[error("no container named '{container}' in this project")]
     UnknownContainer { container: String },
 
+    /// The startup `up` of a `--up` run failed. The per-container detail was
+    /// already printed by then; this carries the operation id so the two can be
+    /// tied together in a log.
+    #[error("the project did not come up (operation {operation_id})")]
+    UpFailed { operation_id: String },
+
     #[error(
         "this daemon is '{expected}', not '{got}'. Try: iii trigger compose::{function} \
          --namespace {got}"
@@ -205,6 +211,7 @@ impl ComposeError {
             Self::SpawnFailed { .. } => "SPAWN_FAILED",
             Self::HookFailed { hook_code, .. } => hook_code,
             Self::UnknownContainer { .. } => "UNKNOWN_CONTAINER",
+            Self::UpFailed { .. } => "UP_FAILED",
             Self::WrongDaemon { .. } => "WRONG_DAEMON",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::StateBindingMismatch { .. } => "STATE_BINDING_MISMATCH",
