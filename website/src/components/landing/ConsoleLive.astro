@@ -257,9 +257,11 @@
     // The forwarded wheel glides instead of teleporting. Instant scrolling is
     // required (the page's global smooth scrolling restarts its animation on
     // every tick and drops most of the distance), so the easing is ours: bank
-    // the delta and pay out a quarter of what is left each frame. Total travel
-    // stays 1:1 with the wheel, it just lands the way the rest of the page
-    // moves rather than in hard steps.
+    // the delta and pay out a quarter of what is left each frame.
+    //
+    // Slightly under 1:1. The wheel here is driving a zoom rather than a page
+    // of text, and a zoom wants a lighter hand than reading does.
+    const GAIN = 0.8
     let banked = 0
     let frame = 0
     const flush = () => {
@@ -269,7 +271,7 @@
       frame = banked ? requestAnimationFrame(flush) : 0
     }
     const glide = (dy: number) => {
-      banked += dy
+      banked += dy * GAIN
       if (!frame) frame = requestAnimationFrame(flush)
     }
 
