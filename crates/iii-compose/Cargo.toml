@@ -16,6 +16,9 @@ serde_yaml = { workspace = true }
 # Durable daemon state is JSON: it is machine state, not an operator-edited file.
 serde_json = { workspace = true }
 dirs = { workspace = true }
+# Colour is disabled automatically when the output is not a terminal, so piped
+# output stays parseable.
+colored = { workspace = true }
 # The daemon is an ordinary worker: it talks to the engine through the SDK.
 iii-sdk = { workspace = true }
 uuid = { workspace = true }

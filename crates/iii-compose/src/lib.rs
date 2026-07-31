@@ -101,14 +101,20 @@ async fn run_daemon(
     let daemon = daemon::Daemon::start(id, compose, engine_url, namespace).await?;
     remote::register(&daemon);
 
+    use colored::Colorize;
     println!(
-        "compose daemon '{}' bound to {}",
-        daemon.id,
-        daemon.file.path.display()
+        "compose daemon {} bound to {}",
+        daemon.id.bold(),
+        daemon.file.path.display().to_string().dimmed()
     );
-    println!("  project namespace: {}", daemon.project_namespace);
     println!(
-        "  reach it with: iii trigger compose::status --namespace {}",
+        "  {} {}",
+        "project namespace:".dimmed(),
+        daemon.project_namespace.cyan()
+    );
+    println!(
+        "  {} iii trigger compose::status --namespace {}",
+        "reach it with:".dimmed(),
         daemon.id
     );
 
@@ -123,7 +129,10 @@ async fn run_daemon(
                 operation_id: result.operation_id,
             });
         }
-        println!("started {} container(s)", result.containers.len());
+        println!(
+            "{}",
+            format!("started {} container(s)", result.containers.len()).green()
+        );
     }
 
     // Serve until asked to stop, or until the engine refuses this identity.
@@ -168,24 +177,35 @@ async fn run_daemon(
         }
     }
 
-    println!("stopping {} container(s)...", daemon.file.containers.len());
+    println!(
+        "{}",
+        format!("stopping {} container(s)...", daemon.file.containers.len()).dimmed()
+    );
     daemon.shutdown().await;
     Ok(())
 }
 
 fn report_error(err: &ComposeError) -> i32 {
-    eprintln!("error[{}]: {err}", err.code());
+    use colored::Colorize;
+    eprintln!("{} {err}", format!("error[{}]:", err.code()).red().bold());
     1
 }
 
 fn print_report(report: &ValidationReport) {
+    use colored::Colorize;
+
     println!(
-        "{}: {} container(s) valid",
-        report.project,
-        report.start_order.len()
+        "{} {}",
+        report.project.bold(),
+        format!("{} container(s) valid", report.start_order.len()).green()
     );
-    println!("namespace: {}", report.namespace);
-    println!("start order: {}", report.start_order.join(" -> "));
+    println!("{} {}", "namespace:".dimmed(), report.namespace.cyan());
+    println!(
+        "{} {}",
+        "start order:".dimmed(),
+        report.start_order.join(" -> ")
+    );
+
     for plan in &report.resolved {
         let command = match &plan.start {
             StartSpec::Shell(command) => command.clone(),
@@ -193,24 +213,32 @@ fn print_report(report: &ValidationReport) {
                 format!("{} {}", program.display(), args.join(" "))
             }
         };
-        println!("  {}: {command}", plan.key);
-        println!("    dir: {}", plan.working_dir.display());
-        println!("    readiness: {}s", plan.startup_timeout.as_secs());
+        println!("  {} {command}", format!("{}:", plan.key).bold());
+        detail("dir", &plan.working_dir.display().to_string());
+        detail("readiness", &format!("{}s", plan.startup_timeout.as_secs()));
         if let Some(config_name) = &plan.config_name {
-            println!("    config: {config_name}");
+            detail("config", config_name);
         }
         // Names only: an env_file's values are routinely secrets.
         if !plan.environment.is_empty() {
-            println!("    env: {}", plan.environment.join(", "));
+            detail("env", &plan.environment.join(", "));
         }
         for env_file in &plan.env_file {
-            println!("    env_file: {}", env_file.display());
+            detail("env_file", &env_file.display().to_string());
         }
     }
+
     if !report.deferred_packages.is_empty() {
         println!(
-            "deferred (package:// resolution not implemented): {}",
+            "{} {}",
+            "deferred (package:// resolution not implemented):".yellow(),
             report.deferred_packages.join(", ")
         );
     }
+}
+
+/// One indented `label: value` line under a container.
+fn detail(label: &str, value: &str) {
+    use colored::Colorize;
+    println!("    {} {value}", format!("{label}:").dimmed());
 }
