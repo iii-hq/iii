@@ -30,6 +30,7 @@ pub mod manifest;
 pub mod namespace;
 pub mod process;
 pub mod remote;
+pub mod report;
 pub mod spawn;
 pub mod state;
 
@@ -129,10 +130,6 @@ async fn run_daemon(
                 operation_id: result.operation_id,
             });
         }
-        println!(
-            "{}",
-            format!("started {} container(s)", result.containers.len()).green()
-        );
     }
 
     // Serve until asked to stop, or until the engine refuses this identity.

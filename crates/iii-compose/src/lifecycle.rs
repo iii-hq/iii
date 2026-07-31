@@ -18,7 +18,10 @@
 //!    things they depend on, so nothing is talking to a worker that just went
 //!    away.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use serde::Serialize;
 
@@ -31,6 +34,7 @@ use crate::{
     hooks,
     manifest::resolve_start,
     process::{Outcome, Supervised, spawn_supervised},
+    report,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
     state::{ChildRecord, ChildStatus},
 };
@@ -103,9 +107,13 @@ pub async fn up(
     target: Option<&str>,
     operation_id: String,
 ) -> OpResult {
+    let began = Instant::now();
     let order = match plan_targets(ctx.file, target) {
         Ok(order) => order,
-        Err(error) => return failed_op(operation_id, target, &error),
+        Err(error) => {
+            report::summary_failed("up", error.code(), began.elapsed());
+            return failed_op(operation_id, target, &error);
+        }
     };
 
     let mut results: Vec<ContainerResult> = Vec::new();
@@ -114,6 +122,7 @@ pub async fn up(
 
     for key in &order {
         if is_running(children, key) {
+            report::unchanged(key, "already running");
             results.push(ContainerResult {
                 container: key.clone(),
                 state: ChildStatus::Ready,
@@ -123,8 +132,12 @@ pub async fn up(
             continue;
         }
 
+        report::starting(key, "starting");
+        let container_began = Instant::now();
+
         match start_one(ctx, children, key).await {
             Ok(record) => {
+                report::ready(key, container_began.elapsed());
                 records.insert(key.clone(), record);
                 started.push(key.clone());
                 results.push(ContainerResult {
@@ -135,6 +148,11 @@ pub async fn up(
                 });
             }
             Err(error) => {
+                report::failed(
+                    key,
+                    error.code(),
+                    &strip_container_prefix(&error.to_string(), key),
+                );
                 results.push(ContainerResult {
                     container: key.clone(),
                     state: ChildStatus::Failed,
@@ -142,6 +160,7 @@ pub async fn up(
                     error: Some(OpError::from(&error)),
                 });
                 rollback(ctx, children, records, &started, &mut results).await;
+                report::summary_failed("up", error.code(), began.elapsed());
                 return OpResult {
                     operation_id,
                     status: OpStatus::Failed,
@@ -152,13 +171,21 @@ pub async fn up(
         }
     }
 
-    let changed = results.iter().any(|result| result.changed);
+    let changed = results.iter().filter(|result| result.changed).count();
+    report::summary_ok("up", changed, results.len(), began.elapsed());
     OpResult {
         operation_id,
         status: OpStatus::Ok,
-        changed,
+        changed: changed > 0,
         containers: results,
     }
+}
+
+/// Drops a leading `container '<name>': ` from a message that is already being
+/// printed under that container's name.
+fn strip_container_prefix(message: &str, container: &str) -> String {
+    let prefix = format!("container '{container}': ");
+    message.strip_prefix(&prefix).unwrap_or(message).to_string()
 }
 
 /// Stops `target` (or every local container), dependents first.
@@ -169,9 +196,13 @@ pub async fn down(
     target: Option<&str>,
     operation_id: String,
 ) -> OpResult {
+    let began = Instant::now();
     let mut order = match plan_targets(ctx.file, target) {
         Ok(order) => order,
-        Err(error) => return failed_op(operation_id, target, &error),
+        Err(error) => {
+            report::summary_failed("down", error.code(), began.elapsed());
+            return failed_op(operation_id, target, &error);
+        }
     };
 
     // Both branches must end up dependents-first: nothing may stop while
@@ -193,6 +224,7 @@ pub async fn down(
     let mut results = Vec::new();
     for key in order {
         if !children.contains_key(&key) {
+            report::unchanged(&key, "not running");
             results.push(ContainerResult {
                 container: key,
                 state: ChildStatus::Stopped,
@@ -201,7 +233,9 @@ pub async fn down(
             });
             continue;
         }
+        report::starting(&key, "stopping");
         stop_one(ctx, children, records, &key).await;
+        report::stopped(&key);
         results.push(ContainerResult {
             container: key,
             state: ChildStatus::Stopped,
@@ -210,11 +244,12 @@ pub async fn down(
         });
     }
 
-    let changed = results.iter().any(|result| result.changed);
+    let changed = results.iter().filter(|result| result.changed).count();
+    report::summary_ok("down", changed, results.len(), began.elapsed());
     OpResult {
         operation_id,
         status: OpStatus::Ok,
-        changed,
+        changed: changed > 0,
         containers: results,
     }
 }
@@ -346,6 +381,7 @@ async fn rollback(
 ) {
     for key in started.iter().rev() {
         stop_one(ctx, children, records, key).await;
+        report::rolled_back(key);
         if let Some(result) = results.iter_mut().find(|r| &r.container == key) {
             result.state = ChildStatus::Stopped;
             result.changed = false;
