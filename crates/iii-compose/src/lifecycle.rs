@@ -33,7 +33,7 @@ use crate::{
     error::{ComposeError, Result},
     hooks,
     manifest::resolve_start,
-    process::{Outcome, Supervised, spawn_supervised},
+    process::{Outcome, Supervised, spawn_supervised_piped},
     report,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
     state::{ChildRecord, ChildStatus},
@@ -300,12 +300,16 @@ async fn start_one(
             })?;
     }
 
-    let child = spawn_supervised(spawn_plan(&spawn_ctx).command()).map_err(|err| {
-        ComposeError::SpawnFailed {
-            container: key.to_string(),
-            message: err.to_string(),
-        }
-    })?;
+    let (child, output) =
+        spawn_supervised_piped(spawn_plan(&spawn_ctx).command()).map_err(|err| {
+            ComposeError::SpawnFailed {
+                container: key.to_string(),
+                message: err.to_string(),
+            }
+        })?;
+    // Tag the child's output before waiting on readiness: whatever it prints
+    // while starting is exactly what an operator needs when it does not.
+    report::pump_output(key, output.stdout, output.stderr);
 
     let readiness = ctx
         .engine
