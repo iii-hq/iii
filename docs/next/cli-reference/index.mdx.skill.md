@@ -26,11 +26,87 @@ iii [OPTIONS] [COMMAND]
 | Command | Description |
 | ------- | ----------- |
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
+| [`compose`](#iii-compose) | Run a worker-compose project: supervise several workers as one graph |
 | [`console`](#iii-console) | Launch the iii web console. |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 | [`worker`](#iii-worker) | Manage workers (add, remove, list, info). |
+
+### `iii compose`
+
+Run a worker-compose project: supervise several workers as one graph
+
+```text
+iii compose [OPTIONS] [COMMAND]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--id <ID>` | Daemon identity. Required in daemon mode: it names the daemon in the engine and is the `id=` every remote `compose::*` call must match |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
+| `--namespace <NS>` | Namespace the project's workers register under. Defaults to a deterministic namespace derived from the project name and compose path |
+| `-f, --file <PATH>` | Compose file this invocation is bound to. Defaults to `worker-compose.yaml` in the current directory |
+| `-d, --detach` | Run the daemon in the background and return once it is serving |
+
+#### `iii compose logs`
+
+Show what the project's containers printed
+
+```text
+iii compose logs [OPTIONS] --namespace <NS>
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--namespace <NS>` | Namespace the daemon serves in — the same one `iii trigger compose::logs --namespace` takes. A daemon registers `compose::*` under its own `--id`, so the two are the same string (required) |
+| `-c, --container <NAME>` | Only this container. Defaults to every container that printed |
+| `-n, --tail <N>` | Lines to show per container [default: 50] |
+| `-f, --follow` | Keep printing new lines until interrupted |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
+
+#### `iii compose stop`
+
+Stop a running daemon and the whole project with it
+
+```text
+iii compose stop [OPTIONS] --namespace <NS>
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--namespace <NS>` | Namespace the daemon serves in — the same one `logs` takes (required) |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
+
+#### `iii compose up`
+
+Start the daemon and bring the project up
+
+```text
+iii compose up [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--id <ID>` | Daemon identity: it names the daemon in the engine and is the namespace `stop` and `logs` address it by |
+| `-f, --file <PATH>` | Compose file. Defaults to `worker-compose.yaml` here |
+| `--namespace <NS>` | Namespace the project's workers register under |
+| `-d, --detach` | Run in the background and return once the project is up |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
+
+#### `iii compose validate`
+
+Validate a compose project without contacting an engine
+
+```text
+iii compose validate [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | Compose file to validate. Defaults to `worker-compose.yaml` here |
+| `--namespace <NS>` | Report the project under this namespace instead of the derived one |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
 
 ### `iii project`
 
