@@ -55,12 +55,12 @@ iii compose [OPTIONS] [COMMAND]
 Show what the project's containers printed
 
 ```text
-iii compose logs [OPTIONS] --namespace <NS>
+iii compose logs [OPTIONS]
 ```
 
 | Option | Description |
 | ------ | ----------- |
-| `--namespace <NS>` | Namespace the daemon serves in, the same one `iii trigger compose::logs --namespace` takes. A daemon registers `compose::*` under its own `--id`, so the two are the same string (required) |
+| `--namespace <NS>` | Namespace the daemon serves in. Resolved like everywhere else: this flag, then `name:` in the compose file here, then `default` |
 | `-c, --container <NAME>` | Only this container. Defaults to every container that printed |
 | `-n, --tail <N>` | Lines to show per container [default: 50] |
 | `-f, --follow` | Keep printing new lines until interrupted |
@@ -71,12 +71,12 @@ iii compose logs [OPTIONS] --namespace <NS>
 Stop a running daemon and the whole project with it
 
 ```text
-iii compose stop [OPTIONS] --namespace <NS>
+iii compose stop [OPTIONS]
 ```
 
 | Option | Description |
 | ------ | ----------- |
-| `--namespace <NS>` | Namespace the daemon serves in, the same one `logs` takes (required) |
+| `--namespace <NS>` | Namespace the daemon serves in. Resolved like everywhere else: this flag, then `name:` in the compose file here, then `default` |
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
 
 #### `iii compose up`
