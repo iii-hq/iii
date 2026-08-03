@@ -47,12 +47,35 @@ fn the_compose_file_defaults_to_the_one_in_this_directory() {
     let explicit = parse(&["iii", "compose", "--id", "host-a", "-f", "other.yaml"]).plan();
     let validated = parse(&["iii", "compose", "validate"]).plan();
 
+    // `stop` and `logs` read the same file for the namespace, so from inside a
+    // project neither needs the flag repeated.
+    let stopped = parse(&["iii", "compose", "stop"]).plan();
+    let logged = parse(&["iii", "compose", "logs"]).plan();
+
     // Outside one, the error names the way out instead of blaming a path the
     // operator never typed.
     std::env::set_current_dir(empty.path()).unwrap();
     let nowhere = parse(&["iii", "compose", "--id", "host-a"]).plan();
+    // And with no project in sight they fall back to `default`, like anything
+    // else that names itself nowhere.
+    let stopped_nowhere = parse(&["iii", "compose", "stop"]).plan();
 
     std::env::set_current_dir(previous).unwrap();
+
+    match stopped.expect("stop reads the file for its namespace") {
+        ComposeCommand::Stop { namespace, .. } => assert_eq!(namespace, "x"),
+        other => panic!("expected Stop, got {other:?}"),
+    }
+    match logged.expect("logs reads it too") {
+        ComposeCommand::Logs { namespace, .. } => assert_eq!(namespace, "x"),
+        other => panic!("expected Logs, got {other:?}"),
+    }
+    match stopped_nowhere.expect("no project is not an error") {
+        ComposeCommand::Stop { namespace, .. } => {
+            assert_eq!(namespace, iii_compose::namespace::DEFAULT_NAMESPACE);
+        }
+        other => panic!("expected Stop, got {other:?}"),
+    }
 
     match defaulted.expect("a project directory needs no --file") {
         ComposeCommand::Daemon { file, .. } => {
@@ -157,14 +180,6 @@ fn up_takes_the_id_before_or_after_the_subcommand() {
     }
 }
 
-#[test]
-fn up_can_detach() {
-    let cli = parse(&["iii", "compose", "up", "--id", "host-a", "-f", "c.yaml", "-d"]);
-    match cli.plan().unwrap() {
-        ComposeCommand::Daemon { detach, .. } => assert!(detach),
-        other => panic!("expected Daemon, got {other:?}"),
-    }
-}
 
 
 // ── `iii compose logs` ───────────────────────────────────────────────────
@@ -225,23 +240,21 @@ fn logs_carries_the_container_tail_and_follow() {
     }
 }
 
-#[test]
-fn logs_without_a_namespace_does_not_parse() {
-    // `compose::*` lives in the namespace of the daemon's id, so without one
-    // there is nothing to address.
-    let missing = std::panic::catch_unwind(|| parse(&["iii", "compose", "logs"]));
-    assert!(missing.is_err(), "--namespace is what names the daemon");
-}
 
 #[test]
 fn detach_is_carried_into_daemon_mode_unless_already_detached() {
-    // One test, not two: the guard lives in the process environment, and tests
-    // share a process. Setting it in one while another reads it is a flake
-    // waiting for a loaded machine.
-    let cli = parse(&["iii", "compose", "--id", "host-a", "--file", "c.yaml", "-d"]);
-    match cli.plan().unwrap() {
-        ComposeCommand::Daemon { detach, .. } => assert!(detach),
-        other => panic!("expected Daemon, got {other:?}"),
+    // One test, not several: the guard lives in the process environment, and
+    // tests share a process. Setting it in one while another reads it is a
+    // flake waiting for a loaded machine — every assertion that depends on it
+    // belongs here.
+    for args in [
+        &["iii", "compose", "--id", "host-a", "--file", "c.yaml", "-d"][..],
+        &["iii", "compose", "up", "--id", "host-a", "-f", "c.yaml", "-d"][..],
+    ] {
+        match parse(args).plan().unwrap() {
+            ComposeCommand::Daemon { detach, .. } => assert!(detach, "{args:?}"),
+            other => panic!("expected Daemon, got {other:?}"),
+        }
     }
 
     // The background process is launched with this set, so a `-d` still in its
@@ -286,11 +299,6 @@ fn stop_accepts_the_ns_alias() {
     }
 }
 
-#[test]
-fn stop_without_a_namespace_does_not_parse() {
-    let missing = std::panic::catch_unwind(|| parse(&["iii", "compose", "stop"]));
-    assert!(missing.is_err(), "--namespace is what names the daemon");
-}
 
 #[test]
 fn stop_takes_the_engine_from_the_environment_like_everything_else() {
