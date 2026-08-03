@@ -77,9 +77,10 @@ pub enum ComposeAction {
 
 #[derive(Args, Debug, Clone)]
 pub struct StopArgs {
-    /// Namespace the daemon serves in, the same one `logs` takes.
+    /// Namespace the daemon serves in. Resolved like everywhere else: this
+    /// flag, then `name:` in the compose file here, then `default`.
     #[arg(long, visible_alias = "ns", value_name = "NS")]
-    pub namespace: String,
+    pub namespace: Option<String>,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -116,11 +117,10 @@ pub const DEFAULT_TAIL: usize = 50;
 
 #[derive(Args, Debug, Clone)]
 pub struct LogsArgs {
-    /// Namespace the daemon serves in, the same one `iii trigger
-    /// compose::logs --namespace` takes. A daemon registers `compose::*` under
-    /// its own `--id`, so the two are the same string.
+    /// Namespace the daemon serves in. Resolved like everywhere else: this
+    /// flag, then `name:` in the compose file here, then `default`.
     #[arg(long, visible_alias = "ns", value_name = "NS")]
-    pub namespace: String,
+    pub namespace: Option<String>,
 
     /// Only this container. Defaults to every container that printed.
     #[arg(long, short = 'c', value_name = "NAME")]
@@ -171,6 +171,14 @@ pub enum ComposeCommand {
     },
 }
 
+/// Just the `name:` of a compose file, for the commands that address a daemon
+/// without loading a project.
+#[derive(serde::Deserialize)]
+struct NamedProject {
+    #[serde(default)]
+    name: Option<String>,
+}
+
 /// A flag the operator actually filled in. Blank is not a value: `--ns ""`
 /// has named nothing, and should fall through to the next step rather than
 /// creating a namespace called "".
@@ -206,14 +214,14 @@ impl ComposeCli {
             // this only asks it a question. Requiring one would stop `logs`
             // from working from anywhere but the project directory.
             Some(ComposeAction::Logs(args)) => Ok(ComposeCommand::Logs {
-                namespace: args.namespace.clone(),
+                namespace: self.addressed_namespace(args.namespace.as_ref()),
                 engine_url: self.engine_url(),
                 container: args.container.clone(),
                 tail: args.tail,
                 follow: args.follow,
             }),
             Some(ComposeAction::Stop(args)) => Ok(ComposeCommand::Stop {
-                namespace: args.namespace.clone(),
+                namespace: self.addressed_namespace(args.namespace.as_ref()),
                 engine_url: self.engine_url(),
             }),
             None => {
@@ -231,6 +239,24 @@ impl ComposeCli {
                 })
             }
         }
+    }
+
+    /// Which daemon a `stop` or `logs` is aimed at.
+    ///
+    /// The same three steps every other mode takes, so an operator standing in
+    /// a project does not have to repeat what the file already says. Reading
+    /// the file is best-effort: these commands must keep working from anywhere,
+    /// and a directory with no project simply contributes nothing.
+    fn addressed_namespace(&self, explicit: Option<&String>) -> String {
+        let declared = std::fs::read_to_string(DEFAULT_COMPOSE_FILE)
+            .ok()
+            .and_then(|text| serde_yaml::from_str::<NamedProject>(&text).ok())
+            .and_then(|project| project.name);
+
+        crate::namespace::project_namespace(
+            present(explicit).as_deref(),
+            present(declared.as_ref()).as_deref(),
+        )
     }
 
     /// `--file`, else `worker-compose.yaml` in the current directory.
