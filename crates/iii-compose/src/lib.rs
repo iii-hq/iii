@@ -49,7 +49,7 @@ pub fn validate_project(
     namespace: Option<&str>,
 ) -> Result<ValidationReport> {
     let compose = ComposeFile::load(file)?;
-    let namespace = namespace::project_namespace(namespace, &compose.name, &compose.path);
+    let namespace = namespace::project_namespace(namespace, compose.name.as_deref());
     manifest::validate_offline(&compose, &namespace)
 }
 
@@ -92,17 +92,16 @@ pub async fn run(cli: ComposeCli) -> i32 {
             id,
             file,
             engine_url,
-            namespace,
             up_on_start,
             detach,
         } => {
             if detach {
-                return match detach_daemon(&id, &file, &engine_url).await {
+                return match detach_daemon(id.as_deref(), &file, &engine_url).await {
                     Ok(()) => 0,
                     Err(err) => report_error(&err),
                 };
             }
-            match run_daemon(id, &file, engine_url, namespace.as_deref(), up_on_start).await {
+            match run_daemon(id, &file, engine_url, up_on_start).await {
                 Ok(()) => 0,
                 Err(err) => report_error(&err),
             }
@@ -116,18 +115,18 @@ pub async fn run(cli: ComposeCli) -> i32 {
 /// Starting the daemon does not implicitly `up` anything — that is a separate
 /// decision the operator makes.
 async fn run_daemon(
-    id: String,
+    id: Option<String>,
     file: &std::path::Path,
     engine_url: String,
-    namespace: Option<&str>,
     up_on_start: bool,
 ) -> Result<()> {
     let compose = ComposeFile::load(file)?;
+    let namespace = namespace::project_namespace(id.as_deref(), compose.name.as_deref());
     // Validate before announcing: a daemon that is serving `compose::up` for a
     // project that cannot start is worse than one that never came up.
-    manifest::validate_offline(&compose, "pending")?;
+    manifest::validate_offline(&compose, &namespace)?;
 
-    let daemon = daemon::Daemon::start(id, compose, engine_url, namespace).await?;
+    let daemon = daemon::Daemon::start(id, compose, engine_url).await?;
     remote::register(&daemon);
 
     use colored::Colorize;
@@ -138,13 +137,13 @@ async fn run_daemon(
     );
     println!(
         "  {} {}",
-        "project namespace:".dimmed(),
+        "namespace:".dimmed(),
         daemon.project_namespace.cyan()
     );
     println!(
-        "  {} iii trigger compose::status --namespace {}",
+        "  {} iii compose logs --ns {}",
         "reach it with:".dimmed(),
-        daemon.id
+        daemon.project_namespace
     );
 
     // `--up` makes the daemon a one-shot: bring the project up, and if that
@@ -229,14 +228,19 @@ const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// detached daemon that dies immediately — a duplicate `--id`, an engine that
 /// is not there — has to fail this command, not return a shell prompt over
 /// nothing.
-async fn detach_daemon(id: &str, file: &std::path::Path, engine_url: &str) -> Result<()> {
+async fn detach_daemon(id: Option<&str>, file: &std::path::Path, engine_url: &str) -> Result<()> {
     use colored::Colorize;
 
     // Validate before forking anything: a project that cannot start should say
     // so on the terminal the operator is looking at.
     let compose = ComposeFile::load(file)?;
-    manifest::validate_offline(&compose, "pending")?;
+    let namespace = namespace::project_namespace(id, compose.name.as_deref());
+    manifest::validate_offline(&compose, &namespace)?;
 
+    // The state directory follows the daemon's worker name, resolved the same
+    // way the child process will resolve it.
+    let id = namespace::daemon_worker_name(id, compose.name.as_deref());
+    let id = id.as_str();
     let store = state::StateStore::for_daemon(id)?;
     std::fs::create_dir_all(store.dir()).map_err(|source| ComposeError::Io {
         path: store.dir().to_path_buf(),
@@ -299,14 +303,14 @@ async fn detach_daemon(id: &str, file: &std::path::Path, engine_url: &str) -> Re
             });
         }
 
-        if daemon_is_serving(engine_url, id, pid).await {
+        if daemon_is_serving(engine_url, &namespace, pid).await {
             println!(
                 "compose daemon {} detached {}",
                 id.bold(),
                 format!("(pid {pid})").dimmed()
             );
             println!("  {} {}", "logs:".dimmed(), log_path.display());
-            println!("  {} iii compose stop --ns {id}", "stop with:".dimmed());
+            println!("  {} iii compose stop --ns {namespace}", "stop with:".dimmed());
             return Ok(());
         }
 

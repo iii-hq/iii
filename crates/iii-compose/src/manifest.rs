@@ -181,7 +181,7 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
     }
 
     Ok(ValidationReport {
-        project: file.name.clone(),
+        project: file.name.clone().unwrap_or_else(|| namespace.to_string()),
         namespace: namespace.to_string(),
         start_order,
         resolved,

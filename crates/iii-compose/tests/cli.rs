@@ -19,12 +19,12 @@ fn parse(args: &[&str]) -> ComposeCli {
 }
 
 #[test]
-fn daemon_mode_requires_an_id() {
-    let missing_id = parse(&["iii", "compose", "--file", "worker-compose.yaml"])
-        .plan()
-        .expect_err("daemon mode without --id is incomplete");
-    assert_eq!(missing_id.code(), "MISSING_FLAG");
-    assert!(missing_id.to_string().contains("--id"));
+fn a_missing_compose_file_is_reported_as_such() {
+    // `--id` used to be the required flag here. It is not any more: a project
+    // that names itself nowhere lands in `default`. The file is what a daemon
+    // cannot do without.
+    let missing_file = parse(&["iii", "compose", "--id", "host-a", "--file", "nope.yaml"]).plan();
+    assert!(missing_file.is_ok(), "the path is only read at start");
 }
 
 /// The compose-file default, in one test: the current directory is
@@ -131,7 +131,7 @@ fn up_is_a_subcommand_and_bare_daemon_mode_starts_nothing() {
         ) => {
             assert!(!plain, "the daemon alone brings nothing up");
             assert!(one_shot);
-            assert_eq!(id, "host-a");
+            assert_eq!(id.as_deref(), Some("host-a"));
         }
         other => panic!("expected two Daemons, got {other:?}"),
     }
@@ -149,7 +149,7 @@ fn up_takes_the_id_before_or_after_the_subcommand() {
     for planned in [after, before] {
         match planned {
             ComposeCommand::Daemon { id, up_on_start, .. } => {
-                assert_eq!(id, "host-a");
+                assert_eq!(id.as_deref(), Some("host-a"));
                 assert!(up_on_start);
             }
             other => panic!("expected Daemon, got {other:?}"),
@@ -166,13 +166,6 @@ fn up_can_detach() {
     }
 }
 
-#[test]
-fn up_without_an_id_says_which_flag_is_missing() {
-    let err = parse(&["iii", "compose", "up", "-f", "c.yaml"])
-        .plan()
-        .expect_err("--id names the daemon");
-    assert_eq!(err.code(), "MISSING_FLAG");
-}
 
 // ── `iii compose logs` ───────────────────────────────────────────────────
 
@@ -319,34 +312,30 @@ fn the_daemon_identity_answers_to_id_ns_and_namespace() {
             .plan()
             .unwrap_or_else(|err| panic!("{flag} should name the daemon: {err}"));
         match planned {
-            ComposeCommand::Daemon { id, .. } => assert_eq!(id, "shop", "via {flag}"),
+            ComposeCommand::Daemon { id, .. } => assert_eq!(id.as_deref(), Some("shop"), "via {flag}"),
             other => panic!("expected Daemon via {flag}, got {other:?}"),
         }
     }
 }
 
 #[test]
-fn the_project_namespace_is_a_separate_flag_from_the_daemon_name() {
-    // Two different namespaces: the daemon's own, and the one its children
-    // register in. Sharing a flag name for both was what made `--namespace`
-    // on `up` mean something the operator did not ask for.
-    let cli = parse(&[
-        "iii",
-        "compose",
-        "up",
-        "--ns",
-        "shop",
-        "--project-namespace",
-        "orders-fixed",
-        "-f",
-        "c.yaml",
-    ]);
+fn a_project_with_no_name_anywhere_lands_in_default() {
+    // Three steps, no derivation: `--ns`, then `name:` in the file, then
+    // `default`. Nothing is hashed in, so the namespace is one the operator
+    // can type — which is the only way `stop` and `logs` are usable.
+    use iii_compose::namespace::{DEFAULT_NAMESPACE, project_namespace};
 
-    match cli.plan().unwrap() {
-        ComposeCommand::Daemon { id, namespace, .. } => {
-            assert_eq!(id, "shop");
-            assert_eq!(namespace.as_deref(), Some("orders-fixed"));
-        }
+    assert_eq!(project_namespace(Some("shop"), Some("loja")), "shop");
+    assert_eq!(project_namespace(None, Some("loja")), "loja");
+    assert_eq!(project_namespace(None, None), DEFAULT_NAMESPACE);
+}
+
+#[test]
+fn daemon_mode_no_longer_demands_an_id() {
+    // The file may name the project, and if it does not, `default` does.
+    let cli = parse(&["iii", "compose", "--file", "c.yaml"]);
+    match cli.plan().expect("an unnamed project is still a project") {
+        ComposeCommand::Daemon { id, .. } => assert_eq!(id, None),
         other => panic!("expected Daemon, got {other:?}"),
     }
 }

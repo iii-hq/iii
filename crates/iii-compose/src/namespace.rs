@@ -4,35 +4,53 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Project namespace derivation.
+//! Where a project registers.
 //!
-//! Every child of one compose project registers in the same engine namespace,
-//! which is what lets two projects declare a `state` worker each without
-//! colliding. An explicit `--namespace` wins; otherwise the namespace is
-//! derived from the project name plus a digest of the canonical compose path,
-//! so the same file always yields the same namespace and two copies of the same
-//! project in different directories yield different ones.
+//! One namespace holds everything a project puts on the engine: the daemon's
+//! own `compose::*` and every container's functions. Resolution has three
+//! steps and no derivation — `--ns` on the command line, then `name:` in the
+//! compose file, then `default`.
+//!
+//! Nothing is hashed into it. A namespace an operator cannot predict is one
+//! they cannot address, and addressing it is the whole point: `stop`, `logs`
+//! and every `iii trigger` take it by hand. The cost is that two copies of a
+//! project sharing a `name:` now collide instead of quietly running side by
+//! side, which is the intended reading of a duplicate.
 
-use std::path::Path;
+/// Namespace the daemon and its containers register in.
+///
+/// `explicit` is `--ns`; `declared` is `name:` in the compose file. Blank
+/// values count as absent: a file with `name: ""` has not named anything.
+pub fn project_namespace(explicit: Option<&str>, declared: Option<&str>) -> String {
+    first_present([explicit, declared])
+        .map(sanitize)
+        .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string())
+}
 
-use sha2::{Digest, Sha256};
+/// The daemon's own worker name, resolved the same way with a different last
+/// resort.
+///
+/// It cannot fall back to `default`: that is a namespace, not a name, and the
+/// lease is on the pair. Two unnamed daemons in `default` therefore both claim
+/// `compose` and the second is rejected — which is what a duplicate should do.
+pub fn daemon_worker_name(explicit: Option<&str>, declared: Option<&str>) -> String {
+    first_present([explicit, declared])
+        .map(sanitize)
+        .unwrap_or_else(|| UNNAMED_DAEMON.to_string())
+}
 
-/// Digest length in hex characters. Eight is enough to keep accidental
-/// collisions negligible while leaving the namespace readable in logs.
-const DIGEST_CHARS: usize = 8;
+/// Namespace for a project that names itself nowhere.
+pub const DEFAULT_NAMESPACE: &str = "default";
 
-pub fn project_namespace(
-    explicit: Option<&str>,
-    project_name: &str,
-    canonical_compose_path: &Path,
-) -> String {
-    if let Some(explicit) = explicit.map(str::trim).filter(|value| !value.is_empty()) {
-        return explicit.to_string();
-    }
-    let digest = hex::encode(Sha256::digest(
-        canonical_compose_path.to_string_lossy().as_bytes(),
-    ));
-    format!("{}-{}", sanitize(project_name), &digest[..DIGEST_CHARS])
+/// Worker name for a daemon that names itself nowhere.
+pub const UNNAMED_DAEMON: &str = "compose";
+
+fn first_present(candidates: [Option<&str>; 2]) -> Option<&str> {
+    candidates
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
 }
 
 /// Namespaces travel into queue names, metric labels and log lines, so the
@@ -67,34 +85,62 @@ fn sanitize(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
-    fn explicit_namespace_wins() {
-        let ns = project_namespace(Some("orders"), "ignored", &PathBuf::from("/srv/a.yaml"));
-        assert_eq!(ns, "orders");
+    fn the_command_line_wins() {
+        assert_eq!(project_namespace(Some("orders"), Some("ignored")), "orders");
     }
 
     #[test]
-    fn blank_explicit_namespace_falls_back_to_derivation() {
-        let ns = project_namespace(Some("   "), "orders", &PathBuf::from("/srv/a.yaml"));
-        assert!(ns.starts_with("orders-"), "unexpected namespace: {ns}");
+    fn the_file_is_used_when_the_command_line_says_nothing() {
+        assert_eq!(project_namespace(None, Some("orders")), "orders");
     }
 
     #[test]
-    fn derivation_is_stable_and_path_scoped() {
-        let a = project_namespace(None, "orders", &PathBuf::from("/srv/a/worker-compose.yaml"));
-        let again = project_namespace(None, "orders", &PathBuf::from("/srv/a/worker-compose.yaml"));
-        let b = project_namespace(None, "orders", &PathBuf::from("/srv/b/worker-compose.yaml"));
-
-        assert_eq!(a, again);
-        assert_ne!(a, b);
-        assert_eq!(a.len(), "orders-".len() + DIGEST_CHARS);
+    fn naming_it_nowhere_lands_in_default() {
+        // The same rule the rest of the engine follows: no namespace means
+        // `default`, not a namespace invented on the project's behalf.
+        assert_eq!(project_namespace(None, None), DEFAULT_NAMESPACE);
     }
 
     #[test]
-    fn project_names_are_sanitized() {
-        let ns = project_namespace(None, "Orders API!", &PathBuf::from("/srv/a.yaml"));
-        assert!(ns.starts_with("orders-api-"), "unexpected namespace: {ns}");
+    fn blank_counts_as_absent() {
+        // `name: ""` has not named anything, and `--ns ""` has not either.
+        assert_eq!(project_namespace(Some("  "), Some("orders")), "orders");
+        assert_eq!(project_namespace(Some("  "), None), DEFAULT_NAMESPACE);
+        assert_eq!(project_namespace(None, Some("")), DEFAULT_NAMESPACE);
+    }
+
+    #[test]
+    fn the_same_name_yields_the_same_namespace_anywhere() {
+        // Nothing about the path enters it. Two copies of a project therefore
+        // collide rather than quietly running side by side, which is what a
+        // duplicate should do.
+        assert_eq!(
+            project_namespace(None, Some("shop")),
+            project_namespace(None, Some("shop"))
+        );
+    }
+
+    #[test]
+    fn a_name_is_reduced_to_what_a_namespace_may_hold() {
+        // Namespaces travel into queue names, metric labels and log lines.
+        assert_eq!(project_namespace(None, Some("My Shop!")), "my-shop");
+        assert_eq!(project_namespace(Some("A B"), None), "a-b");
+    }
+
+    #[test]
+    fn the_daemon_name_follows_the_same_order() {
+        assert_eq!(daemon_worker_name(Some("shop"), Some("loja")), "shop");
+        assert_eq!(daemon_worker_name(None, Some("loja")), "loja");
+    }
+
+    #[test]
+    fn an_unnamed_daemon_is_still_named_something() {
+        // `default` is a namespace, not a name, and the lease is on the pair.
+        // Two unnamed daemons therefore both claim `compose`, and the second
+        // is rejected.
+        assert_eq!(daemon_worker_name(None, None), UNNAMED_DAEMON);
+        assert_ne!(daemon_worker_name(None, None), DEFAULT_NAMESPACE);
     }
 }

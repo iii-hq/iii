@@ -93,9 +93,11 @@ pub struct Container {
 
 #[derive(Debug, Clone)]
 pub struct ComposeFile {
-    pub name: String,
-    /// Canonical path of the compose file. Also the seed of the project
-    /// namespace, so it must be resolved once and never re-derived.
+    /// The namespace this project registers in, when it declares one. Nothing
+    /// is derived from it: what the file says is what the engine sees.
+    pub name: Option<String>,
+    /// Canonical path of the compose file. Resolved once so the state binding
+    /// is stable regardless of how the operator spelled the path.
     pub path: PathBuf,
     /// Directory every relative path in the file resolves against.
     pub base_dir: PathBuf,
@@ -448,7 +450,10 @@ pub fn parse_duration(value: &str) -> Option<Duration> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawComposeFile {
-    name: String,
+    /// Optional: a project that names itself nowhere lands in `default`, the
+    /// same rule the rest of the engine follows.
+    #[serde(default)]
+    name: Option<String>,
     #[serde(default)]
     startup_timeout: Option<String>,
     #[serde(default)]
