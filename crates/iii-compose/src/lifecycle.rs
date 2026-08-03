@@ -32,7 +32,7 @@ use crate::{
     engine::EngineClient,
     error::{ComposeError, Result},
     hooks,
-    manifest::resolve_start,
+    manifest::{StartSpec, resolve_start},
     process::{Outcome, Supervised, spawn_supervised_piped},
     report,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
@@ -91,6 +91,11 @@ pub struct LifecycleCtx<'a> {
     pub engine_url: &'a str,
     /// Directory for resolved config files, owner-only.
     pub config_dir: &'a std::path::Path,
+    /// Where installed packages live, shared across projects on this machine.
+    pub package_cache: &'a std::path::Path,
+    /// Bounded capture of what the children print, for `compose::logs`. Shared
+    /// because the output pumps outlive the operation that started them.
+    pub logs: &'a std::sync::Arc<crate::logs::LogStore>,
 }
 
 /// Containers currently supervised by this daemon, keyed by container id.
@@ -282,9 +287,31 @@ async fn start_one(
         });
     }
 
-    let start = resolve_start(key, container)?;
+    // A package is fetched here rather than at validation time: resolving it
+    // needs the registry, and `validate` is offline by contract.
+    let (start, shipped_config) = match &container.worker {
+        crate::config::WorkerSource::Package { reference } => {
+            let range = container.version.as_deref().unwrap_or("*");
+            report::starting(key, &format!("installing {reference}@{range}"));
+            let installed =
+                crate::registry::install(key, reference, range, ctx.package_cache).await?;
+            report::starting(
+                key,
+                &format!("starting {} {}", installed.name, installed.version),
+            );
+            (
+                StartSpec::Exec {
+                    program: installed.program,
+                    args: Vec::new(),
+                },
+                installed.default_config,
+            )
+        }
+        crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
+    };
+
     let user_env = container.resolve_user_env(key)?;
-    let config = resolve_config(ctx, container, key).await?;
+    let config = resolve_config(ctx, container, key, shipped_config).await?;
     let worker_dir = container.worker_dir();
     let working_dir = resolve_working_dir(
         container.working_dir.as_deref(),
@@ -321,7 +348,7 @@ async fn start_one(
         })?;
     // Tag the child's output before waiting on readiness: whatever it prints
     // while starting is exactly what an operator needs when it does not.
-    report::pump_output(key, output.stdout, output.stderr);
+    report::pump_output(key, output.stdout, output.stderr, ctx.logs);
 
     let readiness = ctx
         .engine
@@ -411,20 +438,31 @@ async fn resolve_config(
     ctx: &LifecycleCtx<'_>,
     container: &Container,
     key: &str,
+    shipped: Option<serde_yaml::Value>,
 ) -> Result<Option<ConfigFile>> {
-    let base = match &container.config_name {
-        Some(name) => Some(ctx.engine.fetch_config(name).await?),
-        None => None,
-    };
+    // Lowest to highest: what the worker ships, what the configuration worker
+    // holds, what the compose file overrides.
+    let mut value = shipped;
 
-    let value = match (base, &container.config_override) {
-        (None, None) => return Ok(None),
-        (Some(base), None) => base,
-        (None, Some(overrides)) => overrides.clone(),
-        (Some(base), Some(overrides)) => merge(base, overrides.clone()),
-    };
+    if let Some(name) = &container.config_name {
+        let fetched = ctx.engine.fetch_config(name).await?;
+        value = Some(match value {
+            Some(base) => merge(base, fetched),
+            None => fetched,
+        });
+    }
 
-    ConfigFile::write(ctx.config_dir, key, &value).map(Some)
+    if let Some(overrides) = &container.config_override {
+        value = Some(match value {
+            Some(base) => merge(base, overrides.clone()),
+            None => overrides.clone(),
+        });
+    }
+
+    match value {
+        None => Ok(None),
+        Some(value) => ConfigFile::write(ctx.config_dir, key, &value).map(Some),
+    }
 }
 
 fn fire_post_run(spawn_ctx: &SpawnCtx<'_>, container: &Container) {

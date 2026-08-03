@@ -223,7 +223,10 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
         Some(Commands::Compose(args)) => match args.action {
-            Some(iii_compose::ComposeAction::Validate) => "compose validate".to_string(),
+            Some(iii_compose::ComposeAction::Up(_)) => "compose up".to_string(),
+            Some(iii_compose::ComposeAction::Validate(_)) => "compose validate".to_string(),
+            Some(iii_compose::ComposeAction::Logs(_)) => "compose logs".to_string(),
+            Some(iii_compose::ComposeAction::Stop(_)) => "compose stop".to_string(),
             None => "compose".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
@@ -853,15 +856,17 @@ mod tests {
         assert_eq!(cli_usage_command_path(&cli), "compose validate");
         match cli.command {
             Some(Commands::Compose(args)) => {
-                assert!(matches!(
-                    args.action,
-                    Some(iii_compose::ComposeAction::Validate)
-                ));
+                // `--file` belongs to the subcommand now: `logs` reads no
+                // project, and keeping it off the parent is what leaves `-f`
+                // free to mean `--follow` there.
+                match args.action {
+                    Some(iii_compose::ComposeAction::Validate(validate)) => assert_eq!(
+                        validate.file.as_deref(),
+                        Some(std::path::Path::new("compose.yaml"))
+                    ),
+                    other => panic!("expected validate, got {other:?}"),
+                }
                 assert!(args.id.is_none());
-                assert_eq!(
-                    args.file.as_deref(),
-                    Some(std::path::Path::new("compose.yaml"))
-                );
             }
             _ => panic!("expected Compose subcommand"),
         }
