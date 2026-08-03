@@ -35,9 +35,9 @@ pub struct ComposeCli {
     #[command(subcommand)]
     pub action: Option<ComposeAction>,
 
-    /// Daemon identity. Required in daemon mode: it names the daemon in the
-    /// engine, it is the namespace `stop` and `logs` address it by, and it is
-    /// the `id=` every remote `compose::*` call must match.
+    /// Namespace the project registers in, the daemon's own `compose::*`
+    /// included. Falls back to `name:` in the compose file, then to `default`.
+    /// It is also the `id=` every remote `compose::*` call must match.
     #[arg(long, visible_aliases = ["ns", "namespace"], value_name = "ID")]
     pub id: Option<String>,
 
@@ -45,12 +45,6 @@ pub struct ComposeCli {
     /// ws://127.0.0.1:49134.
     #[arg(long, global = true, value_name = "URL")]
     pub engine: Option<String>,
-
-    /// Namespace the project's *workers* register under, which is not the
-    /// daemon's own. Defaults to a deterministic namespace derived from the
-    /// project name and the compose path.
-    #[arg(long = "project-namespace", value_name = "NS")]
-    pub namespace: Option<String>,
 
     /// Compose file this invocation is bound to. Defaults to
     /// `worker-compose.yaml` in the current directory.
@@ -90,19 +84,14 @@ pub struct StopArgs {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct UpArgs {
-    /// Daemon identity: it names the daemon in the engine and is the namespace
-    /// `stop` and `logs` address it by.
+    /// Namespace the project registers in. Falls back to `name:` in the
+    /// compose file, then to `default`.
     #[arg(long, visible_aliases = ["ns", "namespace"], value_name = "ID")]
     pub id: Option<String>,
 
     /// Compose file. Defaults to `worker-compose.yaml` here.
     #[arg(long, short = 'f', value_name = "PATH")]
     pub file: Option<PathBuf>,
-
-    /// Namespace the project's *workers* register under, which is not the
-    /// daemon's own.
-    #[arg(long = "project-namespace", value_name = "NS")]
-    pub namespace: Option<String>,
 
     /// Run in the background and return once the project is up.
     #[arg(long, short = 'd')]
@@ -115,9 +104,11 @@ pub struct ValidateArgs {
     #[arg(long, short = 'f', value_name = "PATH")]
     pub file: Option<PathBuf>,
 
-    /// Report the project under this namespace instead of the derived one.
-    #[arg(long = "project-namespace", value_name = "NS")]
-    pub namespace: Option<String>,
+    /// Report the project under this namespace instead of the one the file
+    /// declares. The same flag the other subcommands take, so `validate` can
+    /// answer the question `up` would be asked.
+    #[arg(long = "id", visible_aliases = ["ns", "namespace"], value_name = "NS")]
+    pub id: Option<String>,
 }
 
 /// Lines returned per container when `--tail` is not given.
@@ -167,16 +158,27 @@ pub enum ComposeCommand {
         engine_url: String,
     },
     Daemon {
-        id: String,
+        /// `--ns` when given. Absent means the compose file decides, and a
+        /// file that decides nothing means `default`.
+        id: Option<String>,
         file: PathBuf,
         engine_url: String,
-        namespace: Option<String>,
         /// Start the project immediately and fail the process if it does not
         /// come up. Set by the `up` subcommand.
         up_on_start: bool,
         /// Re-launch in the background instead of serving in the foreground.
         detach: bool,
     },
+}
+
+/// A flag the operator actually filled in. Blank is not a value: `--ns ""`
+/// has named nothing, and should fall through to the next step rather than
+/// creating a namespace called "".
+fn present(value: Option<&String>) -> Option<String> {
+    value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 impl ComposeCli {
@@ -188,14 +190,9 @@ impl ComposeCli {
             // reaches for, and a flag on one side of that pair reads as an
             // afterthought.
             Some(ComposeAction::Up(args)) => Ok(ComposeCommand::Daemon {
-                id: args
-                    .id
-                    .clone()
-                    .filter(|id| !id.trim().is_empty())
-                    .map_or_else(|| self.require_id(), Ok)?,
+                id: present(args.id.as_ref()).or_else(|| present(self.id.as_ref())),
                 file: self.compose_file_or(args.file.as_ref())?,
                 engine_url: self.engine_url(),
-                namespace: args.namespace.clone().or_else(|| self.namespace.clone()),
                 up_on_start: true,
                 detach: args.detach && std::env::var_os(DETACHED_GUARD).is_none(),
             }),
@@ -203,7 +200,7 @@ impl ComposeCli {
             // off the parent for `logs`'s sake, not to break a habit.
             Some(ComposeAction::Validate(args)) => Ok(ComposeCommand::Validate {
                 file: self.compose_file_or(args.file.as_ref())?,
-                namespace: args.namespace.clone().or_else(|| self.namespace.clone()),
+                namespace: present(args.id.as_ref()).or_else(|| present(self.id.as_ref())),
             }),
             // No compose file is read here: the daemon holds the project, and
             // this only asks it a question. Requiring one would stop `logs`
@@ -222,10 +219,9 @@ impl ComposeCli {
             None => {
                 let file = self.compose_file()?;
                 Ok(ComposeCommand::Daemon {
-                    id: self.require_id()?,
+                    id: present(self.id.as_ref()),
                     file,
                     engine_url: self.engine_url(),
-                    namespace: self.namespace.clone(),
                     // Bare daemon mode serves without starting anything: that
                     // is `iii compose up`, a separate decision.
                     up_on_start: false,
@@ -235,14 +231,6 @@ impl ComposeCli {
                 })
             }
         }
-    }
-
-    /// The daemon identity, which both daemon mode and `logs` need.
-    fn require_id(&self) -> Result<String> {
-        self.id
-            .clone()
-            .filter(|id| !id.trim().is_empty())
-            .ok_or(ComposeError::MissingFlag { flag: "--id" })
     }
 
     /// `--file`, else `worker-compose.yaml` in the current directory.
