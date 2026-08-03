@@ -43,9 +43,9 @@ iii compose [OPTIONS] [COMMAND]
 
 | Option | Description |
 | ------ | ----------- |
-| `--id <ID>` | Daemon identity. Required in daemon mode: it names the daemon in the engine and is the `id=` every remote `compose::*` call must match |
+| `--id <ID>` | Daemon identity. Required in daemon mode: it names the daemon in the engine, it is the namespace `stop` and `logs` address it by, and it is the `id=` every remote `compose::*` call must match |
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
-| `--namespace <NS>` | Namespace the project's workers register under. Defaults to a deterministic namespace derived from the project name and compose path |
+| `--project-namespace <NS>` | Namespace the project's *workers* register under, which is not the daemon's own. Defaults to a deterministic namespace derived from the project name and the compose path |
 | `-f, --file <PATH>` | Compose file this invocation is bound to. Defaults to `worker-compose.yaml` in the current directory |
 | `-d, --detach` | Run the daemon in the background and return once it is serving |
 
@@ -90,7 +90,7 @@ iii compose up [OPTIONS]
 | ------ | ----------- |
 | `--id <ID>` | Daemon identity: it names the daemon in the engine and is the namespace `stop` and `logs` address it by |
 | `-f, --file <PATH>` | Compose file. Defaults to `worker-compose.yaml` here |
-| `--namespace <NS>` | Namespace the project's workers register under |
+| `--project-namespace <NS>` | Namespace the project's *workers* register under, which is not the daemon's own |
 | `-d, --detach` | Run in the background and return once the project is up |
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
 
@@ -105,7 +105,7 @@ iii compose validate [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `-f, --file <PATH>` | Compose file to validate. Defaults to `worker-compose.yaml` here |
-| `--namespace <NS>` | Report the project under this namespace instead of the derived one |
+| `--project-namespace <NS>` | Report the project under this namespace instead of the derived one |
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
 
 ### `iii project`
