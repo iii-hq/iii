@@ -30,9 +30,7 @@ there is rejected with a `WORKER_NAMESPACE_CONFLICT` and its connection is close
 restarting against its own not-yet-cleaned connection is not affected; it reclaims its own name.
 
 <Note>
-  To put workers in namespaces and call across them, see [Isolate workers with
-  namespaces](../how-to/isolate-workers-with-namespaces). For the design rationale, see
-  [Namespaces](../understanding-iii/namespaces).
+  To put workers in namespaces and call across them, see [Namespaces](../understanding-iii/namespaces).
 </Note>
 
 ## Untrusted workers and access control
