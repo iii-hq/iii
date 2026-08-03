@@ -61,7 +61,7 @@ pub struct ComposeCli {
     /// Run the daemon in the background and return once it is serving.
     ///
     /// Returns only after the daemon answers `compose::status`, so a failure to
-    /// start is still a failure of this command — a detached daemon that dies
+    /// start is still a failure of this command: a detached daemon that dies
     /// on a duplicate `--id` must not look like a success.
     #[arg(long, short = 'd')]
     pub detach: bool,
@@ -81,7 +81,7 @@ pub enum ComposeAction {
 
 #[derive(Args, Debug, Clone)]
 pub struct StopArgs {
-    /// Namespace the daemon serves in — the same one `logs` takes.
+    /// Namespace the daemon serves in, the same one `logs` takes.
     #[arg(long, visible_alias = "ns", value_name = "NS")]
     pub namespace: String,
 }
@@ -122,7 +122,7 @@ pub const DEFAULT_TAIL: usize = 50;
 
 #[derive(Args, Debug, Clone)]
 pub struct LogsArgs {
-    /// Namespace the daemon serves in — the same one `iii trigger
+    /// Namespace the daemon serves in, the same one `iii trigger
     /// compose::logs --namespace` takes. A daemon registers `compose::*` under
     /// its own `--id`, so the two are the same string.
     #[arg(long, visible_alias = "ns", value_name = "NS")]
