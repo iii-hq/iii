@@ -307,3 +307,46 @@ fn stop_takes_the_engine_from_the_environment_like_everything_else() {
         other => panic!("expected Stop, got {other:?}"),
     }
 }
+
+#[test]
+fn the_daemon_identity_answers_to_id_ns_and_namespace() {
+    // One string with three spellings, because it is one thing: the daemon's
+    // name in the engine *is* the namespace `stop` and `logs` address it by.
+    // Reaching for `--ns` on `up` after using it on `stop` should not be an
+    // error message.
+    for flag in ["--id", "--ns", "--namespace"] {
+        let planned = parse(&["iii", "compose", "up", flag, "shop", "-f", "c.yaml"])
+            .plan()
+            .unwrap_or_else(|err| panic!("{flag} should name the daemon: {err}"));
+        match planned {
+            ComposeCommand::Daemon { id, .. } => assert_eq!(id, "shop", "via {flag}"),
+            other => panic!("expected Daemon via {flag}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_project_namespace_is_a_separate_flag_from_the_daemon_name() {
+    // Two different namespaces: the daemon's own, and the one its children
+    // register in. Sharing a flag name for both was what made `--namespace`
+    // on `up` mean something the operator did not ask for.
+    let cli = parse(&[
+        "iii",
+        "compose",
+        "up",
+        "--ns",
+        "shop",
+        "--project-namespace",
+        "orders-fixed",
+        "-f",
+        "c.yaml",
+    ]);
+
+    match cli.plan().unwrap() {
+        ComposeCommand::Daemon { id, namespace, .. } => {
+            assert_eq!(id, "shop");
+            assert_eq!(namespace.as_deref(), Some("orders-fixed"));
+        }
+        other => panic!("expected Daemon, got {other:?}"),
+    }
+}
