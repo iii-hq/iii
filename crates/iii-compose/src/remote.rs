@@ -49,6 +49,7 @@ pub fn register(daemon: &Arc<Daemon>) {
         ("list", Operation::List),
         ("status", Operation::Status),
         ("logs", Operation::Logs),
+        ("stop", Operation::Stop),
         ("validate", Operation::Validate),
     ] {
         let daemon = Arc::clone(daemon);
@@ -66,6 +67,10 @@ pub fn register(daemon: &Arc<Daemon>) {
     }
 }
 
+/// Lines returned when the caller does not say. Enough to see a failure and
+/// what led to it without paging a terminal off the screen.
+const DEFAULT_TAIL: usize = 50;
+
 #[derive(Debug, Clone, Copy)]
 enum Operation {
     Up,
@@ -73,6 +78,7 @@ enum Operation {
     List,
     Status,
     Logs,
+    Stop,
     Validate,
 }
 
@@ -108,19 +114,23 @@ async fn dispatch(
         })),
         Operation::Status => Ok(json!({
             "daemon_id": daemon.id,
+            // Which process is answering. `--detach` waits on this: a second
+            // daemon started with a taken `--id` would otherwise see the first
+            // one's answer and call itself started.
+            "daemon_pid": std::process::id(),
             "namespace": daemon.project_namespace,
             "containers": daemon.status().await,
         })),
-        // Log capture is not implemented: children inherit the daemon's stdio
-        // today, so there is nothing to tail. Reporting an empty list here
-        // would read as "the worker is silent".
-        Operation::Logs => Err(Error::Remote {
-            code: "LOGS_NOT_IMPLEMENTED".to_string(),
-            message: "children currently inherit the daemon's stdout/stderr, so there is no \
-                      per-container log to tail"
-                .to_string(),
-            stacktrace: None,
-        }),
+        // An unknown container answers empty rather than erroring: it may
+        // simply not have started yet, and a caller polling for output should
+        // not have to tell those two apart.
+        Operation::Logs => Ok(json!({
+            "daemon_id": daemon.id,
+            "containers": daemon.logs(request.container.as_deref(), request.tail.unwrap_or(DEFAULT_TAIL)),
+        })),
+        // Answers first, exits after: the serve loop picks the request up and
+        // runs the same teardown a signal would.
+        Operation::Stop => Ok(daemon.request_stop().await),
         Operation::Validate => {
             match crate::manifest::validate_offline(&daemon.file, &daemon.project_namespace) {
                 Ok(report) => Ok(json!({

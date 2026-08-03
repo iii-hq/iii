@@ -21,6 +21,10 @@ dirs = { workspace = true }
 colored = { workspace = true }
 # The daemon is an ordinary worker: it talks to the engine through the SDK.
 iii-sdk = { workspace = true }
+# Registry resolution and artefact download.
+reqwest = { workspace = true }
+flate2 = "1"
+tar = "0.4"
 uuid = { workspace = true }
 schemars = "0.8"
 thiserror = { workspace = true }

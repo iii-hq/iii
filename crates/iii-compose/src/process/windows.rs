@@ -26,7 +26,8 @@ use windows_sys::Win32::{
         JobObjects::{AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject},
         Threading::{
             CREATE_NEW_PROCESS_GROUP, GetProcessTimes, OpenProcess,
-            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+            TerminateProcess, WaitForSingleObject,
         },
     },
 };
@@ -55,9 +56,25 @@ impl Drop for OwnedHandle {
 pub struct Supervised {
     pub pid: u32,
     pub birth: BirthIdentity,
-    job: OwnedHandle,
-    exit: watch::Receiver<Option<ExitStatus>>,
+    /// `None` for an adopted process: the job belonged to the daemon that
+    /// spawned it and died with it, so only the process itself can be reached.
+    job: Option<OwnedHandle>,
+    exit: ExitSource,
 }
+
+/// How this process's exit becomes observable.
+///
+/// A child we spawned is reaped by a task that publishes the status. One
+/// adopted from a previous daemon is not our child, so its liveness has to be
+/// polled and its status can never be recovered.
+#[derive(Debug)]
+enum ExitSource {
+    Reaped(watch::Receiver<Option<ExitStatus>>),
+    Adopted,
+}
+
+/// How often an adopted process is checked for liveness.
+const ADOPTED_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Spawns `command` in its own job and console process group, and starts
 /// reaping it.
@@ -128,17 +145,55 @@ fn spawn_supervised_inner(
         Supervised {
             pid,
             birth: birth_identity(pid),
-            job,
-            exit,
+            job: Some(job),
+            exit: ExitSource::Reaped(exit),
         },
         output,
     ))
 }
 
 impl Supervised {
+    /// Takes over a process a previous daemon left running.
+    ///
+    /// Returns `None` unless the PID still carries the identity recorded for
+    /// it: a recycled PID belongs to somebody else.
+    ///
+    /// Adoption is weaker here than on unix. The job object died with the
+    /// daemon that created it, so descendants this process spawned are no
+    /// longer reachable as a set — teardown ends this process and leaves any
+    /// grandchildren behind.
+    pub fn adopt(pid: u32, recorded: &BirthIdentity) -> Option<Self> {
+        if !recorded.matches(&birth_identity(pid)) {
+            return None;
+        }
+        Some(Supervised {
+            pid,
+            birth: recorded.clone(),
+            job: None,
+            exit: ExitSource::Adopted,
+        })
+    }
+
+    /// Whether this process was inherited rather than spawned here.
+    pub fn is_adopted(&self) -> bool {
+        matches!(self.exit, ExitSource::Adopted)
+    }
+
     /// Resolves when the child exits. Multiple callers may wait independently.
+    ///
+    /// An adopted process reports [`exited_unknown`]: its real status went to
+    /// the daemon that spawned it.
     pub async fn wait(&self) -> ExitStatus {
-        let mut exit = self.exit.clone();
+        let mut exit = match &self.exit {
+            ExitSource::Reaped(exit) => exit.clone(),
+            ExitSource::Adopted => {
+                while is_running(self.pid) {
+                    tokio::time::sleep(ADOPTED_POLL_INTERVAL).await;
+                }
+                return exited_unknown();
+            }
+        };
+
         loop {
             if let Some(status) = *exit.borrow_and_update() {
                 return status;
@@ -151,13 +206,23 @@ impl Supervised {
 
     /// Current state without blocking.
     pub fn poll(&self) -> Outcome {
-        match *self.exit.borrow() {
-            Some(status) => Outcome::Exited(status),
-            None => Outcome::Running,
+        match &self.exit {
+            ExitSource::Reaped(exit) => match *exit.borrow() {
+                Some(status) => Outcome::Exited(status),
+                None => Outcome::Running,
+            },
+            ExitSource::Adopted => {
+                if self.birth.matches(&birth_identity(self.pid)) {
+                    Outcome::Running
+                } else {
+                    Outcome::Exited(exited_unknown())
+                }
+            }
         }
     }
 
-    /// CTRL_BREAK first, then terminate the whole job once `grace` elapses.
+    /// CTRL_BREAK first, then terminate once `grace` elapses — the whole job
+    /// when we own one, the process alone when it was adopted.
     pub async fn stop(&self, grace: Duration) -> ExitStatus {
         if let Outcome::Exited(status) = self.poll() {
             return status;
@@ -168,10 +233,30 @@ impl Supervised {
             return status;
         }
 
-        // 1 becomes the exit code of every process left in the job.
-        unsafe { TerminateJobObject(self.job.0, 1) };
+        // Re-check identity before escalating: over a long grace the process
+        // may have exited and its PID been handed to somebody else.
+        if let Outcome::Exited(status) = self.poll() {
+            return status;
+        }
+
+        match &self.job {
+            // 1 becomes the exit code of every process left in the job.
+            Some(job) => unsafe { TerminateJobObject(job.0, 1) },
+            None => terminate_process(self.pid),
+        };
         self.wait().await
     }
+}
+
+/// Ends a single process by PID. Used only for adopted processes, which have
+/// no job to terminate.
+fn terminate_process(pid: u32) {
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return;
+    }
+    let handle = OwnedHandle(handle);
+    unsafe { TerminateProcess(handle.0, 1) };
 }
 
 /// A job holding one short-lived process tree, for callers that manage their
