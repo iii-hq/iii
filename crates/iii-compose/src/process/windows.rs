@@ -240,10 +240,15 @@ impl Supervised {
         }
 
         match &self.job {
-            // 1 becomes the exit code of every process left in the job.
-            Some(job) => unsafe { TerminateJobObject(job.0, 1) },
+            // 1 becomes the exit code of every process left in the job. The
+            // BOOL it returns is discarded on purpose: "already gone" is not a
+            // failure here, and it is the arm that has a value at all — the
+            // adopted path returns nothing.
+            Some(job) => {
+                unsafe { TerminateJobObject(job.0, 1) };
+            }
             None => terminate_process(self.pid),
-        };
+        }
         self.wait().await
     }
 }
