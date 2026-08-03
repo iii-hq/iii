@@ -106,7 +106,6 @@ Workers that declare no namespace keep routing through `default` exactly as they
 workers that declare one own their function ids inside it.
 
 <Note>
-  To put workers in namespaces, see [Isolate workers with
-  namespaces](../how-to/isolate-workers-with-namespaces). For why routing is strict, see
+  To put workers in namespaces or understand why routing is strict, see
   [Namespaces](../understanding-iii/namespaces).
 </Note>

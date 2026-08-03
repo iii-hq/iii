@@ -144,8 +144,7 @@ miss returns `function_not_found` naming the namespaces where the id does exist.
 
 <Note>
   `iii trigger` has no namespace flag, so it reaches `default` only. For calling across namespaces
-  from worker code, see [Isolate workers with
-  namespaces](../how-to/isolate-workers-with-namespaces#call-a-function-in-another-namespace).
+  from worker code, see [Namespaces](../understanding-iii/namespaces#call-a-function-in-another-namespace).
 </Note>
 
 <Note>
