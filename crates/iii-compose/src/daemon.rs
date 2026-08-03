@@ -59,12 +59,17 @@ impl Daemon {
     /// Connects, adopts whatever survived a previous run, and returns a daemon
     /// ready to serve `compose::*`.
     pub async fn start(
-        id: String,
+        id: Option<String>,
         file: ComposeFile,
         engine_url: String,
-        namespace_override: Option<&str>,
     ) -> Result<Arc<Self>> {
-        let project_namespace = project_namespace(namespace_override, &file.name, &file.path);
+        // One namespace for the whole project, the daemon's own `compose::*`
+        // included. Two of them meant an operator had to know both to work a
+        // project, and only one of them was ever printed.
+        let declared = file.name.as_deref();
+        let explicit = id.as_deref();
+        let project_namespace = project_namespace(explicit, declared);
+        let id = crate::namespace::daemon_worker_name(explicit, declared);
         let store = StateStore::for_daemon(&id)?;
 
         let recovered = store.load()?;
@@ -76,7 +81,7 @@ impl Daemon {
             recovered.unwrap_or_else(|| DaemonState::new(&id, &file.path, &project_namespace));
         state.namespace = project_namespace.clone();
 
-        let engine = EngineClient::connect(&engine_url, &id);
+        let engine = EngineClient::connect(&engine_url, &id, &project_namespace);
 
         let daemon = Arc::new(Self {
             id,

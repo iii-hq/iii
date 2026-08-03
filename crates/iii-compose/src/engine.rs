@@ -43,31 +43,32 @@ pub struct EngineClient {
 }
 
 impl EngineClient {
-    /// Connects as `daemon_id`, in the namespace of the same name.
+    /// Connects as `daemon_id` in `namespace`, the same one its containers
+    /// register in.
     ///
-    /// A second daemon started with the same `--id` collides on
-    /// `(namespace, worker_name)`, and the engine rejects it fatally — see
-    /// [`EngineClient::fatal_error`].
-    pub fn connect(address: &str, daemon_id: &str) -> Self {
+    /// A second daemon on the same pair collides on `(namespace, worker_name)`
+    /// and the engine rejects it fatally — see [`EngineClient::fatal_error`].
+    /// Two copies of one project are a duplicate, not two projects.
+    pub fn connect(address: &str, daemon_id: &str, namespace: &str) -> Self {
         let mut metadata = iii_sdk::iii::WorkerMetadata {
             name: daemon_id.to_string(),
             description: Some("compose daemon".to_string()),
             ..Default::default()
         };
-        metadata.namespace = Some(daemon_id.to_string());
+        metadata.namespace = Some(namespace.to_string());
 
         let client = register_worker(
             address,
             InitOptions {
                 metadata: Some(metadata),
-                namespace: Some(daemon_id.to_string()),
+                namespace: Some(namespace.to_string()),
                 ..Default::default()
             },
         );
 
         Self {
             client,
-            namespace: daemon_id.to_string(),
+            namespace: namespace.to_string(),
         }
     }
 

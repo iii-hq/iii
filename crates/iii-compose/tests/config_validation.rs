@@ -45,7 +45,7 @@ containers:
 fn accepts_the_canonical_project() {
     let file = parse(CANONICAL).expect("canonical project should parse");
 
-    assert_eq!(file.name, "orders");
+    assert_eq!(file.name.as_deref(), Some("orders"));
     assert_eq!(file.containers.len(), 2);
     assert_eq!(file.start_order().unwrap(), vec!["database", "api"]);
 
