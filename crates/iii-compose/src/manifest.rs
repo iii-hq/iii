@@ -63,8 +63,11 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
 /// worker author's default.
 pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     let dir = match &container.worker {
+        // A package has no start command until its artefact is installed, and
+        // installing needs the network. `lifecycle::start_one` does that and
+        // builds the `Exec` itself; nothing else should reach here.
         WorkerSource::Package { .. } => {
-            return Err(ComposeError::PackageResolutionUnimplemented {
+            return Err(ComposeError::PackageNotInstalled {
                 container: key.to_string(),
             });
         }

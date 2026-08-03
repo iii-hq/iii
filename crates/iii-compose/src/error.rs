@@ -97,11 +97,73 @@ pub enum ComposeError {
     #[error("container '{container}': env_file {path} does not exist")]
     MissingEnvFile { container: String, path: PathBuf },
 
+    #[error("container '{container}': cannot reach the registry at {registry}: {message}")]
+    RegistryUnreachable {
+        container: String,
+        registry: String,
+        message: String,
+    },
+
+    #[error("container '{container}': no version of '{name}' satisfies '{range}'. {message}")]
+    PackageNotResolved {
+        container: String,
+        name: String,
+        range: String,
+        message: String,
+    },
+
     #[error(
-        "container '{container}': package:// resolution is not implemented yet. Point the \
-         entry at a local path:// worker"
+        "container '{container}': '{name}' is a {kind} worker. compose can install binary \
+         workers; engine workers are built into the engine and image workers need the OCI \
+         runtime"
     )]
-    PackageResolutionUnimplemented { container: String },
+    UnsupportedPackageKind {
+        container: String,
+        name: String,
+        kind: String,
+    },
+
+    #[error(
+        "container '{container}': {name} {version} has no build for {target}. It ships: \
+         {available}"
+    )]
+    UnsupportedPlatform {
+        container: String,
+        name: String,
+        version: String,
+        target: String,
+        available: String,
+    },
+
+    #[error("container '{container}': its package has not been installed yet")]
+    PackageNotInstalled { container: String },
+
+    #[error("container '{container}': could not download {url}: {message}")]
+    PackageDownloadFailed {
+        container: String,
+        url: String,
+        message: String,
+    },
+
+    /// The bytes are not what the registry promised. Not a retry: a different
+    /// artefact than the one that was resolved.
+    #[error(
+        "container '{container}': {url} does not match its digest. Expected {expected}, got \
+         {actual}"
+    )]
+    PackageDigestMismatch {
+        container: String,
+        url: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("container '{container}': the archive for '{name}' held no executable ({path})")]
+    PackageArtifactEmpty {
+        container: String,
+        name: String,
+        path: PathBuf,
+    },
 
     #[error(
         "container '{container}': '{name}' is reserved for the daemon and cannot be set by \
@@ -115,8 +177,45 @@ pub enum ComposeError {
     #[error("engine call {function} failed: {message}")]
     EngineCallFailed { function: String, message: String },
 
+    #[error(
+        "container '{container}' registered in '{expected}', but its function '{function}' \
+         landed in '{found_in}': the function registrations reached the engine before the \
+         namespace did, so they were filed without it"
+    )]
+    FunctionsInWrongNamespace {
+        container: String,
+        function: String,
+        found_in: String,
+        expected: String,
+    },
+
+    #[error("compose daemon '{id}' did not detach: {message}")]
+    DetachFailed { id: String, message: String },
+
     #[error("container '{container}' was not ready after {seconds}s")]
     ReadinessTimeout { container: String, seconds: u64 },
+
+    #[error(
+        "container '{container}' never registered, but worker '{registered_as}' appeared in \
+         '{namespace}' while it was starting: a worker that names itself ignores \
+         III_WORKER_NAME, so the container has to carry that same name"
+    )]
+    WorkerNameMismatch {
+        container: String,
+        registered_as: String,
+        namespace: String,
+    },
+
+    #[error(
+        "container '{container}' connected to the engine but registered in namespace \
+         '{found_in}' instead of '{expected}': it ignores III_NAMESPACE, so it was built \
+         against an SDK that predates namespace routing"
+    )]
+    WorkerIgnoredNamespace {
+        container: String,
+        found_in: String,
+        expected: String,
+    },
 
     #[error("container '{container}' exited with {code} before it registered")]
     ChildExitedBeforeReady { container: String, code: i32 },
@@ -221,11 +320,22 @@ impl ComposeError {
             Self::ManifestNameMismatch { .. } => "MANIFEST_NAME_MISMATCH",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
             Self::MissingEnvFile { .. } => "MISSING_ENV_FILE",
-            Self::PackageResolutionUnimplemented { .. } => "PACKAGE_RESOLUTION_UNIMPLEMENTED",
+            Self::RegistryUnreachable { .. } => "REGISTRY_UNREACHABLE",
+            Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
+            Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
+            Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
+            Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
+            Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",
+            Self::PackageDigestMismatch { .. } => "PACKAGE_DIGEST_MISMATCH",
+            Self::PackageArtifactEmpty { .. } => "PACKAGE_ARTIFACT_EMPTY",
             Self::ReservedEnvOverride { .. } => "RESERVED_ENV_OVERRIDE",
             Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
+            Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",
+            Self::DetachFailed { .. } => "DETACH_FAILED",
             Self::ReadinessTimeout { .. } => "STARTUP_TIMEOUT",
+            Self::WorkerIgnoredNamespace { .. } => "WORKER_IGNORED_NAMESPACE",
+            Self::WorkerNameMismatch { .. } => "WORKER_NAME_MISMATCH",
             Self::ChildExitedBeforeReady { .. } => "CHILD_EXITED_BEFORE_REGISTRATION",
             Self::SpawnFailed { .. } => "SPAWN_FAILED",
             Self::HookFailed { hook_code, .. } => hook_code,

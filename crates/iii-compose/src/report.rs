@@ -31,7 +31,7 @@
 
 use std::{
     io::{IsTerminal, Write},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -340,25 +340,32 @@ pub fn pump_output(
     key: &str,
     stdout: Option<tokio::process::ChildStdout>,
     stderr: Option<tokio::process::ChildStderr>,
+    logs: &Arc<crate::logs::LogStore>,
 ) {
     let color = container_color(key);
 
     if let Some(stdout) = stdout {
         let tag = format!("[{key}]").color(color).to_string();
+        let (store, container) = (Arc::clone(logs), key.to_string());
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(text)) = lines.next_line().await {
                 line(&format!("{tag} {text}"));
+                // Stored without the prefix and without colour: the console
+                // wants it decorated, a caller reading it back does not.
+                store.append(&container, crate::logs::Stream::Stdout, text);
             }
         });
     }
 
     if let Some(stderr) = stderr {
         let tag = format!("[{key}]").color(color).bold().to_string();
+        let (store, container) = (Arc::clone(logs), key.to_string());
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(text)) = lines.next_line().await {
                 line(&format!("{tag} {text}"));
+                store.append(&container, crate::logs::Stream::Stderr, text);
             }
         });
     }

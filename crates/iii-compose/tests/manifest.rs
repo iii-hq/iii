@@ -137,7 +137,7 @@ fn a_missing_worker_directory_is_reported_before_the_start_command() {
 }
 
 #[test]
-fn packages_report_that_resolution_is_pending() {
+fn packages_have_no_start_command_until_they_are_installed() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
@@ -145,8 +145,11 @@ fn packages_report_that_resolution_is_pending() {
         &[],
     );
 
-    let err = start_of(&file, "api").expect_err("package resolution is not implemented");
-    assert_eq!(err.code(), "PACKAGE_RESOLUTION_UNIMPLEMENTED");
+    // Installing needs the network, so `lifecycle::start_one` does it and builds
+    // the `Exec` itself. Reaching the offline resolver with a package means the
+    // install was skipped, not that packages are unsupported.
+    let err = start_of(&file, "api").expect_err("a package has no start command yet");
+    assert_eq!(err.code(), "PACKAGE_NOT_INSTALLED");
 }
 
 #[test]

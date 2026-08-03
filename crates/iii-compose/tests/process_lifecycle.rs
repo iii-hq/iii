@@ -149,3 +149,151 @@ async fn a_recycled_pid_is_never_recognised() {
         "linux should fingerprint children"
     );
 }
+
+// ── Adoption ─────────────────────────────────────────────────────────────
+//
+// A daemon that restarts finds its children still running. Adoption is what
+// lets teardown reach them: a process left out of the children map is one
+// `down` walks straight past, reporting success over something still alive.
+
+#[tokio::test]
+async fn an_adopted_child_can_still_be_stopped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let child = spawn("sleep 30", tmp.path());
+    let (pid, birth) = (child.pid, child.birth.clone());
+
+    // Dropping the handle is what a daemon restart does to it: the process
+    // outlives the supervision that spawned it.
+    drop(child);
+    assert!(is_alive(pid), "the process should outlive its handle");
+
+    let adopted = iii_compose::process::Supervised::adopt(pid, &birth)
+        .expect("a live pid with a matching identity is adoptable");
+    assert_eq!(adopted.pid, pid);
+    assert_eq!(adopted.poll(), Outcome::Running);
+
+    adopted.stop(Duration::from_secs(2)).await;
+    assert!(wait_until_gone(pid).await, "adoption must make stop reach it");
+}
+
+#[tokio::test]
+async fn adoption_refuses_a_pid_whose_identity_does_not_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    let child = spawn("sleep 30", tmp.path());
+    let pid = child.pid;
+
+    // Stands in for a recycled PID: alive, but not the process we recorded.
+    let wrong = BirthIdentity::StartTime(u64::MAX);
+    assert!(
+        iii_compose::process::Supervised::adopt(pid, &wrong).is_none(),
+        "a mismatched identity must never be adopted, let alone signalled"
+    );
+    assert!(is_alive(pid), "and the stranger must be left alone");
+
+    child.stop(Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn an_unverifiable_identity_is_never_adopted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let child = spawn("sleep 30", tmp.path());
+    let pid = child.pid;
+
+    assert!(
+        iii_compose::process::Supervised::adopt(pid, &BirthIdentity::Unavailable).is_none(),
+        "without a fingerprint there is nothing to prove ownership with"
+    );
+
+    child.stop(Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn an_adopted_child_reports_its_own_exit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let child = spawn("sleep 0.2", tmp.path());
+    let (pid, birth) = (child.pid, child.birth.clone());
+    drop(child);
+
+    let adopted = iii_compose::process::Supervised::adopt(pid, &birth)
+        .expect("still running when adopted");
+
+    // No reaper task backs an adopted process, so `wait` polls liveness. The
+    // status is unrecoverable — only the fact of the exit survives.
+    adopted.wait().await;
+    assert!(matches!(adopted.poll(), Outcome::Exited(_)));
+}
+
+#[tokio::test]
+async fn adopting_the_group_leader_adopts_its_grandchildren() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("grandchild.pid");
+    let child = spawn(
+        &format!(
+            "sh -c 'echo $$ > {} ; sleep 30' & sleep 30",
+            marker.display()
+        ),
+        tmp.path(),
+    );
+    let (pid, birth) = (child.pid, child.birth.clone());
+    let grandchild = read_pid_file(&marker).await;
+    drop(child);
+
+    let adopted = iii_compose::process::Supervised::adopt(pid, &birth).expect("adoptable");
+    adopted.stop(Duration::from_secs(2)).await;
+
+    assert!(wait_until_gone(pid).await);
+    assert!(
+        wait_until_gone(grandchild).await,
+        "the pid is the group id, so adopting the leader reaches the whole tree"
+    );
+}
+
+// ── The leader is not the group ──────────────────────────────────────────
+//
+// `run: ./worker` goes through a shell, and a shell does not exec a command it
+// has to wait on: the recorded pid is the shell, the worker is its child, and
+// both share the group. Killing the shell therefore leaves the worker running.
+
+#[tokio::test]
+async fn stopping_a_dead_leader_still_clears_its_group() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("child.pid");
+    // The trailing `wait` keeps the leader alive until we kill it, so the
+    // child is orphaned rather than reaped.
+    let child = spawn(
+        &format!("sh -c 'echo $$ > {} ; sleep 30' & wait", marker.display()),
+        tmp.path(),
+    );
+    let leader = child.pid;
+    let worker = read_pid_file(&marker).await;
+
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(leader as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .unwrap();
+    assert!(wait_until_gone(leader).await, "the leader should be gone");
+    assert!(is_alive(worker), "and the worker should have outlived it");
+
+    child.stop(Duration::from_secs(2)).await;
+    assert!(
+        wait_until_gone(worker).await,
+        "stop must sweep the group, not return on the leader's status alone"
+    );
+}
+
+#[tokio::test]
+async fn stopping_a_child_that_left_nothing_behind_is_immediate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let child = spawn("true", tmp.path());
+    child.wait().await;
+
+    // An empty group is never signalled: the sweep probes first, so this
+    // returns without waiting out the grace.
+    let began = std::time::Instant::now();
+    child.stop(Duration::from_secs(5)).await;
+    assert!(
+        began.elapsed() < Duration::from_secs(1),
+        "an empty group should not cost the grace period"
+    );
+}
