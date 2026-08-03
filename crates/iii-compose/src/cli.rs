@@ -36,8 +36,9 @@ pub struct ComposeCli {
     pub action: Option<ComposeAction>,
 
     /// Daemon identity. Required in daemon mode: it names the daemon in the
-    /// engine and is the `id=` every remote `compose::*` call must match.
-    #[arg(long, value_name = "ID")]
+    /// engine, it is the namespace `stop` and `logs` address it by, and it is
+    /// the `id=` every remote `compose::*` call must match.
+    #[arg(long, visible_aliases = ["ns", "namespace"], value_name = "ID")]
     pub id: Option<String>,
 
     /// Engine WebSocket address. Falls back to III_URL, then
@@ -45,9 +46,10 @@ pub struct ComposeCli {
     #[arg(long, global = true, value_name = "URL")]
     pub engine: Option<String>,
 
-    /// Namespace the project's workers register under. Defaults to a
-    /// deterministic namespace derived from the project name and compose path.
-    #[arg(long, value_name = "NS")]
+    /// Namespace the project's *workers* register under, which is not the
+    /// daemon's own. Defaults to a deterministic namespace derived from the
+    /// project name and the compose path.
+    #[arg(long = "project-namespace", value_name = "NS")]
     pub namespace: Option<String>,
 
     /// Compose file this invocation is bound to. Defaults to
@@ -90,15 +92,16 @@ pub struct StopArgs {
 pub struct UpArgs {
     /// Daemon identity: it names the daemon in the engine and is the namespace
     /// `stop` and `logs` address it by.
-    #[arg(long, value_name = "ID")]
+    #[arg(long, visible_aliases = ["ns", "namespace"], value_name = "ID")]
     pub id: Option<String>,
 
     /// Compose file. Defaults to `worker-compose.yaml` here.
     #[arg(long, short = 'f', value_name = "PATH")]
     pub file: Option<PathBuf>,
 
-    /// Namespace the project's workers register under.
-    #[arg(long, value_name = "NS")]
+    /// Namespace the project's *workers* register under, which is not the
+    /// daemon's own.
+    #[arg(long = "project-namespace", value_name = "NS")]
     pub namespace: Option<String>,
 
     /// Run in the background and return once the project is up.
@@ -113,7 +116,7 @@ pub struct ValidateArgs {
     pub file: Option<PathBuf>,
 
     /// Report the project under this namespace instead of the derived one.
-    #[arg(long, value_name = "NS")]
+    #[arg(long = "project-namespace", value_name = "NS")]
     pub namespace: Option<String>,
 }
 
