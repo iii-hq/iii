@@ -114,6 +114,7 @@ Hosts without hardware virtualization will fail `sandbox::create` with error `S3
     default_idle_timeout_secs: 300
     max_concurrent_sandboxes: 32
     max_concurrent_exec_per_sandbox: 4
+    max_exec_timeout_ms: 300000
     default_cpus: 1
     default_memory_mb: 512
 ```
@@ -126,8 +127,9 @@ Hosts without hardware virtualization will fail `sandbox::create` with error `S3
 |---|---|---|---|
 | `auto_install` | boolean | `true` | Pull the image from its OCI ref on first use when the rootfs isn't cached. Set `false` in air-gapped or pre-provisioned deployments — callers get `S101` and operators pre-pull with `iii worker add iiidev/<image>`. |
 | `image_allowlist` | string[] | `[]` | **Fail-closed** list of image names that may be booted. Entries must be preset names (`python`, `node`) or keys from `custom_images`. Empty list denies everything — `sandbox::create` returns `S100` for every request. |
-| `default_idle_timeout_secs` | number | `300` | Reap a sandbox when `now - last_exec_at` exceeds this. The reaper runs every 10 s. Per-request `idle_timeout_secs` on `sandbox::create` overrides. |
-| `max_concurrent_exec_per_sandbox` | number | `4` | Execs admitted simultaneously in one sandbox. Above this, `sandbox::exec` returns `S003`. Capped rather than unlimited because the guest is small (1 vCPU / 512 MB by default) — raise it together with `default_memory_mb`. |
+| `default_idle_timeout_secs` | number | `300` | Reap a sandbox when `now - last_exec_at` exceeds this **and no exec is in flight**. A busy sandbox is exempt until `idle_timeout + max_exec_timeout_ms + 60s`, after which it is reclaimed anyway (a slot that outlives every possible deadline is leaked). Size capacity on the exempt case, not the bare timeout. The reaper runs every 10 s. Per-request `idle_timeout_secs` on `sandbox::create` overrides. |
+| `max_concurrent_exec_per_sandbox` | number | `4` | Execs admitted simultaneously in one sandbox. Above this, `sandbox::exec` returns `S003`. **Every concurrent exec is a full interpreter in the same guest**, so the safe value is bounded by `default_memory_mb`, not by taste: 4 concurrent `pip install`/`npm install` in a 512 MB guest will OOM-kill each other, and an OOM is a worse failure than the `S003` it replaced. Raise it and `default_memory_mb` together; lower it to 1 to restore strict serialization. `0` is treated as `1`, not as unlimited. |
+| `max_exec_timeout_ms` | number | `300000` | Hard ceiling on one exec's deadline; a caller's `timeout_ms` is clamped to it. Bounds how long a busy sandbox can defer reaping — without it, one caller-supplied timeout could pin a VM indefinitely. |
 | `max_concurrent_sandboxes` | number | `32` | Hard cap on live sandboxes. The 33rd concurrent `sandbox::create` returns `S400`. Size by host RAM (default RAM per sandbox × cap ≤ available RAM). |
 | `default_cpus` | number | `1` | vCPUs per sandbox when the request omits `cpus`. |
 | `default_memory_mb` | number | `512` | RAM ceiling per sandbox when the request omits `memory_mb`. |

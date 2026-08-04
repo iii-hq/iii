@@ -190,7 +190,7 @@ fn infer_scripts_typescript_bun() {
 /// PROJ-05: Infer scripts for TypeScript/npm runtime.
 #[test]
 fn infer_scripts_typescript_npm() {
-    let (setup, install, run) = infer_scripts("typescript", "npm", "src/index.ts");
+    let (_setup, install, run) = infer_scripts("typescript", "npm", "src/index.ts");
     assert!(
         install.contains("npm install"),
         "install should contain 'npm install': {install}"

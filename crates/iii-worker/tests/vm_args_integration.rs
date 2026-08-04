@@ -402,7 +402,7 @@ fn build_container_spec_binary_has_no_spec_fields() {
 
 #[tokio::test]
 async fn stop_terminates_sleeping_process() {
-    let mut child = std::process::Command::new("sleep")
+    let child = std::process::Command::new("sleep")
         .arg("60")
         .spawn()
         .expect("failed to spawn sleep");
@@ -436,7 +436,7 @@ async fn stop_terminates_sleeping_process() {
 #[tokio::test]
 async fn stop_escalates_to_sigkill_when_sigterm_ignored() {
     // Spawn a process that traps (ignores) SIGTERM.
-    let mut child = std::process::Command::new("sh")
+    let child = std::process::Command::new("sh")
         .arg("-c")
         .arg("trap '' TERM; sleep 60")
         .spawn()

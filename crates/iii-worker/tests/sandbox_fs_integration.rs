@@ -605,21 +605,9 @@ impl FsRunner for FakeFsRunner {
 // ────────────────────────────────────────────────────────────────────
 
 fn fixture_state(id: Uuid) -> SandboxState {
-    SandboxState {
-        id,
-        name: None,
-        image: "node".into(),
-        rootfs: PathBuf::from("/tmp/r"),
-        workdir: PathBuf::from("/tmp/w"),
-        shell_sock: PathBuf::from("/tmp/s"),
-        vm_pid: Some(1),
-        lifeline: None,
-        created_at: Instant::now(),
-        last_exec_at: Instant::now(),
-        exec_in_flight: 0,
-        idle_timeout_secs: 300,
-        stopped: false,
-    }
+    let mut s = iii_worker::sandbox_daemon::registry::sandbox_state_for_test(id);
+    s.image = "node".into();
+    s
 }
 
 async fn live_sandbox(reg: &SandboxRegistry) -> Uuid {

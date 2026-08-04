@@ -132,6 +132,47 @@ impl SandboxRegistry {
         }
     }
 
+    /// Decide under ONE lock whether `id` should be reaped, and if so mark it
+    /// stopped so nothing else can claim it. `None` means leave it alone.
+    ///
+    /// Atomic on purpose. The reaper used to filter a `list()` snapshot and
+    /// then act on it, so an exec admitted between the snapshot and the reap
+    /// was still killed mid-run — the very defect the busy-check was added to
+    /// prevent. The window is not tight: each preceding reap sleeps
+    /// `STOP_GRACE_MS` and does overlay cleanup I/O.
+    ///
+    /// `busy_grace` bounds the busy exemption. Skipping busy sandboxes
+    /// outright removed the unconditional reclamation backstop: one exec —
+    /// with a leaked count, a wedged child, or simply a long deadline — could
+    /// pin a VM forever, and 32 of those exhaust `max_concurrent_sandboxes`
+    /// until the daemon restarts. Past `idle_timeout + busy_grace` no
+    /// legitimate exec can still be running (the runner clamps every deadline
+    /// to `max_exec_timeout_ms`), so the count is leaked or the child is
+    /// wedged, and reaping is the correct call.
+    pub async fn try_claim_for_reap(
+        &self,
+        id: Uuid,
+        now: Instant,
+        busy_grace: std::time::Duration,
+    ) -> Option<SandboxState> {
+        let mut map = self.inner.lock().await;
+        let state = map.get_mut(&id)?;
+        if state.stopped {
+            return None;
+        }
+        let idle = now.saturating_duration_since(state.last_exec_at);
+        if idle <= std::time::Duration::from_secs(state.idle_timeout_secs) {
+            return None;
+        }
+        if state.exec_in_flight > 0
+            && idle <= std::time::Duration::from_secs(state.idle_timeout_secs) + busy_grace
+        {
+            return None;
+        }
+        state.stopped = true;
+        Some(state.clone())
+    }
+
     pub async fn mark_stopped(&self, id: Uuid) {
         let mut map = self.inner.lock().await;
         if let Some(state) = map.get_mut(&id) {
@@ -149,6 +190,11 @@ impl SandboxRegistry {
         map.values().cloned().collect()
     }
 
+    /// The per-sandbox exec admission cap this registry enforces.
+    pub fn max_exec_in_flight(&self) -> u32 {
+        self.max_exec_in_flight.max(1)
+    }
+
     pub async fn count(&self) -> usize {
         self.inner.lock().await.len()
     }
@@ -161,6 +207,37 @@ impl SandboxRegistry {
         if let Some(state) = map.get_mut(&id) {
             state.last_exec_at = Instant::now();
         }
+    }
+}
+
+/// A `SandboxState` for tests, with every field at a sane default.
+///
+/// `pub` rather than `#[cfg(test)]` because the integration tests under
+/// `tests/` link the compiled lib and cannot see a test-only item. It exists
+/// because the same ~12-line literal was copy-pasted into 18 test modules —
+/// a single field change meant an 18-file mechanical edit, and the copies had
+/// already drifted. Callers mutate what they care about:
+///
+/// ```ignore
+/// let mut s = sandbox_state_for_test(id);
+/// s.idle_timeout_secs = 5;
+/// ```
+#[doc(hidden)]
+pub fn sandbox_state_for_test(id: Uuid) -> SandboxState {
+    SandboxState {
+        id,
+        name: None,
+        image: "python".into(),
+        rootfs: PathBuf::from("/tmp/r"),
+        workdir: PathBuf::from("/tmp/w"),
+        shell_sock: PathBuf::from("/tmp/s"),
+        vm_pid: Some(1),
+        lifeline: None,
+        created_at: Instant::now(),
+        last_exec_at: Instant::now(),
+        exec_in_flight: 0,
+        idle_timeout_secs: 300,
+        stopped: false,
     }
 }
 

@@ -246,11 +246,26 @@ async fn exec_on_stopped_sandbox_returns_s004() {
     );
 }
 
+/// Concurrent execs are admitted now — up to the registry's cap. S003 means
+/// "at the cap", not "a second exec".
 #[tokio::test]
-async fn exec_concurrent_on_same_sandbox_returns_s003() {
-    let reg = SandboxRegistry::new();
+async fn exec_within_the_concurrency_cap_is_admitted() {
+    let reg = SandboxRegistry::with_max_exec_in_flight(2);
     let id = live_sandbox(&reg).await;
     let _claim = reg.begin_exec(id).await.unwrap();
+    let runner = FakeShellRunner::ok("", 0);
+
+    handle_exec(build_req(id, "/bin/true"), &reg, &runner)
+        .await
+        .expect("a second exec runs alongside the first");
+}
+
+#[tokio::test]
+async fn exec_beyond_the_concurrency_cap_returns_s003() {
+    let reg = SandboxRegistry::with_max_exec_in_flight(2);
+    let id = live_sandbox(&reg).await;
+    let _a = reg.begin_exec(id).await.unwrap();
+    let _b = reg.begin_exec(id).await.unwrap();
     let runner = FakeShellRunner::ok("", 0);
 
     let err = handle_exec(build_req(id, "/bin/true"), &reg, &runner)

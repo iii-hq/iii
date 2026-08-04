@@ -115,6 +115,13 @@ impl ConnectionTracker {
         // "tinygram prevention" Nagle buys is worthless on a local
         // host<->guest link.
         socket.set_nagle_enabled(false);
+        // ...and do not delay our own ACKs. Nagle-off fixes the leg where WE
+        // held a write for the guest's delayed ACK; this fixes the mirror,
+        // where the guest's own Nagle holds ITS write awaiting an ACK we sit
+        // on for smoltcp's 10ms default. Same failure shape, smaller
+        // constant. A relay carrying already-framed request/response traffic
+        // gains nothing from coalescing ACKs.
+        socket.set_ack_delay(None);
 
         let listen_addr: smoltcp::wire::IpAddress = match dst.ip() {
             std::net::IpAddr::V4(v4) => v4.into(),
@@ -366,6 +373,12 @@ mod tests {
             !socket.nagle_enabled(),
             "Nagle must be disabled on proxied sockets — it costs ~41ms per \
              overlapping call against the guest's delayed ACK"
+        );
+        assert_eq!(
+            socket.ack_delay(),
+            None,
+            "delaying our own ACKs stalls the mirror direction: the guest's \
+             Nagle holds its write awaiting an ACK we sit on"
         );
     }
 

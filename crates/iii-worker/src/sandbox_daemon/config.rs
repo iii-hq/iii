@@ -34,8 +34,22 @@ pub struct SandboxConfig {
     /// vCPU and 512 MB, so enough simultaneous interpreters OOM the VM. 4 is
     /// a floor that unblocks overlapping I/O-bound calls without letting a
     /// burst exhaust a small guest; raise it alongside `default_memory_mb`.
+    ///
+    /// `0` means ONE, not unlimited — the opposite of the usual convention
+    /// for concurrency knobs, so it is warned about at startup. There is no
+    /// "unlimited": every concurrent exec is a full interpreter in a guest
+    /// that defaults to 512 MB.
     #[serde(default = "default_sandbox_max_concurrent_exec")]
     pub max_concurrent_exec_per_sandbox: u32,
+    /// Hard ceiling on a single exec's deadline, in ms. A caller's
+    /// `timeout_ms` is clamped to this.
+    ///
+    /// Needed because the reaper protects a sandbox with execs in flight from
+    /// being reclaimed: without a ceiling on how long an exec may run, one
+    /// caller-supplied `timeout_ms` could pin a VM indefinitely. The reaper's
+    /// busy grace is derived from this value.
+    #[serde(default = "default_sandbox_max_exec_timeout")]
+    pub max_exec_timeout_ms: u64,
     #[serde(default = "default_sandbox_cpus")]
     pub default_cpus: u32,
     #[serde(default = "default_sandbox_memory")]
@@ -65,7 +79,10 @@ fn default_sandbox_max_concurrent() -> u32 {
     32
 }
 fn default_sandbox_max_concurrent_exec() -> u32 {
-    4
+    crate::sandbox_daemon::registry::DEFAULT_MAX_EXEC_IN_FLIGHT
+}
+fn default_sandbox_max_exec_timeout() -> u64 {
+    crate::sandbox_daemon::adapters::DEFAULT_EXEC_TIMEOUT_MS
 }
 fn default_sandbox_cpus() -> u32 {
     1
@@ -82,6 +99,7 @@ impl Default for SandboxConfig {
             default_idle_timeout_secs: default_sandbox_idle_timeout(),
             max_concurrent_sandboxes: default_sandbox_max_concurrent(),
             max_concurrent_exec_per_sandbox: default_sandbox_max_concurrent_exec(),
+            max_exec_timeout_ms: default_sandbox_max_exec_timeout(),
             default_cpus: default_sandbox_cpus(),
             default_memory_mb: default_sandbox_memory(),
             per_image_caps: std::collections::HashMap::new(),

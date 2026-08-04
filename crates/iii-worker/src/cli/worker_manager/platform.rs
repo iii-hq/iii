@@ -6,8 +6,6 @@
 
 //! Platform-specific utilities for VM execution (macOS entitlements, terminal management).
 
-use anyhow::{Context, Result};
-
 /// Ensure the binary has the required VM entitlements (macOS only).
 #[cfg(target_os = "macos")]
 pub fn ensure_macos_entitlements(binary: &std::path::Path) -> Result<()> {

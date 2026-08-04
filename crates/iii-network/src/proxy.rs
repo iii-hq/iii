@@ -65,6 +65,16 @@ async fn tcp_proxy_task(
 ) -> io::Result<()> {
     let host_dst = resolve_host_dst(dst, gateway_ipv4);
     let stream = TcpStream::connect(host_dst).await?;
+    // The other half of the Nagle fix in `conn::create_tcp_socket`. This relay
+    // has TWO delegate sockets — the smoltcp one facing the guest and this
+    // kernel one facing the destination — and leaving Nagle on either
+    // reintroduces the same stall, just on the other leg: small relayed
+    // writes held awaiting the peer's delayed ACK (~40ms against a Linux
+    // peer). Only loopback destinations were exonerated by measurement,
+    // because loopback ACKs immediately.
+    if let Err(e) = stream.set_nodelay(true) {
+        tracing::debug!(%dst, error = %e, "set_nodelay failed; small writes may stall");
+    }
     tracing::debug!(%dst, %host_dst, "proxy connected");
     let (mut server_rx, mut server_tx) = stream.into_split();
 
