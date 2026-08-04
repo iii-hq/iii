@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       registry_tag:
-        description: 'Registry version tag (latest, next, ...)'
+        description: 'Registry version tag (latest, rc, ...)'
         required: false
         type: string
         default: latest

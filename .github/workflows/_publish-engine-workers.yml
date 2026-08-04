@@ -27,7 +27,7 @@ on:
         type: string
         default: ''
       registry_tag:
-        description: 'Registry tag (latest, next, ...)'
+        description: 'Registry tag (latest, rc, ...)'
         required: false
         type: string
         default: latest
@@ -86,9 +86,10 @@ jobs:
               expected="${GITHUB_REF_NAME#iii/v}"
             fi
             install_args=()
-            if [[ "$expected" == *-* ]]; then
-              install_args+=("--next")
-            fi
+            case "$expected" in
+              *-rc.*) install_args+=("--rc") ;;
+              *-*)    install_args+=("--next") ;;
+            esac
             VERSION="$expected" sh /tmp/install-iii.sh "${install_args[@]}"
           fi
           {

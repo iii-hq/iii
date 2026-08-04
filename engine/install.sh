@@ -219,6 +219,7 @@ fi
 
 engine_version="${VERSION:-}"
 use_next=false
+use_rc=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -240,6 +241,10 @@ while [ $# -gt 0 ]; do
       use_next=true
       shift
       ;;
+    --rc)
+      use_rc=true
+      shift
+      ;;
     -h|--help)
       cat <<'USAGE'
 Usage: install.sh [OPTIONS] [VERSION]
@@ -249,6 +254,7 @@ Install the iii engine (includes CLI commands).
 Options:
   -h, --help            Show this help message
   --next                Install the latest "next" pre-release
+  --rc                  Install the latest release candidate
 
 Environment variables:
   VERSION               Engine version to install (e.g., 0.11.0)
@@ -268,6 +274,7 @@ Requires: curl, jq, tar (unzip if installing a .zip asset)
 Examples:
   curl -fsSL https://iii.dev/install.sh | sh
   curl -fsSL https://iii.dev/install.sh | sh -s -- --next
+  curl -fsSL https://iii.dev/install.sh | sh -s -- --rc
   curl -fsSL https://iii.dev/install.sh | VERSION=0.11.0 sh
   curl -fsSL https://iii.dev/install.sh | BIN_DIR=/usr/local/bin sh
 USAGE
@@ -286,6 +293,10 @@ USAGE
 done
 
 VERSION="$engine_version"
+
+if [ "$use_next" = "true" ] && [ "$use_rc" = "true" ]; then
+  err "args" "--next and --rc cannot be used together"
+fi
 
 # ---------------------------------------------------------------------------
 # Dependency checks
@@ -394,10 +405,21 @@ elif [ -n "$VERSION" ]; then
     fi
   fi
 
-  # Reject prereleases unless --next was passed
+  # Reject prereleases unless an explicit prerelease channel was requested.
   _is_prerelease=$(printf '%s' "$json" | jq -r '.prerelease // false')
-  if [ "$_is_prerelease" = "true" ] && [ "$use_next" != "true" ]; then
-    err "download" "version $VERSION is a prerelease — use a stable release or pass --next"
+  if [ "$_is_prerelease" = "true" ] && [ "$use_next" != "true" ] && [ "$use_rc" != "true" ]; then
+    err "download" "version $VERSION is a prerelease — use a stable release or pass --next/--rc"
+  fi
+elif [ "$use_rc" = "true" ]; then
+  info "installing latest release candidate"
+  api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
+  if ! json_list=$(github_api "$api_url" 2>/dev/null); then
+    check_rate_limit_or_continue "$api_url"
+    err "download" "failed to list releases"
+  fi
+  json=$(printf '%s' "$json_list" | jq -c 'first(.[] | select(.tag_name | test("^iii/v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$")))')
+  if [ "$json" = "null" ] || [ -z "$json" ]; then
+    err "download" "no release candidate found"
   fi
 elif [ "$use_next" = "true" ]; then
   info "installing latest next release"
@@ -443,7 +465,7 @@ if [ -z "$release_version" ]; then
   release_version=$(printf '%s' "$json" | jq -r '.tag_name' | sed -E 's#^(iii/)?v##')
 fi
 
-if [ "$use_next" = "true" ] && [ -n "$release_version" ]; then
+if { [ "$use_next" = "true" ] || [ "$use_rc" = "true" ]; } && [ -n "$release_version" ]; then
   info "installing $BIN_NAME v$release_version"
 fi
 
