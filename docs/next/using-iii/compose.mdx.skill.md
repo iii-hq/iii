@@ -7,9 +7,9 @@ Compose runs a group of workers as one project. The daemon reads a `worker-compo
 each container in dependency order, waits for the engine to register it, and supervises it
 afterwards.
 
-The daemon is itself a worker. It registers under the name `compose` in the `default` namespace and
+The daemon is itself a worker. It registers under the name `compose` in a namespace of its own and
 exposes the `compose::*` functions there, so every project operation is a normal
-[trigger](./triggers).
+[trigger](./triggers) — addressed to one daemon with `--namespace`.
 
 ## The daemon
 
@@ -17,30 +17,55 @@ exposes the `compose::*` functions there, so every project operation is a normal
 iii compose [OPTIONS]
 ```
 
-| Option           | Description                                                                     |
-| ---------------- | ------------------------------------------------------------------------------- |
-| `--engine <URL>` | Engine WebSocket address. Falls back to `III_URL`, then `ws://127.0.0.1:49134`. |
+| Option           | Description                                                                            |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| `--ns <NS>`      | Namespace this daemon answers `compose::*` in. Generated and printed when absent.      |
+| `--engine <URL>` | Engine WebSocket address. Falls back to `III_URL`, then `ws://127.0.0.1:49134`.        |
+| `-d, --detach`   | Run in the background, returning once the daemon is serving.                           |
+| `--attach`       | Put a detached daemon's output back on this terminal.                                  |
 
-The daemon runs in the foreground and writes its own output to stderr. It serves until it is
-stopped.
+A daemon holds any number of projects, and any number of daemons share one engine. What tells them
+apart is the namespace: the worker name is always `compose`, so the engine leases `(namespace,
+compose)` to one connection. Two daemons with different namespaces coexist; a second claiming one
+that is taken is refused at registration with `DAEMON_ALREADY_SERVING`.
 
-One daemon serves one engine and holds any number of projects. It always registers as `compose` in
-`default`, and the engine leases that pair to one connection, so a second daemon on the same engine
-is refused at registration with `DAEMON_ALREADY_SERVING`. Neither coordinate is configurable.
+Without `--ns` the daemon generates one and prints it. There is no well-known default, because a
+shared name is the collision the namespace exists to prevent.
+
+```text
+$ iii compose
+compose serving
+  engine: ws://127.0.0.1:49134
+  namespace: 550e8400-e29b-41d4-a716-446655440000
+  start a project: iii trigger compose::up --namespace 550e8400-… file=./worker-compose.yaml
+```
+
+<Warning>
+  A generated namespace is new on every start, and a project's durable state lives under it. A
+  daemon that has to find its own children again after a restart passes `--ns` and keeps it.
+</Warning>
 
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
 does the same over the engine.
 
 ### Running it in the background
 
-Compose does not daemonize itself and does not manage its own log file. A shell redirect covers a
-development machine:
+`-d` re-launches the command detached and returns once the daemon is *serving*, not once it was
+spawned — a daemon that dies on a taken namespace fails the command instead of handing back a
+prompt. Its console goes to `~/.iii/compose/<namespace>/daemon.log`, and `--attach` puts it back on
+a terminal.
 
 ```bash
-iii compose >> /var/log/iii-compose.log 2>&1 &
+iii compose -d --ns dev
+iii compose --attach --ns dev
 ```
 
-On a server, a unit file gives restart-on-failure and hands the output to the journal:
+`--attach` with no `--ns` follows the only daemon that has run on this machine. With several it
+names them and asks for one, because attaching to the wrong daemon shows a real log with somebody
+else's containers in it.
+
+On a server, a unit file gives restart-on-failure and hands the output to the journal. Name the
+namespace there: a unit that restarts under a generated one loses track of its own children.
 
 ```ini
 [Unit]
@@ -49,7 +74,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/iii compose
+ExecStart=/usr/local/bin/iii compose --ns prod
 Restart=always
 
 [Install]
@@ -65,43 +90,50 @@ WantedBy=multi-user.target
 
 All six functions accept the same payload.
 
-| Field       | Type   | Description                                                                                  |
-| ----------- | ------ | -------------------------------------------------------------------------------------------- |
-| `id`        | string | Which project. Chosen by the caller on the first `up` and used to address the project after. |
-| `file`      | string | Path to the compose file. Required on the call that first names a project.                   |
-| `container` | string | Restricts the operation to one container and the containers it depends on.                   |
+| Field       | Type   | Description                                                                       |
+| ----------- | ------ | --------------------------------------------------------------------------------- |
+| `file`      | string | Which project: the path to its compose file.                                      |
+| `container` | string | Restricts the operation to one container and the containers it depends on.        |
+| `namespace` | string | Which daemon the caller believed they were reaching. A guard — see below.         |
 
-A project-scoped call without `id` fails with `MISSING_ID`. A call that names an `id` the daemon has
-not loaded fails with `UNKNOWN_PROJECT`. Passing a `file` that differs from the one the `id` is
-already bound to fails with `STATE_BINDING_MISMATCH`.
+A project is its compose file, and nothing else names one. The same file reached twice is the same
+project however it was spelled, so there is no second identity to keep in sync and no way to point
+one at the wrong file.
 
-| Function            | Requires       | Returns                                                                  |
-| ------------------- | -------------- | ------------------------------------------------------------------------ |
-| `compose::up`       | `id`           | An operation result.                                                     |
-| `compose::down`     | `id`           | An operation result.                                                     |
-| `compose::status`   | `id`           | The project's id, namespace, file, the daemon pid, and container states. |
-| `compose::list`     | nothing        | The daemon name, its pid, and every project it holds.                    |
-| `compose::validate` | `id` or `file` | A validation report.                                                     |
-| `compose::stop`     | nothing        | The daemon name, its pid, and the ids it is about to stop.               |
+<Warning>
+  `namespace` in the payload does not select a daemon. The engine resolves a call by the
+  `--namespace` flag and never reads the body, so this can only catch having reached the wrong
+  daemon — a mismatch fails with `WRONG_DAEMON`. Sent alone, the call still lands wherever the flag
+  pointed.
+</Warning>
+
+| Function            | Requires  | Returns                                                                        |
+| ------------------- | --------- | ------------------------------------------------------------------------------ |
+| `compose::up`       | `file`    | An operation result.                                                           |
+| `compose::down`     | `file`    | An operation result.                                                           |
+| `compose::status`   | `file`    | The project's namespace, file, state directory, daemon pid, container states.  |
+| `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
+| `compose::validate` | `file`    | A validation report.                                                           |
+| `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
 
 ```bash
-iii trigger compose::up id=shop file=./worker-compose.yaml
-iii trigger compose::up id=shop container=api
-iii trigger compose::status id=shop
-iii trigger compose::down id=shop
-iii trigger compose::list
-iii trigger compose::stop
+iii trigger compose::up     --namespace dev file=./worker-compose.yaml
+iii trigger compose::up     --namespace dev file=./worker-compose.yaml container=api
+iii trigger compose::status --namespace dev file=./worker-compose.yaml
+iii trigger compose::down   --namespace dev file=./worker-compose.yaml
+iii trigger compose::list   --namespace dev
+iii trigger compose::stop   --namespace dev
 ```
 
-`compose::up` accepts a project without a `file` in one case: the daemon's own working directory
-holds a `worker-compose.yaml` and the `id` is new. `compose::down` and `compose::status` never fall
-back to that file.
+A project-scoped call may leave `file` out when the daemon's own working directory holds a
+`worker-compose.yaml`; without one, it fails with `NO_COMPOSE_FILE`. A relative `file` resolves
+against the daemon's directory, not the caller's — pass an absolute path when they differ.
 
 `compose::stop` stops a compose project but returns before the daemon exits.
 
-`compose::validate` with a `file` validates the file with no side effects. With an `id` it validates
-the project the daemon already holds. Validation is offline, so `package://` containers are reported
-under `deferred_packages` instead of being resolved.
+`compose::validate` answers for a file and holds nothing: a CI job that only ever validates leaves
+the daemon owning nothing. Validation is offline, so `package://` containers are reported under
+`deferred_packages` instead of being resolved.
 
 ### Operation results
 
@@ -274,17 +306,23 @@ comes back, every running container gets its `startup_timeout` to register again
 
 ## Where compose keeps state
 
-| Path                             | Contents                                             |
-| -------------------------------- | ---------------------------------------------------- |
-| `~/.iii/compose/<id>/state.json` | One project's child records. Owner-only.             |
-| `~/.iii/compose/<id>/config/`    | Resolved configuration files.                        |
-| `~/.iii/compose/<id>/logs/`      | Each container's own output.                         |
-| `~/.iii/compose/packages/`       | Installed `package://` binaries, shared by projects. |
+Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when that is set.
 
-An `id` is bound to one compose file for as long as its state file exists. A clean shutdown clears
-the state file. After an unclean exit, the daemon compares each record against the live process: a
-match is adopted, a dead process is recorded `failed`, and a live pid it cannot verify is left
-running and reported for manual cleanup.
+| Path                        | Contents                                             |
+| --------------------------- | ---------------------------------------------------- |
+| `<ns>/daemon.log`           | A detached daemon's console.                         |
+| `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
+| `<ns>/<project>/config/`    | Resolved configuration files.                        |
+| `<ns>/<project>/logs/`      | Each container's own output.                         |
+| `packages/`                 | Installed `package://` binaries, shared by projects. |
+
+`<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path —
+readable enough to recognise, hashed enough that two projects in directories of the same name stay
+apart. Because it is derived, it cannot be guessed: `compose::status` reports it as `state_dir`.
+
+A clean shutdown clears the state file. After an unclean exit, the daemon compares each record
+against the live process: a match is adopted, a dead process is recorded `failed`, and a live pid it
+cannot verify is left running and reported for manual cleanup.
 
 ## Error codes
 
@@ -297,12 +335,12 @@ Compose errors cross the wire with a stable code and a message.
 | Worker resolution     | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `MANIFEST_NAME_MISMATCH`                                                                                                                                                                                  |
 | Packages              | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`                                                                        |
 | Start and readiness   | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `ENGINE_CALL_FAILED` |
-| Daemon and project    | `MISSING_ID`, `UNKNOWN_PROJECT`, `UNKNOWN_CONTAINER`, `STATE_BINDING_MISMATCH`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`                                                                                                                            |
+| Daemon and project    | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `NO_DAEMON_TO_ATTACH`, `UNKNOWN_CONTAINER`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `CONFLICTING_FLAGS`, `DETACH_FAILED`, `IO_ERROR`                                                       |
 
 ## Related
 
 <Note>
-  For why compose is a worker and why projects are addressed by id, see [Understanding iii /
+  For why compose is a worker and why a project is its file, see [Understanding iii /
   Compose](../understanding-iii/compose). For the namespace dimension itself, see [Understanding iii
   / Namespaces](../understanding-iii/namespaces). For the `iii compose` entry in the command tree,
   see the [CLI reference](../cli-reference/index#iii-compose).
