@@ -455,8 +455,11 @@ async fn resolve_config(
     // holds, what the compose file overrides.
     let mut value = shipped;
 
-    if let Some(name) = &container.config_name {
-        let fetched = ctx.engine.fetch_config(name).await?;
+    // Absent is not empty: an entry nobody has registered yet contributes
+    // nothing, and the container starts on what the compose file declares.
+    if let Some(name) = &container.config_name
+        && let Some(fetched) = ctx.engine.fetch_config(name).await?
+    {
         value = Some(match value {
             Some(base) => merge(base, fetched),
             None => fetched,

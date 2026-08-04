@@ -253,11 +253,13 @@ pub enum ComposeError {
     InvalidState { path: PathBuf, message: String },
 
     #[error(
-        "daemon '{daemon_id}' already holds state for {recorded}; it cannot be rebound to \
-         {requested}. Use a different --id"
+        "project '{project}' already holds state for {recorded}; it cannot be rebound to \
+         {requested}. Use a different id="
     )]
     StateBindingMismatch {
-        daemon_id: String,
+        /// The project id from the call, not the daemon's namespace: what is
+        /// already bound to a compose file is the project.
+        project: String,
         recorded: PathBuf,
         requested: PathBuf,
     },
@@ -293,8 +295,41 @@ pub enum ComposeError {
     #[error("{flags} cannot be used together")]
     ConflictingFlags { flags: &'static str },
 
+    /// The id is the daemon's namespace *and* its state directory, so it is
+    /// checked at parse time: the alternative is a daemon that starts, answers
+    /// nothing an operator can address, and fails at its first write.
+    #[error("'{namespace}' cannot be a namespace: {reason}")]
+    InvalidNamespace {
+        namespace: String,
+        reason: &'static str,
+    },
+
     #[error("cannot locate a home directory for the daemon state")]
     StateDirUnavailable,
+
+    /// `--attach` with nothing to attach to, or too much. Never guessed:
+    /// following the wrong daemon is a wrong answer that looks like a right
+    /// one, and the namespaces are uuids nobody recalls.
+    #[error(
+        "{}",
+        match .candidates {
+            Some(found) => format!(
+                "several daemons have run here. Name one: iii compose --attach --ns <NS>\n  \
+                 {found}"
+            ),
+            None => "no detached daemon has run here. Start one with `iii compose -d`".to_string(),
+        }
+    )]
+    NoDaemonToAttach { candidates: Option<String> },
+
+    /// A project-scoped call that named no file, from a daemon whose own
+    /// directory holds none either. The file *is* the project, so there is
+    /// nothing to fall back to.
+    #[error(
+        "no {expected} here, and the call named no file. Pass file=<PATH>, or start the daemon \
+         in a project directory"
+    )]
+    NoComposeFileHere { expected: &'static str },
 }
 
 impl ComposeError {
@@ -302,7 +337,9 @@ impl ComposeError {
     /// match on this; the human message may be reworded freely.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Io { .. } => "COMPOSE_FILE_UNREADABLE",
+            // Any read or write compose attempted. `RelativeFileMissing` is
+            // the one that really is about a compose file.
+            Self::Io { .. } => "IO_ERROR",
             Self::Yaml { .. } => "INVALID_COMPOSE_FILE",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
             Self::UnknownDependency { .. } => "UNKNOWN_DEPENDENCY",
@@ -347,7 +384,10 @@ impl ComposeError {
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::ConflictingFlags { .. } => "CONFLICTING_FLAGS",
+            Self::InvalidNamespace { .. } => "INVALID_NAMESPACE",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
+            Self::NoDaemonToAttach { .. } => "NO_DAEMON_TO_ATTACH",
+            Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",
         }
     }
 }

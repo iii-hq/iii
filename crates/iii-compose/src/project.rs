@@ -18,7 +18,12 @@
 //! goes through [`Project`] so the state file is written on the same path that
 //! changed the processes.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use tokio::sync::Mutex;
 
@@ -33,9 +38,6 @@ use crate::{
 };
 
 pub struct Project {
-    /// What `compose::* id=` names. Chosen by the caller, not derived: it is
-    /// how they address this project again.
-    pub id: String,
     pub file: ComposeFile,
     /// Namespace the containers register in. Resolved from the file, and
     /// unrelated to `id` — the id addresses the project, the namespace
@@ -65,33 +67,29 @@ impl Project {
     /// Loads a project, adopts whatever survived a previous run, and returns
     /// it ready to be operated.
     ///
-    /// The namespace comes from the file, never from `id`: the id addresses the
-    /// project through `compose::*`, the namespace addresses its workers. One
-    /// of them is the operator's handle on the daemon, the other is the
-    /// engine's routing dimension, and conflating them was what made an
-    /// operator learn two names to work one project.
+    /// A project is its compose file. Its namespace comes from that file's
+    /// `name:` and addresses its workers; the two are different questions and
+    /// nothing else names the project.
     pub async fn open(
-        id: String,
+        daemon_namespace: &str,
         file: ComposeFile,
         engine: Arc<EngineClient>,
         engine_url: String,
     ) -> Result<Arc<Self>> {
         let project_namespace = project_namespace(None, file.name.as_deref());
-        let store = StateStore::for_daemon(&id)?;
+        let store = StateStore::for_project(daemon_namespace, &file.path)?;
 
         let recovered = store.load()?;
         if let Some(state) = &recovered {
-            // An id is bound to one compose file for as long as its state
-            // lives: pointing it at another project would adopt children it
-            // never started.
+            // The directory is derived from the path, so this only fires on a
+            // slug collision — and adopting another project's children is
+            // exactly what it must not do.
             state.check_binding(&file.path)?;
         }
-        let mut state =
-            recovered.unwrap_or_else(|| DaemonState::new(&id, &file.path, &project_namespace));
+        let mut state = recovered.unwrap_or_else(|| DaemonState::new(&file.path, &project_namespace));
         state.namespace = project_namespace.clone();
 
         let project = Arc::new(Self {
-            id,
             file,
             project_namespace,
             engine_url,
@@ -117,7 +115,7 @@ impl Project {
     /// the two are the same outage.
     pub(crate) async fn reconcile_after_reconnect(&self) {
         daemon_line(
-            &self.id,
+            &self.project_namespace,
             "engine connection restored; re-checking the project",
             Tone::Plain,
         );
@@ -145,7 +143,7 @@ impl Project {
             }
 
             daemon_line(
-                &self.id,
+                &self.project_namespace,
                 &format!("{key} did not register again after the reconnect"),
                 Tone::Warn,
             );
@@ -206,7 +204,7 @@ impl Project {
 
         for (key, code) in dead {
             let reason = format!("exited unexpectedly with {code}");
-            daemon_line(&self.id, &format!("{key} {reason}"), Tone::Warn);
+            daemon_line(&self.project_namespace, &format!("{key} {reason}"), Tone::Warn);
 
             // Cascade through the same path a targeted `down` takes: it stops
             // the dependents first and ends on the dead container itself, which
@@ -215,7 +213,7 @@ impl Project {
             let dependents = crate::dag::transitive_dependents(&self.file, &key);
             if !dependents.is_empty() {
                 daemon_line(
-                    &self.id,
+                    &self.project_namespace,
                     &format!("stopping what depended on {key}: {}", dependents.join(", ")),
                     Tone::Warn,
                 );
@@ -267,7 +265,7 @@ impl Project {
                 Reconciliation::Adopt => match Supervised::adopt(record.pid, &record.birth) {
                     Some(child) => {
                         daemon_line(
-                            &self.id,
+                            &self.project_namespace,
                             &format!("{key} survived (pid {}), adopted", record.pid),
                             Tone::Plain,
                         );
@@ -278,7 +276,7 @@ impl Project {
                     // rather than claiming an adoption that did not happen.
                     None => {
                         daemon_line(
-                            &self.id,
+                            &self.project_namespace,
                             &format!("{key} exited while it was being adopted"),
                             Tone::Warn,
                         );
@@ -291,7 +289,7 @@ impl Project {
                 },
                 Reconciliation::Gone => {
                     daemon_line(
-                        &self.id,
+                        &self.project_namespace,
                         &format!("{key} exited while the daemon was away"),
                         Tone::Warn,
                     );
@@ -303,7 +301,7 @@ impl Project {
                 Reconciliation::Unverifiable => {
                     // Never signalled: the pid is alive but unproven.
                     daemon_line(
-                        &self.id,
+                        &self.project_namespace,
                         &format!(
                             "{key}: pid {} is alive but is not provably ours; left running \
                              for manual cleanup",
@@ -325,6 +323,17 @@ impl Project {
         let _ = self.store.save(&state);
     }
 
+    /// Everything this project owns on disk: its durable record, the
+    /// configuration it was handed, and each container's output.
+    ///
+    /// Reported by `compose::status` because the directory is derived from the
+    /// compose file rather than named by anyone — so asking is the only way to
+    /// know, and an operator looking for a container's log should not have to
+    /// reproduce a hash to find it.
+    pub fn state_dir(&self) -> &Path {
+        self.store.dir()
+    }
+
     fn config_dir(&self) -> PathBuf {
         self.store.dir().join("config")
     }
@@ -335,14 +344,14 @@ impl Project {
         self.store.dir().join("logs")
     }
 
-    /// Installed packages live beside the daemons, not inside one: the same
-    /// `state 0.21.4` serves every project on this machine.
+    /// Installed packages live at the root, not inside a daemon or a project:
+    /// the same `state 0.21.4` serves every project on this machine, and
+    /// deriving this by walking up from the state directory would silently
+    /// re-scope it the next time that layout gains a level.
     fn package_cache(&self) -> PathBuf {
-        self.store
-            .dir()
-            .parent()
-            .map(|root| root.join("packages"))
-            .unwrap_or_else(|| self.store.dir().join("packages"))
+        StateStore::root()
+            .unwrap_or_else(|_| self.store.dir().to_path_buf())
+            .join("packages")
     }
 
     pub async fn up(&self, target: Option<&str>, operation_id: String) -> OpResult {
