@@ -63,11 +63,17 @@ pub async fn run(cli: ComposeCli) -> i32 {
     };
 
     match command {
-        ComposeCommand::Serve { engine_url } => match serve(engine_url).await {
+        ComposeCommand::Serve {
+            engine_url,
+            pid_file,
+        } => match serve(engine_url, pid_file).await {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
-        ComposeCommand::Detach { engine_url } => match detach(&engine_url).await {
+        ComposeCommand::Detach {
+            engine_url,
+            pid_file,
+        } => match detach(&engine_url, pid_file.as_deref()).await {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -85,12 +91,43 @@ fn daemon_log_path() -> Result<std::path::PathBuf> {
     Ok(home.join(".iii").join("compose").join("daemon.log"))
 }
 
+/// A pid file that removes itself when the daemon leaves, so the file being
+/// there means a daemon is there.
+///
+/// Written by the process that serves, holding its own pid: a supervisor that
+/// signals what it reads has to reach the daemon, not whoever launched it.
+struct PidFile(std::path::PathBuf);
+
+impl PidFile {
+    fn write(path: std::path::PathBuf) -> Result<Self> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        std::fs::write(&path, format!("{}\n", std::process::id())).map_err(|source| {
+            ComposeError::Io {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for PidFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Serves `compose::*` until asked to stop.
 ///
 /// No project is loaded here. A daemon that has just started knows nothing,
 /// and the first `compose::up id=… file=…` is what teaches it — which is what
 /// lets one daemon hold several projects without being restarted for each.
-async fn serve(engine_url: String) -> Result<()> {
+async fn serve(engine_url: String, pid_file: Option<std::path::PathBuf>) -> Result<()> {
     use colored::Colorize;
 
     let daemon = daemon::Daemon::start(engine_url);
@@ -115,6 +152,10 @@ async fn serve(engine_url: String) -> Result<()> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+
+    // Only now: a daemon the engine refused must not overwrite, and then on its
+    // way out delete, the pid file of the one already serving.
+    let _pid_file = pid_file.map(PidFile::write).transpose()?;
 
     println!("compose {}", "serving".green());
     println!("  {} {}", "engine:".dimmed(), daemon.engine_url);
@@ -179,7 +220,11 @@ const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// this runs, and only the calling thread survives a fork — the daemon would
 /// come back in a runtime with no workers. The child gets the same argv minus
 /// the detach flag, plus a guard in its environment so it can never fork again.
-async fn detach(engine_url: &str) -> Result<()> {
+///
+/// `pid_file` is what the child will write, not what this writes: the pid worth
+/// recording is the daemon's. This only waits for it, so a script that reads
+/// the file right after `-d` returns finds it there.
+async fn detach(engine_url: &str, pid_file: Option<&std::path::Path>) -> Result<()> {
     use colored::Colorize;
 
     let log_path = daemon_log_path()?;
@@ -244,13 +289,17 @@ async fn detach(engine_url: &str) -> Result<()> {
             });
         }
 
-        if daemon_is_serving(engine_url, pid).await {
+        let recorded = pid_file.is_none_or(|path| path.exists());
+        if recorded && daemon_is_serving(engine_url, pid).await {
             println!(
                 "compose {} {}",
                 "detached".green(),
                 format!("(pid {pid})").dimmed()
             );
             println!("  {} {}", "log:".dimmed(), log_path.display());
+            if let Some(path) = pid_file {
+                println!("  {} {}", "pid file:".dimmed(), path.display());
+            }
             println!("  {} iii compose --attach", "follow it with:".dimmed());
             println!("  {} iii trigger compose::stop", "stop it with:".dimmed());
             return Ok(());
@@ -378,4 +427,25 @@ fn report_error(err: &ComposeError) -> i32 {
     use colored::Colorize;
     eprintln!("{} {err}", format!("error[{}]:", err.code()).red().bold());
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PidFile;
+
+    #[test]
+    fn a_pid_file_holds_this_pid_and_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Under a directory that does not exist yet: `--pid-file /run/x/c.pid`
+        // should not fail on the directory part.
+        let path = dir.path().join("run").join("compose.pid");
+
+        {
+            let _pid_file = PidFile::write(path.clone()).expect("should write");
+            let written = std::fs::read_to_string(&path).expect("should be readable");
+            assert_eq!(written.trim(), std::process::id().to_string());
+        }
+
+        assert!(!path.exists(), "the file should go when the daemon does");
+    }
 }

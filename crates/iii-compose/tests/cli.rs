@@ -80,7 +80,7 @@ fn detach_is_carried_unless_the_guard_says_it_already_happened() {
         .plan()
         .unwrap()
     {
-        ComposeCommand::Detach { engine_url } => assert_eq!(engine_url, "ws://host:1/"),
+        ComposeCommand::Detach { engine_url, .. } => assert_eq!(engine_url, "ws://host:1/"),
         other => panic!("expected Detach, got {other:?}"),
     }
 
@@ -94,6 +94,45 @@ fn detach_is_carried_unless_the_guard_says_it_already_happened() {
         ComposeCommand::Serve { .. } => {}
         other => panic!("the guard should force foreground, got {other:?}"),
     }
+}
+
+#[test]
+fn a_backgrounded_daemon_records_its_pid_unless_told_not_to() {
+    use std::path::Path;
+
+    // The default belongs to the background: a foreground daemon is watched by
+    // whoever started it, and would leave the file behind to go stale.
+    assert_eq!(
+        parse(&["iii", "compose"]).pid_file_path(true).as_deref(),
+        Some(Path::new(iii_compose::cli::DEFAULT_PID_FILE))
+    );
+    assert_eq!(parse(&["iii", "compose"]).pid_file_path(false), None);
+
+    // Asking for a path is asking for one, wherever the daemon runs.
+    assert_eq!(
+        parse(&["iii", "compose", "--pid-file", "/run/compose.pid"])
+            .pid_file_path(false)
+            .as_deref(),
+        Some(Path::new("/run/compose.pid"))
+    );
+
+    assert_eq!(
+        parse(&["iii", "compose", "--no-pid-file"]).pid_file_path(true),
+        None
+    );
+
+    // Naming a file and refusing one is a contradiction, so it must not parse.
+    assert!(
+        Wrapper::try_parse_from([
+            "iii",
+            "compose",
+            "--pid-file",
+            "compose.pid",
+            "--no-pid-file",
+        ])
+        .is_err(),
+        "--pid-file and --no-pid-file should be mutually exclusive"
+    );
 }
 
 #[test]
