@@ -42,6 +42,16 @@ pub struct EngineClient {
     namespace: String,
 }
 
+/// Whether a trigger failure is the configuration worker reporting an
+/// unregistered id, as opposed to anything that went wrong reaching it.
+///
+/// The distinction is the whole of fetch-or-fail: one means "nothing stored
+/// yet", the other means "we do not know what is stored", and only the second
+/// is a reason to refuse to start.
+fn is_not_found(error: &iii_sdk::Error) -> bool {
+    matches!(error, iii_sdk::Error::Remote { code, .. } if code == "NOT_FOUND")
+}
+
 /// What the engine showed for one container before compose started it.
 ///
 /// Readiness reports differences, so it needs a "before" that predates the
@@ -115,11 +125,19 @@ impl EngineClient {
 
     /// Fetches a configuration entry from the configuration worker.
     ///
-    /// Fetch-or-fail: a container that declares `config_name` does not start
-    /// unless its configuration resolves. Starting it with defaults would be a
-    /// silent downgrade.
-    pub async fn fetch_config(&self, name: &str) -> Result<serde_yaml::Value> {
-        let response = self
+    /// Fetch-or-fail, with one deliberate exception. A configuration worker
+    /// that errors or cannot be reached fails the container: starting it on
+    /// defaults it did not ask for is a silent downgrade, and an http worker on
+    /// the wrong port is worse than no http worker.
+    ///
+    /// An entry that simply *does not exist yet* is not that. The worker is
+    /// what registers its own id, with its own schema, on the boot compose
+    /// would be refusing — so treating a first boot as a fetch failure
+    /// deadlocks every project that names a configuration before it has ever
+    /// run. Absent resolves to `None`: the layer contributes nothing, and what
+    /// the compose file declares still reaches the child.
+    pub async fn fetch_config(&self, name: &str) -> Result<Option<serde_yaml::Value>> {
+        let response = match self
             .client
             .trigger(TriggerRequest {
                 function_id: "configuration::get".to_string(),
@@ -128,16 +146,24 @@ impl EngineClient {
                 timeout_ms: Some(CALL_TIMEOUT_MS),
             })
             .await
-            .map_err(|source| ComposeError::ConfigFetchFailed {
-                name: name.to_string(),
-                message: source.to_string(),
-            })?;
+        {
+            Ok(response) => response,
+            Err(source) if is_not_found(&source) => return Ok(None),
+            Err(source) => {
+                return Err(ComposeError::ConfigFetchFailed {
+                    name: name.to_string(),
+                    message: source.to_string(),
+                });
+            }
+        };
 
         let value = response.get("value").cloned().unwrap_or(response);
-        serde_yaml::to_value(value).map_err(|err| ComposeError::ConfigFetchFailed {
-            name: name.to_string(),
-            message: err.to_string(),
-        })
+        serde_yaml::to_value(value)
+            .map(Some)
+            .map_err(|err| ComposeError::ConfigFetchFailed {
+                name: name.to_string(),
+                message: err.to_string(),
+            })
     }
 
     /// What the engine already showed for this container, captured *before*

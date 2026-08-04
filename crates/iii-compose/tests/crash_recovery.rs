@@ -33,7 +33,7 @@ fn spawn(script: &str, cwd: &Path) -> Supervised {
 }
 
 fn state_with(child: &Supervised, compose: &Path) -> DaemonState {
-    let mut state = DaemonState::new("host-a", compose, "orders-1234abcd");
+    let mut state = DaemonState::new(compose, "orders-1234abcd");
     state.containers.insert(
         "api".to_string(),
         ChildRecord::from_supervised(child, ChildStatus::Ready),
@@ -45,7 +45,7 @@ fn state_with(child: &Supervised, compose: &Path) -> DaemonState {
 fn state_survives_a_save_and_load_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     let store = StateStore::at(tmp.path().join("host-a"));
-    let mut state = DaemonState::new("host-a", Path::new("/srv/app/c.yaml"), "orders-1234abcd");
+    let mut state = DaemonState::new(Path::new("/srv/app/c.yaml"), "orders-1234abcd");
     state.containers.insert(
         "api".to_string(),
         ChildRecord::new(4242, BirthIdentity::StartTime(99), ChildStatus::Ready),
@@ -68,9 +68,7 @@ fn state_is_owner_only_and_leaves_no_temp_file() {
     let tmp = tempfile::tempdir().unwrap();
     let store = StateStore::at(tmp.path().join("host-a"));
     store
-        .save(&DaemonState::new(
-            "host-a",
-            Path::new("/srv/app/c.yaml"),
+        .save(&DaemonState::new(Path::new("/srv/app/c.yaml"),
             "ns",
         ))
         .unwrap();
@@ -116,16 +114,37 @@ fn a_corrupt_state_file_is_an_error_not_a_silent_reset() {
 }
 
 #[test]
-fn state_cannot_be_rebound_to_another_compose_file() {
-    let state = DaemonState::new("host-a", Path::new("/srv/a/compose.yaml"), "ns");
+fn state_recorded_for_another_compose_file_is_refused() {
+    // Unreachable through the normal path now that the directory is derived
+    // from the compose file — it takes a slug collision, or a state file
+    // someone moved. Kept because what it prevents is one project adopting and
+    // later killing another's children.
+    let state = DaemonState::new(Path::new("/srv/a/compose.yaml"), "ns");
 
     state
         .check_binding(Path::new("/srv/a/compose.yaml"))
         .unwrap();
     let err = state
         .check_binding(Path::new("/srv/b/compose.yaml"))
-        .expect_err("a daemon id is bound to one compose file");
-    assert_eq!(err.code(), "STATE_BINDING_MISMATCH");
+        .expect_err("state belongs to the file it recorded");
+    assert_eq!(err.code(), "INVALID_STATE_FILE");
+}
+
+#[test]
+fn a_project_is_its_file_and_two_files_never_share_a_directory() {
+    use iii_compose::state::project_slug;
+
+    // Readable, so `~/.iii/compose` can be browsed, and unique, so two
+    // projects whose directories happen to share a name stay apart.
+    let a = project_slug(Path::new("/srv/orders/worker-compose.yaml"));
+    let b = project_slug(Path::new("/opt/orders/worker-compose.yaml"));
+
+    assert!(a.starts_with("orders-"), "unexpected slug: {a}");
+    assert!(b.starts_with("orders-"), "unexpected slug: {b}");
+    assert_ne!(a, b, "two different files must not share a state directory");
+
+    // And the same file is the same project however often it is asked for.
+    assert_eq!(a, project_slug(Path::new("/srv/orders/worker-compose.yaml")));
 }
 
 #[tokio::test]
@@ -207,9 +226,7 @@ fn a_clean_shutdown_clears_the_state() {
     let tmp = tempfile::tempdir().unwrap();
     let store = StateStore::at(tmp.path().join("host-a"));
     store
-        .save(&DaemonState::new(
-            "host-a",
-            Path::new("/srv/app/c.yaml"),
+        .save(&DaemonState::new(Path::new("/srv/app/c.yaml"),
             "ns",
         ))
         .unwrap();

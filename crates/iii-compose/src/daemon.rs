@@ -6,21 +6,22 @@
 
 //! The daemon: one engine connection, many projects.
 //!
-//! `compose::*` is registered once, in `default`, and every call names the
-//! project it means with `id=`. That is the whole addressing story: an operator
-//! types an id they chose, not a namespace they have to look up, and the
-//! namespace goes back to being what the engine uses to route workers.
+//! Two addresses, and they answer different questions. `--ns` is the daemon —
+//! the namespace it serves `compose::*` in, and how an operator reaches this
+//! machine rather than a neighbour. `file=` is the project: a daemon holds as
+//! many as it is given, and the compose file is the only thing that names one.
 //!
-//! One daemon serves an engine, and its worker name says so: `compose`, fixed.
-//!
-//! A random name would let a second daemon register, but not be reached — both
-//! would own `compose::up` in `default` and the engine routes a call to one of
-//! them. The second would sit there holding projects nobody can address, which
-//! is worse than being refused. The `(default, compose)` lease is the only
-//! race-free way to say "this engine already has one", so the collision is the
-//! feature: the second daemon is told, immediately and by name.
+//! The worker name stays `compose` on every machine, so the lease the engine
+//! arbitrates is `(namespace, compose)`. Two daemons with different namespaces
+//! coexist; two claiming one namespace cannot, and the loser is told
+//! immediately rather than left holding projects nobody can address.
 
-use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use tokio::sync::Mutex;
 
@@ -29,7 +30,7 @@ use crate::{
     engine::EngineClient,
     error::{ComposeError, Result},
     lifecycle::OpResult,
-    project::{ContainerStatus, Project},
+    project::Project,
 };
 
 /// How often the supervisor checks whether a ready child is still alive.
@@ -38,13 +39,19 @@ use crate::{
 const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 
 pub struct Daemon {
-    /// What this daemon registered as. Random, and of no interest to the
-    /// operator: projects are addressed by `id=`, never by this.
+    /// What this daemon registered as. Fixed, and the same on every machine:
+    /// what tells two daemons apart is the namespace, not the name.
     pub worker_name: String,
+    /// This machine's identity — the `--id`, and the namespace it answers
+    /// `compose::*` in. `id=` on a call is checked against it.
+    pub daemon_namespace: String,
     pub engine_url: String,
     engine: Arc<EngineClient>,
-    /// Every project this daemon has been asked about, by `id`.
-    projects: Mutex<BTreeMap<String, Arc<Project>>>,
+    /// Every project this daemon has been asked about, keyed by the canonical
+    /// path of its compose file. Nothing else identifies a project: a name
+    /// someone chose would be a second identity, and a second identity can be
+    /// pointed at the wrong file.
+    projects: Mutex<BTreeMap<PathBuf, Arc<Project>>>,
     /// Set by `compose::stop`. The serve loop reads it and leaves through the
     /// same path a SIGTERM takes, so a remote stop and a local one cannot
     /// diverge in what they tear down.
@@ -56,15 +63,19 @@ impl Daemon {
     ///
     /// No project is loaded here: a daemon starts knowing nothing and learns
     /// about a project the first time a call names one.
-    pub fn start(engine_url: String) -> Arc<Self> {
+    pub fn start(engine_url: String, daemon_namespace: String) -> Arc<Self> {
+        // The name stays fixed and the *namespace* carries the identity, so
+        // the lease is `(daemon_namespace, compose)`: two machines coexist, and two
+        // daemons claiming to be the same machine cannot.
         let engine = Arc::new(EngineClient::connect(
             &engine_url,
             DAEMON_WORKER_NAME,
-            crate::namespace::DEFAULT_NAMESPACE,
+            &daemon_namespace,
         ));
 
         let daemon = Arc::new(Self {
             worker_name: DAEMON_WORKER_NAME.to_string(),
+            daemon_namespace,
             engine_url,
             engine,
             projects: Mutex::new(BTreeMap::new()),
@@ -84,37 +95,22 @@ impl Daemon {
         self.engine.fatal_error()
     }
 
-    /// The project `id` names, loading `file` if this is the first time.
+    /// The project `file` declares, loading it if this is the first time.
     ///
-    /// `file` is required to reach a project the daemon has not seen; after
-    /// that it is optional, and giving a different one is an error rather than
-    /// a silent rebind — the id already owns durable state pointing at a
-    /// compose file, and pointing it elsewhere would adopt children it never
-    /// started.
-    pub async fn project(&self, id: &str, file: Option<&Path>) -> Result<Arc<Project>> {
-        if let Some(existing) = self.projects.lock().await.get(id).cloned() {
-            if let Some(file) = file {
-                let requested = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-                if requested != existing.file.path {
-                    return Err(ComposeError::StateBindingMismatch {
-                        daemon_id: id.to_string(),
-                        recorded: existing.file.path.clone(),
-                        requested,
-                    });
-                }
-            }
-            return Ok(existing);
-        }
-
-        let Some(file) = file else {
-            return Err(ComposeError::UnknownProject { id: id.to_string() });
-        };
-
+    /// Loading is idempotent: the same file reached twice is the same project,
+    /// whether it was spelled relatively or absolutely, so there is no way to
+    /// rebind one and no rebind to refuse.
+    pub async fn project(&self, file: &Path) -> Result<Arc<Project>> {
         if file.is_relative() && !file.exists() {
             return Err(ComposeError::RelativeFileMissing {
                 path: file.to_path_buf(),
                 cwd: std::env::current_dir().unwrap_or_default(),
             });
+        }
+        let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+
+        if let Some(existing) = self.projects.lock().await.get(&key).cloned() {
+            return Ok(existing);
         }
 
         let compose = ComposeFile::load(file)?;
@@ -124,7 +120,7 @@ impl Daemon {
         crate::manifest::validate_offline(&compose, &namespace)?;
 
         let project = Project::open(
-            id.to_string(),
+            &self.daemon_namespace,
             compose,
             Arc::clone(&self.engine),
             self.engine_url.clone(),
@@ -134,8 +130,11 @@ impl Daemon {
         self.projects
             .lock()
             .await
-            .insert(id.to_string(), Arc::clone(&project));
-        crate::report::daemon_line(&format!("project '{id}' loaded into {namespace}"), false);
+            .insert(key.clone(), Arc::clone(&project));
+        crate::report::daemon_line(
+            &format!("project {} loaded into {namespace}", key.display()),
+            false,
+        );
         Ok(project)
     }
 
@@ -145,7 +144,6 @@ impl Daemon {
         let mut listed = Vec::new();
         for project in projects {
             listed.push(serde_json::json!({
-                "id": project.id,
                 "namespace": project.project_namespace,
                 "file": project.file.path,
                 "containers": project.status().await,
@@ -154,75 +152,61 @@ impl Daemon {
         listed
     }
 
-    /// Brings `id` up, loading `file` if the project is new.
+    /// Brings a project up, loading its file if this is the first time.
+    ///
+    /// Only `up` falls back to the compose file in the daemon's own directory:
+    /// starting compose inside a project and saying `up` should be enough.
     pub async fn up(
         &self,
-        id: &str,
         file: Option<&Path>,
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        // Only `up` falls back to the compose file in the daemon's own
-        // directory, and only for a project it has not seen: starting compose
-        // inside a project and saying `up id=a` should be enough. `down` and
-        // `status` keep erroring on an unknown id, because there the fallback
-        // would turn a mistyped id into a new project instead of a question.
-        let default_file = Path::new(crate::cli::DEFAULT_COMPOSE_FILE);
-        let known = self.projects.lock().await.contains_key(id);
-        let file = match file {
-            Some(file) => Some(file),
-            None if !known && default_file.exists() => Some(default_file),
-            None => None,
-        };
-
-        let project = self.project(id, file).await?;
+        let project = self.project(self.resolve_file(file)?).await?;
         Ok(project.up(container, operation_id).await)
     }
 
-    /// Takes `id` down. The file is not needed: a project being stopped is one
-    /// the daemon already knows.
+    /// Takes a project down.
     pub async fn down(
         &self,
-        id: &str,
+        file: Option<&Path>,
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let project = self.project(id, None).await?;
+        let project = self.project(self.resolve_file(file)?).await?;
         Ok(project.down(container, operation_id).await)
+    }
+
+    /// The file a call meant: the one it named, else `worker-compose.yaml` in
+    /// the daemon's own directory when that exists.
+    fn resolve_file<'a>(&self, file: Option<&'a Path>) -> Result<&'a Path> {
+        static DEFAULT: &str = crate::cli::DEFAULT_COMPOSE_FILE;
+        match file {
+            Some(file) => Ok(file),
+            None if Path::new(DEFAULT).exists() => Ok(Path::new(DEFAULT)),
+            None => Err(ComposeError::NoComposeFileHere { expected: DEFAULT }),
+        }
     }
 
     /// Checks a declaration without taking it on.
     ///
-    /// With a `file`, the file is read and answered for and nothing is kept —
-    /// this is the call a CI job makes, and it must not leave the daemon
-    /// holding a project or bind an id to a path. With only an `id`, the
-    /// question is about a project already held.
-    pub async fn validate(
-        &self,
-        id: Option<&str>,
-        file: Option<&Path>,
-    ) -> Result<crate::manifest::ValidationReport> {
-        if let Some(file) = file {
-            if file.is_relative() && !file.exists() {
-                return Err(ComposeError::RelativeFileMissing {
-                    path: file.to_path_buf(),
-                    cwd: std::env::current_dir().unwrap_or_default(),
-                });
-            }
-            let compose = ComposeFile::load(file)?;
-            let namespace = crate::namespace::project_namespace(None, compose.name.as_deref());
-            return crate::manifest::validate_offline(&compose, &namespace);
+    /// The file is read and answered for, and nothing is kept: this is the
+    /// call a CI job makes, and it must not leave the daemon holding a project.
+    pub async fn validate(&self, file: Option<&Path>) -> Result<crate::manifest::ValidationReport> {
+        let file = self.resolve_file(file)?;
+        if file.is_relative() && !file.exists() {
+            return Err(ComposeError::RelativeFileMissing {
+                path: file.to_path_buf(),
+                cwd: std::env::current_dir().unwrap_or_default(),
+            });
         }
-
-        let id = id.ok_or_else(|| ComposeError::UnknownProject {
-            id: "<none>".to_string(),
-        })?;
-        let project = self.project(id, None).await?;
-        crate::manifest::validate_offline(&project.file, &project.project_namespace)
+        let compose = ComposeFile::load(file)?;
+        let namespace = crate::namespace::project_namespace(None, compose.name.as_deref());
+        crate::manifest::validate_offline(&compose, &namespace)
     }
 
-    pub async fn status(&self, id: &str) -> Result<Vec<ContainerStatus>> {
-        Ok(self.project(id, None).await?.status().await)
+    pub async fn status(&self, file: Option<&Path>) -> Result<Arc<Project>> {
+        self.project(self.resolve_file(file)?).await
     }
 
     /// Asks the daemon to shut down, and reports what it is about to stop.
@@ -239,7 +223,7 @@ impl Daemon {
         serde_json::json!({
             "daemon": self.worker_name,
             "daemon_pid": std::process::id(),
-            "stopping": projects.keys().collect::<Vec<_>>(),
+            "stopping": projects.keys().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         })
     }
 

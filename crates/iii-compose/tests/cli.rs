@@ -22,8 +22,8 @@ fn parse(args: &[&str]) -> ComposeCli {
 
 #[test]
 fn bare_compose_serves_in_the_foreground() {
-    // No id, no file, no namespace: a daemon starts knowing nothing and learns
-    // about a project the first time a call names one.
+    // No id and no file: a daemon starts knowing nothing and learns about a
+    // project the first time a call names one.
     // The address is asserted in the III_URL test and nowhere else: it reads
     // process-wide state, and two tests reading it while one writes it is a
     // flake waiting for a loaded machine.
@@ -34,14 +34,79 @@ fn bare_compose_serves_in_the_foreground() {
 }
 
 #[test]
+fn an_unnamed_daemon_names_itself() {
+    // Without an id there is no safe well-known name to fall back to: two
+    // daemons sharing one would be the collision the id exists to prevent, and
+    // the second would be refused. So an invocation that does not name itself
+    // gets a name — printed on start, and what an operator captures to address
+    // it.
+    let first = match parse(&["iii", "compose"]).plan().unwrap() {
+        ComposeCommand::Serve { daemon_namespace, .. } => daemon_namespace,
+        other => panic!("expected Serve, got {other:?}"),
+    };
+    let second = match parse(&["iii", "compose"]).plan().unwrap() {
+        ComposeCommand::Serve { daemon_namespace, .. } => daemon_namespace,
+        other => panic!("expected Serve, got {other:?}"),
+    };
+
+    assert!(
+        uuid::Uuid::parse_str(&first).is_ok(),
+        "an unnamed daemon should get a uuid, got {first:?}"
+    );
+    assert_ne!(
+        first, second,
+        "two daemons that did not name themselves must not collide"
+    );
+}
+
+#[test]
+fn the_namespace_is_how_one_daemon_is_told_from_another() {
+    // Several daemons attach to one engine. The id is what tells them apart:
+    // it is the namespace this one answers `compose::*` in, so an operator
+    // reaches exactly one with `--namespace`.
+    match parse(&["iii", "compose", "--ns", "pc-da-xuxa"])
+        .plan()
+        .unwrap()
+    {
+        ComposeCommand::Serve { daemon_namespace, .. } => assert_eq!(daemon_namespace, "pc-da-xuxa"),
+        other => panic!("expected Serve, got {other:?}"),
+    }
+
+    // The view has to name the same daemon the foreground would, or `--attach`
+    // follows a neighbour's log. (`Detach` carries it too; that is asserted in
+    // the test that owns DETACHED_GUARD, since reading it here would race.)
+    match parse(&["iii", "compose", "--ns", "pc-a", "--attach"])
+        .plan()
+        .unwrap()
+    {
+        ComposeCommand::Attach { daemon_namespace } => {
+            assert_eq!(daemon_namespace.as_deref(), Some("pc-a"));
+        }
+        other => panic!("expected Attach, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_namespace_that_cannot_also_be_a_directory_is_refused() {
+    // It is both the namespace the engine routes on and a directory under
+    // ~/.iii/compose, so a separator or an empty string would be a broken
+    // daemon discovered later, at the first write.
+    for bad in ["", "   ", "a/b", "a\\b", ".."] {
+        let err = parse(&["iii", "compose", "--ns", bad])
+            .plan()
+            .expect_err("{bad:?} should be refused");
+        assert_eq!(err.code(), "INVALID_NAMESPACE", "for {bad:?}");
+    }
+}
+
+#[test]
 fn the_project_flags_are_gone_rather_than_ignored() {
-    // They mean something else now — `id` and `file` are call arguments, not
-    // process arguments. Accepting them here would silently do nothing, so
-    // parsing has to fail and say so.
+    // `file` is a call argument, not a process argument, and the subcommands
+    // are `compose::*` calls now. Accepting either here would silently do
+    // nothing, so parsing has to fail and say so.
     for removed in [
-        &["iii", "compose", "--id", "a"][..],
         &["iii", "compose", "--file", "c.yaml"][..],
-        &["iii", "compose", "--ns", "a"][..],
+        &["iii", "compose", "--id", "a"][..],
         &["iii", "compose", "up"][..],
         &["iii", "compose", "down"][..],
         &["iii", "compose", "logs"][..],
@@ -56,8 +121,11 @@ fn the_project_flags_are_gone_rather_than_ignored() {
 
 #[test]
 fn attach_and_detach_are_the_only_modes_left() {
+    // Nothing is generated here: `--attach` follows a daemon that already
+    // exists, so an unnamed one is resolved against what has run on this
+    // machine rather than invented.
     match parse(&["iii", "compose", "--attach"]).plan().unwrap() {
-        ComposeCommand::Attach => {}
+        ComposeCommand::Attach { daemon_namespace } => assert_eq!(daemon_namespace, None),
         other => panic!("expected Attach, got {other:?}"),
     }
 
@@ -76,11 +144,19 @@ fn detach_is_carried_unless_the_guard_says_it_already_happened() {
     // flake waiting for a loaded machine.
     // `-d` re-execs, so whatever resolved the address has to be what the child
     // is told; recomputing it there would read a different environment.
-    match parse(&["iii", "compose", "-d", "--engine", "ws://host:1/"])
+    match parse(&["iii", "compose", "-d", "--engine", "ws://host:1/", "--ns", "pc-a"])
         .plan()
         .unwrap()
     {
-        ComposeCommand::Detach { engine_url } => assert_eq!(engine_url, "ws://host:1/"),
+        // The id goes with it for the same reason the address does: the child
+        // must come back as the same daemon, not as `default`.
+        ComposeCommand::Detach {
+            engine_url,
+            daemon_namespace,
+        } => {
+            assert_eq!(engine_url, "ws://host:1/");
+            assert_eq!(daemon_namespace, "pc-a");
+        }
         other => panic!("expected Detach, got {other:?}"),
     }
 
