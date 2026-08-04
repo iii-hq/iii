@@ -58,7 +58,7 @@ fn make_state(id: Uuid) -> SandboxState {
         lifeline: None,
         created_at: Instant::now(),
         last_exec_at: Instant::now(),
-        exec_in_progress: false,
+        exec_in_flight: 0,
         idle_timeout_secs: 300,
         stopped: false,
     }
@@ -194,7 +194,10 @@ async fn exec_happy_path_returns_response_and_clears_in_progress() {
     assert!(resp.success);
 
     let state = reg.get(id).await.unwrap();
-    assert!(!state.exec_in_progress, "in-progress flag must be cleared");
+    assert!(
+        !state.exec_in_progress(),
+        "in-progress flag must be cleared"
+    );
     assert_eq!(
         runner.call_count.load(std::sync::atomic::Ordering::SeqCst),
         1
@@ -268,7 +271,7 @@ async fn exec_runner_error_clears_in_progress_flag() {
     assert!(matches!(err, SandboxError::BootFailed(_)));
     let state = reg.get(id).await.unwrap();
     assert!(
-        !state.exec_in_progress,
+        !state.exec_in_progress(),
         "exec_in_progress must clear even when runner returns Err"
     );
 }
@@ -518,6 +521,8 @@ async fn list_returns_summary_for_each_sandbox() {
     assert_eq!(resp.sandboxes.len(), 3);
     for s in &resp.sandboxes {
         assert_eq!(s.image, "python");
+        // `SandboxSummary` is the wire shape — still a bool field here, even
+        // though the registry record behind it is now a count.
         assert!(!s.exec_in_progress);
         assert!(!s.stopped);
     }

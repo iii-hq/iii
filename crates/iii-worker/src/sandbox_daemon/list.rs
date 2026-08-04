@@ -32,10 +32,11 @@ pub async fn handle_list(_req: ListRequest, registry: &SandboxRegistry) -> ListR
         .into_iter()
         .map(|s| SandboxSummary {
             sandbox_id: s.id.to_string(),
+            // Wire field stays a bool; the record behind it is now a count.
+            exec_in_progress: s.exec_in_progress(),
+            age_secs: now.saturating_duration_since(s.created_at).as_secs(),
             name: s.name,
             image: s.image,
-            age_secs: now.saturating_duration_since(s.created_at).as_secs(),
-            exec_in_progress: s.exec_in_progress,
             stopped: s.stopped,
         })
         .collect();
@@ -62,7 +63,7 @@ mod tests {
             lifeline: None,
             created_at: Instant::now(),
             last_exec_at: Instant::now(),
-            exec_in_progress: false,
+            exec_in_flight: 0,
             idle_timeout_secs: 300,
             stopped: false,
         }

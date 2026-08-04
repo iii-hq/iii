@@ -18,6 +18,14 @@ pub async fn run_reaper_loop<S: VmStopper>(
             if state.stopped {
                 continue;
             }
+            // Busy is not idle. `last_exec_at` is stamped when an exec
+            // STARTS, and the default per-exec deadline (300s) equals the
+            // default idle timeout — so without this a long exec has its VM
+            // killed out from under it the moment those cross. Nothing
+            // consulted the old in-progress bool at all.
+            if state.exec_in_flight > 0 {
+                continue;
+            }
             let idle = now.saturating_duration_since(state.last_exec_at);
             if idle > Duration::from_secs(state.idle_timeout_secs) {
                 tracing::info!(sandbox_id=%state.id, "reaping idle sandbox");
@@ -64,7 +72,7 @@ mod tests {
             lifeline: None,
             created_at: past,
             last_exec_at: past,
-            exec_in_progress: false,
+            exec_in_flight: 0,
             idle_timeout_secs: timeout,
             stopped: false,
         }
@@ -85,5 +93,65 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         task.abort();
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// The reaper must not kill a sandbox that is mid-exec. `last_exec_at` is
+    /// stamped when the exec STARTS and the default per-exec deadline equals
+    /// the default idle timeout (both 300s), so a long exec crosses the line
+    /// while still running. Nothing consulted the old in-progress bool.
+    #[tokio::test]
+    async fn does_not_reap_a_sandbox_with_an_exec_in_flight() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        // Idle far past its timeout, but busy.
+        let mut busy = state(id, 600, 300);
+        busy.exec_in_flight = 1;
+        reg.insert(busy).await;
+
+        let count = Arc::new(AtomicU32::new(0));
+        let stopper = Arc::new(CountingStopper(count.clone()));
+        let reg_clone = reg.clone();
+        let task = tokio::spawn(async move {
+            run_reaper_loop(reg_clone, stopper, Duration::from_millis(10)).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        task.abort();
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "must not reap a busy sandbox"
+        );
+        assert!(reg.get(id).await.is_ok(), "the record must survive");
+    }
+
+    /// ...and once it finishes, the same sandbox is reapable again.
+    #[tokio::test]
+    async fn reaps_once_the_exec_finishes() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        let mut busy = state(id, 600, 300);
+        busy.exec_in_flight = 1;
+        reg.insert(busy).await;
+
+        let count = Arc::new(AtomicU32::new(0));
+        let stopper = Arc::new(CountingStopper(count.clone()));
+        let reg_clone = reg.clone();
+        let task = tokio::spawn(async move {
+            run_reaper_loop(reg_clone, stopper, Duration::from_millis(10)).await;
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+
+        // Drop the in-flight count without refreshing last_exec_at, so the
+        // sandbox is immediately eligible.
+        {
+            let mut s = reg.get(id).await.unwrap();
+            s.exec_in_flight = 0;
+            reg.insert(s).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        task.abort();
+        assert_eq!(count.load(Ordering::SeqCst), 1, "reapable once idle again");
     }
 }

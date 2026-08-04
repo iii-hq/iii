@@ -113,6 +113,7 @@ Hosts without hardware virtualization will fail `sandbox::create` with error `S3
       - node
     default_idle_timeout_secs: 300
     max_concurrent_sandboxes: 32
+    max_concurrent_exec_per_sandbox: 4
     default_cpus: 1
     default_memory_mb: 512
 ```
@@ -126,6 +127,7 @@ Hosts without hardware virtualization will fail `sandbox::create` with error `S3
 | `auto_install` | boolean | `true` | Pull the image from its OCI ref on first use when the rootfs isn't cached. Set `false` in air-gapped or pre-provisioned deployments — callers get `S101` and operators pre-pull with `iii worker add iiidev/<image>`. |
 | `image_allowlist` | string[] | `[]` | **Fail-closed** list of image names that may be booted. Entries must be preset names (`python`, `node`) or keys from `custom_images`. Empty list denies everything — `sandbox::create` returns `S100` for every request. |
 | `default_idle_timeout_secs` | number | `300` | Reap a sandbox when `now - last_exec_at` exceeds this. The reaper runs every 10 s. Per-request `idle_timeout_secs` on `sandbox::create` overrides. |
+| `max_concurrent_exec_per_sandbox` | number | `4` | Execs admitted simultaneously in one sandbox. Above this, `sandbox::exec` returns `S003`. Capped rather than unlimited because the guest is small (1 vCPU / 512 MB by default) — raise it together with `default_memory_mb`. |
 | `max_concurrent_sandboxes` | number | `32` | Hard cap on live sandboxes. The 33rd concurrent `sandbox::create` returns `S400`. Size by host RAM (default RAM per sandbox × cap ≤ available RAM). |
 | `default_cpus` | number | `1` | vCPUs per sandbox when the request omits `cpus`. |
 | `default_memory_mb` | number | `512` | RAM ceiling per sandbox when the request omits `memory_mb`. |
@@ -440,14 +442,20 @@ The `sandbox_id` is well-formed but no sandbox with that id exists. Call
 `sandbox::create` first.
 
 <a id="S003"></a>
-#### S003 — concurrent exec
-Exec is serialized one-at-a-time per sandbox; another exec is already in flight.
-If that exec is a long-running or FOREGROUND process (a server, `npm install`, a
-build/watch), waiting will NOT
-free the slot — it holds until the process exits or hits its `timeout_ms`
-(default 300s). Detach servers with `nohup <cmd> > /tmp/out.log 2>&1 &` and read
-progress via `sandbox::fs::read`, or `sandbox::stop` + `sandbox::create` to reset.
-Retry-after-wait only helps for a short in-flight command.
+#### S003 — exec concurrency cap reached
+A sandbox admits `max_concurrent_exec_per_sandbox` execs at once (default 4);
+this one would have been the next past that. Exec is **not** serialized — both
+ends of the channel multiplex — but it is capped, because the guest defaults to
+1 vCPU and 512 MB and enough simultaneous interpreters OOM the VM rather than
+queueing.
+
+If the calls in flight are long-running or FOREGROUND processes (a server,
+`npm install`, a build/watch), waiting will NOT free a slot — each holds until
+it exits or hits its `timeout_ms` (default 300s). Detach servers with
+`nohup <cmd> > /tmp/out.log 2>&1 &` and read progress via `sandbox::fs::read`,
+or `sandbox::stop` + `sandbox::create` to reset. Retry-after-wait only helps
+for short in-flight commands. Operators serving genuinely concurrent workloads
+should raise `max_concurrent_exec_per_sandbox` alongside `default_memory_mb`.
 
 <a id="S004"></a>
 #### S004 — sandbox already stopped

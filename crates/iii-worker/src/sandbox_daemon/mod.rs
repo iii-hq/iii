@@ -139,7 +139,11 @@ pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()
         },
     );
 
-    let sandbox_registry = Arc::new(crate::sandbox_daemon::SandboxRegistry::new());
+    let sandbox_registry = Arc::new(
+        crate::sandbox_daemon::SandboxRegistry::with_max_exec_in_flight(
+            config.max_concurrent_exec_per_sandbox,
+        ),
+    );
     let sandbox_cfg = Arc::new(config);
     let launcher = Arc::new(crate::sandbox_daemon::adapters::IiiWorkerLauncher);
     let runner = Arc::new(crate::sandbox_daemon::adapters::ShellProtoRunner);

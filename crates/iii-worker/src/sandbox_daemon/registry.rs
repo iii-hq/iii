@@ -1,5 +1,5 @@
 //! In-memory registry of active sandboxes. Tracks UUID -> SandboxState
-//! with an exec-in-progress flag for serialization.
+//! with a bounded in-flight exec count for admission control.
 
 use crate::sandbox_daemon::errors::SandboxError;
 use std::collections::HashMap;
@@ -25,20 +25,66 @@ pub struct SandboxState {
     pub lifeline: Option<std::sync::Arc<crate::daemon_exit::Lifeline>>,
     pub created_at: Instant,
     pub last_exec_at: Instant,
-    pub exec_in_progress: bool,
+    /// How many execs are running in this sandbox right now.
+    ///
+    /// Was a `bool` — one exec at a time, a second rejected with S003. That
+    /// was daemon POLICY, not a transport limit: both ends of the `iii.exec`
+    /// channel already multiplex by `corr_id` (host `cli::shell_relay`,
+    /// guest `iii_init::shell_dispatcher`), each session with its own threads
+    /// and a shared writer that keeps frames from interleaving.
+    ///
+    /// A COUNT rather than an unbounded free-for-all because the guest is
+    /// small: `default_cpus` is 1 and `default_memory_mb` 512, so enough
+    /// simultaneous interpreters OOM the VM long before they finish.
+    /// [`SandboxRegistry::begin_exec`] admits up to a caller-supplied cap and
+    /// still returns S003 above it.
+    ///
+    /// The count also tells the reaper a sandbox is busy — see
+    /// `reaper::run_reaper_loop`, which used to reap mid-exec because the
+    /// bool recording that was consulted by nobody.
+    pub exec_in_flight: u32,
     pub idle_timeout_secs: u64,
     pub stopped: bool,
 }
 
-#[derive(Default, Clone)]
+impl SandboxState {
+    /// Whether any exec is running. `sandbox::list`'s wire field stayed a
+    /// bool when the internal record became a count.
+    pub fn exec_in_progress(&self) -> bool {
+        self.exec_in_flight > 0
+    }
+}
+
+/// Concurrent execs admitted per sandbox when the registry is built without
+/// an explicit cap. Mirrors `SandboxConfig::max_concurrent_exec_per_sandbox`;
+/// the daemon overrides it from config at startup.
+pub const DEFAULT_MAX_EXEC_IN_FLIGHT: u32 = 4;
+
+#[derive(Clone)]
 pub struct SandboxRegistry {
     inner: Arc<Mutex<HashMap<Uuid, SandboxState>>>,
+    /// Admission cap, held here rather than threaded through `begin_exec`'s
+    /// ~28 call sites. 0 is treated as 1 by `begin_exec`, so a `Default`
+    /// registry serializes rather than deadlocking.
+    max_exec_in_flight: u32,
+}
+
+impl Default for SandboxRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SandboxRegistry {
     pub fn new() -> Self {
+        Self::with_max_exec_in_flight(DEFAULT_MAX_EXEC_IN_FLIGHT)
+    }
+
+    /// Registry whose sandboxes admit at most `max` concurrent execs.
+    pub fn with_max_exec_in_flight(max: u32) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            max_exec_in_flight: max,
         }
     }
 
@@ -54,7 +100,12 @@ impl SandboxRegistry {
             .ok_or_else(|| SandboxError::NotFound(id.to_string()))
     }
 
-    /// Acquire exec slot (serialization). Returns S003 if another exec in flight.
+    /// Admit one exec, up to the registry's concurrency cap. Returns S003
+    /// when the sandbox is already at that cap.
+    ///
+    /// A cap of 0 is treated as 1 — admitting nothing would wedge the
+    /// sandbox permanently, which is never what an operator means by a
+    /// limit.
     pub async fn begin_exec(&self, id: Uuid) -> Result<SandboxState, SandboxError> {
         let mut map = self.inner.lock().await;
         let state = map
@@ -63,10 +114,10 @@ impl SandboxRegistry {
         if state.stopped {
             return Err(SandboxError::AlreadyStopped(id.to_string()));
         }
-        if state.exec_in_progress {
+        if state.exec_in_flight >= self.max_exec_in_flight.max(1) {
             return Err(SandboxError::ConcurrentExec(id.to_string()));
         }
-        state.exec_in_progress = true;
+        state.exec_in_flight += 1;
         state.last_exec_at = Instant::now();
         Ok(state.clone())
     }
@@ -74,7 +125,9 @@ impl SandboxRegistry {
     pub async fn end_exec(&self, id: Uuid) {
         let mut map = self.inner.lock().await;
         if let Some(state) = map.get_mut(&id) {
-            state.exec_in_progress = false;
+            // Saturating: an end without a matching begin must not wrap to
+            // u32::MAX and lock the sandbox out of every future exec.
+            state.exec_in_flight = state.exec_in_flight.saturating_sub(1);
             state.last_exec_at = Instant::now();
         }
     }
@@ -128,7 +181,7 @@ mod tests {
             lifeline: None,
             created_at: Instant::now(),
             last_exec_at: Instant::now(),
-            exec_in_progress: false,
+            exec_in_flight: 0,
             idle_timeout_secs: 300,
             stopped: false,
         }
@@ -157,14 +210,32 @@ mod tests {
         reg.insert(fixture(id)).await;
         let _ = reg.begin_exec(id).await.unwrap();
         let s = reg.get(id).await.unwrap();
-        assert!(s.exec_in_progress);
+        assert!(s.exec_in_progress());
+        assert_eq!(s.exec_in_flight, 1);
     }
 
+    /// The change this file exists to make: a second exec no longer bounces.
+    /// Both ends of the exec channel multiplex by `corr_id`; only this
+    /// registry ever refused.
     #[tokio::test]
-    async fn concurrent_begin_exec_returns_s003_with_actionable_recovery() {
-        let reg = SandboxRegistry::new();
+    async fn concurrent_execs_are_admitted_up_to_the_cap() {
+        let reg = SandboxRegistry::with_max_exec_in_flight(4);
         let id = Uuid::new_v4();
         reg.insert(fixture(id)).await;
+        for expected in 1..=4 {
+            reg.begin_exec(id).await.expect("under the cap");
+            assert_eq!(reg.get(id).await.unwrap().exec_in_flight, expected);
+        }
+    }
+
+    /// Unbounded would OOM the guest: it defaults to 1 vCPU and 512 MB, so
+    /// enough simultaneous interpreters kill the VM rather than queueing.
+    #[tokio::test]
+    async fn exceeding_the_cap_still_returns_s003_with_actionable_recovery() {
+        let reg = SandboxRegistry::with_max_exec_in_flight(2);
+        let id = Uuid::new_v4();
+        reg.insert(fixture(id)).await;
+        let _ = reg.begin_exec(id).await.unwrap();
         let _ = reg.begin_exec(id).await.unwrap();
         let err = reg.begin_exec(id).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S003");
@@ -205,5 +276,39 @@ mod tests {
         reg.mark_stopped(id).await;
         let err = reg.begin_exec(id).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S004");
+    }
+
+    /// A cap of 0 must serialize, not wedge the sandbox forever.
+    #[tokio::test]
+    async fn a_zero_cap_admits_one_rather_than_none() {
+        let reg = SandboxRegistry::with_max_exec_in_flight(0);
+        let id = Uuid::new_v4();
+        reg.insert(fixture(id)).await;
+        reg.begin_exec(id).await.expect("0 is treated as 1");
+        assert!(reg.begin_exec(id).await.is_err());
+    }
+
+    /// An unmatched `end_exec` must not wrap the counter to u32::MAX and lock
+    /// the sandbox out of every future exec.
+    #[tokio::test]
+    async fn end_exec_without_begin_does_not_underflow() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        reg.insert(fixture(id)).await;
+        reg.end_exec(id).await;
+        assert_eq!(reg.get(id).await.unwrap().exec_in_flight, 0);
+        reg.begin_exec(id).await.expect("still admits execs");
+    }
+
+    #[tokio::test]
+    async fn end_exec_releases_one_slot_not_all() {
+        let reg = SandboxRegistry::with_max_exec_in_flight(3);
+        let id = Uuid::new_v4();
+        reg.insert(fixture(id)).await;
+        reg.begin_exec(id).await.unwrap();
+        reg.begin_exec(id).await.unwrap();
+        reg.end_exec(id).await;
+        assert_eq!(reg.get(id).await.unwrap().exec_in_flight, 1);
+        assert!(reg.get(id).await.unwrap().exec_in_progress());
     }
 }

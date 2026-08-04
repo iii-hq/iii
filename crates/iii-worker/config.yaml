@@ -1,0 +1,2 @@
+workers:
+  - name: sync-worker

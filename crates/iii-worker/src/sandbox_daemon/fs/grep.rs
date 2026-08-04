@@ -195,7 +195,7 @@ mod tests {
             lifeline: None,
             created_at: Instant::now(),
             last_exec_at: Instant::now(),
-            exec_in_progress: false,
+            exec_in_flight: 0,
             idle_timeout_secs: 300,
             stopped: false,
         }

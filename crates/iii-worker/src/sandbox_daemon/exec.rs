@@ -302,7 +302,7 @@ mod tests {
             lifeline: None,
             created_at: Instant::now(),
             last_exec_at: Instant::now(),
-            exec_in_progress: false,
+            exec_in_flight: 0,
             idle_timeout_secs: 300,
             stopped: false,
         }
@@ -330,7 +330,7 @@ mod tests {
         let resp = handle_exec(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.stdout, "hi\n");
         let state = reg.get(id).await.unwrap();
-        assert!(!state.exec_in_progress);
+        assert!(!state.exec_in_progress());
     }
 
     #[tokio::test]
@@ -401,7 +401,7 @@ mod tests {
         let resp = handle_exec(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.exit_code, Some(0));
         let state = reg.get(id).await.unwrap();
-        assert!(!state.exec_in_progress);
+        assert!(!state.exec_in_progress());
     }
 
     #[tokio::test]

@@ -147,7 +147,7 @@ async fn end_to_end_create_exec_stop() {
 
 #[tokio::test]
 #[serial]
-async fn concurrent_exec_returns_s003() {
+async fn exec_beyond_the_concurrency_cap_returns_s003() {
     let _guard = ensure_fake_rootfs("python");
     let h = harness("", 0);
     let cfg = cfg_all_presets_allowed();
@@ -169,8 +169,14 @@ async fn concurrent_exec_returns_s003() {
     .await
     .unwrap();
 
+    // A second exec no longer bounces — both ends of the exec channel
+    // multiplex by `corr_id`, and the registry now admits up to a cap.
+    // Saturate that cap so the NEXT one is the rejected case this test is
+    // about. `harness()` builds the registry with the default cap.
     let id = uuid::Uuid::parse_str(&create.sandbox_id).unwrap();
-    h.registry.begin_exec(id).await.unwrap();
+    for _ in 0..iii_worker::sandbox_daemon::registry::DEFAULT_MAX_EXEC_IN_FLIGHT {
+        h.registry.begin_exec(id).await.unwrap();
+    }
 
     let err = handle_exec(
         ExecRequest {
