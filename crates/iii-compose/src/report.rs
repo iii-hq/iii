@@ -31,7 +31,7 @@
 
 use std::{
     io::{IsTerminal, Write},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
@@ -80,6 +80,21 @@ fn animated() -> bool {
 /// Writes one line, stepping around the spinner if one is turning.
 ///
 /// Every line the daemon or a child emits goes through here.
+/// A line from the daemon itself, not from any project.
+///
+/// Compose prints only its own lines now: a worker's output belongs to the
+/// engine, which is where it is read from. Interleaving the two made the
+/// console useless for both.
+pub fn daemon_line(message: &str, warn: bool) {
+    use colored::Colorize;
+    let prefix = "[compose]".dimmed();
+    if warn {
+        line(&format!("{prefix} {}", message.yellow()));
+    } else {
+        line(&format!("{prefix} {message}"));
+    }
+}
+
 pub fn line(text: &str) {
     let console = console();
     let state = console
@@ -336,36 +351,45 @@ fn pick_color(taken: &[Color], last: Option<Color>) -> Color {
 /// output is findable in a wall of five workers logging at once. Both streams
 /// go out through [`line`], which is what keeps them from colliding with a
 /// spinner that is turning at the same time.
-pub fn pump_output(
+/// Sends a child's stdout and stderr to a file beside its project's state.
+///
+/// Compose does not print them and does not serve them: a worker's log belongs
+/// to the engine, which is where it is read from. What this keeps is the one
+/// case the engine cannot cover — a worker that dies before it ever connects,
+/// whose only account of itself is on stderr.
+pub fn capture_output(
     key: &str,
     stdout: Option<tokio::process::ChildStdout>,
     stderr: Option<tokio::process::ChildStderr>,
-    logs: &Arc<crate::logs::LogStore>,
+    log_dir: &std::path::Path,
 ) {
-    let color = container_color(key);
-
-    if let Some(stdout) = stdout {
-        let tag = format!("[{key}]").color(color).to_string();
-        let (store, container) = (Arc::clone(logs), key.to_string());
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(text)) = lines.next_line().await {
-                line(&format!("{tag} {text}"));
-                // Stored without the prefix and without colour: the console
-                // wants it decorated, a caller reading it back does not.
-                store.append(&container, crate::logs::Stream::Stdout, text);
-            }
-        });
+    let path = log_dir.join(format!("{key}.log"));
+    if std::fs::create_dir_all(log_dir).is_err() {
+        return;
     }
 
-    if let Some(stderr) = stderr {
-        let tag = format!("[{key}]").color(color).bold().to_string();
-        let (store, container) = (Arc::clone(logs), key.to_string());
+    for stream in [
+        stdout.map(|out| Box::new(out) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+        stderr.map(|err| Box::new(err) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let path = path.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
+            // Appended, never truncated: a container that restarts extends its
+            // account rather than erasing the run that explains why.
+            let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            else {
+                return;
+            };
+            let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(text)) = lines.next_line().await {
-                line(&format!("{tag} {text}"));
-                store.append(&container, crate::logs::Stream::Stderr, text);
+                use std::io::Write;
+                let _ = writeln!(file, "{text}");
             }
         });
     }

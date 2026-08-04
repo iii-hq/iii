@@ -249,22 +249,6 @@ pub enum ComposeError {
         namespace: String,
     },
 
-    /// The startup `up` of a `--up` run failed. The per-container detail was
-    /// already printed by then; this carries the operation id so the two can be
-    /// tied together in a log.
-    #[error("the project did not come up (operation {operation_id})")]
-    UpFailed { operation_id: String },
-
-    #[error(
-        "this daemon is '{expected}', not '{got}'. Try: iii trigger compose::{function} \
-         --namespace {got}"
-    )]
-    WrongDaemon {
-        expected: String,
-        got: String,
-        function: String,
-    },
-
     #[error("{path} is not valid daemon state: {message}")]
     InvalidState { path: PathBuf, message: String },
 
@@ -278,23 +262,39 @@ pub enum ComposeError {
         requested: PathBuf,
     },
 
+    #[error(
+        "no project '{id}' here. Name the compose file on the first call: \
+         iii trigger compose::up id={id} file=./worker-compose.yaml"
+    )]
+    UnknownProject { id: String },
+
+    /// A relative `file=` that missed. The path is resolved by the daemon, in
+    /// the directory the daemon was started in — which is rarely the directory
+    /// the caller is standing in, and never obvious from the caller's side.
+    #[error(
+        "no compose file at '{}', resolved from the daemon's directory {}. \
+         Pass an absolute path, or start the daemon where the file is.",
+        .path.display(), .cwd.display()
+    )]
+    RelativeFileMissing { path: PathBuf, cwd: PathBuf },
+
+    /// The engine already has a compose daemon.
+    ///
+    /// Named rather than forwarded as a registration failure: an engine holds
+    /// one daemon by design, and the operator's next move is to use the one
+    /// already there rather than to debug a rejection.
+    #[error(
+        "another compose daemon already serves {engine_url}. \
+         Use it (iii trigger compose::list) or stop it (iii trigger compose::stop).\n  \
+         the engine said: {detail}"
+    )]
+    DaemonAlreadyServing { engine_url: String, detail: String },
+
+    #[error("{flags} cannot be used together")]
+    ConflictingFlags { flags: &'static str },
+
     #[error("cannot locate a home directory for the daemon state")]
     StateDirUnavailable,
-
-    #[error("`iii compose` requires {flag}")]
-    MissingFlag { flag: &'static str },
-
-    #[error(
-        "no {expected} in this directory. Run compose from a project directory, or point it \
-         at one with --file <PATH>"
-    )]
-    NoComposeFileHere { expected: &'static str },
-
-    #[error(
-        "daemon supervision is not implemented yet. `iii compose validate --file <PATH>` \
-         validates a project offline"
-    )]
-    DaemonNotImplemented,
 }
 
 impl ComposeError {
@@ -341,14 +341,13 @@ impl ComposeError {
             Self::HookFailed { hook_code, .. } => hook_code,
             Self::UnknownContainer { .. } => "UNKNOWN_CONTAINER",
             Self::ContainerNameTaken { .. } => "CONTAINER_NAME_TAKEN",
-            Self::UpFailed { .. } => "UP_FAILED",
-            Self::WrongDaemon { .. } => "WRONG_DAEMON",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::StateBindingMismatch { .. } => "STATE_BINDING_MISMATCH",
+            Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
+            Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
+            Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
+            Self::ConflictingFlags { .. } => "CONFLICTING_FLAGS",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
-            Self::MissingFlag { .. } => "MISSING_FLAG",
-            Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",
-            Self::DaemonNotImplemented => "DAEMON_NOT_IMPLEMENTED",
         }
     }
 }
