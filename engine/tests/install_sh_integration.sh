@@ -60,6 +60,11 @@ case "$help_output" in
   *) fail "--help missing --next documentation" ;;
 esac
 
+case "$help_output" in
+  *"--rc"*) pass "--help documents --rc" ;;
+  *) fail "--help missing --rc documentation" ;;
+esac
+
 # ─────────────────────────────────────────────────────────────
 # Test 2: unknown flag rejected
 # ─────────────────────────────────────────────────────────────
@@ -67,6 +72,13 @@ if sh "$INSTALL_SH" --nonsense-flag >/dev/null 2>&1; then
   fail "unknown flag was accepted; expected exit non-zero"
 fi
 pass "unknown flag rejected"
+
+# --next and --rc select mutually exclusive prerelease channels, so reject a
+# conflicting request before making any network call.
+if sh "$INSTALL_SH" --next --rc >/dev/null 2>&1; then
+  fail "--next and --rc were accepted together; expected exit non-zero"
+fi
+pass "conflicting prerelease channels rejected"
 
 # ─────────────────────────────────────────────────────────────
 # Test 3: deprecated --no-cli emits warning but doesn't fail arg parsing
