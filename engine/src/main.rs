@@ -168,7 +168,10 @@ enum Commands {
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
-    /// Run a worker-compose project: supervise several workers as one graph
+    /// Serve worker-compose projects: supervise each one's workers as a graph.
+    ///
+    /// Projects are started and stopped through `iii trigger compose::*`,
+    /// naming one with `id=`; this command only puts the daemon there.
     Compose(iii_compose::ComposeCli),
 
     /// Generate the committed MDX CLI reference page from this binary's
@@ -222,13 +225,8 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
-        Some(Commands::Compose(args)) => match args.action {
-            Some(iii_compose::ComposeAction::Up(_)) => "compose up".to_string(),
-            Some(iii_compose::ComposeAction::Validate(_)) => "compose validate".to_string(),
-            Some(iii_compose::ComposeAction::Logs(_)) => "compose logs".to_string(),
-            Some(iii_compose::ComposeAction::Stop(_)) => "compose stop".to_string(),
-            None => "compose".to_string(),
-        },
+        // One command now: what used to be subcommands are `compose::*` calls.
+        Some(Commands::Compose(_)) => "compose".to_string(),
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
@@ -849,47 +847,54 @@ mod tests {
         );
     }
 
+    /// Bare `iii compose` is the whole command. What a project is and what
+    /// happens to it are `compose::*` call arguments now, so nothing here
+    /// names one.
     #[test]
-    fn compose_validate_parses_without_a_daemon_id() {
-        let cli = Cli::try_parse_from(["iii", "compose", "validate", "--file", "compose.yaml"])
-            .expect("should parse compose validate");
-        assert_eq!(cli_usage_command_path(&cli), "compose validate");
+    fn compose_mounts_as_a_single_command() {
+        let cli = Cli::try_parse_from(["iii", "compose"]).expect("should parse compose");
+        assert_eq!(cli_usage_command_path(&cli), "compose");
         match cli.command {
             Some(Commands::Compose(args)) => {
-                // `--file` belongs to the subcommand now: `logs` reads no
-                // project, and keeping it off the parent is what leaves `-f`
-                // free to mean `--follow` there.
-                match args.action {
-                    Some(iii_compose::ComposeAction::Validate(validate)) => assert_eq!(
-                        validate.file.as_deref(),
-                        Some(std::path::Path::new("compose.yaml"))
-                    ),
-                    other => panic!("expected validate, got {other:?}"),
-                }
-                assert!(args.id.is_none());
+                assert!(!args.detach);
+                assert!(!args.attach);
+                assert!(args.engine.is_none());
             }
             _ => panic!("expected Compose subcommand"),
         }
     }
 
+    /// The two flags that survived say where the daemon runs, not what it
+    /// does. They are parsed here and resolved in the crate.
     #[test]
-    fn compose_daemon_mode_parses() {
-        let cli = Cli::try_parse_from([
-            "iii",
-            "compose",
-            "--id",
-            "host-a",
-            "--file",
-            "/srv/app/worker-compose.yaml",
-        ])
-        .expect("should parse compose daemon mode");
+    fn compose_carries_its_placement_flags() {
+        let cli = Cli::try_parse_from(["iii", "compose", "-d", "--engine", "ws://host:1"])
+            .expect("should parse detached compose");
         assert_eq!(cli_usage_command_path(&cli), "compose");
         match cli.command {
             Some(Commands::Compose(args)) => {
-                assert!(args.action.is_none());
-                assert_eq!(args.id.as_deref(), Some("host-a"));
+                assert!(args.detach);
+                assert_eq!(args.engine.as_deref(), Some("ws://host:1"));
             }
             _ => panic!("expected Compose subcommand"),
+        }
+    }
+
+    /// What used to be a subcommand must fail rather than be swallowed as a
+    /// stray argument: `iii compose up` doing nothing quietly is the failure
+    /// mode this guards.
+    #[test]
+    fn the_old_subcommands_no_longer_parse() {
+        for removed in [
+            ["iii", "compose", "up"],
+            ["iii", "compose", "down"],
+            ["iii", "compose", "logs"],
+            ["iii", "compose", "validate"],
+        ] {
+            assert!(
+                Cli::try_parse_from(removed).is_err(),
+                "{removed:?} should no longer parse"
+            );
         }
     }
 
@@ -901,7 +906,6 @@ mod tests {
             .expect("trigger should still parse");
         assert_eq!(cli_usage_command_path(&cli), "trigger");
     }
-
 
     #[test]
     fn project_init_parses() {
@@ -1081,5 +1085,4 @@ mod tests {
             _ => panic!("expected Trigger subcommand"),
         }
     }
-
 }
