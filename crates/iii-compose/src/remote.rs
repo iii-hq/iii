@@ -6,16 +6,19 @@
 
 //! The `compose::*` control surface.
 //!
-//! Registered in the daemon's own namespace, so two daemons never compete for
-//! the same ids and the namespace is what addresses one:
+//! Registered once, in `default`, where a trigger with no namespace flag lands:
 //!
 //! ```text
-//! iii trigger compose::up --namespace host-a
+//! iii trigger compose::up id=shop file=./worker-compose.yaml
 //! ```
 //!
-//! `id` in the payload is an optional guard. The namespace already selected the
-//! daemon; passing a mismatched id is a mistake worth reporting rather than a
-//! request worth executing.
+//! `id` is the whole addressing story. One daemon holds many projects and this
+//! is what tells them apart — an id the operator chose, not a namespace they
+//! have to look up. That leaves the namespace to be what the engine uses to
+//! route workers, which is the only job it should have.
+//!
+//! `list` and `stop` are about the daemon itself and take no id. Every other
+//! call needs one, and says so rather than guessing.
 
 use std::sync::Arc;
 
@@ -30,12 +33,14 @@ use crate::{daemon::Daemon, error::ComposeError};
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ComposeRequest {
-    /// Guard: when present it must equal the daemon's `--id`.
+    /// Which project. Chosen by the caller on the first `up` and used to reach
+    /// it ever after: one daemon holds many, and this is what tells them apart.
     pub id: Option<String>,
+    /// The compose file, needed once — on the call that first names a project.
+    /// Giving a different one later is an error, not a rebind.
+    pub file: Option<String>,
     /// Restrict the operation to one container and what it needs.
     pub container: Option<String>,
-    /// Log lines to return, for `compose::logs`.
-    pub tail: Option<usize>,
 }
 
 /// Registers the control surface. Every id is verbatim — compose never renames
@@ -48,7 +53,6 @@ pub fn register(daemon: &Arc<Daemon>) {
         ("down", Operation::Down),
         ("list", Operation::List),
         ("status", Operation::Status),
-        ("logs", Operation::Logs),
         ("stop", Operation::Stop),
         ("validate", Operation::Validate),
     ] {
@@ -67,17 +71,12 @@ pub fn register(daemon: &Arc<Daemon>) {
     }
 }
 
-/// Lines returned when the caller does not say. Enough to see a failure and
-/// what led to it without paging a terminal off the screen.
-const DEFAULT_TAIL: usize = 50;
-
 #[derive(Debug, Clone, Copy)]
 enum Operation {
     Up,
     Down,
     List,
     Status,
-    Logs,
     Stop,
     Validate,
 }
@@ -88,66 +87,82 @@ async fn dispatch(
     function: String,
     request: ComposeRequest,
 ) -> Result<Value, Error> {
-    if let Err(err) = daemon.check_id(request.id.as_deref(), &function) {
-        return Err(compose_error(&err));
-    }
+    // Every project-scoped call needs one. `list` and `stop` are about the
+    // daemon itself and take none.
+    let id = || -> Result<String, Error> {
+        request.id.clone().ok_or_else(|| Error::Remote {
+            code: "MISSING_ID".to_string(),
+            message: format!(
+                "compose::{function} needs the project: iii trigger compose::{function} id=<id>"
+            ),
+            stacktrace: None,
+        })
+    };
+    let file = request.file.as_ref().map(std::path::PathBuf::from);
 
     match operation {
-        Operation::Up => {
-            let result = daemon
-                .up(request.container.as_deref(), operation_id())
-                .await;
-            Ok(to_value(&result))
-        }
-        Operation::Down => {
-            let result = daemon
-                .down(request.container.as_deref(), operation_id())
-                .await;
-            Ok(to_value(&result))
-        }
+        Operation::Up => match daemon
+            .up(
+                &id()?,
+                file.as_deref(),
+                request.container.as_deref(),
+                operation_id(),
+            )
+            .await
+        {
+            Ok(result) => Ok(to_value(&result)),
+            Err(err) => Err(compose_error(&err)),
+        },
+        Operation::Down => match daemon
+            .down(&id()?, request.container.as_deref(), operation_id())
+            .await
+        {
+            Ok(result) => Ok(to_value(&result)),
+            Err(err) => Err(compose_error(&err)),
+        },
+        // Every project this daemon holds. No id: this is the call an operator
+        // makes when they have forgotten what is running.
         Operation::List => Ok(json!({
-            "project": daemon.file.name,
-            "daemon_id": daemon.id,
-            "namespace": daemon.project_namespace,
-            "file": daemon.file.path,
-            "containers": daemon.file.containers.keys().collect::<Vec<_>>(),
-        })),
-        Operation::Status => Ok(json!({
-            "daemon_id": daemon.id,
-            // Which process is answering. `--detach` waits on this: a second
-            // daemon started with a taken `--id` would otherwise see the first
-            // one's answer and call itself started.
+            "daemon": daemon.worker_name,
             "daemon_pid": std::process::id(),
-            "namespace": daemon.project_namespace,
-            "containers": daemon.status().await,
+            "projects": daemon.list().await,
         })),
-        // An unknown container answers empty rather than erroring: it may
-        // simply not have started yet, and a caller polling for output should
-        // not have to tell those two apart.
-        Operation::Logs => Ok(json!({
-            "daemon_id": daemon.id,
-            "containers": daemon.logs(request.container.as_deref(), request.tail.unwrap_or(DEFAULT_TAIL)),
-        })),
+        Operation::Status => match daemon.project(&id()?, file.as_deref()).await {
+            Ok(project) => Ok(json!({
+                "id": project.id,
+                "namespace": project.project_namespace,
+                "file": project.file.path,
+                // Which process is answering. `--detach` waits on this: another
+                // daemon would otherwise answer for the one being launched.
+                "daemon_pid": std::process::id(),
+                "containers": project.status().await,
+            })),
+            Err(err) => Err(compose_error(&err)),
+        },
         // Answers first, exits after: the serve loop picks the request up and
         // runs the same teardown a signal would.
         Operation::Stop => Ok(daemon.request_stop().await),
-        Operation::Validate => {
-            match crate::manifest::validate_offline(&daemon.file, &daemon.project_namespace) {
-                Ok(report) => Ok(json!({
-                    "project": report.project,
-                    "namespace": report.namespace,
-                    "start_order": report.start_order,
-                    "deferred_packages": report.deferred_packages,
-                })),
-                Err(err) => Err(compose_error(&err)),
-            }
-        }
+        // Validation is a question about a file, so it holds nothing: naming a
+        // file here must not leave the daemon owning a project, and must not
+        // write the durable state that would bind that id to it.
+        Operation::Validate => match daemon
+            .validate(request.id.as_deref(), file.as_deref())
+            .await
+        {
+            Ok(report) => Ok(json!({
+                "project": report.project,
+                "namespace": report.namespace,
+                "start_order": report.start_order,
+                "deferred_packages": report.deferred_packages,
+            })),
+            Err(err) => Err(compose_error(&err)),
+        },
     }
 }
 
 /// Compose errors cross the wire as their stable code plus the message, so a
-/// caller can match on `WRONG_DAEMON` without parsing prose. `Error::Remote` is
-/// the only variant the SDK forwards verbatim into the wire `ErrorBody`.
+/// caller can match on `UNKNOWN_PROJECT` without parsing prose. `Error::Remote`
+/// is the only variant the SDK forwards verbatim into the wire `ErrorBody`.
 fn compose_error(error: &ComposeError) -> Error {
     Error::Remote {
         code: error.code().to_string(),

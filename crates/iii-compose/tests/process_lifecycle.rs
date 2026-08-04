@@ -173,7 +173,10 @@ async fn an_adopted_child_can_still_be_stopped() {
     assert_eq!(adopted.poll(), Outcome::Running);
 
     adopted.stop(Duration::from_secs(2)).await;
-    assert!(wait_until_gone(pid).await, "adoption must make stop reach it");
+    assert!(
+        wait_until_gone(pid).await,
+        "adoption must make stop reach it"
+    );
 }
 
 #[tokio::test]
@@ -214,8 +217,8 @@ async fn an_adopted_child_reports_its_own_exit() {
     let (pid, birth) = (child.pid, child.birth.clone());
     drop(child);
 
-    let adopted = iii_compose::process::Supervised::adopt(pid, &birth)
-        .expect("still running when adopted");
+    let adopted =
+        iii_compose::process::Supervised::adopt(pid, &birth).expect("still running when adopted");
 
     // No reaper task backs an adopted process, so `wait` polls liveness. The
     // status is unrecoverable — only the fact of the exit survives.

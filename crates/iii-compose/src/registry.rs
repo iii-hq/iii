@@ -506,6 +506,9 @@ mod tests {
             registry_message(502, "<html>bad gateway</html>"),
             "HTTP 502: <html>bad gateway</html>"
         );
-        assert_eq!(registry_message(500, r#"{"oops":1}"#), r#"HTTP 500: {"oops":1}"#);
+        assert_eq!(
+            registry_message(500, r#"{"oops":1}"#),
+            r#"HTTP 500: {"oops":1}"#
+        );
     }
 }

@@ -93,9 +93,10 @@ pub struct LifecycleCtx<'a> {
     pub config_dir: &'a std::path::Path,
     /// Where installed packages live, shared across projects on this machine.
     pub package_cache: &'a std::path::Path,
-    /// Bounded capture of what the children print, for `compose::logs`. Shared
-    /// because the output pumps outlive the operation that started them.
-    pub logs: &'a std::sync::Arc<crate::logs::LogStore>,
+    /// Where a child's own output is written. Compose neither prints nor
+    /// serves it — this is the record for a worker that dies before it can
+    /// tell the engine anything.
+    pub log_dir: &'a std::path::Path,
 }
 
 /// Containers currently supervised by this daemon, keyed by container id.
@@ -287,6 +288,15 @@ async fn start_one(
         });
     }
 
+    // Taken here, at the last moment nothing of ours is running yet. Readiness
+    // reports differences against it, and a package install below can take
+    // seconds — long enough for an unrelated worker to arrive and be mistaken
+    // for the child we are about to start.
+    let baseline = ctx
+        .engine
+        .readiness_baseline(ctx.project_namespace, key)
+        .await?;
+
     // A package is fetched here rather than at validation time: resolving it
     // needs the registry, and `validate` is offline by contract.
     let (start, shipped_config) = match &container.worker {
@@ -348,7 +358,7 @@ async fn start_one(
         })?;
     // Tag the child's output before waiting on readiness: whatever it prints
     // while starting is exactly what an operator needs when it does not.
-    report::pump_output(key, output.stdout, output.stderr, ctx.logs);
+    report::capture_output(key, output.stdout, output.stderr, ctx.log_dir);
 
     let readiness = ctx
         .engine
@@ -357,6 +367,7 @@ async fn start_one(
             key,
             &child,
             container.startup_timeout,
+            &baseline,
         )
         .await;
 

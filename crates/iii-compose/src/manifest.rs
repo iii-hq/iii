@@ -122,7 +122,7 @@ pub struct ContainerPlan {
     pub startup_timeout: std::time::Duration,
 }
 
-/// Result of `iii compose validate`.
+/// Result of `compose::validate`.
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
     pub project: String,
