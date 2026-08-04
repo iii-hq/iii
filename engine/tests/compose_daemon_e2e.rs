@@ -1,8 +1,8 @@
 //! The compose daemon against a real engine.
 //!
-//! Everything here goes over a real WebSocket into a real `WorkerManager`: the
-//! daemon registers `compose::*` in its own namespace, and the test reaches it
-//! the same way an operator would — a namespaced trigger.
+//! Everything here goes over a real WebSocket into a real `WorkerManager`: one
+//! daemon registers `compose::*` in `default`, and the test reaches it the same
+//! way an operator does — `iii trigger compose::up id=…`.
 //!
 //! What is *not* covered here: a container that actually becomes ready. That
 //! needs a child process which speaks the SDK, and there is no such fixture
@@ -57,18 +57,20 @@ async fn spawn_engine() -> u16 {
     port
 }
 
-/// Writes a compose project into `dir` and returns the parsed file.
-fn project(dir: &std::path::Path, compose: &str, workers: &[&str]) -> ComposeFile {
+/// Writes a compose project into `dir` and returns its path.
+fn project(dir: &std::path::Path, compose: &str, workers: &[&str]) -> std::path::PathBuf {
     for worker in workers {
         std::fs::create_dir_all(dir.join("workers").join(worker)).expect("worker dir");
     }
     let path = dir.join("worker-compose.yaml");
     std::fs::write(&path, compose).expect("write compose");
-    ComposeFile::load(&path).expect("compose should parse")
+    ComposeFile::load(&path).expect("compose should parse");
+    path
 }
 
-/// Calls a `compose::*` function the way an operator does: by namespace.
-async fn call(port: u16, namespace: &str, function: &str, payload: Value) -> Result<Value, String> {
+/// Calls a `compose::*` function the way an operator does: in `default`, with
+/// the project named in the payload.
+async fn call(port: u16, function: &str, payload: Value) -> Result<Value, String> {
     let client = register_worker(
         &format!("ws://127.0.0.1:{port}"),
         InitOptions {
@@ -80,13 +82,14 @@ async fn call(port: u16, namespace: &str, function: &str, payload: Value) -> Res
         },
     );
 
-    let request = TriggerRequest {
-        function_id: function.to_string(),
-        payload,
-        action: None,
-        timeout_ms: Some(30_000),
-    };
-    let result = client.trigger(request.namespace(namespace)).await;
+    let result = client
+        .trigger(TriggerRequest {
+            function_id: function.to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(30_000),
+        })
+        .await;
     client.shutdown_async().await;
 
     result.map_err(|err| err.to_string())
@@ -96,17 +99,15 @@ async fn call(port: u16, namespace: &str, function: &str, payload: Value) -> Res
 ///
 /// The variable is process-wide and cargo runs tests in threads, so it is set
 /// exactly once for the whole binary; tests stay isolated by using distinct
-/// daemon ids, which are the subdirectory under this root.
+/// project ids, which are the subdirectory under this root.
 fn isolate_state() {
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     let root = ROOT.get_or_init(|| tempfile::tempdir().expect("state root"));
     unsafe { std::env::set_var("III_COMPOSE_STATE_DIR", root.path()) };
 }
 
-async fn start_daemon(port: u16, id: &str, file: ComposeFile) -> Arc<Daemon> {
-    let daemon = Daemon::start(id.to_string(), file, format!("ws://127.0.0.1:{port}"), None)
-        .await
-        .expect("daemon should start");
+async fn start_daemon(port: u16) -> Arc<Daemon> {
+    let daemon = Daemon::start(format!("ws://127.0.0.1:{port}"));
     remote::register(&daemon);
     // The SDK flushes registrations after the namespace announce; give the
     // round trip a moment before the first call.
@@ -130,50 +131,57 @@ containers:
       run: "sleep 30"
 "#;
 
+/// The same project under another name, so two of them can be held at once
+/// without their workers competing for one namespace.
+const ONE_WORKER: &str = r#"
+name: billing
+startup_timeout: 2s
+stop_timeout: 1s
+containers:
+  ledger:
+    worker: path://./workers/ledger
+    scripts:
+      run: "sleep 30"
+"#;
+
 #[tokio::test(flavor = "multi_thread")]
-async fn the_daemon_serves_compose_functions_in_its_own_namespace() {
-    let tmp = tempfile::tempdir().unwrap();
+async fn the_daemon_serves_compose_functions_in_the_default_namespace() {
     isolate_state();
     let port = spawn_engine().await;
-    let file = project(tmp.path(), TWO_WORKERS, &["database", "api"]);
-    let daemon = start_daemon(port, "serves", file).await;
+    let daemon = start_daemon(port).await;
 
-    let listed = call(port, "serves", "compose::list", json!({}))
+    // `default` is where an operator's `iii trigger` lands with no namespace
+    // flag, which is the whole point of moving the control surface here: the
+    // namespace goes back to being the workers' address.
+    let listed = call(port, "compose::list", json!({}))
         .await
-        .expect("compose::list should answer in the daemon's namespace");
+        .expect("compose::list should answer in default");
 
-    assert_eq!(listed["project"], "orders");
-    assert_eq!(listed["daemon_id"], "serves");
+    assert_eq!(listed["daemon"], "compose");
     assert_eq!(
-        listed["containers"],
-        json!(["database", "api"]),
-        "list reports the declared containers"
+        listed["projects"],
+        json!([]),
+        "a daemon that has just started holds nothing"
     );
-
-    let status = call(port, "serves", "compose::status", json!({}))
-        .await
-        .expect("compose::status should answer");
-    assert_eq!(status["containers"].as_array().unwrap().len(), 2);
-    assert_eq!(status["containers"][0]["state"], "stopped");
 
     daemon.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn compose_functions_are_unreachable_without_the_namespace() {
-    let tmp = tempfile::tempdir().unwrap();
+async fn a_project_scoped_call_names_the_argument_it_wanted() {
     isolate_state();
     let port = spawn_engine().await;
-    let file = project(tmp.path(), TWO_WORKERS, &["database", "api"]);
-    let daemon = start_daemon(port, "no-leak", file).await;
+    let daemon = start_daemon(port).await;
 
-    // Routing is strict: without the namespace the invoke resolves in
-    // `default`, where no daemon registered anything.
-    let error = call(port, "default", "compose::list", json!({}))
+    let error = call(port, "compose::down", json!({}))
         .await
-        .expect_err("compose::* must not leak into the default namespace");
+        .expect_err("down without an id cannot mean anything");
+
+    assert!(error.contains("MISSING_ID"), "unexpected error: {error}");
+    // The message is the invocation that would have worked, not a description
+    // of the one that did not.
     assert!(
-        error.contains("not found") || error.contains("NOT_FOUND"),
+        error.contains("compose::down id="),
         "unexpected error: {error}"
     );
 
@@ -181,22 +189,139 @@ async fn compose_functions_are_unreachable_without_the_namespace() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_request_aimed_at_another_daemon_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
+async fn an_unknown_id_is_a_question_rather_than_a_new_project() {
     isolate_state();
     let port = spawn_engine().await;
-    let file = project(tmp.path(), TWO_WORKERS, &["database", "api"]);
-    let daemon = start_daemon(port, "wrong-id", file).await;
+    let daemon = start_daemon(port).await;
 
-    let error = call(port, "wrong-id", "compose::up", json!({ "id": "host-b" }))
+    // A mistyped id must not quietly become an empty project reporting
+    // "nothing to stop" — that reads as success for a command that did nothing.
+    let error = call(port, "compose::down", json!({ "id": "ghost" }))
         .await
-        .expect_err("a mismatched id must not execute");
+        .expect_err("an id nobody brought up is not a project");
 
-    assert!(error.contains("WRONG_DAEMON"), "unexpected error: {error}");
-    // The message names the invocation that would have worked.
+    assert!(error.contains("UNKNOWN_PROJECT"), "unexpected: {error}");
+    assert!(error.contains("file="), "the way out is named: {error}");
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_daemon_holds_several_projects_at_once() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let orders = project(first.path(), TWO_WORKERS, &["database", "api"]);
+    let billing = project(second.path(), ONE_WORKER, &["ledger"]);
+
+    for (id, file) in [("shop", &orders), ("books", &billing)] {
+        call(
+            port,
+            "compose::status",
+            json!({ "id": id, "file": file.to_str().unwrap() }),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("status should load {id}: {err}"));
+    }
+
+    let listed = call(port, "compose::list", json!({}))
+        .await
+        .expect("compose::list should answer");
+    let projects = listed["projects"].as_array().expect("projects");
+
+    assert_eq!(projects.len(), 2, "both projects are held: {listed}");
+    // Each keeps its own namespace, taken from `name:` and never from the id:
+    // the id addresses the project, the namespace addresses its workers.
+    let namespaces: Vec<&str> = projects
+        .iter()
+        .map(|p| p["namespace"].as_str().unwrap())
+        .collect();
+    assert!(namespaces.contains(&"orders"), "{listed}");
+    assert!(namespaces.contains(&"billing"), "{listed}");
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn validating_a_file_does_not_take_the_project_on() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(tmp.path(), TWO_WORKERS, &["database", "api"]);
+
+    let report = call(
+        port,
+        "compose::validate",
+        json!({ "id": "checked", "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("validate should answer for a file it was handed");
+    assert_eq!(report["namespace"], "orders");
+    assert_eq!(report["start_order"], json!(["database", "api"]));
+
+    // Validation is a question, not a decision. Holding the project would bind
+    // the id to this path and put durable state behind it — so a CI job that
+    // only ever validates would leave a daemon owning what it checked.
+    let listed = call(port, "compose::list", json!({}))
+        .await
+        .expect("compose::list should answer");
+    assert_eq!(
+        listed["projects"],
+        json!([]),
+        "validate must hold nothing: {listed}"
+    );
+
+    // And the id it named is still free to be bound to something else.
+    let other = tempfile::tempdir().unwrap();
+    let billing = project(other.path(), ONE_WORKER, &["ledger"]);
+    call(
+        port,
+        "compose::status",
+        json!({ "id": "checked", "file": billing.to_str().unwrap() }),
+    )
+    .await
+    .expect("the id was never bound, so it can still be claimed");
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_id_cannot_be_pointed_at_a_different_file() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let orders = project(first.path(), TWO_WORKERS, &["database", "api"]);
+    let billing = project(second.path(), ONE_WORKER, &["ledger"]);
+
+    call(
+        port,
+        "compose::status",
+        json!({ "id": "bound", "file": orders.to_str().unwrap() }),
+    )
+    .await
+    .expect("the first call binds the id");
+
+    // Rebinding would adopt children the new file never started, while the
+    // recorded state still points at the old project.
+    let error = call(
+        port,
+        "compose::status",
+        json!({ "id": "bound", "file": billing.to_str().unwrap() }),
+    )
+    .await
+    .expect_err("an id belongs to one compose file");
+
     assert!(
-        error.contains("--namespace host-b"),
-        "unexpected error: {error}"
+        error.contains("STATE_BINDING_MISMATCH"),
+        "unexpected: {error}"
     );
 
     daemon.shutdown().await;
@@ -204,17 +329,22 @@ async fn a_request_aimed_at_another_daemon_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_child_that_never_registers_times_out_and_rolls_back() {
-    let tmp = tempfile::tempdir().unwrap();
     isolate_state();
     let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
     // `sleep` is a process, not a worker: it never registers, so readiness can
     // never be satisfied. This is the failure the rollback exists for.
+    let tmp = tempfile::tempdir().unwrap();
     let file = project(tmp.path(), TWO_WORKERS, &["database", "api"]);
-    let daemon = start_daemon(port, "timeout", file).await;
 
-    let result = call(port, "timeout", "compose::up", json!({}))
-        .await
-        .expect("compose::up answers even when it fails");
+    let result = call(
+        port,
+        "compose::up",
+        json!({ "id": "timeout", "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("compose::up answers even when it fails");
 
     assert_eq!(result["status"], "failed");
     let database = &result["containers"][0];
@@ -222,8 +352,9 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
     assert_eq!(database["error"]["code"], "STARTUP_TIMEOUT");
 
     // Nothing was left running: the timed-out child was stopped, and `api`
-    // never started because its dependency failed.
-    let status = call(port, "timeout", "compose::status", json!({}))
+    // never started because its dependency failed. The id is enough to ask —
+    // the file was needed once and is remembered.
+    let status = call(port, "compose::status", json!({ "id": "timeout" }))
         .await
         .expect("status after a failed up");
     for container in status["containers"].as_array().unwrap() {
@@ -237,18 +368,17 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_second_daemon_with_the_same_id_is_rejected() {
-    let tmp = tempfile::tempdir().unwrap();
+async fn a_second_daemon_on_one_engine_is_refused() {
     isolate_state();
     let port = spawn_engine().await;
 
-    let file = project(tmp.path(), TWO_WORKERS, &["database", "api"]);
-    let first = start_daemon(port, "duplicate", file.clone()).await;
-
-    // A second daemon claiming the same --id collides on
-    // `(namespace, worker_name)`; the engine rejects it fatally rather than
-    // letting two daemons answer for one project.
-    let second = start_daemon(port, "duplicate", file).await;
+    let first = start_daemon(port).await;
+    // Both would own `compose::up` in `default` and the engine would route a
+    // call to one of them, leaving the other holding projects nobody can
+    // address. The fixed worker name turns that into a rejection: the
+    // `(default, compose)` lease is the only race-free way to say an engine
+    // already has one.
+    let second = start_daemon(port).await;
 
     let mut rejected = false;
     for _ in 0..40 {
@@ -261,9 +391,15 @@ async fn a_second_daemon_with_the_same_id_is_rejected() {
 
     assert!(
         rejected,
-        "the second daemon must be told it lost the id, not fail silently"
+        "the second daemon must be told it lost the name, not sit there unreachable"
     );
 
-    second.shutdown().await;
+    // And the first is still the one answering.
+    let listed = call(port, "compose::list", json!({}))
+        .await
+        .expect("the daemon that won still serves");
+    assert_eq!(listed["daemon"], "compose");
+
+    second.abandon().await;
     first.shutdown().await;
 }

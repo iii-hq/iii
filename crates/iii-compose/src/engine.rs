@@ -6,10 +6,10 @@
 
 //! The daemon's own connection to the engine.
 //!
-//! The daemon is an ordinary worker: it connects with the SDK, registers under
-//! its own namespace (`--id`) and exposes `compose::*` there. Two daemons
-//! therefore never compete for the same function ids — the namespace is what
-//! addresses one.
+//! The daemon is an ordinary worker: it connects with the SDK, registers in
+//! `default` as `compose`, and exposes `compose::*` there — where a trigger
+//! with no namespace flag lands. One connection serves every project it holds,
+//! whatever namespaces those declare.
 //!
 //! It is also the daemon's window into the engine: readiness is "the child
 //! showed up in `engine::workers::list` under `(namespace, container)`", and
@@ -40,6 +40,21 @@ pub struct EngineClient {
     /// Namespace this daemon registered in — the same one `compose::*` lands
     /// in. Children live in the *project* namespace, which is separate.
     namespace: String,
+}
+
+/// What the engine showed for one container before compose started it.
+///
+/// Readiness reports differences, so it needs a "before" that predates the
+/// child. See [`EngineClient::readiness_baseline`].
+#[derive(Debug, Clone, Default)]
+pub struct ReadinessBaseline {
+    /// Workers already in the project namespace.
+    present: Vec<String>,
+    /// `(function id, namespace)` already owned by this container name.
+    functions: Vec<(String, String)>,
+    /// A worker of this name was already in `default`, so one showing up there
+    /// is not evidence that ours ignored `III_NAMESPACE`.
+    stray: bool,
 }
 
 impl EngineClient {
@@ -125,6 +140,42 @@ impl EngineClient {
         })
     }
 
+    /// What the engine already showed for this container, captured *before*
+    /// compose starts anything for it.
+    ///
+    /// Every question readiness asks is a difference: did this worker, this
+    /// function, this stray registration appear *because of the child we
+    /// started? A snapshot taken once the child is already running answers
+    /// that with the child's own registration, so the caller takes this before
+    /// the spawn — before the package install, even, since a download is
+    /// seconds during which anything may arrive.
+    pub async fn readiness_baseline(
+        &self,
+        namespace: &str,
+        container: &str,
+    ) -> Result<ReadinessBaseline> {
+        Ok(ReadinessBaseline {
+            // Anything that appears while the child is starting and is not this
+            // container is a candidate for having named itself — the registry
+            // `state` worker does exactly that, and under a container called
+            // `store` it would otherwise be a bare timeout over a healthy
+            // process.
+            present: self.workers_in(namespace).await.unwrap_or_default(),
+            // Two projects may each declare a container called `api`, and the
+            // engine reports both under that one name — so only an entry that
+            // appears while this child is starting can be attributed to it.
+            functions: self.functions_of(container).await.unwrap_or_default(),
+            // A worker of this name already in `default` is not ours: an
+            // unrelated one was there before we spawned, and blaming the child
+            // for it would turn a healthy neighbour into our failure.
+            stray: namespace != DEFAULT_NAMESPACE
+                && self
+                    .registered_namespaces(container)
+                    .await?
+                    .contains(&DEFAULT_NAMESPACE.to_string()),
+        })
+    }
+
     /// Waits until `container` is registered in `namespace`, or the budget runs
     /// out.
     ///
@@ -137,30 +188,15 @@ impl EngineClient {
         container: &str,
         child: &Supervised,
         timeout: Duration,
+        baseline: &ReadinessBaseline,
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + timeout;
-
-        // Who was already in the project namespace before this child started.
-        // Anything that appears while it is starting and is not this container
-        // is a candidate for having named itself — the registry `state` worker
-        // does exactly that, and under a container called `store` it would
-        // otherwise be a bare timeout over a healthy process.
-        let present_before = self.workers_in(namespace).await.unwrap_or_default();
-
-        // Functions owned by this *name* that already existed. Two projects
-        // may each declare a container called `api`, and the engine reports
-        // both under that one name — so only an entry that appears while this
-        // child is starting can be attributed to it.
-        let functions_before = self.functions_of(container).await.unwrap_or_default();
-
-        // A worker of this name already in `default` is not ours: an unrelated
-        // one was there before we spawned. Only a newcomer can be blamed on this
-        // child, so the comparison is against what was there at the start.
-        let stray_before = namespace != DEFAULT_NAMESPACE
-            && self
-                .registered_namespaces(container)
-                .await?
-                .contains(&DEFAULT_NAMESPACE.to_string());
+        let ReadinessBaseline {
+            present: present_before,
+            functions: functions_before,
+            stray: stray_before,
+        } = baseline;
+        let stray_before = *stray_before;
 
         loop {
             if let crate::process::Outcome::Exited(status) = child.poll() {
@@ -183,7 +219,7 @@ impl EngineClient {
                 // still lands here. Checking only the worker would call that
                 // ready, and the first invocation would find nothing.
                 if let Some((function, found_in)) = self
-                    .misplaced_function(container, namespace, &functions_before)
+                    .misplaced_function(container, namespace, functions_before)
                     .await?
                 {
                     return Err(ComposeError::FunctionsInWrongNamespace {
@@ -434,7 +470,10 @@ mod tests {
         // one name, so B's readiness sees A's functions in A's namespace —
         // which is exactly where they belong.
         let already_there = functions(&[("api::ping", "shop-aaaaaaaa")]);
-        let listed = functions(&[("api::ping", "shop-aaaaaaaa"), ("api::ping", "shop-bbbbbbbb")]);
+        let listed = functions(&[
+            ("api::ping", "shop-aaaaaaaa"),
+            ("api::ping", "shop-bbbbbbbb"),
+        ]);
 
         assert_eq!(
             first_misplaced(&listed, "shop-bbbbbbbb", &already_there),
