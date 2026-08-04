@@ -27,24 +27,40 @@ project runs and makes a reviewer able to see the whole contract in one place.
 Strictness in the compose file serves the same end and ensures that an incomplete "system" cannot be
 started accidentally.
 
-## What the id and the namespace each do
+## Three names, three jobs
 
-Two names describe a compose project, and each one has a job.
+A compose call names three things, and confusing any two of them is the mistake worth naming up
+front.
 
-The **id** is a reference to a specific compose worker. They choose it on the first `up` and type it
-on every call after, so it can be short, memorable, and local to how they think about their machine.
+The **daemon namespace** is which machine. It comes from `--ns`, and it is where that daemon
+answers `compose::*`, so `iii trigger compose::up --namespace dev` reaches one daemon and not its
+neighbour. Several daemons attach to one engine, which is what lets compose supervise workers where
+their resources are rather than only beside the engine.
 
-The **namespace** is where the project's workers register. It comes from `name:` in the compose file
-and is the engine's routing dimension, the same one every other worker uses.
+The **file** is which project. A daemon holds as many as it is given, and the compose file is the
+only thing that identifies one.
 
-Keeping them separate lets each be good at its job. The id stays free of routing concerns, so it can
-change with no effect on where workers land. The namespace stays exactly what the compose file says,
-so an operator can read it off the file and type it into `iii trigger --namespace` or a
-`worker.trigger` call. Predictability is what makes a namespace usable by hand, and it comes from
-the namespace being declared rather than derived.
+The **project namespace** is where that project's workers register. It comes from `name:` in the
+compose file — the engine's routing dimension, the same one every other worker uses.
 
-Two copies of one project therefore share a namespace and collide, which is how the engine reports a
-duplicate for every other worker as well.
+### Why the project has no name of its own
+
+An earlier design gave each project an id the operator chose on the first `up`. It read well and was
+wrong, because it was a second identity for something the file already identified. Two identities
+have to be kept in agreement, and the failure was silent in both directions: an id could be pointed
+at a different file, and a mistyped id became a new empty project reporting that it had nothing to
+stop — success for a command that did nothing.
+
+Deriving the project from its file removes the question. The same file reached twice is the same
+project however it was spelled, a mistyped file is a file that will not open, and an error existed
+only to police the divergence that can no longer happen.
+
+The namespace stays exactly what the compose file says, so an operator can read it off the file and
+type it into `iii trigger --namespace` or a `worker.trigger` call. Predictability is what makes a
+namespace usable by hand, and it comes from being declared rather than derived.
+
+Two copies of one project therefore share a project namespace and collide, which is how the engine
+reports a duplicate for every other worker as well.
 
 <Note>
   For the routing dimension itself and how the engine handles a contested name, see
