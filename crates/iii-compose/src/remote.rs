@@ -6,19 +6,20 @@
 
 //! The `compose::*` control surface.
 //!
-//! Registered once, in `default`, where a trigger with no namespace flag lands:
+//! Registered in the daemon's own namespace, which is how one machine is
+//! reached rather than another:
 //!
 //! ```text
-//! iii trigger compose::up id=shop file=./worker-compose.yaml
+//! iii trigger compose::up --namespace dev file=./worker-compose.yaml
 //! ```
 //!
-//! `id` is the whole addressing story. One daemon holds many projects and this
-//! is what tells them apart — an id the operator chose, not a namespace they
-//! have to look up. That leaves the namespace to be what the engine uses to
-//! route workers, which is the only job it should have.
+//! The flag picks the daemon; `file=` picks the project. Nothing else names a
+//! project — a name someone chose would be a second identity for the same
+//! thing, and one that can be pointed at the wrong file.
 //!
-//! `list` and `stop` are about the daemon itself and take no id. Every other
-//! call needs one, and says so rather than guessing.
+//! `list` and `stop` are about the daemon itself and take no file. The rest
+//! fall back to `worker-compose.yaml` in the daemon's own directory, and say
+//! so when there is none.
 
 use std::sync::Arc;
 
@@ -33,11 +34,16 @@ use crate::{daemon::Daemon, error::ComposeError};
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ComposeRequest {
-    /// Which project. Chosen by the caller on the first `up` and used to reach
-    /// it ever after: one daemon holds many, and this is what tells them apart.
-    pub id: Option<String>,
-    /// The compose file, needed once — on the call that first names a project.
-    /// Giving a different one later is an error, not a rebind.
+    /// Which daemon the caller believed they were reaching.
+    ///
+    /// A guard, never a route: the engine resolves a call by the `--namespace`
+    /// flag and never reads the payload, so this cannot select a daemon — it
+    /// can only catch having reached the wrong one. Sending it alone is the
+    /// mistake it exists to name, since the call then lands wherever the flag
+    /// (or its absence) pointed.
+    pub namespace: Option<String>,
+    /// Which project: its compose file, and the only thing that names one. A
+    /// daemon started inside a project may leave it out.
     pub file: Option<String>,
     /// Restrict the operation to one container and what it needs.
     pub container: Option<String>,
@@ -87,23 +93,35 @@ async fn dispatch(
     function: String,
     request: ComposeRequest,
 ) -> Result<Value, Error> {
-    // Every project-scoped call needs one. `list` and `stop` are about the
-    // daemon itself and take none.
-    let id = || -> Result<String, Error> {
-        request.id.clone().ok_or_else(|| Error::Remote {
-            code: "MISSING_ID".to_string(),
+    // Checked before anything runs. A caller who named a daemon and reached a
+    // different one meant a different machine, and acting on this one would be
+    // the wrong project brought up somewhere nobody was looking.
+    if let Some(addressed) = &request.namespace
+        && addressed != &daemon.daemon_namespace
+    {
+        return Err(Error::Remote {
+            code: "WRONG_DAEMON".to_string(),
             message: format!(
-                "compose::{function} needs the project: iii trigger compose::{function} id=<id>"
+                "this daemon serves namespace '{}', not '{addressed}'. The namespace is a flag, \
+                 not a payload field: iii trigger compose::{function} --namespace {addressed} …",
+                daemon.daemon_namespace
             ),
             stacktrace: None,
-        })
-    };
+        });
+    }
+
     let file = request.file.as_ref().map(std::path::PathBuf::from);
 
     match operation {
         Operation::Up => match daemon
-            .up(
-                &id()?,
+            .up(file.as_deref(), request.container.as_deref(), operation_id())
+            .await
+        {
+            Ok(result) => Ok(to_value(&result)),
+            Err(err) => Err(compose_error(&err)),
+        },
+        Operation::Down => match daemon
+            .down(
                 file.as_deref(),
                 request.container.as_deref(),
                 operation_id(),
@@ -113,25 +131,24 @@ async fn dispatch(
             Ok(result) => Ok(to_value(&result)),
             Err(err) => Err(compose_error(&err)),
         },
-        Operation::Down => match daemon
-            .down(&id()?, request.container.as_deref(), operation_id())
-            .await
-        {
-            Ok(result) => Ok(to_value(&result)),
-            Err(err) => Err(compose_error(&err)),
-        },
         // Every project this daemon holds. No id: this is the call an operator
         // makes when they have forgotten what is running.
         Operation::List => Ok(json!({
             "daemon": daemon.worker_name,
+            // Which machine answered. Several daemons share an engine, so a
+            // caller who reached one by namespace can confirm it was the one
+            // they meant.
+            "daemon_namespace": daemon.daemon_namespace,
             "daemon_pid": std::process::id(),
             "projects": daemon.list().await,
         })),
-        Operation::Status => match daemon.project(&id()?, file.as_deref()).await {
+        Operation::Status => match daemon.status(file.as_deref()).await {
             Ok(project) => Ok(json!({
-                "id": project.id,
                 "namespace": project.project_namespace,
                 "file": project.file.path,
+                // Derived from the file, so nobody can guess it: where this
+                // project's state, delivered config and container logs live.
+                "state_dir": project.state_dir(),
                 // Which process is answering. `--detach` waits on this: another
                 // daemon would otherwise answer for the one being launched.
                 "daemon_pid": std::process::id(),
@@ -145,10 +162,7 @@ async fn dispatch(
         // Validation is a question about a file, so it holds nothing: naming a
         // file here must not leave the daemon owning a project, and must not
         // write the durable state that would bind that id to it.
-        Operation::Validate => match daemon
-            .validate(request.id.as_deref(), file.as_deref())
-            .await
-        {
+        Operation::Validate => match daemon.validate(file.as_deref()).await {
             Ok(report) => Ok(json!({
                 "project": report.project,
                 "namespace": report.namespace,

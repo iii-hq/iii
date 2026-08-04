@@ -31,6 +31,32 @@ use crate::{
 
 pub const STATE_FILE: &str = "state.json";
 
+/// Directory name for one project's state, derived from its compose file.
+///
+/// Two halves for two jobs: the parent directory's name so an operator
+/// browsing `~/.iii/compose` recognises what they are looking at, and a hash of
+/// the canonical path so two projects that happen to share a directory name
+/// stay apart. The file name itself is nearly always `worker-compose.yaml`, so
+/// it carries nothing.
+pub fn project_slug(compose_path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+
+    let readable = compose_path
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "project".to_string());
+
+    let digest = hex::encode(Sha256::digest(compose_path.as_os_str().as_encoded_bytes()));
+    format!("{readable}-{}", &digest[..8])
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildStatus {
@@ -75,9 +101,9 @@ impl ChildRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonState {
-    pub daemon_id: String,
-    /// Compose file this daemon is bound to, canonicalized. A daemon is bound to
-    /// one file for its whole lifetime; see [`DaemonState::check_binding`].
+    /// Compose file this state belongs to, canonicalized. It is also what the
+    /// state directory is derived from, so the two can only disagree if the
+    /// derivation collided — see [`DaemonState::check_binding`].
     pub compose_path: PathBuf,
     pub namespace: String,
     #[serde(default)]
@@ -85,25 +111,30 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    pub fn new(daemon_id: &str, compose_path: &Path, namespace: &str) -> Self {
+    pub fn new(compose_path: &Path, namespace: &str) -> Self {
         Self {
-            daemon_id: daemon_id.to_string(),
             compose_path: compose_path.to_path_buf(),
             namespace: namespace.to_string(),
             containers: BTreeMap::new(),
         }
     }
 
-    /// Refuses to reuse state recorded for a different compose file. Reusing it
-    /// would let a daemon adopt — and later kill — another project's children.
+    /// Refuses state recorded for a different compose file.
+    ///
+    /// Not an operator error any more: the directory is derived from the path,
+    /// so reaching this means two paths produced one slug. Rare enough to be a
+    /// surprise and dangerous enough to refuse — adopting it would let one
+    /// project kill another's children.
     pub fn check_binding(&self, compose_path: &Path) -> Result<()> {
         if self.compose_path == compose_path {
             return Ok(());
         }
-        Err(ComposeError::StateBindingMismatch {
-            daemon_id: self.daemon_id.clone(),
-            recorded: self.compose_path.clone(),
-            requested: compose_path.to_path_buf(),
+        Err(ComposeError::InvalidState {
+            path: compose_path.to_path_buf(),
+            message: format!(
+                "it records {} instead. Two compose files resolved to one state directory",
+                self.compose_path.display()
+            ),
         })
     }
 }
@@ -141,14 +172,32 @@ pub struct StateStore {
 }
 
 impl StateStore {
-    /// `~/.iii/compose/<daemon-id>`, or `$III_COMPOSE_STATE_DIR/<daemon-id>`
-    /// when the operator relocates it (a read-only home, a tmpfs, a test).
-    pub fn for_daemon(daemon_id: &str) -> Result<Self> {
-        if let Some(root) = std::env::var_os("III_COMPOSE_STATE_DIR") {
-            return Ok(Self::at(PathBuf::from(root).join(daemon_id)));
+    /// Everything compose keeps on this machine: `~/.iii/compose`, or
+    /// `$III_COMPOSE_STATE_DIR` when the operator relocates it.
+    pub fn root() -> Result<PathBuf> {
+        match std::env::var_os("III_COMPOSE_STATE_DIR") {
+            Some(root) => Ok(PathBuf::from(root)),
+            None => Ok(dirs::home_dir()
+                .ok_or(ComposeError::StateDirUnavailable)?
+                .join(".iii")
+                .join("compose")),
         }
-        let home = dirs::home_dir().ok_or(ComposeError::StateDirUnavailable)?;
-        Ok(Self::at(home.join(".iii").join("compose").join(daemon_id)))
+    }
+
+    /// Where one project's state lives:
+    /// `~/.iii/compose/<daemon-namespace>/<project-slug>`, or under
+    /// `$III_COMPOSE_STATE_DIR` when the operator relocates it (a read-only
+    /// home, a tmpfs, a test).
+    ///
+    /// The slug comes from the compose file, not from a name anyone chose:
+    /// there is nothing else that identifies a project, and a chosen name is a
+    /// second identity that can be pointed at the wrong file.
+    pub fn for_project(daemon_namespace: &str, compose_path: &Path) -> Result<Self> {
+        Ok(Self::at(
+            Self::root()?
+                .join(daemon_namespace)
+                .join(project_slug(compose_path)),
+        ))
     }
 
     pub fn at(dir: impl Into<PathBuf>) -> Self {
