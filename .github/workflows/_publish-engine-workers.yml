@@ -27,7 +27,7 @@ on:
         type: string
         default: ''
       registry_tag:
-        description: 'Registry tag (latest, next, ...)'
+        description: 'Registry tag (latest, rc, ...)'
         required: false
         type: string
         default: latest

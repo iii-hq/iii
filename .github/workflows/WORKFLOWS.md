@@ -82,7 +82,7 @@ Entry point for all releases. Provides a form with:
 |-------|---------|
 | `target` | `iii` |
 | `bump` | `patch`, `minor`, `major` |
-| `prerelease` | `none`, `alpha`, `beta`, `rc`, `next` |
+| `prerelease` | `none`, `rc` |
 | `dry_run` | boolean |
 
 **What it does:**
@@ -96,7 +96,7 @@ Entry point for all releases. Provides a form with:
 7. Updates docs from `docs/next/` on stable releases (`pin_docs.py rotate`, which dispatches on the version):
    - **minor/major** — rotates: archives the old Latest into `docs/OLD-MINOR-0/` (its `Latest` block becomes archived), promotes `docs/next/` into the root as a new `Latest` block labeled with the **tag version** (the official version comes from the tag and can be anything), relabels the `Next` block to `MINOR + 1` (reusing the `docs/next/` folder), and reorders the dropdown (Next, Latest, archived newest-first — Mintlify's own ordering does not work).
    - **patch** — syncs in place: replaces the root content with `docs/next/`. No archive, no `Next` bump, no version-block changes — it just refreshes the current Latest's docs.
-   - **all prereleases** (`alpha`/`beta`/`rc`/`next`) leave docs untouched.
+   - **release candidates** (`rc`) leave docs untouched.
    - In-content links are version-relative, so files move verbatim; only `docs.json` nav paths carry the version prefix.
 8. Commits the version bump (including any docs changes), creates an annotated tag, and pushes both
 9. Posts a Slack notification
@@ -174,7 +174,7 @@ setup (parse tag metadata, Slack notification)
   └─► notify-complete (aggregated Slack status)
 ```
 
-**Downstream validations:** once every publish job succeeds (non-dry-run), `trigger-validations` dispatches `init-smoke.yml` in `iii-hq/templates` and `quickstart-validate.yml` in `iii-hq/quickstart-validator`, passing `channel=next` for a prerelease or `channel=main` for a stable release. Both repos report results to their own Slack threads. Requires the `III_CI_APP` GitHub App installed on both repos with `actions: write`.
+**Downstream validations:** once every publish job succeeds (non-dry-run), `trigger-validations` dispatches `init-smoke.yml` in `iii-hq/templates` and `quickstart-validate.yml` in `iii-hq/quickstart-validator`, passing `channel=rc` for a release candidate or `channel=main` for a stable release. Both repos report results to their own Slack threads. Requires the `III_CI_APP` GitHub App installed on both repos with `actions: write`.
 
 **Setup job** parses the tag to determine:
 - `version` — stripped prefix (e.g., `iii/v1.2.3` becomes `1.2.3`)

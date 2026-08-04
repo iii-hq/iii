@@ -105,7 +105,7 @@ def main() -> int:
     parser.add_argument(
         "--version",
         required=True,
-        help="Worker version tag or semver to attach this snapshot to (e.g. latest, next, 1.2.3).",
+        help="Worker version tag or semver to attach this snapshot to (e.g. latest, rc, 1.2.3).",
     )
     parser.add_argument("--out", default="skills-payload.json")
     parser.add_argument(

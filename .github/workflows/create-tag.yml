@@ -25,10 +25,7 @@ on:
         type: choice
         options:
           - none
-          - alpha
-          - beta
           - rc
-          - next
         default: none
       dry_run:
         description: 'Dry run (creates -dry-run.N tag, builds without publishing)'
@@ -76,7 +73,7 @@ jobs:
           # requires a pre-release label. Use patch/minor/major to START a
           # train (they pick the base); none cannot infer one.
           if [[ "$BUMP" == "none" && "$PRERELEASE" == "none" ]]; then
-            echo "::error::bump 'none' requires a pre-release label (alpha/beta/rc/next). Use patch/minor/major for a stable release."
+            echo "::error::bump 'none' requires the rc pre-release label. Use patch/minor/major for a stable release."
             exit 1
           fi
 

@@ -685,7 +685,7 @@ jobs:
     with:
       worker: ${{ matrix.worker }}
       worker_dir: ${{ matrix.worker_dir }}
-      registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
+      registry_tag: ${{ needs.setup.outputs.npm_tag }}
     secrets: inherit
 
   publish-worker-skills:
@@ -694,7 +694,7 @@ jobs:
     if: needs.setup.outputs.dry_run != 'true'
     uses: ./.github/workflows/_publish-worker-skills.yml
     with:
-      registry_tag: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'latest' }}
+      registry_tag: ${{ needs.setup.outputs.npm_tag }}
     secrets: inherit
 
   # ──────────────────────────────────────────────────────────────
@@ -702,8 +702,8 @@ jobs:
   #
   # Once every publish job has succeeded (the validators install the
   # freshly-published artifacts), dispatch the smoke/quickstart workflows
-  # in the templates and quickstart-validator repos. A prerelease publishes
-  # the `next` channel; a stable release publishes `main`. Skipped on
+  # in the templates and quickstart-validator repos. A release candidate uses
+  # the `rc` channel; a stable release uses `main`. Skipped on
   # dry-run and whenever any publish job failed (`!failure()`).
   # ──────────────────────────────────────────────────────────────
 
@@ -727,7 +727,7 @@ jobs:
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     env:
-      CHANNEL: ${{ needs.setup.outputs.is_prerelease == 'true' && 'next' || 'main' }}
+      CHANNEL: ${{ needs.setup.outputs.is_prerelease == 'true' && 'rc' || 'main' }}
     steps:
       - name: Generate token
         id: generate_token
