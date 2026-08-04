@@ -3,9 +3,9 @@
 # Compose
 
 
-Compose runs a group of workers as one project. The daemon reads a
-`worker-compose.yaml`, starts each container in dependency order, waits for the engine to register
-it, and supervises it afterwards.
+Compose runs a group of workers as one project. The daemon reads a `worker-compose.yaml`, starts
+each container in dependency order, waits for the engine to register it, and supervises it
+afterwards.
 
 The daemon is itself a worker. It registers under the name `compose` in the `default` namespace and
 exposes the `compose::*` functions there, so every project operation is a normal
@@ -28,8 +28,8 @@ One daemon serves one engine and holds any number of projects. It always registe
 `default`, and the engine leases that pair to one connection, so a second daemon on the same engine
 is refused at registration with `DAEMON_ALREADY_SERVING`. Neither coordinate is configurable.
 
-`SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop` does
-the same over the engine.
+`SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
+does the same over the engine.
 
 ### Running it in the background
 
@@ -57,32 +57,32 @@ WantedBy=multi-user.target
 ```
 
 <Warning>
-  Use `Type=simple`. `Type=notify` waits for an `sd_notify` readiness message, which compose does not
-  send, so systemd kills it at `TimeoutStartSec`.
+  Use `Type=simple`. `Type=notify` waits for an `sd_notify` readiness message, which compose does
+  not send, so systemd kills it at `TimeoutStartSec`.
 </Warning>
 
 ## The `compose::*` functions
 
-All six functions accept the same payload. Every field is optional.
+All six functions accept the same payload.
 
-| Field       | Type   | Description                                                                                    |
-| ----------- | ------ | ---------------------------------------------------------------------------------------------- |
-| `id`        | string | Which project. Chosen by the caller on the first `up` and used to address the project after.   |
-| `file`      | string | Path to the compose file. Required on the call that first names a project.                     |
-| `container` | string | Restricts the operation to one container and the containers it depends on.                     |
+| Field       | Type   | Description                                                                                  |
+| ----------- | ------ | -------------------------------------------------------------------------------------------- |
+| `id`        | string | Which project. Chosen by the caller on the first `up` and used to address the project after. |
+| `file`      | string | Path to the compose file. Required on the call that first names a project.                   |
+| `container` | string | Restricts the operation to one container and the containers it depends on.                   |
 
 A project-scoped call without `id` fails with `MISSING_ID`. A call that names an `id` the daemon has
 not loaded fails with `UNKNOWN_PROJECT`. Passing a `file` that differs from the one the `id` is
 already bound to fails with `STATE_BINDING_MISMATCH`.
 
-| Function           | Requires          | Returns                                                                |
-| ------------------ | ----------------- | ---------------------------------------------------------------------- |
-| `compose::up`      | `id`              | An operation result.                                                   |
-| `compose::down`    | `id`              | An operation result.                                                   |
-| `compose::status`  | `id`              | The project's id, namespace, file, the daemon pid, and container states. |
-| `compose::list`    | nothing           | The daemon name, its pid, and every project it holds.                    |
-| `compose::validate` | `id` or `file`   | A validation report.                                                   |
-| `compose::stop`    | nothing           | The daemon name, its pid, and the ids it is about to stop.               |
+| Function            | Requires       | Returns                                                                  |
+| ------------------- | -------------- | ------------------------------------------------------------------------ |
+| `compose::up`       | `id`           | An operation result.                                                     |
+| `compose::down`     | `id`           | An operation result.                                                     |
+| `compose::status`   | `id`           | The project's id, namespace, file, the daemon pid, and container states. |
+| `compose::list`     | nothing        | The daemon name, its pid, and every project it holds.                    |
+| `compose::validate` | `id` or `file` | A validation report.                                                     |
+| `compose::stop`     | nothing        | The daemon name, its pid, and the ids it is about to stop.               |
 
 ```bash
 iii trigger compose::up id=shop file=./worker-compose.yaml
@@ -97,40 +97,38 @@ iii trigger compose::stop
 holds a `worker-compose.yaml` and the `id` is new. `compose::down` and `compose::status` never fall
 back to that file.
 
-`compose::stop` answers before the daemon exits. The teardown runs on the serve loop, the same path a
-signal takes.
+`compose::stop` stops a compose project but returns before the daemon exits.
 
-`compose::validate` with a `file` reads that file and keeps nothing: no project is loaded and no
-durable state is written. With an `id` it validates the project the daemon already holds. Validation
-is offline, so `package://` containers are reported under `deferred_packages` instead of being
-resolved.
+`compose::validate` with a `file` validates the file with no side effects. With an `id` it validates
+the project the daemon already holds. Validation is offline, so `package://` containers are reported
+under `deferred_packages` instead of being resolved.
 
 ### Operation results
 
-`compose::up` and `compose::down` return the same shape.
+`compose::up` and `compose::down` return the same fields.
 
-| Field          | Type    | Description                                                            |
-| -------------- | ------- | ---------------------------------------------------------------------- |
-| `operation_id` | string  | Identifier for this operation.                                         |
-| `status`       | string  | `ok` or `failed`.                                                      |
+| Field          | Type    | Description                                                             |
+| -------------- | ------- | ----------------------------------------------------------------------- |
+| `operation_id` | string  | Identifier for this operation.                                          |
+| `status`       | string  | `ok` or `failed`.                                                       |
 | `changed`      | boolean | `false` when every requested container was already in the target state. |
 | `containers`   | array   | One entry per container the operation planned.                          |
 
-Each entry in `containers` carries `container`, `state`, `changed`, and an `error` object with `code`
-and `message` when that container failed.
+Each entry in `containers` contains `container`, `state`, `changed`. If a container failed it will
+also contain an `error` object with `code` and `message`.
 
-A failed `up` stops what that operation started, in reverse order, and reports those containers as
-`stopped` with `changed: false`. Containers that were already running before the operation are left
-alone.
+A failed `up` tears down any running containers, in reverse startup order, and reports those
+containers as `stopped` with `changed: false`. Containers that were already running before the
+operation are left alone.
 
 ### Container states
 
-| State      | Meaning                                                        |
-| ---------- | -------------------------------------------------------------- |
-| `starting` | Spawned. The engine has not registered it yet.                 |
-| `ready`    | Registered in the engine under `(namespace, container)`.        |
-| `failed`   | Exited without being asked to, or one of its hooks failed.      |
-| `stopped`  | Stopped by this daemon.                                        |
+| State      | Meaning                                                    |
+| ---------- | ---------------------------------------------------------- |
+| `starting` | Spawned. The engine has not registered it yet.             |
+| `ready`    | Registered in the engine under `(namespace, container)`.   |
+| `failed`   | Exited without being asked to, or one of its hooks failed. |
+| `stopped`  | Stopped by this daemon.                                    |
 
 `compose::status` reports each declared container with its `state`, its `pid`, an `owned` flag, and
 `last_error` when there is one. `owned` is `false` for a container this daemon can see but did not
@@ -138,17 +136,19 @@ start.
 
 ### Validation reports
 
-| Field                | Type   | Description                                                   |
-| -------------------- | ------ | ------------------------------------------------------------- |
-| `project`            | string | The compose file's `name`, or the namespace when it has none. |
-| `namespace`          | string | Namespace the project's containers register in.               |
-| `start_order`        | array  | Container keys in dependency order.                            |
-| `deferred_packages`  | array  | `package://` containers, which need the registry to resolve.   |
+| Field               | Type   | Description                                                   |
+| ------------------- | ------ | ------------------------------------------------------------- |
+| `project`           | string | The compose file's `name`, or the namespace when it has none. |
+| `namespace`         | string | Namespace the project's containers register in.               |
+| `start_order`       | array  | Container keys in dependency order.                           |
+| `deferred_packages` | array  | `package://` containers, which need the registry to resolve.  |
 
 ## `worker-compose.yaml`
 
-Version 1. Unknown keys are rejected at every level, and a duplicate container key is an error rather
-than an overwrite. Durations carry a unit: `500ms`, `30s`, `2m`.
+<Note>
+  This documentation reflects version 1 of a worker compose file. Unknown keys and duplicate keys
+  are errors. Durations can specify a unit: `500ms`, `30s`, `2m`.
+</Note>
 
 ```yaml
 name: shop
@@ -178,12 +178,12 @@ containers:
 
 ### Top-level fields
 
-| Field             | Type   | Default | Description                                                                        |
-| ----------------- | ------ | ------- | ---------------------------------------------------------------------------------- |
+| Field             | Type   | Default | Description                                                                                |
+| ----------------- | ------ | ------- | ------------------------------------------------------------------------------------------ |
 | `name`            | string | absent  | Namespace the project's containers register in. A project with no name lands in `default`. |
-| `startup_timeout` | string | `60s`   | Readiness budget for every container. A container may override it.                  |
-| `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                  |
-| `containers`      | map    | none    | At least one entry. An empty map fails with `EMPTY_CONTAINERS`.                     |
+| `startup_timeout` | string | `60s`   | Readiness budget for every container. A container may override it.                         |
+| `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                         |
+| `containers`      | map    | none    | At least one entry. An empty map fails with `EMPTY_CONTAINERS`.                            |
 
 The name is lowercased and reduced to `[a-z0-9_-]`, so `My Shop!` registers as `my-shop`. Nothing
 about the file's path enters the namespace, so two copies of one project collide instead of running
@@ -193,31 +193,32 @@ side by side.
 
 Each key under `containers` is the worker name the container registers under.
 
-| Field             | Type          | Default              | Description                                                                     |
-| ----------------- | ------------- | -------------------- | ------------------------------------------------------------------------------- |
-| `worker`          | string        | required             | `path://<dir>` or `package://<registry-host>/<name>`.                            |
-| `version`         | string        | absent               | Version range. Required for `package://`.                                        |
-| `depends_on`      | array         | empty                | Container keys that start first. Self-dependencies and cycles are rejected.       |
-| `config_name`     | string        | absent               | Configuration entry to fetch from the [configuration worker](./configuration).   |
-| `config_uri`      | string        | absent               | `worker://configuration/get/<name>`. Conflicts with `config_name`.                |
-| `config_override` | mapping       | absent               | Merged on top of the fetched configuration.                                      |
-| `working_dir`     | path          | the worker directory | Resolved against the compose file's directory.                                    |
-| `environment`     | map           | empty                | Literal environment for this container.                                          |
-| `env_file`        | array of paths | empty               | Read at start time, in declaration order. A later file wins.                      |
-| `startup_timeout` | string        | the file's value     | Readiness budget for this container.                                              |
-| `scripts`         | mapping       | absent               | See below.                                                                       |
+| Field             | Type           | Default              | Description                                                                         |
+| ----------------- | -------------- | -------------------- | ----------------------------------------------------------------------------------- |
+| `worker`          | string         | required             | `path://<dir>` or `package://<registry-host>/<name>`.                               |
+| `version`         | string         | absent               | Version range. Required for `package://`.                                           |
+| `depends_on`      | array          | empty                | Container keys that start first. Self-dependencies and cycles are rejected.         |
+| `config_name`     | string         | absent               | Configuration entry to fetch from the [configuration worker](./configuration).      |
+| `config_uri`      | string         | absent               | `worker://configuration/get/<name>`. Conflicts with `config_name`.                  |
+| `config_override` | mapping        | absent               | Merged on top of the fetched configuration.                                         |
+| `working_dir`     | path           | the worker directory | Resolved against the compose file's directory.                                      |
+| `environment`     | map            | empty                | Environment variables for this container.                                           |
+| `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries. |
+| `startup_timeout` | string         | the file's value     | Readiness budget for this container.                                                |
+| `scripts`         | mapping        | absent               | See below.                                                                          |
 
 `path://` directories resolve against the compose file's directory. A missing directory fails with
-`MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during validation.
+`MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during
+validation.
 
 ### Scripts
 
-| Field               | Type   | Default | Description                                                             |
-| ------------------- | ------ | ------- | ----------------------------------------------------------------------- |
-| `pre_start`         | string | absent  | Runs to completion before the container is spawned.                      |
-| `pre_start_timeout` | string | `60s`   | Budget for `pre_start`. Rejected without a `pre_start`.                  |
-| `run`               | string | absent  | Start command. Rejected for `package://` containers.                     |
-| `post_run`          | string | absent  | Runs after the container's exit is confirmed. Never awaited.              |
+| Field               | Type   | Default | Description                                                  |
+| ------------------- | ------ | ------- | ------------------------------------------------------------ |
+| `pre_start`         | string | absent  | Runs to completion before the container is spawned.          |
+| `pre_start_timeout` | string | `60s`   | Budget for `pre_start`. Rejected without a `pre_start`.      |
+| `run`               | string | absent  | Start command. Rejected for `package://` containers.         |
+| `post_run`          | string | absent  | Runs after the container's exit is confirmed. Never awaited. |
 
 Both hooks run with the container's environment, working directory, and their own process group.
 
@@ -243,29 +244,29 @@ Three layers apply, lowest to highest.
 2. The container's `env_file` entries, then its `environment` map.
 3. The reserved variables, which the daemon owns.
 
-| Variable           | Value                                                             |
-| ------------------ | ----------------------------------------------------------------- |
-| `III_URL`          | The engine address the daemon is connected to.                     |
-| `III_NAMESPACE`    | The project's namespace.                                          |
-| `III_WORKER_NAME`  | The container key.                                                |
-| `III_CONFIG`       | Path to the resolved configuration file. Absent when there is none. |
+| Variable          | Value                                                               |
+| ----------------- | ------------------------------------------------------------------- |
+| `III_URL`         | The engine address the daemon is connected to.                      |
+| `III_NAMESPACE`   | The project's namespace.                                            |
+| `III_WORKER_NAME` | The container key.                                                  |
+| `III_CONFIG`      | Path to the resolved configuration file. Absent when there is none. |
 
-Declaring a reserved variable in `environment` or an `env_file` fails with
-`RESERVED_ENV_OVERRIDE`.
+Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 
 ## Readiness
 
-A container is up when the engine reports a worker of that name in the project's namespace. Compose
-polls `engine::workers::list` every 200 ms until the container's `startup_timeout` runs out.
+A container is considered up when the engine reports a worker of that name in the project's
+namespace. Compose polls `engine::workers::list` every 200 ms until the container's
+`startup_timeout` runs out.
 
-| Outcome                                                        | Code                                |
-| -------------------------------------------------------------- | ----------------------------------- |
-| The container never appeared.                                  | `STARTUP_TIMEOUT`                   |
-| The process exited while compose was waiting.                  | `CHILD_EXITED_BEFORE_REGISTRATION`  |
-| It registered in `default` instead of the project's namespace.  | `WORKER_IGNORED_NAMESPACE`          |
-| It registered under a different name in the right namespace.    | `WORKER_NAME_MISMATCH`              |
-| Its functions landed outside the project's namespace.          | `FUNCTIONS_IN_WRONG_NAMESPACE`      |
-| A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`              |
+| Outcome                                                        | Code                               |
+| -------------------------------------------------------------- | ---------------------------------- |
+| The container never appeared.                                  | `STARTUP_TIMEOUT`                  |
+| The process exited while compose was waiting.                  | `CHILD_EXITED_BEFORE_REGISTRATION` |
+| It registered in `default` instead of the project's namespace. | `WORKER_IGNORED_NAMESPACE`         |
+| It registered under a different name in the right namespace.   | `WORKER_NAME_MISMATCH`             |
+| Its functions landed outside the project's namespace.          | `FUNCTIONS_IN_WRONG_NAMESPACE`     |
+| A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
 
 After a container is ready, the daemon checks it every 250 ms. A container that exits takes its
 transitive dependents down with it and is recorded as `failed`. When the engine connection drops and
@@ -273,12 +274,12 @@ comes back, every running container gets its `startup_timeout` to register again
 
 ## Where compose keeps state
 
-| Path                              | Contents                                            |
-| --------------------------------- | --------------------------------------------------- |
-| `~/.iii/compose/<id>/state.json`  | One project's child records. Owner-only.            |
-| `~/.iii/compose/<id>/config/`     | Resolved configuration files.                        |
-| `~/.iii/compose/<id>/logs/`       | Each container's own output.                         |
-| `~/.iii/compose/packages/`        | Installed `package://` binaries, shared by projects. |
+| Path                             | Contents                                             |
+| -------------------------------- | ---------------------------------------------------- |
+| `~/.iii/compose/<id>/state.json` | One project's child records. Owner-only.             |
+| `~/.iii/compose/<id>/config/`    | Resolved configuration files.                        |
+| `~/.iii/compose/<id>/logs/`      | Each container's own output.                         |
+| `~/.iii/compose/packages/`       | Installed `package://` binaries, shared by projects. |
 
 An `id` is bound to one compose file for as long as its state file exists. A clean shutdown clears
 the state file. After an unclean exit, the daemon compares each record against the live process: a
@@ -289,14 +290,14 @@ running and reported for manual cleanup.
 
 Compose errors cross the wire with a stable code and a message.
 
-| Area                | Codes                                                                                                                                                                                                    |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Compose file        | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`                        |
-| Container declaration | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `PRE_START_TIMEOUT_WITHOUT_PRE_START`, `CONFLICTING_CONFIG_SOURCE`, `UNSUPPORTED_CONFIG_URI`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE` |
-| Worker resolution   | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `MANIFEST_NAME_MISMATCH`                                                                                                          |
-| Packages            | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM` |
-| Start and readiness | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `ENGINE_CALL_FAILED` |
-| Daemon and project  | `MISSING_ID`, `UNKNOWN_PROJECT`, `UNKNOWN_CONTAINER`, `STATE_BINDING_MISMATCH`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`               |
+| Area                  | Codes                                                                                                                                                                                                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Compose file          | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`                                                                                                |
+| Container declaration | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `PRE_START_TIMEOUT_WITHOUT_PRE_START`, `CONFLICTING_CONFIG_SOURCE`, `UNSUPPORTED_CONFIG_URI`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                            |
+| Worker resolution     | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `MANIFEST_NAME_MISMATCH`                                                                                                                                                                                  |
+| Packages              | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`                                                                        |
+| Start and readiness   | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `ENGINE_CALL_FAILED` |
+| Daemon and project    | `MISSING_ID`, `UNKNOWN_PROJECT`, `UNKNOWN_CONTAINER`, `STATE_BINDING_MISMATCH`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`                                                                                                                            |
 
 ## Related
 
