@@ -7,155 +7,147 @@
 
 A worker is a single process with an identity on the engine. A real deployment is several of them
 with an order between them: a database before the API, the API before the web front end, a migration
-before either. The engine holds workers and routes calls to them. Something else has to own the
-order, the environment each process starts with, and the question of what to do when one of them
-dies.
+before either. The engine holds workers and routes calls to them. Something has to own the order, the
+environment each process starts with, and the response when one of them dies.
 
 That is compose. A `worker-compose.yaml` declares the group, and a daemon turns the declaration into
 running processes it keeps watching.
 
-## Why the daemon is a worker
+## What the daemon gains by being a worker
 
 The daemon connects to the engine with the SDK, registers as `compose`, and exposes `compose::*`
-there. Every project operation is a trigger.
+there. Every project operation is a trigger, and each piece of the engine it uses does real work for
+it.
 
-The alternative was a second control plane: a socket of its own, a wire format of its own, and an
-authorization story of its own. Everything compose needs already exists on the engine. Function
-registration gives the operations a discoverable home. Trigger routing gives them a caller,
-so `iii trigger`, the console, and another worker all reach compose the same way with no extra
-client. Introspection gives the daemon its own view of what is running, which is the fact readiness
-depends on.
+Function registration gives the operations a discoverable home, so `compose::up` carries a request
+schema and appears in `engine::functions::list` like anything else on the engine. Trigger routing
+gives them a caller, so `iii trigger`, the console, and another worker all reach compose the same way
+with no client of its own. Introspection gives the daemon a view of what is registered, which is the
+fact its readiness check is built on. The engine's authorization covers `compose::*` along with every
+other function, so an operator who can call a function on this engine can run a project on it.
 
-Building compose as a worker also keeps its surface honest. `compose::up` carries a request schema
-like any other function, and an operator who can call one function on the engine can call this one.
+## What one daemon holding many projects gains
 
-## Why one daemon holds many projects
+The daemon starts knowing nothing. The first `compose::up` that names a file teaches it a project,
+and it holds that project until it is stopped. A second project is one more call on the same daemon,
+over the same socket, with the same supervision loop.
 
-An earlier shape was one daemon per project. Each one connected separately, each one had to be
-started and addressed separately, and an operator with four projects on a laptop ran four daemons and
-kept track of which was which.
+That keeps the operator's side small. One process to run, one connection on the engine, one place to
+ask what is running: `compose::list` answers for every project at once, which is the question an
+operator has when they have forgotten what they started.
 
-One daemon and one connection replaces that. The daemon starts knowing nothing; the first
-`compose::up` that names a file teaches it a project, and it holds that project until it is stopped.
-A second project is one more call on the same daemon.
+The daemon's worker name is fixed at `compose`. The engine leases the `(default, compose)` pair to
+one connection at a time, so the second daemon on an engine is told so by name, immediately, at
+registration. That gives the exclusion a single owner and makes "this engine already has a compose
+daemon" a fact the engine itself enforces.
 
-The daemon's worker name is fixed at `compose`. The engine hands the `(default, compose)` pair to one
-connection at a time, so a second daemon on the same engine is refused the moment it registers. That
-refusal is the feature. A daemon under a random name would register successfully and then be
-unreachable, because both copies would own `compose::up` in `default` and the engine would route a
-call to whichever it picked. The operator would be left with projects nobody can address. Losing a
-lease by name is a message; being silently unroutable is a hunt.
+## What the id and the namespace each do
 
-## Why a project has an id and a namespace
+Two names describe a compose project, and each one has a job.
 
-Two names describe a compose project, and they answer different questions.
+The **id** is the operator's handle. They choose it on the first `up` and type it on every call after,
+so it can be short, memorable, and local to how they think about their machine.
 
-The **id** is how an operator addresses the project through `compose::*`. They choose it on the first
-`up` and type it on every call after. Nothing derives it, and nothing about it reaches the engine's
-routing.
+The **namespace** is where the project's workers register. It comes from `name:` in the compose file
+and is the engine's routing dimension, the same one every other worker uses.
 
-The **namespace** is where the project's workers register. It comes from `name:` in the compose file,
-and it is the engine's routing dimension, the same one every other worker uses.
+Keeping them separate lets each be good at its job. The id stays free of routing concerns, so it can
+change with no effect on where workers land. The namespace stays exactly what the compose file says,
+so an operator can read it off the file and type it into `iii trigger --namespace` or a `worker.trigger`
+call. Predictability is what makes a namespace usable by hand, and it comes from the namespace being
+declared rather than derived.
 
-Conflating them was the previous design, and it made an operator learn a namespace to work a
-project. Worse, an early version hashed the file path into the namespace so two copies of a project
-could coexist. That namespace was unpredictable, which made it unaddressable: `iii trigger --namespace`
-needs a value a human can type. Now the namespace is what the file says, and two copies of one
-project collide. A duplicate reads as a duplicate.
+Two copies of one project therefore share a namespace and collide, which is how the engine reports a
+duplicate for every other worker as well.
 
 <Note>
-  For the routing dimension itself and why the engine refuses a contested name, see
+  For the routing dimension itself and how the engine handles a contested name, see
   [Namespaces](./namespaces).
 </Note>
 
-## Why readiness is what the engine has seen
+## What engine-observed readiness gains
 
-Spawning a process says nothing about whether its dependents can call it. A worker is useful once the
-engine has filed it under `(namespace, worker_name)` and its functions are routable. So compose waits
-for exactly that: the container's name appearing in the engine's worker list, in the project's
-namespace, with its functions filed alongside it.
+A container is ready when the engine reports it under `(namespace, worker_name)` with its functions
+filed alongside it. Compose waits for that fact and nothing weaker.
 
-Using the engine's view has a further benefit. It is the same fact a dependent's first call will
-depend on, so `depends_on` means something stronger than "the previous process exists".
+Its value is that it is the same fact the next container depends on. When `api` starts after
+`database`, `depends_on` guarantees the engine can already route a call to `database`, so `api`'s
+first call has somewhere to land. A check on the process alone would guarantee only that something
+was launched.
 
-It also lets compose distinguish failures that all look like a timeout from the outside. A worker
-built against an SDK that never reads `III_NAMESPACE` connects, registers in `default`, and is
-perfectly healthy where the project cannot see it. A worker that names itself something other than
-its container key is alive and unreachable through the name the project uses. Functions can land in
-`default` while the worker itself lands in the project namespace, because a namespace is known only
-once `engine::workers::register` is processed and the queued registrations can be drained before
-that. Each of these gets its own error naming what happened, instead of a minute of silence followed
-by "not ready".
+The engine's view is also detailed enough to name what went wrong. A container that registers in
+`default` instead of the project namespace is healthy and out of reach, and compose says exactly
+that. A container that registers under another name is reported with the name it took. Functions
+sitting outside the project namespace are reported as their own condition. Each of these arrives as
+its own error with the evidence in it, which turns a wait into a diagnosis.
 
-The cost of checking against a live engine is that another project's worker can share a container
-name. Compose handles this by taking a snapshot before it starts anything and reporting only
-differences, so a neighbour's `api` is never blamed for this project's `api`.
+Compose takes a snapshot of the namespace before it starts anything, so everything it reports is a
+difference this container caused. That is what lets two projects each run a container called `api` on
+one engine and still get accurate answers.
 
-## Why the environment is built rather than inherited
+## What building the environment gains
 
 A container is spawned with a map compose composed: a short host baseline, the container's declared
-`env_file` and `environment`, then four reserved variables. The daemon's own environment does not
-cross over.
+`env_file` and `environment`, then the reserved variables the daemon owns.
 
-Inheriting the shell would make a project's behavior depend on which terminal launched the daemon.
-The concrete hazard is `III_URL`: an operator with a stale one exported would have every container
-connect somewhere the daemon is not, and the daemon would then wait for registrations that arrive on
-another engine. So the reserved four are the daemon's to set, and declaring one in the compose file
-is an error rather than a value silently dropped. A rejected key is visible; a dropped one looks like
-it took effect.
+The gain is reproducibility. A project starts the same way from a login shell, a systemd unit, or a
+CI runner, because the daemon's own environment plays no part in it. Everything a container needs is
+in the compose file, which makes the file a complete description of how the project runs and makes a
+reviewer able to see the whole contract in one place.
 
-The same reasoning makes unknown keys in the compose file hard errors at every level. A tolerated
-unknown key is how `depends_on` misspelled becomes a dependency that silently does not exist.
+The reserved variables are the daemon's because it is the only party that knows them: the engine
+address it is connected to, the namespace the project resolved to, the container key, and the path of
+the configuration file it wrote. Each one is derived from something the operator already
+declared, so the file stays the single place to change it.
 
-## Why a failed start rolls back only its own work
+Strictness in the compose file serves the same end. Unknown keys are refused at every level, so a
+misspelled `depends_on` is reported at load time while the graph is still a document, and validation
+can be trusted to mean the file says what its author intended.
+
+## What scoped rollback gains
 
 When one container in an `up` fails, compose stops what that operation started, in reverse order, and
-leaves everything else alone. A container that was already running before the call keeps running.
+leaves everything else running.
 
-The rule is that an operation undoes itself. The wider alternatives are both wrong: leaving a
-half-started graph up gives the operator a state no declaration describes, and taking the whole
-project down turns a failed start of one container into an outage of the others.
+The rule is that an operation undoes itself, which makes `up` safe to retry. Containers that were
+already serving keep serving, so a failed start of one container costs exactly that container. The
+operator is left in a state the compose file describes: either the graph is up, or the containers this
+call touched are down and the rest is where it was.
 
-Teardown follows the graph backwards for the same reason. Dependents stop before the things they
-depend on, so nothing is left calling a worker that has already gone. A container that dies on its
-own is treated as a teardown of that container, so its dependents come down with it instead of
-talking to something absent.
+Teardown follows the graph backwards, so dependents stop before the containers they depend on and
+nothing is left calling a worker that has gone. A container that dies on its own takes the same path,
+so its dependents come down in the same order as a deliberate stop.
 
-## Why a restart adopts instead of restarting
+## What adoption after a restart gains
 
-Containers run in their own process groups, so the daemon can die while its children keep serving.
-On the next start the daemon has to decide, per recorded child, whether the process it wrote down is
-still the process running under that pid.
+Containers run in their own process groups, so they keep serving when the daemon stops. On its next
+start the daemon reads its records and re-adopts each process that is still the one it wrote down,
+matching a fingerprint taken at spawn time against the live one.
 
-It never guesses. Each record carries a fingerprint taken at spawn time, and the daemon compares it
-against the live one. A match is adopted back into the project, which is what makes a later `down`
-able to stop it. A dead process is recorded as failed. A live pid whose fingerprint disagrees is a
-recycled pid, and compose leaves it alone and says so.
+Adoption keeps the project up across a daemon restart. Traffic continues, and the daemon comes back
+in charge of the same children, so a later `down` can stop them.
 
-Signalling an unverifiable pid is the one mistake this design refuses to make. The cost of leaving a
-stray process for a human is small; the cost of a supervisor killing an unrelated process on a shared
-machine is not.
-
-There is a matching rule for the daemon that loses its registration to another daemon. It adopted
-those children a moment earlier on the assumption it was the owner, so it hands them back untouched
-and leaves the state file alone. A failed start must not take a healthy project down on its way out.
+The fingerprint is what makes that safe on a shared machine. A pid that matches is provably the
+daemon's own child. A pid that does not match belongs to someone else, and compose leaves it running
+and reports it, so it signals only processes it can prove are its own. The same care applies when the
+engine hands the `compose` lease to another daemon: this daemon releases the children it adopted and
+leaves the state file untouched, so the daemon holding the project keeps it.
 
 ## What it costs
 
-The design puts durable state on disk, under `~/.iii/compose/<id>/`, and binds an id to one compose
-file for as long as that state exists. Pointing an id at a different file is refused, because the
-alternative is a daemon adopting children it never started.
+Durable state is written under `~/.iii/compose/<id>/`, and an id stays bound to one compose file
+for as long as that state exists. Pointing an id at a different file is refused, so moving a project
+means clearing its state.
 
-A daemon serves one engine. Projects on different engines need different daemons, and those daemons
-cannot be on the same machine's default engine address at once.
+A daemon serves one engine. Projects on different engines need one daemon each, and only one of them
+can hold the `compose` lease on any given engine.
 
-Validation is offline by contract, which keeps `compose::validate` safe to run in CI with no engine
-and no side effects. The trade is that `package://` containers cannot be fully checked there:
-resolving a package needs the registry, so validation reports them as deferred and the real check
-happens at `up`.
+Validation is offline, which is what makes `compose::validate` safe in CI with no engine and no side
+effects. The trade is that `package://` containers are reported as deferred there, because resolving
+one needs the registry, and their real check happens at `up`.
 
-Compose writes each container's output to a file next to the project's state and does not serve it.
-The record exists for a worker that dies before it can tell the engine anything.
+Compose writes each container's output to a file beside the project's state and does not serve it.
+The file is the record for a worker that stops before it can tell the engine anything.
 
 ## Related
 
