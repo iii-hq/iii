@@ -139,7 +139,9 @@ distinct argument alongside the payload. It is useful for providing contextual i
 the trigger or execution context to the receiving function. A target function shared by many
 triggers can use it to recover which registration fired and with what context.
 
-`metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations.
+`metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations. When
+`action` is `enqueue`, the queue treats metadata as an opaque sidecar: it must be redelivered to
+the target function separately from `data`, including after retries and dead-letter redrive.
 
 `traceparent` and `baggage` contain W3C trace
 context. `action` is the routing flag (see [Trigger actions](#trigger-actions) below);
@@ -198,7 +200,8 @@ For synchronous calls the engine assigns an `invocation_id`, forwards the `Invok
 owning worker, and waits for the matching `InvocationResult`. For `Void` actions the engine forwards
 without an `invocation_id` and never expects a reply. For `Enqueue` the engine hands the invocation
 to the queue worker, which persists it and re-invokes the target function on a subscriber according
-to the queue's retry policy.
+to the queue's retry policy. Enqueued delivery preserves the original `data` payload and carries
+`metadata` as invocation metadata for the eventual handler call.
 
 ## Engine discovery functions
 
