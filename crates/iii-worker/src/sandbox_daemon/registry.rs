@@ -60,6 +60,17 @@ impl SandboxState {
 /// the daemon overrides it from config at startup.
 pub const DEFAULT_MAX_EXEC_IN_FLIGHT: u32 = 4;
 
+/// Path of a sandbox's network-activity beacon, derived from its shell
+/// socket the same way the launcher derives `control.sock` and
+/// `vm-boot.stderr.log`. Single source of truth for the file name: the
+/// launcher passes it to `__vm-boot` (whose smoltcp stack refreshes the
+/// mtime on relayed guest payload) and the reaper stats it. The file lives
+/// in the sandbox's overlay base dir, so `OverlayLayout::cleanup` reclaims
+/// it with everything else.
+pub fn net_activity_path(shell_sock: &std::path::Path) -> std::path::PathBuf {
+    shell_sock.with_file_name("net-activity")
+}
+
 #[derive(Clone)]
 pub struct SandboxRegistry {
     inner: Arc<Mutex<HashMap<Uuid, SandboxState>>>,
@@ -149,18 +160,38 @@ impl SandboxRegistry {
     /// legitimate exec can still be running (the runner clamps every deadline
     /// to `max_exec_timeout_ms`), so the count is leaked or the child is
     /// wedged, and reaping is the correct call.
+    ///
+    /// `net_idle` is the time since the sandbox's network-activity beacon
+    /// ([`net_activity_path`]) was last refreshed; `None` means no beacon
+    /// exists (networking off, or its creation failed). The idle basis is
+    /// the most recent activity of ANY kind — `min(exec idle, net idle)` —
+    /// so a sandbox serving pure network traffic is no longer reaped
+    /// mid-service. Unlike `exec_in_flight` this input needs no leak bound:
+    /// a timestamp ages out by itself the moment traffic stops.
+    ///
+    /// The beacon is stat'ed by the caller BEFORE this lock is taken. That
+    /// race is irreducible, not sloppy: network activity is produced by
+    /// another process and cannot be admission-controlled under this lock
+    /// the way execs are — payload can land between any decision point and
+    /// the SIGTERM. The stat-to-claim window (microseconds, no awaits)
+    /// merely narrows a boundary that is inherently fuzzy at the timeout
+    /// edge.
     pub async fn try_claim_for_reap(
         &self,
         id: Uuid,
         now: Instant,
         busy_grace: std::time::Duration,
+        net_idle: Option<std::time::Duration>,
     ) -> Option<SandboxState> {
         let mut map = self.inner.lock().await;
         let state = map.get_mut(&id)?;
         if state.stopped {
             return None;
         }
-        let idle = now.saturating_duration_since(state.last_exec_at);
+        let mut idle = now.saturating_duration_since(state.last_exec_at);
+        if let Some(net) = net_idle {
+            idle = idle.min(net);
+        }
         if idle <= std::time::Duration::from_secs(state.idle_timeout_secs) {
             return None;
         }
@@ -375,6 +406,76 @@ mod tests {
         reg.end_exec(id).await;
         assert_eq!(reg.get(id).await.unwrap().exec_in_flight, 0);
         reg.begin_exec(id).await.expect("still admits execs");
+    }
+
+    /// A sandbox way past its exec-idle timeout but with fresh network
+    /// activity is NOT reapable — `min(exec idle, net idle)` is the basis.
+    #[tokio::test]
+    async fn fresh_network_activity_defers_reaping() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        let mut s = fixture(id);
+        s.last_exec_at = Instant::now() - std::time::Duration::from_secs(600);
+        s.idle_timeout_secs = 300;
+        reg.insert(s).await;
+
+        let claimed = reg
+            .try_claim_for_reap(
+                id,
+                Instant::now(),
+                std::time::Duration::from_secs(3600),
+                Some(std::time::Duration::from_secs(5)), // net payload 5s ago
+            )
+            .await;
+        assert!(claimed.is_none(), "fresh net activity must defer the reap");
+        assert!(
+            !reg.get(id).await.unwrap().stopped,
+            "a deferred sandbox must not be marked stopped"
+        );
+    }
+
+    /// ...and once the network has been silent past the timeout too, the
+    /// sandbox is genuinely idle and is claimed.
+    #[tokio::test]
+    async fn stale_network_activity_does_not_defer_reaping() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        let mut s = fixture(id);
+        s.last_exec_at = Instant::now() - std::time::Duration::from_secs(600);
+        s.idle_timeout_secs = 300;
+        reg.insert(s).await;
+
+        let claimed = reg
+            .try_claim_for_reap(
+                id,
+                Instant::now(),
+                std::time::Duration::from_secs(3600),
+                Some(std::time::Duration::from_secs(600)),
+            )
+            .await;
+        assert!(claimed.is_some(), "stale on both clocks => reapable");
+    }
+
+    /// No beacon (networking off / old VM): behavior is exactly the
+    /// pre-beacon exec-idle rule.
+    #[tokio::test]
+    async fn absent_beacon_reaps_on_exec_idleness_alone() {
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        let mut s = fixture(id);
+        s.last_exec_at = Instant::now() - std::time::Duration::from_secs(600);
+        s.idle_timeout_secs = 300;
+        reg.insert(s).await;
+
+        let claimed = reg
+            .try_claim_for_reap(
+                id,
+                Instant::now(),
+                std::time::Duration::from_secs(3600),
+                None,
+            )
+            .await;
+        assert!(claimed.is_some());
     }
 
     #[tokio::test]

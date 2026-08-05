@@ -1,9 +1,41 @@
 //! Sandbox reaper. Background task that periodically scans the registry
 //! and reaps sandboxes that crossed their idle-timeout.
+//!
+//! "Idle" means no activity of ANY daemon-visible kind: no exec
+//! (`last_exec_at`, also bumped by fs::* ops) and no network payload. The
+//! network signal arrives through the per-sandbox `net-activity` beacon file
+//! (see `registry::net_activity_path`): the smoltcp stack lives in the
+//! `__vm-boot` child process, and the beacon's mtime — refreshed there
+//! whenever guest payload is relayed — is its only channel back to this
+//! daemon. Before the beacon existed, a sandbox serving pure network traffic
+//! was reaped mid-service (measured: 22s against a 20s timeout after 112
+//! successful proxied calls).
 
-use crate::sandbox_daemon::{overlay::OverlayLayout, registry::SandboxRegistry, stop::VmStopper};
+use crate::sandbox_daemon::{
+    overlay::OverlayLayout,
+    registry::{SandboxRegistry, net_activity_path},
+    stop::VmStopper,
+};
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+
+/// Time since the sandbox's network beacon was last refreshed. `None` when
+/// no beacon exists (networking off, old VM, or creation failed) — the
+/// sandbox is then judged on exec-idleness alone. An mtime in the future
+/// (host clock stepped) reads as "active now": the safe direction, deferring
+/// the reap by at most one timeout rather than killing a live sandbox.
+fn net_idle(shell_sock: &Path) -> Option<Duration> {
+    let mtime = std::fs::metadata(net_activity_path(shell_sock))
+        .ok()?
+        .modified()
+        .ok()?;
+    Some(
+        SystemTime::now()
+            .duration_since(mtime)
+            .unwrap_or(Duration::ZERO),
+    )
+}
 
 /// Reap idle sandboxes.
 ///
@@ -14,6 +46,11 @@ use std::time::{Duration, Instant};
 /// under it the moment those cross. But the protection has to end: a leaked
 /// `exec_in_flight` or a wedged child would otherwise pin the VM forever,
 /// and the reaper is the only thing that reclaims one.
+///
+/// The network exemption carries no analogous bound on purpose: a beacon
+/// mtime cannot leak the way a counter can. It stays fresh only while
+/// payload actually moves, and a sandbox moving payload is doing work — the
+/// same standing as one exec'ing in a loop.
 pub async fn run_reaper_loop<S: VmStopper>(
     registry: SandboxRegistry,
     stopper: Arc<S>,
@@ -23,13 +60,24 @@ pub async fn run_reaper_loop<S: VmStopper>(
     loop {
         tokio::time::sleep(scan_interval).await;
         let now = Instant::now();
-        // Snapshot only to enumerate ids. Every decision is re-made under the
-        // registry lock by `try_claim_for_reap`, because this loop yields
-        // between entries (each stop sleeps STOP_GRACE_MS, plus overlay
-        // cleanup I/O) and an exec admitted in that window must not be killed.
-        let ids: Vec<_> = registry.list().await.into_iter().map(|s| s.id).collect();
-        for id in ids {
-            let Some(state) = registry.try_claim_for_reap(id, now, busy_grace).await else {
+        // Snapshot only to enumerate ids (shell_sock is immutable per
+        // sandbox, so carrying it out of the snapshot is safe). Every
+        // decision is re-made under the registry lock by
+        // `try_claim_for_reap`, because this loop yields between entries
+        // (each stop sleeps STOP_GRACE_MS, plus overlay cleanup I/O) and an
+        // exec admitted in that window must not be killed.
+        let candidates: Vec<_> = registry
+            .list()
+            .await
+            .into_iter()
+            .map(|s| (s.id, s.shell_sock))
+            .collect();
+        for (id, shell_sock) in candidates {
+            let net_idle = net_idle(&shell_sock);
+            let Some(state) = registry
+                .try_claim_for_reap(id, now, busy_grace, net_idle)
+                .await
+            else {
                 continue;
             };
             if state.exec_in_flight > 0 {
@@ -78,7 +126,12 @@ mod tests {
             image: "python".into(),
             rootfs: PathBuf::new(),
             workdir: PathBuf::new(),
-            shell_sock: PathBuf::new(),
+            // A per-id path whose net-activity sibling never exists, so the
+            // beacon stat is deterministically None. `PathBuf::new()` would
+            // make it a bare relative "net-activity" — CWD-dependent.
+            shell_sock: std::env::temp_dir()
+                .join(format!("iii-reaper-test-{id}"))
+                .join("shell.sock"),
             vm_pid: Some(1),
             lifeline: None,
             created_at: past,
@@ -210,6 +263,65 @@ mod tests {
             count.load(Ordering::SeqCst),
             1,
             "a leaked exec slot must not pin the VM forever"
+        );
+        assert!(reg.get(id).await.is_err(), "record must be removed");
+    }
+
+    /// The gap this branch's PR originally shipped around, now closed: a
+    /// sandbox serving only NETWORK traffic was reaped as idle (measured at
+    /// 22s against a 20s timeout, after 112 successful proxied calls),
+    /// because the smoltcp stack lives in `__vm-boot` and nothing
+    /// daemon-visible recorded its activity. A fresh net-activity beacon
+    /// must protect the sandbox; once the beacon goes stale past the
+    /// timeout, the sandbox is genuinely idle and must be reclaimed.
+    #[tokio::test]
+    async fn network_activity_defers_reaping_until_the_beacon_goes_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell_sock = dir.path().join("shell.sock");
+        let beacon = crate::sandbox_daemon::registry::net_activity_path(&shell_sock);
+        std::fs::write(&beacon, b"").unwrap(); // mtime = now: traffic is flowing
+
+        let reg = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        // Exec-idle far past its timeout — only the beacon protects it.
+        let mut s = state(id, 600, 300);
+        s.shell_sock = shell_sock;
+        reg.insert(s).await;
+
+        let count = Arc::new(AtomicU32::new(0));
+        let stopper = Arc::new(CountingStopper(count.clone()));
+        let reg_clone = reg.clone();
+        let task = tokio::spawn(async move {
+            run_reaper_loop(
+                reg_clone,
+                stopper,
+                Duration::from_millis(10),
+                Duration::from_secs(3600),
+            )
+            .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a network-active sandbox must not be reaped"
+        );
+        assert!(reg.get(id).await.is_ok(), "the record must survive");
+
+        // Traffic stops: age the beacon past the idle timeout. No exec, no
+        // network => genuinely idle => reclaimed.
+        std::fs::File::options()
+            .write(true)
+            .open(&beacon)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(600))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        task.abort();
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "a stale beacon must not pin the VM"
         );
         assert!(reg.get(id).await.is_err(), "record must be removed");
     }

@@ -55,6 +55,8 @@ fn vm_boot_args_all_fields() {
         "/tmp/vm.pid",
         "--console-output",
         "/tmp/console.log",
+        "--net-activity-file",
+        "/tmp/net-activity",
     ]);
     assert_eq!(cli.args.rootfs, "/tmp/rootfs");
     assert_eq!(cli.args.exec, "/usr/bin/node");
@@ -67,6 +69,10 @@ fn vm_boot_args_all_fields() {
     assert_eq!(cli.args.slot, 42);
     assert_eq!(cli.args.pid_file.as_deref(), Some("/tmp/vm.pid"));
     assert_eq!(cli.args.console_output.as_deref(), Some("/tmp/console.log"));
+    assert_eq!(
+        cli.args.net_activity_file.as_deref(),
+        Some("/tmp/net-activity")
+    );
 }
 
 #[test]
@@ -83,6 +89,7 @@ fn vm_boot_args_defaults() {
     assert!(cli.args.arg.is_empty());
     assert!(cli.args.pid_file.is_none());
     assert!(cli.args.console_output.is_none());
+    assert!(cli.args.net_activity_file.is_none());
 }
 
 #[test]

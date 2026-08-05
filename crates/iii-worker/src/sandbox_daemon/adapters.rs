@@ -199,6 +199,14 @@ impl VmLauncher for IiiWorkerLauncher {
 
         if params.network {
             cmd.arg("--network");
+            // Idle-reaper beacon: the smoltcp stack lives in the child
+            // spawned here, and this file's mtime is its only channel back
+            // to the daemon. Without it a sandbox serving pure network
+            // traffic reads as idle and is reaped mid-service.
+            cmd.arg("--net-activity-file")
+                .arg(crate::sandbox_daemon::registry::net_activity_path(
+                    &params.shell_sock,
+                ));
         }
         for e in &params.env {
             cmd.arg("--env").arg(e);
