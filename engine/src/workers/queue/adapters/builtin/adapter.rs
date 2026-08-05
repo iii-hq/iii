@@ -7,14 +7,14 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
 };
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 
 use tracing::Instrument;
 
@@ -32,8 +32,8 @@ use crate::{
     engine::{Engine, EngineTrait},
     telemetry::SpanExt,
     workers::queue::{
-        QueueAdapter, SubscriberQueueConfig,
         registry::{QueueAdapterFuture, QueueAdapterRegistration},
+        QueueAdapter, SubscriberQueueConfig,
     },
 };
 
@@ -87,6 +87,7 @@ impl JobHandler for FunctionHandler {
         let function_id = self.function_id.clone();
         let condition_function_id = self.condition_function_id.clone();
         let data = job.data.clone();
+        let metadata = job.metadata.clone();
 
         async move {
             if let Some(ref condition_id) = condition_function_id {
@@ -116,7 +117,9 @@ impl JobHandler for FunctionHandler {
                 }
             }
 
-            let result = engine.call(&function_id, data).await;
+            let result = engine
+                .call_with_metadata(&function_id, data, metadata)
+                .await;
             match &result {
                 Ok(_) => {
                     tracing::Span::current().record("otel.status_code", "OK");
@@ -408,6 +411,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
         queue_name: &str,
         function_id: &str,
         data: Value,
+        metadata: Option<Value>,
         message_id: &str,
         max_retries: u32,
         backoff_ms: u64,
@@ -428,6 +432,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
                 backoff_ms,
                 traceparent,
                 baggage,
+                metadata,
             )
         };
         self.queue.push_job(job).await;
@@ -492,6 +497,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
                         delivery_id,
                         function_id: job.function_id.unwrap_or_default(),
                         data: job.data,
+                        metadata: job.metadata,
                         attempt: job.attempts_made,
                         message_id: job.message_id,
                         traceparent: job.traceparent,
@@ -660,8 +666,8 @@ mod tests {
     use std::collections::HashSet;
     use std::time::Duration;
 
-    use crate::workers::queue::SubscriberQueueConfig;
     use crate::workers::queue::config::FunctionQueueConfig;
+    use crate::workers::queue::SubscriberQueueConfig;
     use crate::{
         builtins::queue::{Job, QueueMode},
         function::{Function, FunctionResult},
@@ -797,6 +803,7 @@ mod tests {
             100,
             Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string()),
             Some("queue=jobs".to_string()),
+            None,
         );
 
         let success = FunctionHandler {
@@ -912,6 +919,7 @@ mod tests {
                 "test-q",
                 "fn::handler",
                 json!({"key": "value"}),
+                None,
                 "test-msg-id",
                 3,
                 1000,
@@ -960,6 +968,7 @@ mod tests {
                 "test-q",
                 "fn::handler",
                 json!({"k": "v"}),
+                None,
                 "msg-1",
                 1,
                 1000,
@@ -1035,6 +1044,7 @@ mod tests {
                     "test-q",
                     "fn::handler",
                     json!({ "i": i }),
+                    None,
                     &format!("msg-{i}"),
                     1,
                     1000,
@@ -1112,6 +1122,7 @@ mod tests {
                 "test-q",
                 "fn::handler",
                 json!({"ack": true}),
+                None,
                 "test-msg-id",
                 3,
                 1000,
@@ -1156,6 +1167,7 @@ mod tests {
                 "test-q",
                 "fn::handler",
                 json!({"nack": true}),
+                None,
                 "test-msg-id",
                 3,
                 1000,
@@ -1202,7 +1214,8 @@ mod tests {
                 .publish_to_function_queue(
                     "test-q",
                     "fn::handler",
-                    json!({"order": i}),
+                    json!({ "order": i }),
+                    None,
                     "test-msg-id",
                     3,
                     1000,
@@ -1222,7 +1235,7 @@ mod tests {
 
             assert_eq!(
                 msg.data,
-                json!({"order": i}),
+                json!({ "order": i }),
                 "messages should arrive in order"
             );
             delivery_ids.push(msg.delivery_id);
@@ -1258,7 +1271,8 @@ mod tests {
                 .publish_to_function_queue(
                     "test-q",
                     "fn::handler",
-                    json!({"idx": i}),
+                    json!({ "idx": i }),
+                    None,
                     "test-msg-id",
                     3,
                     1000,
@@ -1302,6 +1316,7 @@ mod tests {
                 "test-q",
                 "fn::handler",
                 json!({"traced": true}),
+                None,
                 "test-msg-id",
                 3,
                 1000,
@@ -1679,7 +1694,7 @@ mod tests {
 
         let mut ids = Vec::new();
         for i in 0..5 {
-            let id = push_to_dlq(&adapter, "peek-topic", json!({"idx": i})).await;
+            let id = push_to_dlq(&adapter, "peek-topic", json!({ "idx": i })).await;
             ids.push(id);
         }
 

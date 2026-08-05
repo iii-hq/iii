@@ -12,12 +12,13 @@
 //! They also cover the `iii trigger` CLI subcommand (argument parsing + connection handling).
 
 use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
-    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use tokio::sync::Mutex;
 
 use iii::{
     engine::Engine,
@@ -84,7 +85,28 @@ async fn enqueue(
 ) -> anyhow::Result<()> {
     let message_id = uuid::Uuid::new_v4().to_string();
     worker
-        .enqueue_to_function_queue(queue_name, function_id, data, &message_id, None, None)
+        .enqueue_to_function_queue(queue_name, function_id, data, None, &message_id, None, None)
+        .await
+}
+
+async fn enqueue_with_metadata(
+    worker: &QueueWorker,
+    queue_name: &str,
+    function_id: &str,
+    data: Value,
+    metadata: Value,
+) -> anyhow::Result<()> {
+    let message_id = uuid::Uuid::new_v4().to_string();
+    worker
+        .enqueue_to_function_queue(
+            queue_name,
+            function_id,
+            data,
+            Some(metadata),
+            &message_id,
+            None,
+            None,
+        )
         .await
 }
 
@@ -485,6 +507,101 @@ async fn e2e_flaky_function_recovers_after_redrive() {
         total_success >= 1,
         "Flaky function should eventually succeed after redrives, \
          fails={total_fails}, successes={total_success}"
+    );
+}
+
+#[tokio::test]
+async fn e2e_queue_metadata_survives_dlq_and_redrive() {
+    iii::workers::observability::metrics::ensure_default_meter();
+    let engine = Arc::new(Engine::new());
+
+    let allow_success = Arc::new(AtomicBool::new(false));
+    let call_count = Arc::new(AtomicU64::new(0));
+    let captured_metadata = Arc::new(Mutex::new(Vec::new()));
+
+    let allow = allow_success.clone();
+    let count = call_count.clone();
+    let metadata_store = captured_metadata.clone();
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, _input, _session, metadata| {
+            let allow = allow.clone();
+            let count = count.clone();
+            let metadata_store = metadata_store.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                if allow.load(Ordering::SeqCst) {
+                    metadata_store.lock().await.push(metadata);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                } else {
+                    FunctionResult::Failure(ErrorBody {
+                        code: "PROCESSING_ERROR".to_string(),
+                        message: "simulated processing failure".to_string(),
+                        stacktrace: None,
+                    })
+                }
+            })
+        }),
+        _function_id: "e2e::metadata_redrive".to_string(),
+        _description: Some("captures metadata after redrive".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function("e2e::metadata_redrive".to_string(), function);
+
+    let module = QueueWorker::for_test(engine.clone(), Some(queue_config_with_fast_retries()))
+        .await
+        .expect("create should succeed");
+    module.register_functions(engine.clone());
+    module
+        .initialize()
+        .await
+        .expect("initialize should succeed");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, shutdown_tx)
+        .await
+        .expect("start_background_tasks should succeed");
+
+    let metadata = json!({
+        "iii.ccp": {
+            "version": "1",
+            "id": "ccp-redrive-test",
+            "validation": { "status": "valid" }
+        },
+        "array": [1, true, null],
+        "scalar": "kept"
+    });
+
+    enqueue_with_metadata(
+        &module,
+        "orders",
+        "e2e::metadata_redrive",
+        json!({ "order_id": "ORD-META" }),
+        metadata.clone(),
+    )
+    .await
+    .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    assert_eq!(dlq_count(&module, "orders").await, 1);
+    let dlq_messages = module
+        .function_queue_dlq_messages("orders", 1)
+        .await
+        .expect("dlq messages should be inspectable");
+    assert_eq!(dlq_messages[0]["job"]["metadata"], metadata);
+
+    allow_success.store(true, Ordering::SeqCst);
+    let result = invoke_redrive(&engine, "orders").await;
+    assert!(matches!(result, FunctionResult::Success(_)));
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(*captured_metadata.lock().await, vec![Some(metadata)]);
+    assert!(
+        call_count.load(Ordering::SeqCst) >= 2,
+        "function should have failed before redrive and succeeded after redrive"
     );
 }
 

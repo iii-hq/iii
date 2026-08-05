@@ -16,7 +16,7 @@ use serde_json::Value;
 use tokio::{
     sync::{RwLock, Semaphore},
     task::JoinHandle,
-    time::{Duration, interval},
+    time::{interval, Duration},
 };
 use uuid::Uuid;
 
@@ -42,6 +42,8 @@ pub struct Job {
     #[serde(default)]
     pub baggage: Option<String>,
     #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
     pub function_id: Option<String>,
     #[serde(default)]
     pub message_id: Option<String>,
@@ -55,6 +57,7 @@ impl Job {
         backoff_delay_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        metadata: Option<Value>,
     ) -> Self {
         Self::new_with_group(
             queue,
@@ -64,6 +67,7 @@ impl Job {
             None,
             traceparent,
             baggage,
+            metadata,
         )
     }
 
@@ -75,6 +79,7 @@ impl Job {
         group_id: Option<String>,
         traceparent: Option<String>,
         baggage: Option<String>,
+        metadata: Option<Value>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -91,6 +96,7 @@ impl Job {
             group_id,
             traceparent,
             baggage,
+            metadata,
             function_id: None,
             message_id: None,
         }
@@ -360,6 +366,7 @@ impl BuiltinQueue {
             self.config.backoff_ms,
             traceparent,
             baggage,
+            None,
         );
         let job_id = job.id.clone();
 
@@ -400,6 +407,7 @@ impl BuiltinQueue {
             Some(group_id.to_string()),
             traceparent,
             baggage,
+            None,
         );
         let job_id = job.id.clone();
 
@@ -440,6 +448,7 @@ impl BuiltinQueue {
             self.config.backoff_ms,
             traceparent,
             baggage,
+            None,
         );
         let job_id = job.id.clone();
 
@@ -1372,7 +1381,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exponential_backoff_calculation() {
-        let mut job = Job::new("test", serde_json::json!({}), 5, 1000, None, None);
+        let mut job = Job::new("test", serde_json::json!({}), 5, 1000, None, None, None);
 
         assert_eq!(job.calculate_backoff(), 1000);
 
@@ -1389,7 +1398,15 @@ mod tests {
     #[tokio::test]
     async fn calculate_backoff_normal_cases() {
         // attempts_made=1 => backoff_delay_ms * 2^0 = 1000
-        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+        let mut job = Job::new(
+            "test_queue",
+            serde_json::json!({}),
+            100,
+            1000,
+            None,
+            None,
+            None,
+        );
         job.attempts_made = 1;
         assert_eq!(job.calculate_backoff(), 1000);
 
@@ -1404,7 +1421,15 @@ mod tests {
 
     #[tokio::test]
     async fn calculate_backoff_saturates_at_high_attempts() {
-        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+        let mut job = Job::new(
+            "test_queue",
+            serde_json::json!({}),
+            100,
+            1000,
+            None,
+            None,
+            None,
+        );
 
         // attempts_made=56 => 2^55 overflows when multiplied by 1000, saturates to u64::MAX
         job.attempts_made = 56;
@@ -1422,7 +1447,15 @@ mod tests {
     #[tokio::test]
     async fn calculate_backoff_zero_attempts() {
         // attempts_made=0 => saturating_sub(1) = 0, so result = backoff_delay_ms * 2^0 = backoff_delay_ms
-        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+        let mut job = Job::new(
+            "test_queue",
+            serde_json::json!({}),
+            100,
+            1000,
+            None,
+            None,
+            None,
+        );
         job.attempts_made = 0;
         assert_eq!(job.calculate_backoff(), 1000);
     }
@@ -1694,14 +1727,61 @@ mod tests {
             Some("user-123".to_string()),
             None,
             None,
+            None,
         );
         assert_eq!(job.group_id, Some("user-123".to_string()));
     }
 
     #[tokio::test]
     async fn test_job_without_group_id() {
-        let job = Job::new("test_queue", serde_json::json!({}), 3, 1000, None, None);
+        let job = Job::new(
+            "test_queue",
+            serde_json::json!({}),
+            3,
+            1000,
+            None,
+            None,
+            None,
+        );
         assert_eq!(job.group_id, None);
+    }
+
+    #[tokio::test]
+    async fn job_metadata_round_trips_and_legacy_jobs_default_to_none() {
+        let metadata = serde_json::json!({
+            "object": { "nested": true },
+            "array": [1, "two", null],
+            "string": "value",
+            "number": 3,
+            "bool": false,
+            "null": null
+        });
+        let job = Job::new(
+            "test_queue",
+            serde_json::json!({"payload": true}),
+            3,
+            1000,
+            None,
+            None,
+            Some(metadata.clone()),
+        );
+
+        let encoded = serde_json::to_value(&job).expect("job should serialize");
+        let decoded: Job = serde_json::from_value(encoded).expect("job should deserialize");
+        assert_eq!(decoded.metadata, Some(metadata));
+
+        let legacy = serde_json::json!({
+            "id": "legacy",
+            "queue": "test_queue",
+            "data": { "payload": true },
+            "attempts_made": 0,
+            "max_attempts": 3,
+            "backoff_delay_ms": 1000,
+            "created_at": 1
+        });
+        let decoded_legacy: Job =
+            serde_json::from_value(legacy).expect("legacy job should deserialize");
+        assert_eq!(decoded_legacy.metadata, None);
     }
 
     #[tokio::test]
@@ -2007,7 +2087,7 @@ mod tests {
             queue
                 .push_fifo(
                     "race_queue",
-                    serde_json::json!({"order": i}),
+                    serde_json::json!({ "order": i }),
                     "same-group",
                     None,
                     None,
@@ -2372,7 +2452,7 @@ mod tests {
         let queue = BuiltinQueue::new(kv_store, pubsub, config);
 
         for i in 0..3 {
-            let data = serde_json::json!({"index": i});
+            let data = serde_json::json!({ "index": i });
             queue.push("test_queue", data, None, None).await;
             let job = queue.pop("test_queue").await.unwrap();
             queue
@@ -2503,7 +2583,7 @@ mod tests {
 
         let mut job_ids = Vec::new();
         for i in 0..3 {
-            let data = serde_json::json!({"index": i});
+            let data = serde_json::json!({ "index": i });
             let id = queue.push("test_queue", data, None, None).await;
             let job = queue.pop("test_queue").await.unwrap();
             queue
@@ -2598,7 +2678,7 @@ mod tests {
 
         let mut job_ids = Vec::new();
         for i in 0..3 {
-            let data = serde_json::json!({"index": i});
+            let data = serde_json::json!({ "index": i });
             let id = queue.push("test_queue", data, None, None).await;
             let job = queue.pop("test_queue").await.unwrap();
             queue
@@ -2622,7 +2702,7 @@ mod tests {
     async fn push_n_jobs_to_dlq(queue: &BuiltinQueue, queue_name: &str, n: usize) -> Vec<String> {
         let mut ids = Vec::with_capacity(n);
         for i in 0..n {
-            let data = serde_json::json!({"index": i});
+            let data = serde_json::json!({ "index": i });
             let id = queue.push(queue_name, data, None, None).await;
             let job = queue.pop(queue_name).await.unwrap();
             queue

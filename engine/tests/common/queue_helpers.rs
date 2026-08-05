@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use iii::{
@@ -47,7 +47,7 @@ pub async fn enqueue(
 ) -> anyhow::Result<()> {
     let message_id = uuid::Uuid::new_v4().to_string();
     worker
-        .enqueue_to_function_queue(queue_name, function_id, data, &message_id, None, None)
+        .enqueue_to_function_queue(queue_name, function_id, data, None, &message_id, None, None)
         .await
 }
 

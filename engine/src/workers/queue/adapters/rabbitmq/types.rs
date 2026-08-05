@@ -24,6 +24,8 @@ pub struct Job {
     pub traceparent: Option<String>,
     #[serde(default)]
     pub baggage: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
     /// AMQP message priority (0..=queue `x-max-priority`). Carried on the job so
     /// it survives requeue and DLQ-redrive republishes; stamped onto
     /// `BasicProperties` at publish time. `None` means default priority.
@@ -38,6 +40,7 @@ impl Job {
         max_attempts: u32,
         traceparent: Option<String>,
         baggage: Option<String>,
+        metadata: Option<Value>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -51,6 +54,7 @@ impl Job {
                 .as_millis() as u64,
             traceparent,
             baggage,
+            metadata,
             priority: None,
         }
     }
@@ -163,6 +167,7 @@ mod tests {
             3,
             None,
             None,
+            None,
         );
         assert_eq!(job.topic, "test.topic");
         assert_eq!(job.attempts_made, 0);
@@ -173,8 +178,44 @@ mod tests {
 
     #[test]
     fn test_job_with_priority() {
-        let job = Job::new("t", serde_json::json!({}), 1, None, None).with_priority(Some(7));
+        let job = Job::new("t", serde_json::json!({}), 1, None, None, None).with_priority(Some(7));
         assert_eq!(job.priority, Some(7));
+    }
+
+    #[test]
+    fn test_job_metadata_round_trips_and_legacy_jobs_default_to_none() {
+        let metadata = serde_json::json!({
+            "object": { "nested": true },
+            "array": [1, "two", null],
+            "string": "value",
+            "number": 3,
+            "bool": false,
+            "null": null
+        });
+        let job = Job::new(
+            "test.topic",
+            serde_json::json!({"key": "value"}),
+            3,
+            None,
+            None,
+            Some(metadata.clone()),
+        );
+
+        let encoded = serde_json::to_value(&job).expect("job should serialize");
+        let decoded: Job = serde_json::from_value(encoded).expect("job should deserialize");
+        assert_eq!(decoded.metadata, Some(metadata));
+
+        let legacy = serde_json::json!({
+            "id": "legacy",
+            "topic": "test.topic",
+            "data": { "key": "value" },
+            "attempts_made": 0,
+            "max_attempts": 3,
+            "created_at": 1
+        });
+        let decoded_legacy: Job =
+            serde_json::from_value(legacy).expect("legacy job should deserialize");
+        assert_eq!(decoded_legacy.metadata, None);
     }
 
     #[test]
