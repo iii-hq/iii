@@ -474,10 +474,28 @@ async fn resolve_config(
         });
     }
 
-    match value {
-        None => Ok(None),
-        Some(value) => ConfigFile::write(ctx.config_dir, key, &value).map(Some),
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    // Delivered twice, on purpose, because workers read their configuration in
+    // two different places and both have to be right.
+    //
+    // Into the configuration worker, under the entry the container named: that
+    // is where a worker built before compose existed looks, and re-registering
+    // its own schema without a value reuses what is stored — so this is the
+    // value it boots on, with nothing in the fleet changed. Only when the
+    // container named an entry: without `config_name` there is no id to write
+    // to, and the container key is not one (a container called `api` may run
+    // the `http` worker, which owns the `http` entry).
+    if let Some(name) = &container.config_name {
+        ctx.engine.publish_config(name, &value).await?;
     }
+
+    // And as a file, which is what a worker written for compose reads. The two
+    // carry the same value, so whichever a worker trusts, it gets the same
+    // answer.
+    ConfigFile::write(ctx.config_dir, key, &value).map(Some)
 }
 
 fn fire_post_run(spawn_ctx: &SpawnCtx<'_>, container: &Container) {
