@@ -42,6 +42,38 @@ pub struct EngineClient {
     namespace: String,
 }
 
+/// The last few lines a container printed, for an error that would otherwise
+/// carry only an exit code.
+///
+/// Bounded on both axes — a handful of lines, and each one cut — because this
+/// travels inside an error message that a caller will see on one terminal
+/// line. The whole log stays on disk; `compose::status` says where.
+fn log_tail(log_dir: &std::path::Path, container: &str) -> Option<String> {
+    const LINES: usize = 5;
+    const WIDTH: usize = 200;
+
+    let text = std::fs::read_to_string(log_dir.join(format!("{container}.log"))).ok()?;
+    let tail: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .rev()
+        .take(LINES)
+        .collect();
+    if tail.is_empty() {
+        return None;
+    }
+    Some(
+        tail.into_iter()
+            .rev()
+            .map(|line| {
+                let trimmed: String = line.chars().take(WIDTH).collect();
+                format!("  {trimmed}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 /// Whether a trigger failure is the configuration worker reporting an
 /// unregistered id, as opposed to anything that went wrong reaching it.
 ///
@@ -141,7 +173,13 @@ impl EngineClient {
             .client
             .trigger(TriggerRequest {
                 function_id: "configuration::get".to_string(),
-                payload: json!({ "id": name }),
+                // Raw, so `${VAR}` placeholders survive the round trip. The
+                // worker pushes this value back into the store at boot, and an
+                // expanded fetch would persist the secret a lazy reference was
+                // there to avoid — turning `password: ${DB_PASSWORD}` into the
+                // password, permanently. Expansion belongs to the read that
+                // uses the value, not to a copy passing through.
+                payload: json!({ "id": name, "raw": true }),
                 action: None,
                 timeout_ms: Some(CALL_TIMEOUT_MS),
             })
@@ -215,6 +253,7 @@ impl EngineClient {
         child: &Supervised,
         timeout: Duration,
         baseline: &ReadinessBaseline,
+        log_dir: &std::path::Path,
     ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + timeout;
         let ReadinessBaseline {
@@ -229,6 +268,7 @@ impl EngineClient {
                 return Err(ComposeError::ChildExitedBeforeReady {
                     container: container.to_string(),
                     code: status.code().unwrap_or(-1),
+                    tail: log_tail(log_dir, container),
                 });
             }
 

@@ -217,8 +217,24 @@ pub enum ComposeError {
         expected: String,
     },
 
-    #[error("container '{container}' exited with {code} before it registered")]
-    ChildExitedBeforeReady { container: String, code: i32 },
+    /// The child died on its way up. The exit code alone names nothing an
+    /// operator can act on — a worker that refused its configuration and one
+    /// that could not bind a port both exit non-zero — so what it printed
+    /// comes with it.
+    #[error(
+        "container '{container}' exited with {code} before it registered{}",
+        match .tail {
+            Some(tail) => format!(". It last said:\n{tail}"),
+            None => String::new(),
+        }
+    )]
+    ChildExitedBeforeReady {
+        container: String,
+        code: i32,
+        /// Last lines of the container's own log. Never env values: the log
+        /// holds what the child chose to print, and compose adds nothing.
+        tail: Option<String>,
+    },
 
     #[error("container '{container}' could not start: {message}")]
     SpawnFailed { container: String, message: String },
