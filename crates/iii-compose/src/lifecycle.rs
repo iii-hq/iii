@@ -334,7 +334,10 @@ async fn start_one(
         namespace: ctx.project_namespace,
         container_key: key,
         start: &start,
-        config_path: config.as_ref().map(|file| file.path()),
+        config_path: config.as_ref().map(|resolved| resolved.file.path()),
+        config_name: config
+            .as_ref()
+            .and_then(|resolved| resolved.name.as_deref()),
         working_dir: &working_dir,
         user_env: &user_env,
     };
@@ -415,6 +418,7 @@ async fn stop_one(
             container_key: key,
             start: &start,
             config_path: None,
+            config_name: None,
             working_dir: &working_dir,
             user_env: &user_env,
         };
@@ -446,16 +450,33 @@ async fn rollback(
 
 /// Fetch-or-fail, then merge `config_override` on top and hand the result over
 /// as an owner-only file.
+/// What a container's configuration resolved to: the file it is handed, and
+/// the entry that value lives in.
+pub struct ResolvedConfig {
+    pub file: ConfigFile,
+    /// The configuration entry the value was written to, when the file named
+    /// one. Absent means the value went to the file only, and no global id was
+    /// claimed on the container's behalf.
+    pub name: Option<String>,
+}
+
 async fn resolve_config(
     ctx: &LifecycleCtx<'_>,
     container: &Container,
     key: &str,
     shipped: Option<serde_yaml::Value>,
-) -> Result<Option<ConfigFile>> {
+) -> Result<Option<ResolvedConfig>> {
     // Lowest to highest: what the worker ships, what the configuration worker
     // holds, what the compose file overrides.
     let mut value = shipped;
 
+    // Only an entry the file named. Falling back to the container key looks
+    // helpful and is the collision itself: a container called `state` would
+    // claim the global `state` entry, so two projects would take turns
+    // overwriting one another — and every `state` worker on the engine would
+    // reload on each write, because the id it watches is the one being
+    // written. A configuration entry is claimed deliberately or not at all.
+    //
     // Absent is not empty: an entry nobody has registered yet contributes
     // nothing, and the container starts on what the compose file declares.
     if let Some(name) = &container.config_name
@@ -481,13 +502,10 @@ async fn resolve_config(
     // Delivered twice, on purpose, because workers read their configuration in
     // two different places and both have to be right.
     //
-    // Into the configuration worker, under the entry the container named: that
-    // is where a worker built before compose existed looks, and re-registering
-    // its own schema without a value reuses what is stored — so this is the
-    // value it boots on, with nothing in the fleet changed. Only when the
-    // container named an entry: without `config_name` there is no id to write
-    // to, and the container key is not one (a container called `api` may run
-    // the `http` worker, which owns the `http` entry).
+    // Into the configuration worker, which is where a worker built before
+    // compose existed looks: re-registering its own schema without a value
+    // reuses what is stored, so this is the value it boots on, with nothing in
+    // the fleet changed.
     if let Some(name) = &container.config_name {
         ctx.engine.publish_config(name, &value).await?;
     }
@@ -495,7 +513,11 @@ async fn resolve_config(
     // And as a file, which is what a worker written for compose reads. The two
     // carry the same value, so whichever a worker trusts, it gets the same
     // answer.
-    ConfigFile::write(ctx.config_dir, key, &value).map(Some)
+    let file = ConfigFile::write(ctx.config_dir, key, &value)?;
+    Ok(Some(ResolvedConfig {
+        file,
+        name: container.config_name.clone(),
+    }))
 }
 
 fn fire_post_run(spawn_ctx: &SpawnCtx<'_>, container: &Container) {

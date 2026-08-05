@@ -25,6 +25,7 @@ fn spawn(script: &str, cwd: &Path) -> iii_compose::process::Supervised {
         container_key: "api",
         start: &start,
         config_path: None,
+        config_name: None,
         working_dir: cwd,
         user_env: empty_env(),
     };
