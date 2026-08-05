@@ -359,7 +359,7 @@ impl EngineClient {
                 // still lands here. Checking only the worker would call that
                 // ready, and the first invocation would find nothing.
                 if let Some((function, found_in)) = self
-                    .misplaced_function(container, namespace, functions_before)
+                    .misplaced_function(container, namespace, functions_before, &namespaces)
                     .await?
                 {
                     return Err(ComposeError::FunctionsInWrongNamespace {
@@ -462,9 +462,10 @@ impl EngineClient {
         container: &str,
         namespace: &str,
         before: &[(String, String)],
+        occupied: &[String],
     ) -> Result<Option<(String, String)>> {
         let functions = self.functions_of(container).await?;
-        Ok(first_misplaced(&functions, namespace, before))
+        Ok(first_misplaced(&functions, namespace, before, occupied))
     }
 
     /// Every `(function id, namespace)` owned by `worker_name`.
@@ -555,10 +556,22 @@ fn first_misplaced(
     functions: &[(String, String)],
     expected: &str,
     before: &[(String, String)],
+    occupied: &[String],
 ) -> Option<(String, String)> {
     functions
         .iter()
-        .find(|entry| entry.1 != expected && !before.contains(entry))
+        .find(|entry| {
+            let namespace = &entry.1;
+            namespace != expected
+                // A namespace holding a live worker of this name owns what is
+                // filed under it. Two projects each running `state` list their
+                // functions under one name, and the neighbour's arrive whenever
+                // it happens to register them — including in the window between
+                // our snapshot and our spawn. Without this, its timing becomes
+                // our failure.
+                && !occupied.iter().any(|held| held == namespace)
+                && !before.contains(entry)
+        })
         .cloned()
 }
 
@@ -574,15 +587,41 @@ mod tests {
     }
 
     #[test]
+    fn a_namespace_with_a_live_worker_of_that_name_owns_its_own_functions() {
+        // Two projects each running `state`. The neighbour registers a function
+        // late — after our snapshot and before our child is up — and it lands
+        // where it belongs, in the neighbour's namespace. Attributing it to us
+        // turns its timing into our failure, which is what happened the first
+        // time a project took long enough to make the window visible.
+        let listed = functions(&[
+            ("state::get", "shop-a"),
+            ("state::barrier", "shop-a"),
+            ("state::get", "shop-b"),
+        ]);
+        let occupied = vec!["shop-a".to_string(), "shop-b".to_string()];
+
+        assert_eq!(
+            first_misplaced(&listed, "shop-b", &[], &occupied),
+            None,
+            "a namespace holding a worker of this name owns what is filed there"
+        );
+
+        // The failure it exists for is still caught: registrations that landed
+        // where no worker of that name lives are nobody else's.
+        let orphaned = functions(&[("state::get", "default")]);
+        assert!(first_misplaced(&orphaned, "shop-b", &[], &occupied).is_some());
+    }
+
+    #[test]
     fn functions_in_the_expected_namespace_are_fine() {
         let listed = functions(&[("api::ping", "orders"), ("api::echo", "orders")]);
-        assert_eq!(first_misplaced(&listed, "orders", &[]), None);
+        assert_eq!(first_misplaced(&listed, "orders", &[], &[]), None);
     }
 
     #[test]
     fn a_worker_with_no_functions_is_fine() {
         // Registering only triggers is legitimate; silence is not a symptom.
-        assert_eq!(first_misplaced(&[], "orders", &[]), None);
+        assert_eq!(first_misplaced(&[], "orders", &[], &[]), None);
     }
 
     #[test]
@@ -591,7 +630,7 @@ mod tests {
         // in the project namespace, some of its functions did not.
         let listed = functions(&[("api::ping", "orders"), ("api::echo", "default")]);
         assert_eq!(
-            first_misplaced(&listed, "orders", &[]),
+            first_misplaced(&listed, "orders", &[], &[]),
             Some(("api::echo".to_string(), "default".to_string()))
         );
     }
@@ -599,7 +638,7 @@ mod tests {
     #[test]
     fn the_report_names_the_namespace_they_landed_in() {
         let listed = functions(&[("api::ping", "somewhere-else")]);
-        let (function, found_in) = first_misplaced(&listed, "orders", &[]).expect("misplaced");
+        let (function, found_in) = first_misplaced(&listed, "orders", &[], &[]).expect("misplaced");
         assert_eq!(function, "api::ping");
         assert_eq!(found_in, "somewhere-else", "not assumed to be `default`");
     }
@@ -616,7 +655,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            first_misplaced(&listed, "shop-bbbbbbbb", &already_there),
+            first_misplaced(&listed, "shop-bbbbbbbb", &already_there, &[]),
             None
         );
     }
@@ -629,7 +668,7 @@ mod tests {
         let listed = functions(&[("api::ping", "shop-aaaaaaaa"), ("api::ping", "default")]);
 
         assert_eq!(
-            first_misplaced(&listed, "shop-bbbbbbbb", &already_there),
+            first_misplaced(&listed, "shop-bbbbbbbb", &already_there, &[]),
             Some(("api::ping".to_string(), "default".to_string()))
         );
     }

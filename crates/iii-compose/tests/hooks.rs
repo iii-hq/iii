@@ -26,6 +26,7 @@ fn ctx<'a>(cwd: &'a Path, start: &'a StartSpec, config: Option<&'a Path>) -> Spa
         container_key: "api",
         start,
         config_path: config,
+        config_name: None,
         working_dir: cwd,
         user_env: empty_env(),
     }

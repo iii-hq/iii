@@ -156,3 +156,56 @@ containers:
             .is_empty()
     );
 }
+
+#[test]
+fn a_container_is_told_which_configuration_entry_is_its_own() {
+    // A worker owns a configuration id and hardcodes it, which makes the id a
+    // global scarce name: two projects each running `state` share one entry and
+    // overwrite each other. Compose tells the container its id instead, so one
+    // project can call it `state-finance` and another `state-hr`.
+    use iii_compose::spawn::{SpawnCtx, spawn_plan};
+    use iii_compose::manifest::StartSpec;
+
+    let user_env = std::collections::BTreeMap::new();
+    let start = StartSpec::Shell("true".to_string());
+    let plan = spawn_plan(&SpawnCtx {
+        engine_url: "ws://127.0.0.1:49134",
+        namespace: "finance",
+        container_key: "state",
+        start: &start,
+        config_path: Some(std::path::Path::new("/run/state.yaml")),
+        config_name: Some("state-finance"),
+        working_dir: std::path::Path::new("."),
+        user_env: &user_env,
+    });
+
+    assert_eq!(plan.env["III_CONFIG_NAME"], "state-finance");
+    // The container key still names the worker. They are different questions:
+    // one is what the engine routes to, the other is where the configuration
+    // lives — and it is exactly their conflation that made the id global.
+    assert_eq!(plan.env["III_WORKER_NAME"], "state");
+}
+
+#[test]
+fn a_container_without_configuration_is_told_nothing_about_one() {
+    // A stale `III_CONFIG_NAME` would point a worker at an entry compose never
+    // wrote, which is worse than the absence it replaces.
+    use iii_compose::spawn::{SpawnCtx, spawn_plan};
+    use iii_compose::manifest::StartSpec;
+
+    let user_env = std::collections::BTreeMap::new();
+    let start = StartSpec::Shell("true".to_string());
+    let plan = spawn_plan(&SpawnCtx {
+        engine_url: "ws://127.0.0.1:49134",
+        namespace: "finance",
+        container_key: "plain",
+        start: &start,
+        config_path: None,
+        config_name: None,
+        working_dir: std::path::Path::new("."),
+        user_env: &user_env,
+    });
+
+    assert!(!plan.env.contains_key("III_CONFIG_NAME"));
+    assert!(!plan.env.contains_key("III_CONFIG"));
+}

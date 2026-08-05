@@ -25,7 +25,13 @@ use std::{
 use crate::manifest::StartSpec;
 
 /// Environment variables the daemon owns for every child.
-pub const RESERVED_ENV: [&str; 4] = ["III_URL", "III_NAMESPACE", "III_CONFIG", "III_WORKER_NAME"];
+pub const RESERVED_ENV: [&str; 5] = [
+    "III_URL",
+    "III_NAMESPACE",
+    "III_CONFIG",
+    "III_CONFIG_NAME",
+    "III_WORKER_NAME",
+];
 
 /// Host variables a child inherits. Everything else in the daemon's environment
 /// is dropped: a compose project must start the same way whatever shell the
@@ -67,6 +73,14 @@ pub struct SpawnCtx<'a> {
     pub start: &'a StartSpec,
     /// Path of the resolved configuration file, when the container has config.
     pub config_path: Option<&'a Path>,
+    /// Which configuration entry this container's value was written to, and
+    /// therefore the one it should read from.
+    ///
+    /// A worker owns an id and hardcodes it, which makes the id a global
+    /// scarce name: two projects each running `state` share one entry and
+    /// overwrite each other. Telling the worker its id instead lets one
+    /// project call it `state-finance` and another `state-hr`.
+    pub config_name: Option<&'a str>,
     pub working_dir: &'a Path,
     /// Already-merged `env_file` + `environment` for this container. Reserved
     /// keys are rejected before they get here.
@@ -114,6 +128,14 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
         // No config for this container: the key must be absent, not stale.
         None => {
             env.remove("III_CONFIG");
+        }
+    }
+    match ctx.config_name {
+        Some(name) => {
+            env.insert("III_CONFIG_NAME".to_string(), name.to_string());
+        }
+        None => {
+            env.remove("III_CONFIG_NAME");
         }
     }
 
@@ -187,6 +209,7 @@ mod tests {
             container_key: "api",
             start,
             config_path: config,
+            config_name: None,
             working_dir: Path::new("/srv/app/workers/api"),
             user_env,
         }
