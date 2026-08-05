@@ -496,3 +496,52 @@ async fn naming_another_daemon_in_the_payload_is_refused() {
     .await
     .expect("agreeing with the daemon it reached is not an error");
 }
+
+/// A configuration worker that cannot answer fails the container.
+///
+/// The other half of the rule that lets a first boot through. An entry nobody
+/// has registered yet is not a failure — the worker is what creates it. An
+/// entry compose cannot *read* is, because starting the container would mean
+/// booting it on defaults nobody asked for.
+///
+/// The engine here has no configuration worker at all, so the call fails as
+/// `function_not_found` — an error, and pointedly not `NOT_FOUND`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configuration_that_cannot_be_read_stops_the_container() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+name: orders
+startup_timeout: 2s
+stop_timeout: 1s
+containers:
+  database:
+    worker: path://./workers/database
+    config_name: nobody-can-read-this
+    scripts:
+      run: "sleep 30"
+"#,
+        &["database"],
+    );
+
+    let result = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    )
+    .await
+    .expect("compose::up answers even when it fails");
+
+    assert_eq!(result["status"], "failed", "{result}");
+    let database = &result["containers"][0];
+    assert_eq!(database["error"]["code"], "CONFIG_FETCH_FAILED", "{result}");
+    // Not mistaken for a first boot, which is the case that must proceed.
+    assert_ne!(database["state"], "ready", "{result}");
+
+    daemon.shutdown().await;
+}

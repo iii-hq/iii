@@ -368,6 +368,7 @@ async fn start_one(
             &child,
             container.startup_timeout,
             &baseline,
+            ctx.log_dir,
         )
         .await;
 
