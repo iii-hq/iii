@@ -1840,12 +1840,155 @@ impl ObservabilityWorker {
 
                 let engine = engine.clone();
                 let function_id = trigger.function_id.clone();
+                // Trigger metadata must ride along (state/stream/cron parity):
+                // remote consumers key delivery routing on it.
+                let metadata = trigger.metadata.clone();
 
                 tokio::spawn(async move {
-                    let _ = engine.call(&function_id, log_data).await;
+                    let _ = engine
+                        .call_with_metadata(&function_id, log_data, metadata)
+                        .await;
                 });
             }
         }
+    }
+
+    /// Body of the trace-trigger subscriber task: wait for span storage to
+    /// exist, attach to its broadcast exactly once, then coalesce span
+    /// activity into periodic `trace` trigger fan-outs and live stream
+    /// pushes, excluding engine-internal spans and the trigger's own
+    /// delivery spans (`engine.call` to a consumer fn is itself instrumented
+    /// as a span, so without the exclusion the trigger would re-fire on its
+    /// own output — an unbounded feedback loop).
+    ///
+    /// Span storage is a process-wide `OnceLock` created by OTEL pipeline
+    /// init (`logging::init_*` → `init_otel`), which has NO ordering
+    /// guarantee with worker startup — storage absence at spawn time is
+    /// normal, not terminal. Poll with bounded backoff until it appears:
+    /// once set it lives for the process (runtime `exporter`/`enabled`
+    /// changes are restart-tier and never remove it), so attaching once is
+    /// enough. When the OTEL pipeline is disabled storage never appears and
+    /// this task idles at the capped interval until worker shutdown.
+    ///
+    /// `lookup` abstracts `otel::get_span_storage` so tests can drive the
+    /// wait-then-attach path without the process-global `OnceLock`.
+    async fn run_trace_trigger_subscriber(
+        triggers: Arc<OtelTraceTriggers>,
+        engine: Arc<Engine>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        mut lookup: impl FnMut() -> Option<Arc<otel::InMemorySpanStorage>>,
+    ) {
+        let storage = match lookup() {
+            Some(storage) => storage,
+            None => {
+                tracing::debug!(
+                    "[ObservabilityWorker] Span storage not yet initialized (OTEL pipeline init pending or disabled); trace trigger subscriber waiting"
+                );
+                const MAX_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+                let mut delay = tokio::time::Duration::from_millis(50);
+                loop {
+                    tokio::select! {
+                        result = shutdown_rx.changed() => {
+                            if result.is_err() || *shutdown_rx.borrow() {
+                                tracing::debug!(
+                                    "[ObservabilityWorker] Trace trigger subscriber shutting down before span storage appeared"
+                                );
+                                return;
+                            }
+                        }
+                        _ = tokio::time::sleep(delay) => {
+                            delay = std::cmp::min(delay * 2, MAX_DELAY);
+                        }
+                    }
+                    if let Some(storage) = lookup() {
+                        break storage;
+                    }
+                }
+            }
+        };
+
+        let mut rx = storage.subscribe();
+        tracing::debug!("[ObservabilityWorker] Trace trigger subscriber started");
+
+        // Snapshot of registered trigger function ids, refreshed each
+        // window — a span produced by delivering one of these is the
+        // trigger's own output and must not re-fire it.
+        let mut trigger_fns: HashSet<String> = triggers
+            .triggers
+            .read()
+            .await
+            .iter()
+            .map(|t| t.function_id.clone())
+            .collect();
+        let mut window: Vec<otel::StoredSpan> = Vec::new();
+        let mut ticker =
+            tokio::time::interval(tokio::time::Duration::from_millis(TRACE_COALESCE_MS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                result = shutdown_rx.changed() => {
+                    if result.is_err() || *shutdown_rx.borrow() {
+                        tracing::debug!("[ObservabilityWorker] Trace trigger subscriber shutting down");
+                        break;
+                    }
+                }
+                result = rx.recv() => {
+                    match result {
+                        Ok(span) => {
+                            // Loop-break: drop the engine's own machinery
+                            // spans (context-free internal — the feed's
+                            // pushes and console deliveries must never
+                            // re-enter the feed), any span attributed to
+                            // an observability function (belt: emission
+                            // already refuses those — the pipeline must
+                            // not observe itself), and the trigger's own
+                            // delivery spans. Other PARENTED internal
+                            // spans are built-in calls inside a real
+                            // trace (an agent turn calling
+                            // `configuration::list`) and flow through
+                            // like any other span.
+                            if is_context_free_internal_span(&span) {
+                                continue;
+                            }
+                            if span_function_id(&span).is_some_and(
+                                crate::workers::telemetry::is_observability_function_id,
+                            ) {
+                                continue;
+                            }
+                            if span_function_id(&span).is_some_and(|f| trigger_fns.contains(f)) {
+                                continue;
+                            }
+                            window.push(span);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(skipped, "Trace trigger subscriber lagged, some spans were skipped");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("[ObservabilityWorker] Span broadcast channel closed");
+                            break;
+                        }
+                    }
+                }
+                _ = ticker.tick() => {
+                    trigger_fns = triggers
+                        .triggers
+                        .read()
+                        .await
+                        .iter()
+                        .map(|t| t.function_id.clone())
+                        .collect();
+                    if window.is_empty() {
+                        continue;
+                    }
+                    let batch = std::mem::take(&mut window);
+                    ObservabilityWorker::fire_trace_triggers(&triggers, &engine, &batch).await;
+                    ObservabilityWorker::push_trace_streams(&engine, &batch).await;
+                }
+            }
+        }
+
+        tracing::debug!("[ObservabilityWorker] Trace trigger subscriber stopped");
     }
 
     /// Invoke trace (span) triggers for a given span (static method for use in
@@ -1861,8 +2004,8 @@ impl ObservabilityWorker {
     /// The handler is invoked fire-and-forget via `engine.call`; results are
     /// ignored. NOTE: that `engine.call` is itself instrumented as a span, so
     /// the subscriber MUST exclude trigger-delivery spans before they reach
-    /// here (see `start_background_tasks`) or the trigger would re-fire on its
-    /// own delivery — an unbounded feedback loop.
+    /// here (see `run_trace_trigger_subscriber`) or the trigger would re-fire
+    /// on its own delivery — an unbounded feedback loop.
     async fn fire_trace_triggers(
         triggers: &Arc<OtelTraceTriggers>,
         engine: &Arc<Engine>,
@@ -1889,9 +2032,14 @@ impl ObservabilityWorker {
             let payload = serde_json::json!({ "trace_ids": trace_ids });
             let engine = engine.clone();
             let function_id = trigger.function_id.clone();
+            // Trigger metadata must ride along (state/stream/cron parity):
+            // remote consumers key delivery routing on it.
+            let metadata = trigger.metadata.clone();
 
             tokio::spawn(async move {
-                let _ = engine.call(&function_id, payload).await;
+                let _ = engine
+                    .call_with_metadata(&function_id, payload, metadata)
+                    .await;
             });
         }
     }
@@ -3293,113 +3441,17 @@ impl Worker for ObservabilityWorker {
 
         // Start span subscriber: coalesce span activity into periodic `trace`
         // trigger fan-outs, excluding engine-internal spans and the trigger's
-        // OWN delivery spans. `engine.call` to a consumer fn is itself
-        // instrumented as a span, so without this exclusion the trigger would
-        // re-fire on its own output — an unbounded feedback loop that floods
-        // the consumer and fills the trace store with delivery spans.
-        {
-            let triggers = self.trace_triggers.clone();
-            let engine = self.engine.clone();
-            let mut shutdown_rx = shutdown_rx.clone();
-
-            tokio::spawn(async move {
-                // Wait a bit for span storage to be initialized by exporter setup.
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-                let Some(storage) = otel::get_span_storage() else {
-                    // Span storage is only present when the memory/both exporter
-                    // is configured; with the OTLP-only exporter there is no
-                    // in-memory store to watch, so trace triggers stay dormant.
-                    tracing::debug!(
-                        "[ObservabilityWorker] Span storage not available (memory exporter off), trace triggers will not fire"
-                    );
-                    return;
-                };
-
-                let mut rx = storage.subscribe();
-                tracing::debug!("[ObservabilityWorker] Trace trigger subscriber started");
-
-                // Snapshot of registered trigger function ids, refreshed each
-                // window — a span produced by delivering one of these is the
-                // trigger's own output and must not re-fire it.
-                let mut trigger_fns: HashSet<String> = triggers
-                    .triggers
-                    .read()
-                    .await
-                    .iter()
-                    .map(|t| t.function_id.clone())
-                    .collect();
-                let mut window: Vec<otel::StoredSpan> = Vec::new();
-                let mut ticker =
-                    tokio::time::interval(tokio::time::Duration::from_millis(TRACE_COALESCE_MS));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-                loop {
-                    tokio::select! {
-                        result = shutdown_rx.changed() => {
-                            if result.is_err() || *shutdown_rx.borrow() {
-                                tracing::debug!("[ObservabilityWorker] Trace trigger subscriber shutting down");
-                                break;
-                            }
-                        }
-                        result = rx.recv() => {
-                            match result {
-                                Ok(span) => {
-                                    // Loop-break: drop the engine's own machinery
-                                    // spans (context-free internal — the feed's
-                                    // pushes and console deliveries must never
-                                    // re-enter the feed), any span attributed to
-                                    // an observability function (belt: emission
-                                    // already refuses those — the pipeline must
-                                    // not observe itself), and the trigger's own
-                                    // delivery spans. Other PARENTED internal
-                                    // spans are built-in calls inside a real
-                                    // trace (an agent turn calling
-                                    // `configuration::list`) and flow through
-                                    // like any other span.
-                                    if is_context_free_internal_span(&span) {
-                                        continue;
-                                    }
-                                    if span_function_id(&span).is_some_and(
-                                        crate::workers::telemetry::is_observability_function_id,
-                                    ) {
-                                        continue;
-                                    }
-                                    if span_function_id(&span).is_some_and(|f| trigger_fns.contains(f)) {
-                                        continue;
-                                    }
-                                    window.push(span);
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                    tracing::warn!(skipped, "Trace trigger subscriber lagged, some spans were skipped");
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                    tracing::debug!("[ObservabilityWorker] Span broadcast channel closed");
-                                    break;
-                                }
-                            }
-                        }
-                        _ = ticker.tick() => {
-                            trigger_fns = triggers
-                                .triggers
-                                .read()
-                                .await
-                                .iter()
-                                .map(|t| t.function_id.clone())
-                                .collect();
-                            if window.is_empty() {
-                                continue;
-                            }
-                            let batch = std::mem::take(&mut window);
-                            ObservabilityWorker::fire_trace_triggers(&triggers, &engine, &batch).await;
-                            ObservabilityWorker::push_trace_streams(&engine, &batch).await;
-                        }
-                    }
-                }
-
-                tracing::debug!("[ObservabilityWorker] Trace trigger subscriber stopped");
-            });
-        }
+        // OWN delivery spans (see `run_trace_trigger_subscriber`). The task
+        // waits for span storage to appear rather than checking once — OTEL
+        // pipeline init has no ordering guarantee with worker startup, and a
+        // one-shot check that lost that race used to disable trace triggers
+        // for the life of the process.
+        tokio::spawn(ObservabilityWorker::run_trace_trigger_subscriber(
+            self.trace_triggers.clone(),
+            self.engine.clone(),
+            shutdown_rx.clone(),
+            otel::get_span_storage,
+        ));
 
         // Log retention runs as a respawnable task; spawned below from the
         // post-adoption effective configuration.
@@ -3698,6 +3750,483 @@ mod tests {
             error_hits.load(Ordering::SeqCst),
             0,
             "level=error must NOT fire on WARN"
+        );
+    }
+
+    /// Regression: the trace-trigger subscriber must survive span storage
+    /// appearing AFTER worker startup (the old one-shot check returned
+    /// permanently and trace triggers never fired for the process life),
+    /// then deliver coalesced fires that honor the service/status filters
+    /// and the loop-prevention exclusions.
+    #[tokio::test]
+    async fn trace_subscriber_waits_for_late_storage_then_fires_filtered_triggers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // `engine.call` instruments invocations via the global meter; without
+        // it the fire-and-forget delivery tasks panic and no payload arrives.
+        metrics::ensure_default_meter();
+
+        let engine = Arc::new(Engine::new());
+        let all_payloads: Arc<std::sync::Mutex<Vec<Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let error_payloads: Arc<std::sync::Mutex<Vec<Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        for (fid, sink) in [
+            ("test::trace-all", all_payloads.clone()),
+            ("test::trace-error", error_payloads.clone()),
+        ] {
+            engine.register_function_handler(
+                crate::engine::RegisterFunctionRequest {
+                    function_id: fid.to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                crate::engine::Handler::new(move |payload: Value| {
+                    let sink = sink.clone();
+                    async move {
+                        sink.lock().unwrap().push(payload);
+                        FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                    }
+                }),
+            );
+        }
+
+        let triggers = Arc::new(OtelTraceTriggers::new());
+        {
+            let mut guard = triggers.triggers.write().await;
+            guard.insert(Trigger {
+                id: "t-all".to_string(),
+                trigger_type: TRACE_TRIGGER_TYPE.to_string(),
+                function_id: "test::trace-all".to_string(),
+                config: serde_json::json!({}),
+                worker_id: None,
+                metadata: None,
+            });
+            guard.insert(Trigger {
+                id: "t-error".to_string(),
+                trigger_type: TRACE_TRIGGER_TYPE.to_string(),
+                function_id: "test::trace-error".to_string(),
+                config: serde_json::json!({ "status": "error", "service_name": "svc" }),
+                worker_id: None,
+                metadata: None,
+            });
+        }
+
+        // Storage the subscriber must NOT see on its first checks: the lookup
+        // misses three times before answering, simulating OTEL pipeline init
+        // finishing after worker startup.
+        let storage = Arc::new(otel::InMemorySpanStorage::new(64));
+        let lookup_calls = Arc::new(AtomicUsize::new(0));
+        let lookup = {
+            let storage = storage.clone();
+            let lookup_calls = lookup_calls.clone();
+            move || {
+                let n = lookup_calls.fetch_add(1, Ordering::SeqCst);
+                if n < 3 { None } else { Some(storage.clone()) }
+            }
+        };
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(ObservabilityWorker::run_trace_trigger_subscriber(
+            triggers.clone(),
+            engine.clone(),
+            shutdown_rx,
+            lookup,
+        ));
+
+        let ids_of = |payloads: &std::sync::Mutex<Vec<Value>>| -> HashSet<String> {
+            payloads
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|p| {
+                    p.get("trace_ids")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        };
+
+        // Re-broadcast the same batch until the subscriber has attached and a
+        // coalesce tick delivered it: broadcasts before the (late) subscribe
+        // are lost by design — exactly the production race under test.
+        for _ in 0..30 {
+            storage.add_spans(vec![
+                // Kept: plain user spans.
+                make_span("t-ok", "s1", None, "op", "svc", 1, 2, "ok", vec![]),
+                make_span("t-err", "s2", None, "op", "svc", 1, 2, "error", vec![]),
+                make_span(
+                    "t-err-other",
+                    "s3",
+                    None,
+                    "op",
+                    "other",
+                    1,
+                    2,
+                    "error",
+                    vec![],
+                ),
+                // Excluded: the trigger's own delivery span.
+                make_span(
+                    "t-loop",
+                    "s4",
+                    None,
+                    "call test::trace-all",
+                    "svc",
+                    1,
+                    2,
+                    "ok",
+                    vec![("function_id", "test::trace-all")],
+                ),
+                // Excluded: context-free engine machinery span.
+                make_span(
+                    "t-int",
+                    "s5",
+                    None,
+                    "call stream::send",
+                    "iii",
+                    1,
+                    2,
+                    "ok",
+                    vec![("iii.function.kind", "internal")],
+                ),
+                // Excluded: observability-pipeline span (parented, so only the
+                // observability-function filter can drop it).
+                make_span(
+                    "t-obs",
+                    "s6",
+                    Some("s1"),
+                    "call traces::list",
+                    "svc",
+                    1,
+                    2,
+                    "ok",
+                    vec![("function_id", "iii-observability::spans")],
+                ),
+            ]);
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            let all = ids_of(&all_payloads);
+            if ["t-ok", "t-err", "t-err-other"]
+                .iter()
+                .all(|t| all.contains(*t))
+                && ids_of(&error_payloads).contains("t-err")
+            {
+                break;
+            }
+        }
+
+        // One extra coalesce window so any wrongly-included span still in
+        // flight lands before the negative assertions.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        assert!(
+            lookup_calls.load(Ordering::SeqCst) >= 4,
+            "subscriber must retry the storage lookup past initial misses"
+        );
+
+        let all = ids_of(&all_payloads);
+        for kept in ["t-ok", "t-err", "t-err-other"] {
+            assert!(all.contains(kept), "unfiltered trigger must see {kept}");
+        }
+        for excluded in ["t-loop", "t-int", "t-obs"] {
+            assert!(
+                !all.contains(excluded),
+                "{excluded} must be excluded from the trigger window (feedback loop)"
+            );
+        }
+
+        let errors = ids_of(&error_payloads);
+        assert!(
+            errors.contains("t-err"),
+            "status/service filtered trigger must see the matching span"
+        );
+        for filtered in ["t-ok", "t-err-other", "t-loop", "t-int", "t-obs"] {
+            assert!(
+                !errors.contains(filtered),
+                "{filtered} must not pass the status=error + service_name=svc filter"
+            );
+        }
+
+        // Worker shutdown stops the attached subscriber.
+        shutdown_tx.send(true).expect("subscriber still listening");
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("subscriber must exit on shutdown")
+            .expect("subscriber task must not panic");
+    }
+
+    /// Regression: worker shutdown must terminate the subscriber while it is
+    /// still WAITING for span storage (storage never appears — e.g. OTEL
+    /// pipeline disabled), instead of the task outliving the worker.
+    #[tokio::test]
+    async fn trace_subscriber_shutdown_while_waiting_for_storage() {
+        let engine = Arc::new(Engine::new());
+        let triggers = Arc::new(OtelTraceTriggers::new());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(ObservabilityWorker::run_trace_trigger_subscriber(
+            triggers,
+            engine,
+            shutdown_rx,
+            || None,
+        ));
+
+        // Let the task enter its wait loop, then signal worker shutdown.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        shutdown_tx.send(true).expect("waiter still listening");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("waiting subscriber must exit on shutdown")
+            .expect("subscriber task must not panic");
+    }
+
+    /// The common production path: storage already initialized when the
+    /// subscriber spawns. The first lookup must hit (the wait loop never
+    /// runs) and delivery must work end to end.
+    #[tokio::test]
+    async fn trace_subscriber_attaches_immediately_when_storage_already_present() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // `engine.call` instruments invocations via the global meter; without
+        // it the fire-and-forget delivery tasks panic and no payload arrives.
+        metrics::ensure_default_meter();
+
+        let engine = Arc::new(Engine::new());
+        let payloads: Arc<std::sync::Mutex<Vec<Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let sink = payloads.clone();
+            engine.register_function_handler(
+                crate::engine::RegisterFunctionRequest {
+                    function_id: "test::trace-fast".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                crate::engine::Handler::new(move |payload: Value| {
+                    let sink = sink.clone();
+                    async move {
+                        sink.lock().unwrap().push(payload);
+                        FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                    }
+                }),
+            );
+        }
+
+        let triggers = Arc::new(OtelTraceTriggers::new());
+        triggers.triggers.write().await.insert(Trigger {
+            id: "t-fast".to_string(),
+            trigger_type: TRACE_TRIGGER_TYPE.to_string(),
+            function_id: "test::trace-fast".to_string(),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: None,
+        });
+
+        let storage = Arc::new(otel::InMemorySpanStorage::new(16));
+        let lookup_calls = Arc::new(AtomicUsize::new(0));
+        let lookup = {
+            let storage = storage.clone();
+            let lookup_calls = lookup_calls.clone();
+            move || {
+                lookup_calls.fetch_add(1, Ordering::SeqCst);
+                Some(storage.clone())
+            }
+        };
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(ObservabilityWorker::run_trace_trigger_subscriber(
+            triggers,
+            engine,
+            shutdown_rx,
+            lookup,
+        ));
+
+        // Broadcasts sent before the spawned task subscribes are lost, so
+        // re-send until a coalesce tick delivers.
+        for _ in 0..30 {
+            storage.add_spans(vec![make_span(
+                "t-fast",
+                "s1",
+                None,
+                "op",
+                "svc",
+                1,
+                2,
+                "ok",
+                vec![],
+            )]);
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            if !payloads.lock().unwrap().is_empty() {
+                break;
+            }
+        }
+
+        assert!(
+            payloads.lock().unwrap().iter().any(|p| p["trace_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|v| v == "t-fast"))),
+            "trigger must fire with storage present from the start"
+        );
+        assert_eq!(
+            lookup_calls.load(Ordering::SeqCst),
+            1,
+            "first lookup must hit; the wait loop must not run"
+        );
+
+        shutdown_tx.send(true).expect("subscriber still listening");
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("subscriber must exit on shutdown")
+            .expect("subscriber task must not panic");
+    }
+
+    /// Worker teardown can drop the shutdown sender instead of sending
+    /// `true` (e.g. a reload replacing the worker); the subscriber still
+    /// waiting for storage must treat the closed channel as shutdown.
+    #[tokio::test]
+    async fn trace_subscriber_exits_when_shutdown_sender_dropped_while_waiting() {
+        let engine = Arc::new(Engine::new());
+        let triggers = Arc::new(OtelTraceTriggers::new());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(ObservabilityWorker::run_trace_trigger_subscriber(
+            triggers,
+            engine,
+            shutdown_rx,
+            || None,
+        ));
+
+        // Let the task enter its wait loop, then drop the sender.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        drop(shutdown_tx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("waiting subscriber must exit when the shutdown sender is dropped")
+            .expect("subscriber task must not panic");
+    }
+
+    /// Low-level function handler that records the invocation `metadata` each
+    /// delivery arrives with — the only handler shape that can observe it
+    /// in-process (closure handlers never see metadata).
+    struct MetadataCapture(Arc<std::sync::Mutex<Vec<Option<Value>>>>);
+
+    impl crate::function::FunctionHandler for MetadataCapture {
+        fn handle_function<'a>(
+            &'a self,
+            _invocation_id: Option<uuid::Uuid>,
+            _function_id: String,
+            _input: Value,
+            metadata: Option<Value>,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>,
+        > {
+            let sink = self.0.clone();
+            Box::pin(async move {
+                sink.lock().unwrap().push(metadata);
+                FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+            })
+        }
+    }
+
+    fn register_metadata_capture(
+        engine: &Arc<Engine>,
+        function_id: &str,
+    ) -> Arc<std::sync::Mutex<Vec<Option<Value>>>> {
+        let captured: Arc<std::sync::Mutex<Vec<Option<Value>>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        engine.register_function(
+            crate::engine::RegisterFunctionRequest {
+                function_id: function_id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Box::new(MetadataCapture(captured.clone())),
+        );
+        captured
+    }
+
+    async fn wait_for_capture(captured: &Arc<std::sync::Mutex<Vec<Option<Value>>>>) {
+        // Fan-out is fire-and-forget tokio::spawn; poll for the effect.
+        for _ in 0..40 {
+            if !captured.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    /// Trace trigger deliveries must carry the trigger's registered
+    /// metadata, matching the state/stream/cron fan-outs: remote consumers
+    /// (e.g. session-wake harnesses) key delivery routing on it, and a bare
+    /// `engine.call` (metadata: None) silently starves their gate.
+    #[tokio::test]
+    async fn fire_trace_triggers_delivers_trigger_metadata() {
+        // `engine.call` instruments invocations via the global meter; without
+        // it the fire-and-forget delivery tasks panic and no payload arrives.
+        metrics::ensure_default_meter();
+
+        let engine = Arc::new(Engine::new());
+        let captured = register_metadata_capture(&engine, "test::trace-meta");
+
+        let triggers = Arc::new(OtelTraceTriggers::new());
+        triggers.triggers.write().await.insert(Trigger {
+            id: "t-meta".to_string(),
+            trigger_type: TRACE_TRIGGER_TYPE.to_string(),
+            function_id: "test::trace-meta".to_string(),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: Some(serde_json::json!({ "__binding": "session-wake-7" })),
+        });
+
+        let batch = vec![make_span("t1", "s1", None, "op", "svc", 1, 2, "ok", vec![])];
+        ObservabilityWorker::fire_trace_triggers(&triggers, &engine, &batch).await;
+
+        wait_for_capture(&captured).await;
+        assert_eq!(
+            captured.lock().unwrap().as_slice(),
+            &[Some(serde_json::json!({ "__binding": "session-wake-7" }))],
+            "trace delivery must carry the trigger's registered metadata"
+        );
+    }
+
+    /// Log trigger deliveries must carry the trigger's registered metadata,
+    /// for the same reason as the trace path.
+    #[tokio::test]
+    async fn log_trigger_delivery_carries_trigger_metadata() {
+        metrics::ensure_default_meter();
+
+        let engine = Arc::new(Engine::new());
+        let captured = register_metadata_capture(&engine, "test::log-meta");
+
+        let triggers = Arc::new(OtelLogTriggers::new());
+        triggers.triggers.write().await.insert(Trigger {
+            id: "t-log-meta".to_string(),
+            trigger_type: LOG_TRIGGER_TYPE.to_string(),
+            function_id: "test::log-meta".to_string(),
+            config: serde_json::json!({ "level": "all" }),
+            worker_id: None,
+            metadata: Some(serde_json::json!({ "__binding": "log-wake-1" })),
+        });
+
+        let log = make_log(None, None, "INFO", 9, "hello", "svc", 1);
+        ObservabilityWorker::invoke_triggers_for_log(&triggers, &engine, &log).await;
+
+        wait_for_capture(&captured).await;
+        assert_eq!(
+            captured.lock().unwrap().as_slice(),
+            &[Some(serde_json::json!({ "__binding": "log-wake-1" }))],
+            "log delivery must carry the trigger's registered metadata"
         );
     }
 
