@@ -174,6 +174,12 @@ pub enum ComposeError {
     #[error("configuration '{name}' could not be resolved: {message}")]
     ConfigFetchFailed { name: String, message: String },
 
+    /// The resolved configuration could not be written back. Fatal for the
+    /// same reason the fetch is: the container would boot on whatever was
+    /// stored before, which is the silent downgrade this path exists to stop.
+    #[error("configuration '{name}' could not be published: {message}")]
+    ConfigPublishFailed { name: String, message: String },
+
     #[error("engine call {function} failed: {message}")]
     EngineCallFailed { function: String, message: String },
 
@@ -383,6 +389,7 @@ impl ComposeError {
             Self::PackageArtifactEmpty { .. } => "PACKAGE_ARTIFACT_EMPTY",
             Self::ReservedEnvOverride { .. } => "RESERVED_ENV_OVERRIDE",
             Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
+            Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
             Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",
             Self::DetachFailed { .. } => "DETACH_FAILED",
