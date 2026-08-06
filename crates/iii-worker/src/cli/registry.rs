@@ -464,7 +464,7 @@ pub(crate) fn validate_dependency_graph_roots(
     })
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn read_local_registry_fixture(path: &str) -> Result<String, String> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| format!("Failed to read local API fixture at {path}: {e}"))?;
