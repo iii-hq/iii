@@ -6,7 +6,7 @@
 ## What a namespace is
 
 A namespace is a routing dimension the engine carries alongside a function id and a worker name. It
-is not part of either. `state::get` is `state::get` whether it lives in `default`, in `orders`, or in
+is not part of either. `state::get` is `state::get` whether it is registered in `default`, `orders`, or
 `analytics`; what changes is the second coordinate the engine files it under.
 
 The registries are keyed by pairs rather than by strings: `(namespace, function_id)` for functions,
@@ -62,9 +62,9 @@ Introspection is the one place where a looser rule earns its keep. Asking "what 
 running?" with no namespace in hand is a reasonable question, and an engine whose every worker is
 namespaced would otherwise be unable to describe itself. So `engine::functions::info` and
 `engine::workers::info` prefer `default`, then resolve a name that is unique to one non-default
-namespace, and report an ambiguity when a name lives in several at once. They stop short of guessing
-for exactly the same reason invocation does: naming the candidates is useful, picking one silently is
-not. Passing an explicit namespace restores strict resolution.
+namespace, and report an ambiguity when a name is registered under several namespaces at once. They
+stop short of guessing for exactly the same reason invocation does: naming the candidates is useful,
+picking one silently is not. Passing an explicit namespace restores strict resolution.
 
 ## Why a collision is a rejection
 

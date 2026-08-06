@@ -278,9 +278,9 @@ reported as an ambiguity naming the candidates, never resolved by guessing. Pass
 
 ### Reserved ids
 
-`engine::*` is reserved for engine and builtin infrastructure, which lives in `default`. A worker
-that tries to register an `engine::*` function id in any other namespace has that registration
-refused.
+`engine::*` is reserved for engine and builtin infrastructure, which is registered in `default`.
+A worker that tries to register an `engine::*` function id in any other namespace has that
+registration refused.
 
 ### Wire compatibility
 
@@ -309,8 +309,8 @@ and worker lifecycle. Defined in
 | `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. |
 
 Every row returned by `engine::functions::list`, `engine::functions::info`, `engine::workers::list`,
-and `engine::workers::info` carries a `namespace` field naming the registry key the entry lives
-under. It is what distinguishes two rows that share a `function_id` or a worker `name`. Neither
+and `engine::workers::info` carries a `namespace` field naming the registry key under which the entry
+is registered. It distinguishes two rows that share a `function_id` or a worker `name`. Neither
 `list` function takes a `namespace` filter; both return every namespace.
 
 ## Engine discovery triggers
