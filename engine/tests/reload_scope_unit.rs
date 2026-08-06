@@ -115,8 +115,27 @@ async fn builder_produces_running_workers_with_matching_entries() {
         "default config must define at least one worker entry"
     );
 
+    // Point the default config's configuration worker at a tempdir store so
+    // the boot writes nothing into the repo-relative ./config.
+    let (config_entry, _config_dir) = isolated_config_entry();
+    let mut boot_config = EngineConfig::default_config();
+    let mut found = false;
+    for entry in boot_config
+        .modules
+        .iter_mut()
+        .chain(boot_config.workers.iter_mut())
+    {
+        if entry.name == config_entry.name {
+            entry.config = config_entry.config.clone();
+            found = true;
+        }
+    }
+    if !found {
+        boot_config.workers.push(config_entry);
+    }
+
     let builder = EngineBuilder::new()
-        .with_config(EngineConfig::default_config())
+        .with_config(boot_config)
         .build()
         .await
         .expect("build should succeed for default config");
@@ -148,32 +167,58 @@ async fn builder_produces_running_workers_with_matching_entries() {
     }
 }
 
-// Helper: minimal config whose only explicit worker is iii-worker-manager
-// bound to an ephemeral port. Mandatory workers (telemetry, observability,
-// engine-functions) will be injected by build() but don't bind fixed ports.
-// This lets builder-plumbing tests coexist with the other integration tests
-// in this binary that also exercise build(), without fighting over the real
-// default_config()'s fixed ports (iii-http, iii-stream, iii-worker-manager).
-fn minimal_config_for_builder_tests() -> iii::workers::config::EngineConfig {
-    iii::workers::config::EngineConfig {
+// Helper: a `configuration` worker entry persisting into a throwaway
+// tempdir, so engine boots in this binary neither write the repo-relative
+// `engine/config/` nor leak persisted entries between runs. Keep the
+// returned TempDir alive for the test's duration.
+fn isolated_config_entry() -> (iii::workers::config::WorkerEntry, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("create config tempdir");
+    let entry = iii::workers::config::WorkerEntry {
+        name: "configuration".to_string(),
+        image: None,
+        config: Some(serde_json::json!({
+            "adapter": {
+                "name": "fs",
+                "config": { "directory": dir.path().to_string_lossy() }
+            }
+        })),
+    };
+    (entry, dir)
+}
+
+// Helper: minimal config whose only explicit workers are iii-worker-manager
+// bound to an ephemeral port and a tempdir-isolated configuration worker.
+// Mandatory workers (telemetry, observability, engine-functions) will be
+// injected by build() but don't bind fixed ports. This lets builder-plumbing
+// tests coexist with the other integration tests in this binary that also
+// exercise build(), without fighting over the real default_config()'s fixed
+// ports (iii-http, iii-stream, iii-worker-manager).
+fn minimal_config_for_builder_tests() -> (iii::workers::config::EngineConfig, tempfile::TempDir) {
+    let (config_entry, config_dir) = isolated_config_entry();
+    let config = iii::workers::config::EngineConfig {
         modules: Vec::new(),
-        workers: vec![iii::workers::config::WorkerEntry {
-            name: "iii-worker-manager".to_string(),
-            image: None,
-            config: Some(serde_json::json!({
-                "host": "127.0.0.1",
-                "port": 0,
-            })),
-        }],
-    }
+        workers: vec![
+            iii::workers::config::WorkerEntry {
+                name: "iii-worker-manager".to_string(),
+                image: None,
+                config: Some(serde_json::json!({
+                    "host": "127.0.0.1",
+                    "port": 0,
+                })),
+            },
+            config_entry,
+        ],
+    };
+    (config, config_dir)
 }
 
 #[tokio::test]
 async fn config_path_is_stored_when_set() {
     use iii::EngineBuilder;
 
+    let (config, _config_dir) = minimal_config_for_builder_tests();
     let builder = EngineBuilder::new()
-        .with_config(minimal_config_for_builder_tests())
+        .with_config(config)
         .with_config_path("/tmp/fake-config.yaml")
         .build()
         .await
@@ -186,8 +231,9 @@ async fn config_path_is_stored_when_set() {
 async fn config_path_is_none_when_not_set() {
     use iii::EngineBuilder;
 
+    let (config, _config_dir) = minimal_config_for_builder_tests();
     let builder = EngineBuilder::new()
-        .with_config(minimal_config_for_builder_tests())
+        .with_config(config)
         .build()
         .await
         .unwrap();
@@ -225,16 +271,20 @@ async fn serve_returns_on_sigterm() {
     // here because its enabled-by-default workers (iii-stream, iii-http,
     // etc.) bind fixed ports and would conflict with other integration tests
     // running in parallel.
+    let (config_entry, _config_dir) = isolated_config_entry();
     let config = EngineConfig {
         modules: Vec::new(),
-        workers: vec![iii::workers::config::WorkerEntry {
-            name: "iii-worker-manager".to_string(),
-            image: None,
-            config: Some(serde_json::json!({
-                "host": "127.0.0.1",
-                "port": 0,
-            })),
-        }],
+        workers: vec![
+            iii::workers::config::WorkerEntry {
+                name: "iii-worker-manager".to_string(),
+                image: None,
+                config: Some(serde_json::json!({
+                    "host": "127.0.0.1",
+                    "port": 0,
+                })),
+            },
+            config_entry,
+        ],
     };
 
     let builder = EngineBuilder::new()

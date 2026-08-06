@@ -84,14 +84,30 @@ async fn duplicate_worker_names_get_instance_ids() {
     assert_eq!(foo_entries[1].worker_type(), "foo");
 }
 
-fn minimal_config() -> EngineConfig {
-    serde_yaml::from_str("workers: []\nmodules: []\n").unwrap()
+/// Minimal config whose `configuration` worker persists into a throwaway
+/// tempdir, so the engine boot writes nothing into the repo-relative
+/// `engine/config/`. Keep the TempDir alive for the test's duration.
+fn minimal_config() -> (EngineConfig, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("create config tempdir");
+    let mut config: EngineConfig = serde_yaml::from_str("workers: []\nmodules: []\n").unwrap();
+    config.workers.push(iii::workers::config::WorkerEntry {
+        name: "configuration".to_string(),
+        image: None,
+        config: Some(serde_json::json!({
+            "adapter": {
+                "name": "fs",
+                "config": { "directory": dir.path().to_string_lossy() }
+            }
+        })),
+    });
+    (config, dir)
 }
 
 #[tokio::test]
 async fn commit_noop_when_diff_is_empty() {
+    let (config, _config_dir) = minimal_config();
     let mut builder = EngineBuilder::new()
-        .with_config(minimal_config())
+        .with_config(config)
         .build()
         .await
         .unwrap();

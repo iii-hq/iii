@@ -46,11 +46,21 @@ fn disable_builtin_daemons() {
     });
 }
 
-/// A minimal YAML config with no user-defined workers or modules. Mandatory
-/// workers (telemetry, observability, engine-functions) are auto-injected by
-/// `EngineBuilder::build()` and do not bind fixed ports.
-fn minimal_config_yaml() -> &'static str {
-    "workers: []\nmodules: []\n"
+/// A minimal YAML config whose `configuration` worker persists into
+/// `store_dir`, with `extra_workers` (yaml list items, or "") appended to the
+/// workers list. Mandatory workers (telemetry, observability,
+/// engine-functions) are auto-injected by `EngineBuilder::build()` and do not
+/// bind fixed ports.
+///
+/// Every yaml revision a reload test writes must keep the `configuration`
+/// entry: reload re-reads the file, and a config without it re-injects the
+/// mandatory configuration worker with its default cwd-relative `./config`
+/// store — littering the repo tree and leaking persisted entries into later
+/// runs.
+fn minimal_config_yaml(store_dir: &str, extra_workers: &str) -> String {
+    format!(
+        "workers:\n  - name: configuration\n    config:\n      adapter:\n        name: fs\n        config:\n          directory: {store_dir}\n{extra_workers}modules: []\n"
+    )
 }
 
 /// Write `contents` to `path` synchronously.
@@ -137,9 +147,11 @@ impl Worker for TestEphemeralWorker {
 #[serial]
 async fn config_change_reloads_without_crashing() {
     disable_builtin_daemons();
+    let store = tempfile::tempdir().expect("store dir");
+    let store_dir = store.path().to_str().unwrap().to_string();
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
-    write_config(&path, minimal_config_yaml());
+    write_config(&path, &minimal_config_yaml(&store_dir, ""));
 
     let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load initial config");
 
@@ -157,7 +169,10 @@ async fn config_change_reloads_without_crashing() {
 
     // Rewrite the config with a trivially-different-but-equivalent body.
     // The file watcher detects the change, debounces 500ms, then reloads.
-    write_config(&path, "workers: []\nmodules: []\n# reload trigger\n");
+    write_config(
+        &path,
+        &format!("{}# reload trigger\n", minimal_config_yaml(&store_dir, "")),
+    );
 
     // Wait for watcher debounce (500ms) + reload pipeline.
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -181,9 +196,11 @@ async fn config_change_reloads_without_crashing() {
 #[serial]
 async fn broken_yaml_config_exits_engine() {
     disable_builtin_daemons();
+    let store = tempfile::tempdir().expect("store dir");
+    let store_dir = store.path().to_str().unwrap().to_string();
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
     let path = tmp.path().to_path_buf();
-    write_config(&path, minimal_config_yaml());
+    write_config(&path, &minimal_config_yaml(&store_dir, ""));
 
     let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load initial config");
 
@@ -237,9 +254,11 @@ async fn config_reload_removes_worker_function_registrations() {
 
     // Start with the ephemeral worker declared in the config so build() will
     // instantiate it and record its function registration in the engine.
-    let initial_yaml = format!(
-        "workers:\n  - name: {}\nmodules: []\n",
-        TEST_EPHEMERAL_WORKER_NAME
+    let store = tempfile::tempdir().expect("store dir");
+    let store_dir = store.path().to_str().unwrap().to_string();
+    let initial_yaml = minimal_config_yaml(
+        &store_dir,
+        &format!("  - name: {}\n", TEST_EPHEMERAL_WORKER_NAME),
     );
     write_config(&path, &initial_yaml);
 
@@ -269,7 +288,7 @@ async fn config_reload_removes_worker_function_registrations() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Rewrite the config with the worker removed.
-    write_config(&path, minimal_config_yaml());
+    write_config(&path, &minimal_config_yaml(&store_dir, ""));
 
     // Wait for watcher debounce (500ms) + reload pipeline.
     tokio::time::sleep(Duration::from_millis(1500)).await;
