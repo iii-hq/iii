@@ -1047,6 +1047,24 @@ impl Default for EngineBuilder {
 mod tests {
     use super::*;
 
+    /// Configuration-worker entry whose fs adapter persists into a throwaway
+    /// tempdir. Every `build()` boots the mandatory configuration worker, and
+    /// its default adapter writes `./config/<id>.yaml` relative to the test
+    /// cwd — polluting the repo tree and leaking one run's persisted entries
+    /// into the next: the persisted value is the runtime source of truth, so
+    /// e.g. a stream port persisted by run A overrides run B's inline worker
+    /// config. Keep the returned `TempDir` alive for the test's duration.
+    fn isolated_config_entry() -> (Value, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("create config tempdir");
+        let entry = serde_json::json!({
+            "adapter": {
+                "name": crate::workers::configuration::adapters::fs::ADAPTER_NAME,
+                "config": { "directory": dir.path().to_string_lossy() }
+            }
+        });
+        (entry, dir)
+    }
+
     fn restore_env_var(name: &str, value: Option<std::ffi::OsString>) {
         unsafe {
             match value {
@@ -2011,7 +2029,9 @@ modules:
         REGISTERED.store(0, Ordering::SeqCst);
         DESTROYED.store(0, Ordering::SeqCst);
 
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
+            .add_worker("configuration", Some(config_entry))
             .register_worker::<LifecycleModule>("test::Lifecycle")
             .add_worker(
                 "test::Lifecycle",
@@ -2068,7 +2088,9 @@ modules:
             }
         }
 
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
+            .add_worker("configuration", Some(config_entry))
             .register_worker::<ListedWorker>("test::Listed")
             .add_worker("test::Listed", None)
             .build()
@@ -2161,7 +2183,9 @@ modules:
             }
         }
 
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
+            .add_worker("configuration", Some(config_entry))
             .register_worker::<BackgroundStartFailsWorker>("test::BackgroundStartFails")
             .add_worker("test::BackgroundStartFails", None)
             .build()
@@ -2260,7 +2284,9 @@ modules:
         FAILING_DESTROYS.store(0, Ordering::SeqCst);
         SUCCESSFUL_DESTROYS.store(0, Ordering::SeqCst);
 
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
+            .add_worker("configuration", Some(config_entry))
             .register_worker::<DestroyFailsWorker>("test::DestroyFails")
             .register_worker::<DestroySucceedsWorker>("test::DestroySucceeds")
             .add_worker("test::DestroyFails", None)
@@ -2294,7 +2320,9 @@ modules:
 
         // Bind happens in `start_background_tasks` (not `build`/`initialize`),
         // so we have to step through the worker lifecycle manually.
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
+            .add_worker("configuration", Some(config_entry))
             .add_worker(
                 "iii-stream",
                 Some(serde_json::json!({
@@ -2496,7 +2524,9 @@ workers:
         // `sdk/fixtures/config-test.yaml` -- if that fixture's port ever
         // needs rewording, this test keeps the plumbing honest.
         let custom_port: u16 = 49199;
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
+            .add_worker("configuration", Some(config_entry))
             .add_worker(
                 "iii-worker-manager",
                 Some(serde_json::json!({
@@ -2524,11 +2554,13 @@ workers:
         // has no custom config, so the port resolution must land on
         // DEFAULT_PORT. Losing this fallback would regress every existing
         // deployment that doesn't explicitly pin a port.
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
             .with_config(EngineConfig {
                 modules: Vec::new(),
                 workers: Vec::new(),
             })
+            .add_worker("configuration", Some(config_entry))
             .build()
             .await
             .expect("build with no explicit workers");
@@ -2564,11 +2596,13 @@ workers:
         // Spawned workers receive III_CONFIG_PATH from `Engine::config_path`;
         // a relative path (the CLI default is the bare "config.yaml") would
         // resolve against the CHILD's cwd and defeat the whole handshake.
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
             .with_config(EngineConfig {
                 modules: Vec::new(),
                 workers: Vec::new(),
             })
+            .add_worker("configuration", Some(config_entry))
             .with_config_path("config.yaml")
             .build()
             .await
@@ -2627,8 +2661,10 @@ workers:
         // content shape; this pins the engine side of that contract).
         let cfg: EngineConfig = serde_yaml::from_str(&EngineConfig::starter_config_yaml())
             .expect("starter config must parse");
+        let (config_entry, _config_dir) = isolated_config_entry();
         let builder = EngineBuilder::new()
             .with_config(cfg)
+            .add_worker("configuration", Some(config_entry))
             .build()
             .await
             .expect("an empty starter config must boot (mandatory workers injected)");
