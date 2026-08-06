@@ -93,6 +93,7 @@ async fn missing_dlq_inspection_does_not_close_function_queue_channel() {
             None,
             None,
             None,
+            None,
         )
         .await;
 

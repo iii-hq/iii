@@ -1011,5 +1011,4 @@ mod tests {
             _ => panic!("expected Trigger subcommand"),
         }
     }
-
 }

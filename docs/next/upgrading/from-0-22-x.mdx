@@ -72,10 +72,10 @@ workers:
 
 ## Step 4: Check for `engine::*` function ids outside `default`
 
-`engine::*` is reserved for engine and builtin infrastructure, which lives in `default`. A worker
-that registers an `engine::*` function id while running in another namespace now has that one
-registration refused with a `FUNCTION_NAMESPACE_CONFLICT`; the connection stays open and its other
-functions keep serving. Rename any such id to your own `service::name` prefix.
+`engine::*` is reserved for engine and builtin infrastructure, which is registered in `default`.
+A worker that registers an `engine::*` function id while running in another namespace now has that
+one registration refused with a `FUNCTION_NAMESPACE_CONFLICT`; the connection stays open and its
+other functions keep serving. Rename any such id to your own `service::name` prefix.
 
 This only affects workers that both use a namespace and register under the `engine::` prefix, so a
 project that has not adopted namespaces is unaffected.
