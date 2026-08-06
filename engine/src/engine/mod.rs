@@ -1648,18 +1648,28 @@ impl Engine {
 
                         tokio::spawn(
                             async move {
+                                let mut enqueue_input = serde_json::json!({
+                                    "queue": queue.clone(),
+                                    "function_id": function_id.clone(),
+                                    "data": data,
+                                    "messageReceiptId": message_receipt_id.clone(),
+                                    "traceparent": traceparent.clone(),
+                                    "baggage": queued_baggage,
+                                });
+                                // The standalone queue predates namespaces and
+                                // strictly rejects unknown request fields. Keep
+                                // the default namespace wire-compatible with
+                                // those releases; only a non-default target
+                                // needs the additive field understood by a
+                                // namespace-aware queue provider.
+                                if target_namespace != DEFAULT_NAMESPACE {
+                                    enqueue_input["namespace"] =
+                                        Value::String(target_namespace.clone());
+                                }
                                 let result = engine
                                     .call_with_metadata(
                                         ENQUEUE_PROVIDER_FUNCTION_ID,
-                                        serde_json::json!({
-                                            "queue": queue.clone(),
-                                            "function_id": function_id.clone(),
-                                            "data": data,
-                                            "namespace": target_namespace.clone(),
-                                            "messageReceiptId": message_receipt_id.clone(),
-                                            "traceparent": traceparent.clone(),
-                                            "baggage": queued_baggage,
-                                        }),
+                                        enqueue_input,
                                         None,
                                     )
                                     .await;
@@ -4302,6 +4312,10 @@ mod tests {
         assert_eq!(input["queue"], "harness-turn");
         assert_eq!(input["function_id"], "harness::turn");
         assert_eq!(input["data"], json!({"session_id": "s1"}));
+        assert!(
+            input.get("namespace").is_none(),
+            "default namespace must be omitted for legacy queue providers: {input}"
+        );
         assert_eq!(input["messageReceiptId"], receipt);
         assert_eq!(
             input["traceparent"],
