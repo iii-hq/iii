@@ -121,12 +121,7 @@ queues iii does not own, so those need operator action.
   For the migration steps, see [Upgrading from 0.22.x](../upgrading/from-0-22-x).
 </Note>
 
-## Isolate workers with namespaces
-
-Use this when two projects on one engine both want the same worker name or the same function id, and
-neither can rename. Declaring a namespace scopes each worker's registrations so they coexist.
-
-### Declare the worker's namespace
+## Declare the worker's namespace
 
 Pass `namespace` when registering the worker. The SDK resolves it in this order: the explicit option,
 then the `III_NAMESPACE` environment variable, then nothing at all, in which case the engine files
