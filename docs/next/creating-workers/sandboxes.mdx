@@ -66,9 +66,9 @@ exclusion, so coordinate commands that mutate shared state. `sandbox::list` repo
 is running and does not mean the next call will be rejected.
 
 Idle cleanup treats an active exec or relayed TCP, UDP, or DNS payload as activity, so a sandbox
-serving network traffic is not reaped while it is handling requests. Bare acknowledgements and
-keepalive probes do not count as activity. Each exec remains bounded by `max_exec_timeout_ms`, and
-you should still call `sandbox::stop` when the sandbox is no longer needed.
+serving network traffic is not automatically stopped while it is handling requests. Bare
+acknowledgements and keepalive probes do not count as activity. Each exec remains bounded by
+`max_exec_timeout_ms`, and you should still call `sandbox::stop` when the sandbox is no longer needed.
 
 ## Catalog
 
@@ -129,7 +129,9 @@ iii trigger sandbox::stop sandbox_id=$SB
 
 ## Moving files in and out
 
-To copy a file between the host and a running sandbox, use the `iii worker sandbox` CLI:
+To copy a file between the host and a running sandbox, use the local `iii worker sandbox`
+file-transfer commands. These admin CLI commands are distinct from the `sandbox::*` trigger API used
+through the engine:
 
 ```bash
 # boot a sandbox and capture its id
