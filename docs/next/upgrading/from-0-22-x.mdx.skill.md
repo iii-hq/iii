@@ -11,9 +11,11 @@ uses.
 ## Step 1: Redeclare RabbitMQ durable subscriber queues
 
 Durable subscriber queue names are now namespace-qualified, so two subscribers of the same topic and
-function id in different namespaces get two queues instead of competing for one. The RabbitMQ adapter
-has no automatic migration: queues declared by a pre-0.23 deploy keep their old names and stop being
-addressed after the upgrade.
+function id in different namespaces get two queues instead of competing for one. After the upgrade,
+a 0.23 subscriber declares and consumes a new namespace-qualified queue. The RabbitMQ adapter does
+not rename, consume, or migrate the old queue. The old queue and its durable binding remain in
+RabbitMQ until you delete the queue. Messages in it remain unread, and the binding can continue to
+route copies of new events to it.
 
 | Version | Subscriber queue                        | Dead-letter queue                     |
 | ------- | --------------------------------------- | ------------------------------------- |
