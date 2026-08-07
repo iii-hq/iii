@@ -87,21 +87,21 @@ carve-out the default `hostname:pid` naming would make fast restarts fail agains
 
 ## Why it arrives per connection
 
-A namespace is declared on the `engine::workers::register` call
-because it describes the worker, not the individual function. One worker is one identity in
-one namespace; letting individual registrations disagree would create a worker that is partly in two
-or more places.
+A namespace is declared on the `engine::workers::register` call because it describes the worker, not
+an individual function. One worker is one identity in one namespace.
 
-That choice has a cost, and the cost is ordering. SDKs have always flushed their `RegisterFunction`
-frames as soon as the socket opens, before announcing worker metadata. If the engine filed those
-registrations as they arrived it would file them before knowing the namespace. So it buffers a
-connection's registrations until the namespace is known, then drains them in arrival order.
+When a WebSocket connection opens, the engine starts a namespace resolution timer. The default
+timeout is `5000 ms`. Until `engine::workers::register` resolves the connection namespace, the engine
+holds `RegisterFunction`, `UnregisterFunction`, `RegisterService`, and `RegisterTrigger` messages from
+that connection.
 
-The buffer is bounded by a grace period rather than waiting forever, because a worker might never
-announce itself at all. When the grace expires the connection is fixed to `default` and drained. This
-is what makes the whole feature backward compatible: a worker built against an older SDK sends no
-namespace, waits out the grace, lands in `default`, and behaves exactly as it always did. Every
-namespace field on the wire is optional for the same reason.
+If the worker registration arrives before the timer expires, the engine assigns its `namespace`
+value, or `default` when the value is absent. It then processes the held messages in arrival order.
+If the timer expires first, the engine assigns `default` and processes the held messages. A later
+worker registration cannot change the assigned namespace.
+
+To change this timeout with `registration_namespace_grace_ms` or `III_NAMESPACE_GRACE_MS`, see
+[Registration namespace timeout](../using-iii/configuration#registration-namespace-timeout).
 
 ## What it costs
 
