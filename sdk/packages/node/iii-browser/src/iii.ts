@@ -869,7 +869,7 @@ class Sdk implements ISdk {
       )
     } else if (msgType === MessageType.RegistrationRejected) {
       this.onRegistrationRejected(
-        message as { code: string; namespace: string; worker_name: string; owner_worker_id: string },
+        message as { code: string; namespace: string; worker_name?: string; function_id?: string; owner_worker_id: string },
       )
     } else if (msgType === MessageType.WorkerRegistered) {
       const { worker_id, reattach_token } = message as { worker_id: string; reattach_token?: string }
@@ -889,12 +889,13 @@ class Sdk implements ISdk {
   private onRegistrationRejected(init: {
     code: string
     namespace: string
-    worker_name: string
+    worker_name?: string
+    function_id?: string
     owner_worker_id: string
   }): void {
     if (init.code === 'FUNCTION_NAMESPACE_CONFLICT') {
       console.warn(
-        `[iii] Function registration rejected: function "${init.worker_name}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. Staying connected and serving the rest.`,
+        `[iii] Function registration rejected: function "${init.function_id ?? '<unknown>'}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. Staying connected and serving the rest.`,
       )
       return
     }

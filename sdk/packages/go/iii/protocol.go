@@ -214,7 +214,8 @@ type InvokeFunctionMessage struct {
 type RegistrationRejectedMessage struct {
 	Code          string `json:"code"`
 	Namespace     string `json:"namespace"`
-	WorkerName    string `json:"worker_name"`
+	WorkerName    string `json:"worker_name,omitempty"`
+	FunctionID    string `json:"function_id,omitempty"`
 	OwnerWorkerID string `json:"owner_worker_id"`
 }
 

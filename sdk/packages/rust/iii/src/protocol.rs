@@ -241,12 +241,14 @@ pub enum Message {
     /// the same namespace. The `code` distinguishes the two cases:
     /// [`WORKER_NAMESPACE_CONFLICT`] is fatal (the engine closes the connection;
     /// the SDK stops and does not reconnect), while [`FUNCTION_NAMESPACE_CONFLICT`]
-    /// refuses a single function id, keeps the connection open, and here
-    /// `worker_name` carries the rejected function id.
+    /// refuses a single function id and keeps the connection open.
     RegistrationRejected {
         code: String,
         namespace: String,
-        worker_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        function_id: Option<String>,
         owner_worker_id: String,
     },
 }

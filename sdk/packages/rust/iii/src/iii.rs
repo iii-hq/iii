@@ -1853,9 +1853,16 @@ impl IIIClient {
                 code,
                 namespace,
                 worker_name,
+                function_id,
                 owner_worker_id,
             } => {
-                self.handle_registration_rejected(code, namespace, worker_name, owner_worker_id);
+                self.handle_registration_rejected(
+                    code,
+                    namespace,
+                    worker_name,
+                    function_id,
+                    owner_worker_id,
+                );
             }
             Message::TriggerRegistrationResult {
                 id,
@@ -1890,31 +1897,42 @@ impl IIIClient {
         &self,
         code: String,
         namespace: String,
-        worker_name: String,
+        worker_name: Option<String>,
+        function_id: Option<String>,
         owner_worker_id: String,
     ) {
         match code.as_str() {
             FUNCTION_NAMESPACE_CONFLICT => {
-                // Non-fatal. `worker_name` carries the rejected function id here
-                // (the engine reuses the struct field).
                 tracing::warn!(
                     code = %code,
                     namespace = %namespace,
-                    function_id = %worker_name,
+                    function_id = %function_id.as_deref().unwrap_or("<unknown>"),
                     owner_worker_id = %owner_worker_id,
                     "function registration rejected: another worker in this namespace already \
                      owns this function id; the worker keeps serving its other functions"
                 );
             }
             WORKER_NAMESPACE_CONFLICT => {
-                self.fail_registration_fatal(code, namespace, worker_name, owner_worker_id);
+                self.fail_registration_fatal(
+                    code,
+                    namespace,
+                    worker_name,
+                    function_id,
+                    owner_worker_id,
+                );
             }
             _ => {
                 tracing::error!(
                     code = %code,
                     "registration rejected with an unknown code; treating as fatal"
                 );
-                self.fail_registration_fatal(code, namespace, worker_name, owner_worker_id);
+                self.fail_registration_fatal(
+                    code,
+                    namespace,
+                    worker_name,
+                    function_id,
+                    owner_worker_id,
+                );
             }
         }
     }
@@ -1926,13 +1944,15 @@ impl IIIClient {
         &self,
         code: String,
         namespace: String,
-        worker_name: String,
+        worker_name: Option<String>,
+        function_id: Option<String>,
         owner_worker_id: String,
     ) {
         let err = Error::RegistrationRejected {
             code,
             namespace,
             worker_name,
+            function_id,
             owner_worker_id,
         };
         tracing::error!(error = %err, "worker registration rejected; not reconnecting");
@@ -2879,7 +2899,8 @@ mod tests {
         iii.fail_registration_fatal(
             "WORKER_NAMESPACE_CONFLICT".to_string(),
             "orders".to_string(),
-            "state".to_string(),
+            Some("state".to_string()),
+            None,
             "owner-1".to_string(),
         );
 
@@ -3346,11 +3367,13 @@ mod tests {
                 code,
                 namespace,
                 worker_name,
+                function_id,
                 owner_worker_id,
             } => {
                 assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
                 assert_eq!(namespace, "orders");
-                assert_eq!(worker_name, "checkout");
+                assert_eq!(worker_name.as_deref(), Some("checkout"));
+                assert!(function_id.is_none());
                 assert_eq!(owner_worker_id, "worker-abc");
             }
             other => panic!("expected RegistrationRejected, got {other:?}"),
@@ -3367,12 +3390,12 @@ mod tests {
         iii.set_connection_state(IIIConnectionState::Connected);
 
         // The engine refused a single duplicate function id but deliberately
-        // kept the connection open. `worker_name` carries the function id.
+        // kept the connection open.
         let payload = json!({
             "type": "registrationrejected",
             "code": "FUNCTION_NAMESPACE_CONFLICT",
             "namespace": "orders",
-            "worker_name": "orders::charge",
+            "function_id": "orders::charge",
             "owner_worker_id": "worker-abc",
         })
         .to_string();

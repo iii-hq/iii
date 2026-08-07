@@ -131,8 +131,8 @@ process can be deployed anywhere reachable on the network.
 
 `namespace` scopes everything this worker registers, so an identically-named worker or function id
 can coexist in another namespace. The SDK resolves it from the explicit option, then the
-`III_NAMESPACE` environment variable, and falls back to the engine's `default` namespace when neither
-is set. The browser SDK has no environment to read, so it takes the option only.
+`III_NAMESPACE` environment variable, and falls back to the `default` namespace when neither is set.
+The browser SDK has no environment to read, so it takes the option only.
 
 <Note>
   For calling across namespaces and handling a rejected registration, see

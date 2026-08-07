@@ -184,7 +184,8 @@ async fn duplicate_function_id_in_same_namespace_is_rejected_without_closing_the
         .expect("second worker must receive RegistrationRejected");
     assert_eq!(rejection["code"], "FUNCTION_NAMESPACE_CONFLICT");
     assert_eq!(rejection["namespace"], "orders");
-    assert_eq!(rejection["worker_name"], "svc::f");
+    assert_eq!(rejection["function_id"], "svc::f");
+    assert!(rejection.get("worker_name").is_none());
     assert_eq!(rejection["owner_worker_id"], first_id);
 
     // The connection must survive: a refused function is not a fatal error.
@@ -338,6 +339,7 @@ async fn second_worker_with_same_name_in_same_namespace_is_rejected_and_closed()
     assert_eq!(rejection["code"], "WORKER_NAMESPACE_CONFLICT");
     assert_eq!(rejection["namespace"], "orders");
     assert_eq!(rejection["worker_name"], "state");
+    assert!(rejection.get("function_id").is_none());
     assert_eq!(rejection["owner_worker_id"], winner_id);
 
     assert!(

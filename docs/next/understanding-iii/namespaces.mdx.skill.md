@@ -323,8 +323,13 @@ Read the fatal error to report which identity collided and with whom:
     ```rust
     use iii_sdk::Error;
 
-    if let Some(Error::RegistrationRejected { code, namespace, worker_name, owner_worker_id }) =
-        worker.fatal_error()
+    if let Some(Error::RegistrationRejected {
+        code,
+        namespace,
+        worker_name: Some(worker_name),
+        owner_worker_id,
+        ..
+    }) = worker.fatal_error()
     {
         eprintln!("{code}: {worker_name} in {namespace} owned by {owner_worker_id}");
     }

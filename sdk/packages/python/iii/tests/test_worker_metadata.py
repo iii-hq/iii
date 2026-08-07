@@ -243,11 +243,9 @@ def test_function_namespace_conflict_keeps_worker_serving() -> None:
             json.dumps(
                 {
                     "type": "registrationrejected",
-                    # For FUNCTION conflicts the engine reuses the struct, so
-                    # `worker_name` carries the conflicting function id.
                     "code": "FUNCTION_NAMESPACE_CONFLICT",
                     "namespace": "orders",
-                    "worker_name": "state::get",
+                    "function_id": "state::get",
                     "owner_worker_id": "owner-123",
                 }
             )

@@ -556,8 +556,7 @@ class III:
         * ``FUNCTION_NAMESPACE_CONFLICT`` -- another live worker already exports
           this one function id. Only that registration is refused; the engine
           keeps the connection open and this worker keeps serving everything
-          else. Non-fatal: log and continue. (Here ``worker_name`` carries the
-          conflicting function id -- the engine reuses the struct.)
+          else. Non-fatal: log and continue.
         * ``WORKER_NAMESPACE_CONFLICT`` -- another live worker already holds this
           ``(namespace, worker_name)``. The engine closes the connection. Fatal:
           stop and do NOT reconnect. Any unknown code is treated as fatal too.
@@ -571,7 +570,7 @@ class III:
                 "function; the worker keeps serving its other exports.",
                 code,
                 data.get("namespace", ""),
-                data.get("worker_name", ""),
+                data.get("function_id", ""),
                 data.get("owner_worker_id", ""),
             )
             return

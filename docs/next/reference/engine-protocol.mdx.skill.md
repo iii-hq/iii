@@ -107,11 +107,27 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
 that `trigger_type` (e.g. `http` for `http` triggers). The engine responds with a
 `TriggerRegistrationResult` carrying an optional `error: ErrorBody`.
 
-`namespace` is optional and names the namespace `function_id` resolves in when the trigger fires. It
-is independent of the registering connection's own namespace: an absent `namespace` means `default`,
-not "the namespace this worker registered under". The typed SDK helpers that pair a function with its
-trigger (`registerTriggerType(...).registerTrigger`) fill it with the worker's own namespace; the
-low-level `registerTrigger` leaves it absent.
+`namespace` specifies the namespace of the target function. It uses the same namespace system as
+worker registration. Usually, it has the same value as the worker namespace.
+
+A trigger can call a function in a different namespace. For this reason, `RegisterTrigger` includes
+the target `namespace`. If this field is not present, `function_id` resolves in `default`.
+
+The typed SDK helper `registerTriggerType(...).registerTrigger` sets this field to the worker
+namespace. The low-level `registerTrigger` API does not set this field automatically. Set
+`namespace` explicitly if the target function is not in `default`.
+
+These fields target `math::add` in `default`:
+
+```json
+{ "function_id": "math::add" }
+```
+
+These fields target `math::add` in `orders`:
+
+```json
+{ "function_id": "math::add", "namespace": "orders" }
+```
 
 ## `RegisterTriggerType`
 
@@ -214,17 +230,26 @@ namespace(s): orders, analytics.`
 }
 ```
 
-Pushed when a registration collides with a worker that is already live in `namespace`.
-`owner_worker_id` identifies the worker that holds the contested identity. `code` decides the
-severity:
+The engine sends this message when a registration conflicts with a live worker in `namespace`.
+`owner_worker_id` identifies the worker that owns the identity. `code` specifies the identity field
+and the severity. Each message contains only one identity field:
 
-| `code`                        | `worker_name` carries | Connection | Severity                                                                     |
-| ----------------------------- | --------------------- | ---------- | ---------------------------------------------------------------------------- |
-| `WORKER_NAMESPACE_CONFLICT`   | the worker name       | closed by the engine | Fatal. The SDK stops the worker and does not reconnect.            |
-| `FUNCTION_NAMESPACE_CONFLICT` | the function id       | stays open | Non-fatal. Only that one registration is refused; the worker keeps serving its other functions. |
+| `code`                        | Identity field | Connection           | Severity                                                                                        |
+| ----------------------------- | -------------- | -------------------- | ----------------------------------------------------------------------------------------------- |
+| `WORKER_NAMESPACE_CONFLICT`   | `worker_name`  | closed by the engine | Fatal. The SDK stops the worker and does not reconnect.                                         |
+| `FUNCTION_NAMESPACE_CONFLICT` | `function_id`  | stays open           | Non-fatal. The engine refuses one function registration. The worker serves its other functions. |
 
-The struct is reused for both codes, so on a `FUNCTION_NAMESPACE_CONFLICT` the `worker_name` field
-holds the contested function id rather than a worker name.
+A function conflict has this format:
+
+```json
+{
+  "type": "registrationrejected",
+  "code": "FUNCTION_NAMESPACE_CONFLICT",
+  "namespace": "orders",
+  "function_id": "state::get",
+  "owner_worker_id": "3f9c1a2e-…"
+}
+```
 
 A worker restarting against its own not-yet-cleaned connection is not a conflict: the engine treats
 a connection that has begun tearing down as not live, so the restart reclaims its name immediately.
