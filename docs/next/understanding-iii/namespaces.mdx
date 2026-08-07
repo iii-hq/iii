@@ -1,8 +1,7 @@
 ---
 title: "Namespaces"
 description:
-  "Why iii routes on a namespace dimension carried alongside the function id, instead of folding it
-  into the name."
+  "iii routes functions based on their namespace allowing for multiple tenants, agents, projects, and teams to exist in the same system without conflicts."
 owner: "devrel"
 type: "explanation"
 ---
@@ -11,20 +10,17 @@ type: "explanation"
 
 A namespace is a routing dimension the engine carries alongside a function id and a worker name. It
 is not part of either. `state::get` is `state::get` whether it is registered in `default`, `orders`, or
-`analytics`; what changes is the second coordinate the engine files it under.
+`analytics`.
 
 The registries are keyed by pairs rather than by strings: `(namespace, function_id)` for functions,
-`(namespace, worker_name)` for worker identity. A namespace is declared once per connection, and
+`(namespace, worker_name)` for worker identity. A namespace is declared once per worker connection, and
 every registration that connection makes inherits it.
 
 ## The problem it solves
 
-Before namespaces, a running engine had one flat registry. A function id was globally unique, and so
-was a worker name. That is a comfortable model right up to the moment two things legitimately want
-the same name.
 
 The concrete case is two projects on one engine, each declaring a `state` worker. Both are correct;
-neither is willing to rename. Without a second coordinate the engine has to pick one, and every
+neither is able to rename. Without a second coordinate the engine has to pick one, and every
 option is bad: the second registration overwrites the first, or it is silently dropped, or callers
 get whichever worker happened to connect first. A system that routes by name alone cannot host two
 tenants that disagree about names.
@@ -47,7 +43,7 @@ the whole point of having a second coordinate rather than a longer first one.
 
 ## Why routing is strict
 
-Resolution never searches. A call with no namespace resolves in `default` and nowhere else; a call
+A call with no namespace resolves to `default`; a call
 naming `orders` resolves in `orders` and nowhere else. In particular the caller's own namespace does
 not influence where its calls land: a worker registered in `analytics` that calls `state::get`
 without saying so reaches `default`, not its own neighbour.
@@ -58,11 +54,11 @@ worker to a namespace can silently re-target calls that were resolving somewhere
 a function id can resolve to a real function in another tenant instead of failing. The failure is
 invisible, and it is a wrong answer rather than a missing one.
 
-Strictness makes the failure loud instead. A miss returns `function_not_found` and names the
-namespaces where the id does exist, so the caller learns both that the call was wrong and how to fix
+Strictness makes the failure loud instead. A miss returns `function_not_found` and reports the
+any namespaces where the id does exist, so the caller learns both that the call was wrong and how to fix
 it, without the engine ever guessing on their behalf.
 
-Introspection is the one place where a looser rule earns its keep. Asking "what is this engine
+Asking "what is this engine
 running?" with no namespace in hand is a reasonable question, and an engine whose every worker is
 namespaced would otherwise be unable to describe itself. So `engine::functions::info` and
 `engine::workers::info` prefer `default`, then resolve a name that is unique to one non-default
@@ -70,15 +66,10 @@ namespace, and report an ambiguity when a name is registered under several names
 stop short of guessing for exactly the same reason invocation does: naming the candidates is useful,
 picking one silently is not. Passing an explicit namespace restores strict resolution.
 
-## Why a collision is a rejection
+## Why a namespace collision is a rejection
 
 When a worker claims a name another live worker already holds in the same namespace, the engine
 refuses the registration rather than accepting it.
-
-The alternative, last-write-wins, is how a flat registry degrades in practice: a second copy of a
-worker starts, quietly takes ownership of the name, and calls begin landing somewhere their author
-did not intend. Nothing errors. The symptom surfaces much later, as a behaviour change with no
-obvious cause.
 
 Refusal moves that discovery to the moment the mistake is made, and it distinguishes two severities.
 A contested **worker name** is an identity conflict: the worker cannot function as itself, so the
@@ -87,17 +78,19 @@ contested **function id** is narrower: only that one registration is refused, th
 open, and the worker keeps serving everything else it registered. Treating both as fatal would take
 a healthy worker offline over one duplicated function.
 
+<Note>
 There is a case that looks like a collision and is not: a worker restarting faster than the engine
 cleans up its previous connection, contending with itself. The engine treats a connection that has
 begun tearing down as no longer live, so a restart reclaims its own name immediately. Without that
 carve-out the default `hostname:pid` naming would make fast restarts fail against their own ghost.
+</Note>
 
 ## Why it arrives per connection
 
-A namespace is declared on the `engine::workers::register` call rather than on each registration
-frame, because it describes the worker, not the individual function. One worker is one identity in
+A namespace is declared on the `engine::workers::register` call
+because it describes the worker, not the individual function. One worker is one identity in
 one namespace; letting individual registrations disagree would create a worker that is partly in two
-places.
+or more places.
 
 That choice has a cost, and the cost is ordering. SDKs have always flushed their `RegisterFunction`
 frames as soon as the socket opens, before announcing worker metadata. If the engine filed those
@@ -127,9 +120,12 @@ queues iii does not own, so those need operator action.
 
 ## Declare the worker's namespace
 
-Pass `namespace` when registering the worker. The SDK resolves it in this order: the explicit option,
-then the `III_NAMESPACE` environment variable, then nothing at all, in which case the engine files
-the worker under `default`.
+Pass `namespace` when registering the worker. The recommended approach is to always reference
+the III_NAMESPACE environment variable so that it can be dynamically assigned at runtime.
+
+The SDK's behavior is to assign the `default` workspace when `namespace` is not specified. If 
+namespace is an invalid value (empty string, null, none, undefined, non-string) then the SDK will
+error.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -184,26 +180,26 @@ the worker under `default`.
 </Tabs>
 
 <Warning>
-  The browser SDK has no environment to read, so `namespace` must be passed explicitly there.
+  The browser SDK has no environment to read, so `namespace` must be passed explicitly or obtained
+  at runtime via other methods. For untrusted clients like browsers it's common to hardcode their namespace.
 </Warning>
 
 Every function, service, and trigger type this worker registers now lands in `orders`. A second
 worker can register `state` in `analytics` on the same engine without either one displacing the
 other.
 
-### Namespace a worker iii starts for you
+### Shipping with a custom namespace
 
-Managed workers pick the value up from `III_NAMESPACE`, so set it in the worker's `iii.worker.yaml`
-manifest:
+If you have a preferred namespace for your shipped worker you can set it in its `iii.worker.yaml`:
 
 ```yaml iii.worker.yaml
 env:
   III_NAMESPACE: orders
 ```
 
-A worker whose manifest you don't control inherits `III_NAMESPACE` from the environment the engine
-runs in, which namespaces every managed worker in that project at once. There is no per-worker
-`namespace:` key in `config.yaml`.
+<Note>
+This value will replace `default` when namespace is otherwise unspecified. If a consumer does specify `III_NAMESPACE` in their environment then that env takes precedence.
+</Note>
 
 ### Call a function in another namespace
 
