@@ -27,8 +27,7 @@ route copies of new events to it.
 | 0.23.x  | `iii.{topic}.{function_id}@{ns}.queue`  | `iii.{topic}.{function_id}@{ns}.dlq`  |
 
 `{ns}` is the subscriber's namespace, `default` when it declared none. Any `@` or `\` inside a
-topic, function id, or namespace is backslash-escaped before the join, so the single unescaped `@` is
-always the namespace boundary.
+topic, function id, or namespace is backslash-escaped before the join.
 
 <Warning>
   Drain the old queues before upgrading. Messages left in a pre-0.23 queue are not migrated and no
@@ -76,13 +75,13 @@ Queue name contains the namespace separator; skipped by the legacy subscriber-qu
   consumer drain the skipped queue, and then repeat the upgrade.
 </Warning>
 
-## Step 3: Tune the registration grace, if needed
+## Step 3: Tune the registration grace period, if needed
 
 A connection's namespace arrives on its `engine::workers::register` call, which SDKs send after their
 first registration frames. The engine buffers a connection's registrations until the namespace is
 known, or until a grace period expires and the connection is fixed to `default`.
 
-The default grace is 5000 ms. Raise it if workers on slow links register but land in `default`
+The default grace period is 5000 ms. Raise it if workers on slow links register but land in `default`
 unexpectedly:
 
 ```yaml config.yaml
@@ -94,7 +93,9 @@ applies to namespace resolution for all new worker connections and overrides
 `registration_namespace_grace_ms`.
 
 ## Step 4: Check for `engine::*` function ids outside `default`
-
+<Note>
+Your own workers are unlikely to have `engine::` prefixed function names but we've documented this as it would be a breaking change if they do exist.
+</Note>
 Every worker has a namespace. A worker uses `default` if you do not specify a namespace.
 `engine::*` is reserved for engine infrastructure, which is registered in `default`. If a worker in
 a non-default namespace registers an `engine::*` function id, the engine rejects that registration
