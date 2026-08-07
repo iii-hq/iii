@@ -102,6 +102,25 @@ pub struct FunctionQueueConfig {
     /// Defaults to 100.
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
+
+    /// Maximum time in milliseconds to wait for a dispatched invocation to
+    /// complete before the message is nacked back through the normal
+    /// retry→DLQ path. Bounds the "dispatched-but-uncompleted" case: a lost
+    /// engine→worker dispatch (or a worker that never returns a result) would
+    /// otherwise leave the message in-flight until the broker's own timeout
+    /// (e.g. RabbitMQ `consumer_timeout`, ~30 min). When unset, dispatch has
+    /// no deadline (the historical behaviour). Set it comfortably above the
+    /// slowest legitimate handler runtime.
+    ///
+    /// The timeout does not cancel work already running on a worker, so a
+    /// retry can execute concurrently with the original (still-running)
+    /// attempt, and a message can dead-letter even though an attempt
+    /// ultimately succeeded — handlers on a bounded queue must be idempotent.
+    /// In-process handlers are instead cancelled at their next await point,
+    /// which can leave partial side effects for the retry to reconcile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub dispatch_timeout_ms: Option<u64>,
 }
 
 impl Default for FunctionQueueConfig {
@@ -115,6 +134,7 @@ impl Default for FunctionQueueConfig {
             priority_field: None,
             backoff_ms: default_backoff_ms(),
             poll_interval_ms: default_poll_interval_ms(),
+            dispatch_timeout_ms: None,
         }
     }
 }
@@ -190,6 +210,16 @@ impl QueueModuleConfig {
             if queue_config.max_priority == Some(0) {
                 anyhow::bail!(
                     "Queue '{}' has 'max_priority' 0; it must be between 1 and 255",
+                    name
+                );
+            }
+            // A 0ms dispatch timeout fires before any handler can run, so every
+            // invocation would nack immediately. The JSON schema
+            // (`range(min = 1)`) rejects this at `configuration::set`, but the
+            // `config.yaml` seed bypasses the schema, so guard here too.
+            if queue_config.dispatch_timeout_ms == Some(0) {
+                anyhow::bail!(
+                    "Queue '{}' has 'dispatch_timeout_ms' 0; it must be at least 1 (or omitted to disable)",
                     name
                 );
             }
@@ -541,6 +571,44 @@ adapter:
         assert!(config.message_group_field.is_none());
         assert_eq!(config.backoff_ms, 1000);
         assert_eq!(config.poll_interval_ms, 100);
+        // Dispatch timeout is opt-in: unset by default preserves the historical
+        // unbounded-dispatch behaviour.
+        assert!(config.dispatch_timeout_ms.is_none());
+    }
+
+    #[test]
+    fn function_queue_config_parses_dispatch_timeout_ms() {
+        // Absent -> None (opt-in, no deadline).
+        let without: FunctionQueueConfig =
+            serde_json::from_str(r#"{"max_retries": 2}"#).expect("should deserialize");
+        assert!(without.dispatch_timeout_ms.is_none());
+
+        // Present -> Some(ms).
+        let with: FunctionQueueConfig =
+            serde_json::from_str(r#"{"dispatch_timeout_ms": 5000}"#).expect("should deserialize");
+        assert_eq!(with.dispatch_timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn validate_rejects_zero_dispatch_timeout() {
+        let mut queue_configs = HashMap::new();
+        queue_configs.insert(
+            "jobs".to_string(),
+            FunctionQueueConfig {
+                dispatch_timeout_ms: Some(0),
+                ..Default::default()
+            },
+        );
+        let config = QueueModuleConfig {
+            adapter: None,
+            queue_configs,
+        };
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("jobs"), "error should name the queue: {err}");
+        assert!(
+            err.contains("dispatch_timeout_ms"),
+            "error should name the field: {err}"
+        );
     }
 
     #[test]

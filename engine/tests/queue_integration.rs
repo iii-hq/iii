@@ -9,13 +9,13 @@ use tokio::sync::Mutex;
 
 use iii::{
     engine::Engine,
-    function::{Function, FunctionResult},
     workers::{queue::QueueWorker, traits::Worker},
 };
 
 use common::queue_helpers::{
     builtin_queue_config, create_engine_with_queue, dlq_count, enqueue, register_counting_function,
     register_failing_function, register_order_recording_function, register_slow_function,
+    register_wedging_function,
 };
 
 // ---------------------------------------------------------------------------
@@ -502,5 +502,134 @@ async fn start_paused_smoke_test() {
         elapsed >= Duration::from_secs(60),
         "tokio time should have auto-advanced by 60s, but elapsed was {:?}",
         elapsed
+    );
+}
+
+/// A queue config with a single-slot `standard` queue whose invocations are
+/// bounded by `dispatch_timeout_ms`. `max_retries: 0` dead-letters on the
+/// first nack, so a timed-out dispatch lands in the DLQ immediately.
+fn dispatch_timeout_queue_config() -> Value {
+    json!({
+        "queue_configs": {
+            "wedge": {
+                "type": "standard",
+                "concurrency": 1,
+                "max_retries": 0,
+                "dispatch_timeout_ms": 200,
+                "backoff_ms": 100,
+                "poll_interval_ms": 50
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn dispatch_timeout_wedged_handler_dead_letters() {
+    // A handler that never returns (a lost/wedged dispatch) must not pin the
+    // message forever: the per-invocation dispatch timeout nacks it back
+    // through the normal retry→DLQ path. With max_retries=0 it dead-letters on
+    // the first timeout.
+    let engine = create_engine_with_queue(dispatch_timeout_queue_config()).await;
+
+    let call_count = Arc::new(AtomicU64::new(0));
+    register_wedging_function(&engine, "test::wedged", call_count.clone());
+
+    assert_eq!(dlq_count(&engine, "wedge").await, 0);
+
+    enqueue(&engine, "wedge", "test::wedged", json!({"wedge": true}))
+        .await
+        .expect("Enqueue should succeed");
+
+    // dispatch_timeout_ms=200 → the timeout fires, nacks, and (max_retries=0)
+    // routes straight to the DLQ well within this window.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "The wedged handler should have been entered exactly once"
+    );
+    assert_eq!(
+        dlq_count(&engine, "wedge").await,
+        1,
+        "The timed-out message should have been dead-lettered"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_timeout_releases_concurrency_slot() {
+    // Regression test for the reported symptom: a wedged invocation permanently
+    // consuming one of the queue's concurrency slots. With concurrency=1, a
+    // second (healthy) message can only run if the first wedged dispatch's slot
+    // is released when its dispatch timeout fires.
+    let engine = create_engine_with_queue(dispatch_timeout_queue_config()).await;
+
+    let wedge_count = Arc::new(AtomicU64::new(0));
+    let ok_count = Arc::new(AtomicU64::new(0));
+    register_wedging_function(&engine, "test::wedge", wedge_count.clone());
+    register_counting_function(&engine, "test::ok", ok_count.clone());
+
+    // Wedge first, then a healthy message — both on the single-slot queue.
+    enqueue(&engine, "wedge", "test::wedge", json!({"wedge": true}))
+        .await
+        .expect("Enqueue should succeed");
+    enqueue(&engine, "wedge", "test::ok", json!({"ok": true}))
+        .await
+        .expect("Enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    assert_eq!(
+        ok_count.load(Ordering::SeqCst),
+        1,
+        "The healthy message must run once the wedged dispatch releases the slot"
+    );
+    assert_eq!(
+        dlq_count(&engine, "wedge").await,
+        1,
+        "The wedged message should have been dead-lettered after its timeout"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_timeout_unset_leaves_dispatch_unbounded() {
+    // Regression guard for backward compatibility: with dispatch_timeout_ms
+    // unset, a slow-but-completing handler must still succeed (and not be
+    // dead-lettered) — the fix preserves the historical unbounded behaviour.
+    let config = json!({
+        "queue_configs": {
+            "unbounded": {
+                "type": "standard",
+                "concurrency": 1,
+                "max_retries": 0,
+                "poll_interval_ms": 50
+            }
+        }
+    });
+    let engine = create_engine_with_queue(config).await;
+
+    let timestamps = Arc::new(Mutex::new(Vec::new()));
+    register_slow_function(
+        &engine,
+        "test::slow",
+        Duration::from_millis(400),
+        timestamps.clone(),
+    );
+
+    enqueue(&engine, "unbounded", "test::slow", json!({"k": "v"}))
+        .await
+        .expect("Enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    assert_eq!(
+        timestamps.lock().await.len(),
+        1,
+        "The slow handler should have completed exactly once"
+    );
+    assert_eq!(
+        dlq_count(&engine, "unbounded").await,
+        0,
+        "No message should be dead-lettered when dispatch timeout is unset"
     );
 }
