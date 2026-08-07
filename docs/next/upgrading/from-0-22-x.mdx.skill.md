@@ -94,13 +94,11 @@ applies to namespace resolution for all new worker connections and overrides
 
 ## Step 4: Check for `engine::*` function ids outside `default`
 
-`engine::*` is reserved for engine and builtin infrastructure, which is registered in `default`.
-A worker that registers an `engine::*` function id while running in another namespace now has that
-one registration refused with a `FUNCTION_NAMESPACE_CONFLICT`; the connection stays open and its
-other functions keep serving. Rename any such id to your own `service::name` prefix.
-
-This only affects workers that both use a namespace and register under the `engine::` prefix, so a
-project that has not adopted namespaces is unaffected.
+Every worker has a namespace. A worker uses `default` if you do not specify a namespace.
+`engine::*` is reserved for engine infrastructure, which is registered in `default`. If a worker in
+a non-default namespace registers an `engine::*` function id, the engine rejects that registration
+with `FUNCTION_NAMESPACE_CONFLICT`. The connection stays open, and its other functions continue to
+serve requests. Rename the function with your own `service::name` prefix.
 
 ## Step 5: Scope RBAC expose rules when adopting a namespace
 
