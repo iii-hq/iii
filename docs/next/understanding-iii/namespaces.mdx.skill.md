@@ -114,8 +114,8 @@ adding a coordinate stops being free.
 Durable queue identity is the visible case. A subscriber queue is now scoped by namespace, so two
 subscribers of the same topic and function id in different namespaces are two queues receiving the
 same event rather than two competing consumers of one queue. That is the correct behaviour, and it
-means the queue names changed. The builtin broker migrates its own queues; an external broker holds
-queues iii does not own, so those need operator action.
+means the queue names changed. The engine migrates queues in its managed storage. External brokers
+hold queues the engine does not own, so those need operator action.
 
 <Note>
   For the migration steps, see [Upgrading from 0.22.x](../upgrading/from-0-22-x).

@@ -38,17 +38,39 @@ For each affected subscriber:
 3. Upgrade and restart. The adapter declares the new namespace-qualified queue on the next subscribe.
 4. Delete the drained queue and its dead-letter queue from the broker.
 
-## Step 2: Verify the builtin broker migrated
+## Step 2: Verify migration of engine-managed queues
 
-The builtin broker migrates itself. On the first boot after the upgrade it drains each legacy
-subscriber queue into its namespaced identity and logs one line per queue:
+This step applies when your deployment stores durable queues in the queue storage managed by the
+engine. It does not apply to RabbitMQ.
+
+At startup, before queue consumers start, the engine scans the stored durable subscriber queues. For
+each queue without a namespace, it moves the waiting, active, delayed, and dead-letter entries to the
+same queue in `default`. Active jobs return to the waiting state. Delayed jobs keep their scheduled
+time.
+
+| Before                       | After                                |
+| ---------------------------- | ------------------------------------ |
+| `{topic}::{function_id}`     | `{topic}::{function_id}@default`     |
+
+The engine uses `default` because a legacy queue does not contain a namespace. The migration is
+idempotent. If startup stops during migration, the next startup continues without duplicating jobs.
+The engine logs each migrated queue:
 
 ```text
 Drained legacy subscriber queue into its namespace
 ```
 
-No action is needed. A queue name that already contains the separator is skipped and logged as such,
-because it cannot be told apart from an already-migrated name.
+If a legacy queue name contains `@`, the engine cannot determine if the character is part of the old
+name or marks a namespace. It does not migrate that queue and logs this warning:
+
+```text
+Queue name contains the namespace separator; skipped by the legacy subscriber-queue drain
+```
+
+<Warning>
+  If you see this warning, stop publishing. Restart 0.22.x with the same queue storage, let its
+  consumer drain the skipped queue, and then repeat the upgrade.
+</Warning>
 
 ## Step 3: Tune the registration grace, if needed
 
@@ -96,7 +118,7 @@ namespace; they come from the session's auth result, which carries no namespace.
 ## Migration checklist
 
 - [ ] Drain and delete pre-0.23 RabbitMQ subscriber and dead-letter queues (Step 1)
-- [ ] Confirm the builtin broker logged its legacy-queue drain on first boot (Step 2)
+- [ ] Confirm the engine logged each legacy queue migration on startup (Step 2)
 - [ ] Raise `registration_namespace_grace_ms` if workers land in `default` unexpectedly (Step 3)
 - [ ] Rename `engine::*` function ids registered by namespaced workers (Step 4)
 - [ ] Add `namespace:` to `expose_functions` rules for namespaced workers (Step 5)
