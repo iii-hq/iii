@@ -1,0 +1,82 @@
+---
+// iii.dev/agent — a coding-agent-focused landing page, built the same way as
+// the homepage (src/pages/index.astro): byte-faithful raw HTML fragments
+// assembled with set:html. Unlike /pi (src/pages/pi.astro), this page makes
+// no comparison to any other product by name — it pitches iii's own
+// comprehensive functionality for coding agents on its own terms, using the
+// homepage's existing sections wherever one already makes the point (the
+// any-agent/one-system diagram, the cross-language demo, the worker registry
+// ticker, the capability grid, the roadmap list, the footer) instead of
+// re-authoring it. New sections live in components/landing/sections/agent/.
+import SiteNav from '../components/SiteNav.astro'
+import ScrollNav from '../components/ScrollNav.astro'
+import HtmlShell from '../layouts/HtmlShell.astro'
+import '../styles/landing.css'
+import '../styles/pi.css'
+
+import agentHeadExtras from '../components/landing/agent-head-extras.html?raw'
+import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
+
+// New, page-specific sections.
+import agentHero from '../components/landing/sections/agent/01-hero.html?raw'
+import agentManifesto from '../components/landing/sections/agent/02-manifesto.html?raw'
+import agentBringYourOwn from '../components/landing/sections/agent/03-bring-your-own.html?raw'
+import agentFaq from '../components/landing/sections/agent/04-faq.html?raw'
+import agentCloser from '../components/landing/sections/agent/05-closer.html?raw'
+
+// Homepage sections reused verbatim — same file, same ids, same behavior.
+import agents from '../components/landing/sections/07-agents.html?raw'
+import nutshell from '../components/landing/sections/09-nutshell.html?raw'
+import helloWorld from '../components/landing/sections/06-hello-world.html?raw'
+import workers from '../components/landing/sections/05-workers.html?raw'
+import techSpecs from '../components/landing/sections/10-tech-specs.html?raw'
+import footer from '../components/landing/sections/11-footer.html?raw'
+
+// Behavior scripts these sections need. Skipped: 01 (homepage-only Slack
+// chat sequencer) and 04/07 (the internal design tweaks panel) — neither
+// has markup on this page. The rest guard every lookup on element presence,
+// so including them is safe even where only some of their targets exist.
+import pageBehaviors from '../components/landing/scripts/02-page-behaviors.html?raw'
+import workersTicker from '../components/landing/scripts/03-workers-ticker-nested-in-nutshell.html?raw'
+import heroViz from '../components/landing/scripts/05-hero-viz-engine.html?raw'
+import agentSections from '../components/landing/scripts/06-agent-sections-a-harness-collapse-c-.html?raw'
+
+const body = [
+  agentManifesto,
+  agents,
+  nutshell,
+  helloWorld,
+  workers,
+  agentBringYourOwn,
+  techSpecs,
+  agentFaq,
+  agentCloser,
+  footer,
+  pageBehaviors,
+  workersTicker,
+  heroViz,
+  agentSections,
+].join('')
+---
+
+<HtmlShell
+  title="iii for coding agents — the system underneath the harness"
+  description="iii turns a coding agent into one worker in a live system: any language, durable triggers after the turn ends, a live registry, and one trace across everything it touches."
+  canonicalPath="/agent"
+  keywords="iii, coding agent, agent runtime, worker, trigger, function, three primitives, cross-language workers, durable orchestration, worker registry, MCP alternative, AI agent infrastructure"
+>
+  <Fragment slot="head" set:html={agentHeadExtras} />
+  <Fragment set:html={sheetOpen} />
+  <SiteNav pageTitle="agent" />
+  <ScrollNav
+    links={[
+      { id: 'why', label: 'why' },
+      { id: 'agents', label: 'agents' },
+      { id: 'nutshell', label: 'capabilities' },
+      { id: 'workers', label: 'workers' },
+      { id: 'faq', label: 'faq' },
+    ]}
+  />
+  <Fragment set:html={agentHero} />
+  <Fragment set:html={body} />
+</HtmlShell>

@@ -11,6 +11,7 @@ export const INDEXABLE_ROUTES: RouteMeta[] = [
   { path: '/manifesto' },
   { path: '/privacy-policy' },
   { path: '/pi' },
+  { path: '/agent' },
 ]
 
 export const SITE_ORIGIN = 'https://iii.dev'
