@@ -86,10 +86,7 @@ The default grace is 5000 ms. Raise it if workers on slow links register but lan
 unexpectedly:
 
 ```yaml config.yaml
-workers:
-  - name: iii-worker-manager
-    config:
-      registration_namespace_grace_ms: 10000
+registration_namespace_grace_ms: 10000
 ```
 
 Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a worker environment. It

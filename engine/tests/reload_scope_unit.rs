@@ -171,6 +171,7 @@ async fn builder_produces_running_workers_with_matching_entries() {
 // default_config()'s fixed ports (iii-http, iii-stream, iii-worker-manager).
 fn minimal_config_for_builder_tests() -> iii::workers::config::EngineConfig {
     iii::workers::config::EngineConfig {
+        registration_namespace_grace_ms: 5000,
         modules: Vec::new(),
         workers: vec![iii::workers::config::WorkerEntry {
             name: "iii-worker-manager".to_string(),
@@ -241,6 +242,7 @@ async fn serve_returns_on_sigterm() {
     // etc.) bind fixed ports and would conflict with other integration tests
     // running in parallel.
     let config = EngineConfig {
+        registration_namespace_grace_ms: 5000,
         modules: Vec::new(),
         workers: vec![iii::workers::config::WorkerEntry {
             name: "iii-worker-manager".to_string(),

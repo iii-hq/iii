@@ -130,14 +130,11 @@ assigns its `namespace` value, or `default` when the value is absent, and proces
 If the timeout expires first, the engine assigns `default`. A later worker registration cannot change
 the assigned namespace.
 
-`iii-worker-manager` registers no configuration schema, so this setting stays in `config.yaml` and is
-read directly on every boot:
+`registration_namespace_grace_ms` is a global engine setting. Set it at the root of `config.yaml`.
+The engine reads it when it starts:
 
 ```yaml config.yaml
-workers:
-  - name: iii-worker-manager
-    config:
-      registration_namespace_grace_ms: 10000
+registration_namespace_grace_ms: 10000
 ```
 
 The default is `5000 ms`. Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a

@@ -36,10 +36,28 @@ const MIGRATED_BUILTIN_WORKERS: &[(&str, &str)] = &[
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
+    /// How long a new worker connection waits for its namespace registration
+    /// before the engine assigns it to `default`.
+    #[serde(default = "default_registration_namespace_grace_ms")]
+    pub registration_namespace_grace_ms: u64,
     #[serde(default)]
     pub modules: Vec<WorkerEntry>,
     #[serde(default)]
     pub workers: Vec<WorkerEntry>,
+}
+
+fn default_registration_namespace_grace_ms() -> u64 {
+    crate::engine::REGISTRATION_NAMESPACE_GRACE.as_millis() as u64
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
+            modules: Vec::new(),
+            workers: Vec::new(),
+        }
+    }
 }
 
 impl EngineConfig {
@@ -48,7 +66,7 @@ impl EngineConfig {
 
         Self {
             modules,
-            workers: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -146,7 +164,7 @@ impl EngineConfig {
         tracing::info!("Using default config (no config file)");
         let mut cfg = Self {
             modules: default_worker_entries(),
-            workers: Vec::new(),
+            ..Default::default()
         };
         cfg.ensure_builtin_daemons();
         cfg
@@ -686,10 +704,7 @@ impl EngineBuilder {
     /// Adds a worker entry
     pub fn add_worker(mut self, name: &str, config: Option<Value>) -> Self {
         if self.config.is_none() {
-            self.config = Some(EngineConfig {
-                modules: Vec::new(),
-                workers: Vec::new(),
-            });
+            self.config = Some(EngineConfig::default());
         }
 
         if let Some(ref mut cfg) = self.config {
@@ -711,6 +726,9 @@ impl EngineBuilder {
         // engine construction. Re-apply the invariant at the build boundary;
         // ensure_builtin_daemons is idempotent so duplicate calls are safe.
         config.ensure_builtin_daemons();
+
+        self.engine
+            .set_registration_namespace_grace_ms(config.registration_namespace_grace_ms);
 
         crate::workers::observability::metrics::ensure_default_meter();
 
@@ -754,10 +772,6 @@ impl EngineBuilder {
             .map(|c| c.port)
             .unwrap_or(super::worker::DEFAULT_PORT);
         self.engine.set_worker_manager_port(resolved_port);
-        if let Some(ref c) = manager_config {
-            self.engine
-                .set_registration_namespace_grace_ms(c.registration_namespace_grace_ms);
-        }
 
         // Publish the absolute config path so worker-spawning code can hand
         // it to child processes (III_CONFIG_PATH). Absolutized because the
@@ -1503,6 +1517,7 @@ mod tests {
     #[test]
     fn test_ensure_builtin_daemons_is_idempotent() {
         let mut config = EngineConfig {
+            registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
             modules: Vec::new(),
             workers: vec![WorkerEntry {
                 name: "iii-worker-ops".into(),
@@ -1532,6 +1547,20 @@ modules: []
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.modules.is_empty());
+        assert_eq!(
+            config.registration_namespace_grace_ms,
+            default_registration_namespace_grace_ms()
+        );
+    }
+
+    #[test]
+    fn test_config_yaml_with_global_registration_namespace_grace() {
+        let yaml = r#"
+registration_namespace_grace_ms: 10000
+workers: []
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.registration_namespace_grace_ms, 10_000);
     }
 
     #[test]
@@ -2524,6 +2553,37 @@ workers:
     }
 
     #[tokio::test]
+    async fn engine_builder_resolves_global_registration_namespace_grace() {
+        if std::env::var_os("III_NAMESPACE_GRACE_MS").is_some() {
+            return;
+        }
+
+        let builder = EngineBuilder::new()
+            .with_config(EngineConfig {
+                registration_namespace_grace_ms: 10_000,
+                modules: Vec::new(),
+                workers: vec![WorkerEntry {
+                    name: "iii-worker-manager".to_string(),
+                    image: None,
+                    config: Some(serde_json::json!({
+                        "host": "127.0.0.1",
+                        "port": 0,
+                    })),
+                }],
+            })
+            .build()
+            .await
+            .expect("build with global registration namespace grace");
+
+        assert_eq!(
+            builder.engine().registration_namespace_grace(),
+            std::time::Duration::from_millis(10_000)
+        );
+
+        builder.destroy().await.expect("destroy engine");
+    }
+
+    #[tokio::test]
     async fn engine_builder_falls_back_to_default_when_no_manager_entry() {
         // Edge: configs that don't declare `iii-worker-manager` still get
         // one injected via the `mandatory` registration path. That entry
@@ -2532,6 +2592,7 @@ workers:
         // deployment that doesn't explicitly pin a port.
         let builder = EngineBuilder::new()
             .with_config(EngineConfig {
+                registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
                 modules: Vec::new(),
                 workers: Vec::new(),
             })
@@ -2572,6 +2633,7 @@ workers:
         // resolve against the CHILD's cwd and defeat the whole handshake.
         let builder = EngineBuilder::new()
             .with_config(EngineConfig {
+                registration_namespace_grace_ms: default_registration_namespace_grace_ms(),
                 modules: Vec::new(),
                 workers: Vec::new(),
             })

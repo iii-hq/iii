@@ -410,8 +410,8 @@ pub struct Engine {
     /// the SAME file the engine watches (a non-default name like
     /// `config.yml` otherwise silently splits the two).
     config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
-    /// Registration namespace grace in milliseconds, resolved from the
-    /// `iii-worker-manager` config by `EngineBuilder::build`. Read through
+    /// Registration namespace grace in milliseconds, resolved from the global
+    /// engine config by `EngineBuilder::build`. Read through
     /// [`Engine::registration_namespace_grace`], where the `III_NAMESPACE_GRACE_MS`
     /// env var takes precedence and an unset lock falls back to the 5s default.
     registration_namespace_grace_ms: Arc<std::sync::OnceLock<u64>>,
@@ -459,7 +459,7 @@ impl Engine {
 
     /// The effective registration namespace grace. Precedence: the
     /// `III_NAMESPACE_GRACE_MS` env var (runtime override), then the value
-    /// resolved from the `iii-worker-manager` config by `EngineBuilder::build`,
+    /// resolved from the global engine config by `EngineBuilder::build`,
     /// then [`REGISTRATION_NAMESPACE_GRACE`] (5s).
     pub fn registration_namespace_grace(&self) -> Duration {
         if let Some(ms) = std::env::var("III_NAMESPACE_GRACE_MS")
@@ -885,7 +885,7 @@ impl Engine {
                     "namespace registration grace of {}ms expired without an \
                      `engine::workers::register` announce; drained this connection's \
                      buffered registrations into the `{}` namespace. To allow more time, \
-                     raise the `iii-worker-manager` `registration_namespace_grace_ms` config \
+                     raise the global `registration_namespace_grace_ms` config \
                      or set the `III_NAMESPACE_GRACE_MS` env var.",
                     grace.as_millis(),
                     DEFAULT_NAMESPACE,

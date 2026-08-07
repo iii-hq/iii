@@ -100,7 +100,8 @@ value, or `default` when the value is absent. It then processes the held message
 If the timer expires first, the engine assigns `default` and processes the held messages. A later
 worker registration cannot change the assigned namespace.
 
-To change this timeout with `registration_namespace_grace_ms` or `III_NAMESPACE_GRACE_MS`, see
+To change this timeout, use the global `registration_namespace_grace_ms` setting or the
+`III_NAMESPACE_GRACE_MS` environment variable. See
 [Registration namespace timeout](../using-iii/configuration#registration-namespace-timeout).
 
 ## What it costs
