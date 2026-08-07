@@ -276,12 +276,12 @@ to the queue's retry policy.
 
 ## Namespaces
 
-A namespace is a routing dimension carried alongside a function id, never folded into it: `state::get`
+A namespace is a routing dimension carried alongside a function id, never folded into it the function name. For example `state::get`
 is `state::get` in every namespace. Registries are keyed by `(namespace, function_id)` and
 `(namespace, worker_name)`, so the same id or worker name may appear once per namespace.
 
 A worker declares its namespace on the `engine::workers::register` call
-([`RegisterWorkerInput.namespace`](#engine-discovery-functions)), not on a protocol frame. A
+([`RegisterWorkerInput.namespace`](#engine-discovery-functions)). A
 connection that declares none lands in `default`.
 
 ### Resolution
