@@ -92,7 +92,9 @@ workers:
       registration_namespace_grace_ms: 10000
 ```
 
-`III_NAMESPACE_GRACE_MS` overrides the configured value at runtime and takes precedence.
+Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a worker environment. It
+applies to namespace resolution for all new worker connections and overrides
+`registration_namespace_grace_ms`.
 
 ## Step 4: Check for `engine::*` function ids outside `default`
 
