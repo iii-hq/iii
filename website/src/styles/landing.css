@@ -142,6 +142,9 @@
     transition: opacity .4s ease, transform .4s ease;
     will-change: opacity, transform;
   }
+  /* Second carousel on the same line — keeps the single-accent look by
+     rotating in ink rather than a second orange word. */
+  .hero-headline .desc.plain{ color:var(--ink); }
   .hero-headline .desc.is-anim{
     opacity:0;
     transform: translateY(14px);
