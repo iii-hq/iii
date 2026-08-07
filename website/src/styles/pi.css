@@ -1,0 +1,270 @@
+/* iii.dev/pi — page-specific rules layered on top of landing.css (tokens,
+   fonts, base reset, and every reused section's own classes already come
+   from there). Everything in this file is scoped to "pi-" prefixed classes
+   that don't exist anywhere else on the site. */
+
+/* This page's hero-left carries less copy than the homepage's (no email
+   form, no rotating descriptor), so it's shorter than hero-viz. Center it
+   against the visual instead of leaving dead space under a top-aligned
+   column — scoped to this page only, the homepage keeps align-items:start. */
+.hero-inner{ align-items:center; }
+
+/* ============= hero: install button, badge, trust row ============= */
+.pi-install{
+  display:inline-flex; align-items:center; gap:12px;
+  border:1px solid var(--ink);
+  background:var(--bg);
+  color:var(--ink);
+  padding:13px 20px;
+  cursor:pointer;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:13px;
+  transition: background .15s, color .15s;
+  flex-shrink:0;
+}
+.pi-install:hover{ background:var(--ink); color:var(--bg); }
+.pi-install .prompt{ opacity:.6; }
+.pi-install .copy-ico{ display:flex; flex-shrink:0; }
+.pi-install .copy-ico svg{ width:14px; height:14px; }
+.pi-install.copied{ border-color:var(--accent); color:var(--accent); background:var(--bg); }
+.pi-badge-row{ margin:22px 0 0; }
+.pi-badge{
+  display:inline-flex; align-items:center; gap:10px;
+  border:1px solid var(--rule);
+  padding:8px 14px;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px;
+  color:var(--ink-faint);
+  text-decoration:none;
+  transition: border-color .15s, color .15s;
+}
+.pi-badge:hover{ border-color:var(--accent); color:var(--ink); }
+.pi-badge .dot{ width:6px; height:6px; background:var(--accent); flex-shrink:0; }
+.pi-badge .arrow{ color:var(--accent); }
+.pi-trust{
+  display:flex; flex-wrap:wrap; align-items:center; gap:18px;
+  margin:28px 0 0;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px;
+  color:var(--ink-ghost);
+}
+.pi-trust a{ color:var(--ink-faint); text-decoration:none; }
+.pi-trust a:hover{ color:var(--accent); }
+@media (max-width: 720px){
+  .pi-install{ width:100%; }
+  .pi-install .cmd{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+}
+
+/* ============= shared section header (accent claim, mute line) =============
+   Same shape as .xp-title/.nut-title/.hello-title elsewhere on the site,
+   generalized under one class so every new section on this page uses it. */
+.pi-section{ position:relative; padding:88px 36px 0; }
+.pi-section-head{ max-width:900px; margin:0 0 36px; }
+.pi-section-title{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-weight:500;
+  font-size: clamp(20px, 4.2vw, 28px);
+  line-height:1.25;
+  letter-spacing:-0.01em;
+  color:var(--ink);
+  margin:0;
+}
+.pi-section-title .accent{ color:var(--accent); }
+.pi-section-title .mute{ color:var(--ink-faint); }
+.pi-lede{
+  max-width:640px;
+  display:flex; flex-direction:column; gap:14px;
+}
+.pi-lede p{
+  margin:0;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:14px;
+  line-height:1.75;
+  color:var(--ink-2);
+  max-width:46ch;
+}
+.pi-lede p.pi-emph{ color:var(--ink); }
+.pi-lede .accent{ color:var(--accent); font-weight:500; }
+@media (max-width: 720px){
+  .pi-section{ padding:56px 18px 0; }
+}
+
+/* ============= problem / reframe intro / pi-worker share this body shell */
+.pi-body{ padding-bottom:72px; }
+
+/* ============= comparison table ============= */
+.pi-compare{ overflow-x:auto; border:1px solid var(--rule); }
+.pi-compare table{
+  width:100%; min-width:760px;
+  border-collapse:collapse;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12.5px;
+}
+.pi-compare th, .pi-compare td{
+  border-bottom:1px solid var(--rule);
+  border-right:1px solid var(--rule);
+  padding:14px 16px;
+  text-align:left;
+  vertical-align:top;
+  line-height:1.55;
+}
+.pi-compare th:last-child, .pi-compare td:last-child{ border-right:0; }
+.pi-compare thead th{
+  color:var(--ink-ghost);
+  font-weight:500;
+  letter-spacing:.06em;
+  text-transform:lowercase;
+  background:var(--paper-2);
+}
+.pi-compare tbody th{
+  color:var(--ink-faint);
+  font-weight:400;
+  white-space:nowrap;
+  background:var(--paper-2);
+}
+.pi-compare td.pi-col-pi{ color:var(--ink-faint); }
+.pi-compare td.pi-col-iii{ color:var(--ink); }
+.pi-compare tbody tr:last-child th, .pi-compare tbody tr:last-child td{ border-bottom:0; }
+.pi-compare-caption{
+  margin:16px 0 0;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px; line-height:1.7;
+  color:var(--ink-faint);
+  max-width:60ch;
+}
+
+/* ============= differentiator blocks ============= */
+.pi-diffs{ display:flex; flex-direction:column; }
+.pi-diff{
+  border-top:1px solid var(--rule);
+  padding:40px 0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  gap:36px;
+  align-items:start;
+}
+.pi-diff:last-child{ border-bottom:1px solid var(--rule); }
+.pi-diff-num{
+  font-size:12px; color:var(--ink-ghost); letter-spacing:.06em;
+  margin-bottom:10px;
+}
+.pi-diff-title{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-weight:500; font-size:17px; letter-spacing:-0.01em;
+  color:var(--ink);
+  margin:0 0 12px;
+}
+.pi-diff-title .accent{ color:var(--accent); }
+.pi-diff-body{
+  font-size:13.5px; line-height:1.75; color:var(--ink-2);
+  max-width:44ch;
+}
+.pi-diff-body p{ margin:0 0 10px; }
+.pi-diff-body p:last-child{ margin-bottom:0; }
+.pi-diff-body .accent{ color:var(--accent); font-weight:500; }
+.pi-diff-payoff{
+  margin-top:14px;
+  color:var(--ink);
+  font-weight:500;
+}
+.pi-diff-proof{ min-width:0; }
+/* A differentiator's proof is a single hello-card-style code panel — reuse
+   that component's classes directly (border, header, .hello-code syntax
+   highlighting all come free from landing.css + highlightHelloCode()). */
+.pi-diff-proof .hello-card{ border:1px solid var(--rule); }
+.pi-diff-proof .hello-code{ font-size:12px; }
+@media (max-width: 880px){
+  .pi-diff{ grid-template-columns:1fr; }
+}
+
+.pi-diff-payoff-standalone{
+  margin:8px 36px 0;
+  padding:20px 0 0;
+  text-align:center;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:14px;
+  color:var(--ink-faint);
+}
+.pi-diff-payoff-standalone .accent{ color:var(--accent); font-weight:500; }
+@media (max-width: 720px){
+  .pi-diff-payoff-standalone{ margin:8px 18px 0; }
+}
+
+.pi-diff-num-standalone{
+  margin:56px 36px 0;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px; color:var(--ink-ghost); letter-spacing:.06em;
+}
+@media (max-width: 720px){
+  .pi-diff-num-standalone{ margin:40px 18px 0; }
+}
+
+/* ============= pi-as-worker section ============= */
+.pi-worker-panel{
+  border:1px solid var(--rule);
+  display:grid; grid-template-columns:1fr 1fr;
+}
+.pi-worker-col{ padding:24px 26px; }
+.pi-worker-col + .pi-worker-col{ border-left:1px solid var(--rule); }
+.pi-worker-col h3{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px; letter-spacing:.1em; text-transform:lowercase;
+  color:var(--ink-ghost); margin:0 0 12px; font-weight:500;
+}
+.pi-worker-col ul{ margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:10px; }
+.pi-worker-col li{
+  font-size:13px; line-height:1.6; color:var(--ink-2);
+  padding-left:16px; position:relative;
+}
+.pi-worker-col li::before{
+  content:''; position:absolute; left:0; top:.6em;
+  width:6px; height:1px; background:var(--ink-ghost);
+}
+@media (max-width: 720px){
+  .pi-worker-panel{ grid-template-columns:1fr; }
+  .pi-worker-col + .pi-worker-col{ border-left:0; border-top:1px solid var(--rule); }
+}
+
+/* ============= FAQ ============= */
+.pi-faq{ border-top:1px solid var(--rule); max-width:900px; }
+.pi-faq details{ border-bottom:1px solid var(--rule); }
+.pi-faq summary{
+  cursor:pointer;
+  list-style:none;
+  padding:18px 4px;
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:14px; color:var(--ink);
+}
+.pi-faq summary::-webkit-details-marker{ display:none; }
+.pi-faq summary .q-ico{
+  flex-shrink:0; color:var(--ink-ghost);
+  font-size:16px; line-height:1;
+  transition: transform .15s;
+}
+.pi-faq details[open] summary .q-ico{ transform:rotate(45deg); color:var(--accent); }
+.pi-faq .a{
+  margin:0; padding:0 4px 20px;
+  font-size:13.5px; line-height:1.75; color:var(--ink-2);
+  max-width:60ch;
+}
+.pi-faq .a .accent{ color:var(--accent); font-weight:500; }
+
+/* ============= final CTA closer (sits directly above the reused footer) */
+.pi-closer{
+  padding:96px 36px 0;
+  text-align:center;
+}
+.pi-closer p{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:clamp(15px, 2.6vw, 19px);
+  line-height:1.6;
+  color:var(--ink-faint);
+  max-width:640px;
+  margin:0 auto;
+}
+.pi-closer .accent{ color:var(--accent); }
+.pi-closer .ink{ color:var(--ink); }
+@media (max-width: 720px){
+  .pi-closer{ padding:64px 18px 0; }
+}

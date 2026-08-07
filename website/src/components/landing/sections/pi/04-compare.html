@@ -1,0 +1,79 @@
+<!-- COMPARISON TABLE — the screenshot-able asset. New markup, styled with
+     .pi-compare in styles/pi.css: sharp rectangle, cells sharing borders. -->
+<section class="pi-section pi-body" id="compare" aria-label="Pi vs iii, side by side">
+  <header class="pi-section-head">
+    <h2 class="pi-section-title">
+      <span class="accent">side by side.</span>
+      <span class="mute">both are extensible. they extend different things.</span>
+    </h2>
+  </header>
+  <div class="pi-compare">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">dimension</th>
+          <th scope="col">pi</th>
+          <th scope="col">iii</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">what it is</th>
+          <td class="pi-col-pi">minimal coding-agent harness. TUI, CLI, RPC, SDK</td>
+          <td class="pi-col-iii">runtime and protocol for the whole stack. harness included</td>
+        </tr>
+        <tr>
+          <th scope="row">how you make it yours</th>
+          <td class="pi-col-pi">a TypeScript extension, skill, prompt template, theme</td>
+          <td class="pi-col-iii">create workers that register functions and triggers</td>
+        </tr>
+        <tr>
+          <th scope="row">language</th>
+          <td class="pi-col-pi">node / TypeScript, in-process</td>
+          <td class="pi-col-iii">any language, any runtime, interoperably: TS calling Python calling Rust</td>
+        </tr>
+        <tr>
+          <th scope="row">adding capability</th>
+          <td class="pi-col-pi"><code>pi install npm:&hellip;</code>, then <code>/reload</code></td>
+          <td class="pi-col-iii"><code>iii worker add</code>, live, callable by every worker instantly</td>
+        </tr>
+        <tr>
+          <th scope="row">discovery</th>
+          <td class="pi-col-pi">files on disk, loaded at startup</td>
+          <td class="pi-col-iii">a live engine registry: register once, visible system-wide</td>
+        </tr>
+        <tr>
+          <th scope="row">sub-agents</th>
+          <td class="pi-col-pi">not built. tmux, or write an extension</td>
+          <td class="pi-col-iii">first-class: spawn, react, behave like any other worker</td>
+        </tr>
+        <tr>
+          <th scope="row">work after the turn ends</th>
+          <td class="pi-col-pi">turn-scoped. you script it</td>
+          <td class="pi-col-iii">engine-side triggers: cron, state changes, anything the system emits</td>
+        </tr>
+        <tr>
+          <th scope="row">observability</th>
+          <td class="pi-col-pi">session trees, <code>/export</code>, <code>/share</code>, tmux</td>
+          <td class="pi-col-iii">one trace across every worker, every language, every action executed</td>
+        </tr>
+        <tr>
+          <th scope="row">tool protocol</th>
+          <td class="pi-col-pi">no MCP by design: CLI tools plus READMEs</td>
+          <td class="pi-col-iii">functions with published schemas as the single contract</td>
+        </tr>
+        <tr>
+          <th scope="row">distribution</th>
+          <td class="pi-col-pi">npm or git packages of code</td>
+          <td class="pi-col-iii">a registry of running participants, as easy to install as a library</td>
+        </tr>
+        <tr>
+          <th scope="row">runs where</th>
+          <td class="pi-col-pi">your machine, one process</td>
+          <td class="pi-col-iii">docker, k8s, the edge, a browser tab, a raspberry pi, a microVM</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="pi-compare-caption">extending a harness on iii means building new tools for that harness, and for the system underneath it. that's the more sustainable version of the same instinct.</p>
+</section>
