@@ -1,0 +1,87 @@
+<section class="pi-section pi-body" aria-label="Differentiators, continued" style="padding-top: 0;">
+  <div class="pi-diffs">
+
+    <article class="pi-diff">
+      <div>
+        <div class="pi-diff-num">02 / 06</div>
+        <h3 class="pi-diff-title"><span class="accent">the harness is inside</span> the system.</h3>
+        <div class="pi-diff-body">
+          <p>the agent calls the same registry the system does. contracts get fetched, not memorized, so context comes from the engine on demand instead of being re-explained in the prompt every session.</p>
+          <p class="pi-diff-payoff">pi's answer to context is engineering the prompt. iii's is the system answering questions on demand.</p>
+        </div>
+      </div>
+      <div class="pi-diff-proof">
+        <article class="hello-card">
+          <div class="hello-chead">
+            <div class="hello-meta">
+              <div class="t">engine::functions::list</div>
+              <div class="s">called from inside the harness worker</div>
+            </div>
+          </div>
+          <pre class="hello-code" data-lang="typescript"><code>const fns = await iii.trigger({
+  function_id: "engine::functions::list",
+  payload: {},
+})
+<span class="hl-cmt" data-cmt="fns"> // fns → every registered function, with its schema</span>
+<span class="hl-cmt" data-cmt="read"> // the agent reads the system instead of remembering it</span></code></pre>
+        </article>
+      </div>
+    </article>
+
+    <article class="pi-diff">
+      <div>
+        <div class="pi-diff-num">03 / 06</div>
+        <h3 class="pi-diff-title"><span class="accent">durable orchestration,</span> not scripted turns.</h3>
+        <div class="pi-diff-body">
+          <p>register a trigger, end the turn, get woken. fan-out, fan-in, joins, and deadline wakes are primitives here, not something scripted around a chat loop.</p>
+          <p class="pi-diff-payoff">pi ships no sub-agents and no background bash, on purpose. iii ships both because a system needs them.</p>
+        </div>
+      </div>
+      <div class="pi-diff-proof">
+        <article class="hello-card">
+          <div class="hello-chead">
+            <div class="hello-meta">
+              <div class="t">reports::nightly</div>
+              <div class="s">a cron trigger, registered once</div>
+            </div>
+          </div>
+          <pre class="hello-code" data-lang="typescript"><code>worker.registerFunction("reports::nightly", async () => {
+  await buildReport()
+})
+
+worker.registerTrigger({
+  type: "cron",
+  function_id: "reports::nightly",
+  config: { expression: "0 6 * * *" },
+})
+<span class="hl-cmt" data-cmt="end"> // the turn ends here.</span>
+<span class="hl-cmt" data-cmt="wake"> // the engine wakes reports::nightly at 06:00, every day</span></code></pre>
+        </article>
+      </div>
+    </article>
+
+    <article class="pi-diff">
+      <div>
+        <div class="pi-diff-num">04 / 06</div>
+        <h3 class="pi-diff-title"><span class="accent">live by default.</span></h3>
+        <div class="pi-diff-body">
+          <p>add or remove a capability on a running system with no redesign. no stale specs, no propagation delay, nothing to reload.</p>
+        </div>
+      </div>
+      <div class="pi-diff-proof">
+        <article class="hello-card">
+          <div class="hello-chead">
+            <div class="hello-meta">
+              <div class="t">iii worker add state</div>
+              <div class="s">engine already running, workers already trading traffic</div>
+            </div>
+          </div>
+          <pre class="hello-code"><code>iii worker add state
+
+  ✓ state ready (connected to engine)</code></pre>
+        </article>
+      </div>
+    </article>
+
+  </div>
+</section>
