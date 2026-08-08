@@ -57,6 +57,19 @@ iii trigger sandbox::stop sandbox_id=$SB
 A whitespace-containing `cmd` is split into a command and its arguments. It is not a shell, so it
 does not expand variables or chain commands; use `sandbox::run` with `lang=shell` for that.
 
+## Concurrency and idle cleanup
+
+A sandbox accepts up to `max_concurrent_exec_per_sandbox` simultaneous `sandbox::exec` calls (four
+by default). Concurrent execs share the guest filesystem and process table without mutual
+exclusion, so coordinate commands that mutate shared state. `sandbox::list` reports
+`exec_in_flight` and `exec_slots_free`; `exec_in_progress` only indicates whether at least one exec
+is running and does not mean the next call will be rejected.
+
+Idle cleanup treats an active exec or relayed TCP, UDP, or DNS payload as activity, so a sandbox
+serving network traffic is not automatically stopped while it is handling requests. Bare
+acknowledgements and keepalive probes do not count as activity. Each exec remains bounded by
+`max_exec_timeout_ms`, and you should still call `sandbox::stop` when the sandbox is no longer needed.
+
 ## Catalog
 
 `sandbox::catalog::list` reports the images this engine can boot (presets plus any
@@ -116,7 +129,9 @@ iii trigger sandbox::stop sandbox_id=$SB
 
 ## Moving files in and out
 
-To copy a file between the host and a running sandbox, use the `iii worker sandbox` CLI:
+To copy a file between the host and a running sandbox, use the local `iii worker sandbox`
+file-transfer commands. These admin CLI commands are distinct from the `sandbox::*` trigger API used
+through the engine:
 
 ```bash
 # boot a sandbox and capture its id

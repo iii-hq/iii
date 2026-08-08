@@ -99,6 +99,30 @@ impl ConnectionTracker {
         let tx_buf = tcp::SocketBuffer::new(vec![0u8; TCP_TX_BUF_SIZE]);
         let mut socket = tcp::Socket::new(rx_buf, tx_buf);
 
+        // Nagle off. smoltcp enables it by default, and its own docs name the
+        // failure we hit: "increased latency ... particularly when the remote
+        // peer has ACK delay enabled". The peer here is the guest's Linux
+        // stack, whose delayed-ACK floor is TCP_DELACK_MIN = 40ms, so a small
+        // write held for an outstanding ACK stalls for exactly that. Measured
+        // before this change: a request/response protocol over this proxy sat
+        // at ~0.1ms while calls were sequential, then jumped to a flat ~41ms
+        // the moment two were in flight — identical at 2 and at 200
+        // concurrent, i.e. a fixed timer rather than a per-message cost, and
+        // absent when the same protocol ran over host loopback.
+        //
+        // This socket relays application data that is already framed by the
+        // layer above; coalescing small writes is not ours to do, and the
+        // "tinygram prevention" Nagle buys is worthless on a local
+        // host<->guest link.
+        socket.set_nagle_enabled(false);
+        // ...and do not delay our own ACKs. Nagle-off fixes the leg where WE
+        // held a write for the guest's delayed ACK; this fixes the mirror,
+        // where the guest's own Nagle holds ITS write awaiting an ACK we sit
+        // on for smoltcp's 10ms default. Same failure shape, smaller
+        // constant. A relay carrying already-framed request/response traffic
+        // gains nothing from coalescing ACKs.
+        socket.set_ack_delay(None);
+
         let listen_addr: smoltcp::wire::IpAddress = match dst.ip() {
             std::net::IpAddr::V4(v4) => v4.into(),
             std::net::IpAddr::V6(_) => return false,
@@ -326,6 +350,36 @@ mod tests {
         assert!(tracker.has_socket_for(&src, &dst));
         assert_eq!(tracker.connections.len(), 1);
         assert_eq!(tracker.connection_keys.len(), 1);
+    }
+
+    /// Nagle must be OFF on every proxied socket. With it on (smoltcp's
+    /// default) a request/response protocol over this proxy stalls a flat
+    /// ~41ms as soon as two calls overlap — Nagle holding a small write for
+    /// an outstanding ACK, against the guest Linux stack's 40ms delayed-ACK
+    /// floor. The stall is invisible to a sequential benchmark, which is why
+    /// it survived: it only appears under concurrency.
+    #[test]
+    fn create_tcp_socket_disables_nagle() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+        let src = addr(5000);
+        let dst = dst_addr(80);
+
+        assert!(tracker.create_tcp_socket(src, dst, &mut sockets));
+
+        let handle = *tracker.connections.keys().next().expect("one socket");
+        let socket = sockets.get::<tcp::Socket>(handle);
+        assert!(
+            !socket.nagle_enabled(),
+            "Nagle must be disabled on proxied sockets — it costs ~41ms per \
+             overlapping call against the guest's delayed ACK"
+        );
+        assert_eq!(
+            socket.ack_delay(),
+            None,
+            "delaying our own ACKs stalls the mirror direction: the guest's \
+             Nagle holds its write awaiting an ACK we sit on"
+        );
     }
 
     #[test]

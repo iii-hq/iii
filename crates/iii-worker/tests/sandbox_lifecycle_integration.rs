@@ -58,7 +58,7 @@ fn make_state(id: Uuid) -> SandboxState {
         lifeline: None,
         created_at: Instant::now(),
         last_exec_at: Instant::now(),
-        exec_in_progress: false,
+        exec_in_flight: 0,
         idle_timeout_secs: 300,
         stopped: false,
     }
@@ -194,7 +194,10 @@ async fn exec_happy_path_returns_response_and_clears_in_progress() {
     assert!(resp.success);
 
     let state = reg.get(id).await.unwrap();
-    assert!(!state.exec_in_progress, "in-progress flag must be cleared");
+    assert!(
+        !state.exec_in_progress(),
+        "in-progress flag must be cleared"
+    );
     assert_eq!(
         runner.call_count.load(std::sync::atomic::Ordering::SeqCst),
         1
@@ -243,11 +246,26 @@ async fn exec_on_stopped_sandbox_returns_s004() {
     );
 }
 
+/// Concurrent execs are admitted now — up to the registry's cap. S003 means
+/// "at the cap", not "a second exec".
 #[tokio::test]
-async fn exec_concurrent_on_same_sandbox_returns_s003() {
-    let reg = SandboxRegistry::new();
+async fn exec_within_the_concurrency_cap_is_admitted() {
+    let reg = SandboxRegistry::with_max_exec_in_flight(2);
     let id = live_sandbox(&reg).await;
     let _claim = reg.begin_exec(id).await.unwrap();
+    let runner = FakeShellRunner::ok("", 0);
+
+    handle_exec(build_req(id, "/bin/true"), &reg, &runner)
+        .await
+        .expect("a second exec runs alongside the first");
+}
+
+#[tokio::test]
+async fn exec_beyond_the_concurrency_cap_returns_s003() {
+    let reg = SandboxRegistry::with_max_exec_in_flight(2);
+    let id = live_sandbox(&reg).await;
+    let _a = reg.begin_exec(id).await.unwrap();
+    let _b = reg.begin_exec(id).await.unwrap();
     let runner = FakeShellRunner::ok("", 0);
 
     let err = handle_exec(build_req(id, "/bin/true"), &reg, &runner)
@@ -268,7 +286,7 @@ async fn exec_runner_error_clears_in_progress_flag() {
     assert!(matches!(err, SandboxError::BootFailed(_)));
     let state = reg.get(id).await.unwrap();
     assert!(
-        !state.exec_in_progress,
+        !state.exec_in_progress(),
         "exec_in_progress must clear even when runner returns Err"
     );
 }
@@ -518,6 +536,8 @@ async fn list_returns_summary_for_each_sandbox() {
     assert_eq!(resp.sandboxes.len(), 3);
     for s in &resp.sandboxes {
         assert_eq!(s.image, "python");
+        // `SandboxSummary` is the wire shape — still a bool field here, even
+        // though the registry record behind it is now a count.
         assert!(!s.exec_in_progress);
         assert!(!s.stopped);
     }

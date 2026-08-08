@@ -346,7 +346,7 @@ mod tests {
     use iii_shell_proto::{FsOp, FsReadMeta, FsResult};
     use std::io::Cursor;
     use std::path::PathBuf;
-    use std::time::Instant;
+
     use tokio::sync::Mutex;
 
     struct FakeRunner {
@@ -389,21 +389,7 @@ mod tests {
     }
 
     fn make_state(id: Uuid) -> SandboxState {
-        SandboxState {
-            id,
-            name: None,
-            image: "python".into(),
-            rootfs: PathBuf::from("/tmp/r"),
-            workdir: PathBuf::from("/tmp/w"),
-            shell_sock: PathBuf::from("/tmp/s"),
-            vm_pid: Some(1),
-            lifeline: None,
-            created_at: Instant::now(),
-            last_exec_at: Instant::now(),
-            exec_in_progress: false,
-            idle_timeout_secs: 300,
-            stopped: false,
-        }
+        crate::sandbox_daemon::registry::sandbox_state_for_test(id)
     }
 
     #[tokio::test]

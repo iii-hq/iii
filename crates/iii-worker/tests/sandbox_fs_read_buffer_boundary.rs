@@ -73,21 +73,7 @@ impl FsRunner for FakeRunnerStream {
 }
 
 fn make_state(id: Uuid) -> SandboxState {
-    SandboxState {
-        id,
-        name: None,
-        image: "python".into(),
-        rootfs: PathBuf::from("/tmp/r"),
-        workdir: PathBuf::from("/tmp/w"),
-        shell_sock: PathBuf::from("/tmp/s"),
-        vm_pid: Some(1),
-        lifeline: None,
-        created_at: Instant::now(),
-        last_exec_at: Instant::now(),
-        exec_in_progress: false,
-        idle_timeout_secs: 300,
-        stopped: false,
-    }
+    iii_worker::sandbox_daemon::registry::sandbox_state_for_test(id)
 }
 
 /// Build a 999 KiB Vec<u8> with intentionally invalid UTF-8 bytes

@@ -7,7 +7,19 @@ use iii::{EngineBuilder, engine::EngineTrait};
 /// the caller-facing queue/DLQ functions.
 #[tokio::test]
 async fn explicit_iii_queue_entry_registers_queue_functions() {
+    // The mandatory configuration worker persists entries on boot; point its
+    // store at a tempdir so the test writes nothing into the repo tree.
+    let config_dir = tempfile::tempdir().expect("create config tempdir");
     let builder = EngineBuilder::new()
+        .add_worker(
+            "configuration",
+            Some(json!({
+                "adapter": {
+                    "name": "fs",
+                    "config": { "directory": config_dir.path().to_string_lossy() }
+                }
+            })),
+        )
         .add_worker("iii-engine-functions", None)
         .add_worker("iii-observability", None)
         .add_worker("iii-queue", None)

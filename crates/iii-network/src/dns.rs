@@ -133,6 +133,9 @@ async fn dns_resolver_task(
     };
 
     while let Some(query) = query_rx.recv().await {
+        // A DNS query is guest activity whether or not it resolves —
+        // refresh the idle-reaper beacon at arrival, not at response.
+        shared.note_activity();
         let response_tx = response_tx.clone();
         let shared = shared.clone();
         let resolver = resolver.clone();

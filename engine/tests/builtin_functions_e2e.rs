@@ -4,8 +4,22 @@ use serde_json::json;
 
 use iii::{EngineBuilder, engine::EngineTrait, workers::telemetry::is_iii_builtin_function_id};
 
-async fn boot_bare_engine() -> iii::EngineBuilder {
-    EngineBuilder::new()
+/// The mandatory `configuration` worker persists entries on boot; point its
+/// store at a tempdir so the tests write nothing into the repo-relative
+/// `engine/config/` and leak nothing between runs. The returned `TempDir`
+/// must stay alive for the test's duration.
+async fn boot_bare_engine() -> (iii::EngineBuilder, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().expect("create config tempdir");
+    let builder = EngineBuilder::new()
+        .add_worker(
+            "configuration",
+            Some(json!({
+                "adapter": {
+                    "name": "fs",
+                    "config": { "directory": config_dir.path().to_string_lossy() }
+                }
+            })),
+        )
         .add_worker("iii-engine-functions", None)
         .add_worker("iii-state", None)
         .add_worker("iii-stream", Some(json!({ "port": 0 })))
@@ -16,7 +30,8 @@ async fn boot_bare_engine() -> iii::EngineBuilder {
         .add_worker("iii-worker-manager", Some(json!({ "port": 0 })))
         .build()
         .await
-        .expect("engine build should succeed")
+        .expect("engine build should succeed");
+    (builder, config_dir)
 }
 
 /// Boots the engine with all default modules (ephemeral ports to avoid
@@ -24,7 +39,7 @@ async fn boot_bare_engine() -> iii::EngineBuilder {
 /// and asserts every returned function_id is classified as an iii builtin.
 #[tokio::test]
 async fn all_functions_on_bare_engine_are_iii_builtins() {
-    let builder = boot_bare_engine().await;
+    let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -90,7 +105,7 @@ async fn all_functions_on_bare_engine_are_iii_builtins() {
 /// `request_schema` / `response_schema` keys.
 #[tokio::test]
 async fn functions_info_returns_schemas_for_engine_builtin() {
-    let builder = boot_bare_engine().await;
+    let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -135,7 +150,7 @@ async fn functions_info_returns_schemas_for_engine_builtin() {
 /// request order, without failing the batch.
 #[tokio::test]
 async fn functions_info_batch_returns_details_and_markers() {
-    let builder = boot_bare_engine().await;
+    let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -188,7 +203,7 @@ async fn functions_info_batch_returns_details_and_markers() {
 /// instances. Every row must carry an `id`, `worker_name`, and `description`.
 #[tokio::test]
 async fn triggers_list_returns_trigger_types() {
-    let builder = boot_bare_engine().await;
+    let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -236,7 +251,7 @@ async fn triggers_list_returns_trigger_types() {
 /// canonical `{ registered_triggers: [] }` envelope.
 #[tokio::test]
 async fn registered_triggers_list_returns_canonical_envelope() {
-    let builder = boot_bare_engine().await;
+    let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -277,7 +292,7 @@ async fn registered_triggers_list_returns_canonical_envelope() {
 /// Looking up a known in-process runtime worker by `name` must succeed.
 #[tokio::test]
 async fn workers_info_returns_full_surface_for_runtime_worker() {
-    let builder = boot_bare_engine().await;
+    let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -317,7 +332,7 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
 /// registry for iii-http, iii-cron, iii-state, etc.
 #[tokio::test]
 async fn workers_info_attributes_trigger_types_to_in_process_worker() {
-    let builder = boot_bare_engine().await;
+    let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
     tokio::time::sleep(Duration::from_secs(2)).await;

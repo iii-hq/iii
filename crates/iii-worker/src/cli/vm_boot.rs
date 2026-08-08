@@ -154,6 +154,16 @@ pub struct VmBootArgs {
     /// `--network` only when the request's `network` field is true.
     #[arg(long, default_value = "false")]
     pub network: bool,
+
+    /// Network-activity beacon file (only meaningful with `--network`).
+    /// The smoltcp stack refreshes this file's mtime whenever guest
+    /// payload is relayed (TCP data, UDP datagrams, DNS queries), so the
+    /// sandbox daemon's idle reaper — a separate process with no other
+    /// view into this one — can tell a network-serving sandbox from an
+    /// idle one. Absent => no beacon; the sandbox is reaped on
+    /// exec-idleness alone, as before.
+    #[arg(long)]
+    pub net_activity_file: Option<String>,
 }
 
 /// One `--mount host:guest` CLI arg, expanded into the virtiofs attach plan.
@@ -831,8 +841,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     // when the rewrite below ran with networking off (see `rewrite_localhost`).
     let (dns_nameserver, guest_ip, gateway_ip): (Option<String>, Option<String>, Option<String>) =
         if args.network {
-            let mut network =
-                iii_network::SmoltcpNetwork::new(iii_network::NetworkConfig::default(), args.slot);
+            let net_cfg = iii_network::NetworkConfig {
+                activity_file: args.net_activity_file.clone().map(std::path::PathBuf::from),
+                ..Default::default()
+            };
+            let mut network = iii_network::SmoltcpNetwork::new(net_cfg, args.slot);
             network.start(tokio_rt.handle().clone());
             builder =
                 builder.net(|net| net.mac(network.guest_mac()).custom(network.take_backend()));

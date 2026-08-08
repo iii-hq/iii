@@ -65,6 +65,16 @@ async fn tcp_proxy_task(
 ) -> io::Result<()> {
     let host_dst = resolve_host_dst(dst, gateway_ipv4);
     let stream = TcpStream::connect(host_dst).await?;
+    // The other half of the Nagle fix in `conn::create_tcp_socket`. This relay
+    // has TWO delegate sockets — the smoltcp one facing the guest and this
+    // kernel one facing the destination — and leaving Nagle on either
+    // reintroduces the same stall, just on the other leg: small relayed
+    // writes held awaiting the peer's delayed ACK (~40ms against a Linux
+    // peer). Only loopback destinations were exonerated by measurement,
+    // because loopback ACKs immediately.
+    if let Err(e) = stream.set_nodelay(true) {
+        tracing::debug!(%dst, error = %e, "set_nodelay failed; small writes may stall");
+    }
     tracing::debug!(%dst, %host_dst, "proxy connected");
     let (mut server_rx, mut server_tx) = stream.into_split();
 
@@ -76,6 +86,10 @@ async fn tcp_proxy_task(
             data = from_smoltcp.recv(), if guest_open => {
                 match data {
                     Some(bytes) => {
+                        // Guest payload moved: refresh the idle-reaper beacon.
+                        // This channel only ever carries application data
+                        // (conn.rs relays recv'd bytes, never bare frames).
+                        shared.note_activity();
                         if let Err(e) = server_tx.write_all(&bytes).await {
                             tracing::debug!(dst = %dst, error = %e, "write to server failed");
                             break;
@@ -94,6 +108,9 @@ async fn tcp_proxy_task(
                 match result {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Response payload toward the guest counts too — a
+                        // slow server reply keeps its sandbox alive.
+                        shared.note_activity();
                         let data = Bytes::copy_from_slice(&server_buf[..n]);
                         if to_smoltcp.send(data).await.is_err() {
                             break;
@@ -115,7 +132,110 @@ async fn tcp_proxy_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::ActivityStamp;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::time::{Duration, SystemTime};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn aged_beacon(name: &str) -> (std::path::PathBuf, SystemTime) {
+        let path = std::env::temp_dir().join(format!(
+            "iii-net-activity-proxy-{}-{name}",
+            std::process::id()
+        ));
+        let old = SystemTime::now() - Duration::from_secs(600);
+        (path, old)
+    }
+
+    fn age(path: &std::path::Path, to: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(to)
+            .unwrap();
+    }
+
+    fn assert_refreshed(path: &std::path::Path, old: SystemTime, dir: &str) {
+        let mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+        assert!(
+            mtime > old + Duration::from_secs(300),
+            "{dir} payload must refresh the activity beacon (mtime {mtime:?} vs aged {old:?})"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The regression the beacon closes: a resident guest process serving
+    /// request/response traffic over this proxy was reaped as idle because
+    /// nothing daemon-visible recorded the traffic. Guest→server payload
+    /// must refresh the beacon.
+    #[tokio::test]
+    async fn guest_to_server_payload_refreshes_activity_beacon() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (path, old) = aged_beacon("g2s");
+        let shared = Arc::new(SharedState::with_activity(
+            64,
+            Some(ActivityStamp::create(&path).unwrap()),
+        ));
+        // Age BEFORE any stamp so the once-per-second throttle gate is
+        // untouched when the payload flows.
+        age(&path, old);
+
+        let (to_task_tx, to_task_rx) = mpsc::channel(8);
+        let (from_task_tx, _from_task_rx) = mpsc::channel(8);
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let _task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            shared.clone(),
+            gateway,
+        ));
+        let (mut server_conn, _) = listener.accept().await.unwrap();
+
+        to_task_tx.send(Bytes::from_static(b"ping")).await.unwrap();
+        let mut buf = [0u8; 4];
+        server_conn.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+
+        assert_refreshed(&path, old, "guest->server");
+    }
+
+    /// ...and the response leg: a server reply toward the guest is equally
+    /// "the sandbox is doing work".
+    #[tokio::test]
+    async fn server_to_guest_payload_refreshes_activity_beacon() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (path, old) = aged_beacon("s2g");
+        let shared = Arc::new(SharedState::with_activity(
+            64,
+            Some(ActivityStamp::create(&path).unwrap()),
+        ));
+        age(&path, old);
+
+        let (_to_task_tx, to_task_rx) = mpsc::channel::<Bytes>(8);
+        let (from_task_tx, mut from_task_rx) = mpsc::channel(8);
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let _task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            shared.clone(),
+            gateway,
+        ));
+        let (mut server_conn, _) = listener.accept().await.unwrap();
+
+        server_conn.write_all(b"pong").await.unwrap();
+        let got = from_task_rx.recv().await.expect("relayed response");
+        assert_eq!(&got[..], b"pong");
+
+        assert_refreshed(&path, old, "server->guest");
+    }
 
     #[test]
     fn resolve_host_dst_rewrites_gateway_to_localhost() {

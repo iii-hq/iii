@@ -5,6 +5,33 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.22.1" description="August 2026">
+  ## Queue workers restore their persisted transport on restart
+
+  The queue worker now rebuilds the adapter selected in its persisted configuration before starting consumers. After the first boot removes the one-time `config.yaml` seed, a queue configured for a non-default transport such as RabbitMQ no longer restarts with the default transport while retaining the stored queue settings.
+
+  ## `iii-*` helper binaries resolve consistently from `PATH`
+
+  Every engine path that launches a sibling binary, including `iii-worker` and `iii-console`, now uses the same `PATH`-first resolver. A development or override binary earlier on `PATH` takes precedence, with the managed installation used as a fallback. `iii update` continues to manage the installed copy directly.
+
+  ## Worker installs support large dependency graphs
+
+  `iii worker add` and `iii worker reinstall` no longer reject valid dependency graphs because they are deep or contain more than 32 workers. Graphs are validated for duplicate or unreachable workers, missing dependency targets, and cycles without an arbitrary depth cap. Installs above 32 workers require explicit confirmation; pass `--yes` in CI or other non-interactive environments.
+
+  ## Sandboxes keep active workloads responsive
+
+  Sandboxes now admit a bounded number of concurrent `sandbox::exec` calls (four by default) instead of serializing every command. Active execs and relayed TCP, UDP, or DNS payload keep a sandbox from being reaped as idle, while a hard per-exec timeout still bounds cleanup. TCP relays also avoid delayed packet coalescing that could add about 40 ms to overlapping request-response traffic. Concurrent execs share the guest filesystem and process table, so callers that mutate shared state must coordinate access.
+
+  ## Observability triggers start reliably and preserve metadata
+
+  Trace trigger subscribers now wait for span storage to become available instead of silently stopping when engine startup wins the initialization race. Trace and log trigger deliveries also preserve the metadata registered with the trigger, so metadata-routed consumers receive the context they expect.
+
+  ## Additional reliability fixes
+
+  - Empty `traceparent`, `tracestate`, and `baggage` values are treated as absent, preventing invalid W3C baggage warnings in the engine and Rust observability helpers.
+  - RabbitMQ DLQ inspection and redrive operations use isolated channels, so inspecting a missing queue cannot close the channel used for publishing or consuming messages.
+</Update>
+
 <Update label="0.22.0" description="July 2026">
   ## Recoverable triggers survive startup races and provider restarts
 

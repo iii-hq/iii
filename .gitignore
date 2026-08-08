@@ -87,3 +87,10 @@ CLAUDE.md
 
 # Impeccable editor hook cache
 .impeccable/
+
+# Runtime artifacts written by `iii-worker` when run from a crate dir.
+# Never source files: config.yaml/iii.lock are CLI inputs the daemon reads,
+# and .iii-worker.lock holds a live pid.
+/crates/iii-worker/config.yaml
+/crates/iii-worker/iii.lock
+.iii-worker.lock

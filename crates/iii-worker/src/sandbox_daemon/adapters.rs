@@ -28,7 +28,7 @@ const BOOT_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// Calls that should fail fast (probes, version checks, "is this
 /// service up") should still pass an explicit `timeout_ms`.
-const DEFAULT_EXEC_TIMEOUT_MS: u64 = 300_000;
+pub const DEFAULT_EXEC_TIMEOUT_MS: u64 = 300_000;
 /// Grace between SIGTERM and SIGKILL. Kept short because the sandbox VM
 /// is ephemeral — nothing needs to flush to persistent storage. Values
 /// larger than a few hundred ms directly translate into user-visible
@@ -199,6 +199,14 @@ impl VmLauncher for IiiWorkerLauncher {
 
         if params.network {
             cmd.arg("--network");
+            // Idle-reaper beacon: the smoltcp stack lives in the child
+            // spawned here, and this file's mtime is its only channel back
+            // to the daemon. Without it a sandbox serving pure network
+            // traffic reads as idle and is reaped mid-service.
+            cmd.arg("--net-activity-file")
+                .arg(crate::sandbox_daemon::registry::net_activity_path(
+                    &params.shell_sock,
+                ));
         }
         for e in &params.env {
             cmd.arg("--env").arg(e);
@@ -442,7 +450,27 @@ fn decode_stdin(stdin: Option<&str>) -> Result<Option<Vec<u8>>, SandboxError> {
 /// Uses `tokio::task::spawn_blocking` + an inner `current_thread`
 /// runtime so the `!Send` `&mut dyn OutputSink` reference never crosses
 /// the outer multi-thread runtime's Send boundary.
-pub struct ShellProtoRunner;
+pub struct ShellProtoRunner {
+    /// Ceiling applied to every caller-supplied `timeout_ms`. See
+    /// `SandboxConfig::max_exec_timeout_ms`: the reaper exempts busy
+    /// sandboxes from reclamation, so an unbounded deadline would let one
+    /// exec pin a VM forever.
+    max_timeout_ms: u64,
+}
+
+impl ShellProtoRunner {
+    pub fn new(max_timeout_ms: u64) -> Self {
+        Self {
+            max_timeout_ms: max_timeout_ms.max(1),
+        }
+    }
+}
+
+impl Default for ShellProtoRunner {
+    fn default() -> Self {
+        Self::new(DEFAULT_EXEC_TIMEOUT_MS)
+    }
+}
 
 #[async_trait::async_trait]
 impl ShellRunner for ShellProtoRunner {
@@ -455,7 +483,12 @@ impl ShellRunner for ShellProtoRunner {
         // up the stack via the `?`.
         let env = req.env.clone().into_kv_vec()?;
         let cwd = req.workdir.clone();
-        let timeout_ms = req.timeout_ms.unwrap_or(DEFAULT_EXEC_TIMEOUT_MS);
+        // Clamped, not trusted: `timeout_ms` is caller-supplied and the
+        // reaper protects busy sandboxes, so an unbounded deadline pins a VM.
+        let timeout_ms = req
+            .timeout_ms
+            .unwrap_or(DEFAULT_EXEC_TIMEOUT_MS)
+            .min(self.max_timeout_ms);
 
         let stdin: Option<Vec<u8>> = decode_stdin(req.stdin.as_deref())?;
 
