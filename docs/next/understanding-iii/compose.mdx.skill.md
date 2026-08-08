@@ -37,7 +37,7 @@ The **file** is which project. A daemon holds as many as it is given, and the co
 only thing that identifies one.
 
 The **project namespace** is where that project's workers register. It comes from `name:` in the
-compose file — the engine's routing dimension, the same one every other worker uses.
+compose file: the engine's routing dimension, the same one every other worker uses.
 
 ### Why the project has no name of its own
 
@@ -45,7 +45,7 @@ An earlier design gave each project an id the operator chose on the first `up`. 
 wrong, because it was a second identity for something the file already identified. Two identities
 have to be kept in agreement, and the failure was silent in both directions: an id could be pointed
 at a different file, and a mistyped id became a new empty project reporting that it had nothing to
-stop — success for a command that did nothing.
+stop, reporting success for a command that did nothing.
 
 Deriving the project from its file removes the question. The same file reached twice is the same
 project however it was spelled, a mistyped file is a file that will not open, and an error existed

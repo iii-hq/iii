@@ -13,7 +13,7 @@ afterwards.
 
 The daemon is itself a worker. It registers under the name `compose` in a namespace of its own and
 exposes the `compose::*` functions there, so every project operation is a normal
-[trigger](./triggers) — addressed to one daemon with `--namespace`.
+[trigger](./triggers), addressed to one daemon with `--namespace`.
 
 ## The daemon
 
@@ -45,7 +45,7 @@ compose serving
 ```
 
 <Warning>
-  A generated namespace is new on every start, and a project's durable state lives under it. A
+  A generated namespace is new on every start, and a project's durable state is stored under it. A
   daemon that has to find its own children again after a restart passes `--ns` and keeps it.
 </Warning>
 
@@ -55,7 +55,7 @@ does the same over the engine.
 ### Running it in the background
 
 `-d` re-launches the command detached and returns once the daemon is *serving*, not once it was
-spawned — a daemon that dies on a taken namespace fails the command instead of handing back a
+spawned: a daemon that dies on a taken namespace fails the command instead of handing back a
 prompt. Its console goes to `~/.iii/compose/<namespace>/daemon.log`, and `--attach` puts it back on
 a terminal.
 
@@ -98,7 +98,7 @@ All six functions accept the same payload.
 | ----------- | ------ | --------------------------------------------------------------------------------- |
 | `file`      | string | Which project: the path to its compose file.                                      |
 | `container` | string | Restricts the operation to one container and the containers it depends on.        |
-| `namespace` | string | Which daemon the caller believed they were reaching. A guard — see below.         |
+| `namespace` | string | Which daemon the caller believed they were reaching. A guard, see below.          |
 
 A project is its compose file, and nothing else names one. The same file reached twice is the same
 project however it was spelled, so there is no second identity to keep in sync and no way to point
@@ -107,7 +107,7 @@ one at the wrong file.
 <Warning>
   `namespace` in the payload does not select a daemon. The engine resolves a call by the
   `--namespace` flag and never reads the body, so this can only catch having reached the wrong
-  daemon — a mismatch fails with `WRONG_DAEMON`. Sent alone, the call still lands wherever the flag
+  daemon: a mismatch fails with `WRONG_DAEMON`. Sent alone, the call still lands wherever the flag
   pointed.
 </Warning>
 
@@ -131,7 +131,7 @@ iii trigger compose::stop   --namespace dev
 
 A project-scoped call may leave `file` out when the daemon's own working directory holds a
 `worker-compose.yaml`; without one, it fails with `NO_COMPOSE_FILE`. A relative `file` resolves
-against the daemon's directory, not the caller's — pass an absolute path when they differ.
+against the daemon's directory, not the caller's, so pass an absolute path when they differ.
 
 `compose::stop` stops a compose project but returns before the daemon exits.
 
@@ -320,7 +320,7 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | `<ns>/<project>/logs/`      | Each container's own output.                         |
 | `packages/`                 | Installed `package://` binaries, shared by projects. |
 
-`<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path —
+`<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:
 readable enough to recognise, hashed enough that two projects in directories of the same name stay
 apart. Because it is derived, it cannot be guessed: `compose::status` reports it as `state_dir`.
 
