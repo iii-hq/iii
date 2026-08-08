@@ -78,6 +78,12 @@ export type OnTriggerRegistrationInput = {
   config: unknown
   /** Arbitrary metadata attached to the trigger. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the trigger's target resolves in (explicit, or `default` when
+   * absent). The same function id can exist in several namespaces, so the hook
+   * needs this to authorize per target namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
@@ -111,6 +117,11 @@ export type OnFunctionRegistrationInput = {
   description?: string
   /** Arbitrary metadata attached to the function. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the function registers in. The same id can exist in several
+   * namespaces, so the hook needs this to authorize per namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }

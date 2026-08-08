@@ -27,9 +27,10 @@ from iii_helpers.stream import (
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
-from .errors import InvocationError, _wrap_wire_error
+from .errors import InvocationError, RegistrationRejectedError, _wrap_wire_error
 from .format_utils import extract_request_format, extract_response_format
 from .iii_constants import (
+    DEFAULT_ENGINE_URL,
     DEFAULT_RECONNECTION_CONFIG,
     MAX_QUEUE_SIZE,
     ConnectionStateCallback,
@@ -186,6 +187,11 @@ class III:
         >>> worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
 
+    def _worker_namespace(self) -> str | None:
+        """Effective worker namespace: explicit option, then ``III_NAMESPACE`` env,
+        else ``None`` (the engine applies its ``default`` namespace)."""
+        return self._options.namespace or os.environ.get("III_NAMESPACE") or None
+
     def __init__(self, address: str, options: InitOptions | None = None) -> None:
         self._address = address
         self._options = options or InitOptions()
@@ -207,6 +213,9 @@ class III:
         # _set_connection_state as soon as connect_async starts.
         self._connection_listeners: list[ConnectionStateCallback] = []
         self._worker_id: str | None = None
+        # Set when the engine fatally rejects this worker's registration
+        # (e.g. a namespace/name collision). Terminal: no reconnect follows.
+        self._fatal_error: RegistrationRejectedError | None = None
         self._reattach_token: str | None = None
 
         # Background event loop thread
@@ -233,11 +242,18 @@ class III:
 
     def _wait_until_connected(self) -> None:
         """Block until the WebSocket connection to the engine is established."""
+        # A terminal registration rejection (e.g. a worker-name collision) is not
+        # retryable: surface the typed error so callers observe the export
+        # contract instead of a generic ConnectionError or a hung trigger.
+        if self._fatal_error is not None:
+            raise self._fatal_error
         if self._connection_state == "connected":
             return
         if self._connection_state == "failed":
             raise ConnectionError(f"Connection to {self._address} failed")
         connected = self._connected_event.wait(timeout=30)
+        if self._fatal_error is not None:
+            raise self._fatal_error
         if cast(IIIConnectionState, self._connection_state) == "failed":
             raise ConnectionError(
                 f"Connection to {self._address} failed after max retries"
@@ -438,7 +454,11 @@ class III:
         except websockets.ConnectionClosed:
             log.debug("Connection closed")
             self._ws = None
-            self._set_connection_state("disconnected")
+            # A fatal registration rejection already set the terminal `failed`
+            # state and cleared `_running`; the socket close it triggers must not
+            # regress the state back to `disconnected`.
+            if self._fatal_error is None:
+                self._set_connection_state("disconnected")
             if self._running:
                 self._schedule_reconnect()
 
@@ -525,6 +545,64 @@ class III:
             self._worker_id = worker_id
             self._reattach_token = data.get("reattach_token")
             log.debug(f"Worker registered with ID: {worker_id}")
+        elif msg_type == MessageType.REGISTRATION_REJECTED.value:
+            self._handle_registration_rejected(data)
+
+    def _handle_registration_rejected(self, data: dict[str, Any]) -> None:
+        """Handle a ``registrationrejected`` push from the engine.
+
+        Two codes with different semantics arrive here:
+
+        * ``FUNCTION_NAMESPACE_CONFLICT`` -- another live worker already exports
+          this one function id. Only that registration is refused; the engine
+          keeps the connection open and this worker keeps serving everything
+          else. Non-fatal: log and continue.
+        * ``WORKER_NAMESPACE_CONFLICT`` -- another live worker already holds this
+          ``(namespace, worker_name)``. The engine closes the connection. Fatal:
+          stop and do NOT reconnect. Any unknown code is treated as fatal too.
+        """
+        code = data.get("code", "")
+
+        if code == "FUNCTION_NAMESPACE_CONFLICT":
+            log.warning(
+                "Function registration rejected (%s): namespace=%r "
+                "function_id=%r already owned by worker %r. Skipping that "
+                "function; the worker keeps serving its other exports.",
+                code,
+                data.get("namespace", ""),
+                data.get("function_id", ""),
+                data.get("owner_worker_id", ""),
+            )
+            return
+
+        error = RegistrationRejectedError(
+            code=code,
+            namespace=data.get("namespace", ""),
+            worker_name=data.get("worker_name", ""),
+            owner_worker_id=data.get("owner_worker_id", ""),
+        )
+        log.error(
+            "Worker registration rejected (%s): namespace=%r worker_name=%r "
+            "owner_worker_id=%r. Fatal; not reconnecting.",
+            error.code,
+            error.namespace,
+            error.worker_name,
+            error.owner_worker_id,
+        )
+        self._fatal_error = error
+        # Stop first so the receive loop's ConnectionClosed handler (and any
+        # pending reconnect loop) sees `_running is False` and gives up.
+        self._running = False
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+        self._set_connection_state("failed")
+        # Fail in-flight invocations; they will never resolve on a dead link.
+        for invocation_id, pending in list(self._pending.items()):
+            if not pending.future.done():
+                pending.future.set_exception(error)
+        self._pending.clear()
+        if self._ws:
+            asyncio.create_task(self._ws.close())
 
     def _handle_result(self, invocation_id: str, result: Any, error: Any) -> None:
         pending = self._pending.pop(invocation_id, None)
@@ -770,6 +848,7 @@ class III:
         function_id = data.get("function_id", "")
         config = data.get("config")
         metadata = data.get("metadata")
+        namespace = data.get("namespace")
 
         result_base = {
             "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
@@ -783,7 +862,13 @@ class III:
 
         try:
             await handler_data.handler.register_trigger(
-                TriggerConfig(id=trigger_id, function_id=function_id, config=config, metadata=metadata)
+                TriggerConfig(
+                    id=trigger_id,
+                    function_id=function_id,
+                    config=config,
+                    metadata=metadata,
+                    namespace=namespace,
+                )
             )
             await self._send(result_base)
         except Exception as e:
@@ -889,6 +974,15 @@ class III:
                 pass
 
         return unsubscribe
+
+    def get_address(self) -> str:
+        """Return the engine address this worker resolved to.
+
+        The explicit ``register_worker`` argument, else ``III_URL``, else
+        :data:`DEFAULT_ENGINE_URL`. Mirrors the Rust SDK's ``address()`` and the
+        Node SDK's ``getAddress()``.
+        """
+        return self._address
 
     def get_connection_state(self) -> IIIConnectionState:
         """Return the current WebSocket connection state.
@@ -1031,6 +1125,7 @@ class III:
             function_id=trigger.function_id,
             config=trigger.config,
             metadata=trigger.metadata,
+            namespace=trigger.namespace,
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)
@@ -1273,11 +1368,14 @@ class III:
             >>> result = await worker.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> await worker.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
+        if self._fatal_error is not None:
+            raise self._fatal_error
         req = request if isinstance(request, dict) else request.model_dump()
         function_id = req["function_id"]
         payload = req.get("payload")
         action = req.get("action")
         metadata = req.get("metadata")
+        namespace = req.get("namespace")
 
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 
@@ -1299,6 +1397,7 @@ class III:
                     traceparent=self._inject_traceparent(),
                     baggage=self._inject_baggage(),
                     action=action,
+                    namespace=namespace,
                 )
             )
             return None
@@ -1324,6 +1423,7 @@ class III:
                 traceparent=self._inject_traceparent(),
                 baggage=self._inject_baggage(),
                 action=enqueue_action,
+                namespace=namespace,
             )
         )
 
@@ -1384,6 +1484,15 @@ class III:
             or f"{platform.node()}:{os.getpid()}"
         )
 
+        # III_NAMESPACE mirrors III_WORKER_NAME precedence: an explicit option
+        # wins, then the managed env var, else None (the engine applies its
+        # `default` namespace when absent).
+        namespace = (
+            self._options.namespace
+            or os.environ.get("III_NAMESPACE")
+            or None
+        )
+
         telemetry_opts = self._options.telemetry
         language = (
             (telemetry_opts.language if telemetry_opts else None)
@@ -1410,6 +1519,7 @@ class III:
             "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
             "pid": os.getpid(),
             "isolation": os.environ.get("III_ISOLATION") or None,
+            "namespace": namespace,
             "telemetry": telemetry,
         }
         # Optional, like the other SDKs: only send `description` when set so the
@@ -1496,7 +1606,23 @@ class TriggerAction:
         return TriggerActionVoid()
 
 
-def register_worker(address: str, options: InitOptions | None = None) -> III:
+def resolve_engine_url(address: str | None = None) -> str:
+    """Resolve the engine address: explicit argument, then ``III_URL``, then
+    :data:`DEFAULT_ENGINE_URL`.
+
+    The supervisor that spawned this process -- ``iii compose``, a container
+    runtime, systemd -- sets ``III_URL``, the same way it sets ``III_NAMESPACE``
+    and ``III_WORKER_NAME``.
+    """
+    if address:
+        return address
+    from_env = os.environ.get("III_URL")
+    if from_env:
+        return from_env
+    return DEFAULT_ENGINE_URL
+
+
+def register_worker(address: str | None = None, options: InitOptions | None = None) -> III:
     """Register the worker with a iii instance, returns a connected worker client.
 
     Blocks up to 30 seconds for the WebSocket connection to be established.
@@ -1518,8 +1644,9 @@ def register_worker(address: str, options: InitOptions | None = None) -> III:
 
     Examples:
         >>> from iii import register_worker, InitOptions
-        >>> worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
+        >>> worker = register_worker()  # address from III_URL
+        >>> other = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
-    client = III(address, options)
+    client = III(resolve_engine_url(address), options)
     client._wait_until_connected()
     return client

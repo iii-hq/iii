@@ -30,6 +30,7 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 function_id: "bench.echo".to_string(),
                 config: json!({"api_path": "bench/0", "http_method": "POST"}),
                 metadata: None,
+                namespace: None,
             },
         ),
         (
@@ -44,6 +45,7 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 baggage: Some("userId=alice".to_string()),
                 action: None,
                 metadata: None,
+                namespace: None,
             },
         ),
         (

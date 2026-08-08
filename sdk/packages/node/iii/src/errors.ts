@@ -33,6 +33,43 @@ export class InvocationError extends Error {
 }
 
 /**
+ * Fatal error surfaced when the engine rejects this worker's registration with
+ * a `registrationrejected` message: another live worker already owns this
+ * registration identity in the target `namespace`. The
+ * engine closes the connection on rejection, so this is terminal -- the SDK
+ * stops the worker and does not reconnect. Carries the wire fields
+ * (`code`, `namespace`, `worker_name` or `function_id`, `owner_worker_id`) so callers can tell
+ * exactly which identity collided and with whom.
+ */
+export type RegistrationRejectedInit = {
+  code: string
+  namespace: string
+  worker_name?: string
+  function_id?: string
+  owner_worker_id: string
+}
+
+export class RegistrationRejectedError extends Error {
+  public readonly code: string
+  public readonly namespace: string
+  public readonly worker_name?: string
+  public readonly function_id?: string
+  public readonly owner_worker_id: string
+
+  constructor(init: RegistrationRejectedInit) {
+    super(
+      `${init.code}: registration rejected for ${init.function_id !== undefined ? `function "${init.function_id}"` : `worker "${init.worker_name ?? '<unknown>'}"`} in namespace "${init.namespace}" (already owned by worker ${init.owner_worker_id})`,
+    )
+    this.name = 'RegistrationRejectedError'
+    this.code = init.code
+    this.namespace = init.namespace
+    this.worker_name = init.worker_name
+    this.function_id = init.function_id
+    this.owner_worker_id = init.owner_worker_id
+  }
+}
+
+/**
  * True when `value` looks like the wire `ErrorBody` the engine sends in
  * `InvocationResult.error`: `{ code: string, message: string, stacktrace?: string }`.
  * Used to distinguish an engine rejection (which we wrap in

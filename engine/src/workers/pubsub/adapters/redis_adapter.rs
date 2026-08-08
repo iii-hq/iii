@@ -177,10 +177,14 @@ impl PubSubAdapter for RedisAdapter {
 
                 let engine = Arc::clone(&engine);
                 let function_id = function_id_for_task.clone();
+                // Resolve the subscribing trigger's namespace LIVE by id.
+                let namespace = engine.trigger_registry.namespace_of(&id_for_task);
 
                 // We may want to limit concurrency at some point
                 tokio::spawn(async move {
-                    let _ = engine.call(&function_id, event_data).await;
+                    let _ = engine
+                        .call_with_metadata_ns(&namespace, &function_id, event_data, None)
+                        .await;
                 });
             }
 

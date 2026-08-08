@@ -401,6 +401,7 @@ async fn reactive_state() {
             function_id: fn_ref.id.clone(),
             config: json!({"scope": SCOPE, "key": key_clone}),
             metadata: None,
+            namespace: None,
         })
         .expect("register state trigger");
 

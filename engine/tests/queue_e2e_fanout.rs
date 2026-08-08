@@ -87,12 +87,102 @@ async fn setup_engine_with_topic_triggers(function_ids: &[&str], topic: &str) ->
                 config: json!({ "topic": topic }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger should succeed");
     }
 
     engine
+}
+
+/// BUG 1 (real-user path): a queue `durable:subscriber` trigger registered by a
+/// namespaced worker must invoke its target — and evaluate its condition — in
+/// that worker's namespace, resolved LIVE by trigger id at fire time (the
+/// builtin `FunctionHandler` holds the trigger id). `queue::react` exists in
+/// both `orders` ("from-orders") and `default` ("from-default"); the trigger
+/// bound in `orders` must fire "from-orders". `queue::cond` exists ONLY in
+/// `orders`, so a condition resolved in `default` is not-found → the handler is
+/// skipped (also RED). Drives the real mechanism: `enqueue_to_topic`.
+#[tokio::test]
+async fn queue_subscriber_invokes_target_and_condition_in_registering_namespace() {
+    use iii::engine::{EngineTrait, Handler, RegisterFunctionRequest};
+
+    iii::workers::observability::metrics::ensure_default_meter();
+    let engine = Arc::new(Engine::new());
+
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+        .await
+        .expect("QueueWorker::create should succeed");
+    module.register_functions(engine.clone());
+    module.initialize().await.expect("init should succeed");
+    let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+    module
+        .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+        .await
+        .expect("start_background_tasks should succeed");
+
+    let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+    for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
+        let fired = fired.clone();
+        engine.register_function_handler_ns(
+            ns,
+            RegisterFunctionRequest {
+                function_id: "queue::react".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let fired = fired.clone();
+                async move {
+                    fired.lock().await.push(tag.to_string());
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+    }
+    // Condition lives ONLY in `orders`; returns true (proceed).
+    engine.register_function_handler_ns(
+        "orders",
+        RegisterFunctionRequest {
+            function_id: "queue::cond".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(|_input: Value| async move { FunctionResult::Success(Some(json!(true))) }),
+    );
+
+    let topic = format!("ns-queue-{}", uuid::Uuid::new_v4());
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("trig-{}", uuid::Uuid::new_v4()),
+            trigger_type: "durable:subscriber".to_string(),
+            function_id: "queue::react".to_string(),
+            config: json!({ "topic": topic, "condition_function_id": "queue::cond" }),
+            worker_id: None,
+            metadata: None,
+            namespace: "orders".to_string(),
+        })
+        .await
+        .expect("register trigger should succeed");
+
+    enqueue_to_topic(&engine, &topic, json!({ "msg": "hello" }))
+        .await
+        .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let fired = fired.lock().await.clone();
+    assert_eq!(
+        fired,
+        vec!["from-orders".to_string()],
+        "the orders queue subscriber must invoke the orders target via its orders condition; \
+         got: {fired:?}"
+    );
 }
 
 #[tokio::test]
@@ -156,6 +246,7 @@ async fn fanout_replicas_compete_within_function() {
                 config: json!({ "topic": &topic }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger should succeed");
@@ -203,6 +294,7 @@ async fn fanout_mixed_functions_and_replicas() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register trigger should succeed");
@@ -217,6 +309,7 @@ async fn fanout_mixed_functions_and_replicas() {
                 config: json!({ "topic": &topic }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             })
             .await
             .expect("register trigger should succeed");
@@ -297,6 +390,7 @@ async fn fanout_unsubscribe_stops_delivery() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register trigger A should succeed");
@@ -310,6 +404,7 @@ async fn fanout_unsubscribe_stops_delivery() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register trigger B should succeed");
@@ -415,6 +510,7 @@ async fn fanout_with_condition_function() {
             config: json!({ "topic": &topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register always trigger should succeed");
@@ -431,6 +527,7 @@ async fn fanout_with_condition_function() {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register conditional trigger should succeed");

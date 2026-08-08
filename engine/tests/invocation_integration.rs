@@ -45,7 +45,10 @@ async fn test_basic_invocation_flow() {
         handler,
     );
 
-    let function = engine.functions.get("test.processor").unwrap();
+    let function = engine
+        .functions
+        .get(iii::protocol::DEFAULT_NAMESPACE, "test.processor")
+        .unwrap();
     assert_eq!(function._function_id, "test.processor");
 }
 
@@ -68,6 +71,16 @@ async fn test_engine_cloning_preserves_functions() {
 
     let engine2 = engine1.clone();
 
-    assert!(engine1.functions.get("cloned.function").is_some());
-    assert!(engine2.functions.get("cloned.function").is_some());
+    assert!(
+        engine1
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, "cloned.function")
+            .is_some()
+    );
+    assert!(
+        engine2
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, "cloned.function")
+            .is_some()
+    );
 }

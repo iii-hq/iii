@@ -73,7 +73,10 @@ pub trait FunctionHandler {
 
 #[derive(Default)]
 pub struct FunctionsRegistry {
-    pub functions: Arc<DashMap<String, Function>>,
+    /// Keyed by `(namespace, function_id)`. The same function id may be
+    /// registered once per namespace; lookups must always supply the namespace
+    /// the caller is scoped to (see [`DEFAULT_NAMESPACE`]).
+    pub functions: Arc<DashMap<(String, String), Function>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
 }
 
@@ -104,7 +107,7 @@ impl FunctionsRegistry {
         let functions: HashSet<String> = self
             .functions
             .iter()
-            .map(|entry| entry.key().clone())
+            .map(|entry| Self::qualified_id(&entry.key().0, &entry.key().1))
             .collect();
 
         let mut function_hash = functions.iter().cloned().collect::<Vec<String>>();
@@ -112,20 +115,52 @@ impl FunctionsRegistry {
         format!("{:?}", function_hash)
     }
 
+    /// Namespace-qualified display form used where a single flat string must
+    /// stand in for a `(namespace, function_id)` key. Functions in
+    /// [`DEFAULT_NAMESPACE`] keep their bare id so the hash — and anything
+    /// derived from it — stays stable for existing single-namespace engines.
+    fn qualified_id(namespace: &str, function_id: &str) -> String {
+        if namespace == DEFAULT_NAMESPACE {
+            function_id.to_string()
+        } else {
+            format!("{namespace}/{function_id}")
+        }
+    }
+
+    /// Registers `function` under [`DEFAULT_NAMESPACE`].
+    ///
+    /// Convenience wrapper over [`Self::register_function_ns`] for the many
+    /// builtin/engine-internal workers that are not namespace-aware.
     pub fn register_function(&self, function_id: String, function: Function) {
+        self.register_function_ns(DEFAULT_NAMESPACE, function_id, function);
+    }
+
+    pub fn register_function_ns(&self, namespace: &str, function_id: String, function: Function) {
         tracing::info!(
-            "{} Function {}",
+            "{} Function {} in namespace {}",
             "[REGISTERED]".green(),
-            function_id.purple()
+            function_id.purple(),
+            namespace.purple()
         );
-        if self.functions.contains_key(&function_id) {
+        let key = (namespace.to_string(), function_id.clone());
+        if self.functions.contains_key(&key) {
             tracing::warn!(
-                "Function {} is already registered. Overwriting.",
-                function_id.purple()
+                "Function {} is already registered in namespace {}. Overwriting.",
+                function_id.purple(),
+                namespace.purple()
             );
         }
-        self.functions.insert(function_id.clone(), function);
+        self.functions.insert(key, function);
 
+        // `function_ids` holds bare ids, not `(ns, id)`. Scopes only ever
+        // capture in-process/builtin workers, which register into
+        // DEFAULT_NAMESPACE, so a bare id is unambiguous for the scope's own
+        // consumers. A non-default id can only land here via the process-wide
+        // `active_scope` race documented on `Engine::begin_worker_scope` (a WS
+        // `RegisterFunction` landing inside a builtin's scope window). That is
+        // pre-existing and guarded downstream: `remove_worker_registrations`
+        // skips ids present in `function_owners`, which every WS registration
+        // populates.
         if let Ok(mut scope) = self.active_scope.lock()
             && let Some(builder) = scope.as_mut()
         {
@@ -133,28 +168,50 @@ impl FunctionsRegistry {
         }
     }
 
-    pub fn remove(&self, function_id: &str) {
-        self.functions.remove(function_id);
+    pub fn remove(&self, namespace: &str, function_id: &str) {
+        self.functions
+            .remove(&(namespace.to_string(), function_id.to_string()));
+        // Prunes by bare id across namespaces — see the note in
+        // `register_function_ns`; the scope only holds default-ns builtin ids
+        // outside the documented race.
         if let Ok(mut scope) = self.active_scope.lock()
             && let Some(builder) = scope.as_mut()
         {
             builder.function_ids.retain(|id| id != function_id);
         }
         tracing::info!(
-            "{} Function {}",
+            "{} Function {} in namespace {}",
             "[UNREGISTERED]".red(),
-            function_id.purple()
+            function_id.purple(),
+            namespace.purple()
         );
     }
 
-    pub fn get(&self, function_id: &str) -> Option<Function> {
-        tracing::debug!("Searching for function: {}", function_id);
+    pub fn get(&self, namespace: &str, function_id: &str) -> Option<Function> {
+        tracing::debug!(
+            "Searching for function {} in namespace {}",
+            function_id,
+            namespace
+        );
         self.functions
-            .get(function_id)
+            .get(&(namespace.to_string(), function_id.to_string()))
             .map(|entry| entry.value().clone())
     }
 
-    pub fn iter(&self) -> dashmap::iter::Iter<'_, String, Function> {
+    /// Every namespace that has `function_id` registered, sorted. Used to build
+    /// the "did you mean" hint when a lookup misses in the caller's namespace.
+    pub fn namespaces_for(&self, function_id: &str) -> Vec<String> {
+        let mut namespaces: Vec<String> = self
+            .functions
+            .iter()
+            .filter(|entry| entry.key().1 == function_id)
+            .map(|entry| entry.key().0.clone())
+            .collect();
+        namespaces.sort();
+        namespaces
+    }
+
+    pub fn iter(&self) -> dashmap::iter::Iter<'_, (String, String), Function> {
         self.functions.iter()
     }
 }
@@ -220,19 +277,58 @@ mod tests {
     }
 
     // =========================================================================
+    // Namespaces
+    // =========================================================================
+
+    #[test]
+    fn same_function_id_coexists_across_namespaces() {
+        let reg = FunctionsRegistry::new();
+        reg.register_function_ns(
+            "orders",
+            "state::get".to_string(),
+            make_function("orders_get"),
+        );
+        reg.register_function_ns(
+            "analytics",
+            "state::get".to_string(),
+            make_function("analytics_get"),
+        );
+
+        assert_eq!(
+            reg.get("orders", "state::get").unwrap()._function_id,
+            "orders_get"
+        );
+        assert_eq!(
+            reg.get("analytics", "state::get").unwrap()._function_id,
+            "analytics_get"
+        );
+        assert_eq!(
+            reg.namespaces_for("state::get"),
+            vec!["analytics".to_string(), "orders".to_string()]
+        );
+    }
+
+    #[test]
+    fn register_function_defaults_to_default_namespace() {
+        let reg = FunctionsRegistry::new();
+        reg.register_function("my_fn".to_string(), make_function("my_fn"));
+        assert!(reg.get(DEFAULT_NAMESPACE, "my_fn").is_some());
+    }
+
+    // =========================================================================
     // FunctionsRegistry
     // =========================================================================
 
     #[test]
     fn registry_new_is_empty() {
         let reg = FunctionsRegistry::new();
-        assert!(reg.get("anything").is_none());
+        assert!(reg.get(DEFAULT_NAMESPACE, "anything").is_none());
     }
 
     #[test]
     fn registry_default_is_empty() {
         let reg = FunctionsRegistry::default();
-        assert!(reg.get("anything").is_none());
+        assert!(reg.get(DEFAULT_NAMESPACE, "anything").is_none());
     }
 
     #[test]
@@ -240,7 +336,7 @@ mod tests {
         let reg = FunctionsRegistry::new();
         let func = make_function("my_fn");
         reg.register_function("my_fn".to_string(), func);
-        let retrieved = reg.get("my_fn");
+        let retrieved = reg.get(DEFAULT_NAMESPACE, "my_fn");
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap()._function_id, "my_fn");
     }
@@ -248,22 +344,22 @@ mod tests {
     #[test]
     fn registry_get_nonexistent_returns_none() {
         let reg = FunctionsRegistry::new();
-        assert!(reg.get("does_not_exist").is_none());
+        assert!(reg.get(DEFAULT_NAMESPACE, "does_not_exist").is_none());
     }
 
     #[test]
     fn registry_remove_function() {
         let reg = FunctionsRegistry::new();
         reg.register_function("fn_to_remove".to_string(), make_function("fn_to_remove"));
-        assert!(reg.get("fn_to_remove").is_some());
-        reg.remove("fn_to_remove");
-        assert!(reg.get("fn_to_remove").is_none());
+        assert!(reg.get(DEFAULT_NAMESPACE, "fn_to_remove").is_some());
+        reg.remove(DEFAULT_NAMESPACE, "fn_to_remove");
+        assert!(reg.get(DEFAULT_NAMESPACE, "fn_to_remove").is_none());
     }
 
     #[test]
     fn registry_remove_nonexistent_does_not_panic() {
         let reg = FunctionsRegistry::new();
-        reg.remove("no_such_fn"); // should not panic
+        reg.remove(DEFAULT_NAMESPACE, "no_such_fn"); // should not panic
     }
 
     #[test]
@@ -307,9 +403,15 @@ mod tests {
         reg.register_function("fn1".to_string(), make_function("fn1"));
         reg.register_function("fn2".to_string(), make_function("fn2"));
 
-        let mut keys: Vec<String> = reg.iter().map(|entry| entry.key().clone()).collect();
+        let mut keys: Vec<(String, String)> = reg.iter().map(|entry| entry.key().clone()).collect();
         keys.sort();
-        assert_eq!(keys, vec!["fn1", "fn2"]);
+        assert_eq!(
+            keys,
+            vec![
+                (DEFAULT_NAMESPACE.to_string(), "fn1".to_string()),
+                (DEFAULT_NAMESPACE.to_string(), "fn2".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -333,7 +435,7 @@ mod tests {
         };
         reg.register_function("fn".to_string(), func1);
         reg.register_function("fn".to_string(), func2);
-        let retrieved = reg.get("fn").unwrap();
+        let retrieved = reg.get(DEFAULT_NAMESPACE, "fn").unwrap();
         assert_eq!(retrieved._description, Some("version 2".to_string()));
     }
 

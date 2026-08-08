@@ -154,6 +154,7 @@ pub fn register_triggers(bridge: &IIIClient) -> Result<(), Error> {
             function_id: function_path.to_string(),
             config,
             metadata: None,
+            namespace: None,
         })?;
     }
 

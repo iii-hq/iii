@@ -1,5 +1,7 @@
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import type { ChannelReader, ChannelWriter } from './channels'
+import type { RegistrationRejectedError } from './errors'
+import type { IIIConnectionState } from './iii-constants'
 import type {
   JsonValue,
   RegisterFunctionMessage,
@@ -230,6 +232,26 @@ export interface IIIClient {
    * ```
    */
   shutdown(): Promise<void>
+
+  /**
+   * The current WebSocket connection state. `'failed'` is terminal — it follows
+   * a fatal registration rejection (see {@link getFatalError}). Mirrors the
+   * Python/Rust SDKs' `get_connection_state()`.
+   */
+  getConnectionState(): IIIConnectionState
+
+  /**
+   * Engine address this worker resolved to: the explicit `registerWorker`
+   * argument, else `III_URL`, else `ws://127.0.0.1:49134`.
+   */
+  getAddress(): string
+
+  /**
+   * The fatal registration rejection that terminated this connection, if any
+   * (e.g. a `WORKER_NAMESPACE_CONFLICT`); `undefined` while healthy. Mirrors the
+   * Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
+   */
+  getFatalError(): RegistrationRejectedError | undefined
 }
 
 /**

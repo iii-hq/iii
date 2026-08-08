@@ -125,7 +125,8 @@ impl SocketStreamConnection {
 
                 let call_result = self
                     .engine
-                    .call_with_metadata(
+                    .call_with_metadata_ns(
+                        &trigger.namespace,
                         &trigger.function_id,
                         event_value.clone(),
                         trigger.metadata.clone(),
@@ -536,6 +537,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
         connection
             .triggers
@@ -549,6 +551,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
 
         let join_result = connection
@@ -577,6 +580,65 @@ mod tests {
         assert_eq!(leave_payload["id"], "item-1");
     }
 
+    /// BUG 1 (real-user path): a stream join trigger registered by a namespaced
+    /// worker must fire the target in that worker's namespace. `conn::react`
+    /// exists in both `orders` ("from-orders") and `default` ("from-default");
+    /// the `orders` join trigger must fire "from-orders". Drives the real
+    /// mechanism: `handle_join_leave`.
+    #[tokio::test]
+    async fn join_trigger_fires_target_in_registering_namespace() {
+        let (engine, _module, connection, _rx) = build_connection(None);
+        let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
+            let fired = fired.clone();
+            engine.register_function_handler_ns(
+                ns,
+                RegisterFunctionRequest {
+                    function_id: "conn::react".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                Handler::new(move |_input: Value| {
+                    let fired = fired.clone();
+                    async move {
+                        fired.lock().unwrap().push(tag.to_string());
+                        FunctionResult::Success(None)
+                    }
+                }),
+            );
+        }
+
+        connection
+            .triggers
+            .join_triggers
+            .write()
+            .await
+            .insert(Trigger {
+                id: "join-ns-trigger".to_string(),
+                trigger_type: JOIN_TRIGGER_TYPE.to_string(),
+                function_id: "conn::react".to_string(),
+                config: json!({}),
+                worker_id: None,
+                metadata: None,
+                namespace: "orders".to_string(),
+            });
+
+        connection
+            .handle_join_leave(&join_message("sub-1", "orders", "group-a", Some("item-1")))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let fired = fired.lock().unwrap().clone();
+        assert_eq!(
+            fired,
+            vec!["from-orders".to_string()],
+            "the orders join trigger must fire the orders target; got: {fired:?}"
+        );
+    }
+
     #[tokio::test]
     async fn handle_socket_message_unauthorized_join_emits_unauthorized() {
         let (engine, _module, connection, mut rx) = build_connection(None);
@@ -596,6 +658,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
 
         connection
@@ -727,6 +790,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
 
         connection
@@ -880,6 +944,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
 
         let result = connection
@@ -912,6 +977,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
 
         let result = connection

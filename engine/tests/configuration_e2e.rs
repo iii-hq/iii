@@ -142,6 +142,109 @@ async fn register_set_get_round_trip_with_env_var_expansion() {
     }
 }
 
+/// Registers a handler under `function_id` in `namespace` that records `tag`
+/// into `recorder` when invoked.
+fn register_recording_handler(
+    engine: &Arc<Engine>,
+    namespace: &str,
+    function_id: &str,
+    tag: &'static str,
+    recorder: Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    engine.register_function_handler_ns(
+        namespace,
+        RegisterFunctionRequest {
+            function_id: function_id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(move |_input: Value| {
+            let recorder = recorder.clone();
+            async move {
+                recorder.lock().unwrap().push(tag.to_string());
+                FunctionResult::Success(None)
+            }
+        }),
+    );
+}
+
+/// BUG 1 (real-user path): a configuration trigger registered by a namespaced
+/// worker must fire the target — and evaluate its condition — in that worker's
+/// namespace, not `default`. `cfg::react` exists in both `orders`
+/// ("from-orders") and `default` ("from-default"); the `orders` trigger must
+/// fire "from-orders". `cfg::cond` exists ONLY in `orders`, so a condition
+/// resolved in `default` is not-found → handler skipped (also RED). Drives the
+/// real mechanism: `worker.register_fn` emits `configuration:registered`.
+#[tokio::test]
+async fn configuration_trigger_fires_target_and_condition_in_registering_namespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, worker) = build_worker(dir.path(), 0).await;
+
+    let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    register_recording_handler(
+        &engine,
+        "orders",
+        "cfg::react",
+        "from-orders",
+        fired.clone(),
+    );
+    register_recording_handler(
+        &engine,
+        "default",
+        "cfg::react",
+        "from-default",
+        fired.clone(),
+    );
+    engine.register_function_handler_ns(
+        "orders",
+        RegisterFunctionRequest {
+            function_id: "cfg::cond".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(|_input: Value| async move { FunctionResult::Success(Some(json!(true))) }),
+    );
+
+    let trigger = Trigger {
+        id: "cfg-ns-trig".into(),
+        trigger_type: "configuration".into(),
+        function_id: "cfg::react".into(),
+        config: json!({ "configuration_id": "iii-stream", "condition_function_id": "cfg::cond" }),
+        worker_id: None,
+        metadata: None,
+        namespace: "orders".to_string(),
+    };
+    worker
+        .register_trigger(trigger)
+        .await
+        .expect("register configuration trigger");
+
+    worker
+        .register_fn(ConfigurationRegisterInput {
+            id: "iii-stream".into(),
+            name: "Stream".into(),
+            description: "...".into(),
+            schema: json!({ "type": "object", "properties": { "host": { "type": "string" } } }),
+            initial_value: Some(json!({ "host": "h" })),
+            metadata: None,
+        })
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let fired = fired.lock().unwrap().clone();
+    assert_eq!(
+        fired,
+        vec!["from-orders".to_string()],
+        "the orders configuration trigger must fire the orders target via its orders condition; \
+         got: {fired:?}"
+    );
+}
+
 #[tokio::test]
 async fn trigger_fan_out_delivers_expanded_event_payload() {
     let dir = tempfile::tempdir().unwrap();
@@ -160,6 +263,7 @@ async fn trigger_fan_out_delivers_expanded_event_payload() {
         config: json!({ "configuration_id": "iii-stream" }),
         worker_id: None,
         metadata: None,
+        namespace: "default".to_string(),
     };
     worker
         .register_trigger(trigger.clone())
@@ -218,6 +322,7 @@ async fn fs_watcher_surfaces_external_file_edits_as_updates() {
             config: json!({ "configuration_id": "iii-bridge" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .unwrap();
@@ -265,6 +370,7 @@ async fn ttl_cleanup_removes_configuration_after_last_trigger_unregistered() {
         config: json!({ "configuration_id": "ephemeral" }),
         worker_id: None,
         metadata: None,
+        namespace: "default".to_string(),
     };
     worker.register_trigger(trigger.clone()).await.unwrap();
 

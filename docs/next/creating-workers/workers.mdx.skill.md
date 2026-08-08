@@ -81,6 +81,7 @@ process can be deployed anywhere reachable on the network.
     const worker = registerWorker(url, {
       workerName: "my-worker",
       workerDescription: "One-line summary of what this worker does",
+      // namespace: "orders",  // scopes this worker's registrations
     });
     ```
 
@@ -95,6 +96,7 @@ process can be deployed anywhere reachable on the network.
         InitOptions(
             worker_name="my-worker",
             worker_description="One-line summary of what this worker does",
+            # namespace="orders",  # scopes this worker's registrations
         ),
     )
     ```
@@ -114,6 +116,7 @@ process can be deployed anywhere reachable on the network.
                 description: Some("One-line summary of what this worker does".into()),
                 ..Default::default()
             }),
+            // namespace: Some("orders".into()),  // scopes this worker's registrations
             ..Default::default()
         },
     );
@@ -121,6 +124,16 @@ process can be deployed anywhere reachable on the network.
 
   </Tab>
 </Tabs>
+
+`namespace` scopes everything this worker registers, so an identically-named worker or function id
+can coexist in another namespace. The SDK resolves it from the explicit option, then the
+`III_NAMESPACE` environment variable, and falls back to the `default` namespace when neither is set.
+The browser SDK has no environment to read, so it takes the option only.
+
+<Note>
+  For calling across namespaces and handling a rejected registration, see
+  [Namespaces](../understanding-iii/namespaces#isolate-workers-with-namespaces).
+</Note>
 
 ## Worker lifecycle
 

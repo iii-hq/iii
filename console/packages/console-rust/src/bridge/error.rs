@@ -13,6 +13,27 @@ pub fn error_response(error: Error) -> Value {
         Error::Serde(msg) => (500, format!("Serialization error: {}", msg)),
         Error::WebSocket(msg) => (503, format!("WebSocket error: {}", msg)),
         Error::Runtime(msg) => (500, format!("Runtime error: {}", msg)),
+        Error::RegistrationRejected {
+            code,
+            namespace,
+            worker_name,
+            function_id,
+            owner_worker_id,
+        } => {
+            let registration = if let Some(function_id) = function_id {
+                format!("function '{function_id}'")
+            } else if let Some(worker_name) = worker_name {
+                format!("worker '{worker_name}'")
+            } else {
+                "registration".to_string()
+            };
+            (
+                409,
+                format!(
+                    "Registration rejected ({code}): {registration} in namespace '{namespace}' is already owned by '{owner_worker_id}'"
+                ),
+            )
+        }
     };
 
     json!({

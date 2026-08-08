@@ -263,6 +263,29 @@ impl QueueKvStore {
         self.kv.list_keys_with_prefix(prefix.to_string()).await
     }
 
+    /// Keys of every persisted list and sorted set beginning with `prefix`.
+    /// Unlike [`Self::list_job_keys`] (which only sees job records), this covers
+    /// the `waiting`/`active`/`delayed`/`dlq` structures, so a queue that holds
+    /// only DLQ entries — whose job records were deleted when they were
+    /// dead-lettered — is still discoverable. Used by the one-time legacy
+    /// subscriber-queue migration.
+    pub async fn list_structure_keys(&self, prefix: &str) -> Vec<String> {
+        let lists = self.lists.read().await;
+        let sorted_sets = self.sorted_sets.read().await;
+        let mut keys: Vec<String> = lists
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        keys.extend(
+            sorted_sets
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned(),
+        );
+        keys
+    }
+
     pub async fn lpush(&self, key: &str, value: String) {
         let mut lists = self.lists.write().await;
         lists

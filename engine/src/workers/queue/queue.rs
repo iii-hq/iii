@@ -156,12 +156,14 @@ impl QueueWorker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn enqueue_to_function_queue(
         &self,
         queue_name: &str,
         function_id: &str,
         data: Value,
         message_id: &str,
+        namespace: Option<String>,
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> anyhow::Result<()> {
@@ -229,6 +231,7 @@ impl QueueWorker {
                 queue_config.backoff_ms,
                 traceparent,
                 baggage,
+                namespace,
                 priority,
             )
             .await;
@@ -639,6 +642,10 @@ impl TriggerRegistrator for QueueWorker {
                         &topic,
                         &trigger.id,
                         &trigger.function_id,
+                        // The trigger's own namespace: subscribe runs before the
+                        // registry inserts the trigger, so pass it directly
+                        // rather than resolving by id (which would miss).
+                        &trigger.namespace,
                         condition_function_id,
                         queue_config,
                     )
@@ -831,6 +838,12 @@ impl QueueWorker {
                     let delivery_id = msg.delivery_id;
                     let function_id = msg.function_id.clone();
                     let attempt = msg.attempt;
+                    // Resolve the target in the namespace captured at enqueue.
+                    // Absent (pre-namespace messages) falls back to `default`.
+                    let namespace = msg
+                        .namespace
+                        .clone()
+                        .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string());
 
                     // `iii.tag.*` is the console timeline's relevant-span
                     // convention (workers/console/docs/timeline-span-tags.md):
@@ -860,11 +873,14 @@ impl QueueWorker {
                         baggage.as_deref(),
                     );
 
-                    let result =
-                        AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
-                            .catch_unwind()
-                            .instrument(span)
-                            .await;
+                    let result = AssertUnwindSafe(async {
+                        engine
+                            .call_with_metadata_ns(&namespace, &function_id, msg.data, None)
+                            .await
+                    })
+                    .catch_unwind()
+                    .instrument(span)
+                    .await;
 
                     match result {
                         Ok(Ok(_)) => {
@@ -1227,7 +1243,10 @@ impl Worker for QueueWorker {
         if self
             .engine
             .functions
-            .get(super::configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                super::configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -1615,6 +1634,7 @@ mod tests {
             _backoff_ms: u64,
             _traceparent: Option<String>,
             _baggage: Option<String>,
+            _namespace: Option<String>,
             _priority: Option<u8>,
         ) {
             self.enqueue_to_queue_count.fetch_add(1, Ordering::SeqCst);
@@ -1625,6 +1645,7 @@ mod tests {
             _topic: &str,
             _id: &str,
             _function_id: &str,
+            _namespace: &str,
             _condition_function_id: Option<String>,
             _queue_config: Option<SubscriberQueueConfig>,
         ) {
@@ -2017,6 +2038,7 @@ mod tests {
             config: json!({"topic": "my-topic"}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2033,6 +2055,7 @@ mod tests {
             config: json!({"topic": ""}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2049,6 +2072,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2069,6 +2093,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2095,6 +2120,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2111,6 +2137,7 @@ mod tests {
             config: json!({"topic": "unsub-topic"}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2127,6 +2154,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2260,6 +2288,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -2331,6 +2360,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -2351,6 +2381,7 @@ mod tests {
                 "fn-1",
                 json!({"amount": 100}), // missing "transaction_id"
                 "test-msg-id",
+                None,
                 None,
                 None,
             )
@@ -2375,6 +2406,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
         assert!(result.is_err());
@@ -2397,6 +2429,7 @@ mod tests {
                 "test-msg-id",
                 None,
                 None,
+                None,
             )
             .await;
         assert!(result.is_ok());
@@ -2412,6 +2445,7 @@ mod tests {
                 "fn-1",
                 json!({"key": "value"}),
                 "test-msg-id",
+                None,
                 None,
                 None,
             )
@@ -2519,6 +2553,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await;
 
@@ -2580,6 +2615,7 @@ mod tests {
                 "test-msg-id",
                 3,
                 100,
+                None,
                 None,
                 None,
                 None,
@@ -2647,6 +2683,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                     None,
@@ -2724,6 +2761,7 @@ mod tests {
                     "test-msg-id",
                     3,
                     1000,
+                    None,
                     None,
                     None,
                     None,

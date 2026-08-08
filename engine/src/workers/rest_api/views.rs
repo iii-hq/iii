@@ -189,13 +189,14 @@ enum MiddlewareResult {
 
 async fn execute_middleware(
     engine: &Arc<Engine>,
+    namespace: &str,
     mw_fn_id: &str,
     mw_input: Value,
     timeout_ms: u64,
 ) -> Result<MiddlewareResult, axum::response::Response> {
     match tokio::time::timeout(
         Duration::from_millis(timeout_ms),
-        engine.call(mw_fn_id, mw_input),
+        engine.call_with_metadata_ns(namespace, mw_fn_id, mw_input, None),
     )
     .await
     {
@@ -382,6 +383,7 @@ pub async fn dynamic_handler(
                 condition_function_id,
                 middleware_function_ids,
                 metadata,
+                namespace,
             } = router_match;
 
             let function_kind = if function_id.starts_with("engine::") {
@@ -407,6 +409,7 @@ pub async fn dynamic_handler(
                 );
                 match execute_middleware(
                     &engine,
+                    &namespace,
                     &mw_config.function_id,
                     mw_input,
                     rest_api_config.default_timeout,
@@ -517,7 +520,9 @@ pub async fn dynamic_handler(
                     obj.remove("response");
                 }
 
-                match check_condition(engine.as_ref(), condition_id, condition_input).await {
+                match check_condition(engine.as_ref(), &namespace, condition_id, condition_input)
+                    .await
+                {
                     Ok(true) => {}
                     Ok(false) => {
                         tracing::debug!(
@@ -566,6 +571,7 @@ pub async fn dynamic_handler(
                 );
                 match execute_middleware(
                     &engine,
+                    &namespace,
                     mw_fn_id,
                     mw_input,
                     rest_api_config.default_timeout,
@@ -587,7 +593,7 @@ pub async fn dynamic_handler(
             let call_span = tracing::Span::current();
             let mut call_handle = tokio::spawn(async move {
                 engine_clone
-                    .call_with_metadata(&function_id, api_request_value, metadata)
+                    .call_with_metadata_ns(&namespace, &function_id, api_request_value, metadata)
                     .await
             }.instrument(call_span));
 

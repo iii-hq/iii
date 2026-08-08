@@ -1,11 +1,15 @@
 import { Logger } from '@iii-dev/helpers/observability'
 import { registerWorker } from '../src/index'
+import { uniqueWorkerName } from './utils'
 
 const BRIDGE_WS_URL = process.env.III_BRIDGE_WS_URL ?? 'ws://localhost:49197'
 const RETRY_LIMIT = 100
 const DELAY_MS = 100
 
+// Also fanned out to every test file by setup.ts — see uniqueWorkerName in
+// ./utils for why each copy needs a distinct name.
 export const bridgeIII = registerWorker(BRIDGE_WS_URL, {
+  workerName: uniqueWorkerName('bridge'),
   reconnectionConfig: {
     maxRetries: 3,
     initialDelayMs: 100,

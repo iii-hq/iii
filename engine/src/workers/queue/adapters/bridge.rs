@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::trigger::Trigger;
-use iii_sdk::{Error, IIIClient, InitOptions, TriggerAction, register_worker};
+use iii_sdk::{Error, IIIClient, TriggerAction, register_worker};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -73,7 +73,10 @@ impl BridgeAdapter {
     pub async fn new(engine: Arc<Engine>, bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(register_worker(&bridge_url, InitOptions::default()));
+        let bridge = Arc::new(register_worker(
+            &bridge_url,
+            crate::workers::bridge_client::bridge_init_options("iii-queue-bridge"),
+        ));
 
         Ok(Self {
             engine,
@@ -154,6 +157,11 @@ impl QueueAdapter for BridgeAdapter {
         topic: &str,
         id: &str,
         function_id: &str,
+        // The bridge forwards the subscription to a remote engine, which owns
+        // the durable queue identity via its own adapter; local subscriptions
+        // are already keyed by (topic, trigger id). Dispatch resolves the
+        // namespace live by id.
+        _namespace: &str,
         condition_function_id: Option<String>,
         _queue_config: Option<SubscriberQueueConfig>,
     ) {
@@ -178,6 +186,7 @@ impl QueueAdapter for BridgeAdapter {
         let function_id_owned = function_id.to_string();
         let condition_function_id_owned = condition_function_id.clone();
         let topic_owned = topic.to_string();
+        let trigger_id_owned = id.to_string();
         self.bridge.register_function(
             handler_path.clone(),
             iii_sdk::RegisterFunction::new_async(move |data: Value| {
@@ -185,6 +194,7 @@ impl QueueAdapter for BridgeAdapter {
                 let function_id = function_id_owned.clone();
                 let condition_function_id = condition_function_id_owned.clone();
                 let topic_name = topic_owned.clone();
+                let trigger_id = trigger_id_owned.clone();
                 async move {
                     // Extract trace context embedded by the sender
                     let traceparent = data["__traceparent"].as_str().map(|s| s.to_string());
@@ -206,13 +216,20 @@ impl QueueAdapter for BridgeAdapter {
                     );
 
                     async move {
+                        // Resolve the subscribing trigger's namespace LIVE by id.
+                        let namespace = engine.trigger_registry.namespace_of(&trigger_id);
                         if let Some(condition_path) = condition_function_id {
                             tracing::debug!(
                                 condition_function_id = %condition_path,
                                 "Checking trigger conditions"
                             );
-                            match check_condition(engine.as_ref(), &condition_path, data.clone())
-                                .await
+                            match check_condition(
+                                engine.as_ref(),
+                                &namespace,
+                                &condition_path,
+                                data.clone(),
+                            )
+                            .await
                             {
                                 Ok(true) => {}
                                 Ok(false) => {
@@ -240,7 +257,10 @@ impl QueueAdapter for BridgeAdapter {
                         }
 
                         // Invoke the actual handler
-                        match engine.call(&function_id, data).await {
+                        match engine
+                            .call_with_metadata_ns(&namespace, &function_id, data, None)
+                            .await
+                        {
                             Ok(result) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                                 Ok::<Value, Error>(result.unwrap_or(Value::Null))
@@ -266,6 +286,7 @@ impl QueueAdapter for BridgeAdapter {
             function_id: handler_path.clone(),
             config: serde_json::json!({ "topic": topic }),
             metadata: None,
+            namespace: None,
         }) {
             Ok(t) => t,
             Err(e) => {
@@ -334,22 +355,26 @@ impl QueueAdapter for BridgeAdapter {
         _backoff_ms: u64,
         _traceparent: Option<String>,
         _baggage: Option<String>,
+        namespace: Option<String>,
         // Priority is resolved by the remote engine via its own adapter; the
         // bridge forwards the enqueue unchanged.
         _priority: Option<u8>,
     ) {
-        if let Err(e) = self
-            .bridge
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: data,
-                action: Some(TriggerAction::Enqueue {
-                    queue: queue_name.to_string(),
-                }),
-                timeout_ms: None,
-            })
-            .await
-        {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload: data,
+            action: Some(TriggerAction::Enqueue {
+                queue: queue_name.to_string(),
+            }),
+            timeout_ms: None,
+        };
+        // Forward the target namespace so the remote engine enqueues (and later
+        // consumes) in the enqueuer's namespace rather than `default`.
+        let result = match namespace {
+            Some(ns) => self.bridge.trigger(request.namespace(ns)).await,
+            None => self.bridge.trigger(request).await,
+        };
+        if let Err(e) = result {
             tracing::error!(error = %e, queue = %queue_name, function_id = %function_id, "Failed to enqueue via bridge");
         }
     }
@@ -424,7 +449,14 @@ mod tests {
         // verify subscribe doesn't panic either.
         let Ok(adapter) = result else { return };
         adapter
-            .subscribe("test_topic", "test_id", "functions.test", None, None)
+            .subscribe(
+                "test_topic",
+                "test_id",
+                "functions.test",
+                "default",
+                None,
+                None,
+            )
             .await;
     }
 

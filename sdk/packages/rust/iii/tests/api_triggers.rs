@@ -51,6 +51,7 @@ async fn get_endpoint() {
             "http_method": "GET",
         }),
         metadata: None,
+        namespace: None,
     })
     .expect("register trigger");
 
@@ -94,6 +95,7 @@ async fn post_endpoint_with_body() {
                 "http_method": "POST",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -199,6 +201,7 @@ async fn raw_json_request_body() {
                 "http_method": "POST",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -246,6 +249,7 @@ async fn path_parameters() {
                 "http_method": "GET",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -290,6 +294,7 @@ async fn query_parameters() {
                 "http_method": "GET",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -332,6 +337,7 @@ async fn custom_status_code() {
                 "http_method": "GET",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -377,6 +383,7 @@ async fn content_type_on_api_response_return() {
                 "http_method": "POST",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -473,6 +480,7 @@ async fn download_pdf_streaming() {
                 "http_method": "GET",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -597,6 +605,7 @@ async fn upload_pdf_streaming() {
                 "http_method": "POST",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -707,6 +716,7 @@ async fn sse_streaming() {
                 "http_method": "GET",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -858,6 +868,7 @@ async fn urlencoded_form_data() {
                 "http_method": "POST",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -1013,6 +1024,7 @@ async fn multipart_form_data() {
                 "http_method": "POST",
             }),
             metadata: None,
+            namespace: None,
         })
         .expect("register trigger");
 
@@ -1069,6 +1081,7 @@ async fn conflicting_route_structure_is_rejected() {
             "http_method": "GET",
         }),
         metadata: None,
+        namespace: None,
     })
     .expect("register trigger a");
 
@@ -1087,6 +1100,7 @@ async fn conflicting_route_structure_is_rejected() {
             "http_method": "GET",
         }),
         metadata: None,
+        namespace: None,
     })
     .expect("register trigger b");
 

@@ -186,6 +186,7 @@ async fn subscribe(harness: &Harness, id: &str, topic: &str, function_id: &str) 
             config: json!({ "topic": topic }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register subscribe trigger");

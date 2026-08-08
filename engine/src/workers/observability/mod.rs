@@ -3408,7 +3408,10 @@ impl Worker for ObservabilityWorker {
         if self
             .engine
             .functions
-            .get(configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -3706,6 +3709,7 @@ mod tests {
                 config: serde_json::json!({ "level": "all" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
             guard.insert(Trigger {
                 id: "t-error".to_string(),
@@ -3714,6 +3718,7 @@ mod tests {
                 config: serde_json::json!({ "level": "error" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
         }
 
@@ -3799,6 +3804,7 @@ mod tests {
             let mut guard = triggers.triggers.write().await;
             guard.insert(Trigger {
                 id: "t-all".to_string(),
+                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 trigger_type: TRACE_TRIGGER_TYPE.to_string(),
                 function_id: "test::trace-all".to_string(),
                 config: serde_json::json!({}),
@@ -3807,6 +3813,7 @@ mod tests {
             });
             guard.insert(Trigger {
                 id: "t-error".to_string(),
+                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 trigger_type: TRACE_TRIGGER_TYPE.to_string(),
                 function_id: "test::trace-error".to_string(),
                 config: serde_json::json!({ "status": "error", "service_name": "svc" }),
@@ -4023,6 +4030,7 @@ mod tests {
         let triggers = Arc::new(OtelTraceTriggers::new());
         triggers.triggers.write().await.insert(Trigger {
             id: "t-fast".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             trigger_type: TRACE_TRIGGER_TYPE.to_string(),
             function_id: "test::trace-fast".to_string(),
             config: serde_json::json!({}),
@@ -4182,6 +4190,7 @@ mod tests {
         let triggers = Arc::new(OtelTraceTriggers::new());
         triggers.triggers.write().await.insert(Trigger {
             id: "t-meta".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             trigger_type: TRACE_TRIGGER_TYPE.to_string(),
             function_id: "test::trace-meta".to_string(),
             config: serde_json::json!({}),
@@ -4212,6 +4221,7 @@ mod tests {
         let triggers = Arc::new(OtelLogTriggers::new());
         triggers.triggers.write().await.insert(Trigger {
             id: "t-log-meta".to_string(),
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
             trigger_type: LOG_TRIGGER_TYPE.to_string(),
             function_id: "test::log-meta".to_string(),
             config: serde_json::json!({ "level": "all" }),

@@ -52,6 +52,9 @@ pub struct PathRouter {
     /// Per-trigger metadata, delivered to the handler as a distinct argument
     /// when the route fires (not folded into the request payload).
     pub metadata: Option<Value>,
+    /// Namespace the target (and condition) function resolves in when the route
+    /// fires — the namespace of the worker that registered the trigger.
+    pub namespace: String,
 }
 
 impl PathRouter {
@@ -71,6 +74,7 @@ impl PathRouter {
             trigger_id: String::new(),
             worker_id: None,
             metadata: None,
+            namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
         }
     }
 
@@ -78,6 +82,12 @@ impl PathRouter {
     pub fn with_owner(mut self, trigger_id: String, worker_id: Option<uuid::Uuid>) -> Self {
         self.trigger_id = trigger_id;
         self.worker_id = worker_id;
+        self
+    }
+
+    /// Set the namespace the route's target/condition function resolves in.
+    pub fn with_namespace(mut self, namespace: String) -> Self {
+        self.namespace = namespace;
         self
     }
 
@@ -95,6 +105,7 @@ pub struct RouterMatch {
     pub condition_function_id: Option<String>,
     pub middleware_function_ids: Vec<String>,
     pub metadata: Option<Value>,
+    pub namespace: String,
 }
 
 #[derive(Clone)]
@@ -281,7 +292,10 @@ impl Worker for HttpWorker {
         if self
             .engine
             .functions
-            .get(super::configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                super::configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -838,6 +852,7 @@ impl HttpWorker {
             condition_function_id: r.condition_function_id.clone(),
             middleware_function_ids: r.middleware_function_ids.clone(),
             metadata: r.metadata.clone(),
+            namespace: r.namespace.clone(),
         })
     }
 
@@ -967,7 +982,8 @@ impl TriggerRegistrator for HttpWorker {
                 middleware_function_ids,
             )
             .with_owner(trigger.id.clone(), trigger.worker_id)
-            .with_metadata(trigger.metadata.clone());
+            .with_metadata(trigger.metadata.clone())
+            .with_namespace(trigger.namespace.clone());
 
             adapter.register_router(router).await?;
             Ok(())
@@ -1618,6 +1634,7 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         module
@@ -1660,6 +1677,7 @@ mod tests {
             }),
             worker_id: Some(worker_a),
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let trigger_b = Trigger {
@@ -1672,6 +1690,7 @@ mod tests {
             }),
             worker_id: Some(worker_b),
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         // 1. Worker A registers the route.
@@ -1717,6 +1736,7 @@ mod tests {
             }),
             worker_id: Some(worker_a),
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let trigger_b = Trigger {
@@ -1729,6 +1749,7 @@ mod tests {
             }),
             worker_id: Some(worker_b),
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         module
@@ -1774,6 +1795,7 @@ mod tests {
             }),
             worker_id: Some(worker),
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         module
@@ -1799,6 +1821,7 @@ mod tests {
             config: json!({ "http_method": "GET" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         let err = module

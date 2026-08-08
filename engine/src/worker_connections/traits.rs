@@ -61,6 +61,8 @@ impl TriggerRegistrator for WorkerConnection {
                     function_id: trigger.function_id,
                     config: trigger.config,
                     metadata: trigger.metadata,
+                    namespace: (trigger.namespace != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.namespace),
                 }))
                 .await;
             if let Err(err) = sent {
@@ -110,6 +112,8 @@ impl TriggerRegistrator for WorkerConnection {
                     function_id: trigger.function_id,
                     config: trigger.config,
                     metadata: trigger.metadata,
+                    namespace: (trigger.namespace != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.namespace),
                 }))
                 .await
                 .map_err(|err| {
@@ -201,6 +205,7 @@ impl FunctionHandler for WorkerConnection {
                     baggage,
                     action: None,
                     metadata,
+                    namespace: None,
                 }))
                 .await;
 
@@ -239,6 +244,7 @@ mod tests {
             config: json!({}),
             worker_id,
             metadata: None,
+            namespace: "default".to_string(),
         }
     }
 
@@ -338,6 +344,7 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         worker.unregister_trigger(trigger).await.unwrap();
         let msg = rx.recv().await.unwrap();

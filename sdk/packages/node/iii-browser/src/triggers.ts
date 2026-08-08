@@ -11,6 +11,12 @@ export type TriggerConfig<TConfig> = {
   function_id: string
   /** Trigger-specific configuration. */
   config: TConfig
+  /**
+   * Namespace the trigger's target `function_id` resolves in. A provider that
+   * stores this config and later fires the target must pass this namespace, or
+   * it fires in `default`. Absent means the engine's default namespace.
+   */
+  namespace?: string
 }
 
 /**

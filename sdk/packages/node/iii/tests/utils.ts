@@ -10,7 +10,21 @@ const DELAY_MS = 100
 export const engineWsUrl = ENGINE_WS_URL
 export const engineHttpUrl = ENGINE_HTTP_URL
 
+/**
+ * The engine allows a single live worker per `(namespace, name)` and rejects
+ * (fatally, without reconnect) any later claimant. The SDK's default name is
+ * `hostname:pid`, which every worker in a vitest process shares — so each
+ * worker the suite opens against a shared engine must carry its own name.
+ *
+ * `setup.ts` pulls this module into all 36 test files, and vitest re-evaluates
+ * it per file within one process: the suffix is what keeps those copies apart.
+ */
+export function uniqueWorkerName(role: string): string {
+  return `node-sdk-tests:${role}:${crypto.randomUUID().slice(0, 8)}`
+}
+
 export const iii = registerWorker(engineWsUrl, {
+  workerName: uniqueWorkerName('shared'),
   otel: {
     serviceName: 'iii-tests',
     serviceVersion: '0.0.1',

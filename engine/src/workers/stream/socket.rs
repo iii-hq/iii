@@ -575,6 +575,7 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
             });
 
         let (mut client, _response) = connect_async(url).await.expect("connect websocket client");

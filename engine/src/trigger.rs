@@ -214,6 +214,14 @@ pub struct Trigger {
     pub worker_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the target `function_id` resolves in when this trigger fires.
+    /// Taken from the `RegisterTrigger` message's `namespace` (not the registering
+    /// connection): the trigger names its target namespace explicitly, and an
+    /// absent value means [`crate::protocol::DEFAULT_NAMESPACE`] — see
+    /// `Engine::fire_triggers`. Also defaults to `default` for engine-internal /
+    /// durable registrations and for wire payloads that predate the field.
+    #[serde(default = "crate::protocol::default_namespace")]
+    pub namespace: String,
 }
 
 // Only `id` is considered for Hash and Eq/PartialEq
@@ -258,6 +266,26 @@ impl TriggerRegistry {
             pending_triggers: Arc::new(DashMap::new()),
             park_transition: std::sync::Mutex::new(()),
         }
+    }
+
+    /// The namespace a fired trigger's target/condition function resolves in,
+    /// looked up LIVE by trigger id at fire time.
+    ///
+    /// Message-broker triggers (queue `durable:subscriber`, `subscribe`) invoke
+    /// their target inside an adapter task that holds only the trigger id — the
+    /// enqueued/published message carries no namespace. Resolving against the
+    /// registry here uses the trigger's CURRENT binding, exactly as the
+    /// in-process workers (state/stream/cron/...) read the live `Trigger`. A
+    /// message that sits in a durable queue while its trigger is re-registered
+    /// therefore resolves against the new namespace, and one whose trigger has
+    /// been unregistered falls back to [`DEFAULT_NAMESPACE`] (there is no binding
+    /// left to consult). This is the intended semantic for this plan, not an
+    /// accident of lookup.
+    pub fn namespace_of(&self, trigger_id: &str) -> String {
+        self.triggers
+            .get(trigger_id)
+            .map(|t| t.namespace.clone())
+            .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string())
     }
 
     pub async fn unregister_worker(&self, worker_id: &Uuid) {
@@ -749,6 +777,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         }
     }
 
@@ -1213,6 +1242,45 @@ mod tests {
         assert!(registry.pending_triggers.is_empty());
         assert!(registry.triggers.contains_key("t_durable"));
         assert!(registry.triggers.contains_key("t_other"));
+    }
+
+    /// Recovery must preserve the namespace. A trigger registered in `orders`
+    /// while its type is unavailable is parked in `pending_triggers`; when the
+    /// type is (re)registered it is activated into the live `triggers` map. The
+    /// recovered binding must still resolve in `orders` — every dispatch path
+    /// reads `namespace_of`, so if recovery dropped the namespace the trigger
+    /// would silently fire in `default` (BUG 1 via the recovery path).
+    #[tokio::test]
+    async fn a_recovered_pending_trigger_keeps_its_namespace() {
+        let registry = TriggerRegistry::new();
+
+        // Arrives before its type exists → parked pending.
+        let mut trig = make_trigger("t_ns", "evt");
+        trig.namespace = "orders".to_string();
+        registry.register_trigger(trig).await.unwrap();
+        assert!(registry.pending_triggers.contains_key("t_ns"));
+        assert!(!registry.triggers.contains_key("t_ns"));
+
+        // The type registers: the parked intent is activated (recovered).
+        let healthy = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "gen A",
+                Box::new(Arc::clone(&healthy)),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert!(registry.triggers.contains_key("t_ns"), "trigger recovered");
+        assert!(registry.pending_triggers.is_empty());
+        assert_eq!(
+            registry.namespace_of("t_ns"),
+            "orders",
+            "a recovered trigger must still resolve in the namespace it was registered in, \
+             not fall back to default"
+        );
     }
 
     #[tokio::test]
@@ -1791,6 +1859,7 @@ mod tests {
             config: serde_json::json!({"interval": 5}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let t2 = Trigger {
             id: "trigger-1".to_string(),
@@ -1799,6 +1868,7 @@ mod tests {
             config: serde_json::json!({"url": "https://example.com"}),
             worker_id: Some(Uuid::new_v4()),
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         // Same id means equal, even though other fields differ.
@@ -1820,6 +1890,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let t2 = Trigger {
             id: "trigger-2".to_string(),
@@ -1828,6 +1899,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
 
         assert_ne!(t1, t2);
@@ -1857,6 +1929,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: Some(serde_json::json!({"team": "platform", "priority": "high"})),
+            namespace: "default".to_string(),
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();
@@ -1875,6 +1948,7 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();

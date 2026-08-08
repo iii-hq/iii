@@ -233,7 +233,10 @@ async fn disabled_boot_still_registers_the_configuration_entry() {
         harness
             .engine
             .functions
-            .get("iii-observability::on-config-change")
+            .get(
+                iii::protocol::DEFAULT_NAMESPACE,
+                "iii-observability::on-config-change"
+            )
             .is_some(),
         "the on-config-change handler must be registered on a disabled boot"
     );
@@ -441,6 +444,7 @@ async fn register_log_recorder(harness: &Harness, fn_id: &str, level: &str) -> A
             config: json!({ "level": level }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
         })
         .await
         .expect("register log trigger");
