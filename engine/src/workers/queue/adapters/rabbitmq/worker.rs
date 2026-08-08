@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use lapin::{Channel, message::Delivery, options::*};
+use lapin::{message::Delivery, options::*, Channel};
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
@@ -224,6 +224,7 @@ impl Worker {
         async {
             let engine = Arc::clone(&self.engine);
             let data = job.data.clone();
+            let metadata = job.metadata.clone();
 
             if let Some(condition_path) = condition_function_id {
                 tracing::debug!(
@@ -252,7 +253,7 @@ impl Worker {
                 }
             }
 
-            match engine.call(function_id, data).await {
+            match engine.call_with_metadata(function_id, data, metadata).await {
                 Ok(_) => {
                     tracing::debug!(job_id = %job.id, "Job processed successfully");
                     tracing::Span::current().record("otel.status_code", "OK");

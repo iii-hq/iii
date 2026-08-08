@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use redis::{AsyncCommands, Client, aio::ConnectionManager};
+use redis::{aio::ConnectionManager, AsyncCommands, Client};
 use serde_json::Value;
 use tokio::{
     sync::{Mutex, RwLock},
@@ -23,8 +23,8 @@ use crate::{
     telemetry::SpanExt,
     workers::{
         queue::{
-            QueueAdapter, SubscriberQueueConfig,
             registry::{QueueAdapterFuture, QueueAdapterRegistration},
+            QueueAdapter, SubscriberQueueConfig,
         },
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
     },
@@ -363,6 +363,7 @@ impl QueueAdapter for RedisAdapter {
         queue_name: &str,
         function_id: &str,
         data: Value,
+        metadata: Option<Value>,
         message_id: &str,
         _max_retries: u32,
         _backoff_ms: u64,
@@ -381,6 +382,7 @@ impl QueueAdapter for RedisAdapter {
             },
             "function_id": function_id,
             "message_id": message_id,
+            "metadata": metadata,
             "data": data,
         });
 

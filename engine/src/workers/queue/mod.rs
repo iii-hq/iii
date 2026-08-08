@@ -82,6 +82,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
         _queue_name: &str,
         _function_id: &str,
         _data: Value,
+        _metadata: Option<Value>,
         _message_id: &str,
         _max_retries: u32,
         _backoff_ms: u64,

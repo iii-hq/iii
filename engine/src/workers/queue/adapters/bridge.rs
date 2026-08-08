@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::trigger::Trigger;
-use iii_sdk::{Error, IIIClient, InitOptions, TriggerAction, register_worker};
+use iii_sdk::{register_worker, Error, IIIClient, InitOptions, TriggerAction};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -21,8 +21,8 @@ use crate::{
     engine::{Engine, EngineTrait},
     telemetry::SpanExt,
     workers::queue::{
-        QueueAdapter, SubscriberQueueConfig,
         registry::{QueueAdapterFuture, QueueAdapterRegistration},
+        QueueAdapter, SubscriberQueueConfig,
     },
 };
 
@@ -329,6 +329,7 @@ impl QueueAdapter for BridgeAdapter {
         queue_name: &str,
         function_id: &str,
         data: Value,
+        metadata: Option<Value>,
         _message_id: &str,
         _max_retries: u32,
         _backoff_ms: u64,
@@ -338,18 +339,21 @@ impl QueueAdapter for BridgeAdapter {
         // bridge forwards the enqueue unchanged.
         _priority: Option<u8>,
     ) {
-        if let Err(e) = self
-            .bridge
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: data,
-                action: Some(TriggerAction::Enqueue {
-                    queue: queue_name.to_string(),
-                }),
-                timeout_ms: None,
-            })
-            .await
-        {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload: data,
+            action: Some(TriggerAction::Enqueue {
+                queue: queue_name.to_string(),
+            }),
+            timeout_ms: None,
+        };
+        let result = if let Some(metadata) = metadata {
+            self.bridge.trigger(request.metadata(metadata)).await
+        } else {
+            self.bridge.trigger(request).await
+        };
+
+        if let Err(e) = result {
             tracing::error!(error = %e, queue = %queue_name, function_id = %function_id, "Failed to enqueue via bridge");
         }
     }

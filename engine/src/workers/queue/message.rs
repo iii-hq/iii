@@ -15,6 +15,8 @@ pub struct QueueMessage {
     pub function_id: String,
     /// The payload to pass to the function
     pub data: Value,
+    /// Opaque invocation metadata to pass alongside the payload
+    pub metadata: Option<Value>,
     /// Current attempt number (derived from transport-native retry count)
     pub attempt: u32,
     /// Publisher-assigned message ID for tracking and cancellation
@@ -36,6 +38,7 @@ mod tests {
             delivery_id: 42,
             function_id: "functions.process_order".to_string(),
             data: json!({"order_id": "o-1"}),
+            metadata: Some(json!({"source": "test"})),
             attempt: 0,
             message_id: Some("msg-123".to_string()),
             traceparent: Some("00-abc-def-01".to_string()),
@@ -45,6 +48,7 @@ mod tests {
         assert_eq!(msg.delivery_id, 42);
         assert_eq!(msg.function_id, "functions.process_order");
         assert_eq!(msg.data["order_id"], "o-1");
+        assert_eq!(msg.metadata, Some(json!({"source": "test"})));
         assert_eq!(msg.attempt, 0);
         assert!(msg.traceparent.is_some());
         assert!(msg.baggage.is_some());
@@ -56,6 +60,7 @@ mod tests {
             delivery_id: 1,
             function_id: "fn".to_string(),
             data: json!(null),
+            metadata: None,
             attempt: 3,
             message_id: None,
             traceparent: None,
