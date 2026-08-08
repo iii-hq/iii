@@ -63,11 +63,28 @@ with that metadata:
 
 ```yaml
 expose_functions:
-  - match("public::*") # any function under the public:: namespace
+  - match("public::*") # any function with the public:: id prefix
   - match("engine::functions::list") # one specific function
   - metadata:
       public: true # any function whose metadata.public is true
 ```
+
+### Namespace-scoped function rules
+
+An `expose_functions` rule without a namespace applies to `default` only. Add `namespace` when the
+session must call a function in another namespace:
+
+```yaml
+expose_functions:
+  - match: "orders::*"
+    namespace: orders
+  - metadata:
+      public: true
+    namespace: analytics
+```
+
+The `match` value supports `*` wildcards for the function id. The `namespace` value is an exact
+match and does not support wildcards. Add one rule for each namespace that the session can access.
 
 A function's [`metadata`](./functions#attach-metadata) is an arbitrary JSON object set when the
 function is registered, so you can shape it however your access model needs and gate on exactly the
