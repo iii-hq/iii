@@ -28,11 +28,29 @@ iii [OPTIONS] [COMMAND]
 | Command | Description |
 | ------- | ----------- |
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
+| [`compose`](#iii-compose) | Serve worker-compose projects: supervise each one's workers as a graph |
 | [`console`](#iii-console) | Launch the iii web console. |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 | [`worker`](#iii-worker) | Manage workers (add, remove, list, info). |
+
+### `iii compose`
+
+Serve worker-compose projects: supervise each one's workers as a graph.
+
+Projects are started and stopped through `iii trigger compose::*`, naming one with `id=`; this command only puts the daemon there.
+
+```text
+iii compose [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
+| `--ns <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
+| `-d, --detach` | Run in the background and return once the daemon is serving |
+| `--attach` | Put a detached daemon's output back on this terminal |
 
 ### `iii project`
 

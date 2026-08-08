@@ -102,6 +102,7 @@
                   "next/using-iii/functions",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
+                  "next/using-iii/compose",
                   "next/using-iii/configuration",
                   "next/using-iii/console",
                   "next/using-iii/cli",
@@ -114,6 +115,7 @@
                 "pages": [
                   "next/understanding-iii/index",
                   "next/understanding-iii/engine",
+                  "next/understanding-iii/compose",
                   "next/understanding-iii/namespaces",
                   "next/understanding-iii/channels"
                 ]

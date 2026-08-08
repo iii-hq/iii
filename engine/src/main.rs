@@ -168,6 +168,12 @@ enum Commands {
     /// Manage iii projects (init, generate-docker)
     Project(crate::cli::project::ProjectArgs),
 
+    /// Serve worker-compose projects: supervise each one's workers as a graph.
+    ///
+    /// Projects are started and stopped through `iii trigger compose::*`,
+    /// naming one with `id=`; this command only puts the daemon there.
+    Compose(iii_compose::ComposeCli),
+
     /// Generate the committed MDX CLI reference page from this binary's
     /// clap definitions (build tooling; see scripts/generate-cli-docs.sh)
     #[command(name = "gen-cli-docs", hide = true)]
@@ -219,6 +225,8 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
             cli::project::ProjectAction::GenerateDocker(_) => "project generate-docker".to_string(),
         },
+        // One command now: what used to be subcommands are `compose::*` calls.
+        Some(Commands::Compose(_)) => "compose".to_string(),
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Update {
             list_targets: true, ..
@@ -391,6 +399,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Project(args)) => {
             let exit_code = cli::project::run(args.clone()).await;
+            std::process::exit(exit_code);
+        }
+        // Compose owns its own lifecycle and never builds an engine: it is a
+        // client of one, exactly like any other worker.
+        Some(Commands::Compose(args)) => {
+            let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
         // Handled before telemetry above.
@@ -831,6 +845,66 @@ mod tests {
             !error_source.contains("iii-cli"),
             "error.rs should not contain 'iii-cli' references — the binary is now 'iii'"
         );
+    }
+
+    /// Bare `iii compose` is the whole command. What a project is and what
+    /// happens to it are `compose::*` call arguments now, so nothing here
+    /// names one.
+    #[test]
+    fn compose_mounts_as_a_single_command() {
+        let cli = Cli::try_parse_from(["iii", "compose"]).expect("should parse compose");
+        assert_eq!(cli_usage_command_path(&cli), "compose");
+        match cli.command {
+            Some(Commands::Compose(args)) => {
+                assert!(!args.detach);
+                assert!(!args.attach);
+                assert!(args.engine.is_none());
+            }
+            _ => panic!("expected Compose subcommand"),
+        }
+    }
+
+    /// The two flags that survived say where the daemon runs, not what it
+    /// does. They are parsed here and resolved in the crate.
+    #[test]
+    fn compose_carries_its_placement_flags() {
+        let cli = Cli::try_parse_from(["iii", "compose", "-d", "--engine", "ws://host:1"])
+            .expect("should parse detached compose");
+        assert_eq!(cli_usage_command_path(&cli), "compose");
+        match cli.command {
+            Some(Commands::Compose(args)) => {
+                assert!(args.detach);
+                assert_eq!(args.engine.as_deref(), Some("ws://host:1"));
+            }
+            _ => panic!("expected Compose subcommand"),
+        }
+    }
+
+    /// What used to be a subcommand must fail rather than be swallowed as a
+    /// stray argument: `iii compose up` doing nothing quietly is the failure
+    /// mode this guards.
+    #[test]
+    fn the_old_subcommands_no_longer_parse() {
+        for removed in [
+            ["iii", "compose", "up"],
+            ["iii", "compose", "down"],
+            ["iii", "compose", "logs"],
+            ["iii", "compose", "validate"],
+        ] {
+            assert!(
+                Cli::try_parse_from(removed).is_err(),
+                "{removed:?} should no longer parse"
+            );
+        }
+    }
+
+    /// The trigger alias shares the top-level argument space with every
+    /// subcommand, so a new one must not shadow it.
+    #[test]
+    fn compose_does_not_shadow_the_trigger_alias() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "compose::up", "id=host-a"])
+            .expect("trigger should still parse");
+        assert_eq!(cli_usage_command_path(&cli), "trigger");
     }
 
     #[test]

@@ -141,6 +141,9 @@ clap = { version = "4", features = ["derive"] }
 clap-help = "1"
 # MDX CLI reference generation for the hidden `gen-cli-docs` subcommand.
 iii-clap-docs = { path = "../crates/iii-clap-docs" }
+# `iii compose`: declarative multi-worker lifecycle. Owns its own CLI surface;
+# the engine only mounts the subcommand and delegates.
+iii-compose = { path = "../crates/iii-compose" }
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"

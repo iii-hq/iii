@@ -1,0 +1,61 @@
+[package]
+name = "iii-compose"
+version = "0.1.0"
+edition = "2024"
+license = "Elastic-2.0"
+description = "Compose daemon for iii: declarative multi-worker lifecycle"
+
+[lib]
+name = "iii_compose"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+# Durable daemon state is JSON: it is machine state, not an operator-edited file.
+serde_json = { workspace = true }
+dirs = { workspace = true }
+# Colour is disabled automatically when the output is not a terminal, so piped
+# output stays parseable.
+colored = { workspace = true }
+# The daemon is an ordinary worker: it talks to the engine through the SDK.
+iii-sdk = { workspace = true }
+# Registry resolution and artefact download.
+reqwest = { workspace = true }
+flate2 = "1"
+tar = "0.4"
+uuid = { workspace = true }
+schemars = "0.8"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+# io-util drains hook pipes while waiting; sync carries a child's exit status to
+# every waiter (stop and the lifecycle both need it).
+# signal: the foreground daemon stops its children on Ctrl-C.
+tokio = { workspace = true, features = ["io-util", "sync", "signal"] }
+# Container order is part of the diagnostics contract: validation errors and
+# topological output must be reproducible, which a HashMap cannot promise.
+indexmap = { version = "2", features = ["serde"] }
+# Project namespace is derived from the canonical compose path; the digest has
+# to be stable across machines and rust versions, so DefaultHasher is out.
+sha2 = "0.10"
+hex = "0.4"
+
+# Teardown signals whole process groups, which std cannot express.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal", "process"] }
+
+# Job Objects are the windows equivalent; console control events deliver the
+# graceful stop that unix gets from SIGTERM.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  # CreateJobObjectW takes SECURITY_ATTRIBUTES, so it lives behind Win32_Security.
+  "Win32_Security",
+  "Win32_System_Console",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
