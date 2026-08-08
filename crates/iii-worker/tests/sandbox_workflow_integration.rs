@@ -33,21 +33,13 @@ use iii_worker::sandbox_daemon::stop::{StopRequest, handle_stop};
 use common::sandbox_fakes::{FakeShellRunner, FakeVmStopper};
 
 fn make_state(id: Uuid) -> SandboxState {
-    SandboxState {
-        id,
-        name: Some("workflow-fixture".into()),
-        image: "python".into(),
-        rootfs: PathBuf::from("/tmp/rootfs"),
-        workdir: PathBuf::from("/tmp/work"),
-        shell_sock: PathBuf::from("/tmp/shell.sock"),
-        vm_pid: Some(7777),
-        lifeline: None,
-        created_at: Instant::now(),
-        last_exec_at: Instant::now(),
-        exec_in_progress: false,
-        idle_timeout_secs: 300,
-        stopped: false,
-    }
+    let mut s = iii_worker::sandbox_daemon::registry::sandbox_state_for_test(id);
+    s.name = Some("workflow-fixture".into());
+    s.rootfs = PathBuf::from("/tmp/rootfs");
+    s.workdir = PathBuf::from("/tmp/work");
+    s.shell_sock = PathBuf::from("/tmp/shell.sock");
+    s.vm_pid = Some(7777);
+    s
 }
 
 fn build_req(id: Uuid, cmd: impl Into<String>) -> ExecRequest {

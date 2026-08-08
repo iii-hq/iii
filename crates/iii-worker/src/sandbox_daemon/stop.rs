@@ -58,10 +58,9 @@ pub async fn handle_stop<S: VmStopper>(
 mod tests {
     use super::*;
     use crate::sandbox_daemon::registry::SandboxState;
-    use std::path::PathBuf;
+
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Instant;
 
     struct FakeStopper {
         called: Arc<AtomicBool>,
@@ -75,21 +74,9 @@ mod tests {
     }
 
     fn state(id: Uuid) -> SandboxState {
-        SandboxState {
-            id,
-            name: None,
-            image: "python".into(),
-            rootfs: PathBuf::from("/tmp/r"),
-            workdir: PathBuf::from("/tmp/w"),
-            shell_sock: PathBuf::from("/tmp/s"),
-            vm_pid: Some(1234),
-            lifeline: None,
-            created_at: Instant::now(),
-            last_exec_at: Instant::now(),
-            exec_in_progress: false,
-            idle_timeout_secs: 300,
-            stopped: false,
-        }
+        let mut s = crate::sandbox_daemon::registry::sandbox_state_for_test(id);
+        s.vm_pid = Some(1234);
+        s
     }
 
     #[tokio::test]

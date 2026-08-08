@@ -346,8 +346,7 @@ describe('registrationrejected — code decides severity', () => {
         type: 'registrationrejected',
         code: 'FUNCTION_NAMESPACE_CONFLICT',
         namespace: 'orders',
-        // For the FUNCTION case worker_name carries the contested function id.
-        worker_name: 'orders::get',
+        function_id: 'orders::get',
         owner_worker_id: 'abc',
       }),
     )

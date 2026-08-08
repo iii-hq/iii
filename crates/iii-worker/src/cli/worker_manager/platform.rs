@@ -6,6 +6,11 @@
 
 //! Platform-specific utilities for VM execution (macOS entitlements, terminal management).
 
+// Gated to match its only consumer below. Ungated, this import is "unused"
+// on every non-macOS build — and removing it on that evidence (as a review
+// cleanup did) breaks exactly the builds that Linux-hosted checks never
+// compile. cfg-gated code needs cfg-gated imports.
+#[cfg(target_os = "macos")]
 use anyhow::{Context, Result};
 
 /// Ensure the binary has the required VM entitlements (macOS only).

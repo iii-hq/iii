@@ -1009,20 +1009,19 @@ class Sdk implements IIIClient {
    * - {@link FUNCTION_NAMESPACE_CONFLICT}: another live worker in this namespace
    *   already exports this one function id. Only that registration is refused;
    *   the engine keeps the connection open and the worker keeps serving its
-   *   other functions. Non-fatal -- log a warning and continue. Here
-   *   `worker_name` carries the contested function id (the engine reuses the
-   *   struct).
+   *   other functions. Non-fatal -- log a warning and continue.
    * - Any other code: treated as fatal (safe default).
    */
   private onRegistrationRejected(init: {
     code: string
     namespace: string
-    worker_name: string
+    worker_name?: string
+    function_id?: string
     owner_worker_id: string
   }): void {
     if (init.code === FUNCTION_NAMESPACE_CONFLICT) {
       this.logWarn(
-        `Function registration rejected: function "${init.worker_name}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. The worker stays connected and keeps serving its other functions.`,
+        `Function registration rejected: function "${init.function_id ?? '<unknown>'}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. The worker stays connected and keeps serving its other functions.`,
       )
       return
     }
@@ -1316,8 +1315,8 @@ class Sdk implements IIIClient {
       console.debug('[iii] Worker registered with ID:', worker_id)
       this.startMetricsReporting()
     } else if (msgType === MessageType.RegistrationRejected) {
-      const { code, namespace, worker_name, owner_worker_id } = message as RegistrationRejectedMessage
-      this.onRegistrationRejected({ code, namespace, worker_name, owner_worker_id })
+      const { code, namespace, worker_name, function_id, owner_worker_id } = message as RegistrationRejectedMessage
+      this.onRegistrationRejected({ code, namespace, worker_name, function_id, owner_worker_id })
     }
   }
 }

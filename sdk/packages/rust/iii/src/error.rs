@@ -27,13 +27,13 @@ pub enum Error {
     /// worker already holds the name (or an exported function id) in the same
     /// namespace. Fatal: the SDK stops and does not reconnect.
     #[error(
-        "registration rejected ({code}): worker '{worker_name}' in namespace '{namespace}' \
-         is already owned by worker '{owner_worker_id}'"
+        "registration rejected ({code}) in namespace '{namespace}' by worker '{owner_worker_id}'"
     )]
     RegistrationRejected {
         code: String,
         namespace: String,
-        worker_name: String,
+        worker_name: Option<String>,
+        function_id: Option<String>,
         owner_worker_id: String,
     },
 }

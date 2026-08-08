@@ -137,7 +137,7 @@ describe('RegistrationRejected handling', () => {
         type: 'registrationrejected',
         code: 'FUNCTION_NAMESPACE_CONFLICT',
         namespace: 'orders',
-        worker_name: 'state::get',
+        function_id: 'state::get',
         owner_worker_id: 'owner-1',
       }),
     )

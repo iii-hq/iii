@@ -44,10 +44,14 @@ metadata (runtime, version, OS, PID, isolation, optional `namespace`, and an opt
 The connection is bidirectional from that point on: the engine pushes `InvokeFunction` frames at the
 worker, and the worker pushes `InvocationResult`, additional registrations, or unregistrations back.
 
-A connection's namespace arrives on the `engine::workers::register` call, not on a protocol frame.
-Because SDKs flush their registrations before that call, the engine buffers a connection's
-registrations until the namespace is known and drains them in arrival order. See
-[Namespaces](#namespaces).
+A connection gets its namespace from the `engine::workers::register` call.
+
+A client can send registration messages before this call. The engine holds these messages until it
+knows the namespace. It does not register them in `default` and move them later.
+
+When `engine::workers::register` arrives, the engine registers the worker, sets the connection
+namespace, and processes the held messages in arrival order. If the registration timeout expires
+first, the engine sets the connection namespace to `default`. See [Namespaces](#namespaces).
 
 ## Message types
 
@@ -109,11 +113,27 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
 that `trigger_type` (e.g. `http` for `http` triggers). The engine responds with a
 `TriggerRegistrationResult` carrying an optional `error: ErrorBody`.
 
-`namespace` is optional and names the namespace `function_id` resolves in when the trigger fires. It
-is independent of the registering connection's own namespace: an absent `namespace` means `default`,
-not "the namespace this worker registered under". The typed SDK helpers that pair a function with its
-trigger (`registerTriggerType(...).registerTrigger`) fill it with the worker's own namespace; the
-low-level `registerTrigger` leaves it absent.
+`namespace` specifies the namespace of the target function. It uses the same namespace system as
+worker registration. Usually, it has the same value as the worker namespace.
+
+A trigger can call a function in a different namespace. For this reason, `RegisterTrigger` includes
+the target `namespace`. If this field is not present, `function_id` resolves in `default`.
+
+The typed SDK helper `registerTriggerType(...).registerTrigger` sets this field to the worker
+namespace. The low-level `registerTrigger` API does not set this field automatically. Set
+`namespace` explicitly if the target function is not in `default`.
+
+These fields target `math::add` in `default`:
+
+```json
+{ "function_id": "math::add" }
+```
+
+These fields target `math::add` in `orders`:
+
+```json
+{ "function_id": "math::add", "namespace": "orders" }
+```
 
 ## `RegisterTriggerType`
 
@@ -216,17 +236,49 @@ namespace(s): orders, analytics.`
 }
 ```
 
-Pushed when a registration collides with a worker that is already live in `namespace`.
-`owner_worker_id` identifies the worker that holds the contested identity. `code` decides the
-severity:
+The engine sends this message when a registration conflicts with a live worker in `namespace`.
+`owner_worker_id` identifies the worker that owns the identity. `code` specifies the identity field
+and the severity. Each message contains only one identity field:
 
-| `code`                        | `worker_name` carries | Connection | Severity                                                                     |
-| ----------------------------- | --------------------- | ---------- | ---------------------------------------------------------------------------- |
-| `WORKER_NAMESPACE_CONFLICT`   | the worker name       | closed by the engine | Fatal. The SDK stops the worker and does not reconnect.            |
-| `FUNCTION_NAMESPACE_CONFLICT` | the function id       | stays open | Non-fatal. Only that one registration is refused; the worker keeps serving its other functions. |
+| `code`                        | Identity field | Connection           | Severity                                                                                        |
+| ----------------------------- | -------------- | -------------------- | ----------------------------------------------------------------------------------------------- |
+| `WORKER_NAMESPACE_CONFLICT`   | `worker_name`  | closed by the engine | Fatal. The SDK stops the worker and does not reconnect.                                         |
+| `FUNCTION_NAMESPACE_CONFLICT` | `function_id`  | stays open           | Non-fatal. The engine refuses one function registration. The worker serves its other functions. |
 
-The struct is reused for both codes, so on a `FUNCTION_NAMESPACE_CONFLICT` the `worker_name` field
-holds the contested function id rather than a worker name.
+A function conflict has this format:
+
+```json
+{
+  "type": "registrationrejected",
+  "code": "FUNCTION_NAMESPACE_CONFLICT",
+  "namespace": "orders",
+  "function_id": "state::get",
+  "owner_worker_id": "3f9c1a2e-…"
+}
+```
+
+### Function conflict behavior
+
+Worker registration and function registration are separate operations. The engine can accept a
+worker and reject one of its functions.
+
+For a function ownership conflict, the engine:
+
+1. Keeps the current function owner.
+2. Does not register the new handler.
+3. Sends `FUNCTION_NAMESPACE_CONFLICT` to the new worker.
+4. Keeps the new worker connection open.
+5. Continues to register and serve the new worker's other functions.
+
+`FUNCTION_NAMESPACE_CONFLICT` is a registration result. It is not an invocation result. A later
+invocation of the same function id in the same namespace goes to the current owner. It does not go
+to the worker whose registration was rejected.
+
+<Warning>
+A connected worker does not confirm that all its functions are registered. The SDK reports a
+function conflict as a warning and keeps the worker active. If the worker requires all its functions,
+treat this warning as a startup or deployment error.
+</Warning>
 
 A worker restarting against its own not-yet-cleaned connection is not a conflict: the engine treats
 a connection that has begun tearing down as not live, so the restart reclaims its name immediately.
@@ -251,12 +303,13 @@ to the queue's retry policy.
 
 ## Namespaces
 
-A namespace is a routing dimension carried alongside a function id, never folded into it: `state::get`
-is `state::get` in every namespace. Registries are keyed by `(namespace, function_id)` and
-`(namespace, worker_name)`, so the same id or worker name may appear once per namespace.
+A namespace is a routing value carried with a function id. It is not part of the function name. For
+example, `state::get` has the same id in every namespace. Registries are keyed by
+`(namespace, function_id)` and `(namespace, worker_name)`, so the same id or worker name may appear
+once per namespace.
 
 A worker declares its namespace on the `engine::workers::register` call
-([`RegisterWorkerInput.namespace`](#engine-discovery-functions)), not on a protocol frame. A
+([`RegisterWorkerInput.namespace`](#engine-discovery-functions)). A
 connection that declares none lands in `default`.
 
 ### Resolution
@@ -280,9 +333,12 @@ reported as an ambiguity naming the candidates, never resolved by guessing. Pass
 
 ### Reserved ids
 
-`engine::*` is reserved for engine and builtin infrastructure, which is registered in `default`.
-A worker that tries to register an `engine::*` function id in any other namespace has that
-registration refused.
+`engine::*` is reserved for engine infrastructure, which is registered in `default`. A custom worker
+that tries to register an `engine::*` function id in another namespace has that registration
+refused.
+
+The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
+The reserved-id check does not reject these functions.
 
 ### Wire compatibility
 

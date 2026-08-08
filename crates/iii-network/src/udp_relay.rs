@@ -156,6 +156,8 @@ async fn udp_relay_task(
             data = outbound_rx.recv() => {
                 match data {
                     Some(payload) => {
+                        // Guest datagram: refresh the idle-reaper beacon.
+                        shared.note_activity();
                         let _ = socket.send(&payload).await;
                     }
                     None => break,
@@ -176,6 +178,8 @@ async fn udp_relay_task(
                         // oversized payload); don't inject a zero-length
                         // frame into the guest's rx ring.
                         if !frame.is_empty() {
+                            // Inbound datagram delivered: also activity.
+                            shared.note_activity();
                             let _ = shared.rx_ring.push(frame);
                             shared.rx_wake.wake();
                         }

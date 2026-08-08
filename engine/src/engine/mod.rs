@@ -175,17 +175,12 @@ pub enum Outbound {
     Raw(WsMessage),
 }
 
-/// A registration refused because a live worker already holds the name in the
-/// target namespace.
-///
-/// `worker_name` carries the name that collided — today always a function id,
-/// since worker-name conflicts are deferred to Task 9.5. It maps straight onto
-/// [`Message::RegistrationRejected`]'s field of the same name, which is why it
-/// keeps that name rather than `id`.
+/// A registration refused because a live worker already holds the same worker
+/// name or function id in the target namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespaceConflict {
     pub namespace: String,
-    pub worker_name: String,
+    pub name: String,
     pub owner_worker_id: String,
 }
 
@@ -415,8 +410,8 @@ pub struct Engine {
     /// the SAME file the engine watches (a non-default name like
     /// `config.yml` otherwise silently splits the two).
     config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
-    /// Registration namespace grace in milliseconds, resolved from the
-    /// `iii-worker-manager` config by `EngineBuilder::build`. Read through
+    /// Registration namespace grace in milliseconds, resolved from the global
+    /// engine config by `EngineBuilder::build`. Read through
     /// [`Engine::registration_namespace_grace`], where the `III_NAMESPACE_GRACE_MS`
     /// env var takes precedence and an unset lock falls back to the 5s default.
     registration_namespace_grace_ms: Arc<std::sync::OnceLock<u64>>,
@@ -464,7 +459,7 @@ impl Engine {
 
     /// The effective registration namespace grace. Precedence: the
     /// `III_NAMESPACE_GRACE_MS` env var (runtime override), then the value
-    /// resolved from the `iii-worker-manager` config by `EngineBuilder::build`,
+    /// resolved from the global engine config by `EngineBuilder::build`,
     /// then [`REGISTRATION_NAMESPACE_GRACE`] (5s).
     pub fn registration_namespace_grace(&self) -> Duration {
         if let Some(ms) = std::env::var("III_NAMESPACE_GRACE_MS")
@@ -890,7 +885,7 @@ impl Engine {
                     "namespace registration grace of {}ms expired without an \
                      `engine::workers::register` announce; drained this connection's \
                      buffered registrations into the `{}` namespace. To allow more time, \
-                     raise the `iii-worker-manager` `registration_namespace_grace_ms` config \
+                     raise the global `registration_namespace_grace_ms` config \
                      or set the `III_NAMESPACE_GRACE_MS` env var.",
                     grace.as_millis(),
                     DEFAULT_NAMESPACE,
@@ -1981,7 +1976,8 @@ impl Engine {
                         Message::RegistrationRejected {
                             code: FUNCTION_NAMESPACE_CONFLICT.to_string(),
                             namespace: namespace.clone(),
-                            worker_name: reg_id.clone(),
+                            worker_name: None,
+                            function_id: Some(reg_id.clone()),
                             // Reserved-prefix refusal, not a real conflict: no
                             // worker owns `engine::*` (the engine reserves it), so
                             // don't name the rejected worker as its own owner.
@@ -2015,7 +2011,8 @@ impl Engine {
                         Message::RegistrationRejected {
                             code: FUNCTION_NAMESPACE_CONFLICT.to_string(),
                             namespace: conflict.namespace,
-                            worker_name: conflict.worker_name,
+                            worker_name: None,
+                            function_id: Some(conflict.name),
                             owner_worker_id: conflict.owner_worker_id,
                         },
                     )
@@ -2686,7 +2683,7 @@ impl Engine {
                     );
                     return Err(NamespaceConflict {
                         namespace: namespace.to_string(),
-                        worker_name: worker_name.to_string(),
+                        name: worker_name.to_string(),
                         owner_worker_id: previous.to_string(),
                     });
                 }
@@ -2727,7 +2724,8 @@ impl Engine {
             Message::RegistrationRejected {
                 code: WORKER_NAMESPACE_CONFLICT.to_string(),
                 namespace: conflict.namespace,
-                worker_name: conflict.worker_name,
+                worker_name: Some(conflict.name),
+                function_id: None,
                 owner_worker_id: conflict.owner_worker_id,
             },
         )
@@ -2831,7 +2829,7 @@ impl Engine {
         );
         NamespaceConflict {
             namespace: namespace.to_string(),
-            worker_name: function_id.to_string(),
+            name: function_id.to_string(),
             owner_worker_id: owner.to_string(),
         }
     }
@@ -3367,7 +3365,7 @@ mod tests {
             .claim_worker_name("orders", other, "state")
             .expect_err("a second live worker must be rejected");
         assert_eq!(conflict.namespace, "orders");
-        assert_eq!(conflict.worker_name, "state");
+        assert_eq!(conflict.name, "state");
         assert_eq!(conflict.owner_worker_id, owner.id.to_string());
 
         // The incumbent re-claiming its own name is idempotent.

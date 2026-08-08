@@ -54,7 +54,23 @@ impl SmoltcpNetwork {
         let guest_ipv4 = derive_guest_ipv4(slot);
         let gateway_ipv4 = gateway_from_guest_ipv4(guest_ipv4);
 
-        let shared = Arc::new(SharedState::new(DEFAULT_QUEUE_CAPACITY));
+        // Best-effort: a sandbox whose beacon can't be created behaves like
+        // one without networking as far as the idle reaper is concerned —
+        // it is reaped on exec-idleness alone. Warn rather than fail the
+        // boot; the beacon is a liveness hint, not a correctness dependency.
+        let activity = config.activity_file.as_deref().and_then(|path| {
+            crate::shared::ActivityStamp::create(path)
+                .map_err(|e| {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "cannot create net-activity beacon; idle reaping will \
+                         not see network activity for this VM"
+                    );
+                })
+                .ok()
+        });
+        let shared = Arc::new(SharedState::with_activity(DEFAULT_QUEUE_CAPACITY, activity));
         let backend = SmoltcpBackend::new(shared.clone());
 
         Self {

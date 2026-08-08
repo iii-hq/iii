@@ -143,13 +143,14 @@ env:
   MY_API_KEY: replace-me
 ```
 
-`III_NAMESPACE` is the supported way to put a managed worker in a namespace: the SDK reads it when no
-explicit `namespace` option is passed. There is no per-worker `namespace:` key in `config.yaml`.
+For managed and reusable workers, configure the namespace in the compose file that deploys the
+worker rather than baking it into the shipped worker. Set `III_NAMESPACE` in the worker service's
+environment; the SDK reads it when no explicit `namespace` option is passed. `config.yaml` does not
+support a per-worker `namespace:` key.
 
-```yaml
-env:
-  III_NAMESPACE: orders
-```
+When registering a worker programmatically, you may instead pass `namespace` directly to
+`registerWorker` / `register_worker`. The explicit option takes precedence over `III_NAMESPACE`.
+When neither is set, the worker registers in the `default` namespace.
 
 ## `dependencies`
 

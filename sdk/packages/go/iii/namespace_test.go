@@ -160,7 +160,31 @@ func TestRegistrationRejectedIsFatal(t *testing.T) {
 	if re.Code != "WORKER_NAMESPACE_CONFLICT" || re.Namespace != "orders" {
 		t.Errorf("got %+v, want code=WORKER_NAMESPACE_CONFLICT namespace=orders", re)
 	}
+	if re.WorkerName != "state" || re.FunctionID != "" {
+		t.Errorf("got %+v, want only worker_name=state", re)
+	}
 	if st := c.State(); st != StateFailed {
 		t.Errorf("state = %q, want failed", st)
+	}
+}
+
+func TestFunctionRegistrationRejectedIsNonFatal(t *testing.T) {
+	c := New("ws://127.0.0.1:0", WithName("state"), WithNamespace("orders"))
+	c.mu.Lock()
+	c.state = StateConnected
+	c.mu.Unlock()
+
+	c.handleRegistrationRejected(&RegistrationRejectedMessage{
+		Code:          "FUNCTION_NAMESPACE_CONFLICT",
+		Namespace:     "orders",
+		FunctionID:    "state::get",
+		OwnerWorkerID: "owner-123",
+	})
+
+	if err := c.FatalError(); err != nil {
+		t.Fatalf("FatalError = %v, want nil", err)
+	}
+	if st := c.State(); st != StateConnected {
+		t.Errorf("state = %q, want connected", st)
 	}
 }

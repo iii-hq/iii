@@ -72,6 +72,11 @@ iii worker add ghcr.io/org/worker:tag # Pulls and adds a worker from a Docker or
 The worker is added to `config.yaml` and started automatically. To force a redownload of an existing
 worker, use `iii worker reinstall <name>` (equivalent to `add --force`).
 
+Registry installs validate the complete dependency graph without an arbitrary depth limit. If a
+resolved graph contains more than 32 workers, iii asks for confirmation before installing it. Use
+`iii worker add --yes <name>` (or `iii worker reinstall --yes <name>`) in CI and other
+non-interactive environments after reviewing the graph.
+
 `iii worker add` writes a bare `- name:` entry with no `config:` block. Workers boot with their
 built-in defaults and manage runtime settings through the
 [configuration worker](./configuration), whose entries are editable as local files under

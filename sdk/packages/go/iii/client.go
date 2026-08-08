@@ -741,7 +741,7 @@ type workerMetadata struct {
 
 // sdkVersion is reported in the worker metadata. Kept as a const for v1; a release
 // process can wire this to the module version later.
-const sdkVersion = "0.22.1-rc.1"
+const sdkVersion = "0.22.1"
 
 // writeLoop is the single writer for one connection. It drains the shared outbound
 // channel (connection-agnostic frames) and this connection's own reply channel
@@ -835,7 +835,7 @@ func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
 	}
 	if msg.Code == "FUNCTION_NAMESPACE_CONFLICT" {
 		log.Printf("iii: function registration rejected (%s): %q in namespace %q already owned by worker %s; staying connected and serving the rest",
-			msg.Code, msg.WorkerName, msg.Namespace, msg.OwnerWorkerID)
+			msg.Code, msg.FunctionID, msg.Namespace, msg.OwnerWorkerID)
 		return
 	}
 
@@ -843,6 +843,7 @@ func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
 		Code:          msg.Code,
 		Namespace:     msg.Namespace,
 		WorkerName:    msg.WorkerName,
+		FunctionID:    msg.FunctionID,
 		OwnerWorkerID: msg.OwnerWorkerID,
 	}
 	log.Printf("iii: registration rejected (%s): worker %q in namespace %q already owned by %s; fatal, not reconnecting",

@@ -605,21 +605,9 @@ impl FsRunner for FakeFsRunner {
 // ────────────────────────────────────────────────────────────────────
 
 fn fixture_state(id: Uuid) -> SandboxState {
-    SandboxState {
-        id,
-        name: None,
-        image: "node".into(),
-        rootfs: PathBuf::from("/tmp/r"),
-        workdir: PathBuf::from("/tmp/w"),
-        shell_sock: PathBuf::from("/tmp/s"),
-        vm_pid: Some(1),
-        lifeline: None,
-        created_at: Instant::now(),
-        last_exec_at: Instant::now(),
-        exec_in_progress: false,
-        idle_timeout_secs: 300,
-        stopped: false,
-    }
+    let mut s = iii_worker::sandbox_daemon::registry::sandbox_state_for_test(id);
+    s.image = "node".into();
+    s
 }
 
 async fn live_sandbox(reg: &SandboxRegistry) -> Uuid {
@@ -1256,7 +1244,7 @@ async fn fs_ops_succeed_while_exec_is_in_progress() {
     // Acquire the exec slot — equivalent to an in-flight `sandbox::exec`.
     let _slot = reg.begin_exec(id).await.unwrap();
     let busy = reg.get(id).await.unwrap();
-    assert!(busy.exec_in_progress);
+    assert!(busy.exec_in_progress());
 
     // mkdir + write + ls all proceed while exec is busy.
     handle_mkdir(
@@ -1300,7 +1288,7 @@ async fn fs_ops_succeed_while_exec_is_in_progress() {
     // gate) without clearing `exec_in_progress`.
     let after = reg.get(id).await.unwrap();
     assert!(
-        after.exec_in_progress,
+        after.exec_in_progress(),
         "fs ops must not clear exec_in_progress; that belongs to end_exec"
     );
 }

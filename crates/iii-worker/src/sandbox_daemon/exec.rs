@@ -1,5 +1,12 @@
-//! Exec serialization invariant: per-sandbox, only one exec runs at a
-//! time. `SandboxRegistry::begin_exec` / `end_exec` holds that guard.
+//! Exec admission: a sandbox runs up to `max_concurrent_exec_per_sandbox`
+//! execs at once (default 4), counted by `SandboxRegistry::begin_exec` /
+//! `end_exec`. Beyond the cap the request is refused with S003.
+//!
+//! There is NO mutual exclusion between concurrent execs in one sandbox —
+//! they share the guest's filesystem and process table. Anything that mutates
+//! shared guest state (overlay writes, a build directory, a package install)
+//! must arrange its own coordination; it used to get serialization for free
+//! and no longer does.
 
 use crate::sandbox_daemon::{errors::SandboxError, registry::SandboxRegistry};
 use schemars::JsonSchema;
@@ -265,8 +272,6 @@ pub(crate) fn resolve_cmd_shape(
 mod tests {
     use super::*;
     use crate::sandbox_daemon::registry::SandboxState;
-    use std::path::PathBuf;
-    use std::time::Instant;
 
     struct FakeRunner {
         stdout: String,
@@ -291,21 +296,7 @@ mod tests {
     }
 
     fn state_for(id: Uuid) -> SandboxState {
-        SandboxState {
-            id,
-            name: None,
-            image: "python".into(),
-            rootfs: PathBuf::from("/tmp/r"),
-            workdir: PathBuf::from("/tmp/w"),
-            shell_sock: PathBuf::from("/tmp/s"),
-            vm_pid: Some(1),
-            lifeline: None,
-            created_at: Instant::now(),
-            last_exec_at: Instant::now(),
-            exec_in_progress: false,
-            idle_timeout_secs: 300,
-            stopped: false,
-        }
+        crate::sandbox_daemon::registry::sandbox_state_for_test(id)
     }
 
     #[tokio::test]
@@ -330,7 +321,7 @@ mod tests {
         let resp = handle_exec(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.stdout, "hi\n");
         let state = reg.get(id).await.unwrap();
-        assert!(!state.exec_in_progress);
+        assert!(!state.exec_in_progress());
     }
 
     #[tokio::test]
@@ -401,7 +392,7 @@ mod tests {
         let resp = handle_exec(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.exit_code, Some(0));
         let state = reg.get(id).await.unwrap();
-        assert!(!state.exec_in_progress);
+        assert!(!state.exec_in_progress());
     }
 
     #[tokio::test]

@@ -90,21 +90,22 @@ carve-out the default `hostname:pid` naming would make fast restarts fail agains
 
 ## Why it arrives per connection
 
-A namespace is declared on the `engine::workers::register` call rather than on each registration
-frame, because it describes the worker, not the individual function. One worker is one identity in
-one namespace; letting individual registrations disagree would create a worker that is partly in two
-places.
+A namespace is declared on the `engine::workers::register` call because it describes the worker, not
+an individual function. One worker is one identity in one namespace.
 
-That choice has a cost, and the cost is ordering. SDKs have always flushed their `RegisterFunction`
-frames as soon as the socket opens, before announcing worker metadata. If the engine filed those
-registrations as they arrived it would file them before knowing the namespace. So it buffers a
-connection's registrations until the namespace is known, then drains them in arrival order.
+When a WebSocket connection opens, the engine starts a namespace resolution timer. The default
+timeout is `5000 ms`. Until `engine::workers::register` resolves the connection namespace, the engine
+holds `RegisterFunction`, `UnregisterFunction`, `RegisterService`, and `RegisterTrigger` messages from
+that connection.
 
-The buffer is bounded by a grace period rather than waiting forever, because a worker might never
-announce itself at all. When the grace expires the connection is fixed to `default` and drained. This
-is what makes the whole feature backward compatible: a worker built against an older SDK sends no
-namespace, waits out the grace, lands in `default`, and behaves exactly as it always did. Every
-namespace field on the wire is optional for the same reason.
+If the worker registration arrives before the timer expires, the engine assigns its `namespace`
+value, or `default` when the value is absent. It then processes the held messages in arrival order.
+If the timer expires first, the engine assigns `default` and processes the held messages. A later
+worker registration cannot change the assigned namespace.
+
+To change this timeout, use the global `registration_namespace_grace_ms` setting or the
+`III_NAMESPACE_GRACE_MS` environment variable. See
+[Registration namespace timeout](../using-iii/configuration#registration-namespace-timeout).
 
 ## What it costs
 
@@ -114,19 +115,14 @@ adding a coordinate stops being free.
 Durable queue identity is the visible case. A subscriber queue is now scoped by namespace, so two
 subscribers of the same topic and function id in different namespaces are two queues receiving the
 same event rather than two competing consumers of one queue. That is the correct behaviour, and it
-means the queue names changed. The builtin broker migrates its own queues; an external broker holds
-queues iii does not own, so those need operator action.
+means the queue names changed. The engine migrates queues in its managed storage. External brokers
+hold queues the engine does not own, so those need operator action.
 
 <Note>
   For the migration steps, see [Upgrading from 0.22.x](../upgrading/from-0-22-x).
 </Note>
 
-## Isolate workers with namespaces
-
-Use this when two projects on one engine both want the same worker name or the same function id, and
-neither can rename. Declaring a namespace scopes each worker's registrations so they coexist.
-
-### Declare the worker's namespace
+## Declare the worker's namespace
 
 Pass `namespace` when registering the worker. The SDK resolves it in this order: the explicit option,
 then the `III_NAMESPACE` environment variable, then nothing at all, in which case the engine files
@@ -323,8 +319,13 @@ Read the fatal error to report which identity collided and with whom:
     ```rust
     use iii_sdk::Error;
 
-    if let Some(Error::RegistrationRejected { code, namespace, worker_name, owner_worker_id }) =
-        worker.fatal_error()
+    if let Some(Error::RegistrationRejected {
+        code,
+        namespace,
+        worker_name: Some(worker_name),
+        owner_worker_id,
+        ..
+    }) = worker.fatal_error()
     {
         eprintln!("{code}: {worker_name} in {namespace} owned by {owner_worker_id}");
     }

@@ -194,7 +194,10 @@ pub enum Message {
     RegistrationRejected {
         code: String,
         namespace: String,
-        worker_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        function_id: Option<String>,
         owner_worker_id: String,
     },
 }
@@ -595,15 +598,30 @@ mod tests {
 
     #[test]
     fn registration_rejected_roundtrip() {
-        let msg = Message::RegistrationRejected {
+        let worker_conflict = Message::RegistrationRejected {
             code: "WORKER_NAMESPACE_CONFLICT".into(),
             namespace: "orders".into(),
-            worker_name: "state".into(),
+            worker_name: Some("state".into()),
+            function_id: None,
             owner_worker_id: "abc".into(),
         };
-        let s = serde_json::to_string(&msg).unwrap();
-        assert!(s.contains(r#""code":"WORKER_NAMESPACE_CONFLICT""#));
-        let back: Message = serde_json::from_str(&s).unwrap();
+        let worker_json = serde_json::to_value(&worker_conflict).unwrap();
+        assert_eq!(worker_json["worker_name"], "state");
+        assert!(worker_json.get("function_id").is_none());
+        let back: Message = serde_json::from_value(worker_json).unwrap();
+        assert!(matches!(back, Message::RegistrationRejected { .. }));
+
+        let function_conflict = Message::RegistrationRejected {
+            code: "FUNCTION_NAMESPACE_CONFLICT".into(),
+            namespace: "orders".into(),
+            worker_name: None,
+            function_id: Some("state::get".into()),
+            owner_worker_id: "abc".into(),
+        };
+        let function_json = serde_json::to_value(&function_conflict).unwrap();
+        assert_eq!(function_json["function_id"], "state::get");
+        assert!(function_json.get("worker_name").is_none());
+        let back: Message = serde_json::from_value(function_json).unwrap();
         assert!(matches!(back, Message::RegistrationRejected { .. }));
     }
 }

@@ -16,7 +16,16 @@ pub struct SandboxSummary {
     pub name: Option<String>,
     pub image: String,
     pub age_secs: u64,
+    /// Any exec running. NOTE: this no longer implies the next exec will be
+    /// refused — a sandbox admits `max_concurrent_exec_per_sandbox` at once.
+    /// Use `exec_in_flight` / `exec_slots_free` for admission decisions; a
+    /// caller that polls this waiting for `false` will wait forever against a
+    /// resident process while slots sit idle.
     pub exec_in_progress: bool,
+    /// Execs running right now.
+    pub exec_in_flight: u32,
+    /// Execs this sandbox would admit before returning S003.
+    pub exec_slots_free: u32,
     pub stopped: bool,
 }
 
@@ -27,15 +36,19 @@ pub struct ListResponse {
 
 pub async fn handle_list(_req: ListRequest, registry: &SandboxRegistry) -> ListResponse {
     let all = registry.list().await;
+    let max_exec = registry.max_exec_in_flight();
     let now = std::time::Instant::now();
     let sandboxes = all
         .into_iter()
         .map(|s| SandboxSummary {
             sandbox_id: s.id.to_string(),
+            // Wire field stays a bool; the record behind it is now a count.
+            exec_in_progress: s.exec_in_progress(),
+            exec_in_flight: s.exec_in_flight,
+            exec_slots_free: max_exec.saturating_sub(s.exec_in_flight),
+            age_secs: now.saturating_duration_since(s.created_at).as_secs(),
             name: s.name,
             image: s.image,
-            age_secs: now.saturating_duration_since(s.created_at).as_secs(),
-            exec_in_progress: s.exec_in_progress,
             stopped: s.stopped,
         })
         .collect();
@@ -47,25 +60,15 @@ mod tests {
     use super::*;
     use crate::sandbox_daemon::registry::SandboxState;
     use std::path::PathBuf;
-    use std::time::Instant;
+
     use uuid::Uuid;
 
     fn make(id: Uuid) -> SandboxState {
-        SandboxState {
-            id,
-            name: None,
-            image: "python".into(),
-            rootfs: PathBuf::new(),
-            workdir: PathBuf::new(),
-            shell_sock: PathBuf::new(),
-            vm_pid: Some(1),
-            lifeline: None,
-            created_at: Instant::now(),
-            last_exec_at: Instant::now(),
-            exec_in_progress: false,
-            idle_timeout_secs: 300,
-            stopped: false,
-        }
+        let mut s = crate::sandbox_daemon::registry::sandbox_state_for_test(id);
+        s.rootfs = PathBuf::new();
+        s.workdir = PathBuf::new();
+        s.shell_sock = PathBuf::new();
+        s
     }
 
     #[tokio::test]

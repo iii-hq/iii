@@ -139,11 +139,29 @@ pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()
         },
     );
 
-    let sandbox_registry = Arc::new(crate::sandbox_daemon::SandboxRegistry::new());
+    if config.max_concurrent_exec_per_sandbox == 0 {
+        tracing::warn!(
+            "max_concurrent_exec_per_sandbox is 0, which this daemon treats as 1 \
+             (strict serialization) — it does NOT mean unlimited. Set it to the \
+             number of simultaneous execs a guest of default_memory_mb can hold."
+        );
+    }
+    let sandbox_registry = Arc::new(
+        crate::sandbox_daemon::SandboxRegistry::with_max_exec_in_flight(
+            config.max_concurrent_exec_per_sandbox,
+        ),
+    );
     let sandbox_cfg = Arc::new(config);
     let launcher = Arc::new(crate::sandbox_daemon::adapters::IiiWorkerLauncher);
-    let runner = Arc::new(crate::sandbox_daemon::adapters::ShellProtoRunner);
+    let runner = Arc::new(crate::sandbox_daemon::adapters::ShellProtoRunner::new(
+        sandbox_cfg.max_exec_timeout_ms,
+    ));
     let stopper = Arc::new(crate::sandbox_daemon::adapters::SignalStopper);
+    // How long past its idle timeout a busy sandbox is protected. One clamped
+    // exec deadline plus slack: beyond that no legitimate exec can still be
+    // running, so a lingering count is leaked and the VM must be reclaimed.
+    let busy_grace = std::time::Duration::from_millis(sandbox_cfg.max_exec_timeout_ms)
+        + std::time::Duration::from_secs(60);
     let fs_runner: std::sync::Arc<dyn fs::FsRunner> = std::sync::Arc::new(fs::IiiShellFsRunner);
 
     register_sandbox_create(
@@ -179,6 +197,7 @@ pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()
                 registry,
                 stopper,
                 std::time::Duration::from_secs(10),
+                busy_grace,
             )
             .await;
         });
