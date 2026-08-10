@@ -255,8 +255,13 @@ validation.
 Both hooks run with the container's environment, working directory, and their own process group.
 
 The start command for a `path://` container is `run`, then `scripts.start` from the worker's
-`iii.worker.yaml`. A container with neither fails with `MISSING_START_COMMAND`. A manifest whose
-`name` differs from the container key fails with `MANIFEST_NAME_MISMATCH`.
+`iii.worker.yaml`. A container with neither fails with `MISSING_START_COMMAND`.
+
+Where the two files describe the same thing, `worker-compose.yaml` wins and the manifest is the
+default. `run` overrides `scripts.start`, and the container key overrides the manifest's `name`: the
+key is what reaches the child as `III_WORKER_NAME`, so a worker honouring the reserved contract
+registers under it whatever its manifest declares. A worker that hardcodes its name instead is
+caught at readiness by `WORKER_NAME_MISMATCH`, which reports the name it took.
 
 ### Configuration precedence
 
@@ -332,7 +337,7 @@ Compose errors cross the wire with a stable code and a message.
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Compose file          | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`                                                                                                |
 | Container declaration | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `PRE_START_TIMEOUT_WITHOUT_PRE_START`, `CONFLICTING_CONFIG_SOURCE`, `UNSUPPORTED_CONFIG_URI`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                            |
-| Worker resolution     | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `MANIFEST_NAME_MISMATCH`                                                                                                                                                                                  |
+| Worker resolution     | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`                                                                                                                                                                                                            |
 | Packages              | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`                                                                        |
 | Start and readiness   | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `ENGINE_CALL_FAILED` |
 | Daemon and project    | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `NO_DAEMON_TO_ATTACH`, `UNKNOWN_CONTAINER`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `CONFLICTING_FLAGS`, `DETACH_FAILED`, `IO_ERROR`                                                       |

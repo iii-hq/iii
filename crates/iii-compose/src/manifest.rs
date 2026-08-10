@@ -33,7 +33,6 @@ pub enum StartSpec {
 
 #[derive(Debug, Clone)]
 pub struct Manifest {
-    pub name: Option<String>,
     pub start: Option<String>,
 }
 
@@ -53,14 +52,27 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
             message: err.to_string(),
         })?;
     Ok(Some(Manifest {
-        name: raw.name,
         start: raw.scripts.and_then(|scripts| scripts.start),
     }))
 }
 
-/// Resolves how a container starts. Compose `run` wins over the manifest's
-/// `scripts.start`: the compose file is the operator's file, the manifest is the
-/// worker author's default.
+/// Resolves how a container starts.
+///
+/// The rule is general, not a decision per field: **where the compose file and
+/// the manifest describe the same thing, `worker-compose.yaml` wins and the
+/// manifest is the default.** The compose file is the operator's, the manifest
+/// is the worker author's, and an operator deploying a worker they did not
+/// write has to be able to override the author without editing a vendored
+/// directory. So `run` wins over `scripts.start`, and the container key wins
+/// over the manifest's `name` — the key is what reaches the child as
+/// `III_WORKER_NAME`, so a worker honouring the reserved contract registers
+/// under it whatever its manifest says.
+///
+/// A manifest that names itself differently used to be refused outright, which
+/// rejected a configuration that works. What the manifest cannot predict — a
+/// worker that hardcodes its name in code and ignores `III_WORKER_NAME` — is
+/// caught at readiness by `WORKER_NAME_MISMATCH`, which reports the name it
+/// actually took.
 pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     let dir = match &container.worker {
         // A package has no start command until its artefact is installed, and
@@ -82,19 +94,6 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     }
 
     let manifest = read_manifest(dir)?;
-    // A manifest that renames the container would split identity between the
-    // compose graph and the engine registration.
-    if let Some(name) = manifest
-        .as_ref()
-        .and_then(|manifest| manifest.name.as_ref())
-        && name != key
-    {
-        return Err(ComposeError::ManifestNameMismatch {
-            container: key.to_string(),
-            path: dir.join(MANIFEST_FILE),
-            manifest_name: name.clone(),
-        });
-    }
 
     if let Some(run) = &container.scripts.run {
         return Ok(StartSpec::Shell(run.clone()));
@@ -227,8 +226,9 @@ fn check_env_files(key: &str, container: &Container) -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct RawManifest {
-    #[serde(default)]
-    name: Option<String>,
+    // `name` is deliberately absent: the manifest may carry one and compose
+    // does not read it. Unknown keys are tolerated here, so it is ignored
+    // rather than rejected.
     #[serde(default)]
     scripts: Option<RawManifestScripts>,
 }

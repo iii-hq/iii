@@ -92,8 +92,14 @@ fn no_manifest_and_no_run_names_both_ways_out() {
     assert!(message.contains("iii.worker.yaml"), "{message}");
 }
 
+/// The container key wins over the manifest's `name`, the same way `run` wins
+/// over `scripts.start`. This used to be `MANIFEST_NAME_MISMATCH`, which
+/// refused a configuration that works: the key reaches the child as
+/// `III_WORKER_NAME`, so a worker honouring the reserved contract registers
+/// under it whatever its own manifest declares. An operator deploying a worker
+/// they did not write could not rename it without editing a vendored file.
 #[test]
-fn a_manifest_may_not_rename_the_container() {
+fn the_container_key_wins_over_the_manifest_name() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
@@ -104,8 +110,17 @@ fn a_manifest_may_not_rename_the_container() {
         )],
     );
 
-    let err = start_of(&file, "api").expect_err("a renaming manifest is invalid");
-    assert_eq!(err.code(), "MANIFEST_NAME_MISMATCH");
+    // It resolves rather than failing, and the manifest still supplies the
+    // start command it is there for.
+    assert_eq!(
+        start_of(&file, "api").expect("a differently-named manifest is not an error"),
+        StartSpec::Shell("cargo run".to_string())
+    );
+
+    // And the name the child is told is the compose key, not the manifest's.
+    let report = iii_compose::manifest::validate_offline(&file, "orders-abcd1234")
+        .expect("project should validate");
+    assert_eq!(report.resolved[0].key, "api");
 }
 
 #[test]

@@ -81,16 +81,6 @@ pub enum ComposeError {
     #[error("{path} is not a valid iii.worker.yaml: {message}")]
     InvalidManifest { path: PathBuf, message: String },
 
-    #[error(
-        "container '{container}': manifest at {path} declares name '{manifest_name}'; it must \
-         match the compose container key"
-    )]
-    ManifestNameMismatch {
-        container: String,
-        path: PathBuf,
-        manifest_name: String,
-    },
-
     #[error("container '{container}': worker directory {path} does not exist")]
     MissingWorkerDirectory { container: String, path: PathBuf },
 
@@ -376,7 +366,6 @@ impl ComposeError {
             Self::ConflictingConfigSource { .. } => "CONFLICTING_CONFIG_SOURCE",
             Self::MissingStartCommand { .. } => "MISSING_START_COMMAND",
             Self::InvalidManifest { .. } => "INVALID_MANIFEST",
-            Self::ManifestNameMismatch { .. } => "MANIFEST_NAME_MISMATCH",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
             Self::MissingEnvFile { .. } => "MISSING_ENV_FILE",
             Self::RegistryUnreachable { .. } => "REGISTRY_UNREACHABLE",
