@@ -215,8 +215,8 @@ pub async fn down(
     // something that depends on it is still running.
     match target {
         // A single target takes its local dependents with it.
-        // `transitive_dependents` already returns them nearest-first, so the
-        // target goes last and the list needs no reversing.
+        // `transitive_dependents` returns them in stop order, so the target
+        // goes last and the list needs no reversing.
         Some(target) => {
             let mut with_dependents = dag::transitive_dependents(ctx.file, target);
             with_dependents.push(target.to_string());
@@ -701,5 +701,51 @@ containers:
         let mut full = file.start_order().unwrap();
         full.reverse();
         assert_eq!(full, vec!["web", "api", "database"]);
+    }
+
+    /// The case the test above cannot reach. With a depth-1 target, discovery
+    /// order and reverse-topological order agree, so a breadth-first walk
+    /// passes it while still being the wrong rule. Two levels below the target
+    /// is where they diverge: discovery returns `[api, reports, web]` and
+    /// stops `api` while `web` is still calling it.
+    #[test]
+    fn a_two_level_cascade_stops_the_far_dependent_first() {
+        let file = ComposeFile::parse(
+            r#"
+name: orders
+containers:
+  web:
+    worker: path://./workers/web
+    depends_on: [api]
+  api:
+    worker: path://./workers/api
+    depends_on: [database]
+  reports:
+    worker: path://./workers/reports
+    depends_on: [database]
+  database:
+    worker: path://./workers/database
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap();
+
+        let mut order = dag::transitive_dependents(&file, "database");
+        order.push("database".to_string());
+
+        let at = |key: &str| {
+            order
+                .iter()
+                .position(|candidate| candidate == key)
+                .unwrap_or_else(|| panic!("{key} missing from {order:?}"))
+        };
+        assert!(
+            at("web") < at("api"),
+            "web depends on api, so web stops first: {order:?}"
+        );
+        assert!(
+            at("api") < at("database") && at("reports") < at("database"),
+            "the target stops last: {order:?}"
+        );
     }
 }

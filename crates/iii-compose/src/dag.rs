@@ -144,10 +144,16 @@ pub fn dependency_closure(file: &ComposeFile, key: &str) -> HashSet<String> {
 }
 
 /// Local containers that must stop before `key` can stop: its transitive
-/// dependents, nearest first.
+/// dependents, in the order they have to stop in.
+///
+/// Discovery order is not stop order. A breadth-first walk of `db <- api <-
+/// web` reaches `api` before `web`, and stopping in that order leaves `web`
+/// calling a dependency that is already gone — the state teardown exists to
+/// prevent. Reversing the start order applies the rule a whole-project
+/// teardown already follows to this subgraph, instead of maintaining a second
+/// ordering rule beside it.
 pub fn transitive_dependents(file: &ComposeFile, key: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut seen = HashSet::new();
+    let mut discovered = HashSet::new();
     let mut queue = VecDeque::from([key.to_string()]);
 
     while let Some(current) = queue.pop_front() {
@@ -155,11 +161,27 @@ pub fn transitive_dependents(file: &ComposeFile, key: &str) -> Vec<String> {
             if !container.depends_on.iter().any(|dep| dep == &current) {
                 continue;
             }
-            if seen.insert(candidate.clone()) {
-                found.push(candidate.clone());
+            if discovered.insert(candidate.clone()) {
                 queue.push_back(candidate.clone());
             }
         }
     }
-    found
+
+    // `ComposeFile::parse` rejects cycles, so the sort cannot fail here. The
+    // fallback keeps this function infallible rather than describing a path
+    // callers can reach; declaration order is at least reproducible.
+    let Ok(start_order) = topo_order(file) else {
+        return file
+            .containers
+            .keys()
+            .filter(|candidate| discovered.contains(*candidate))
+            .cloned()
+            .collect();
+    };
+
+    start_order
+        .into_iter()
+        .rev()
+        .filter(|candidate| discovered.contains(candidate))
+        .collect()
 }
