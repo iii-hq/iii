@@ -309,8 +309,21 @@ namespace. Compose polls `engine::workers::list` every 200 ms until the containe
 | A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
 
 After a container is ready, the daemon checks it every 250 ms. A container that exits takes its
-transitive dependents down with it and is recorded as `failed`. When the engine connection drops and
-comes back, every running container gets its `startup_timeout` to register again.
+transitive dependents down with it and is recorded as `failed`. Nothing is restarted: v1 has no
+restart policy, so a container that dies stays down until the next `up`. When the engine connection
+drops and comes back, every running container gets its `startup_timeout` to register again.
+
+What a failure takes with it depends on when it happens, and v1 has no way to declare otherwise.
+
+| When                       | What comes down                                                          |
+| -------------------------- | ------------------------------------------------------------------------ |
+| During `up`                | The operation ends. Everything it started is stopped in reverse order, and containers later in the start order are never attempted. |
+| After the container is ready | Its transitive dependents. Everything else keeps running.               |
+
+<Note>
+  So a container nothing depends on ends the whole `up` if it fails at start, and is contained if it
+  fails a minute later. See [Understanding iii / Compose](../understanding-iii/compose).
+</Note>
 
 ## Where compose keeps state
 

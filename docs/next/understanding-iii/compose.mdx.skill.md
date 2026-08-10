@@ -143,6 +143,31 @@ Teardown follows the graph backwards, so dependents stop before the containers t
 nothing is left using a worker that no longer exists. A container that stops on its own takes the
 same path, so its dependents come down in the same order as a deliberate stop.
 
+### The blast radius depends on the clock
+
+Those two sentences describe two different rules, and it is worth being plain about the gap between
+them. During an `up`, the first container that fails ends the operation: everything that operation
+started is rolled back, and everything after it in the start order is never attempted. On a first
+`up` of a five-container project, a failure in the last one leaves the whole project down, including
+containers that have nothing to do with it. Once a container is ready, the supervisor is narrower:
+it takes that container's transitive dependents down and leaves the rest alone.
+
+So a `mailer` that nothing depends on ends the whole start if it fails during `up`, and is contained
+if it fails a minute later. The same declaration, the same container, two blast radii separated only
+by timing.
+
+Each rule is defensible where it stands. An `up` that reported success over a half-started project
+would be worse than one that refuses, and a supervisor that tore down a whole project because one
+leaf died would be worse than one that contains it. What is missing is a way for the compose file to
+say which it wants, so the choice is compose's rather than the operator's. That is a v1 limitation
+rather than a decision: a project cannot mark a container as non-essential, and it cannot ask for a
+dead one to be restarted, because there is no restart policy at all.
+
+Both belong in the file rather than in compose's judgement, and they are two separate questions:
+whether a container's failure fails the operation, and what happens when a ready container exits.
+Whatever those grow into, the property worth keeping is that the answer reads the same at start time
+and at run time.
+
 ## Related
 
 <Note>
