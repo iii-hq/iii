@@ -299,7 +299,10 @@ containers:
 #[test]
 fn rejects_a_user_environment_that_shadows_the_reserved_contract() {
     // Silently dropping it would look like it took effect.
-    for reserved in ["III_URL", "III_NAMESPACE", "III_CONFIG", "III_WORKER_NAME"] {
+    // Driven off the constant rather than a hand-written list: III_CONFIG_NAME
+    // was added to the contract and missed here, so a sixth key would have been
+    // untested the same way.
+    for reserved in iii_compose::spawn::RESERVED_ENV {
         let text = format!(
             r#"
 namespace: orders

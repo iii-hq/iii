@@ -283,14 +283,21 @@ Three layers apply, lowest to highest.
 2. The container's `env_file` entries, then its `environment` map.
 3. The reserved variables, which the daemon owns.
 
-| Variable          | Value                                                               |
-| ----------------- | ------------------------------------------------------------------- |
-| `III_URL`         | The engine address the daemon is connected to.                      |
-| `III_NAMESPACE`   | The project's namespace.                                            |
-| `III_WORKER_NAME` | The container key.                                                  |
-| `III_CONFIG`      | Path to the resolved configuration file. Absent when there is none. |
+| Variable           | Value                                                                   |
+| ------------------ | ----------------------------------------------------------------------- |
+| `III_URL`          | The engine address the daemon is connected to.                          |
+| `III_NAMESPACE`    | The project's namespace.                                                |
+| `III_WORKER_NAME`  | The container key.                                                      |
+| `III_CONFIG`       | Path to the resolved configuration file. Absent when there is none.     |
+| `III_CONFIG_NAME`  | The configuration entry the container owns. Absent when it declares none. |
 
-Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
+Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`,
+in both cases at `compose::validate` time.
+
+<Note>
+  For why the daemon owns these five rather than treating them as defaults a container can replace,
+  see [Understanding iii / Compose](../understanding-iii/compose).
+</Note>
 
 ## Readiness
 

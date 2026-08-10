@@ -63,6 +63,37 @@ reports a duplicate for every other worker as well.
   [Namespaces](./namespaces).
 </Note>
 
+## Why the daemon owns five variables
+
+A container's environment is its own, with five exceptions the daemon sets and refuses to let a
+container replace. The rule is not that static configuration outranks an environment variable, which
+would be the wrong way round for most settings. It is that each of these five is already declared
+somewhere in the compose file, and a second declaration of the same thing is a disagreement nobody
+resolves.
+
+`III_URL` is the daemon's connection. Readiness is observed over it, so a container pointed at
+another engine is invisible to the daemon that started it, however healthy it is. The failure would
+arrive as a startup timeout over a worker that is running and serving, which is the least
+diagnosable shape a failure can take. Two engines mean two daemons.
+
+`III_NAMESPACE` and `III_WORKER_NAME` are the pair readiness watches. Letting a container change
+either would mean compose waiting in one place while the child registers in another, so the override
+would have to be threaded through readiness, the child record and `compose::status` before it could
+work at all. Both are already declared: the namespace by the file, the name by the container key.
+
+`III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery. Compose merges the configuration,
+writes it to the file the first names, and publishes the same value to the entry the second names. A
+container pointed at a different file would read one value while the configuration worker held
+another, and the two would drift apart with nobody able to say which was in force.
+
+### A container that belongs in another namespace
+
+The case the reserved contract genuinely refuses is a container joining a namespace other than its
+project's, a shared one addressed by two projects for instance. That is not an oversight. A
+namespace is declared per file, and a project is its file, so a container that registers somewhere
+else is describing a different project. Declaring it in a second compose file says exactly that, and
+keeps the property that reading one file tells you where everything in it lands.
+
 ## Engine observed readiness
 
 Compose determines ready state through the engine rather than locally as this is the one way to

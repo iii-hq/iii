@@ -25,6 +25,26 @@ use std::{
 use crate::manifest::StartSpec;
 
 /// Environment variables the daemon owns for every child.
+///
+/// Not because static configuration outranks an environment variable, which
+/// would be the wrong way round for most settings. Because each of these five
+/// is already declared in the compose file, and a second declaration of the
+/// same thing is a disagreement nobody resolves. Each earns its place
+/// separately, so adding a sixth is a decision, not a habit:
+///
+/// - `III_URL` is the daemon's own connection. Readiness is observed over it,
+///   so a container pointed at another engine is invisible to the daemon that
+///   started it and fails as a startup timeout over a worker that is running
+///   and serving. Two engines mean two daemons.
+/// - `III_NAMESPACE` and `III_WORKER_NAME` are the pair readiness watches.
+///   An override would have to be threaded through readiness, the `ChildRecord`
+///   and `compose::status` before it could work at all; short of that, compose
+///   waits in one place while the child registers in another. Both are already
+///   declared, by `namespace:` and by the container key.
+/// - `III_CONFIG` and `III_CONFIG_NAME` are two halves of one delivery: the
+///   merged value is written to the file and published to the entry. Pointing
+///   the child at a different file leaves it reading one value while the
+///   configuration worker holds another.
 pub const RESERVED_ENV: [&str; 5] = [
     "III_URL",
     "III_NAMESPACE",
