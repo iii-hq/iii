@@ -321,7 +321,19 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:
 readable enough to recognise, hashed enough that two projects in directories of the same name stay
-apart. Because it is derived, it cannot be guessed: `compose::status` reports it as `state_dir`.
+apart. Because it is derived, it cannot be guessed. `compose::status` reports it as `state_dir`,
+which is how a container's own output is located:
+
+```bash
+iii trigger compose::status --namespace dev file=./worker-compose.yaml
+# ... "state_dir": "/home/you/.iii/compose/dev/shop-3f2a1b9c"
+ls /home/you/.iii/compose/dev/shop-3f2a1b9c/logs/
+```
+
+<Note>
+  For why this is one place per machine rather than a directory beside each compose file, see
+  [Understanding iii / Compose](../understanding-iii/compose).
+</Note>
 
 A clean shutdown clears the state file. After an unclean exit, the daemon compares each record
 against the live process: a match is adopted, a dead process is recorded `failed`, and a live pid it
@@ -338,7 +350,7 @@ Compose errors cross the wire with a stable code and a message.
 | Worker resolution     | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`                                                                                                                                                                                                            |
 | Packages              | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`                                                                        |
 | Start and readiness   | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `ENGINE_CALL_FAILED` |
-| Daemon and project    | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `NO_DAEMON_TO_ATTACH`, `UNKNOWN_CONTAINER`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `CONFLICTING_FLAGS`, `DETACH_FAILED`, `IO_ERROR`                                                       |
+| Daemon and project    | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `IO_ERROR`                                                                                                                    |
 
 ## Related
 

@@ -94,6 +94,35 @@ namespace is declared per file, and a project is its file, so a container that r
 else is describing a different project. Declaring it in a second compose file says exactly that, and
 keeps the property that reading one file tells you where everything in it lands.
 
+## Why state lives in one place per machine
+
+A project's records, its resolved configuration and each container's output all sit under
+`~/.iii/compose`, keyed by the daemon's namespace and by a slug derived from the compose file's
+canonical path. Putting them in a `.iii/` directory beside the compose file would make them easier
+to find, and that is a real cost of the current layout: locating a container's log means asking
+`compose::status` for `state_dir` rather than listing a directory you are already standing in.
+
+Three things outweigh it.
+
+A checkout is not always writable. A CI runner that mounts the repository read-only, or a container
+image built without a writable working tree, would be unable to start a project at all. State that
+lives outside the checkout keeps starting a project independent of how the checkout was obtained.
+
+State written into a project directory becomes the project's problem to ignore. Every user would
+have to keep a `.iii/` entry in version control ignore rules, and every generated file that lands
+there is one an ordinary `git add` sweeps up. That is a recurring cost paid by everyone who runs
+compose, in exchange for a shorter path.
+
+Installed packages are shared on purpose. `packages/` is keyed by name, version and target so two
+projects asking for the same worker download it once. Moving project state in-tree would split the
+layout across two locations without removing the machine-global one.
+
+The identity concern that motivates in-tree state is already handled. A project is its compose file,
+and the slug is derived from that file's canonical path, so a state directory cannot be pointed at a
+different project and two checkouts of one repository are two projects without anything to
+configure. `$III_COMPOSE_STATE_DIR` relocates the whole tree for anyone whose home directory is the
+wrong place for it.
+
 ## Engine observed readiness
 
 Compose determines ready state through the engine rather than locally as this is the one way to

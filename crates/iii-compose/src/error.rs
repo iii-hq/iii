@@ -253,18 +253,6 @@ pub enum ComposeError {
     InvalidState { path: PathBuf, message: String },
 
     #[error(
-        "project '{project}' already holds state for {recorded}; it cannot be rebound to \
-         {requested}. Use a different id="
-    )]
-    StateBindingMismatch {
-        /// The project id from the call, not the daemon's namespace: what is
-        /// already bound to a compose file is the project.
-        project: String,
-        recorded: PathBuf,
-        requested: PathBuf,
-    },
-
-    #[error(
         "no project '{id}' here. Name the compose file on the first call: \
          iii trigger compose::up id={id} file=./worker-compose.yaml"
     )]
@@ -358,7 +346,6 @@ impl ComposeError {
             Self::UnknownContainer { .. } => "UNKNOWN_CONTAINER",
             Self::ContainerNameTaken { .. } => "CONTAINER_NAME_TAKEN",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
-            Self::StateBindingMismatch { .. } => "STATE_BINDING_MISMATCH",
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
