@@ -320,7 +320,7 @@ impl Container {
 
 /// `KEY=VALUE` lines. Blank lines and `#` comments are skipped, a leading
 /// `export ` is tolerated, and one layer of matching quotes is stripped.
-fn parse_env_file(text: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_env_file(text: &str) -> Vec<(String, String)> {
     let mut entries = Vec::new();
     for line in text.lines() {
         let line = line.trim();

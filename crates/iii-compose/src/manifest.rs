@@ -147,6 +147,12 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
         let Some(container) = file.containers.get(key) else {
             continue;
         };
+        // Ahead of the package split on purpose: an env file is as checkable
+        // for a `package://` container as for a `path://` one, since nothing
+        // here needs the worker on disk. Behind it, every rule below would
+        // silently exempt half the catalogue.
+        check_env_files(key, container)?;
+
         let worker_dir = match &container.worker {
             WorkerSource::Package { .. } => {
                 deferred_packages.push(key.clone());
@@ -154,16 +160,6 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
             }
             WorkerSource::Path { dir, .. } => dir,
         };
-        // Env files are read at spawn time, but a missing one must fail here:
-        // finding out at `up` means half the graph is already running.
-        for env_file in &container.env_file {
-            if !env_file.is_file() {
-                return Err(ComposeError::MissingEnvFile {
-                    container: key.clone(),
-                    path: env_file.clone(),
-                });
-            }
-        }
 
         resolved.push(ContainerPlan {
             key: key.clone(),
@@ -187,6 +183,46 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
         resolved,
         deferred_packages,
     })
+}
+
+/// Everything an env file can be judged on without an engine: that it is
+/// there, and that it does not claim a name the daemon owns.
+///
+/// The rule this follows is general, and worth stating once rather than
+/// deciding per field: **whatever holds for `environment` is evaluated for
+/// `env_file` at the same stage.** `environment` is checked when the compose
+/// file parses, so an `env_file` saying the same thing has to fail then too.
+/// Anything checked only at spawn time is a rule `compose::validate` cannot
+/// see, which makes it a rule a CI job reports as passing and `up` discovers
+/// with half the graph already running.
+///
+/// Contents are read and dropped inside this function. `resolve_user_env`
+/// keeps them out of the daemon's memory deliberately — env files hold secrets
+/// — so validating them must not be what puts them back; the values do not
+/// outlive this call.
+fn check_env_files(key: &str, container: &Container) -> Result<()> {
+    for env_file in &container.env_file {
+        if !env_file.is_file() {
+            return Err(ComposeError::MissingEnvFile {
+                container: key.to_string(),
+                path: env_file.clone(),
+            });
+        }
+
+        let text = std::fs::read_to_string(env_file).map_err(|source| ComposeError::Io {
+            path: env_file.clone(),
+            source,
+        })?;
+        for (name, _) in crate::config::parse_env_file(&text) {
+            if crate::spawn::RESERVED_ENV.contains(&name.as_str()) {
+                return Err(ComposeError::ReservedEnvOverride {
+                    container: key.to_string(),
+                    name,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

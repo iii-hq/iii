@@ -194,3 +194,115 @@ containers:
         api.working_dir.display()
     );
 }
+
+/// A reserved key inside an `env_file` used to survive `validate` and surface
+/// during `start_one`, by which point earlier containers in the graph were
+/// running and had to be rolled back. The same key written under
+/// `environment:` failed at parse time, so where the error appeared depended
+/// on which of the two forms the operator chose.
+#[test]
+fn a_reserved_key_in_an_env_file_fails_validation() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("api.env"),
+        "DATABASE_URL=postgres://localhost/app\nIII_NAMESPACE=somewhere-else\n",
+    )
+    .unwrap();
+
+    let file = project(
+        tmp.path(),
+        r#"
+name: orders
+containers:
+  api:
+    worker: path://./workers/api
+    env_file:
+      - ./api.env
+"#,
+        &[("workers/api", Some(MANIFEST))],
+    );
+
+    let err = iii_compose::manifest::validate_offline(&file, "orders-abcd1234")
+        .expect_err("a reserved key must not reach `up`");
+    assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE");
+    assert!(
+        err.to_string().contains("III_NAMESPACE"),
+        "the error should name the key: {err}"
+    );
+}
+
+/// The same rule for a `package://` container. Env-file checks used to sit
+/// after the branch that defers packages, so a registry worker was exempt from
+/// all of them — including the missing-file check, whose whole point is to
+/// fail before anything starts.
+#[test]
+fn a_package_container_gets_the_same_env_file_checks() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("queue.env"), "III_URL=ws://elsewhere:1234\n").unwrap();
+
+    let file = project(
+        tmp.path(),
+        r#"
+name: orders
+containers:
+  queue:
+    worker: package://workers.iii.dev/queue
+    version: "0.1.0"
+    env_file:
+      - ./queue.env
+"#,
+        &[],
+    );
+
+    let err = iii_compose::manifest::validate_offline(&file, "orders-abcd1234")
+        .expect_err("deferring the package must not defer its env files");
+    assert_eq!(err.code(), "RESERVED_ENV_OVERRIDE");
+
+    // And the missing-file case, which was exempt for the same reason.
+    let file = project(
+        tmp.path(),
+        r#"
+name: orders
+containers:
+  queue:
+    worker: package://workers.iii.dev/queue
+    version: "0.1.0"
+    env_file:
+      - ./not-here.env
+"#,
+        &[],
+    );
+    let err = iii_compose::manifest::validate_offline(&file, "orders-abcd1234")
+        .expect_err("a missing env file must fail before anything starts");
+    assert_eq!(err.code(), "MISSING_ENV_FILE");
+}
+
+/// The check reads the file, so the ordinary case has to keep passing: a
+/// plain env file with no reserved key validates and starts nothing early.
+#[test]
+fn an_ordinary_env_file_still_validates() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("api.env"),
+        "# a comment\nexport DATABASE_URL=\"postgres://localhost/app\"\nLOG_LEVEL=debug\n",
+    )
+    .unwrap();
+
+    let file = project(
+        tmp.path(),
+        r#"
+name: orders
+containers:
+  api:
+    worker: path://./workers/api
+    env_file:
+      - ./api.env
+"#,
+        &[("workers/api", Some(MANIFEST))],
+    );
+
+    let report = iii_compose::manifest::validate_offline(&file, "orders-abcd1234")
+        .expect("an ordinary env file should validate");
+    assert_eq!(report.resolved.len(), 1);
+    assert_eq!(report.resolved[0].env_file.len(), 1);
+}
