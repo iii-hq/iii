@@ -147,14 +147,14 @@ impl ComposeCli {
         };
 
         let namespace = namespace.trim();
+        // The same rule `name:` is held to. It used to be looser here — a path
+        // separator was refused but a space was not — while `name:` was
+        // silently rewritten, so one string meant two different namespaces
+        // depending on which of the two the operator used to say it.
         let reason = if namespace.is_empty() {
             Some("it is empty")
-        } else if namespace.contains('/') || namespace.contains('\\') {
-            Some("it contains a path separator")
-        } else if namespace == "." || namespace == ".." {
-            Some("it names a directory rather than a namespace")
         } else {
-            None
+            crate::namespace::check(namespace).err()
         };
 
         match reason {

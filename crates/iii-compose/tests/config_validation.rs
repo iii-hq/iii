@@ -512,3 +512,44 @@ containers:
     assert!(position("queue") < position("web"));
     assert_eq!(order.len(), 4);
 }
+
+/// `name:` used to be rewritten to fit the namespace charset rather than
+/// checked against it. The value is what an operator types into `iii trigger
+/// --namespace` and into every `worker.trigger` call, so a value they cannot
+/// type back is worse than a refusal at load time.
+#[test]
+fn a_name_outside_the_namespace_charset_is_refused() {
+    let with_name = |name: &str| {
+        format!(
+            "name: \"{name}\"\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n"
+        )
+    };
+
+    // All four of these sanitized to `my-shop`, so four different declarations
+    // addressed one namespace and none of them said so.
+    for collided in ["My Shop!", "my/shop", "my shop", "MY-SHOP"] {
+        assert_eq!(
+            code(&with_name(collided)),
+            "INVALID_NAMESPACE",
+            "for {collided:?}"
+        );
+    }
+
+    // And a name made entirely of rejected characters became the literal
+    // `project`, naming a namespace after nothing the file contained.
+    assert_eq!(code(&with_name("!!!")), "INVALID_NAMESPACE");
+
+    // What the set does hold still parses, unchanged.
+    for accepted in ["my-shop", "shop_2", "a"] {
+        let file = parse(&with_name(accepted)).expect("should parse");
+        assert_eq!(file.name.as_deref(), Some(accepted));
+    }
+}
+
+/// An absent name is not an invalid one: the project lands in `default`.
+#[test]
+fn no_name_at_all_is_still_allowed() {
+    let file = parse("containers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n")
+        .expect("a file without a name should parse");
+    assert_eq!(file.name, None);
+}

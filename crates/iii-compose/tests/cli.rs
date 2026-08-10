@@ -100,6 +100,28 @@ fn a_namespace_that_cannot_also_be_a_directory_is_refused() {
 }
 
 #[test]
+fn the_flag_is_held_to_the_same_charset_as_the_file() {
+    // `--ns` used to refuse a path separator and accept a space, while `name:`
+    // in the compose file was silently rewritten to fit. One string therefore
+    // meant two different namespaces depending on which of the two said it:
+    // `--ns 'My Shop!'` registered under `My Shop!`, and `name: "My Shop!"`
+    // registered under `my-shop`.
+    for bad in ["My Shop!", "my shop", "MY-SHOP", "a.b", "olá"] {
+        let err = parse(&["iii", "compose", "--ns", bad])
+            .plan()
+            .expect_err("{bad:?} should be refused");
+        assert_eq!(err.code(), "INVALID_NAMESPACE", "for {bad:?}");
+    }
+
+    for good in ["my-shop", "shop_2", "a"] {
+        assert!(
+            parse(&["iii", "compose", "--ns", good]).plan().is_ok(),
+            "{good:?} should be accepted"
+        );
+    }
+}
+
+#[test]
 fn the_project_flags_are_gone_rather_than_ignored() {
     // `file` is a call argument, not a process argument, and the subcommands
     // are `compose::*` calls now. Accepting either here would silently do

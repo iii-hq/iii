@@ -141,6 +141,18 @@ impl ComposeFile {
             return Err(ComposeError::EmptyContainers);
         }
 
+        // At load time, before a container starts: `name:` is the namespace
+        // every trigger against this project has to spell, so a value it
+        // cannot be is a value nothing else should be built on.
+        if let Some(name) = raw.name.as_deref().map(str::trim).filter(|n| !n.is_empty())
+            && let Err(reason) = crate::namespace::check(name)
+        {
+            return Err(ComposeError::InvalidNamespace {
+                namespace: name.to_string(),
+                reason,
+            });
+        }
+
         let startup_timeout = file_duration(
             "startup_timeout",
             &raw.startup_timeout,
