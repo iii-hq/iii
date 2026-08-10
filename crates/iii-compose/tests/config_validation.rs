@@ -554,14 +554,15 @@ fn no_name_at_all_is_still_allowed() {
     assert_eq!(file.namespace, None);
 }
 
-/// The old spelling is a hard break, not a silent no-op. `name:` used to be
-/// the namespace; the schema is strict, so a file still using it fails to load
-/// rather than starting a project in `default` that answers nowhere the
-/// operator expects.
+/// `name:` is not a second spelling of `namespace:`. Nothing has shipped, so
+/// this guards a future rather than a past: adding it back as a convenience
+/// alias would put two keys on one coordinate, and the shorter one is the one
+/// people write. The error that refuses it also points at the right key, which
+/// is what makes one spelling affordable.
 #[test]
-fn the_old_name_field_is_refused() {
+fn name_is_not_an_alias_for_namespace() {
     let text = "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n";
-    let err = parse(text).expect_err("`name:` is no longer a field");
+    let err = parse(text).expect_err("`name:` is not a field");
     assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
 
     let message = err.to_string();
