@@ -72,8 +72,13 @@ pub struct Container {
     pub worker: WorkerSource,
     pub version: Option<String>,
     pub depends_on: Vec<String>,
-    /// Configuration entry to fetch from the configuration worker. Both
-    /// `config_name` and the v1 `config_uri` form collapse into this name.
+    /// The configuration entry this container owns.
+    ///
+    /// Not a source. Compose fetches it as the base, publishes the merged
+    /// result back to it, and tells the child which entry is its own through
+    /// `III_CONFIG_NAME`. *How* a configuration is read and stored belongs to
+    /// the configuration worker, which has its own adapter for that, so this
+    /// says which configuration and nothing about where it lives.
     pub config_name: Option<String>,
     pub config_override: Option<serde_yaml::Value>,
     pub scripts: Scripts,
@@ -213,16 +218,7 @@ fn validate_container(
         }
     }
 
-    if raw.config_name.is_some() && raw.config_uri.is_some() {
-        return Err(ComposeError::ConflictingConfigSource {
-            container: key.to_string(),
-        });
-    }
-    let config_name = match (&raw.config_name, &raw.config_uri) {
-        (Some(name), _) => Some(name.clone()),
-        (None, Some(uri)) => Some(parse_config_uri(key, uri)?),
-        (None, None) => None,
-    };
+    let config_name = raw.config_name.clone();
 
     let scripts = match &raw.scripts {
         None => Scripts::default(),
@@ -407,20 +403,6 @@ fn parse_worker_source(key: &str, value: &str, base_dir: &Path) -> Result<Worker
     })
 }
 
-/// v1 accepts exactly one `config_uri` shape: the configuration worker. Every
-/// other scheme (`file://`, direct adapters) waits for its own phase, because
-/// the configuration worker is the adapter-agnostic entry point.
-fn parse_config_uri(key: &str, uri: &str) -> Result<String> {
-    let name = uri
-        .strip_prefix("worker://configuration/get/")
-        .filter(|name| !name.is_empty() && !name.contains('/'));
-    name.map(str::to_string)
-        .ok_or_else(|| ComposeError::UnsupportedConfigUri {
-            container: key.to_string(),
-            uri: uri.to_string(),
-        })
-}
-
 fn resolve_relative(base_dir: &Path, path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
@@ -533,8 +515,6 @@ struct RawContainer {
     #[serde(default)]
     config_name: Option<String>,
     #[serde(default)]
-    config_uri: Option<String>,
-    #[serde(default)]
     config_override: Option<serde_yaml::Value>,
     #[serde(default)]
     scripts: Option<RawScripts>,
@@ -572,16 +552,6 @@ mod tests {
         assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
         assert_eq!(parse_duration("30"), None);
         assert_eq!(parse_duration("later"), None);
-    }
-
-    #[test]
-    fn config_uri_accepts_only_the_configuration_worker_form() {
-        assert_eq!(
-            parse_config_uri("api", "worker://configuration/get/orders-api").unwrap(),
-            "orders-api"
-        );
-        let err = parse_config_uri("api", "file://./config/api.yaml").unwrap_err();
-        assert_eq!(err.code(), "UNSUPPORTED_CONFIG_URI");
     }
 
     #[test]

@@ -16,8 +16,8 @@ compose daemon ── merge ──► final config ── standard contract ─�
 worker-compose.yaml (config_override)
 ```
 
-1. The container names its base config: `config_name: orders-api` (or a
-   `config_uri` for explicit sources). Names resolve through the
+1. The container names its base config: `config_name: orders-api`. Names
+   resolve through the
    **configuration worker**, whose adapter decides storage — local fs today,
    secrets manager or a separate iii instance in cloud. File paths are not
    the contract; names are, so the same compose file works when storage

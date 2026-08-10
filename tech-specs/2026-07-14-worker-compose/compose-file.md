@@ -38,7 +38,7 @@ containers:
 | `worker` | yes | `package://` (registry) or `path://` (local directory) |
 | `version` | package only | exact or range, resolved into the lockfile |
 | `depends_on` | no | container ids **from the same file only** |
-| `config_name` / `config_uri` | no | where the daemon fetches base config (see configuration.md) |
+| `config_name` | no | the configuration entry this container owns (see configuration.md) |
 | `config_override` | no | sparse map merged over the fetched base |
 | `scripts` | no (`run` required for manifest-less `path://`) | see scripts.md |
 | `working_dir` | no | default: worker dir for `path://`, compose-file dir for `package://` |

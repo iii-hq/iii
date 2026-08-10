@@ -29,7 +29,7 @@ containers:
     worker: path://./workers/api
     depends_on:
       - database
-    config_uri: worker://configuration/get/orders-api
+    config_name: orders-api
     config_override:
       server:
         port: 3000
@@ -59,10 +59,13 @@ fn accepts_the_canonical_project() {
     assert_eq!(api.scripts.run.as_deref(), Some("cargo run --release"));
     assert_eq!(api.working_dir, Some(PathBuf::from("/srv/app/workers/api")));
 
-    // config_name and the config_uri alias resolve to the same entry name.
     assert_eq!(
         file.containers["database"].config_name.as_deref(),
         Some("orders-db")
+    );
+    assert_eq!(
+        file.containers["api"].config_name.as_deref(),
+        Some("orders-api")
     );
 }
 
@@ -446,39 +449,6 @@ containers:
 }
 
 #[test]
-fn rejects_two_config_sources() {
-    assert_eq!(
-        code(
-            r#"
-namespace: orders
-containers:
-  api:
-    worker: path://./workers/api
-    config_name: orders-api
-    config_uri: worker://configuration/get/orders-api
-"#
-        ),
-        "CONFLICTING_CONFIG_SOURCE"
-    );
-}
-
-#[test]
-fn rejects_config_uris_outside_the_configuration_worker() {
-    assert_eq!(
-        code(
-            r#"
-namespace: orders
-containers:
-  api:
-    worker: path://./workers/api
-    config_uri: file://./config/api.yaml
-"#
-        ),
-        "UNSUPPORTED_CONFIG_URI"
-    );
-}
-
-#[test]
 fn orders_a_diamond_graph_dependencies_first() {
     let file = parse(
         r#"
@@ -570,5 +540,30 @@ fn name_is_not_an_alias_for_namespace() {
     assert!(
         message.contains("namespace"),
         "and list `namespace` among the accepted keys: {message}"
+    );
+}
+
+/// `config_uri` is gone rather than deprecated. How a configuration is read
+/// and stored is the configuration worker's business — it has an adapter for
+/// that — so the compose file says which configuration and nothing about where
+/// it lives. A URI here would have been compose describing transport it does
+/// not own, and a `file://` form would have contradicted the very adapter that
+/// decides it.
+#[test]
+fn config_uri_is_not_a_second_spelling() {
+    let text = r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    config_uri: worker://configuration/get/orders-api
+    scripts:
+      run: ./api
+"#;
+    let err = parse(text).expect_err("`config_uri` is not a field");
+    assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
+    assert!(
+        err.to_string().contains("config_name"),
+        "the error should point at the key that replaced it: {err}"
     );
 }

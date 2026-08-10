@@ -61,15 +61,6 @@ pub enum ComposeError {
     MissingVersionForPackage { container: String },
 
     #[error(
-        "container '{container}': config_uri '{uri}' is not supported in v1. Use \
-         worker://configuration/get/<name> or config_name"
-    )]
-    UnsupportedConfigUri { container: String, uri: String },
-
-    #[error("container '{container}': set either 'config_name' or 'config_uri', not both")]
-    ConflictingConfigSource { container: String },
-
-    #[error(
         "container '{container}': no start command. Add 'run:' to the compose entry or \
          'scripts.start' to {manifest}"
     )]
@@ -362,8 +353,6 @@ impl ComposeError {
             Self::PreStartTimeoutWithoutPreStart { .. } => "PRE_START_TIMEOUT_WITHOUT_PRE_START",
             Self::InvalidDuration { .. } => "INVALID_DURATION",
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
-            Self::UnsupportedConfigUri { .. } => "UNSUPPORTED_CONFIG_URI",
-            Self::ConflictingConfigSource { .. } => "CONFLICTING_CONFIG_SOURCE",
             Self::MissingStartCommand { .. } => "MISSING_START_COMMAND",
             Self::InvalidManifest { .. } => "INVALID_MANIFEST",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
