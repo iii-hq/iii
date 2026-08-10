@@ -94,7 +94,7 @@ namespace is declared per file, and a project is its file, so a container that r
 else is describing a different project. Declaring it in a second compose file says exactly that, and
 keeps the property that reading one file tells you where everything in it lands.
 
-## Why state lives in one place per machine
+## Why state is kept in one place per machine
 
 A project's records, its resolved configuration and each container's output all sit under
 `~/.iii/compose`, keyed by the daemon's namespace and by a slug derived from the compose file's
@@ -106,7 +106,7 @@ Three things outweigh it.
 
 A checkout is not always writable. A CI runner that mounts the repository read-only, or a container
 image built without a writable working tree, would be unable to start a project at all. State that
-lives outside the checkout keeps starting a project independent of how the checkout was obtained.
+sits outside the checkout keeps starting a project independent of how the checkout was obtained.
 
 State written into a project directory becomes the project's problem to ignore. Every user would
 have to keep a `.iii/` entry in version control ignore rules, and every generated file that lands
