@@ -208,9 +208,10 @@ containers:
 | `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                         |
 | `containers`      | map    | none    | At least one entry. An empty map fails with `EMPTY_CONTAINERS`.                            |
 
-The name is lowercased and reduced to `[a-z0-9_-]`, so `My Shop!` registers as `my-shop`. Nothing
-about the file's path enters the namespace, so two copies of one project collide instead of running
-side by side.
+The namespace must already be `[a-z0-9_-]`. A value outside that set is refused with
+`INVALID_NAMESPACE` rather than rewritten to fit, so what the file declares is what an operator
+types into `--namespace`. Nothing about the file's path enters it, so two copies of one project
+collide instead of running side by side.
 
 ### Container fields
 
