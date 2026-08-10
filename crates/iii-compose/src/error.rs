@@ -176,9 +176,6 @@ pub enum ComposeError {
         expected: String,
     },
 
-    #[error("compose daemon '{id}' did not detach: {message}")]
-    DetachFailed { id: String, message: String },
-
     #[error("container '{container}' was not ready after {seconds}s")]
     ReadinessTimeout { container: String, seconds: u64 },
 
@@ -295,9 +292,6 @@ pub enum ComposeError {
     )]
     DaemonAlreadyServing { engine_url: String, detail: String },
 
-    #[error("{flags} cannot be used together")]
-    ConflictingFlags { flags: &'static str },
-
     /// The id is the daemon's namespace *and* its state directory, so it is
     /// checked at parse time: the alternative is a daemon that starts, answers
     /// nothing an operator can address, and fails at its first write.
@@ -309,21 +303,6 @@ pub enum ComposeError {
 
     #[error("cannot locate a home directory for the daemon state")]
     StateDirUnavailable,
-
-    /// `--attach` with nothing to attach to, or too much. Never guessed:
-    /// following the wrong daemon is a wrong answer that looks like a right
-    /// one, and the namespaces are uuids nobody recalls.
-    #[error(
-        "{}",
-        match .candidates {
-            Some(found) => format!(
-                "several daemons have run here. Name one: iii compose --attach --ns <NS>\n  \
-                 {found}"
-            ),
-            None => "no detached daemon has run here. Start one with `iii compose -d`".to_string(),
-        }
-    )]
-    NoDaemonToAttach { candidates: Option<String> },
 
     /// A project-scoped call that named no file, from a daemon whose own
     /// directory holds none either. The file *is* the project, so there is
@@ -370,7 +349,6 @@ impl ComposeError {
             Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
             Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",
-            Self::DetachFailed { .. } => "DETACH_FAILED",
             Self::ReadinessTimeout { .. } => "STARTUP_TIMEOUT",
             Self::WorkerIgnoredNamespace { .. } => "WORKER_IGNORED_NAMESPACE",
             Self::WorkerNameMismatch { .. } => "WORKER_NAME_MISMATCH",
@@ -384,10 +362,8 @@ impl ComposeError {
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
-            Self::ConflictingFlags { .. } => "CONFLICTING_FLAGS",
             Self::InvalidNamespace { .. } => "INVALID_NAMESPACE",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
-            Self::NoDaemonToAttach { .. } => "NO_DAEMON_TO_ATTACH",
             Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",
         }
     }

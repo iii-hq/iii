@@ -1,8 +1,9 @@
-//! Mode selection: what the three remaining flags resolve to.
+//! Mode selection: what the two remaining flags resolve to.
 //!
-//! There is one command now. Everything an operator does to a project goes
-//! through `iii trigger compose::*`, so the only decisions left here are where
-//! the daemon runs and which engine it talks to.
+//! There is one command now, and it only ever serves in the foreground.
+//! Everything an operator does to a project goes through `iii trigger
+//! compose::*`, so the only decisions left here are which namespace this
+//! daemon answers in and which engine it talks to.
 
 use clap::Parser;
 use iii_compose::{ComposeCli, ComposeCommand};
@@ -27,10 +28,7 @@ fn bare_compose_serves_in_the_foreground() {
     // The address is asserted in the III_URL test and nowhere else: it reads
     // process-wide state, and two tests reading it while one writes it is a
     // flake waiting for a loaded machine.
-    match parse(&["iii", "compose"]).plan().unwrap() {
-        ComposeCommand::Serve { .. } => {}
-        other => panic!("expected Serve, got {other:?}"),
-    }
+    let ComposeCommand::Serve { .. } = parse(&["iii", "compose"]).plan().unwrap();
 }
 
 #[test]
@@ -40,14 +38,14 @@ fn an_unnamed_daemon_names_itself() {
     // the second would be refused. So an invocation that does not name itself
     // gets a name — printed on start, and what an operator captures to address
     // it.
-    let first = match parse(&["iii", "compose"]).plan().unwrap() {
-        ComposeCommand::Serve { daemon_namespace, .. } => daemon_namespace,
-        other => panic!("expected Serve, got {other:?}"),
-    };
-    let second = match parse(&["iii", "compose"]).plan().unwrap() {
-        ComposeCommand::Serve { daemon_namespace, .. } => daemon_namespace,
-        other => panic!("expected Serve, got {other:?}"),
-    };
+    let ComposeCommand::Serve {
+        daemon_namespace: first,
+        ..
+    } = parse(&["iii", "compose"]).plan().unwrap();
+    let ComposeCommand::Serve {
+        daemon_namespace: second,
+        ..
+    } = parse(&["iii", "compose"]).plan().unwrap();
 
     assert!(
         uuid::Uuid::parse_str(&first).is_ok(),
@@ -64,26 +62,12 @@ fn the_namespace_is_how_one_daemon_is_told_from_another() {
     // Several daemons attach to one engine. The id is what tells them apart:
     // it is the namespace this one answers `compose::*` in, so an operator
     // reaches exactly one with `--namespace`.
-    match parse(&["iii", "compose", "--ns", "pc-da-xuxa"])
+    let ComposeCommand::Serve {
+        daemon_namespace, ..
+    } = parse(&["iii", "compose", "--ns", "pc-da-xuxa"])
         .plan()
-        .unwrap()
-    {
-        ComposeCommand::Serve { daemon_namespace, .. } => assert_eq!(daemon_namespace, "pc-da-xuxa"),
-        other => panic!("expected Serve, got {other:?}"),
-    }
-
-    // The view has to name the same daemon the foreground would, or `--attach`
-    // follows a neighbour's log. (`Detach` carries it too; that is asserted in
-    // the test that owns DETACHED_GUARD, since reading it here would race.)
-    match parse(&["iii", "compose", "--ns", "pc-a", "--attach"])
-        .plan()
-        .unwrap()
-    {
-        ComposeCommand::Attach { daemon_namespace } => {
-            assert_eq!(daemon_namespace.as_deref(), Some("pc-a"));
-        }
-        other => panic!("expected Attach, got {other:?}"),
-    }
+        .unwrap();
+    assert_eq!(daemon_namespace, "pc-da-xuxa");
 }
 
 #[test]
@@ -133,64 +117,16 @@ fn the_project_flags_are_gone_rather_than_ignored() {
         &["iii", "compose", "down"][..],
         &["iii", "compose", "logs"][..],
         &["iii", "compose", "stop"][..],
+        // Backgrounding is the supervisor's job, not compose's: it never
+        // daemonises itself, so there is nothing to attach back to.
+        &["iii", "compose", "-d"][..],
+        &["iii", "compose", "--detach"][..],
+        &["iii", "compose", "--attach"][..],
     ] {
         assert!(
             Wrapper::try_parse_from(removed).is_err(),
             "{removed:?} should no longer parse"
         );
-    }
-}
-
-#[test]
-fn attach_and_detach_are_the_only_modes_left() {
-    // Nothing is generated here: `--attach` follows a daemon that already
-    // exists, so an unnamed one is resolved against what has run on this
-    // machine rather than invented.
-    match parse(&["iii", "compose", "--attach"]).plan().unwrap() {
-        ComposeCommand::Attach { daemon_namespace } => assert_eq!(daemon_namespace, None),
-        other => panic!("expected Attach, got {other:?}"),
-    }
-
-    // Asking for both is a contradiction: one backgrounds a new daemon, the
-    // other follows one that is already running.
-    let err = parse(&["iii", "compose", "-d", "--attach"])
-        .plan()
-        .expect_err("both at once means nothing");
-    assert_eq!(err.code(), "CONFLICTING_FLAGS");
-}
-
-#[test]
-fn detach_is_carried_unless_the_guard_says_it_already_happened() {
-    // One test, not several: the guard lives in the process environment, and
-    // tests share a process. Setting it in one while another reads it is a
-    // flake waiting for a loaded machine.
-    // `-d` re-execs, so whatever resolved the address has to be what the child
-    // is told; recomputing it there would read a different environment.
-    match parse(&["iii", "compose", "-d", "--engine", "ws://host:1/", "--ns", "pc-a"])
-        .plan()
-        .unwrap()
-    {
-        // The id goes with it for the same reason the address does: the child
-        // must come back as the same daemon, not as `default`.
-        ComposeCommand::Detach {
-            engine_url,
-            daemon_namespace,
-        } => {
-            assert_eq!(engine_url, "ws://host:1/");
-            assert_eq!(daemon_namespace, "pc-a");
-        }
-        other => panic!("expected Detach, got {other:?}"),
-    }
-
-    // The background process is launched with the same argv, so a `-d` still
-    // in it must not make it fork a second time.
-    unsafe { std::env::set_var(iii_compose::cli::DETACHED_GUARD, "1") };
-    let planned = parse(&["iii", "compose", "--detach"]).plan();
-    unsafe { std::env::remove_var(iii_compose::cli::DETACHED_GUARD) };
-
-    match planned.unwrap() {
-        ComposeCommand::Serve { .. } => {}
-        other => panic!("the guard should force foreground, got {other:?}"),
     }
 }
 

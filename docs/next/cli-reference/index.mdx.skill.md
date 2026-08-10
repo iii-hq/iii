@@ -47,8 +47,6 @@ iii compose [OPTIONS]
 | ------ | ----------- |
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
 | `--ns <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
-| `-d, --detach` | Run in the background and return once the daemon is serving |
-| `--attach` | Put a detached daemon's output back on this terminal |
 
 ### `iii project`
 

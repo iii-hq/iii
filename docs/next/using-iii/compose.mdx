@@ -25,8 +25,6 @@ iii compose [OPTIONS]
 | ---------------- | -------------------------------------------------------------------------------------- |
 | `--ns <NS>`      | Namespace this daemon answers `compose::*` in. Generated and printed when absent.      |
 | `--engine <URL>` | Engine WebSocket address. Falls back to `III_URL`, then `ws://127.0.0.1:49134`.        |
-| `-d, --detach`   | Run in the background, returning once the daemon is serving.                           |
-| `--attach`       | Put a detached daemon's output back on this terminal.                                  |
 
 A daemon holds any number of projects, and any number of daemons share one engine. What tells them
 apart is the namespace: the worker name is always `compose`, so the engine leases `(namespace,
@@ -54,19 +52,15 @@ does the same over the engine.
 
 ### Running it in the background
 
-`-d` re-launches the command detached and returns once the daemon is *serving*, not once it was
-spawned: a daemon that dies on a taken namespace fails the command instead of handing back a
-prompt. Its console goes to `~/.iii/compose/<namespace>/daemon.log`, and `--attach` puts it back on
-a terminal.
+Compose never backgrounds itself. It serves in the foreground and writes to stdout, which is the
+shape every process supervisor already expects, and it leaves log rotation and restart-on-failure
+to something that already does both.
+
+For a quick session, a shell redirect is enough:
 
 ```bash
-iii compose -d --ns dev
-iii compose --attach --ns dev
+iii compose --ns dev >> ~/iii-compose.log 2>&1 &
 ```
-
-`--attach` with no `--ns` follows the only daemon that has run on this machine. With several it
-names them and asks for one, because attaching to the wrong daemon shows a real log with somebody
-else's containers in it.
 
 On a server, a unit file gives restart-on-failure and hands the output to the journal. Name the
 namespace there: a unit that restarts under a generated one loses track of its own children.
@@ -324,7 +318,6 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 
 | Path                        | Contents                                             |
 | --------------------------- | ---------------------------------------------------- |
-| `<ns>/daemon.log`           | A detached daemon's console.                         |
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
 | `<ns>/<project>/config/`    | Resolved configuration files.                        |
 | `<ns>/<project>/logs/`      | Each container's own output.                         |
