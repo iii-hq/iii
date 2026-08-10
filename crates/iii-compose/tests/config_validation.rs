@@ -19,7 +19,7 @@ fn code(text: &str) -> String {
 }
 
 const CANONICAL: &str = r#"
-name: orders
+namespace: orders
 containers:
   database:
     worker: package://workers.iii.dev/database
@@ -45,7 +45,7 @@ containers:
 fn accepts_the_canonical_project() {
     let file = parse(CANONICAL).expect("canonical project should parse");
 
-    assert_eq!(file.name.as_deref(), Some("orders"));
+    assert_eq!(file.namespace.as_deref(), Some("orders"));
     assert_eq!(file.containers.len(), 2);
     assert_eq!(file.start_order().unwrap(), vec!["database", "api"]);
 
@@ -70,7 +70,7 @@ fn accepts_the_canonical_project() {
 fn pre_start_timeout_defaults_to_sixty_seconds() {
     let file = parse(
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -89,7 +89,7 @@ fn rejects_an_empty_container_map() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers: {}
 "#
         ),
@@ -102,7 +102,7 @@ fn rejects_an_unknown_dependency() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -119,7 +119,7 @@ fn rejects_a_self_dependency() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -135,7 +135,7 @@ containers:
 fn reports_the_cycle_path_in_declaration_order() {
     let err = parse(
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -164,7 +164,7 @@ containers:
 fn rejects_unknown_fields_at_every_level() {
     let top_level = code(
         r#"
-name: orders
+namespace: orders
 hot_reload: true
 containers:
   api:
@@ -173,7 +173,7 @@ containers:
     );
     let container = code(
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -182,7 +182,7 @@ containers:
     );
     let scripts = code(
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -206,7 +206,7 @@ fn rejects_fields_still_outside_v1() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 schema_version: 1
 containers:
   api:
@@ -218,7 +218,7 @@ containers:
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -234,7 +234,7 @@ containers:
 fn accepts_environment_env_file_and_timeouts() {
     let file = parse(
         r#"
-name: orders
+namespace: orders
 startup_timeout: 45s
 stop_timeout: 5s
 containers:
@@ -276,7 +276,7 @@ containers:
 fn timeouts_fall_back_to_the_documented_defaults() {
     let file = parse(
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -299,7 +299,7 @@ fn rejects_a_user_environment_that_shadows_the_reserved_contract() {
     for reserved in ["III_URL", "III_NAMESPACE", "III_CONFIG", "III_WORKER_NAME"] {
         let text = format!(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -316,7 +316,7 @@ fn rejects_duplicate_environment_keys() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -334,7 +334,7 @@ fn rejects_a_file_level_timeout_without_a_unit() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 startup_timeout: 60
 containers:
   api:
@@ -350,7 +350,7 @@ fn rejects_duplicate_yaml_keys() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -367,7 +367,7 @@ fn rejects_run_on_a_package_worker() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: package://workers.iii.dev/api
@@ -385,7 +385,7 @@ fn rejects_a_pre_start_timeout_without_a_pre_start() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -402,7 +402,7 @@ fn rejects_a_timeout_without_a_unit() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -420,7 +420,7 @@ fn rejects_worker_sources_outside_v1() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   runtime:
     worker: image://docker.io/library/node@sha256:abc
@@ -435,7 +435,7 @@ fn requires_a_version_for_package_workers() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: package://workers.iii.dev/api
@@ -450,7 +450,7 @@ fn rejects_two_config_sources() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -467,7 +467,7 @@ fn rejects_config_uris_outside_the_configuration_worker() {
     assert_eq!(
         code(
             r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -482,7 +482,7 @@ containers:
 fn orders_a_diamond_graph_dependencies_first() {
     let file = parse(
         r#"
-name: orders
+namespace: orders
 containers:
   web:
     worker: path://./workers/web
@@ -521,7 +521,7 @@ containers:
 fn a_name_outside_the_namespace_charset_is_refused() {
     let with_name = |name: &str| {
         format!(
-            "name: \"{name}\"\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n"
+            "namespace: \"{name}\"\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n"
         )
     };
 
@@ -542,7 +542,7 @@ fn a_name_outside_the_namespace_charset_is_refused() {
     // What the set does hold still parses, unchanged.
     for accepted in ["my-shop", "shop_2", "a"] {
         let file = parse(&with_name(accepted)).expect("should parse");
-        assert_eq!(file.name.as_deref(), Some(accepted));
+        assert_eq!(file.namespace.as_deref(), Some(accepted));
     }
 }
 
@@ -551,5 +551,23 @@ fn a_name_outside_the_namespace_charset_is_refused() {
 fn no_name_at_all_is_still_allowed() {
     let file = parse("containers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n")
         .expect("a file without a name should parse");
-    assert_eq!(file.name, None);
+    assert_eq!(file.namespace, None);
+}
+
+/// The old spelling is a hard break, not a silent no-op. `name:` used to be
+/// the namespace; the schema is strict, so a file still using it fails to load
+/// rather than starting a project in `default` that answers nowhere the
+/// operator expects.
+#[test]
+fn the_old_name_field_is_refused() {
+    let text = "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n";
+    let err = parse(text).expect_err("`name:` is no longer a field");
+    assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
+
+    let message = err.to_string();
+    assert!(message.contains("name"), "should name the bad key: {message}");
+    assert!(
+        message.contains("namespace"),
+        "and list `namespace` among the accepted keys: {message}"
+    );
 }

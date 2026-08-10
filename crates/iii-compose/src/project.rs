@@ -76,7 +76,7 @@ impl Project {
         engine: Arc<EngineClient>,
         engine_url: String,
     ) -> Result<Arc<Self>> {
-        let project_namespace = project_namespace(None, file.name.as_deref());
+        let project_namespace = project_namespace(None, file.namespace.as_deref());
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
 
         let recovered = store.load()?;

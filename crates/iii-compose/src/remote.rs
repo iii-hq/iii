@@ -164,7 +164,6 @@ async fn dispatch(
         // write the durable state that would bind that id to it.
         Operation::Validate => match daemon.validate(file.as_deref()).await {
             Ok(report) => Ok(json!({
-                "project": report.project,
                 "namespace": report.namespace,
                 "start_order": report.start_order,
                 "deferred_packages": report.deferred_packages,

@@ -95,7 +95,7 @@ pub struct Container {
 pub struct ComposeFile {
     /// The namespace this project registers in, when it declares one. Nothing
     /// is derived from it: what the file says is what the engine sees.
-    pub name: Option<String>,
+    pub namespace: Option<String>,
     /// Canonical path of the compose file. Resolved once so the state binding
     /// is stable regardless of how the operator spelled the path.
     pub path: PathBuf,
@@ -141,10 +141,14 @@ impl ComposeFile {
             return Err(ComposeError::EmptyContainers);
         }
 
-        // At load time, before a container starts: `name:` is the namespace
-        // every trigger against this project has to spell, so a value it
-        // cannot be is a value nothing else should be built on.
-        if let Some(name) = raw.name.as_deref().map(str::trim).filter(|n| !n.is_empty())
+        // At load time, before a container starts: this is the namespace every
+        // trigger against the project has to spell, so a value it cannot be is
+        // a value nothing else should be built on.
+        if let Some(name) = raw
+            .namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
             && let Err(reason) = crate::namespace::check(name)
         {
             return Err(ComposeError::InvalidNamespace {
@@ -169,7 +173,7 @@ impl ComposeFile {
         }
 
         let file = Self {
-            name: raw.name,
+            namespace: raw.namespace,
             path,
             base_dir,
             startup_timeout,
@@ -464,8 +468,13 @@ pub fn parse_duration(value: &str) -> Option<Duration> {
 struct RawComposeFile {
     /// Optional: a project that names itself nowhere lands in `default`, the
     /// same rule the rest of the engine follows.
+    ///
+    /// Spelled `namespace:` rather than `name:` because that is what it sets.
+    /// The value is typed back into `iii trigger --namespace` and into every
+    /// `worker.trigger` call, so the field is named after the coordinate it
+    /// feeds rather than read as a display label the project happens to carry.
     #[serde(default)]
-    name: Option<String>,
+    namespace: Option<String>,
     #[serde(default)]
     startup_timeout: Option<String>,
     #[serde(default)]

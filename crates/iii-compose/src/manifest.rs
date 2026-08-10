@@ -124,8 +124,11 @@ pub struct ContainerPlan {
 /// Result of `compose::validate`.
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
-    pub project: String,
     /// Namespace the project's workers would register under.
+    ///
+    /// There is no separate project name beside it. `namespace:` in the file
+    /// is the only thing the project declares about itself, and a second field
+    /// carrying the same string under another word is one that drifts.
     pub namespace: String,
     pub start_order: Vec<String>,
     /// Containers whose start command resolved, in start order.
@@ -176,7 +179,6 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
     }
 
     Ok(ValidationReport {
-        project: file.name.clone().unwrap_or_else(|| namespace.to_string()),
         namespace: namespace.to_string(),
         start_order,
         resolved,

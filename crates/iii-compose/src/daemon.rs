@@ -116,7 +116,7 @@ impl Daemon {
         let compose = ComposeFile::load(file)?;
         // Validate before announcing: a project that cannot start is better
         // refused here than half-started later.
-        let namespace = crate::namespace::project_namespace(None, compose.name.as_deref());
+        let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
         crate::manifest::validate_offline(&compose, &namespace)?;
 
         let project = Project::open(
@@ -201,7 +201,7 @@ impl Daemon {
             });
         }
         let compose = ComposeFile::load(file)?;
-        let namespace = crate::namespace::project_namespace(None, compose.name.as_deref());
+        let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
         crate::manifest::validate_offline(&compose, &namespace)
     }
 

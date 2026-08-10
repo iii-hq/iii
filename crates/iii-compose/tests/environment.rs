@@ -20,7 +20,7 @@ fn project(tmp: &Path, compose: &str, files: &[(&str, &str)]) -> ComposeFile {
 }
 
 const COMPOSE: &str = r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -65,7 +65,7 @@ fn env_files_tolerate_comments_blanks_quotes_and_export() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -92,7 +92,7 @@ fn an_env_file_cannot_shadow_the_reserved_contract() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -120,7 +120,7 @@ fn a_missing_env_file_fails_validation_before_anything_starts() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -141,7 +141,7 @@ fn a_container_without_env_resolves_to_nothing() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api

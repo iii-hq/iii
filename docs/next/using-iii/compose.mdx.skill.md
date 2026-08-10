@@ -170,7 +170,6 @@ start.
 
 | Field               | Type   | Description                                                   |
 | ------------------- | ------ | ------------------------------------------------------------- |
-| `project`           | string | The compose file's `name`, or the namespace when it has none. |
 | `namespace`         | string | Namespace the project's containers register in.               |
 | `start_order`       | array  | Container keys in dependency order.                           |
 | `deferred_packages` | array  | `package://` containers, which need the registry to resolve.  |
@@ -183,7 +182,7 @@ start.
 </Note>
 
 ```yaml
-name: shop
+namespace: shop
 startup_timeout: 60s
 stop_timeout: 10s
 containers:
@@ -212,7 +211,7 @@ containers:
 
 | Field             | Type   | Default | Description                                                                                |
 | ----------------- | ------ | ------- | ------------------------------------------------------------------------------------------ |
-| `name`            | string | absent  | Namespace the project's containers register in. A project with no name lands in `default`. |
+| `namespace`       | string | absent  | Namespace the project's containers register in. A project that declares none lands in `default`. |
 | `startup_timeout` | string | `60s`   | Readiness budget for every container. A container may override it.                         |
 | `stop_timeout`    | string | `10s`   | Grace between the polite stop and the forced kill.                                         |
 | `containers`      | map    | none    | At least one entry. An empty map fails with `EMPTY_CONTAINERS`.                            |

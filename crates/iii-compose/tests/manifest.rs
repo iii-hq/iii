@@ -36,7 +36,7 @@ fn manifest_start_is_used_when_compose_has_no_run() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
         &[("workers/api", Some(MANIFEST))],
     );
 
@@ -51,7 +51,7 @@ fn compose_run_wins_over_the_manifest() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./dev.sh\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./dev.sh\n",
         &[("workers/api", Some(MANIFEST))],
     );
 
@@ -66,7 +66,7 @@ fn run_alone_is_enough_without_a_manifest() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./dev.sh\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./dev.sh\n",
         &[("workers/api", None)],
     );
 
@@ -81,7 +81,7 @@ fn no_manifest_and_no_run_names_both_ways_out() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
         &[("workers/api", None)],
     );
 
@@ -103,7 +103,7 @@ fn the_container_key_wins_over_the_manifest_name() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
         &[(
             "workers/api",
             Some("name: orders-api\nscripts:\n  start: cargo run\n"),
@@ -128,7 +128,7 @@ fn a_manifest_without_a_name_inherits_the_container_key() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n",
         &[("workers/api", Some("scripts:\n  start: cargo run\n"))],
     );
 
@@ -143,7 +143,7 @@ fn a_missing_worker_directory_is_reported_before_the_start_command() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./dev.sh\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./dev.sh\n",
         &[],
     );
 
@@ -156,7 +156,7 @@ fn packages_have_no_start_command_until_they_are_installed() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
-        "name: orders\ncontainers:\n  api:\n    worker: package://workers.iii.dev/api\n    version: \"1.0.0\"\n",
+        "namespace: orders\ncontainers:\n  api:\n    worker: package://workers.iii.dev/api\n    version: \"1.0.0\"\n",
         &[],
     );
 
@@ -173,7 +173,7 @@ fn validate_offline_resolves_paths_and_defers_packages() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -189,7 +189,6 @@ containers:
     let report = iii_compose::manifest::validate_offline(&file, "orders-abcd1234")
         .expect("project should validate");
 
-    assert_eq!(report.project, "orders");
     assert_eq!(report.namespace, "orders-abcd1234");
     assert_eq!(report.start_order, vec!["queue", "api"]);
     assert_eq!(report.deferred_packages, vec!["queue"]);
@@ -227,7 +226,7 @@ fn a_reserved_key_in_an_env_file_fails_validation() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api
@@ -258,7 +257,7 @@ fn a_package_container_gets_the_same_env_file_checks() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   queue:
     worker: package://workers.iii.dev/queue
@@ -277,7 +276,7 @@ containers:
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   queue:
     worker: package://workers.iii.dev/queue
@@ -306,7 +305,7 @@ fn an_ordinary_env_file_still_validates() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 containers:
   api:
     worker: path://./workers/api

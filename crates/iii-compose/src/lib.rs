@@ -50,7 +50,7 @@ pub fn validate_project(
     namespace: Option<&str>,
 ) -> Result<ValidationReport> {
     let compose = ComposeFile::load(file)?;
-    let namespace = namespace::project_namespace(namespace, compose.name.as_deref());
+    let namespace = namespace::project_namespace(namespace, compose.namespace.as_deref());
     manifest::validate_offline(&compose, &namespace)
 }
 

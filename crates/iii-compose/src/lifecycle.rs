@@ -574,7 +574,7 @@ mod tests {
     use super::*;
 
     const PROJECT: &str = r#"
-name: orders
+namespace: orders
 containers:
   web:
     worker: path://./workers/web
@@ -674,7 +674,7 @@ mod teardown_order_tests {
     fn a_targeted_down_stops_dependents_before_their_dependency() {
         let file = ComposeFile::parse(
             r#"
-name: orders
+namespace: orders
 containers:
   web:
     worker: path://./workers/web
@@ -712,7 +712,7 @@ containers:
     fn a_two_level_cascade_stops_the_far_dependent_first() {
         let file = ComposeFile::parse(
             r#"
-name: orders
+namespace: orders
 containers:
   web:
     worker: path://./workers/web
