@@ -44,12 +44,19 @@ workers:
       rbac:
         auth_function_id: auth::browser
         expose_functions:
-          - match("link::create")
-          - match("stream::*")
+          - match: "link::create"
+            namespace: browser
+          - match: "stream::*"
+            namespace: browser
 ```
 
 `auth_function_id` names a function the worker invokes once per connection to authorize the worker
 to connect (or reject it if authorization fails). That is covered in the next section.
+
+<Warning>
+  `auth_function_id` resolves in the `default` namespace. Register the auth worker there. An auth
+  worker in another namespace makes the listener reject every connection.
+</Warning>
 
 `expose_functions` is the allowlist of function IDs a session may call. Each entry is either a glob
 `match("...")` on the function ID or a `metadata:` selector that matches any function registered
@@ -111,7 +118,6 @@ to reject the connection.**
 
     const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
       workerName: "auth",
-      namespace: process.env.III_NAMESPACE,
     });
 
     worker.registerFunction(
@@ -143,7 +149,7 @@ to reject the connection.**
 
     worker = register_worker(
         os.environ.get("III_URL", "ws://localhost:49134"),
-        InitOptions(worker_name="auth", namespace=os.environ.get("III_NAMESPACE")),
+        InitOptions(worker_name="auth"),
     )
 
     def browser(req: dict) -> dict:
@@ -169,13 +175,7 @@ to reject the connection.**
     use serde_json::{json, Value};
 
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
-    let worker = register_worker(
-        &url,
-        InitOptions {
-            namespace: std::env::var("III_NAMESPACE").ok(),
-            ..Default::default()
-        },
-    );
+    let worker = register_worker(&url, InitOptions::default());
 
     worker.register_function("auth::browser", RegisterFunction::new(|input: AuthInput| {
         let token = input.query_params.get("token").and_then(|v| v.first());
@@ -243,7 +243,8 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
     rbac:
       auth_function_id: auth::browser
       expose_functions:
-        - match("link::create")
+        - match: "link::create"
+          namespace: browser
 ```
 
 <Tabs>

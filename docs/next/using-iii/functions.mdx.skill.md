@@ -91,7 +91,7 @@ fire. Pass a different `TriggerAction` to change that.
     const result = await worker.trigger({
       function_id: "math::add",
       payload: { a: 2, b: 3 },
-      namespace: "default" // target a specific namespace
+      namespace: "default", // target a specific namespace
       // action: TriggerAction.Void(), // fire-and-forget
       // action: TriggerAction.Enqueue({ queue: "math" }), // route through queue
     });
@@ -105,7 +105,7 @@ fire. Pass a different `TriggerAction` to change that.
     result = worker.trigger({
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
-        "namespace": "default" # target a specific namespace
+        "namespace": "default", # target a specific namespace
         # "action": TriggerAction.Void(), # fire-and-forget
         # "action": TriggerAction.Enqueue(queue="math"), # route through queue
     })
@@ -163,7 +163,7 @@ naming the namespaces where the id does exist.
 
 <Note>
   `iii trigger` reaches `default` unless you pass `--namespace <NS>`. For calling across namespaces
-  from worker code, see [Use namespaces](./namespaces#call-a-function-in-a-namespace).
+  from worker code, see [Use namespaces](./namespaces#trigger-a-function-in-a-namespace).
 </Note>
 
 <Note>
