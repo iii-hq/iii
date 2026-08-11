@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { registerWorker } from '../src/iii'
 import type { IIIClient } from '../src/types'
@@ -116,5 +116,42 @@ describe('namespace inheritance', () => {
     expect(announce).toMatchObject({ namespace: 'default' })
     // The namespace still travels, as data the engine files the worker under.
     expect((announce as { data?: { namespace?: string } }).data?.namespace).toBe('orders')
+  })
+
+  /**
+   * A namespace that was declared and left blank is a mistake, not a way to ask
+   * for `default`.
+   *
+   * Absent and blank mean opposite things, and read as the same they produce
+   * the failure nobody can see: the worker registers in `default`, and since a
+   * worker's calls and triggers now follow its namespace, the whole project
+   * serves from a place the declaration never named.
+   */
+  describe('a blank namespace is refused', () => {
+    afterEach(() => vi.unstubAllEnvs())
+
+    it('rejects an empty option', () => {
+      expect(() => registerWorker(url, { workerName: 'tester', namespace: '' })).toThrow(
+        /namespace is empty/,
+      )
+    })
+
+    it('rejects a whitespace-only option', () => {
+      expect(() => registerWorker(url, { workerName: 'tester', namespace: '   ' })).toThrow(
+        /namespace is empty/,
+      )
+    })
+
+    it('rejects a blank III_NAMESPACE', () => {
+      vi.stubEnv('III_NAMESPACE', '')
+      expect(() => registerWorker(url, { workerName: 'tester' })).toThrow(/III_NAMESPACE/)
+    })
+
+    it('still accepts an unset III_NAMESPACE', () => {
+      vi.stubEnv('III_NAMESPACE', undefined as unknown as string)
+      expect(() => {
+        sdk = registerWorker(url, { workerName: 'tester', otel: { enabled: false } })
+      }).not.toThrow()
+    })
   })
 })

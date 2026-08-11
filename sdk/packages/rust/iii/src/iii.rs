@@ -330,12 +330,42 @@ impl Default for WorkerMetadata {
 /// Resolve the effective worker namespace: an explicit `InitOptions.namespace`
 /// wins, then the `III_NAMESPACE` env var, then `None` (the engine applies its
 /// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+/// `namespace` option > `III_NAMESPACE` > `None` (the engine then applies its
+/// `default` namespace).
+///
+/// A declared-but-blank namespace is refused rather than read as "no
+/// namespace". The two mean opposite things: absent asks for the engine's
+/// default, blank names a namespace and gives nothing to name it with. Read as
+/// absent, the worker registers in `default`, and every call and trigger it
+/// makes now follows it there — a whole project quietly serving from the wrong
+/// namespace, and the one thing an operator cannot see by reading the
+/// declaration.
+///
+/// # Panics
+///
+/// When either source is present and holds only whitespace. This runs before
+/// any connection, so it fails the worker at startup the way `iii compose`
+/// refuses `--ns ""`, rather than producing a client that serves in a place
+/// nobody asked for.
 pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
-    explicit.filter(|s| !s.is_empty()).or_else(|| {
-        std::env::var("III_NAMESPACE")
-            .ok()
-            .filter(|s| !s.is_empty())
-    })
+    if let Some(declared) = explicit {
+        if declared.trim().is_empty() {
+            panic!(
+                "namespace is empty: `InitOptions.namespace` was set to {declared:?}. \
+                 Give it a name, or leave it unset to register in `default`."
+            );
+        }
+        return Some(declared);
+    }
+
+    match std::env::var("III_NAMESPACE") {
+        Ok(managed) if managed.trim().is_empty() => panic!(
+            "namespace is empty: III_NAMESPACE is set to {managed:?}. \
+             Give it a name, or unset it to register in `default`."
+        ),
+        Ok(managed) => Some(managed),
+        Err(_) => None,
+    }
 }
 
 /// Returns a project identifier for telemetry, derived from the current

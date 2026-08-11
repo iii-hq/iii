@@ -122,11 +122,31 @@ function resolveNamespace(optionNamespace?: string): string | undefined {
   // at spawn), mirroring III_WORKER_NAME. An explicit option wins; otherwise
   // the env var provides the managed identity. Absent in both means undefined
   // -- the engine applies its `default` namespace when none is on the wire.
-  if (optionNamespace) {
+  //
+  // A declared-but-blank namespace throws rather than reading as "no
+  // namespace". The two mean opposite things: absent asks for the engine's
+  // default, blank names a namespace and gives nothing to name it with. Read
+  // as absent, the worker registers in `default`, and every call and trigger it
+  // makes now follows it there -- a whole project quietly serving from the
+  // wrong namespace, and the one thing an operator cannot see by reading the
+  // declaration.
+  if (optionNamespace !== undefined) {
+    if (optionNamespace.trim() === '') {
+      throw new Error(
+        `namespace is empty: options.namespace was set to ${JSON.stringify(optionNamespace)}. ` +
+          'Give it a name, or leave it unset to register in `default`.',
+      )
+    }
     return optionNamespace
   }
   const managedNamespace = process.env.III_NAMESPACE
-  if (managedNamespace) {
+  if (managedNamespace !== undefined) {
+    if (managedNamespace.trim() === '') {
+      throw new Error(
+        `namespace is empty: III_NAMESPACE is set to ${JSON.stringify(managedNamespace)}. ` +
+          'Give it a name, or unset it to register in `default`.',
+      )
+    }
     return managedNamespace
   }
   return undefined

@@ -189,8 +189,37 @@ class III:
 
     def _worker_namespace(self) -> str | None:
         """Effective worker namespace: explicit option, then ``III_NAMESPACE`` env,
-        else ``None`` (the engine applies its ``default`` namespace)."""
-        return self._options.namespace or os.environ.get("III_NAMESPACE") or None
+        else ``None`` (the engine applies its ``default`` namespace).
+
+        A declared-but-blank namespace raises rather than reading as "no
+        namespace". The two mean opposite things: absent asks for the engine's
+        default, blank names a namespace and gives nothing to name it with.
+        Read as absent, the worker registers in ``default``, and every call and
+        trigger it makes now follows it there -- a whole project quietly
+        serving from the wrong namespace, and the one thing an operator cannot
+        see by reading the declaration.
+
+        Raises:
+            ValueError: when either source is present and holds only whitespace.
+        """
+        declared = self._options.namespace
+        if declared is not None:
+            if not declared.strip():
+                raise ValueError(
+                    f"namespace is empty: InitOptions.namespace was set to {declared!r}. "
+                    "Give it a name, or leave it unset to register in `default`."
+                )
+            return declared
+
+        managed = os.environ.get("III_NAMESPACE")
+        if managed is not None:
+            if not managed.strip():
+                raise ValueError(
+                    f"namespace is empty: III_NAMESPACE is set to {managed!r}. "
+                    "Give it a name, or unset it to register in `default`."
+                )
+            return managed
+        return None
 
     def __init__(self, address: str, options: InitOptions | None = None) -> None:
         self._address = address
@@ -1494,14 +1523,10 @@ class III:
             or f"{platform.node()}:{os.getpid()}"
         )
 
-        # III_NAMESPACE mirrors III_WORKER_NAME precedence: an explicit option
-        # wins, then the managed env var, else None (the engine applies its
-        # `default` namespace when absent).
-        namespace = (
-            self._options.namespace
-            or os.environ.get("III_NAMESPACE")
-            or None
-        )
+        # One resolver, so the blank-namespace check cannot be bypassed by the
+        # path that builds the metadata: a second copy of the precedence rule
+        # is a second place for it to drift.
+        namespace = self._worker_namespace()
 
         telemetry_opts = self._options.telemetry
         language = (

@@ -180,3 +180,41 @@ async fn the_workers_own_registration_is_not_redirected() {
     // The namespace still travels, as data the engine files the worker under.
     assert_eq!(register.pointer("/data/namespace"), Some(&json!("orders")));
 }
+
+/// A namespace that was declared and left blank is a mistake, not a way to ask
+/// for `default`.
+///
+/// Absent and blank mean opposite things, and read as the same they produce the
+/// failure nobody can see: the worker registers in `default`, and since a
+/// worker's calls and triggers now follow its namespace, the whole project
+/// serves from a place the declaration never named.
+///
+/// Checked before any connection, so it fails at startup the way `iii compose`
+/// refuses `--ns ""`.
+mod blank_namespace {
+    use iii_sdk::{InitOptions, register_worker};
+
+    #[test]
+    #[should_panic(expected = "namespace is empty")]
+    fn an_empty_option_is_refused() {
+        let _ = register_worker(
+            "ws://127.0.0.1:1",
+            InitOptions {
+                namespace: Some(String::new()),
+                ..Default::default()
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "namespace is empty")]
+    fn whitespace_only_is_refused_too() {
+        let _ = register_worker(
+            "ws://127.0.0.1:1",
+            InitOptions {
+                namespace: Some("   ".to_string()),
+                ..Default::default()
+            },
+        );
+    }
+}
