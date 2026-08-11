@@ -1,5 +1,5 @@
 ---
-title: "Use namespaces"
+title: "Namespaces"
 description: "Set worker namespaces, call namespaced functions, and handle namespace conflicts."
 owner: "devrel"
 type: "how-to"
@@ -20,6 +20,8 @@ The SDK selects the worker namespace in this order:
 | 3        | `default`                                               |
 
 Use a non-empty string for a namespace.
+
+{/* TODO: Add this back when compose is released */}
 
 ### Managed workers
 
@@ -98,10 +100,15 @@ over `III_NAMESPACE`.
 The browser SDK cannot read a process environment. Pass its namespace explicitly or obtain it from
 trusted runtime configuration.
 
-## Call a function in a namespace
+## Trigger a function in a namespace
 
 Set `namespace` on the invocation. The call resolves only in that namespace. If you omit the field,
-the call resolves in `default`. The caller's own namespace does not select the target namespace.
+the call resolves in `default`.
+
+<Info>
+  Namespace references are explicit. The triggering worker's own namespace is never used to derive
+  the target namespace.
+</Info>
 
 <Tabs>
   <Tab title="Node / TypeScript">
