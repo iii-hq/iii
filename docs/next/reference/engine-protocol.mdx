@@ -119,9 +119,9 @@ worker registration. Usually, it has the same value as the worker namespace.
 A trigger can call a function in a different namespace. For this reason, `RegisterTrigger` includes
 the target `namespace`. If this field is not present, `function_id` resolves in `default`.
 
-The typed SDK helper `registerTriggerType(...).registerTrigger` sets this field to the worker
-namespace. The low-level `registerTrigger` API does not set this field automatically. Set
-`namespace` explicitly if the target function is not in `default`.
+The SDKs fill the field from the worker namespace when the caller sets no namespace on the binding,
+so the frame carries the worker's own namespace, or `default` when the worker declared none. A
+caller that sets `namespace` targets that namespace instead.
 
 These fields target `math::add` in `default`:
 

@@ -9,6 +9,11 @@ on one engine.
 
 ## Set a worker namespace
 
+<Warning>
+  A worker's namespace is not inherited into `worker.trigger()` calls. Every invocation names its
+  target namespace, or resolves in `default`.
+</Warning>
+
 The SDK selects the worker namespace in this order:
 
 | Priority | Source                                                  |
@@ -158,27 +163,20 @@ A miss returns `function_not_found`. The error lists other namespaces where the 
 
 ## Point a trigger at a namespaced function
 
-A trigger binding carries its own target namespace. `worker.registerTrigger` does not inherit the
-namespace of the worker that calls it: a binding with no `namespace` field targets `default`. A
-worker in `orders` that binds without the field gets a trigger that fires into `default` and never
-reaches its own function.
+A trigger binding targets the namespace of the worker that registers it. A worker in `orders` that
+binds a function gets a trigger that resolves that function in `orders`, so most bindings need no
+`namespace` field.
 
-Set `namespace` on each binding for a namespaced function:
+Set `namespace` on the binding only to point a trigger at a function in another namespace:
 
 ```typescript
 worker.registerTrigger({
   type: "http",
   function_id: "state::get",
   config: { api_path: "/orders/state", http_method: "GET" },
-  namespace: "orders",
+  namespace: "analytics", // a function outside this worker's namespace
 });
 ```
-
-<Note>
-  The typed helpers from
-  [`registerTriggerType`](../creating-workers/triggers#declaring-a-trigger-type) set the target to
-  the namespace of the worker, so a binding through a helper needs no `namespace` field.
-</Note>
 
 ## Inspect namespaces
 

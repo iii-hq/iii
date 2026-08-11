@@ -117,6 +117,7 @@ to reject the connection.**
 
     const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
       workerName: "auth",
+      namespace: process.env.III_NAMESPACE,
     });
 
     worker.registerFunction(
@@ -148,7 +149,7 @@ to reject the connection.**
 
     worker = register_worker(
         os.environ.get("III_URL", "ws://localhost:49134"),
-        InitOptions(worker_name="auth"),
+        InitOptions(worker_name="auth", namespace=os.environ.get("III_NAMESPACE")),
     )
 
     def browser(req: dict) -> dict:
@@ -174,7 +175,13 @@ to reject the connection.**
     use serde_json::{json, Value};
 
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: std::env::var("III_NAMESPACE").ok(),
+            ..Default::default()
+        },
+    );
 
     worker.register_function("auth::browser", RegisterFunction::new(|input: AuthInput| {
         let token = input.query_params.get("token").and_then(|v| v.first());
@@ -219,7 +226,9 @@ WebSocket headers, so the token travels as a query parameter, the same one `auth
 import { registerWorker } from "iii-browser-sdk";
 
 const token = import.meta.env.VITE_BROWSER_TOKEN ?? "dev-token";
-export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`);
+export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`, {
+  namespace: "browser",
+});
 ```
 
 The session can now call only the functions `expose_functions` (plus `allowed_functions`) permit.

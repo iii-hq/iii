@@ -16,7 +16,7 @@ and returns the result.
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url);
+    const worker = registerWorker(url, { namespace: process.env.III_NAMESPACE });
 
     worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
       return { c: payload.a + payload.b };
@@ -31,7 +31,10 @@ and returns the result.
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="math-worker"),
+        InitOptions(
+            worker_name="math-worker",
+            namespace=os.environ.get("III_NAMESPACE"),
+        ),
     )
 
     def add_handler(payload: dict) -> dict:
@@ -46,7 +49,13 @@ and returns the result.
     use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: std::env::var("III_NAMESPACE").ok(),
+            ..Default::default()
+        },
+    );
 
     worker.register_function("math::add", RegisterFunction::new(|input: AddInput| {
         Ok(serde_json::json!({ "c": input.a + input.b }))

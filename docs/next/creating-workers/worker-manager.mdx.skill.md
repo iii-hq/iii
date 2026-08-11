@@ -57,11 +57,28 @@ with that metadata:
 
 ```yaml
 expose_functions:
-  - match("public::*") # any function under the public:: namespace
+  - match("public::*") # any function with the public:: id prefix
   - match("engine::functions::list") # one specific function
   - metadata:
       public: true # any function whose metadata.public is true
 ```
+
+### Namespace-scoped function rules
+
+An `expose_functions` rule without a namespace applies to `default` only. Add `namespace` when the
+session must call a function in another namespace:
+
+```yaml
+expose_functions:
+  - match: "orders::*"
+    namespace: orders
+  - metadata:
+      public: true
+    namespace: analytics
+```
+
+The `match` value supports `*` wildcards for the function id. The `namespace` value is an exact
+match and does not support wildcards. Add one rule for each namespace that the session can access.
 
 A function's [`metadata`](./functions#attach-metadata) is an arbitrary JSON object set when the
 function is registered, so you can shape it however your access model needs and gate on exactly the
@@ -94,6 +111,7 @@ to reject the connection.**
 
     const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
       workerName: "auth",
+      namespace: process.env.III_NAMESPACE,
     });
 
     worker.registerFunction(
@@ -125,7 +143,7 @@ to reject the connection.**
 
     worker = register_worker(
         os.environ.get("III_URL", "ws://localhost:49134"),
-        InitOptions(worker_name="auth"),
+        InitOptions(worker_name="auth", namespace=os.environ.get("III_NAMESPACE")),
     )
 
     def browser(req: dict) -> dict:
@@ -151,7 +169,13 @@ to reject the connection.**
     use serde_json::{json, Value};
 
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: std::env::var("III_NAMESPACE").ok(),
+            ..Default::default()
+        },
+    );
 
     worker.register_function("auth::browser", RegisterFunction::new(|input: AuthInput| {
         let token = input.query_params.get("token").and_then(|v| v.first());
@@ -196,7 +220,9 @@ WebSocket headers, so the token travels as a query parameter, the same one `auth
 import { registerWorker } from "iii-browser-sdk";
 
 const token = import.meta.env.VITE_BROWSER_TOKEN ?? "dev-token";
-export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`);
+export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`, {
+  namespace: "browser",
+});
 ```
 
 The session can now call only the functions `expose_functions` (plus `allowed_functions`) permit.
