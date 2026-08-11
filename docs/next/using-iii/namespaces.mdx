@@ -19,7 +19,8 @@ The SDK selects the worker namespace in this order:
 | 2        | The worker process `III_NAMESPACE` environment variable |
 | 3        | `default`                                               |
 
-Use a non-empty string for a namespace.
+Use a non-empty string for a namespace. Leave the option out to accept `default`. A `null`, a
+`None`, or any other non-string value fails; it is not a way to ask for `default`.
 
 {/* TODO: Add this back when compose is released */}
 
