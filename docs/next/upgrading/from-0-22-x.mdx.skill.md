@@ -23,8 +23,7 @@ route copies of new events to it.
 | 0.23.x  | `iii.{topic}.{function_id}@{ns}.queue`  | `iii.{topic}.{function_id}@{ns}.dlq`  |
 
 `{ns}` is the subscriber's namespace, `default` when it declared none. Any `@` or `\` inside a
-topic, function id, or namespace is backslash-escaped before the join, so the single unescaped `@` is
-always the namespace boundary.
+topic, function id, or namespace is backslash-escaped before the join.
 
 <Warning>
   Drain the old queues before upgrading. Messages left in a pre-0.23 queue are not migrated and no
@@ -72,13 +71,13 @@ Queue name contains the namespace separator; skipped by the legacy subscriber-qu
   consumer drain the skipped queue, and then repeat the upgrade.
 </Warning>
 
-## Step 3: Tune the registration grace, if needed
+## Step 3: Tune the registration grace period, if needed
 
-A connection's namespace arrives on its `engine::workers::register` call, which SDKs send after their
-first registration frames. The engine buffers a connection's registrations until the namespace is
-known, or until a grace period expires and the connection is fixed to `default`.
+A connection gets its namespace from `engine::workers::register`. A client can send registration
+messages before this call. The engine holds these messages until the namespace is known, or until
+the grace period expires and the connection is set to `default`.
 
-The default grace is 5000 ms. Raise it if workers on slow links register but land in `default`
+The default grace period is 5000 ms. Raise it if workers on slow links register but land in `default`
 unexpectedly:
 
 ```yaml config.yaml
@@ -91,11 +90,20 @@ applies to namespace resolution for all new worker connections and overrides
 
 ## Step 4: Check for `engine::*` function ids outside `default`
 
+<Note>
+  Most custom workers do not use the `engine::` prefix. Check this step because the new rule rejects
+  an existing custom function that uses the prefix outside `default`.
+</Note>
+
 Every worker has a namespace. A worker uses `default` if you do not specify a namespace.
 `engine::*` is reserved for engine infrastructure, which is registered in `default`. If a worker in
 a non-default namespace registers an `engine::*` function id, the engine rejects that registration
 with `FUNCTION_NAMESPACE_CONFLICT`. The connection stays open, and its other functions continue to
 serve requests. Rename the function with your own `service::name` prefix.
+
+The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
+The rule does not reject these functions. It applies to a custom worker connection that registers an
+`engine::*` function in a non-default namespace.
 
 ## Step 5: Scope RBAC expose rules when adopting a namespace
 
@@ -109,6 +117,10 @@ expose_functions:
     namespace: orders
 ```
 
+The function-id `match` value supports `*` wildcards. The `namespace` value is exact and does not
+support wildcards. Add one rule for each namespace. See
+[Namespace-scoped function rules](../creating-workers/worker-manager#namespace-scoped-function-rules).
+
 `forbidden_functions` and `allowed_functions` still match on the bare function id and apply in every
 namespace; they come from the session's auth result, which carries no namespace.
 
@@ -116,6 +128,7 @@ namespace; they come from the session's auth result, which carries no namespace.
 
 - [ ] Drain and delete pre-0.23 RabbitMQ subscriber and dead-letter queues (Step 1)
 - [ ] Confirm the engine logged each legacy queue migration on startup (Step 2)
+- [ ] Recover each queue that the legacy migration skipped because its name contains `@` (Step 2)
 - [ ] Raise `registration_namespace_grace_ms` if workers land in `default` unexpectedly (Step 3)
 - [ ] Rename `engine::*` function ids registered by namespaced workers (Step 4)
 - [ ] Add `namespace:` to `expose_functions` rules for namespaced workers (Step 5)
@@ -127,6 +140,6 @@ Workers that declare no namespace keep routing through `default` exactly as they
 workers that declare one own their function ids inside it.
 
 <Note>
-  To put workers in namespaces or understand why routing is strict, see
-  [Namespaces](../understanding-iii/namespaces).
+  To configure workers and calls, see [Use namespaces](../using-iii/namespaces). To understand strict
+  routing, see [Namespaces](../understanding-iii/namespaces).
 </Note>

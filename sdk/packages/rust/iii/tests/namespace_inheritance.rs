@@ -153,7 +153,6 @@ async fn an_invocation_can_still_name_another_namespace() {
     );
 }
 
-
 /// The SDK's own registration call must stay in `default`.
 ///
 /// `engine::workers::register` is how a worker announces itself, and it is an
@@ -170,9 +169,7 @@ async fn the_workers_own_registration_is_not_redirected() {
     let register = mock
         .received_messages()
         .into_iter()
-        .find(|m| {
-            m.get("function_id").and_then(Value::as_str) == Some("engine::workers::register")
-        })
+        .find(|m| m.get("function_id").and_then(Value::as_str) == Some("engine::workers::register"))
         .expect("the worker announces itself");
 
     assert_eq!(
@@ -181,8 +178,5 @@ async fn the_workers_own_registration_is_not_redirected() {
         "the announcement must reach the engine's own namespace: {register}"
     );
     // The namespace still travels, as data the engine files the worker under.
-    assert_eq!(
-        register.pointer("/data/namespace"),
-        Some(&json!("orders"))
-    );
+    assert_eq!(register.pointer("/data/namespace"), Some(&json!("orders")));
 }

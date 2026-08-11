@@ -42,10 +42,14 @@ metadata (runtime, version, OS, PID, isolation, optional `namespace`, and an opt
 The connection is bidirectional from that point on: the engine pushes `InvokeFunction` frames at the
 worker, and the worker pushes `InvocationResult`, additional registrations, or unregistrations back.
 
-A connection's namespace arrives on the `engine::workers::register` call, not on a protocol frame.
-Because SDKs flush their registrations before that call, the engine buffers a connection's
-registrations until the namespace is known and drains them in arrival order. See
-[Namespaces](#namespaces).
+A connection gets its namespace from the `engine::workers::register` call.
+
+A client can send registration messages before this call. The engine holds these messages until it
+knows the namespace. It does not register them in `default` and move them later.
+
+When `engine::workers::register` arrives, the engine registers the worker, sets the connection
+namespace, and processes the held messages in arrival order. If the registration timeout expires
+first, the engine sets the connection namespace to `default`. See [Namespaces](#namespaces).
 
 ## Message types
 
@@ -251,6 +255,29 @@ A function conflict has this format:
 }
 ```
 
+### Function conflict behavior
+
+Worker registration and function registration are separate operations. The engine can accept a
+worker and reject one of its functions.
+
+For a function ownership conflict, the engine:
+
+1. Keeps the current function owner.
+2. Does not register the new handler.
+3. Sends `FUNCTION_NAMESPACE_CONFLICT` to the new worker.
+4. Keeps the new worker connection open.
+5. Continues to register and serve the new worker's other functions.
+
+`FUNCTION_NAMESPACE_CONFLICT` is a registration result. It is not an invocation result. A later
+invocation of the same function id in the same namespace goes to the current owner. It does not go
+to the worker whose registration was rejected.
+
+<Warning>
+A connected worker does not confirm that all its functions are registered. The SDK reports a
+function conflict as a warning and keeps the worker active. If the worker requires all its functions,
+treat this warning as a startup or deployment error.
+</Warning>
+
 A worker restarting against its own not-yet-cleaned connection is not a conflict: the engine treats
 a connection that has begun tearing down as not live, so the restart reclaims its name immediately.
 
@@ -274,12 +301,13 @@ to the queue's retry policy.
 
 ## Namespaces
 
-A namespace is a routing dimension carried alongside a function id, never folded into it: `state::get`
-is `state::get` in every namespace. Registries are keyed by `(namespace, function_id)` and
-`(namespace, worker_name)`, so the same id or worker name may appear once per namespace.
+A namespace is a routing value carried with a function id. It is not part of the function name. For
+example, `state::get` has the same id in every namespace. Registries are keyed by
+`(namespace, function_id)` and `(namespace, worker_name)`, so the same id or worker name may appear
+once per namespace.
 
 A worker declares its namespace on the `engine::workers::register` call
-([`RegisterWorkerInput.namespace`](#engine-discovery-functions)), not on a protocol frame. A
+([`RegisterWorkerInput.namespace`](#engine-discovery-functions)). A
 connection that declares none lands in `default`.
 
 ### Resolution
@@ -303,9 +331,12 @@ reported as an ambiguity naming the candidates, never resolved by guessing. Pass
 
 ### Reserved ids
 
-`engine::*` is reserved for engine and builtin infrastructure, which is registered in `default`.
-A worker that tries to register an `engine::*` function id in any other namespace has that
-registration refused.
+`engine::*` is reserved for engine infrastructure, which is registered in `default`. A custom worker
+that tries to register an `engine::*` function id in another namespace has that registration
+refused.
+
+The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
+The reserved-id check does not reject these functions.
 
 ### Wire compatibility
 
