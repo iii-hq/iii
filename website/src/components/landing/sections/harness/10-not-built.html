@@ -1,0 +1,38 @@
+<!-- WHAT WE DIDN'T BUILD — pi.dev's list (no MCP, no sub-agents, no permission
+     popups, no plan mode, no built-in to-dos, no background bash) is its proof
+     of minimalism. iii's is the same honesty from the runtime side: the things
+     a harness bakes in, iii deliberately leaves as composable primitives. -->
+<section class="hz-section hz-body" id="not-built" aria-label="What we didn't build">
+  <header class="hz-section-head">
+    <h2 class="hz-section-title">
+      <span class="accent">what we didn't build.</span>
+      <span class="mute">and why the system is better for it.</span>
+    </h2>
+  </header>
+  <div class="hz-grid">
+    <div class="hz-cell">
+      <h3>no MCP</h3>
+      <p>functions with live, published schemas are the contract. one protocol replaces a per-tool server for each integration.</p>
+    </div>
+    <div class="hz-cell">
+      <h3>no sub-agent framework</h3>
+      <p>an agent is already a worker. spawn another, or react on a trigger — orchestration is the runtime, not a feature.</p>
+    </div>
+    <div class="hz-cell">
+      <h3>no permission popups</h3>
+      <p>policy is a worker concern. gate by function allow-list, run in a sandbox worker, or build your own flow.</p>
+    </div>
+    <div class="hz-cell">
+      <h3>no plan mode</h3>
+      <p>write the plan to state, let a trigger drive each step. plans are data the system acts on, not a UI mode.</p>
+    </div>
+    <div class="hz-cell">
+      <h3>no built-in to-dos</h3>
+      <p>a to-do is a state key and a cron trigger. compose it from the primitives instead of waiting for the feature.</p>
+    </div>
+    <div class="hz-cell">
+      <h3>no background bash</h3>
+      <p>a long-running task is a worker with a durable trigger. it outlives the turn on purpose, not by accident of a shell.</p>
+    </div>
+  </div>
+</section>

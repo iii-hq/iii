@@ -1,0 +1,63 @@
+---
+// iii.dev/harness — a landing page that mirrors the structure of pi.dev's
+// homepage, block for block, with each block re-told from the iii perspective
+// (backend-first, workers/triggers/functions instead of a customizable TUI).
+// pi.dev's interactive terminal visualizations become static HarnessConsole
+// blocks — the iii console design lifted out of the HarnessRace animation and
+// frozen. Construction matches the other landing pages (index/pi/agent): a
+// shared HtmlShell, SiteNav, ScrollNav, raw-HTML fragments for the sections
+// that carry no component, and Astro components (HarnessHero, HarnessFeatures)
+// where a real <HarnessConsole> element has to sit next to the copy.
+import SiteNav from '../components/SiteNav.astro'
+import ScrollNav from '../components/ScrollNav.astro'
+import HtmlShell from '../layouts/HtmlShell.astro'
+import HarnessHero from '../components/landing/sections/harness/HarnessHero.astro'
+import HarnessFeatures from '../components/landing/sections/harness/HarnessFeatures.astro'
+import '../styles/landing.css'
+import '../styles/pi.css'
+import '../styles/harness.css'
+
+import headExtras from '../components/landing/head-extras.html?raw'
+import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
+
+// Raw-HTML sections (no component inside). The feature blocks with a console
+// live in HarnessFeatures.astro; these carry the grid, FAQ, and closer.
+import notBuilt from '../components/landing/sections/harness/10-not-built.html?raw'
+import faq from '../components/landing/sections/harness/11-faq.html?raw'
+import closer from '../components/landing/sections/harness/12-closer.html?raw'
+
+// Homepage sections reused verbatim — the footer.
+import footer from '../components/landing/sections/11-footer.html?raw'
+
+// Behavior scripts these sections need: page behaviors (install-copy buttons,
+// footer email/discord) guard every lookup on element presence, so including
+// it is safe even though only some of its targets exist on this page.
+import pageBehaviors from '../components/landing/scripts/02-page-behaviors.html?raw'
+
+const body = [notBuilt, faq, closer, footer, pageBehaviors].join('')
+---
+
+<HtmlShell
+  title="iii — the harness that runs your whole backend"
+  description="There are many agent harnesses, but this one runs your whole backend. iii is workers, triggers, and functions on one protocol — with the harness as one participant instead of the whole system."
+  canonicalPath="/harness"
+  keywords="iii, agent harness, coding agent, backend, worker, trigger, function, three primitives, agent runtime, durable orchestration, worker registry, live discovery, cross-language workers, MCP alternative"
+>
+  <Fragment slot="head" set:html={headExtras} />
+  <Fragment set:html={sheetOpen} />
+  <SiteNav pageTitle="harness" />
+  <ScrollNav
+    links={[
+      { id: 'why', label: 'why' },
+      { id: 'extend', label: 'extend' },
+      { id: 'models', label: 'models' },
+      { id: 'state', label: 'state' },
+      { id: 'triggers', label: 'triggers' },
+      { id: 'not-built', label: 'not built' },
+      { id: 'faq', label: 'faq' },
+    ]}
+  />
+  <HarnessHero />
+  <HarnessFeatures />
+  <Fragment set:html={body} />
+</HtmlShell>

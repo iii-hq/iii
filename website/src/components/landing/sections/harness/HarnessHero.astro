@@ -1,0 +1,80 @@
+---
+// HARNESS HERO — pi.dev's "many agent harnesses, but this one is yours"
+// becomes iii's claim: the harness is not the product, the system is, and the
+// harness is one worker in it. The right column is a static HarnessConsole
+// (the same console the race animates) mid-run on a backend task — iii's home
+// turf. Astro, not a raw fragment, so the console can be a real element.
+import HarnessConsole from '../../HarnessConsole.astro'
+---
+
+<section class="hero hz-hero" aria-label="Hero">
+  <div class="hero-inner">
+    <div class="hero-left">
+      <h1 class="hero-headline">
+        <span class="line">there are many agent harnesses.</span>
+        <span class="line mute">this one runs your whole backend.</span>
+      </h1>
+
+      <p class="hero-sub">pi is a minimal harness you customize to fit your workflow. that's the right shape for a coding assistant. but the work an agent does on a real product isn't the website — it's the backend: services, queues, state, schedules, and the glue between all of them.</p>
+      <p class="hero-sub">
+        iii is that backend. workers, triggers, and functions on <span class="accent">one protocol</span>, with the harness as one participant instead of the whole system — so the agent builds on what's already running instead of recreating it every session.
+      </p>
+
+      <div class="hero-cta">
+        <div class="hero-actions">
+          <div class="hero-actions-row">
+            <button
+              class="pi-install cta-install"
+              id="hero-install"
+              data-cta-location="hero"
+              type="button"
+              aria-label="Copy install command"
+            >
+              <span class="prompt">$</span>
+              <span class="cmd">curl -fsSL install.sh | sh</span>
+              <span class="copy-ico" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="5" y="5" width="9" height="9"/>
+                  <path d="M3 11 V3 H11"/>
+                </svg>
+              </span>
+            </button>
+            <a class="cta-get-started ghost" href="https://iii.dev/docs" style="text-decoration:none; display:inline-flex; align-items:center;">read the docs</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="pi-trust">
+        <a class="cta-github" data-cta-location="hero_trust" href="https://github.com/iii-hq/iii" target="_blank" rel="noopener noreferrer">github</a>
+        <a class="cta-discord" data-cta-location="hero_trust" href="https://discord.gg/iiidev" target="_blank" rel="noopener noreferrer">discord</a>
+        <a href="https://workers.iii.dev" target="_blank" rel="noopener noreferrer">worker registry</a>
+        <span class="pron">pronounced "three-eye"</span>
+      </div>
+    </div>
+
+    <aside class="hz-hero-viz" aria-label="The iii harness building a backend">
+      <HarnessConsole
+        status="31% · 118k/1.0M"
+        triggers="4 triggers registered"
+        workers={[
+          { label: 'http', on: true },
+          { label: 'state' },
+          { label: 'database', on: true },
+          { label: 'queue' },
+          { label: 'payments-ledger', on: true },
+        ]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>build a payments ledger service with a durable db</div>
+        <div class="hc-line hc-muted">Finding workers...</div>
+        <div class="hc-line hc-ok">found existing database worker</div>
+        <div class="hc-fn"><div class="sig">payments::charge::record {'{'} amount, customer_id {'}'}</div><div class="doc">Record an authorized charge</div></div>
+        <div class="hc-fn"><div class="sig">payments::ledger::reconcile {'{'} period {'}'}</div><div class="doc">Reconcile the ledger for a period</div></div>
+        <div class="hc-line hc-muted">Registering functions to http triggers [/charge/record, /ledger/reconcile]</div>
+        <div class="hc-line hc-muted">Running tests on dev ... <span class="hc-badge">pass</span></div>
+        <div class="hc-worker"><span class="dot"></span><span class="name">payments-ledger</span><span class="kind">node</span><span class="tag">STANDALONE</span></div>
+        <div class="hc-line hc-ok">Deploy to production? <span class="hc-badge">yes</span></div>
+        <div class="hc-line hc-ok">joined prod · 25 workers connected</div>
+      </HarnessConsole>
+    </aside>
+  </div>
+</section>

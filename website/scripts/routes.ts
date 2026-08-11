@@ -7,11 +7,11 @@ export interface RouteMeta {
 }
 
 export const INDEXABLE_ROUTES: RouteMeta[] = [
+export const INDEXABLE_ROUTES: RouteMeta[] = [
   { path: '/' },
   { path: '/manifesto' },
   { path: '/privacy-policy' },
-  { path: '/pi' },
-  { path: '/agent' },
+  { path: '/harness' },
 ]
 
 export const SITE_ORIGIN = 'https://iii.dev'

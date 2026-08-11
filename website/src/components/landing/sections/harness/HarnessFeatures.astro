@@ -1,0 +1,253 @@
+---
+// HARNESS FEATURES — the eight feature blocks of the /harness page, each a
+// static HarnessConsole paired with copy. One component instead of eight
+// fragments because every block needs a real <HarnessConsole> element (with
+// its own transcript) next to its copy, and Astro components can't be nested
+// inside set:html raw-HTML fragments the way the race is — so the whole
+// feature list is one Astro tree. The section id's match the ScrollNav.
+import HarnessConsole from '../../HarnessConsole.astro'
+---
+
+<!-- 02 · WHY — pi.dev's "manipulate the website" → iii's backend build. -->
+<section class="hz-section hz-body" id="why" aria-label="Why iii">
+  <div class="hz-feature">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">why iii <span class="dot"></span></p>
+      <h2 class="hz-feature-title">the harness for <span class="accent">backend work.</span></h2>
+      <div class="hz-feature-body">
+        <p>a coding harness manipulates the thing in front of it — a file, a website, a terminal. iii's arena is the system behind all of that: services, data, and the work that runs when no one is watching.</p>
+        <p>ask iii to stand up a backend and it doesn't scaffold a repo and hand you a README. it finds the workers already running, registers new functions against them, wires the triggers, and ships — into the same runtime your product already uses.</p>
+        <p>customize it the same way you customize everything in iii: add a worker. the harness, your services, and your team's capabilities all speak one protocol, so anything you add is callable by all of it.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="31% · 118k/1.0M"
+        triggers="4 triggers registered"
+        workers={[{ label: 'http', on: true }, { label: 'state' }, { label: 'database', on: true }, { label: 'queue' }, { label: 'storage' }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>build a payments ledger service with a durable db</div>
+        <div class="hc-line hc-muted">Finding workers...</div>
+        <div class="hc-line hc-ok">found existing database worker</div>
+        <div class="hc-fn"><div class="sig">payments::charge::record {'{'} amount, customer_id {'}'}</div><div class="doc">Record an authorized charge</div></div>
+        <div class="hc-fn"><div class="sig">payments::webhook::stripe {'{'} event {'}'}</div><div class="doc">Ingest a provider event, idempotent</div></div>
+        <div class="hc-line hc-muted">Registering functions to http triggers [/charge/record, /webhook/stripe]</div>
+        <div class="hc-line hc-muted">Running tests on dev ... <span class="hc-badge">pass</span></div>
+        <div class="hc-line hc-ok">Deploy to production? <span class="hc-badge">yes</span></div>
+        <div class="hc-line hc-muted">› compose::add ./payments-ledger --host production</div>
+        <div class="hc-line hc-ok">joined prod · 25 workers connected</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
+
+<!-- 03 · EXTEND — pi.dev's "custom workflow extension" → register a worker. -->
+<section class="hz-section hz-body" id="extend" aria-label="Change the system, not your workflow">
+  <div class="hz-feature flip">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">extensibility <span class="dot"></span></p>
+      <h2 class="hz-feature-title">change the <span class="accent">system,</span> not your workflow.</h2>
+      <div class="hz-feature-body">
+        <p>pi customizes itself on the fly — write an extension, <code>/reload</code>, keep going. iii takes the same instinct one level down: the thing you extend isn't the harness, it's the running system.</p>
+        <p>need a capability that doesn't exist? register a worker. it's live the moment it connects — no reload, no rebuild, no restart — and callable by every other worker and every agent already on the engine, in any language.</p>
+        <p>the loop closes: an agent can register a worker mid-task and immediately use what it just added. that's the tight loop between extending a system and using it that a sealed harness can't structurally offer.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="12% · 54k/1.0M"
+        triggers="3 triggers registered"
+        workers={[{ label: 'http' }, { label: 'state', on: true }, { label: 'database' }, { label: 'queue' }, { label: 'fraud-check', on: true }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>we need fraud scoring before a charge settles</div>
+        <div class="hc-line hc-muted">No worker provides fraud scoring. Building one.</div>
+        <div class="hc-fn"><div class="sig">fraud::score {'{'} charge_id, amount, signals {'}'}</div><div class="doc">Score a charge 0–1 before settle</div></div>
+        <div class="hc-fn"><div class="sig">fraud::review::queue {'{'} score {'}'}</div><div class="doc">Route high-risk charges to review</div></div>
+        <div class="hc-worker"><span class="dot"></span><span class="name">fraud-check</span><span class="kind">python</span><span class="tag">LIVE</span></div>
+        <div class="hc-line hc-muted">Registered to queue trigger [charges.pending]</div>
+        <div class="hc-line hc-ok">live · callable by all 25 workers, no reload</div>
+        <div class="hc-line hc-muted">payments-ledger is already calling fraud::score</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
+
+<!-- 04 · MODELS — pi.dev's "switch models mid-session" → one router. -->
+<section class="hz-section hz-body" id="models" aria-label="Every provider, every model">
+  <div class="hz-feature">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">models <span class="dot"></span></p>
+      <h2 class="hz-feature-title">every provider. <span class="accent">one router.</span></h2>
+      <div class="hz-feature-body">
+        <p>Anthropic, OpenAI, Google, Bedrock, Mistral, Groq, xAI, OpenRouter, Ollama — the model call routes through the <a href="/roadmap/2026-06-08-agentic/" style="color:var(--ink);">llm-router worker</a> on the engine, not through the harness process.</p>
+        <p>adding a provider or a model is a router config, not an agent rewrite. switch mid-session and every worker that reasons sees it at once, because they all call the same router function.</p>
+        <p>and your keys stay in the engine's configuration — not in a harness process, not in a dotfile, not in a prompt. one place to rotate, one place to audit.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="44% · 260k/1.0M"
+        triggers="2 triggers registered"
+        model="claude sonnet 5"
+        workers={[{ label: 'llm-router', on: true }, { label: 'http' }, { label: 'state' }, { label: 'database' }, { label: 'queue' }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>switch the summarizer to a cheaper model</div>
+        <div class="hc-line hc-muted">Model calls route through llm-router, not the harness.</div>
+        <div class="hc-fn"><div class="sig">llm::route {'{'} task, payload {'}'}</div><div class="doc">Resolve task → provider + model</div></div>
+        <div class="hc-line hc-muted">› engine::config llm-router summarize=gpt-4o-mini</div>
+        <div class="hc-line hc-ok">router updated · 0 agent rewrites</div>
+        <div class="hc-line hc-muted">every worker calling llm::route sees it now</div>
+        <div class="hc-line hc-ok">keys stay in engine config · never in the prompt</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
+
+<!-- 05 · STATE — pi.dev's "tree-structured, shareable history" → state primitive. -->
+<section class="hz-section hz-body" id="state" aria-label="State is a primitive">
+  <div class="hz-feature flip">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">state <span class="dot"></span></p>
+      <h2 class="hz-feature-title">sessions are <span class="accent">state,</span> not files.</h2>
+      <div class="hz-feature-body">
+        <p>pi keeps sessions as trees in a single file you navigate, export to HTML, or push to a gist. that's a history you look at. on iii, a session is state — a first-class primitive in the same runtime as everything else.</p>
+        <p>an agent's memory is state. its progress is state. any worker can read it, branch it, or resume from it, because it's not locked inside one harness's file format.</p>
+        <p>and because triggers are durable and replay, nothing is lost when a process restarts: workers reconnect, re-register, and pick up where the state says they were. the history isn't an artifact you share — it's the system, continuing.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="9% · 22k/1.0M"
+        triggers="2 triggers registered"
+        workers={[{ label: 'http' }, { label: 'state', on: true }, { label: 'database' }, { label: 'queue' }, { label: 'storage' }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>resume the migration where it stopped</div>
+        <div class="hc-line hc-muted">Progress is state, readable by every worker.</div>
+        <div class="hc-fn"><div class="sig">state::get {'{'} scope, key {'}'}</div><div class="doc">Read a durable value</div></div>
+        <div class="hc-line hc-muted">› state::get migration cursor</div>
+        <div class="hc-line hc-ok">cursor = batch_47 · resuming from state, not a file</div>
+        <div class="hc-line hc-muted">worker restarted · re-registered invisibly</div>
+        <div class="hc-line hc-ok">replay complete · nothing lost</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
+
+<!-- 06 · CONTEXT — pi.dev's "context engineering" → live discovery subtracts it. -->
+<section class="hz-section hz-body" id="context" aria-label="Context engineering">
+  <div class="hz-feature">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">context <span class="dot"></span></p>
+      <h2 class="hz-feature-title">context engineering, <span class="accent">subtracted.</span></h2>
+      <div class="hz-feature-body">
+        <p>pi gives you real context engineering: a minimal system prompt, AGENTS.md, skills, compaction. you decide what goes into the window. iii's answer is that the window shouldn't have to hold the system at all.</p>
+        <p>every function and trigger a worker exposes is published to the engine's live registry the moment it connects. the agent doesn't load a skill file describing what's possible — it queries the system and gets the actual, current list, with schemas.</p>
+        <p>one set of primitives, one always-accurate source of truth. an agent can reason about the whole system in a single context window because there's so little of it to hold.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="6% · 14k/1.0M"
+        triggers="1 trigger registered"
+        workers={[{ label: 'http' }, { label: 'state' }, { label: 'database' }, { label: 'queue' }, { label: 'storage' }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>what can this system do?</div>
+        <div class="hc-line hc-muted">No skill file. Query the live registry.</div>
+        <div class="hc-fn"><div class="sig">engine::functions::list {'{'} prefix {'}'}</div><div class="doc">Every function, with its schema</div></div>
+        <div class="hc-line hc-muted">› engine::functions::list</div>
+        <div class="hc-line hc-ok">142 functions · 25 workers · always current</div>
+        <div class="hc-line hc-muted">context holds the task, not the system map</div>
+        <div class="hc-line hc-ok">6% ctx · the registry is the context</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
+
+<!-- 07 · TRIGGERS — pi.dev's "steer or follow up" → work that outlives the turn. -->
+<section class="hz-section hz-body" id="triggers" aria-label="Work that outlives the turn">
+  <div class="hz-feature flip">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">triggers <span class="dot"></span></p>
+      <h2 class="hz-feature-title">steer the turn. <span class="accent">or outlive it.</span></h2>
+      <div class="hz-feature-body">
+        <p>pi lets you steer a running agent or queue a follow-up. useful, while the agent is running. but most backend work doesn't fit in a turn — it runs on a schedule, on a state change, on an event from somewhere else in the system.</p>
+        <p>on iii that's a trigger: the cause primitive, registered engine-side. it fires with no live turn, keeps firing after the turn ends, and is replayed after a restart.</p>
+        <p>so "follow up" stops being a keybinding. it's the system, reacting — a cron that reconciles the ledger nightly, a state trigger that kicks the next stage the moment the last one writes its result. the agent registers it and moves on; the engine keeps it alive.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="15% · 61k/1.0M"
+        triggers="3 triggers registered"
+        workers={[{ label: 'http' }, { label: 'state', on: true }, { label: 'database' }, { label: 'queue', on: true }, { label: 'cron' }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>reconcile the ledger every night</div>
+        <div class="hc-line hc-muted">That doesn't fit in a turn. Register a trigger.</div>
+        <div class="hc-fn"><div class="sig">engine::register_trigger {'{'} cron, fn {'}'}</div><div class="doc">Cause work on a schedule</div></div>
+        <div class="hc-line hc-muted">› register cron "0 2 * * *" → ledger::reconcile</div>
+        <div class="hc-line hc-ok">trigger registered · fires with no live turn</div>
+        <div class="hc-line hc-muted">durable · replays after a restart</div>
+        <div class="hc-line hc-ok">the agent moved on · the engine keeps it alive</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
+
+<!-- 08 · MODES — pi.dev's "four modes" → one protocol. -->
+<section class="hz-section hz-body" id="modes" aria-label="One protocol, every mode">
+  <div class="hz-feature">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">modes <span class="dot"></span></p>
+      <h2 class="hz-feature-title">not four modes. <span class="accent">one protocol.</span></h2>
+      <div class="hz-feature-body">
+        <p>a harness ships modes: interactive for you, print for scripts, RPC for other languages, an SDK to embed. four doors into one process, each with its own contract.</p>
+        <p>iii has one door. the console, a shell script, a Python worker, an HTTP client, another agent — they all do the same thing: trigger a function over the protocol. there's nothing to embed because everything is already embedded in the same runtime.</p>
+        <p>the console you're looking at on this page isn't a special UI. it's one participant, reading the same registry and calling the same functions as everything else.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="21% · 88k/1.0M"
+        triggers="2 triggers registered"
+        workers={[{ label: 'http', on: true }, { label: 'state' }, { label: 'database' }, { label: 'queue' }, { label: 'storage' }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>call this from a script and from the console</div>
+        <div class="hc-line hc-muted">Same call, every door. No embed mode.</div>
+        <div class="hc-line hc-muted">› curl -X POST /fn/payments::charge::record</div>
+        <div class="hc-line hc-muted">› iii.trigger({'{'} function_id: "payments::charge::record" {'}'})</div>
+        <div class="hc-line hc-ok">both resolve to the same function</div>
+        <div class="hc-line hc-muted">console · script · worker · http — one contract</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
+
+<!-- 09 · PRIMITIVES — pi.dev's "primitives, not features" → three primitives. -->
+<section class="hz-section hz-body" id="primitives" aria-label="Three primitives">
+  <div class="hz-feature flip">
+    <div class="hz-feature-copy">
+      <p class="hz-kicker">primitives <span class="dot"></span></p>
+      <h2 class="hz-feature-title">primitives, <span class="accent">not features.</span></h2>
+      <div class="hz-feature-body">
+        <p>pi's bet is that a minimal core plus extensions beats a feature list. iii makes the same bet about the whole system: three primitives — <strong>worker</strong>, <strong>trigger</strong>, <strong>function</strong> — compose into every capability you'll ever need.</p>
+        <p>something hosts work, something causes it, something does it. queues, cron, streaming, sandboxing, observability, agents, business logic — each is a pattern on those three, not a new subsystem to learn, configure, and monitor.</p>
+        <p>sub-agents, plan mode, permission gates? not features to wait for. they're workers and triggers you add — as easy to install as a library, live the moment they connect.</p>
+      </div>
+    </div>
+    <div class="hz-feature-viz">
+      <HarnessConsole
+        status="4% · 9k/1.0M"
+        triggers="1 trigger registered"
+        workers={[{ label: 'worker' }, { label: 'trigger' }, { label: 'function' }]}
+      >
+        <div class="hc-line hc-prompt"><span class="ghost">$ </span>three primitives. every capability.</div>
+        <div class="hc-fn"><div class="sig">worker</div><div class="doc">something hosts work</div></div>
+        <div class="hc-fn"><div class="sig">trigger</div><div class="doc">something causes it</div></div>
+        <div class="hc-fn"><div class="sig">function</div><div class="doc">something does it</div></div>
+        <div class="hc-line hc-muted">queue · cron · stream · sandbox · agent</div>
+        <div class="hc-line hc-ok">each a pattern on the same three</div>
+        <div class="hc-line hc-muted">sub-agents and plan mode are workers you add</div>
+      </HarnessConsole>
+    </div>
+  </div>
+</section>
