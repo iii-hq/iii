@@ -1125,7 +1125,13 @@ class III:
             function_id=trigger.function_id,
             config=trigger.config,
             metadata=trigger.metadata,
-            namespace=trigger.namespace,
+            # Unset means this worker's namespace, not the engine's default. A
+            # trigger names a function, and the function a worker registers
+            # lands in the worker's namespace, so defaulting anywhere else
+            # registers a trigger that fires and resolves nothing. Naming
+            # another namespace, ``default`` included, stays a matter of saying
+            # so.
+            namespace=trigger.namespace or self._worker_namespace(),
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)
@@ -1375,7 +1381,11 @@ class III:
         payload = req.get("payload")
         action = req.get("action")
         metadata = req.get("metadata")
-        namespace = req.get("namespace")
+        # Same rule as ``register_trigger``: a call with no namespace stays in
+        # the caller's. Reaching a worker that lives elsewhere -- an engine
+        # builtin in ``default``, a neighbour in another project -- is done by
+        # naming that namespace.
+        namespace = req.get("namespace") or self._worker_namespace()
 
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 

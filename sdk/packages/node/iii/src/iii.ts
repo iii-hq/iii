@@ -340,6 +340,16 @@ class Sdk implements IIIClient {
       ...trigger,
       id,
       message_type: MessageType.RegisterTrigger,
+      // Unset means this worker's namespace, not the engine's default. A
+      // trigger names a function, and the function a worker registers lands in
+      // the worker's namespace, so defaulting anywhere else registers a trigger
+      // that fires and resolves nothing. Naming another namespace, `default`
+      // included, stays a matter of saying so.
+      ...(trigger.namespace !== undefined
+        ? { namespace: trigger.namespace }
+        : this.namespace !== undefined
+          ? { namespace: this.namespace }
+          : {}),
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
@@ -559,7 +569,12 @@ class Sdk implements IIIClient {
   trigger = async <TInput = unknown, TOutput = any>(
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs, metadata, namespace } = request
+    const { function_id, payload, action, timeoutMs, metadata } = request
+    // Same rule as `registerTrigger`: a call with no namespace stays in the
+    // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
+    // `default`, a neighbour in another project -- is done by naming that
+    // namespace.
+    const namespace = request.namespace ?? this.namespace
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     // Void is fire-and-forget, no invocation_id, no response
@@ -573,7 +588,7 @@ class Sdk implements IIIClient {
         baggage,
         action,
         metadata,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
       return undefined as TOutput
@@ -620,7 +635,7 @@ class Sdk implements IIIClient {
         baggage,
         action,
         metadata,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
     })

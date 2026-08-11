@@ -1249,7 +1249,13 @@ impl IIIClient {
             function_id: input.function_id,
             config: input.config,
             metadata: input.metadata,
-            namespace: input.namespace,
+            // Unset means this worker's namespace, not the engine's default.
+            // A trigger names a function, and the function a worker registers
+            // lands in the worker's namespace, so defaulting anywhere else
+            // registers a trigger that fires and resolves nothing. Naming
+            // another namespace, `default` included, stays a matter of saying
+            // so.
+            namespace: input.namespace.or_else(|| self.namespace()),
         };
 
         self.inner
@@ -1333,7 +1339,11 @@ impl IIIClient {
         let request = request.into();
         let req = request.request;
         let metadata = request.metadata;
-        let namespace = request.namespace;
+        // Same rule as `register_trigger`: a call with no namespace stays in
+        // the caller's. Reaching a worker that lives elsewhere -- an engine
+        // builtin in `default`, a neighbour in another project -- is done by
+        // naming that namespace.
+        let namespace = request.namespace.or_else(|| self.namespace());
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response
