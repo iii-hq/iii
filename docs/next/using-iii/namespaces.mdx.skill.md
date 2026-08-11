@@ -109,6 +109,12 @@ the call resolves in `default`.
 </Info>
 
 <Tabs>
+  <Tab title="CLI">
+    ```bash
+    iii trigger --namespace orders state::get key=cart
+    ```
+
+  </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
     const result = await worker.trigger({
@@ -150,20 +156,14 @@ the call resolves in `default`.
 
 A miss returns `function_not_found`. The error lists other namespaces where the function id exists.
 
-<Note>
-  `iii trigger` calls functions in `default` unless you pass `--namespace <NS>`:
-
-```bash
-iii trigger --namespace orders state::get
-```
-
-</Note>
-
 ## Point a trigger at a namespaced function
 
-The typed helpers returned by `registerTriggerType` set the target to the worker namespace. The
-low-level `registerTrigger` API requires an explicit target namespace. If you omit it, the trigger
-calls the function in `default`.
+A trigger binding carries its own target namespace. `worker.registerTrigger` does not inherit the
+namespace of the worker that calls it: a binding with no `namespace` field targets `default`. A
+worker in `orders` that binds without the field gets a trigger that fires into `default` and never
+reaches its own function.
+
+Set `namespace` on each binding for a namespaced function:
 
 ```typescript
 worker.registerTrigger({
@@ -173,6 +173,12 @@ worker.registerTrigger({
   namespace: "orders",
 });
 ```
+
+<Note>
+  The typed helpers from
+  [`registerTriggerType`](../creating-workers/triggers#declaring-a-trigger-type) set the target to
+  the namespace of the worker, so a binding through a helper needs no `namespace` field.
+</Note>
 
 ## Inspect namespaces
 

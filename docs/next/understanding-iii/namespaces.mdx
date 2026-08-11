@@ -1,8 +1,8 @@
 ---
 title: "Namespaces"
 description:
-  "iii routes functions by namespace so multiple tenants, projects, and teams can use the same
-  worker and function names on one engine."
+  "iii routes functions by namespace so multiple tenants, agents, projects, and teams can isolate
+  their work from each other when they're using the same workers."
 owner: "devrel"
 type: "explanation"
 ---
@@ -10,8 +10,8 @@ type: "explanation"
 ## What a namespace is
 
 A namespace is a routing value that the engine stores with a function id and a worker name. It is
-not part of either value. `state::get` has the same function id in `default`, `orders`, and
-`analytics`.
+not part of either value. For example `state::get` can exist as the same function id in `default`,
+`orders`, and `analytics` namespaces.
 
 The engine uses these registry keys:
 
