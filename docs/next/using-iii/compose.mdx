@@ -334,13 +334,13 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | --------------------------- | ---------------------------------------------------- |
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
 | `<ns>/<project>/config/`    | Resolved configuration files.                        |
-| `<ns>/<project>/logs/`      | Each container's own output.                         |
+| `<ns>/<project>/logs/`      | What each container printed while starting.          |
 | `packages/`                 | Installed `package://` binaries, shared by projects. |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:
 readable enough to recognise, hashed enough that two projects in directories of the same name stay
 apart. Because it is derived, it cannot be guessed. `compose::status` reports it as `state_dir`,
-which is how a container's own output is located:
+which is how a container's startup output is located:
 
 ```bash
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
@@ -352,6 +352,12 @@ ls /home/you/.iii/compose/dev/shop-3f2a1b9c/logs/
   For why this is one place per machine rather than a directory beside each compose file, see
   [Understanding iii / Compose](../understanding-iii/compose).
 </Note>
+
+Capture stops when a container becomes ready. Up to that point a worker has no connection and its
+own output is the only account of itself, which is what the file keeps; once the engine can hear it,
+the worker's logging is the record and compose keeps no second copy. So a container that fails at
+boot leaves its reason on disk, and one that runs for a month does not leave a file that grew all
+month.
 
 A clean shutdown clears the state file. After an unclean exit, the daemon compares each record
 against the live process: a match is adopted, a dead process is recorded `failed`, and a live pid it

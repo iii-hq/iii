@@ -359,9 +359,9 @@ async fn start_one(
                 message: err.to_string(),
             }
         })?;
-    // Tag the child's output before waiting on readiness: whatever it prints
-    // while starting is exactly what an operator needs when it does not.
-    report::capture_output(key, output.stdout, output.stderr, ctx.log_dir);
+    // Capture before waiting on readiness: whatever the child prints while
+    // starting is exactly what an operator needs when it does not.
+    let capture = report::capture_output(key, output.stdout, output.stderr, ctx.log_dir);
 
     let readiness = ctx
         .engine
@@ -382,6 +382,11 @@ async fn start_one(
         fire_post_run(&spawn_ctx, container);
         return Err(error);
     }
+
+    // Registered: the engine can hear it now, so its own logging is the record
+    // and compose stops keeping a second one. What stays on disk is the boot,
+    // which is the part the engine never saw.
+    capture.stop();
 
     let record = ChildRecord::from_supervised(&child, ChildStatus::Ready);
     children.insert(key.to_string(), child);
