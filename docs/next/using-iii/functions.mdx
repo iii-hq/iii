@@ -162,8 +162,8 @@ globally: `state::get` can be registered once in `default`, once in `orders`, an
 `analytics`. Set `namespace` on the trigger invocation to pick one.
 
 Resolution is strict. A call that names `orders` resolves there and nowhere else, and a call that
-names none resolves in `default` regardless of which namespace the caller itself registered in. A
-miss returns `function_not_found` naming the namespaces where the id does exist.
+names none resolves in the namespace of the calling worker. A miss returns `function_not_found`
+naming the namespaces where the id does exist.
 
 <Note>
   `iii trigger` reaches `default` unless you pass `--namespace <NS>`. For calling across namespaces

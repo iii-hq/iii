@@ -312,13 +312,15 @@ connection that declares none lands in `default`.
 
 ### Resolution
 
-Invocation routing is strict. It never falls back to another namespace and the caller's own namespace
-never influences it:
+Invocation routing is strict. It never falls back to another namespace:
 
 | `InvokeFunction.namespace` | Resolves in           |
 | -------------------------- | --------------------- |
 | absent / `null`            | `default` only        |
 | `"orders"`                 | `orders` only         |
+
+The SDKs fill the field from the worker namespace when the caller sets none on the invocation, so the
+frame carries the worker's own namespace, or `default` when the worker declared none.
 
 A miss returns `function_not_found` naming the namespaces where the id does exist.
 

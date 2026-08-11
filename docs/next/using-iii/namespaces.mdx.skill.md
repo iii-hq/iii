@@ -9,11 +9,6 @@ on one engine.
 
 ## Set a worker namespace
 
-<Warning>
-  A worker's namespace is not inherited into `worker.trigger()` calls. Every invocation names its
-  target namespace, or resolves in `default`.
-</Warning>
-
 The SDK selects the worker namespace in this order:
 
 | Priority | Source                                                  |
@@ -26,22 +21,31 @@ Use a non-empty string for a namespace.
 
 {/* TODO: Add this back when compose is released */}
 
-### Managed workers
+{/* ### Managed workers */}
 
-Set `III_NAMESPACE` in the compose service that deploys the worker. This keeps the reusable worker
-package independent from one tenant or project.
+{/* Set `III_NAMESPACE` in the compose service that deploys the worker. This keeps the reusable worker */}
 
-```yaml compose.yaml
-services:
-  state-orders:
-    image: example/state-worker:latest
-    environment:
-      III_URL: ws://iii:49134
-      III_NAMESPACE: orders
-```
+{/* package independent from one tenant or project. */}
 
-The SDK reads `III_NAMESPACE` when the worker does not pass an explicit option. Do not set a
-per-worker `namespace:` key in `config.yaml`; that key does not exist.
+{/* ```yaml compose.yaml */}
+
+{/* services: */}
+
+{/* state-orders: */}
+
+{/* image: example/state-worker:latest */}
+
+{/* environment: */}
+
+{/* III_URL: ws://iii:49134 */}
+
+{/* III_NAMESPACE: orders */}
+
+{/* ``` */}
+
+{/* The SDK reads `III_NAMESPACE` when the worker does not pass an explicit option. Do not set a */}
+
+{/* per-worker `namespace:` key in `config.yaml`; that key does not exist. */}
 
 ### SDK option
 
@@ -105,13 +109,9 @@ trusted runtime configuration.
 
 ## Trigger a function in a namespace
 
-Set `namespace` on the invocation. The call resolves only in that namespace. If you omit the field,
-the call resolves in `default`.
-
-<Info>
-  Namespace references are explicit. The triggering worker's own namespace is never used to derive
-  the target namespace.
-</Info>
+Set `namespace` on the invocation to call a function in another namespace. The call resolves only in
+that namespace. An invocation with no `namespace` field resolves in the namespace of the calling
+worker.
 
 <Tabs>
   <Tab title="CLI">
