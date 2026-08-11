@@ -648,6 +648,12 @@ class Sdk implements IIIClient {
 
     this.trigger({
       function_id: EngineFunctions.REGISTER_WORKER,
+      // Named, because `trigger` now defaults to this worker's namespace and
+      // this one call must not follow it: `engine::workers::register` is
+      // compiled into the engine and served in `default` only. Routed into the
+      // worker's own namespace, the announcement reaches nothing and the worker
+      // never registers -- every function it offers then appears missing.
+      namespace: 'default',
       payload: {
         runtime: 'node',
         version: SDK_VERSION,
