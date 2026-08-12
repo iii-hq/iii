@@ -189,8 +189,36 @@ class III:
 
     def _worker_namespace(self) -> str | None:
         """Effective worker namespace: explicit option, then ``III_NAMESPACE`` env,
-        else ``None`` (the engine applies its ``default`` namespace)."""
-        return self._options.namespace or os.environ.get("III_NAMESPACE") or None
+        else ``None`` (the engine applies its ``default`` namespace).
+
+        A declared-but-blank namespace raises rather than reading as "no
+        namespace". The two mean opposite things: absent asks for the engine's
+        default, blank names a namespace and gives nothing to name it with.
+        Read as absent, the worker registers in ``default``, and every call and
+        trigger it makes now follows it there -- a whole project quietly
+        serving from the wrong namespace, and the one thing an operator cannot
+        see by reading the declaration.
+
+        Raises:
+            ValueError: when either source is present and holds only whitespace.
+        """
+        declared = self._options.namespace
+        if declared is not None:
+            if not declared.strip():
+                raise ValueError(
+                    f"namespace is empty: InitOptions.namespace was set to {declared!r}. "
+                    "Give it a name, or leave it unset to register in `default`."
+                )
+            return declared
+
+        # III_NAMESPACE is left alone when blank. ``FOO=`` is how a shell says
+        # "not set" -- ``III_NAMESPACE=${NS}`` with NS unset produces exactly
+        # that -- so reading it as absent is what the caller meant, and absent
+        # is a namespace a worker may legitimately have none of. Only the
+        # option is a mistake: nobody writes a namespace parameter and passes
+        # nothing on purpose.
+        managed = os.environ.get("III_NAMESPACE")
+        return managed if managed and managed.strip() else None
 
     def __init__(self, address: str, options: InitOptions | None = None) -> None:
         self._address = address
@@ -1125,7 +1153,13 @@ class III:
             function_id=trigger.function_id,
             config=trigger.config,
             metadata=trigger.metadata,
-            namespace=trigger.namespace,
+            # Unset means this worker's namespace, not the engine's default. A
+            # trigger names a function, and the function a worker registers
+            # lands in the worker's namespace, so defaulting anywhere else
+            # registers a trigger that fires and resolves nothing. Naming
+            # another namespace, ``default`` included, stays a matter of saying
+            # so.
+            namespace=trigger.namespace or self._worker_namespace(),
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)
@@ -1375,7 +1409,11 @@ class III:
         payload = req.get("payload")
         action = req.get("action")
         metadata = req.get("metadata")
-        namespace = req.get("namespace")
+        # Same rule as ``register_trigger``: a call with no namespace stays in
+        # the caller's. Reaching a worker that lives elsewhere -- an engine
+        # builtin in ``default``, a neighbour in another project -- is done by
+        # naming that namespace.
+        namespace = req.get("namespace") or self._worker_namespace()
 
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 
@@ -1484,14 +1522,10 @@ class III:
             or f"{platform.node()}:{os.getpid()}"
         )
 
-        # III_NAMESPACE mirrors III_WORKER_NAME precedence: an explicit option
-        # wins, then the managed env var, else None (the engine applies its
-        # `default` namespace when absent).
-        namespace = (
-            self._options.namespace
-            or os.environ.get("III_NAMESPACE")
-            or None
-        )
+        # One resolver, so the blank-namespace check cannot be bypassed by the
+        # path that builds the metadata: a second copy of the precedence rule
+        # is a second place for it to drift.
+        namespace = self._worker_namespace()
 
         telemetry_opts = self._options.telemetry
         language = (

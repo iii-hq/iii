@@ -330,12 +330,42 @@ impl Default for WorkerMetadata {
 /// Resolve the effective worker namespace: an explicit `InitOptions.namespace`
 /// wins, then the `III_NAMESPACE` env var, then `None` (the engine applies its
 /// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+/// `namespace` option > `III_NAMESPACE` > `None` (the engine then applies its
+/// `default` namespace).
+///
+/// A declared-but-blank namespace is refused rather than read as "no
+/// namespace". The two mean opposite things: absent asks for the engine's
+/// default, blank names a namespace and gives nothing to name it with. Read as
+/// absent, the worker registers in `default`, and every call and trigger it
+/// makes now follows it there — a whole project quietly serving from the wrong
+/// namespace, and the one thing an operator cannot see by reading the
+/// declaration.
+///
+/// # Panics
+///
+/// When either source is present and holds only whitespace. This runs before
+/// any connection, so it fails the worker at startup the way `iii compose`
+/// refuses `--ns ""`, rather than producing a client that serves in a place
+/// nobody asked for.
 pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
-    explicit.filter(|s| !s.is_empty()).or_else(|| {
-        std::env::var("III_NAMESPACE")
-            .ok()
-            .filter(|s| !s.is_empty())
-    })
+    if let Some(declared) = explicit {
+        if declared.trim().is_empty() {
+            panic!(
+                "namespace is empty: `InitOptions.namespace` was set to {declared:?}. \
+                 Give it a name, or leave it unset to register in `default`."
+            );
+        }
+        return Some(declared);
+    }
+
+    // III_NAMESPACE is left alone when blank. `FOO=` is how a shell says "not
+    // set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly that -- so
+    // reading it as absent is what the caller meant, and absent is a namespace
+    // a worker may legitimately have none of. Only the option is a mistake:
+    // nobody writes a namespace parameter and passes nothing on purpose.
+    std::env::var("III_NAMESPACE")
+        .ok()
+        .filter(|managed| !managed.trim().is_empty())
 }
 
 /// Returns a project identifier for telemetry, derived from the current
@@ -1249,7 +1279,13 @@ impl IIIClient {
             function_id: input.function_id,
             config: input.config,
             metadata: input.metadata,
-            namespace: input.namespace,
+            // Unset means this worker's namespace, not the engine's default.
+            // A trigger names a function, and the function a worker registers
+            // lands in the worker's namespace, so defaulting anywhere else
+            // registers a trigger that fires and resolves nothing. Naming
+            // another namespace, `default` included, stays a matter of saying
+            // so.
+            namespace: input.namespace.or_else(|| self.namespace()),
         };
 
         self.inner
@@ -1333,7 +1369,11 @@ impl IIIClient {
         let request = request.into();
         let req = request.request;
         let metadata = request.metadata;
-        let namespace = request.namespace;
+        // Same rule as `register_trigger`: a call with no namespace stays in
+        // the caller's. Reaching a worker that lives elsewhere -- an engine
+        // builtin in `default`, a neighbour in another project -- is done by
+        // naming that namespace.
+        let namespace = request.namespace.or_else(|| self.namespace());
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response

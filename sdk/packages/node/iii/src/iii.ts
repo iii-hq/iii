@@ -122,9 +122,28 @@ function resolveNamespace(optionNamespace?: string): string | undefined {
   // at spawn), mirroring III_WORKER_NAME. An explicit option wins; otherwise
   // the env var provides the managed identity. Absent in both means undefined
   // -- the engine applies its `default` namespace when none is on the wire.
-  if (optionNamespace) {
+  //
+  // A declared-but-blank namespace throws rather than reading as "no
+  // namespace". The two mean opposite things: absent asks for the engine's
+  // default, blank names a namespace and gives nothing to name it with. Read
+  // as absent, the worker registers in `default`, and every call and trigger it
+  // makes now follows it there -- a whole project quietly serving from the
+  // wrong namespace, and the one thing an operator cannot see by reading the
+  // declaration.
+  if (optionNamespace !== undefined) {
+    if (optionNamespace.trim() === '') {
+      throw new Error(
+        `namespace is empty: options.namespace was set to ${JSON.stringify(optionNamespace)}. ` +
+          'Give it a name, or leave it unset to register in `default`.',
+      )
+    }
     return optionNamespace
   }
+  // III_NAMESPACE is left alone when blank. `FOO=` is how a shell says "not
+  // set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly that -- so
+  // reading it as absent is what the caller meant, and absent is a namespace a
+  // worker may legitimately have none of. Only the option is a mistake: nobody
+  // writes a namespace parameter and passes nothing on purpose.
   const managedNamespace = process.env.III_NAMESPACE
   if (managedNamespace) {
     return managedNamespace
@@ -340,6 +359,16 @@ class Sdk implements IIIClient {
       ...trigger,
       id,
       message_type: MessageType.RegisterTrigger,
+      // Unset means this worker's namespace, not the engine's default. A
+      // trigger names a function, and the function a worker registers lands in
+      // the worker's namespace, so defaulting anywhere else registers a trigger
+      // that fires and resolves nothing. Naming another namespace, `default`
+      // included, stays a matter of saying so.
+      ...(trigger.namespace !== undefined
+        ? { namespace: trigger.namespace }
+        : this.namespace !== undefined
+          ? { namespace: this.namespace }
+          : {}),
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
@@ -559,7 +588,12 @@ class Sdk implements IIIClient {
   trigger = async <TInput = unknown, TOutput = any>(
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs, metadata, namespace } = request
+    const { function_id, payload, action, timeoutMs, metadata } = request
+    // Same rule as `registerTrigger`: a call with no namespace stays in the
+    // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
+    // `default`, a neighbour in another project -- is done by naming that
+    // namespace.
+    const namespace = request.namespace ?? this.namespace
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     // Void is fire-and-forget, no invocation_id, no response
@@ -573,7 +607,7 @@ class Sdk implements IIIClient {
         baggage,
         action,
         metadata,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
       return undefined as TOutput
@@ -620,7 +654,7 @@ class Sdk implements IIIClient {
         baggage,
         action,
         metadata,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
     })
@@ -633,6 +667,12 @@ class Sdk implements IIIClient {
 
     this.trigger({
       function_id: EngineFunctions.REGISTER_WORKER,
+      // Named, because `trigger` now defaults to this worker's namespace and
+      // this one call must not follow it: `engine::workers::register` is
+      // compiled into the engine and served in `default` only. Routed into the
+      // worker's own namespace, the announcement reaches nothing and the worker
+      // never registers -- every function it offers then appears missing.
+      namespace: 'default',
       payload: {
         runtime: 'node',
         version: SDK_VERSION,
