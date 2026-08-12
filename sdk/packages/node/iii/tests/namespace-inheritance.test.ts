@@ -142,9 +142,14 @@ describe('namespace inheritance', () => {
       )
     })
 
-    it('rejects a blank III_NAMESPACE', () => {
+    // `FOO=` is how a shell says "not set", so a blank env var is read as
+    // absent rather than refused. Absent is a namespace a worker may
+    // legitimately have none of; an option written and left empty is not.
+    it('leaves a blank III_NAMESPACE alone', () => {
       vi.stubEnv('III_NAMESPACE', '')
-      expect(() => registerWorker(url, { workerName: 'tester' })).toThrow(/III_NAMESPACE/)
+      expect(() => {
+        sdk = registerWorker(url, { workerName: 'tester', otel: { enabled: false } })
+      }).not.toThrow()
     })
 
     it('still accepts an unset III_NAMESPACE', () => {

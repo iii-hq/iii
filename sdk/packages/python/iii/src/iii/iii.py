@@ -211,15 +211,14 @@ class III:
                 )
             return declared
 
+        # III_NAMESPACE is left alone when blank. ``FOO=`` is how a shell says
+        # "not set" -- ``III_NAMESPACE=${NS}`` with NS unset produces exactly
+        # that -- so reading it as absent is what the caller meant, and absent
+        # is a namespace a worker may legitimately have none of. Only the
+        # option is a mistake: nobody writes a namespace parameter and passes
+        # nothing on purpose.
         managed = os.environ.get("III_NAMESPACE")
-        if managed is not None:
-            if not managed.strip():
-                raise ValueError(
-                    f"namespace is empty: III_NAMESPACE is set to {managed!r}. "
-                    "Give it a name, or unset it to register in `default`."
-                )
-            return managed
-        return None
+        return managed if managed and managed.strip() else None
 
     def __init__(self, address: str, options: InitOptions | None = None) -> None:
         self._address = address

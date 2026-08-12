@@ -34,11 +34,12 @@ def test_a_blank_option_is_refused(blank: str) -> None:
         client._worker_namespace()
 
 
-def test_a_blank_env_var_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_blank_env_var_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``FOO=`` is how a shell says "not set", so a blank env var reads as absent
+    # rather than being refused. Absent is a namespace a worker may
+    # legitimately have none of; an option written and left empty is not.
     monkeypatch.setenv("III_NAMESPACE", "")
-    client = _client(None)
-    with pytest.raises(ValueError, match="III_NAMESPACE"):
-        client._worker_namespace()
+    assert _client(None)._worker_namespace() is None
 
 
 def test_an_unset_env_var_is_still_no_namespace(monkeypatch: pytest.MonkeyPatch) -> None:

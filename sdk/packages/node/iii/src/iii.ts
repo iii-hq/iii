@@ -139,14 +139,13 @@ function resolveNamespace(optionNamespace?: string): string | undefined {
     }
     return optionNamespace
   }
+  // III_NAMESPACE is left alone when blank. `FOO=` is how a shell says "not
+  // set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly that -- so
+  // reading it as absent is what the caller meant, and absent is a namespace a
+  // worker may legitimately have none of. Only the option is a mistake: nobody
+  // writes a namespace parameter and passes nothing on purpose.
   const managedNamespace = process.env.III_NAMESPACE
-  if (managedNamespace !== undefined) {
-    if (managedNamespace.trim() === '') {
-      throw new Error(
-        `namespace is empty: III_NAMESPACE is set to ${JSON.stringify(managedNamespace)}. ` +
-          'Give it a name, or unset it to register in `default`.',
-      )
-    }
+  if (managedNamespace) {
     return managedNamespace
   }
   return undefined

@@ -358,14 +358,14 @@ pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
         return Some(declared);
     }
 
-    match std::env::var("III_NAMESPACE") {
-        Ok(managed) if managed.trim().is_empty() => panic!(
-            "namespace is empty: III_NAMESPACE is set to {managed:?}. \
-             Give it a name, or unset it to register in `default`."
-        ),
-        Ok(managed) => Some(managed),
-        Err(_) => None,
-    }
+    // III_NAMESPACE is left alone when blank. `FOO=` is how a shell says "not
+    // set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly that -- so
+    // reading it as absent is what the caller meant, and absent is a namespace
+    // a worker may legitimately have none of. Only the option is a mistake:
+    // nobody writes a namespace parameter and passes nothing on purpose.
+    std::env::var("III_NAMESPACE")
+        .ok()
+        .filter(|managed| !managed.trim().is_empty())
 }
 
 /// Returns a project identifier for telemetry, derived from the current
