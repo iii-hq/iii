@@ -132,7 +132,10 @@ async fn start_daemon(port: u16) -> Arc<Daemon> {
 /// machines: distinct ids coexist, and the same id twice is the collision that
 /// must be refused.
 async fn start_daemon_named(port: u16, daemon_namespace: &str) -> Arc<Daemon> {
-    let daemon = Daemon::start(format!("ws://127.0.0.1:{port}"), daemon_namespace.to_string());
+    let daemon = Daemon::start(
+        format!("ws://127.0.0.1:{port}"),
+        daemon_namespace.to_string(),
+    );
     remote::register(&daemon);
     // The SDK flushes registrations after the namespace announce; give the
     // round trip a moment before the first call.
@@ -372,8 +375,8 @@ async fn a_child_that_never_registers_times_out_and_rolls_back() {
         "compose::status",
         json!({ "file": file.to_str().unwrap() }),
     )
-        .await
-        .expect("status after a failed up");
+    .await
+    .expect("status after a failed up");
     for container in status["containers"].as_array().unwrap() {
         assert_ne!(
             container["state"], "ready",
