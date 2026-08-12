@@ -110,9 +110,9 @@ trusted runtime configuration.
 
 ## Trigger a function in a namespace
 
-Set `namespace` on the invocation to call a function in another namespace. The call resolves only in
-that namespace. An invocation with no `namespace` field resolves in the namespace of the calling
-worker.
+Set `namespace` on the invocation. The call resolves only in that namespace. Omit the field and the
+call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker
+with no namespace of its own resolves in `default`, as before.
 
 <Tabs>
   <Tab title="CLI">
@@ -162,20 +162,31 @@ worker.
 
 A miss returns `function_not_found`. The error lists other namespaces where the function id exists.
 
+<Note>
+  `iii trigger --namespace <NS>` calls a function in that namespace. Without the flag it resolves in
+  `default`: a CLI invocation has no namespace of its own to inherit.
+</Note>
+
 ## Point a trigger at a namespaced function
 
-A trigger binding targets the namespace of the worker that registers it. A worker in `orders` that
-binds a function gets a trigger that resolves that function in `orders`, so most bindings need no
-`namespace` field.
-
-Set `namespace` on the binding only to point a trigger at a function in another namespace:
+Both the typed helpers returned by `registerTriggerType` and the low-level `registerTrigger` bind
+the target to the worker's namespace. Set `namespace` to bind it elsewhere, which is what a trigger
+pointing at an engine builtin needs, since those exist only in `default`.
 
 ```typescript
+// Bound to this worker's namespace.
 worker.registerTrigger({
   type: "http",
   function_id: "state::get",
   config: { api_path: "/orders/state", http_method: "GET" },
-  namespace: "analytics", // a function outside this worker's namespace
+});
+
+// Bound to `default`, where the engine's own functions live.
+worker.registerTrigger({
+  type: "cron",
+  function_id: "engine::workers::list",
+  config: { schedule: "0 * * * *" },
+  namespace: "default",
 });
 ```
 
