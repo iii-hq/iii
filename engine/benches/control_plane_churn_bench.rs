@@ -131,6 +131,9 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
                                     worker_id: None,
                                     metadata: None,
                                     namespace: "default".to_string(),
+                                    trigger_namespace: None,
+                                    home_namespace: iii::protocol::default_namespace(),
+                                    provider_namespace: iii::protocol::default_namespace(),
                                 })
                                 .await
                                 .expect("register trigger");

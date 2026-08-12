@@ -937,12 +937,14 @@ async fn workers_info_scopes_trigger_types_and_reports_namespace_by_namespace() 
         engine
             .trigger_registry
             .trigger_types
-            .get("tt-orders")
+            // A trigger type is filed under the namespace of the connection
+            // that registered it, so each worker's provider is its own.
+            .get(&iii::trigger::type_key("orders", "tt-orders"))
             .is_some()
             && engine
                 .trigger_registry
                 .trigger_types
-                .get("tt-analytics")
+                .get(&iii::trigger::type_key("analytics", "tt-analytics"))
                 .is_some()
     })
     .await;
@@ -1035,12 +1037,15 @@ async fn workers_info_excludes_connectionless_trigger_types_from_a_namespaced_ws
         engine
             .trigger_registry
             .trigger_types
-            .get("tt-own")
+            // The WS worker's own type lands in its connection's namespace;
+            // the connectionless one stays in `default`, where every
+            // in-process provider registers.
+            .get(&iii::trigger::type_key("orders", "tt-own"))
             .is_some()
             && engine
                 .trigger_registry
                 .trigger_types
-                .get("internalonly")
+                .get(&iii::trigger::type_key("default", "internalonly"))
                 .is_some()
     })
     .await;

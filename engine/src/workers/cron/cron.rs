@@ -560,7 +560,15 @@ mod tests {
         let (engine, module) = setup_cron_module();
         let result = module.initialize().await;
         assert!(result.is_ok());
-        assert!(engine.trigger_registry.trigger_types.contains_key("cron"));
+        assert!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "cron"
+                ))
+        );
     }
 
     // =========================================================================
@@ -607,6 +615,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -625,6 +636,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_err());
@@ -647,6 +661,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_err());
@@ -666,6 +683,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -686,6 +706,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let _ = module.register_trigger(trigger.clone()).await;
 
@@ -705,6 +728,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_err());
@@ -807,6 +833,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         // Register
@@ -838,6 +867,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let result = module.register_trigger(trigger.clone()).await;
@@ -926,6 +958,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             };
             module
                 .register_trigger(trigger)

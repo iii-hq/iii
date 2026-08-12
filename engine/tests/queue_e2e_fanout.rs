@@ -88,6 +88,9 @@ async fn setup_engine_with_topic_triggers(function_ids: &[&str], topic: &str) ->
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: iii::protocol::default_namespace(),
+                provider_namespace: iii::protocol::default_namespace(),
             })
             .await
             .expect("register trigger should succeed");
@@ -167,6 +170,9 @@ async fn queue_subscriber_invokes_target_and_condition_in_registering_namespace(
             worker_id: None,
             metadata: None,
             namespace: "orders".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register trigger should succeed");
@@ -247,6 +253,9 @@ async fn fanout_replicas_compete_within_function() {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: iii::protocol::default_namespace(),
+                provider_namespace: iii::protocol::default_namespace(),
             })
             .await
             .expect("register trigger should succeed");
@@ -295,6 +304,9 @@ async fn fanout_mixed_functions_and_replicas() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register trigger should succeed");
@@ -310,6 +322,9 @@ async fn fanout_mixed_functions_and_replicas() {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: iii::protocol::default_namespace(),
+                provider_namespace: iii::protocol::default_namespace(),
             })
             .await
             .expect("register trigger should succeed");
@@ -391,6 +406,9 @@ async fn fanout_unsubscribe_stops_delivery() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register trigger A should succeed");
@@ -405,6 +423,9 @@ async fn fanout_unsubscribe_stops_delivery() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register trigger B should succeed");
@@ -511,6 +532,9 @@ async fn fanout_with_condition_function() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register always trigger should succeed");
@@ -528,6 +552,9 @@ async fn fanout_with_condition_function() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register conditional trigger should succeed");

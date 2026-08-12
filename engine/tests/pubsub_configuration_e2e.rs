@@ -187,6 +187,9 @@ async fn subscribe(harness: &Harness, id: &str, topic: &str, function_id: &str) 
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register subscribe trigger");

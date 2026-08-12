@@ -431,7 +431,7 @@ impl QueueKvStore {
             .entry(key.to_string())
             .or_insert_with(BTreeMap::new);
 
-        for (_, members) in set.iter_mut() {
+        for members in set.values_mut() {
             members.remove(&member);
         }
 

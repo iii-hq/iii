@@ -1,0 +1,4 @@
+# iii engine configuration.
+# Add workers with `iii worker add <name>`; a running engine reloads on save.
+# Configure workers at runtime through the configuration worker (configuration::set).
+workers: []

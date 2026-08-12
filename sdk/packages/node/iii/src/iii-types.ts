@@ -34,6 +34,12 @@ export type RegisterTriggerTypeMessage = {
   id: string
   /** Human-readable description of what this trigger type does. */
   description: string
+  /**
+   * Namespace this provider serves. Omit to let the engine use this
+   * connection's own, which is what a worker providing a trigger type for its
+   * own project wants.
+   */
+  namespace?: string
 }
 
 export type UnregisterTriggerTypeMessage = {
@@ -79,6 +85,16 @@ export type RegisterTriggerMessage = {
    * default namespace, independent of this connection's namespace.
    */
   namespace?: string
+  /**
+   * Namespace to find the trigger type's provider in.
+   *
+   * Omitting it is not the same as `'default'`: it asks the engine to resolve,
+   * taking this worker's namespace first and the engine's own second. That is
+   * what lets a project ship its own provider for a type id the engine also
+   * provides, while a worker that has not been migrated keeps reaching the
+   * engine's without saying so. Naming one is strict.
+   */
+  trigger_namespace?: string
 }
 
 export type RegisterFunctionFormat = {

@@ -1,0 +1,13 @@
+id: pi
+name: Pi
+description: 'Pi coding agent worker: per-turn defaults (model, thinking level, working directory, tool allowlist, agent config dir), the agent::events / pi::events stream names, and whether to inject the iii runtime context.'
+value:
+  defaults:
+    agent_dir: ''
+    cwd: ''
+    model: ''
+    thinking_level: medium
+    tools: []
+  events_stream: agent::events
+  iii_context: true
+  raw_events_stream: pi::events

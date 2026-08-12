@@ -165,6 +165,9 @@ fn cron_trigger(id: &str, function_id: &str, expression: &str) -> Trigger {
         worker_id: None,
         metadata: None,
         namespace: "default".to_string(),
+        trigger_namespace: None,
+        home_namespace: iii::protocol::default_namespace(),
+        provider_namespace: iii::protocol::default_namespace(),
     }
 }
 

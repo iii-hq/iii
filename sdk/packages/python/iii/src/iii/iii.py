@@ -1160,6 +1160,13 @@ class III:
             # another namespace, ``default`` included, stays a matter of saying
             # so.
             namespace=trigger.namespace or self._worker_namespace(),
+            # Passed through untouched, ``None`` included. ``None`` is the
+            # engine's two-step resolution -- this worker's namespace, then the
+            # engine's own -- which carries an unmigrated worker onto the
+            # engine's provider while letting a project's own win when it has
+            # one. The SDK cannot decide this locally: a sibling worker in the
+            # same project may be the one providing the type.
+            trigger_namespace=trigger.trigger_namespace,
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)

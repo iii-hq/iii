@@ -1,0 +1,20 @@
+id: iii-observability
+name: Observability
+description: OpenTelemetry settings — trace/metric/log exporters, sampling (ratio, per-operation rules, rate limits), in-memory store limits and retention, alert rules, span-collapse rules, and the engine log level/format.
+value:
+  enabled: true
+  exporter: memory
+  logs_console_output: true
+  logs_enabled: true
+  logs_exporter: memory
+  logs_max_count: 1000
+  logs_retention_seconds: 3600
+  logs_sampling_ratio: 1.0
+  memory_max_spans: 1000000
+  metrics_enabled: true
+  metrics_exporter: memory
+  metrics_max_count: 10000
+  metrics_retention_seconds: 3600
+  sampling_ratio: 1.0
+  service_name: iii
+  service_version: ${SERVICE_VERSION:__III_ENGINE_VERSION__}

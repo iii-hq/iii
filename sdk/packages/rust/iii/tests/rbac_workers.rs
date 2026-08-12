@@ -513,6 +513,7 @@ async fn should_deny_trigger_registration_via_hook() {
         config: json!({ "key": "value" }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     });
 
     tokio::time::sleep(Duration::from_millis(1000)).await;

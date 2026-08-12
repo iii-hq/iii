@@ -53,6 +53,7 @@ async fn a_trigger_registers_in_the_workers_namespace() {
         config: json!({}),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("registertrigger");
 
@@ -77,6 +78,7 @@ async fn an_explicit_namespace_still_wins() {
         config: json!({}),
         metadata: None,
         namespace: Some("default".to_string()),
+        trigger_namespace: None,
     })
     .expect("registertrigger");
 
@@ -97,6 +99,7 @@ async fn a_worker_without_a_namespace_is_unchanged() {
         config: json!({}),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("registertrigger");
 

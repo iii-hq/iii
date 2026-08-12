@@ -155,6 +155,7 @@ async fn mixed_registration_types_each_sent_once() {
             config: json!({"foo": "bar"}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
     drop(trigger);

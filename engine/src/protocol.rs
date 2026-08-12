@@ -78,6 +78,14 @@ pub enum Message {
         trigger_request_format: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         call_request_format: Option<Value>,
+        /// Namespace this provider serves. Absent means the registering
+        /// connection's namespace, which is what every SDK wants and what
+        /// keeps two projects providing the same type id from overwriting each
+        /// other. In-process engine providers register in
+        /// [`DEFAULT_NAMESPACE`], where the resolution in
+        /// [`crate::trigger::TriggerRegistry`] falls back to find them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     RegisterTrigger {
         id: String,
@@ -92,6 +100,16 @@ pub enum Message {
         /// send it stay wire-compatible.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
+        /// Namespace to find `trigger_type`'s provider in.
+        ///
+        /// Absent is not "default": it asks the engine to resolve, taking the
+        /// registering connection's namespace first and [`DEFAULT_NAMESPACE`]
+        /// second. That is what lets a project ship its own provider for a
+        /// type id the engine also provides, while every worker that has not
+        /// been migrated keeps reaching the engine's one without saying so.
+        /// Naming a namespace here is strict: that namespace or nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger_namespace: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,

@@ -137,6 +137,9 @@ async fn register_http_trigger(
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register_trigger should succeed");
@@ -287,6 +290,9 @@ async fn http_route_invokes_target_and_condition_in_registering_namespace() {
             worker_id: None,
             metadata: None,
             namespace: "orders".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register_trigger should succeed");
@@ -371,6 +377,9 @@ async fn per_route_middleware_runs_in_route_namespace() {
             worker_id: None,
             metadata: None,
             namespace: "orders".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register_trigger should succeed");
