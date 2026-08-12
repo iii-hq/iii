@@ -201,6 +201,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
             config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
             metadata,
             namespace: self.iii.namespace(),
+            trigger_namespace: None,
         })
     }
 }
@@ -1212,6 +1213,10 @@ impl IIIClient {
             description: trigger_type.description,
             trigger_request_format: trigger_type.trigger_request_format,
             call_request_format: trigger_type.call_request_format,
+            // Left to the engine, which files it under this connection's
+            // namespace. A worker providing a trigger type provides it for the
+            // project it belongs to.
+            namespace: None,
         };
 
         let trigger_type_id = message.id.clone();
@@ -1286,6 +1291,14 @@ impl IIIClient {
             // another namespace, `default` included, stays a matter of saying
             // so.
             namespace: input.namespace.or_else(|| self.namespace()),
+            // Passed through untouched, including when it is `None`. `None` is
+            // the engine's two-step resolution — this worker's namespace, then
+            // the engine's own — which is what lets a project ship its own
+            // provider for a type id the engine also provides while every
+            // unmigrated worker keeps reaching the engine's without saying so.
+            // The SDK cannot decide this locally: a sibling worker in the same
+            // project may be the one providing the type.
+            trigger_namespace: input.trigger_namespace,
         };
 
         self.inner
@@ -1865,6 +1878,10 @@ impl IIIClient {
                 // provider that stores the config and later calls `trigger()`
                 // needs it to fire the target in the right namespace.
                 namespace,
+                // Which of this provider's namespaces the bind belongs to. Only
+                // meaningful to a provider serving more than one, and the
+                // engine has already routed the message here by it.
+                trigger_namespace: _,
             } => {
                 self.handle_register_trigger(
                     id,
@@ -2593,6 +2610,7 @@ mod tests {
                 config: json!({ "foo": "bar" }),
                 metadata: None,
                 namespace: None,
+                trigger_namespace: None,
             })
             .unwrap();
 
@@ -3097,6 +3115,7 @@ mod tests {
             config: json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         }
     }
 
@@ -3106,6 +3125,7 @@ mod tests {
             description: "tt".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         }
     }
 

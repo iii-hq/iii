@@ -726,7 +726,7 @@ struct CompiledCollapseRule {
 
 impl CompiledCollapseRule {
     fn matches(&self, name: &str, service: &str) -> bool {
-        self.name.is_match(name) && self.service.as_ref().map_or(true, |s| s.is_match(service))
+        self.name.is_match(name) && self.service.as_ref().is_none_or(|s| s.is_match(service))
     }
 }
 
@@ -3710,6 +3710,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
             guard.insert(Trigger {
                 id: "t-error".to_string(),
@@ -3719,6 +3722,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
         }
 
@@ -3810,6 +3816,9 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
             guard.insert(Trigger {
                 id: "t-error".to_string(),
@@ -3819,6 +3828,9 @@ mod tests {
                 config: serde_json::json!({ "status": "error", "service_name": "svc" }),
                 worker_id: None,
                 metadata: None,
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
         }
 
@@ -4036,6 +4048,9 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         });
 
         let storage = Arc::new(otel::InMemorySpanStorage::new(16));
@@ -4196,6 +4211,9 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: Some(serde_json::json!({ "__binding": "session-wake-7" })),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         });
 
         let batch = vec![make_span("t1", "s1", None, "op", "svc", 1, 2, "ok", vec![])];
@@ -4227,6 +4245,9 @@ mod tests {
             config: serde_json::json!({ "level": "all" }),
             worker_id: None,
             metadata: Some(serde_json::json!({ "__binding": "log-wake-1" })),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         });
 
         let log = make_log(None, None, "INFO", 9, "hello", "svc", 1);
@@ -8474,7 +8495,10 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(LOG_TRIGGER_TYPE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    LOG_TRIGGER_TYPE
+                ))
         );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -8521,13 +8545,19 @@ mod tests {
             !engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(LOG_TRIGGER_TYPE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    LOG_TRIGGER_TYPE
+                ))
         );
         assert!(
             !engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(TRACE_TRIGGER_TYPE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    TRACE_TRIGGER_TYPE
+                ))
         );
     }
 
@@ -8563,13 +8593,19 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(LOG_TRIGGER_TYPE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    LOG_TRIGGER_TYPE
+                ))
         );
         assert!(
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(TRACE_TRIGGER_TYPE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    TRACE_TRIGGER_TYPE
+                ))
         );
     }
 

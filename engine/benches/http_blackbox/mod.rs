@@ -210,6 +210,7 @@ async fn run_worker(ws_url: String, route_count: usize) {
                     }),
                     metadata: None,
                     namespace: None,
+                    trigger_namespace: None,
                 })
                 .expect("serialize RegisterTrigger")
                 .into(),

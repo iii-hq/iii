@@ -2039,6 +2039,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2056,6 +2059,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2073,6 +2079,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2094,6 +2103,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2121,6 +2133,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2138,6 +2153,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2155,6 +2173,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());
@@ -2233,7 +2254,10 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key("durable:subscriber")
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "durable:subscriber"
+                ))
         );
     }
 

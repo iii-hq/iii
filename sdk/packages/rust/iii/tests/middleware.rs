@@ -51,6 +51,7 @@ async fn middleware_continue_to_handler() {
         }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("register trigger");
 
@@ -112,6 +113,7 @@ async fn middleware_short_circuit() {
         }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("register trigger");
 
@@ -187,6 +189,7 @@ async fn multiple_middleware_ordering() {
         }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("register trigger");
 
@@ -227,6 +230,7 @@ async fn no_middleware_regression() {
         }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("register trigger");
 

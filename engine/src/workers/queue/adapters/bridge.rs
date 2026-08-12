@@ -287,6 +287,7 @@ impl QueueAdapter for BridgeAdapter {
             config: serde_json::json!({ "topic": topic }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         }) {
             Ok(t) => t,
             Err(e) => {

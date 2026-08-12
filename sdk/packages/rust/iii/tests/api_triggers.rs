@@ -52,6 +52,7 @@ async fn get_endpoint() {
         }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("register trigger");
 
@@ -96,6 +97,7 @@ async fn post_endpoint_with_body() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -202,6 +204,7 @@ async fn raw_json_request_body() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -250,6 +253,7 @@ async fn path_parameters() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -295,6 +299,7 @@ async fn query_parameters() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -338,6 +343,7 @@ async fn custom_status_code() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -384,6 +390,7 @@ async fn content_type_on_api_response_return() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -481,6 +488,7 @@ async fn download_pdf_streaming() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -606,6 +614,7 @@ async fn upload_pdf_streaming() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -717,6 +726,7 @@ async fn sse_streaming() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -869,6 +879,7 @@ async fn urlencoded_form_data() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -1025,6 +1036,7 @@ async fn multipart_form_data() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -1082,6 +1094,7 @@ async fn conflicting_route_structure_is_rejected() {
         }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("register trigger a");
 
@@ -1101,6 +1114,7 @@ async fn conflicting_route_structure_is_rejected() {
         }),
         metadata: None,
         namespace: None,
+        trigger_namespace: None,
     })
     .expect("register trigger b");
 

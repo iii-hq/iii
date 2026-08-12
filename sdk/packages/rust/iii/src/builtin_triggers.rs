@@ -323,6 +323,8 @@ impl IIITrigger {
             config: serde_json::to_value(&self).unwrap(),
             metadata: None,
             namespace: None,
+            // The engine resolves it: this worker's namespace, then its own.
+            trigger_namespace: None,
         }
     }
 }

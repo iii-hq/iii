@@ -55,6 +55,7 @@ async fn register_healthcheck_function_and_trigger() {
             }),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 

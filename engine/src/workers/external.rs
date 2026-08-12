@@ -214,7 +214,7 @@ const BACKOFF_RESET_UPTIME: Duration = Duration::from_secs(60);
 impl ExternalWorker {
     pub fn new(info: ExternalWorkerInfo, config: Option<Value>, worker_manager_port: u16) -> Self {
         let name = info.name.clone();
-        let display_name = Box::leak(format!("ExternalWorker({})", &name).into_boxed_str());
+        let display_name = Box::leak(format!("ExternalWorker({})", name).into_boxed_str());
         Self {
             display_name,
             name,

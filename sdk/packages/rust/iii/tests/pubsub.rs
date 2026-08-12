@@ -55,6 +55,7 @@ async fn subscribe_and_receive_published_messages() {
             config: json!({"topic": topic}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger");
 
@@ -133,6 +134,7 @@ async fn topic_isolation() {
             config: json!({"topic": topic_a}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger a");
     let trigger_b = iii
@@ -142,6 +144,7 @@ async fn topic_isolation() {
             config: json!({"topic": topic_b}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         })
         .expect("register trigger b");
 
