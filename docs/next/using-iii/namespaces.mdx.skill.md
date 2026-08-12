@@ -20,8 +20,8 @@ The SDK selects the worker namespace in this order:
 Use a non-empty string for a namespace. Leave the option out and the SDK reads `III_NAMESPACE`
 itself, then falls back to `default`; an absent option gives the same result as passing
 `process.env.III_NAMESPACE` (`os.environ.get("III_NAMESPACE")`,
-`std::env::var("III_NAMESPACE").ok()`). A `null`, a `None`, or any other non-string value fails; it
-is not a way to ask for `default`.
+`std::env::var("III_NAMESPACE").ok()`). A `null`, a `None`, or any other non-string value is invalid
+and fails in both the SDK and at the engine.
 
 {/* TODO: Add this back when compose is released */}
 
