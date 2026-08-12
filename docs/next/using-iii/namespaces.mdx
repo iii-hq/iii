@@ -1,5 +1,5 @@
 ---
-title: "Use namespaces"
+title: "Namespaces"
 description: "Set worker namespaces, call namespaced functions, and handle namespace conflicts."
 owner: "devrel"
 type: "how-to"
@@ -19,24 +19,39 @@ The SDK selects the worker namespace in this order:
 | 2        | The worker process `III_NAMESPACE` environment variable |
 | 3        | `default`                                               |
 
-Use a non-empty string for a namespace.
+Use a non-empty string for a namespace. Leave the option out and the SDK reads `III_NAMESPACE`
+itself, then falls back to `default`; an absent option gives the same result as passing
+`process.env.III_NAMESPACE` (`os.environ.get("III_NAMESPACE")`,
+`std::env::var("III_NAMESPACE").ok()`). A `null`, a `None`, or any other non-string value is invalid
+and fails in both the SDK and at the engine.
 
-### Managed workers
+{/* TODO: Add this back when compose is released */}
 
-Set `III_NAMESPACE` in the compose service that deploys the worker. This keeps the reusable worker
-package independent from one tenant or project.
+{/* ### Managed workers */}
 
-```yaml compose.yaml
-services:
-  state-orders:
-    image: example/state-worker:latest
-    environment:
-      III_URL: ws://iii:49134
-      III_NAMESPACE: orders
-```
+{/* Set `III_NAMESPACE` in the compose service that deploys the worker. This keeps the reusable worker */}
 
-The SDK reads `III_NAMESPACE` when the worker does not pass an explicit option. Do not set a
-per-worker `namespace:` key in `config.yaml`; that key does not exist.
+{/* package independent from one tenant or project. */}
+
+{/* ```yaml compose.yaml */}
+
+{/* services: */}
+
+{/* state-orders: */}
+
+{/* image: example/state-worker:latest */}
+
+{/* environment: */}
+
+{/* III_URL: ws://iii:49134 */}
+
+{/* III_NAMESPACE: orders */}
+
+{/* ``` */}
+
+{/* The SDK reads `III_NAMESPACE` when the worker does not pass an explicit option. Do not set a */}
+
+{/* per-worker `namespace:` key in `config.yaml`; that key does not exist. */}
 
 ### SDK option
 
@@ -98,13 +113,19 @@ over `III_NAMESPACE`.
 The browser SDK cannot read a process environment. Pass its namespace explicitly or obtain it from
 trusted runtime configuration.
 
-## Call a function in a namespace
+## Trigger a function in a namespace
 
 Set `namespace` on the invocation. The call resolves only in that namespace. Omit the field and the
-call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker
-with no namespace of its own resolves in `default`, as before.
+call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker with
+no namespace of its own resolves in `default`, as before.
 
 <Tabs>
+  <Tab title="CLI">
+    ```bash
+    iii trigger --namespace orders state::get key=cart
+    ```
+
+  </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
     const result = await worker.trigger({

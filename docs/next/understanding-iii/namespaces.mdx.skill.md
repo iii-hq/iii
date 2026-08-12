@@ -6,8 +6,8 @@
 ## What a namespace is
 
 A namespace is a routing value that the engine stores with a function id and a worker name. It is
-not part of either value. `state::get` has the same function id in `default`, `orders`, and
-`analytics`.
+not part of either value. For example `state::get` can exist as the same function id in `default`,
+`orders`, and `analytics` namespaces.
 
 The engine uses these registry keys:
 
@@ -43,8 +43,8 @@ worker. These two values stay separate.
 
 ## Why routing is strict
 
-A call with no namespace resolves in `default` only. A call with `namespace: "orders"` resolves in
-`orders` only. The caller's namespace does not change this rule.
+A call with `namespace: "orders"` resolves in `orders` only. A call with no namespace resolves in the
+namespace of the calling worker.
 
 The engine does not search other namespaces after a miss. A fallback could send a call to another
 tenant. Instead, the engine returns `function_not_found` and lists the namespaces where the function

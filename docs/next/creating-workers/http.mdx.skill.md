@@ -44,7 +44,10 @@ iii worker init my-worker --language typescript
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { workerName: "my-worker" });
+    const worker = registerWorker(url, {
+      workerName: "my-worker",
+      namespace: "orders",
+    });
 
     worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
       status_code: 200,
@@ -66,7 +69,7 @@ iii worker init my-worker --language typescript
 
     worker = register_worker(
         os.environ["III_URL"],
-        InitOptions(worker_name="my-worker"),
+        InitOptions(worker_name="my-worker", namespace="orders"),
     )
 
     def add(payload: dict) -> dict:
@@ -106,7 +109,13 @@ iii worker init my-worker --language typescript
     }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     worker.register_function(
         "http::add",

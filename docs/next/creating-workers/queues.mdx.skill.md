@@ -123,7 +123,10 @@ iii worker init email-worker --language typescript
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { workerName: "email-worker" });
+    const worker = registerWorker(url, {
+      workerName: "email-worker",
+      namespace: "orders",
+    });
 
     // receives the `data` from each published message
     worker.registerFunction("email::send", async (msg: { to: string; subject: string }) => {
@@ -146,7 +149,7 @@ iii worker init email-worker --language typescript
 
     worker = register_worker(
         os.environ["III_URL"],
-        InitOptions(worker_name="email-worker"),
+        InitOptions(worker_name="email-worker", namespace="orders"),
     )
 
     # receives the `data` from each published message
@@ -179,7 +182,13 @@ iii worker init email-worker --language typescript
     }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     // receives the `data` from each published message
     worker.register_function("email::send", RegisterFunction::new(|_msg: Email| {
