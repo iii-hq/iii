@@ -17,8 +17,11 @@ The SDK selects the worker namespace in this order:
 | 2        | The worker process `III_NAMESPACE` environment variable |
 | 3        | `default`                                               |
 
-Use a non-empty string for a namespace. Leave the option out to accept `default`. A `null`, a
-`None`, or any other non-string value fails; it is not a way to ask for `default`.
+Use a non-empty string for a namespace. Leave the option out and the SDK reads `III_NAMESPACE`
+itself, then falls back to `default`; an absent option gives the same result as passing
+`process.env.III_NAMESPACE` (`os.environ.get("III_NAMESPACE")`,
+`std::env::var("III_NAMESPACE").ok()`). A `null`, a `None`, or any other non-string value fails; it
+is not a way to ask for `default`.
 
 {/* TODO: Add this back when compose is released */}
 
@@ -111,8 +114,8 @@ trusted runtime configuration.
 ## Trigger a function in a namespace
 
 Set `namespace` on the invocation. The call resolves only in that namespace. Omit the field and the
-call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker
-with no namespace of its own resolves in `default`, as before.
+call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker with
+no namespace of its own resolves in `default`, as before.
 
 <Tabs>
   <Tab title="CLI">

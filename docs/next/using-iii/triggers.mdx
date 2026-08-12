@@ -35,7 +35,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { namespace: process.env.III_NAMESPACE });
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerTrigger({
       type: "http",
@@ -52,7 +52,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="my-worker", namespace=os.environ.get("III_NAMESPACE")),
+        InitOptions(worker_name="my-worker", namespace="orders"),
     )
 
     worker.register_trigger({
@@ -73,7 +73,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
     let worker = register_worker(
         &url,
         InitOptions {
-            namespace: std::env::var("III_NAMESPACE").ok(),
+            namespace: Some("orders".into()),
             ..Default::default()
         },
     );

@@ -16,7 +16,7 @@ and returns the result.
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { namespace: process.env.III_NAMESPACE });
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
       return { c: payload.a + payload.b };
@@ -33,7 +33,7 @@ and returns the result.
         os.environ.get("III_URL"),
         InitOptions(
             worker_name="math-worker",
-            namespace=os.environ.get("III_NAMESPACE"),
+            namespace="orders",
         ),
     )
 
@@ -52,7 +52,7 @@ and returns the result.
     let worker = register_worker(
         &url,
         InitOptions {
-            namespace: std::env::var("III_NAMESPACE").ok(),
+            namespace: Some("orders".into()),
             ..Default::default()
         },
     );

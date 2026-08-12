@@ -125,7 +125,7 @@ iii worker init email-worker --language typescript
     if (!url) throw new Error("III_URL must be set");
     const worker = registerWorker(url, {
       workerName: "email-worker",
-      namespace: process.env.III_NAMESPACE,
+      namespace: "orders",
     });
 
     // receives the `data` from each published message
@@ -149,7 +149,7 @@ iii worker init email-worker --language typescript
 
     worker = register_worker(
         os.environ["III_URL"],
-        InitOptions(worker_name="email-worker", namespace=os.environ.get("III_NAMESPACE")),
+        InitOptions(worker_name="email-worker", namespace="orders"),
     )
 
     # receives the `data` from each published message
@@ -185,7 +185,7 @@ iii worker init email-worker --language typescript
     let worker = register_worker(
         &url,
         InitOptions {
-            namespace: std::env::var("III_NAMESPACE").ok(),
+            namespace: Some("orders".into()),
             ..Default::default()
         },
     );

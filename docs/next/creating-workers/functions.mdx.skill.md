@@ -31,7 +31,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { namespace: process.env.III_NAMESPACE });
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
       return { c: payload.a + payload.b };
@@ -46,7 +46,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="math-worker", namespace=os.environ.get("III_NAMESPACE")),
+        InitOptions(worker_name="math-worker", namespace="orders"),
     )
 
     def add_handler(payload: dict) -> dict:
@@ -64,7 +64,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
     let worker = register_worker(
         &url,
         InitOptions {
-            namespace: std::env::var("III_NAMESPACE").ok(),
+            namespace: Some("orders".into()),
             ..Default::default()
         },
     );
@@ -99,7 +99,7 @@ the function. The schemas are stored with the function and surface in the iii co
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { namespace: process.env.III_NAMESPACE });
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerFunction(
       "math::add",
@@ -127,7 +127,7 @@ the function. The schemas are stored with the function and surface in the iii co
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="math-worker", namespace=os.environ.get("III_NAMESPACE")),
+        InitOptions(worker_name="math-worker", namespace="orders"),
     )
 
     worker.register_function(
@@ -163,7 +163,7 @@ the function. The schemas are stored with the function and surface in the iii co
     let worker = register_worker(
         &url,
         InitOptions {
-            namespace: std::env::var("III_NAMESPACE").ok(),
+            namespace: Some("orders".into()),
             ..Default::default()
         },
     );
@@ -299,7 +299,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
 
       const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, { namespace: process.env.III_NAMESPACE });
+    const worker = registerWorker(url, { namespace: "orders" });
 
       worker.registerFunction(
         "notifications::send",
@@ -322,7 +322,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
 
       worker = register_worker(
           os.environ.get("III_URL"),
-          InitOptions(worker_name="notifications-worker", namespace=os.environ.get("III_NAMESPACE")),
+          InitOptions(worker_name="notifications-worker", namespace="orders"),
       )
 
       worker.register_function(
@@ -350,7 +350,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
       let worker = register_worker(
           &url,
           InitOptions {
-              namespace: std::env::var("III_NAMESPACE").ok(),
+              namespace: Some("orders".into()),
               ..Default::default()
           },
       );

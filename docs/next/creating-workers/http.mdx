@@ -50,7 +50,7 @@ iii worker init my-worker --language typescript
     if (!url) throw new Error("III_URL must be set");
     const worker = registerWorker(url, {
       workerName: "my-worker",
-      namespace: process.env.III_NAMESPACE,
+      namespace: "orders",
     });
 
     worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
@@ -73,7 +73,7 @@ iii worker init my-worker --language typescript
 
     worker = register_worker(
         os.environ["III_URL"],
-        InitOptions(worker_name="my-worker", namespace=os.environ.get("III_NAMESPACE")),
+        InitOptions(worker_name="my-worker", namespace="orders"),
     )
 
     def add(payload: dict) -> dict:
@@ -116,7 +116,7 @@ iii worker init my-worker --language typescript
     let worker = register_worker(
         &url,
         InitOptions {
-            namespace: std::env::var("III_NAMESPACE").ok(),
+            namespace: Some("orders".into()),
             ..Default::default()
         },
     );
