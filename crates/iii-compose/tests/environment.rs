@@ -163,8 +163,8 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
     // global scarce name: two projects each running `state` share one entry and
     // overwrite each other. Compose tells the container its id instead, so one
     // project can call it `state-finance` and another `state-hr`.
-    use iii_compose::spawn::{SpawnCtx, spawn_plan};
     use iii_compose::manifest::StartSpec;
+    use iii_compose::spawn::{SpawnCtx, spawn_plan};
 
     let user_env = std::collections::BTreeMap::new();
     let start = StartSpec::Shell("true".to_string());
@@ -190,8 +190,8 @@ fn a_container_is_told_which_configuration_entry_is_its_own() {
 fn a_container_without_configuration_is_told_nothing_about_one() {
     // A stale `III_CONFIG_NAME` would point a worker at an entry compose never
     // wrote, which is worse than the absence it replaces.
-    use iii_compose::spawn::{SpawnCtx, spawn_plan};
     use iii_compose::manifest::StartSpec;
+    use iii_compose::spawn::{SpawnCtx, spawn_plan};
 
     let user_env = std::collections::BTreeMap::new();
     let start = StartSpec::Shell("true".to_string());

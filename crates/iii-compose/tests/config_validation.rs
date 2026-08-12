@@ -522,8 +522,10 @@ fn a_name_outside_the_namespace_charset_is_refused() {
 /// An absent name is not an invalid one: the project lands in `default`.
 #[test]
 fn no_name_at_all_is_still_allowed() {
-    let file = parse("containers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n")
-        .expect("a file without a name should parse");
+    let file = parse(
+        "containers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: ./api\n",
+    )
+    .expect("a file without a name should parse");
     assert_eq!(file.namespace, None);
 }
 
@@ -539,7 +541,10 @@ fn name_is_not_an_alias_for_namespace() {
     assert_eq!(err.code(), "INVALID_COMPOSE_FILE");
 
     let message = err.to_string();
-    assert!(message.contains("name"), "should name the bad key: {message}");
+    assert!(
+        message.contains("name"),
+        "should name the bad key: {message}"
+    );
     assert!(
         message.contains("namespace"),
         "and list `namespace` among the accepted keys: {message}"

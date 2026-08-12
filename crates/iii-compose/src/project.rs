@@ -86,7 +86,8 @@ impl Project {
             // exactly what it must not do.
             state.check_binding(&file.path)?;
         }
-        let mut state = recovered.unwrap_or_else(|| DaemonState::new(&file.path, &project_namespace));
+        let mut state =
+            recovered.unwrap_or_else(|| DaemonState::new(&file.path, &project_namespace));
         state.namespace = project_namespace.clone();
 
         let project = Arc::new(Self {
@@ -204,7 +205,11 @@ impl Project {
 
         for (key, code) in dead {
             let reason = format!("exited unexpectedly with {code}");
-            daemon_line(&self.project_namespace, &format!("{key} {reason}"), Tone::Warn);
+            daemon_line(
+                &self.project_namespace,
+                &format!("{key} {reason}"),
+                Tone::Warn,
+            );
 
             // Cascade through the same path a targeted `down` takes: it stops
             // the dependents first and ends on the dead container itself, which

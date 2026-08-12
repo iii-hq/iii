@@ -18,6 +18,7 @@
 use std::time::Duration;
 
 use iii_sdk::{IIIClient, InitOptions, protocol::TriggerRequest, register_worker};
+
 use serde_json::{Value, json};
 
 use crate::{
@@ -29,7 +30,14 @@ use crate::{
 /// held back, long enough not to hammer the engine for a minute.
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Where a worker lands when it does not know about namespaces.
+/// Where a worker lands when it does not know about namespaces, and where the
+/// engine serves its own functions.
+///
+/// The daemon lives in its own namespace, and the SDK sends a worker's calls
+/// there unless told otherwise. `configuration::*` and `engine::*` are compiled
+/// into the engine and exist only here, so every call the daemon makes to one
+/// names this namespace. Unqualified, they would look for the engine's
+/// functions in the daemon's own and find nothing.
 const DEFAULT_NAMESPACE: &str = "default";
 
 /// Budget for a single introspection or configuration call.
@@ -171,18 +179,21 @@ impl EngineClient {
     pub async fn fetch_config(&self, name: &str) -> Result<Option<serde_yaml::Value>> {
         let response = match self
             .client
-            .trigger(TriggerRequest {
-                function_id: "configuration::get".to_string(),
-                // Raw, so `${VAR}` placeholders survive the round trip. The
-                // worker pushes this value back into the store at boot, and an
-                // expanded fetch would persist the secret a lazy reference was
-                // there to avoid — turning `password: ${DB_PASSWORD}` into the
-                // password, permanently. Expansion belongs to the read that
-                // uses the value, not to a copy passing through.
-                payload: json!({ "id": name, "raw": true }),
-                action: None,
-                timeout_ms: Some(CALL_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "configuration::get".to_string(),
+                    // Raw, so `${VAR}` placeholders survive the round trip. The
+                    // worker pushes this value back into the store at boot, and an
+                    // expanded fetch would persist the secret a lazy reference was
+                    // there to avoid — turning `password: ${DB_PASSWORD}` into the
+                    // password, permanently. Expansion belongs to the read that
+                    // uses the value, not to a copy passing through.
+                    payload: json!({ "id": name, "raw": true }),
+                    action: None,
+                    timeout_ms: Some(CALL_TIMEOUT_MS),
+                }
+                .namespace(DEFAULT_NAMESPACE),
+            )
             .await
         {
             Ok(response) => response,
@@ -250,12 +261,15 @@ impl EngineClient {
         });
 
         self.client
-            .trigger(TriggerRequest {
-                function_id: "configuration::register".to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(CALL_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "configuration::register".to_string(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(CALL_TIMEOUT_MS),
+                }
+                .namespace(DEFAULT_NAMESPACE),
+            )
             .await
             .map(|_| ())
             .map_err(|source| ComposeError::ConfigPublishFailed {
@@ -267,12 +281,15 @@ impl EngineClient {
     /// The schema and metadata already registered for `name`, if any.
     async fn config_metadata(&self, name: &str) -> Option<serde_json::Map<String, Value>> {
         self.client
-            .trigger(TriggerRequest {
-                function_id: "configuration::schema".to_string(),
-                payload: json!({ "id": name }),
-                action: None,
-                timeout_ms: Some(CALL_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "configuration::schema".to_string(),
+                    payload: json!({ "id": name }),
+                    action: None,
+                    timeout_ms: Some(CALL_TIMEOUT_MS),
+                }
+                .namespace(DEFAULT_NAMESPACE),
+            )
             .await
             .ok()
             .and_then(|response| response.as_object().cloned())
@@ -472,12 +489,15 @@ impl EngineClient {
     async fn functions_of(&self, worker_name: &str) -> Result<Vec<(String, String)>> {
         let response = self
             .client
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::list".to_string(),
-                payload: json!({ "include_internal": true }),
-                action: None,
-                timeout_ms: Some(CALL_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::functions::list".to_string(),
+                    payload: json!({ "include_internal": true }),
+                    action: None,
+                    timeout_ms: Some(CALL_TIMEOUT_MS),
+                }
+                .namespace(DEFAULT_NAMESPACE),
+            )
             .await
             .map_err(|source| ComposeError::EngineCallFailed {
                 function: "engine::functions::list".to_string(),
@@ -508,12 +528,15 @@ impl EngineClient {
     async fn list_workers(&self) -> Result<Vec<(String, String)>> {
         let response = self
             .client
-            .trigger(TriggerRequest {
-                function_id: "engine::workers::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(CALL_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "engine::workers::list".to_string(),
+                    payload: json!({}),
+                    action: None,
+                    timeout_ms: Some(CALL_TIMEOUT_MS),
+                }
+                .namespace(DEFAULT_NAMESPACE),
+            )
             .await
             .map_err(|source| ComposeError::EngineCallFailed {
                 function: "engine::workers::list".to_string(),

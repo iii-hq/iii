@@ -252,7 +252,11 @@ containers:
 #[test]
 fn a_package_container_gets_the_same_env_file_checks() {
     let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join("queue.env"), "III_URL=ws://elsewhere:1234\n").unwrap();
+    std::fs::write(
+        tmp.path().join("queue.env"),
+        "III_URL=ws://elsewhere:1234\n",
+    )
+    .unwrap();
 
     let file = project(
         tmp.path(),

@@ -69,9 +69,7 @@ fn state_is_owner_only_and_leaves_no_temp_file() {
     let tmp = tempfile::tempdir().unwrap();
     let store = StateStore::at(tmp.path().join("host-a"));
     store
-        .save(&DaemonState::new(Path::new("/srv/app/c.yaml"),
-            "ns",
-        ))
+        .save(&DaemonState::new(Path::new("/srv/app/c.yaml"), "ns"))
         .unwrap();
 
     let file_mode = std::fs::metadata(store.path())
@@ -145,7 +143,10 @@ fn a_project_is_its_file_and_two_files_never_share_a_directory() {
     assert_ne!(a, b, "two different files must not share a state directory");
 
     // And the same file is the same project however often it is asked for.
-    assert_eq!(a, project_slug(Path::new("/srv/orders/worker-compose.yaml")));
+    assert_eq!(
+        a,
+        project_slug(Path::new("/srv/orders/worker-compose.yaml"))
+    );
 }
 
 #[tokio::test]
@@ -227,9 +228,7 @@ fn a_clean_shutdown_clears_the_state() {
     let tmp = tempfile::tempdir().unwrap();
     let store = StateStore::at(tmp.path().join("host-a"));
     store
-        .save(&DaemonState::new(Path::new("/srv/app/c.yaml"),
-            "ns",
-        ))
+        .save(&DaemonState::new(Path::new("/srv/app/c.yaml"), "ns"))
         .unwrap();
 
     store.clear().unwrap();

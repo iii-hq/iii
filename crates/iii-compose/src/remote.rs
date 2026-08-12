@@ -114,7 +114,11 @@ async fn dispatch(
 
     match operation {
         Operation::Up => match daemon
-            .up(file.as_deref(), request.container.as_deref(), operation_id())
+            .up(
+                file.as_deref(),
+                request.container.as_deref(),
+                operation_id(),
+            )
             .await
         {
             Ok(result) => Ok(to_value(&result)),
