@@ -18,7 +18,10 @@ use crate::{
     function::FunctionResult,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType, known_trigger_type_provider},
-    worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionTelemetryMeta},
+    worker_connections::{
+        RuntimeWorkerInfo, WorkerAuthority, WorkerConnection, WorkerConnectionTelemetryMeta,
+        WorkerIdentityConflict,
+    },
     workers::traits::Worker,
     workers::worker::rbac_session::Session,
 };
@@ -327,6 +330,12 @@ pub struct WorkerSummary {
     pub active_invocations: usize,
     pub isolation: Option<String>,
     pub ip_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub authority: WorkerAuthority,
+    pub quarantined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_conflict: Option<WorkerIdentityConflict>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -347,6 +356,10 @@ pub struct WorkerDetailEnvelope {
     /// (not present on the registry surface).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    pub authority: WorkerAuthority,
+    pub quarantined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_conflict: Option<WorkerIdentityConflict>,
     /// Whether this worker is an in-process engine module. Engine-local
     /// extra.
     pub internal: bool,
@@ -693,7 +706,13 @@ impl EngineFunctionsWorker {
                 continue;
             }
 
-            if filter_worker_id.is_none() && w.pid.is_none() {
+            // Historical SDK connections without metadata stay hidden from
+            // the default list, but quarantined connections must remain
+            // visible so operators can identify and stop the duplicate.
+            if filter_worker_id.is_none()
+                && w.pid.is_none()
+                && w.authority() != WorkerAuthority::Quarantined
+            {
                 continue;
             }
 
@@ -714,6 +733,10 @@ impl EngineFunctionsWorker {
                 active_invocations,
                 isolation: w.isolation.clone(),
                 ip_address,
+                pid: w.pid,
+                authority: w.authority(),
+                quarantined: w.authority() == WorkerAuthority::Quarantined,
+                identity_conflict: w.identity_conflict(),
             });
         }
 
@@ -738,6 +761,10 @@ impl EngineFunctionsWorker {
                 active_invocations: 0,
                 isolation: Some("in-process".to_string()),
                 ip_address: None,
+                pid: None,
+                authority: WorkerAuthority::CurrentManaged,
+                quarantined: false,
+                identity_conflict: None,
             });
         }
 
@@ -857,6 +884,9 @@ impl EngineFunctionsWorker {
             isolation: w.isolation.clone(),
             ip_address,
             pid: w.pid,
+            authority: w.authority(),
+            quarantined: w.authority() == WorkerAuthority::Quarantined,
+            identity_conflict: w.identity_conflict(),
             internal: false,
             latest_metrics,
         }
@@ -878,6 +908,9 @@ impl EngineFunctionsWorker {
             isolation: Some("in-process".to_string()),
             ip_address: None,
             pid: None,
+            authority: WorkerAuthority::CurrentManaged,
+            quarantined: false,
+            identity_conflict: None,
             internal: w.internal,
             latest_metrics: None,
         }
@@ -1957,6 +1990,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_worker_summaries_keeps_pidless_quarantined_workers_visible() {
+        let (engine, module) = setup_engine_and_module();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
+        worker.quarantine(WorkerIdentityConflict {
+            function_id: "provider::kimi::stream".to_string(),
+            current_worker_id: uuid::Uuid::new_v4().to_string(),
+            current_worker_name: Some("provider-kimi".to_string()),
+            current_worker_pid: Some(42),
+        });
+        engine.worker_registry.register_worker(worker);
+
+        let workers = module.list_worker_summaries(None).await;
+        assert_eq!(workers.len(), 1);
+        assert!(workers[0].quarantined);
+        assert_eq!(workers[0].authority, WorkerAuthority::Quarantined);
+    }
+
+    #[tokio::test]
     async fn list_worker_summaries_includes_runtime_worker_snapshots() {
         let (engine, module) = setup_engine_and_module();
 
@@ -2281,12 +2333,18 @@ mod tests {
             active_invocations: 0,
             isolation: None,
             ip_address: None,
+            pid: Some(42),
+            authority: WorkerAuthority::CurrentManaged,
+            quarantined: false,
+            identity_conflict: None,
         };
         let json = serde_json::to_value(&summary).expect("serialize");
         assert!(json.get("description").is_some());
         assert!(json["description"].is_null());
         assert_eq!(json["name"], "agent-memory");
         assert_eq!(json["function_count"], 9);
+        assert_eq!(json["authority"], "current_managed");
+        assert_eq!(json["pid"], 42);
     }
 
     // ── Lifecycle tests ─────────────────────────────────────────────────

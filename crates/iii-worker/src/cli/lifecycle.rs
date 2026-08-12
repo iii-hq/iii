@@ -9,7 +9,7 @@
 use super::worker_manager::adapter::ContainerSpec;
 use super::worker_manager::state::WorkerDef;
 
-pub fn build_container_spec(name: &str, def: &WorkerDef, _engine_url: &str) -> ContainerSpec {
+pub fn build_container_spec(name: &str, def: &WorkerDef, engine_url: &str) -> ContainerSpec {
     match def {
         WorkerDef::Managed {
             image,
@@ -25,6 +25,9 @@ pub fn build_container_spec(name: &str, def: &WorkerDef, _engine_url: &str) -> C
                 // connections by this name. Not overridable via worker env —
                 // identity comes from the config entry.
                 env.insert("III_WORKER_NAME".to_string(), name.to_string());
+                env.insert("III_ENGINE_URL".to_string(), engine_url.to_string());
+                env.insert("III_URL".to_string(), engine_url.to_string());
+                super::engine_identity::insert_engine_run_id(&mut env);
                 env
             },
             memory_limit: resources.as_ref().and_then(|r| r.memory.clone()),

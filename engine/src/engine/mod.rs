@@ -30,7 +30,10 @@ use crate::{
         inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
-    worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
+    worker_connections::{
+        RuntimeWorkerInfo, WorkerAuthority, WorkerConnection, WorkerConnectionRegistry,
+        WorkerIdentityConflict,
+    },
     workers::worker::rbac_session::Session,
     workers::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
@@ -55,6 +58,21 @@ const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// actions. The engine owns receipt generation and uses this function only as
 /// the durable transport boundary.
 const ENQUEUE_PROVIDER_FUNCTION_ID: &str = "engine::queue::enqueue";
+
+fn worker_authority_from_uri(uri: &Uri, current_run_id: Uuid) -> WorkerAuthority {
+    let managed_run_id = uri.query().and_then(|query| {
+        query.split('&').find_map(|pair| {
+            pair.strip_prefix("engine_run_id=")
+                .and_then(|value| Uuid::parse_str(value).ok())
+        })
+    });
+
+    if managed_run_id == Some(current_run_id) {
+        WorkerAuthority::CurrentManaged
+    } else {
+        WorkerAuthority::Unscoped
+    }
+}
 
 /// Handles binary frames with OTEL telemetry prefixes.
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
@@ -216,6 +234,10 @@ pub trait EngineTrait: Send + Sync {
 
 #[derive(Clone)]
 pub struct Engine {
+    /// Ephemeral identity for this engine process. Managed workers receive it
+    /// through a reserved environment variable and echo it in their WS URL,
+    /// allowing a restarted engine to distinguish its children from orphans.
+    run_id: Uuid,
     pub worker_registry: Arc<WorkerConnectionRegistry>,
     pub runtime_workers: Arc<DashMap<String, RuntimeWorkerInfo>>,
     pub functions: Arc<FunctionsRegistry>,
@@ -248,6 +270,15 @@ pub struct Engine {
     config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
 }
 
+enum OwnershipClaim {
+    Accepted {
+        previous_to_quarantine: Option<WorkerConnection>,
+    },
+    Rejected {
+        current: WorkerConnection,
+    },
+}
+
 fn resolve_registration_id(worker: &WorkerConnection, id: &str) -> String {
     if let Some(prefix) = worker
         .session
@@ -270,6 +301,7 @@ impl Engine {
     pub fn new() -> Self {
         let active_scope = Arc::new(std::sync::Mutex::new(None));
         Self {
+            run_id: Uuid::new_v4(),
             worker_registry: Arc::new(WorkerConnectionRegistry::new()),
             runtime_workers: Arc::new(DashMap::new()),
             functions: Arc::new(FunctionsRegistry::with_scope(active_scope.clone())),
@@ -283,6 +315,10 @@ impl Engine {
             worker_manager_port: Arc::new(std::sync::OnceLock::new()),
             config_path: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    pub fn run_id(&self) -> Uuid {
+        self.run_id
     }
 
     /// Returns the effective `iii-worker-manager` port. Resolved from config
@@ -594,6 +630,87 @@ impl Engine {
 
     #[doc(hidden)]
     pub async fn router_msg(&self, worker: &WorkerConnection, msg: &Message) -> anyhow::Result<()> {
+        if worker.authority() == WorkerAuthority::Quarantined {
+            let conflict = worker.identity_conflict();
+            let message = conflict.as_ref().map_or_else(
+                || "This worker connection is quarantined after an identity conflict.".to_string(),
+                |conflict| {
+                    let current = conflict
+                        .current_worker_name
+                        .as_deref()
+                        .unwrap_or(&conflict.current_worker_id);
+                    format!(
+                        "This worker is quarantined because function '{}' is owned by the current managed worker '{}'. Stop the duplicate process, then restart iii if the conflict remains.",
+                        conflict.function_id, current
+                    )
+                },
+            );
+            let error = ErrorBody::new("engine/worker_identity_conflict", message);
+
+            match msg {
+                // Metadata remains available so Console can show the worker's
+                // name, pid, runtime, and recovery guidance.
+                Message::InvokeFunction { function_id, .. }
+                    if function_id == "engine::workers::register" => {}
+                Message::InvokeFunction {
+                    invocation_id,
+                    function_id,
+                    traceparent,
+                    baggage,
+                    ..
+                } => {
+                    self.send_msg(
+                        worker,
+                        Message::InvocationResult {
+                            invocation_id: (*invocation_id).unwrap_or_else(Uuid::new_v4),
+                            function_id: function_id.clone(),
+                            result: None,
+                            error: Some(error),
+                            traceparent: traceparent.clone(),
+                            baggage: baggage.clone(),
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+                Message::RegisterTrigger {
+                    id,
+                    trigger_type,
+                    function_id,
+                    ..
+                } => {
+                    self.send_msg(
+                        worker,
+                        Message::TriggerRegistrationResult {
+                            id: id.clone(),
+                            trigger_type: trigger_type.clone(),
+                            function_id: function_id.clone(),
+                            error: Some(error),
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+                Message::RegisterFunction { .. }
+                | Message::UnregisterFunction { .. }
+                | Message::RegisterTriggerType { .. }
+                | Message::UnregisterTrigger { .. }
+                | Message::RegisterService { .. }
+                | Message::Reattach { .. } => {
+                    tracing::warn!(
+                        worker_id = %worker.id,
+                        "Ignoring business registration from quarantined worker"
+                    );
+                    return Ok(());
+                }
+                Message::TriggerRegistrationResult { .. }
+                | Message::InvocationResult { .. }
+                | Message::Ping
+                | Message::Pong
+                | Message::WorkerRegistered { .. } => {}
+            }
+        }
+
         match msg {
             Message::TriggerRegistrationResult {
                 id,
@@ -1347,10 +1464,13 @@ impl Engine {
                 // id, and tear down the registration we're about to write.
                 // Claiming first makes the CAS release in cleanup see the new
                 // owner and bail out for every subsequent step.
-                if invocation.is_some() {
-                    self.claim_external_function(worker.id, &reg_id);
+                let claimed = if invocation.is_some() {
+                    self.claim_external_function(worker, &reg_id).await
                 } else {
-                    self.claim_function(worker.id, &reg_id);
+                    self.claim_function(worker, &reg_id).await
+                };
+                if !claimed {
+                    return Ok(());
                 }
 
                 self.service_registry
@@ -1566,6 +1686,7 @@ impl Engine {
     ) -> anyhow::Result<()> {
         tracing::debug!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
+        let authority = worker_authority_from_uri(&uri, self.run_id);
 
         let session =
             match rbac_session::handle_session(peer, Arc::new(self.clone()), config, uri, headers)
@@ -1606,7 +1727,7 @@ impl Engine {
             }
         });
 
-        let worker = WorkerConnection::with_session(tx.clone(), session);
+        let worker = WorkerConnection::with_session_and_authority(tx.clone(), session, authority);
         // Mark before registering: from the moment this connection is
         // discoverable, a Reattach targeting it can rely on this read loop
         // to exit on eviction and run the cleanup.
@@ -1614,7 +1735,7 @@ impl Engine {
             .has_reader
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
-        tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
+        tracing::debug!(worker_id = %worker.id, peer = %peer, authority = worker.authority().as_str(), "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
 
         // Send worker ID back to the worker, along with the secret it must
@@ -1770,6 +1891,128 @@ impl Engine {
         Ok(())
     }
 
+    async fn remove_worker_business_state(
+        &self,
+        worker: &WorkerConnection,
+        clear_local_state: bool,
+    ) {
+        let mut regular_functions: std::collections::HashSet<String> = worker
+            .get_regular_function_ids()
+            .await
+            .into_iter()
+            .collect();
+        regular_functions.extend(
+            self.function_owners
+                .iter()
+                .filter(|entry| *entry.value() == worker.id)
+                .map(|entry| entry.key().clone()),
+        );
+
+        let mut external_functions: std::collections::HashSet<String> = worker
+            .get_external_function_ids()
+            .await
+            .into_iter()
+            .collect();
+        external_functions.extend(
+            self.external_function_owners
+                .iter()
+                .filter(|entry| *entry.value() == worker.id)
+                .map(|entry| entry.key().clone()),
+        );
+
+        if clear_local_state {
+            worker.function_ids.write().await.clear();
+            worker.external_function_ids.write().await.clear();
+        }
+
+        tracing::debug!(worker_id = %worker.id, functions = ?regular_functions, "Removing worker business registrations");
+        for function_id in &regular_functions {
+            if !self.release_function_if_owner(&worker.id, function_id) {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    function_id = %function_id,
+                    "Skipping function removal — owner changed"
+                );
+            }
+        }
+
+        if !external_functions.is_empty() {
+            let http_module = self
+                .service_registry
+                .get_service::<HttpFunctionsWorker>("http_functions");
+            for function_id in &external_functions {
+                if self
+                    .external_function_owners
+                    .get(function_id)
+                    .is_none_or(|owner| *owner != worker.id)
+                {
+                    continue;
+                }
+
+                match &http_module {
+                    Some(module) => {
+                        if let Err(err) = module.unregister_http_function(function_id).await {
+                            tracing::error!(
+                                worker_id = %worker.id,
+                                function_id = %function_id,
+                                error = ?err,
+                                "Failed to unregister external function"
+                            );
+                            self.remove_function(function_id);
+                        }
+                        if self
+                            .external_function_owners
+                            .get(function_id)
+                            .is_some_and(|owner| *owner == worker.id)
+                        {
+                            self.service_registry
+                                .remove_function_from_services(function_id);
+                        }
+                    }
+                    None => self.remove_function_from_engine(function_id),
+                }
+                self.external_function_owners
+                    .remove_if(function_id, |_, owner| *owner == worker.id);
+            }
+        }
+
+        let worker_invocations: Vec<Uuid> =
+            worker.invocations.read().await.iter().copied().collect();
+        if clear_local_state {
+            worker.invocations.write().await.clear();
+        }
+        for invocation_id in worker_invocations {
+            tracing::debug!(invocation_id = %invocation_id, "Halting invocation");
+            self.invocations.halt_invocation(&invocation_id);
+        }
+
+        self.trigger_registry.unregister_worker(&worker.id).await;
+        self.channel_manager.remove_channels_by_worker(&worker.id);
+    }
+
+    async fn quarantine_worker(&self, worker: &WorkerConnection, conflict: WorkerIdentityConflict) {
+        if !worker.quarantine(conflict.clone()) {
+            return;
+        }
+
+        tracing::warn!(
+            worker_id = %worker.id,
+            worker_name = ?worker.name,
+            function_id = %conflict.function_id,
+            current_worker_id = %conflict.current_worker_id,
+            "Worker quarantined after managed identity conflict"
+        );
+        self.remove_worker_business_state(worker, true).await;
+
+        let workers_data = serde_json::json!({
+            "event": "worker_identity_conflict",
+            "worker_id": worker.id.to_string(),
+            "conflict": conflict,
+        });
+        self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
+            .await;
+    }
+
     async fn cleanup_worker(&self, worker: &WorkerConnection) {
         // Run this connection's teardown exactly once, with COMPLETION
         // visible to every caller: the loser of the claim waits for the
@@ -1789,88 +2032,7 @@ impl Engine {
             return;
         }
 
-        let regular_functions = worker.get_regular_function_ids().await;
-        let external_functions = worker.get_external_function_ids().await;
-
-        tracing::debug!(worker_id = %worker.id, functions = ?regular_functions, "Worker registered functions");
-        for function_id in regular_functions.iter() {
-            if !self.release_function_if_owner(&worker.id, function_id) {
-                tracing::debug!(
-                    worker_id = %worker.id,
-                    function_id = %function_id,
-                    "Skipping function removal — owner changed (another worker registered after)"
-                );
-            }
-        }
-
-        if !external_functions.is_empty() {
-            let http_module = self
-                .service_registry
-                .get_service::<HttpFunctionsWorker>("http_functions");
-            for function_id in external_functions.iter() {
-                // Snapshot ownership without releasing — releasing first would
-                // open a window where a racing `RegisterFunction` can claim
-                // ownership mid-teardown, and the remaining teardown steps
-                // (service_registry + http_module) would then wipe the new
-                // owner's fresh state. Keep ownership through teardown and
-                // CAS-release at the end so a racing claim reliably aborts
-                // us at the next ownership check.
-                if self
-                    .external_function_owners
-                    .get(function_id)
-                    .is_none_or(|r| *r != worker.id)
-                {
-                    tracing::debug!(
-                        worker_id = %worker.id,
-                        function_id = %function_id,
-                        "Skipping external function removal — owner changed"
-                    );
-                    continue;
-                }
-                match &http_module {
-                    Some(module) => {
-                        if let Err(err) = module.unregister_http_function(function_id).await {
-                            tracing::error!(
-                                worker_id = %worker.id,
-                                function_id = %function_id,
-                                error = ?err,
-                                "Failed to unregister external function during worker cleanup"
-                            );
-                            self.remove_function(function_id);
-                        }
-                        // Re-check before wiping service_registry: the
-                        // `.await` above is a yield point a racing claim can
-                        // slip through, and service_registry is shared with
-                        // the claimant's setup path (router_msg populates it
-                        // before claim completes).
-                        if self
-                            .external_function_owners
-                            .get(function_id)
-                            .is_some_and(|r| *r == worker.id)
-                        {
-                            self.service_registry
-                                .remove_function_from_services(function_id);
-                        }
-                    }
-                    None => self.remove_function_from_engine(function_id),
-                }
-                // CAS-release ownership. A racing claim will have overwritten
-                // the entry with a new owner id; that predicate fails and we
-                // leave their ownership intact.
-                self.external_function_owners
-                    .remove_if(function_id, |_, owner| *owner == worker.id);
-            }
-        }
-
-        let worker_invocations = worker.invocations.read().await;
-        tracing::debug!(worker_id = %worker.id, invocations = ?worker_invocations, "Worker invocations");
-        for invocation_id in worker_invocations.iter() {
-            tracing::debug!(invocation_id = %invocation_id, "Halting invocation");
-            self.invocations.halt_invocation(invocation_id);
-        }
-
-        self.trigger_registry.unregister_worker(&worker.id).await;
-        self.channel_manager.remove_channels_by_worker(&worker.id);
+        self.remove_worker_business_state(worker, false).await;
         self.worker_registry.unregister_worker(&worker.id);
 
         let workers_data = serde_json::json!({
@@ -1884,42 +2046,133 @@ impl Engine {
         tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
     }
 
-    /// Records `worker_id` as the current owner of `function_id`. Logs a warning
-    /// when the previous owner was a different worker still in the registry —
-    /// that is the cross-worker overwrite shape that, post-defensive-cleanup,
-    /// can leave a hijacked entry behind. Operators can grep for this WARN
-    /// to detect potential function-id squatting.
-    fn claim_function(&self, worker_id: Uuid, function_id: &str) {
-        if let Some(previous) = self
-            .function_owners
-            .insert(function_id.to_string(), worker_id)
-            && previous != worker_id
-            && self.worker_registry.workers.contains_key(&previous)
-        {
-            tracing::warn!(
-                new_owner = %worker_id,
-                previous_owner = %previous,
-                function_id = %function_id,
-                "Function ownership transferred between two live workers — possible cross-worker overwrite"
-            );
+    fn identity_conflict(function_id: &str, current: &WorkerConnection) -> WorkerIdentityConflict {
+        WorkerIdentityConflict {
+            function_id: function_id.to_string(),
+            current_worker_id: current.id.to_string(),
+            current_worker_name: current.name.clone(),
+            current_worker_pid: current.pid,
         }
     }
 
-    /// HTTP-invocation variant of `claim_function`.
-    fn claim_external_function(&self, worker_id: Uuid, function_id: &str) {
-        if let Some(previous) = self
-            .external_function_owners
-            .insert(function_id.to_string(), worker_id)
-            && previous != worker_id
-            && self.worker_registry.workers.contains_key(&previous)
-        {
-            tracing::warn!(
-                new_owner = %worker_id,
-                previous_owner = %previous,
-                function_id = %function_id,
-                "External function ownership transferred between two live workers — possible cross-worker overwrite"
-            );
+    fn claim_owner(
+        &self,
+        owners: &DashMap<String, Uuid>,
+        worker: &WorkerConnection,
+        function_id: &str,
+    ) -> OwnershipClaim {
+        use dashmap::mapref::entry::Entry;
+
+        if worker.authority() == WorkerAuthority::Quarantined {
+            return OwnershipClaim::Rejected {
+                current: worker.clone(),
+            };
         }
+
+        match owners.entry(function_id.to_string()) {
+            Entry::Vacant(entry) => {
+                // Re-check after taking the shard lock: another function's
+                // collision can quarantine this connection concurrently.
+                if worker.authority() == WorkerAuthority::Quarantined {
+                    return OwnershipClaim::Rejected {
+                        current: worker.clone(),
+                    };
+                }
+                entry.insert(worker.id);
+                OwnershipClaim::Accepted {
+                    previous_to_quarantine: None,
+                }
+            }
+            Entry::Occupied(entry) if *entry.get() == worker.id => OwnershipClaim::Accepted {
+                previous_to_quarantine: None,
+            },
+            Entry::Occupied(mut entry) => {
+                let previous_id = *entry.get();
+                let previous = self.worker_registry.get_worker(&previous_id);
+
+                if worker.authority() == WorkerAuthority::Quarantined {
+                    return OwnershipClaim::Rejected {
+                        current: previous.unwrap_or_else(|| worker.clone()),
+                    };
+                }
+
+                if worker.authority() == WorkerAuthority::Unscoped
+                    && previous
+                        .as_ref()
+                        .is_some_and(|owner| owner.authority() == WorkerAuthority::CurrentManaged)
+                {
+                    return OwnershipClaim::Rejected {
+                        current: previous.expect("checked as present"),
+                    };
+                }
+
+                entry.insert(worker.id);
+                let previous_to_quarantine =
+                    if worker.authority() == WorkerAuthority::CurrentManaged {
+                        previous
+                    } else {
+                        None
+                    };
+
+                if previous_to_quarantine.is_none()
+                    && self.worker_registry.workers.contains_key(&previous_id)
+                {
+                    tracing::warn!(
+                        new_owner = %worker.id,
+                        previous_owner = %previous_id,
+                        function_id = %function_id,
+                        "Function ownership transferred between two unscoped live workers"
+                    );
+                }
+
+                OwnershipClaim::Accepted {
+                    previous_to_quarantine,
+                }
+            }
+        }
+    }
+
+    async fn finish_owner_claim(
+        &self,
+        owners: &DashMap<String, Uuid>,
+        worker: &WorkerConnection,
+        function_id: &str,
+        claim: OwnershipClaim,
+    ) -> bool {
+        match claim {
+            OwnershipClaim::Accepted {
+                previous_to_quarantine,
+            } => {
+                if let Some(previous) = previous_to_quarantine {
+                    let conflict = Self::identity_conflict(function_id, worker);
+                    self.quarantine_worker(&previous, conflict).await;
+                }
+                // Quarantining the previous owner yields. A third connection
+                // may win the same id during that await, so only the worker
+                // that still owns the map entry may publish global state.
+                worker.authority() != WorkerAuthority::Quarantined
+                    && owners
+                        .get(function_id)
+                        .is_some_and(|owner| *owner == worker.id)
+            }
+            OwnershipClaim::Rejected { current } => {
+                let conflict = Self::identity_conflict(function_id, &current);
+                self.quarantine_worker(worker, conflict).await;
+                false
+            }
+        }
+    }
+
+    async fn claim_function(&self, worker: &WorkerConnection, function_id: &str) -> bool {
+        let claim = self.claim_owner(&self.function_owners, worker, function_id);
+        self.finish_owner_claim(&self.function_owners, worker, function_id, claim)
+            .await
+    }
+
+    async fn claim_external_function(&self, worker: &WorkerConnection, function_id: &str) -> bool {
+        let claim = self.claim_owner(&self.external_function_owners, worker, function_id);
+        self.finish_owner_claim(&self.external_function_owners, worker, function_id, claim)
+            .await
     }
 
     /// Atomically removes `function_id` from the engine ONLY if `worker_id`
@@ -2141,12 +2394,13 @@ mod tests {
     use serde::Serialize;
     use serde_json::json;
     use tokio::sync::mpsc;
+    use uuid::Uuid;
 
     use crate::{
         config::SecurityConfig,
         function::FunctionResult,
         protocol::{HttpInvocationRef, Message},
-        worker_connections::WorkerConnection,
+        worker_connections::{WorkerAuthority, WorkerConnection},
         workers::{
             engine_fn::TRIGGER_WORKERS_AVAILABLE,
             http_functions::{HttpFunctionsWorker, config::HttpFunctionsConfig},
@@ -2176,6 +2430,28 @@ mod tests {
         {
             Err(serde::ser::Error::custom("serialization exploded"))
         }
+    }
+
+    #[test]
+    fn websocket_run_identity_selects_managed_authority() {
+        let current = Uuid::new_v4();
+        let stale = Uuid::new_v4();
+        let current_uri = format!("/ws?engine_run_id={current}").parse().unwrap();
+        let stale_uri = format!("/ws?engine_run_id={stale}").parse().unwrap();
+        let missing_uri = "/ws".parse().unwrap();
+
+        assert_eq!(
+            super::worker_authority_from_uri(&current_uri, current),
+            WorkerAuthority::CurrentManaged
+        );
+        assert_eq!(
+            super::worker_authority_from_uri(&stale_uri, current),
+            WorkerAuthority::Unscoped
+        );
+        assert_eq!(
+            super::worker_authority_from_uri(&missing_uri, current),
+            WorkerAuthority::Unscoped
+        );
     }
 
     #[test]
@@ -3274,7 +3550,11 @@ mod tests {
         // Ownership gate on UnregisterFunction requires the worker to be the
         // recorded owner. This test sidesteps `router_msg` to seed state, so
         // populate the owner map directly to match the production invariant.
-        engine.claim_external_function(worker.id, "external.cleanup");
+        assert!(
+            engine
+                .claim_external_function(&worker, "external.cleanup")
+                .await
+        );
 
         engine
             .router_msg(
@@ -4696,6 +4976,113 @@ mod tests {
             engine.external_function_owners.contains_key("ext_fn"),
             "external ownership entry for the WS worker must be intact"
         );
+    }
+
+    #[tokio::test]
+    async fn current_managed_worker_replaces_and_quarantines_stale_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let register = |id: &str| Message::RegisterFunction {
+            id: id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+
+        let (stale_tx, _stale_rx) = mpsc::channel::<Outbound>(8);
+        let stale = WorkerConnection::new_with_authority(stale_tx, WorkerAuthority::Unscoped);
+        engine.worker_registry.register_worker(stale.clone());
+        engine
+            .router_msg(&stale, &register("provider::kimi::stream"))
+            .await
+            .unwrap();
+        engine
+            .router_msg(&stale, &register("provider::kimi::old_only"))
+            .await
+            .unwrap();
+
+        let (current_tx, _current_rx) = mpsc::channel::<Outbound>(8);
+        let current =
+            WorkerConnection::new_with_authority(current_tx, WorkerAuthority::CurrentManaged);
+        engine.worker_registry.register_worker(current.clone());
+        engine
+            .router_msg(&current, &register("provider::kimi::stream"))
+            .await
+            .unwrap();
+
+        assert_eq!(stale.authority(), WorkerAuthority::Quarantined);
+        assert!(stale.identity_conflict().is_some());
+        assert_eq!(
+            *engine
+                .function_owners
+                .get("provider::kimi::stream")
+                .unwrap(),
+            current.id
+        );
+        assert!(engine.functions.get("provider::kimi::old_only").is_none());
+        assert!(engine.worker_registry.get_worker(&stale.id).is_some());
+        assert_eq!(stale.function_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn unscoped_worker_cannot_replace_current_managed_owner() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let register = Message::RegisterFunction {
+            id: "provider::kimi::stream".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        };
+
+        let (current_tx, _current_rx) = mpsc::channel::<Outbound>(8);
+        let current =
+            WorkerConnection::new_with_authority(current_tx, WorkerAuthority::CurrentManaged);
+        engine.worker_registry.register_worker(current.clone());
+        engine.router_msg(&current, &register).await.unwrap();
+
+        let (stale_tx, mut stale_rx) = mpsc::channel::<Outbound>(8);
+        let stale = WorkerConnection::new_with_authority(stale_tx, WorkerAuthority::Unscoped);
+        engine.worker_registry.register_worker(stale.clone());
+        engine.router_msg(&stale, &register).await.unwrap();
+
+        assert_eq!(stale.authority(), WorkerAuthority::Quarantined);
+        assert_eq!(
+            *engine
+                .function_owners
+                .get("provider::kimi::stream")
+                .unwrap(),
+            current.id
+        );
+
+        engine
+            .router_msg(
+                &stale,
+                &Message::InvokeFunction {
+                    invocation_id: Some(Uuid::new_v4()),
+                    function_id: "router::provider::register".to_string(),
+                    data: json!({}),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+        match stale_rx.recv().await {
+            Some(Outbound::Protocol(Message::InvocationResult { error, .. })) => {
+                assert_eq!(
+                    error.expect("identity error").code,
+                    "engine/worker_identity_conflict"
+                );
+            }
+            other => panic!("expected identity conflict response, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

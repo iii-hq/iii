@@ -10,6 +10,7 @@ pub mod builtin_defaults;
 pub mod bundle_download;
 pub mod config_file;
 pub mod download;
+pub mod engine_identity;
 pub mod erofs;
 pub mod firmware;
 pub mod gen_docs;

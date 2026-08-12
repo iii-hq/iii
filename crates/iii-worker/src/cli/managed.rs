@@ -3831,7 +3831,7 @@ async fn start_oci_worker(worker_name: &str, worker_def: &WorkerDef, port: u16) 
     let adapter = super::worker_manager::create_adapter("libkrun");
     eprintln!("  Starting {} (OCI)...", worker_name.bold());
 
-    let engine_url = format!("ws://localhost:{}", port);
+    let engine_url = super::engine_identity::managed_engine_url(format!("ws://localhost:{}", port));
     let spec = build_container_spec(worker_name, worker_def, &engine_url);
 
     let pid_file = dirs::home_dir()
@@ -3911,9 +3911,12 @@ async fn start_binary_worker(
     // are engine-set). Without these a registry binary on a non-default
     // manager port dials its compiled-in ws://127.0.0.1:49134 default and
     // strands retrying (iii-hq/workers#526).
-    let engine_url = format!("ws://127.0.0.1:{}", port);
+    let engine_url = super::engine_identity::managed_engine_url(format!("ws://127.0.0.1:{}", port));
     cmd.env("III_ENGINE_URL", &engine_url);
     cmd.env("III_URL", &engine_url);
+    if let Some(run_id) = super::engine_identity::engine_run_id() {
+        cmd.env(super::engine_identity::ENGINE_RUN_ID_ENV, run_id);
+    }
     cmd.stdout(stdout_file).stderr(stderr_file);
 
     #[cfg(unix)]

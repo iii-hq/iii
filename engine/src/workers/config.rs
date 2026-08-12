@@ -409,8 +409,12 @@ impl WorkerRegistry {
                 info.env
                     .push(("III_CONFIG_PATH".to_string(), path.display().to_string()));
             }
-            let module =
-                super::external::ExternalWorker::new(info, config, engine.worker_manager_port());
+            let module = super::external::ExternalWorker::new_managed(
+                info,
+                config,
+                engine.worker_manager_port(),
+                engine.run_id(),
+            );
             return Ok(Box::new(ExternalProcessWorker::new(Box::new(module))));
         }
 
@@ -427,6 +431,7 @@ impl WorkerRegistry {
             port,
             config.as_ref(),
             engine.config_path(),
+            engine.run_id(),
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start worker '{}': {}", name, e))?;

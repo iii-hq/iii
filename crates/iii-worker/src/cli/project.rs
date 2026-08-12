@@ -421,7 +421,10 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
     let mut env = HashMap::new();
     if let Some(env_map) = &manifest.env {
         for (key, val) in env_map {
-            if key != "III_URL" && key != "III_ENGINE_URL" {
+            if key != "III_URL"
+                && key != "III_ENGINE_URL"
+                && key != super::engine_identity::ENGINE_RUN_ID_ENV
+            {
                 env.insert(key.clone(), val.clone());
             }
         }

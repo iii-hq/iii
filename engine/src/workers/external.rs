@@ -28,6 +28,7 @@ use tokio::{
     sync::Mutex,
     time::{Duration, timeout},
 };
+use uuid::Uuid;
 
 use crate::{engine::Engine, workers::traits::Worker};
 
@@ -185,6 +186,7 @@ pub struct ExternalWorker {
     /// (sandbox-daemon, worker-manager-daemon) connect back to THIS engine
     /// instead of their hardcoded ws://127.0.0.1:49134 default (MOT-3970).
     worker_manager_port: u16,
+    engine_run_id: Option<Uuid>,
     env: Vec<(String, String)>,
     config: Option<Value>,
     child: Arc<Mutex<Option<Child>>>,
@@ -213,6 +215,24 @@ const BACKOFF_RESET_UPTIME: Duration = Duration::from_secs(60);
 
 impl ExternalWorker {
     pub fn new(info: ExternalWorkerInfo, config: Option<Value>, worker_manager_port: u16) -> Self {
+        Self::new_with_run_id(info, config, worker_manager_port, None)
+    }
+
+    pub fn new_managed(
+        info: ExternalWorkerInfo,
+        config: Option<Value>,
+        worker_manager_port: u16,
+        engine_run_id: Uuid,
+    ) -> Self {
+        Self::new_with_run_id(info, config, worker_manager_port, Some(engine_run_id))
+    }
+
+    fn new_with_run_id(
+        info: ExternalWorkerInfo,
+        config: Option<Value>,
+        worker_manager_port: u16,
+        engine_run_id: Option<Uuid>,
+    ) -> Self {
         let name = info.name.clone();
         let display_name = Box::leak(format!("ExternalWorker({})", &name).into_boxed_str());
         Self {
@@ -221,6 +241,7 @@ impl ExternalWorker {
             binary_path: info.binary_path,
             extra_args: info.extra_args,
             worker_manager_port,
+            engine_run_id,
             env: info.env,
             config,
             child: Arc::new(Mutex::new(None)),
@@ -282,7 +303,11 @@ impl ExternalWorker {
         // two engines on one host each get their own daemon (MOT-3970).
         // Re-exported on every respawn (MOT-3857 supervisor) so a respawned
         // daemon keeps the same contract.
-        let engine_url = format!("ws://127.0.0.1:{}", self.worker_manager_port);
+        let mut engine_url = format!("ws://127.0.0.1:{}", self.worker_manager_port);
+        if let Some(run_id) = self.engine_run_id {
+            engine_url.push_str(&format!("?engine_run_id={run_id}"));
+            cmd.env("III_ENGINE_RUN_ID", run_id.to_string());
+        }
         cmd.env("III_ENGINE_URL", &engine_url);
         cmd.env("III_URL", &engine_url);
 

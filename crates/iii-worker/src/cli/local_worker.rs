@@ -371,7 +371,11 @@ echo "iii: workspace ready; deps mounted VM-local from $DEPS_ROOT" >&2"#
 pub fn build_env_exports(env: &HashMap<String, String>) -> String {
     let mut parts: Vec<String> = Vec::new();
     for (k, v) in env {
-        if k == "III_ENGINE_URL" || k == "III_URL" || k == "III_WORKER_NAME" {
+        if k == "III_ENGINE_URL"
+            || k == "III_URL"
+            || k == "III_WORKER_NAME"
+            || k == super::engine_identity::ENGINE_RUN_ID_ENV
+        {
             continue;
         }
         if !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') || k.is_empty() {
@@ -404,10 +408,15 @@ pub fn build_local_env(
     // `hostname:pid` fallback instead reads as "not registered" forever.
     env.insert("III_WORKER_NAME".to_string(), worker_name.to_string());
     for (key, value) in project_env {
-        if key != "III_ENGINE_URL" && key != "III_URL" && key != "III_WORKER_NAME" {
+        if key != "III_ENGINE_URL"
+            && key != "III_URL"
+            && key != "III_WORKER_NAME"
+            && key != super::engine_identity::ENGINE_RUN_ID_ENV
+        {
             env.insert(key.clone(), value.clone());
         }
     }
+    super::engine_identity::insert_engine_run_id(&mut env);
     env
 }
 
@@ -1163,7 +1172,9 @@ async fn start_worker_impl(
     let is_prepared = prepared_marker.exists();
 
     // 6. Build env with engine URL + OCI env + config.yaml env
-    let engine_url = engine_url_for_runtime("libkrun", "0.0.0.0", port, &None);
+    let engine_url = super::engine_identity::managed_engine_url(engine_url_for_runtime(
+        "libkrun", "0.0.0.0", port, &None,
+    ));
     let config_env = super::config_file::get_worker_config_as_env(worker_name);
 
     let mut combined_project_env = project.env.clone();

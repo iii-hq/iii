@@ -9,7 +9,10 @@ pub mod traits;
 use std::{
     collections::HashSet,
     str::FromStr,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
 };
 
 use chrono::{DateTime, Utc};
@@ -32,6 +35,50 @@ pub struct WorkerConnectionTelemetryMeta {
     pub language: Option<String>,
     pub project_name: Option<String>,
     pub framework: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerAuthority {
+    CurrentManaged,
+    Unscoped,
+    Quarantined,
+}
+
+impl WorkerAuthority {
+    const fn as_u8(self) -> u8 {
+        match self {
+            Self::CurrentManaged => 0,
+            Self::Unscoped => 1,
+            Self::Quarantined => 2,
+        }
+    }
+
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::CurrentManaged,
+            2 => Self::Quarantined,
+            _ => Self::Unscoped,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentManaged => "current_managed",
+            Self::Unscoped => "unscoped",
+            Self::Quarantined => "quarantined",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct WorkerIdentityConflict {
+    pub function_id: String,
+    pub current_worker_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_worker_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_worker_pid: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +292,8 @@ pub struct WorkerConnection {
     pub pid: Option<u32>,
     pub isolation: Option<String>,
     pub session: Option<Arc<Session>>,
+    authority: Arc<AtomicU8>,
+    identity_conflict: Arc<std::sync::RwLock<Option<WorkerIdentityConflict>>>,
     /// In-flight `Message::RegisterTrigger` deliveries awaiting this worker's
     /// `TriggerRegistrationResult` ack, keyed by trigger id. Only ownerless
     /// (function-path) registrations wait on an entry here — see the
@@ -278,6 +327,10 @@ pub struct WorkerConnection {
 
 impl WorkerConnection {
     pub fn new(channel: mpsc::Sender<Outbound>) -> Self {
+        Self::new_with_authority(channel, WorkerAuthority::Unscoped)
+    }
+
+    pub fn new_with_authority(channel: mpsc::Sender<Outbound>, authority: WorkerAuthority) -> Self {
         let id = Uuid::new_v4();
         Self {
             id,
@@ -296,6 +349,8 @@ impl WorkerConnection {
             pid: None,
             isolation: None,
             session: None,
+            authority: Arc::new(AtomicU8::new(authority.as_u8())),
+            identity_conflict: Arc::new(std::sync::RwLock::new(None)),
             pending_trigger_acks: Arc::new(DashMap::new()),
             evict: Arc::new(Notify::new()),
             has_reader: Arc::new(AtomicBool::new(false)),
@@ -306,6 +361,14 @@ impl WorkerConnection {
     }
 
     pub fn with_session(channel: mpsc::Sender<Outbound>, session: Session) -> Self {
+        Self::with_session_and_authority(channel, session, WorkerAuthority::Unscoped)
+    }
+
+    pub fn with_session_and_authority(
+        channel: mpsc::Sender<Outbound>,
+        session: Session,
+        authority: WorkerAuthority,
+    ) -> Self {
         let id = Uuid::new_v4();
         Self {
             id,
@@ -324,6 +387,8 @@ impl WorkerConnection {
             pid: None,
             isolation: None,
             session: Some(Arc::new(session)),
+            authority: Arc::new(AtomicU8::new(authority.as_u8())),
+            identity_conflict: Arc::new(std::sync::RwLock::new(None)),
             pending_trigger_acks: Arc::new(DashMap::new()),
             evict: Arc::new(Notify::new()),
             has_reader: Arc::new(AtomicBool::new(false)),
@@ -331,6 +396,34 @@ impl WorkerConnection {
             cleanup_done: Arc::new(watch::channel(false).0),
             reattach_token: Uuid::new_v4(),
         }
+    }
+
+    pub fn authority(&self) -> WorkerAuthority {
+        WorkerAuthority::from_u8(self.authority.load(Ordering::SeqCst))
+    }
+
+    pub fn identity_conflict(&self) -> Option<WorkerIdentityConflict> {
+        self.identity_conflict
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Marks the connection quarantined exactly once. Returns true for the
+    /// caller that performed the transition and must remove business state.
+    pub fn quarantine(&self, conflict: WorkerIdentityConflict) -> bool {
+        if self
+            .authority
+            .swap(WorkerAuthority::Quarantined.as_u8(), Ordering::SeqCst)
+            == WorkerAuthority::Quarantined.as_u8()
+        {
+            return false;
+        }
+        *self
+            .identity_conflict
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(conflict);
+        true
     }
 
     pub async fn function_count(&self) -> usize {

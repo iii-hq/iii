@@ -80,7 +80,7 @@ pub struct WorkerManifest {
     pub scripts: Option<ScriptsSection>,
 
     #[schemars(
-        description = "Optional string->string env vars injected into the worker process. III_URL / III_ENGINE_URL are set by the engine and ignored here."
+        description = "Optional string->string env vars injected into the worker process. III_URL, III_ENGINE_URL, and III_ENGINE_RUN_ID are set by the engine and ignored here."
     )]
     pub env: Option<BTreeMap<String, String>>,
 

@@ -138,9 +138,13 @@ fn spawn_args(worker_name: &str, port: u16, config_path: Option<&std::path::Path
 /// ws://127.0.0.1:49134 default (iii-hq/workers#526). Mirrors the
 /// MOT-3970 exports in external.rs for builtin daemons. Kept pure so the
 /// env contract regression-tests without spawning, like `spawn_args`.
-fn spawn_url_env(port: u16) -> [(&'static str, String); 2] {
+fn spawn_url_env(port: u16, run_id: uuid::Uuid) -> [(&'static str, String); 3] {
     let url = format!("ws://127.0.0.1:{}", port);
-    [("III_ENGINE_URL", url.clone()), ("III_URL", url)]
+    [
+        ("III_ENGINE_URL", url.clone()),
+        ("III_URL", url),
+        ("III_ENGINE_RUN_ID", run_id.to_string()),
+    ]
 }
 
 // =============================================================================
@@ -252,6 +256,7 @@ impl ExternalWorkerProcess {
         port: u16,
         config: Option<&Value>,
         engine_config_path: Option<&std::path::Path>,
+        engine_run_id: uuid::Uuid,
     ) -> Result<Self, String> {
         let worker_binary = resolve_iii_worker_binary()
             .ok_or_else(|| {
@@ -319,7 +324,7 @@ impl ExternalWorkerProcess {
         // Engine WS URL for the whole detached tree (workers#526): binary
         // workers inherit env from `iii-worker start`, so exporting here
         // reaches them even through a version-skewed iii-worker binary.
-        for (key, value) in spawn_url_env(port) {
+        for (key, value) in spawn_url_env(port, engine_run_id) {
             cmd.env(key, value);
         }
         // Same-file contract: the spawned `iii-worker start` (and everything
@@ -1039,11 +1044,13 @@ mod tests {
     /// re-strands every registry binary on non-default ports.
     #[test]
     fn spawn_url_env_carries_manager_port() {
+        let run_id = uuid::Uuid::nil();
         assert_eq!(
-            spawn_url_env(3034),
+            spawn_url_env(3034, run_id),
             [
                 ("III_ENGINE_URL", "ws://127.0.0.1:3034".to_string()),
                 ("III_URL", "ws://127.0.0.1:3034".to_string()),
+                ("III_ENGINE_RUN_ID", run_id.to_string()),
             ],
         );
     }
