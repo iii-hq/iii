@@ -120,20 +120,16 @@ pub fn collector() -> &'static TelemetryCollector {
     TELEMETRY_COLLECTOR.get_or_init(TelemetryCollector::default)
 }
 
-static FIRST_USER_INVOCATION: OnceLock<tokio::sync::Notify> = OnceLock::new();
-static FIRST_USER_INVOCATION_SENT: AtomicBool = AtomicBool::new(false);
+static USER_FUNCTION_INVOKED: AtomicBool = AtomicBool::new(false);
 
-/// Returns the notify handle the boot heartbeat task awaits on.
-pub fn first_user_invocation_notify() -> &'static tokio::sync::Notify {
-    FIRST_USER_INVOCATION.get_or_init(tokio::sync::Notify::new)
+/// Whether a user (non-builtin) function has been invoked in this process.
+pub fn user_function_invoked() -> bool {
+    USER_FUNCTION_INVOKED.load(Ordering::Relaxed)
 }
 
-/// Signal that a user (non-builtin) function was invoked.
-/// Only the first call actually wakes the listener; subsequent calls are no-ops.
-pub fn notify_user_function_invoked() {
-    if !FIRST_USER_INVOCATION_SENT.swap(true, Ordering::Relaxed) {
-        first_user_invocation_notify().notify_one();
-    }
+/// Record that a user (non-builtin) function was invoked.
+pub fn mark_user_function_invoked() {
+    USER_FUNCTION_INVOKED.store(true, Ordering::Relaxed);
 }
 
 // Convenience tracking functions

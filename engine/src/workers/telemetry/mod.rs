@@ -705,6 +705,9 @@ impl TelemetryContext {
     }
 }
 
+/// How long the engine must stay up before it reports a boot heartbeat.
+const BOOT_HEARTBEAT_DELAY_SECS: u64 = 120;
+
 const TEMPLATE_POLL_INTERVAL_SECS: u64 = 3;
 const TEMPLATE_POLL_TIMEOUT_SECS: u64 = 60 * 60;
 
@@ -878,11 +881,7 @@ impl Worker for TelemetryWorker {
         let posthog_client_for_started = self.posthog_client.clone();
         let ctx_for_started = self.ctx.clone();
         tokio::spawn(async move {
-            let user_invocation = collector::first_user_invocation_notify().notified();
-            tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {},
-                _ = user_invocation => {},
-            }
+            tokio::time::sleep(std::time::Duration::from_secs(BOOT_HEARTBEAT_DELAY_SECS)).await;
 
             let snap = collect_engine_snapshot(&engine_for_started);
 
@@ -905,8 +904,16 @@ impl Worker for TelemetryWorker {
                 .await;
             }
 
+            if !environment::claim_heartbeat(interval_secs) {
+                return;
+            }
+
             let mut props = build_base_properties(&snap);
             props.insert("session_start".into(), serde_json::json!(true));
+            props.insert(
+                "functions_invoked".into(),
+                serde_json::json!(collector::user_function_invoked()),
+            );
             props.insert(
                 "worker_count_by_language".into(),
                 serde_json::json!(snap.wd.worker_count_by_language),
@@ -969,11 +976,16 @@ impl Worker for TelemetryWorker {
                         }
                     }
                     _ = interval.tick() => {
+                        if !environment::claim_heartbeat(interval_secs) {
+                            continue;
+                        }
+
                         // let d = deltas.snapshot();
                         let snap = collect_engine_snapshot(&engine);
 
                         let mut props = build_base_properties(&snap);
                         props.insert("session_start".into(), serde_json::json!(false));
+                        props.insert("functions_invoked".into(), serde_json::json!(collector::user_function_invoked()));
                         props.insert("worker_count_by_language".into(), serde_json::json!(snap.wd.worker_count_by_language));
                         props.insert("period_secs".into(), serde_json::json!(interval_secs));
                         props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
@@ -1230,6 +1242,24 @@ mod tests {
     #[test]
     fn test_default_heartbeat_interval_is_six_hours() {
         assert_eq!(default_heartbeat_interval(), 6 * 60 * 60);
+    }
+
+    #[test]
+    fn test_default_interval_leaves_room_for_the_stamp_gate() {
+        // `claim_heartbeat` compares against the interval less the slack
+        // window. An interval inside that window makes the gate always open,
+        // which would silently restore the per-restart heartbeat flood.
+        assert!(
+            default_heartbeat_interval() > environment::HEARTBEAT_STAMP_SLACK_SECS,
+            "the default interval must stay outside the stamp slack window"
+        );
+    }
+
+    #[test]
+    fn test_boot_delay_is_shorter_than_the_default_interval() {
+        // The boot heartbeat has to land before the first periodic tick,
+        // otherwise a short-lived engine reports nothing at all.
+        assert!(BOOT_HEARTBEAT_DELAY_SECS < default_heartbeat_interval());
     }
 
     #[test]
