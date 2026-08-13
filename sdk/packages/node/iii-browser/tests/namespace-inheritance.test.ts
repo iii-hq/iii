@@ -104,3 +104,42 @@ describe('namespace inheritance', () => {
     expect((announce as { data?: { namespace?: string } }).data?.namespace).toBe('orders')
   })
 })
+
+/**
+ * A namespace that was declared and left blank is a mistake, not a way to ask
+ * for `default`.
+ *
+ * The browser assigned it raw, so `namespace: ''` produced a worker that
+ * registered under a namespace named by the empty string -- one nobody can
+ * address or type. The other SDKs each refused it already, in their own way.
+ */
+describe('a blank namespace is refused', () => {
+  let engine: MockEngine
+
+  beforeEach(() => {
+    engine = new MockEngine()
+    engine.install()
+  })
+
+  afterEach(() => {
+    engine.uninstall()
+  })
+
+  it.each([['', 'empty'], ['   ', 'whitespace-only']])(
+    'refuses a %s namespace',
+    (namespace) => {
+      expect(() => registerWorker('ws://test:49135', { namespace })).toThrow(/namespace is empty/)
+    },
+  )
+
+  it('says what to do instead', () => {
+    expect(() => registerWorker('ws://test:49135', { namespace: '' })).toThrow(
+      /leave it unset to register in `default`/,
+    )
+  })
+
+  it('leaves an absent namespace alone', () => {
+    // The control: absent asks for the engine's `default` and is not a mistake.
+    expect(() => registerWorker('ws://test:49135', {})).not.toThrow()
+  })
+})
