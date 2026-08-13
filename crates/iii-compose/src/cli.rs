@@ -42,7 +42,10 @@ pub struct ComposeCli {
     /// It is the address an operator reaches exactly one of them with:
     /// `iii trigger compose::up --namespace <NS> file=<PATH>`. Omitted, the
     /// daemon generates one and prints it.
-    #[arg(long = "ns", value_name = "NS")]
+    /// `--ns` is kept as an alias so a daemon started by an older script keeps
+    /// running; it is not advertised, and `-n` / `--namespace` is the spelling
+    /// everything else in the CLI uses.
+    #[arg(short = 'n', long = "namespace", alias = "ns", value_name = "NS")]
     pub ns: Option<String>,
 }
 
