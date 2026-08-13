@@ -1335,6 +1335,9 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register trigger A");
@@ -1349,6 +1352,9 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register trigger B");
@@ -1402,6 +1408,9 @@ async fn rmq_fanout_replicas_compete_within_function() {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: iii::protocol::default_namespace(),
+                provider_namespace: iii::protocol::default_namespace(),
             })
             .await
             .expect("register trigger");
@@ -1457,6 +1466,9 @@ async fn rmq_fanout_dlq_per_function() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register success trigger");
@@ -1471,6 +1483,9 @@ async fn rmq_fanout_dlq_per_function() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register fail trigger");
@@ -1753,6 +1768,9 @@ async fn rmq_subscriber_priority_orders_by_priority() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register trigger should succeed");
@@ -1858,6 +1876,9 @@ async fn rmq_subscriber_invokes_target_in_registering_namespace() {
             worker_id: None,
             metadata: None,
             namespace: "orders".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .expect("register orders trigger");
@@ -1948,6 +1969,9 @@ async fn rmq_two_namespaces_same_topic_fid_are_distinct_queues() {
                 worker_id: None,
                 metadata: None,
                 namespace: ns.to_string(),
+                trigger_namespace: None,
+                home_namespace: iii::protocol::default_namespace(),
+                provider_namespace: iii::protocol::default_namespace(),
             })
             .await
             .unwrap_or_else(|_| panic!("register {ns} trigger"));

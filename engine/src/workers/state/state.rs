@@ -250,15 +250,15 @@ fn state_trigger_matches(
     event_scope: &str,
     event_key: &str,
 ) -> bool {
-    if let Some(scope) = &config.scope {
-        if scope != event_scope {
-            return false;
-        }
+    if let Some(scope) = &config.scope
+        && scope != event_scope
+    {
+        return false;
     }
-    if let Some(key) = &config.key {
-        if key != event_key {
-            return false;
-        }
+    if let Some(key) = &config.key
+        && key != event_key
+    {
+        return false;
     }
     true
 }
@@ -986,6 +986,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
             trigger.config.clone(),
@@ -1192,6 +1195,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "orders".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let config = serde_json::from_value::<StateTriggerConfig>(trigger.config.clone()).unwrap();
         module
@@ -1436,6 +1442,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         {
@@ -1486,6 +1495,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         {
@@ -1553,6 +1565,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         {
@@ -1638,7 +1653,10 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(TRIGGER_TYPE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    TRIGGER_TYPE
+                ))
         );
 
         module.destroy().await.unwrap();
@@ -1804,6 +1822,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
@@ -1887,6 +1908,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
@@ -1945,6 +1969,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(

@@ -17,9 +17,34 @@ The engine uses these registry keys:
 
 - `(namespace, function_id)` for functions.
 - `(namespace, worker_name)` for workers.
+- `(namespace, trigger_type_id)` for trigger type providers.
 
 A worker connection has one namespace. Its function, service, and trigger type registrations use
 that namespace.
+
+## Trigger types and the two namespaces a trigger names
+
+A trigger names two namespaces, and they answer different questions:
+
+- **`namespace`** is where the target function resolves when the trigger fires.
+- **`trigger_namespace`** is where the trigger type's provider is found.
+
+Both are optional. `namespace` absent means the engine's default namespace.
+`trigger_namespace` absent is not `default`: the engine resolves it, taking the
+registering worker's namespace first and the default namespace second.
+
+That order is what lets a project ship its own provider for a trigger type the
+engine also provides. The engine's own providers (`http`, `cron`, `state`,
+`stream`) live in the default namespace, so a worker that names nothing reaches
+them. A project that registers its own provider for the same type id gets that
+one instead, without any worker changing how it binds.
+
+Naming `trigger_namespace` explicitly is strict: that namespace or nothing. A
+binding that names one is never moved.
+
+A provider that registers after a binding already fell back to the default
+namespace claims that binding back. Start order therefore does not decide which
+provider serves a project.
 
 ## What namespaces enable
 

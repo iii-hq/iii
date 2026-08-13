@@ -691,6 +691,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         module
@@ -731,6 +734,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .expect("register trigger without topic");
@@ -754,7 +760,10 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key("subscribe")
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "subscribe"
+                ))
         );
         assert_eq!(module.name(), "PubSubModule");
     }
@@ -857,6 +866,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .expect("register subscribe trigger");
@@ -887,6 +899,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .expect("register subscribe trigger");

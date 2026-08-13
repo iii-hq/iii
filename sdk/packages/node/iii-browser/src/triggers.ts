@@ -14,7 +14,12 @@ export type TriggerConfig<TConfig> = {
   /**
    * Namespace the trigger's target `function_id` resolves in. A provider that
    * stores this config and later fires the target must pass this namespace, or
-   * it fires in `default`. Absent means the engine's default namespace.
+   * it fires in `default`.
+   *
+   * Omitted, it is filled in with the registering worker's namespace. A trigger
+   * names a function, and a worker's functions land in the worker's namespace,
+   * so defaulting anywhere else registers a trigger that resolves nothing. Name
+   * another namespace, `default` included, to target one.
    */
   namespace?: string
 }
