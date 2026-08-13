@@ -507,13 +507,11 @@ async fn should_deny_trigger_registration_via_hook() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let _ = iii_client.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-        trigger_type: "test-rbac-trigger".to_string(),
-        function_id: "denied-trig::my-fn".to_string(),
-        config: json!({ "key": "value" }),
-        metadata: None,
-        namespace: None,
-    });
+    let _ = iii_client.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+        "test-rbac-trigger".to_string(),
+        "denied-trig::my-fn".to_string(),
+        json!({ "key": "value" }),
+    ));
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 

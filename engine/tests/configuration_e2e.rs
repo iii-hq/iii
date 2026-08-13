@@ -217,6 +217,9 @@ async fn configuration_trigger_fires_target_and_condition_in_registering_namespa
         worker_id: None,
         metadata: None,
         namespace: "orders".to_string(),
+        trigger_namespace: None,
+        home_namespace: iii::protocol::default_namespace(),
+        provider_namespace: iii::protocol::default_namespace(),
     };
     worker
         .register_trigger(trigger)
@@ -264,6 +267,9 @@ async fn trigger_fan_out_delivers_expanded_event_payload() {
         worker_id: None,
         metadata: None,
         namespace: "default".to_string(),
+        trigger_namespace: None,
+        home_namespace: iii::protocol::default_namespace(),
+        provider_namespace: iii::protocol::default_namespace(),
     };
     worker
         .register_trigger(trigger.clone())
@@ -323,6 +329,9 @@ async fn fs_watcher_surfaces_external_file_edits_as_updates() {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: iii::protocol::default_namespace(),
+            provider_namespace: iii::protocol::default_namespace(),
         })
         .await
         .unwrap();
@@ -371,6 +380,9 @@ async fn ttl_cleanup_removes_configuration_after_last_trigger_unregistered() {
         worker_id: None,
         metadata: None,
         namespace: "default".to_string(),
+        trigger_namespace: None,
+        home_namespace: iii::protocol::default_namespace(),
+        provider_namespace: iii::protocol::default_namespace(),
     };
     worker.register_trigger(trigger.clone()).await.unwrap();
 

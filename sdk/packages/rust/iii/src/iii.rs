@@ -195,13 +195,17 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         config: C,
         metadata: Option<Value>,
     ) -> Result<Trigger, Error> {
-        self.iii.register_trigger(RegisterTriggerInput {
-            trigger_type: self.trigger_type_id.clone(),
-            function_id: function_id.into(),
-            config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
-            metadata,
-            namespace: self.iii.namespace(),
-        })
+        let mut input = RegisterTriggerInput::new(
+            self.trigger_type_id.clone(),
+            function_id,
+            serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
+        );
+        // This typed helper pairs a function with its trigger, so it names the
+        // worker's namespace for the target; the low-level path resolves the
+        // same thing, and saying it here keeps the two from drifting.
+        input.metadata = metadata;
+        input.namespace = self.iii.namespace();
+        self.iii.register_trigger(input)
     }
 }
 
@@ -347,14 +351,55 @@ impl Default for WorkerMetadata {
 /// any connection, so it fails the worker at startup the way `iii compose`
 /// refuses `--ns ""`, rather than producing a client that serves in a place
 /// nobody asked for.
+/// Refuses a namespace that was named and left blank, whatever named it.
+///
+/// Absent and blank ask for opposite things. Absent asks for the engine's
+/// `default`; blank names a namespace and gives nothing to name it with. Read
+/// as absent, the worker registers in `default`, and since a worker's calls and
+/// triggers follow its namespace, the whole project quietly serves from a place
+/// its declaration never named.
+///
+/// Panics rather than returning an error: this is a mistake in the program
+/// text, made once at construction, and there is nothing a caller could do with
+/// a `Result` here except unwrap it.
+pub(crate) fn reject_blank_namespace(declared: &str, source: &str) {
+    if declared.trim().is_empty() {
+        panic!(
+            "namespace is empty: `{source}` was set to {declared:?}. \
+             Give it a name, or leave it unset to register in `default`."
+        );
+    }
+}
+
+/// The namespace one call or one binding resolves in.
+///
+/// `None` inherits the worker's. `Some("")` is refused: a namespace named and
+/// left blank asks for the opposite of what absent asks for, and the two are
+/// only ever confused by accident -- `??`, `or_else` and `or` each disagree
+/// about the empty string, which is how the SDKs ended up forwarding it,
+/// coercing it and dropping it respectively.
+///
+/// An `Err` rather than a panic: unlike a namespace declared once in
+/// `InitOptions`, a per-call one can come from data, and a caller can do
+/// something with the error.
+pub(crate) fn call_namespace(
+    explicit: Option<String>,
+    worker: Option<String>,
+    source: &str,
+) -> Result<Option<String>, Error> {
+    match explicit {
+        Some(declared) if declared.trim().is_empty() => Err(Error::Handler(format!(
+            "namespace is empty: `{source}` was set to {declared:?}. Give it a name, or leave \
+             it unset to stay in this worker's namespace."
+        ))),
+        Some(declared) => Ok(Some(declared)),
+        None => Ok(worker),
+    }
+}
+
 pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
     if let Some(declared) = explicit {
-        if declared.trim().is_empty() {
-            panic!(
-                "namespace is empty: `InitOptions.namespace` was set to {declared:?}. \
-                 Give it a name, or leave it unset to register in `default`."
-            );
-        }
+        reject_blank_namespace(&declared, "InitOptions.namespace");
         return Some(declared);
     }
 
@@ -913,9 +958,18 @@ impl IIIClient {
     /// Override the worker's target namespace (call before connect). Applied by
     /// [`register_worker`](crate::register_worker) after resolving
     /// `InitOptions.namespace` and `III_NAMESPACE`.
+    ///
+    /// # Panics
+    ///
+    /// If `namespace` is empty or only whitespace. `register_worker` resolves
+    /// its own namespace before calling this, so the check is here for the
+    /// callers that reach it directly: a blank one is the same mistake
+    /// wherever it is made, and this entry point skipped it.
     pub fn set_namespace(&self, namespace: impl Into<String>) {
+        let namespace = namespace.into();
+        reject_blank_namespace(&namespace, "IIIClient::set_namespace");
         if let Some(md) = self.inner.worker_metadata.lock_or_recover().as_mut() {
-            md.namespace = Some(namespace.into());
+            md.namespace = Some(namespace);
         }
     }
 
@@ -1212,6 +1266,10 @@ impl IIIClient {
             description: trigger_type.description,
             trigger_request_format: trigger_type.trigger_request_format,
             call_request_format: trigger_type.call_request_format,
+            // Left to the engine, which files it under this connection's
+            // namespace. A worker providing a trigger type provides it for the
+            // project it belongs to.
+            namespace: None,
         };
 
         let trigger_type_id = message.id.clone();
@@ -1260,13 +1318,11 @@ impl IIIClient {
     /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
     /// # let worker = IIIClient::new("ws://localhost:49134");
-    /// let trigger = worker.register_trigger(RegisterTriggerInput {
-    ///     trigger_type: "http".to_string(),
-    ///     function_id: "greet".to_string(),
-    ///     config: json!({ "api_path": "/greet", "http_method": "GET" }),
-    ///     metadata: None,
-    ///     namespace: None,
-    /// })?;
+    /// let trigger = worker.register_trigger(RegisterTriggerInput::new(
+    ///     "http",
+    ///     "greet",
+    ///     json!({ "api_path": "/greet", "http_method": "GET" }),
+    /// ))?;
     /// // Later...
     /// trigger.unregister();
     /// # Ok::<(), iii_sdk::Error>(())
@@ -1285,7 +1341,19 @@ impl IIIClient {
             // registers a trigger that fires and resolves nothing. Naming
             // another namespace, `default` included, stays a matter of saying
             // so.
-            namespace: input.namespace.or_else(|| self.namespace()),
+            namespace: call_namespace(
+                input.namespace,
+                self.namespace(),
+                "RegisterTriggerInput.namespace",
+            )?,
+            // Passed through untouched, including when it is `None`. `None` is
+            // the engine's two-step resolution — this worker's namespace, then
+            // the engine's own — which is what lets a project ship its own
+            // provider for a type id the engine also provides while every
+            // unmigrated worker keeps reaching the engine's without saying so.
+            // The SDK cannot decide this locally: a sibling worker in the same
+            // project may be the one providing the type.
+            trigger_namespace: input.trigger_namespace,
         };
 
         self.inner
@@ -1373,7 +1441,11 @@ impl IIIClient {
         // the caller's. Reaching a worker that lives elsewhere -- an engine
         // builtin in `default`, a neighbour in another project -- is done by
         // naming that namespace.
-        let namespace = request.namespace.or_else(|| self.namespace());
+        let namespace = call_namespace(
+            request.namespace,
+            self.namespace(),
+            "TriggerRequest.namespace",
+        )?;
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response
@@ -1865,6 +1937,10 @@ impl IIIClient {
                 // provider that stores the config and later calls `trigger()`
                 // needs it to fire the target in the right namespace.
                 namespace,
+                // Which of this provider's namespaces the bind belongs to. Only
+                // meaningful to a provider serving more than one, and the
+                // engine has already routed the message here by it.
+                trigger_namespace: _,
             } => {
                 self.handle_register_trigger(
                     id,
@@ -2587,13 +2663,11 @@ mod tests {
     async fn register_trigger_unregister_removes_entry() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let trigger = iii
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: "demo".to_string(),
-                function_id: "functions.echo".to_string(),
-                config: json!({ "foo": "bar" }),
-                metadata: None,
-                namespace: None,
-            })
+            .register_trigger(RegisterTriggerInput::new(
+                "demo",
+                "functions.echo",
+                json!({ "foo": "bar" }),
+            ))
             .unwrap();
 
         assert_eq!(iii.inner.triggers.lock().unwrap().len(), 1);
@@ -3097,6 +3171,7 @@ mod tests {
             config: json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         }
     }
 
@@ -3106,6 +3181,7 @@ mod tests {
             description: "tt".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         }
     }
 

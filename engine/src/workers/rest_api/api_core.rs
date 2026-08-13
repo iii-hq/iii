@@ -1542,7 +1542,15 @@ mod tests {
         module.register_functions(engine.clone());
         module.initialize().await.expect("module should initialize");
 
-        assert!(engine.trigger_registry.trigger_types.contains_key("http"));
+        assert!(
+            engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "http"
+                ))
+        );
     }
 
     #[tokio::test]
@@ -1635,6 +1643,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         module
@@ -1678,6 +1689,9 @@ mod tests {
             worker_id: Some(worker_a),
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let trigger_b = Trigger {
@@ -1691,6 +1705,9 @@ mod tests {
             worker_id: Some(worker_b),
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         // 1. Worker A registers the route.
@@ -1737,6 +1754,9 @@ mod tests {
             worker_id: Some(worker_a),
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let trigger_b = Trigger {
@@ -1750,6 +1770,9 @@ mod tests {
             worker_id: Some(worker_b),
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         module
@@ -1796,6 +1819,9 @@ mod tests {
             worker_id: Some(worker),
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         module
@@ -1822,6 +1848,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let err = module

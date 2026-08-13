@@ -165,13 +165,11 @@ async fn create_consumer(state: &LifecycleState) -> iii_sdk::IIIClient {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: TRIGGER_TYPE_ID.to_string(),
-        function_id: CONSUMER_FN.to_string(),
-        config: json!({ "tag": "test" }),
-        metadata: None,
-        namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        TRIGGER_TYPE_ID.to_string(),
+        CONSUMER_FN.to_string(),
+        json!({ "tag": "test" }),
+    ))
     .expect("register trigger");
 
     wait_register_calls(state, 1).await;

@@ -151,6 +151,10 @@ pub struct TriggersListInput {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TriggerInfoInput {
     pub id: String,
+    /// Which provider of this id. Absent means the one in the default
+    /// namespace, where every in-process engine provider lives.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
@@ -288,6 +292,8 @@ pub enum FunctionInfoOutput {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TriggerTypeSummary {
     pub id: String,
+    /// Namespace this provider serves. Two entries can share an id.
+    pub namespace: String,
     pub worker_name: String,
     pub description: String,
 }
@@ -295,6 +301,8 @@ pub struct TriggerTypeSummary {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TriggerTypeDetail {
     pub id: String,
+    /// Namespace this provider serves.
+    pub namespace: String,
     pub worker_name: String,
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -482,6 +490,11 @@ pub struct RegisterTriggerInput {
     /// is GC'd when that worker disconnects. Absent for in-process callers.
     #[serde(rename = "_caller_worker_id", default)]
     pub caller_worker_id: Option<String>,
+    /// Namespace to find the trigger type's provider in. Absent asks the engine
+    /// to resolve it, which for a durable registration means
+    /// [`crate::protocol::DEFAULT_NAMESPACE`] — its home — and nothing else.
+    #[serde(default)]
+    pub trigger_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -892,6 +905,7 @@ impl EngineFunctionsWorker {
                 let tt = entry.value();
                 TriggerTypeSummary {
                     id: tt.id.clone(),
+                    namespace: tt.namespace.clone(),
                     // Guard-safe: we're inside `trigger_types.iter()`.
                     worker_name: self.owner_name_for_trigger_type(tt),
                     description: tt._description.clone(),
@@ -1063,10 +1077,14 @@ impl EngineFunctionsWorker {
         })
     }
 
-    fn build_trigger_type_detail(&self, tt_id: &str) -> Option<TriggerTypeDetail> {
-        let tt = self.engine.trigger_registry.trigger_types.get(tt_id)?;
+    fn build_trigger_type_detail(
+        &self,
+        key: &crate::trigger::TypeKey,
+    ) -> Option<TriggerTypeDetail> {
+        let tt = self.engine.trigger_registry.trigger_types.get(key)?;
         Some(TriggerTypeDetail {
             id: tt.id.clone(),
+            namespace: tt.namespace.clone(),
             // Guard-safe: we hold the `.get()` guard on this entry.
             worker_name: self.owner_name_for_trigger_type(tt.value()),
             description: tt._description.clone(),
@@ -1089,7 +1107,7 @@ impl EngineFunctionsWorker {
         let worker_name =
             Self::worker_name_for_function_id(&index, &trigger.namespace, &trigger.function_id);
 
-        let trigger_detail = self.build_trigger_type_detail(&trigger.trigger_type);
+        let trigger_detail = self.build_trigger_type_detail(&trigger.provider_key());
         let function_detail = self
             .build_function_detail(&trigger.namespace, &trigger.function_id)
             .await;
@@ -1196,16 +1214,16 @@ impl EngineFunctionsWorker {
             envelope = self.worker_detail_envelope_from_runtime(&runtime, worker_namespace.clone());
             function_ids = runtime.function_ids;
             resolved_worker_id = None;
-        } else if let Some(worker) =
-            self.engine
+        } else {
+            let worker = self
+                .engine
                 .worker_registry
                 .list_workers()
                 .into_iter()
                 .find(|w| {
                     w.name.as_deref() == Some(name)
                         && self.engine.worker_registry.get_namespace(&w.id) == worker_namespace
-                })
-        {
+                })?;
             let function_count_async = worker.get_function_ids().await;
             let function_count = function_count_async.len();
             let active_invocations = worker.invocation_count().await;
@@ -1221,8 +1239,6 @@ impl EngineFunctionsWorker {
                 latest_metrics,
             );
             function_ids = function_count_async;
-        } else {
-            return None;
         }
 
         let worker_name = envelope.name.clone();
@@ -1299,6 +1315,7 @@ impl EngineFunctionsWorker {
                 }
                 Some(TriggerTypeSummary {
                     id: tt.id.clone(),
+                    namespace: tt.namespace.clone(),
                     worker_name: owner,
                     description: tt._description.clone(),
                 })
@@ -1784,11 +1801,18 @@ impl EngineFunctionsWorker {
         &self,
         input: TriggerInfoInput,
     ) -> FunctionResult<TriggerTypeDetail, ErrorBody> {
-        match self.build_trigger_type_detail(&input.id) {
+        let namespace = input
+            .namespace
+            .clone()
+            .unwrap_or_else(crate::protocol::default_namespace);
+        match self.build_trigger_type_detail(&crate::trigger::type_key(&namespace, &input.id)) {
             Some(detail) => FunctionResult::Success(detail),
             None => FunctionResult::Failure(ErrorBody {
                 code: "NOT_FOUND".into(),
-                message: format!("Trigger type '{}' is not registered.", input.id),
+                message: format!(
+                    "Trigger type '{}' is not registered in namespace '{}'.",
+                    input.id, namespace
+                ),
                 stacktrace: None,
             }),
         }
@@ -1919,6 +1943,25 @@ impl EngineFunctionsWorker {
     ) -> FunctionResult<RegisterWorkerResult, ErrorBody> {
         let mut input = input;
         let worker_id = input.worker_id.clone();
+
+        // Refused rather than read as absent. This is the namespace the whole
+        // connection inherits -- its lease, its functions, and everything it
+        // calls or binds afterwards -- so getting it wrong here is not a local
+        // mistake.
+        if crate::protocol::is_blank_namespace(&input.namespace) {
+            return FunctionResult::Failure(ErrorBody {
+                code: crate::protocol::INVALID_NAMESPACE.into(),
+                message: format!(
+                    "namespace is empty: worker '{}' declared {:?}. Give it a name, or omit \
+                     the field to register in '{}'.",
+                    input.name.as_deref().unwrap_or("<unnamed>"),
+                    input.namespace.as_deref().unwrap_or_default(),
+                    crate::protocol::DEFAULT_NAMESPACE
+                ),
+                stacktrace: None,
+            });
+        }
+
         let declared = crate::protocol::effective_namespace(&input.namespace).to_string();
 
         // The grace timer fixes a connection to `default` when no
@@ -2058,8 +2101,12 @@ impl EngineFunctionsWorker {
             metadata: input.metadata,
             // Function-path (durable) registrations are engine orchestration and
             // resolve their target in the default namespace, matching the
-            // `fire_triggers` behavior they predate.
+            // `fire_triggers` behavior they predate. Their provider resolves
+            // there too — see `Trigger::internal_namespaces`.
             namespace: crate::protocol::default_namespace(),
+            trigger_namespace: input.trigger_namespace,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         if let Err(err) = self.engine.trigger_registry.register_trigger(trigger).await {
@@ -2158,6 +2205,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
     }
@@ -2747,6 +2797,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let result = module.register_trigger(trigger.clone()).await;
@@ -2772,6 +2825,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             };
             module.register_trigger(trigger).await.unwrap();
         }
@@ -2792,6 +2848,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -2838,6 +2897,9 @@ mod tests {
             worker_id: None,
             metadata: None,
             namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -2898,6 +2960,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "orders".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .unwrap();
@@ -3007,6 +3072,7 @@ mod tests {
             request_schema: Some(serde_json::json!({"type": "object"})),
             response_schema: None,
             instance_count: 2,
+            namespace: crate::protocol::default_namespace(),
         };
         let json = serde_json::to_value(&detail).expect("serialize");
         assert!(json.get("configuration_schema").is_some());
@@ -3051,13 +3117,19 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(TRIGGER_FUNCTIONS_AVAILABLE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    TRIGGER_FUNCTIONS_AVAILABLE
+                ))
         );
         assert!(
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key(TRIGGER_WORKERS_AVAILABLE)
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    TRIGGER_WORKERS_AVAILABLE
+                ))
         );
     }
 
@@ -3535,7 +3607,7 @@ mod tests {
     async fn triggers_list_returns_trigger_types_not_instances() {
         let (engine, module) = setup_engine_and_module();
         engine.trigger_registry.trigger_types.insert(
-            "user-type".to_string(),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"user-type".to_string()),
             crate::trigger::TriggerType::new(
                 "user-type",
                 "User type",
@@ -3544,7 +3616,10 @@ mod tests {
             ),
         );
         engine.trigger_registry.trigger_types.insert(
-            "engine::internal-type".to_string(),
+            crate::trigger::type_key(
+                crate::protocol::DEFAULT_NAMESPACE,
+                &"engine::internal-type".to_string(),
+            ),
             crate::trigger::TriggerType::new(
                 "engine::internal-type",
                 "Internal",
@@ -3616,6 +3691,7 @@ mod tests {
         let result = module
             .triggers_info(TriggerInfoInput {
                 id: "cron".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3648,6 +3724,7 @@ mod tests {
         let result = module
             .triggers_info(TriggerInfoInput {
                 id: "http".to_string(),
+                namespace: None,
             })
             .await;
         match result {
@@ -3714,6 +3791,7 @@ mod tests {
         let result = module
             .triggers_info(TriggerInfoInput {
                 id: "nope".to_string(),
+                namespace: None,
             })
             .await;
         assert!(matches!(result, FunctionResult::Failure(_)));
@@ -4313,6 +4391,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -4415,6 +4496,7 @@ mod tests {
                     config: serde_json::json!({}),
                     metadata: Some(meta.clone()),
                     caller_worker_id: Some(wid.to_string()),
+                    trigger_namespace: None,
                 },
                 None,
             )
@@ -4468,6 +4550,7 @@ mod tests {
                     config: serde_json::json!({}),
                     metadata: Some(serde_json::json!({ "session_id": "s" })),
                     caller_worker_id: None,
+                    trigger_namespace: None,
                 },
                 None,
             )
@@ -4545,6 +4628,7 @@ mod tests {
                     config: serde_json::json!({}),
                     metadata: None,
                     caller_worker_id: None,
+                    trigger_namespace: None,
                 },
                 Some(session),
             )
@@ -4578,6 +4662,7 @@ mod tests {
                     config: serde_json::json!({}),
                     metadata: None,
                     caller_worker_id: None,
+                    trigger_namespace: None,
                 },
                 None,
             )

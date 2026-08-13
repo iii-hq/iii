@@ -32,6 +32,10 @@ class RegisterTriggerTypeMessage(BaseModel):
     description: str
     trigger_request_format: Any | None = Field(default=None)
     call_request_format: Any | None = Field(default=None)
+    #: Namespace this provider serves. ``None`` lets the engine use this
+    #: connection's own, which is what a worker providing a trigger type for
+    #: its own project wants.
+    namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER_TYPE, alias="type")
 
 
@@ -89,6 +93,8 @@ class RegisterTriggerInput(BaseModel):
         function_id: ID of the function this trigger invokes when it fires.
         config: Trigger-type-specific configuration, matching the shape the trigger type expects.
         metadata: Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
+        namespace: Namespace the target function resolves in.
+        trigger_namespace: Namespace the trigger type's provider is found in.
     """
 
     type: str = Field(
@@ -114,6 +120,14 @@ class RegisterTriggerInput(BaseModel):
             "default namespace, independent of this connection's namespace."
         ),
     )
+    trigger_namespace: str | None = Field(
+        default=None,
+        description=(
+            "Namespace to find the trigger type's provider in. Omitting it is not the "
+            "same as 'default': it asks the engine to resolve, taking this worker's "
+            "namespace first and the engine's own second. Naming one is strict."
+        ),
+    )
 
 
 class RegisterTriggerMessage(BaseModel):
@@ -125,6 +139,10 @@ class RegisterTriggerMessage(BaseModel):
     config: Any
     metadata: Any | None = Field(default=None)
     namespace: str | None = Field(default=None)
+    #: Namespace to find the trigger type's provider in. ``None`` is not
+    #: ``"default"``: it asks the engine to resolve, taking this worker's
+    #: namespace first and the engine's own second. Naming one is strict.
+    trigger_namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
 
 

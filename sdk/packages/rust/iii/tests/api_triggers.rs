@@ -43,16 +43,14 @@ async fn get_endpoint() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "test::api::get::rs".to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        "test::api::get::rs".to_string(),
+        json!({
             "api_path": "test/rs/hello",
             "http_method": "GET",
         }),
-        metadata: None,
-        namespace: None,
-    })
+    ))
     .expect("register trigger");
 
     common::settle().await;
@@ -87,16 +85,14 @@ async fn post_endpoint_with_body() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::post::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::post::rs".to_string(),
+            json!({
                 "api_path": "test/rs/items",
                 "http_method": "POST",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -193,16 +189,14 @@ async fn raw_json_request_body() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::json::raw::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::json::raw::rs".to_string(),
+            json!({
                 "api_path": "/test/rs/json/raw",
                 "http_method": "POST",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -241,16 +235,14 @@ async fn path_parameters() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::getbyid::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::getbyid::rs".to_string(),
+            json!({
                 "api_path": "test/rs/items/:id",
                 "http_method": "GET",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -286,16 +278,14 @@ async fn query_parameters() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::search::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::search::rs".to_string(),
+            json!({
                 "api_path": "test/rs/search",
                 "http_method": "GET",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -329,16 +319,14 @@ async fn custom_status_code() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::notfound::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::notfound::rs".to_string(),
+            json!({
                 "api_path": "test/rs/missing",
                 "http_method": "GET",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -375,16 +363,14 @@ async fn content_type_on_api_response_return() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::xml::return::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::xml::return::rs".to_string(),
+            json!({
                 "api_path": "test/rs/xml-return",
                 "http_method": "POST",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -472,16 +458,14 @@ async fn download_pdf_streaming() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::download::pdf::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::download::pdf::rs".to_string(),
+            json!({
                 "api_path": "test/rs/download/pdf",
                 "http_method": "GET",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -597,16 +581,14 @@ async fn upload_pdf_streaming() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::upload::pdf::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::upload::pdf::rs".to_string(),
+            json!({
                 "api_path": "test/rs/upload/pdf",
                 "http_method": "POST",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -708,16 +690,14 @@ async fn sse_streaming() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::sse::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::sse::rs".to_string(),
+            json!({
                 "api_path": "test/rs/sse",
                 "http_method": "GET",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -860,16 +840,14 @@ async fn urlencoded_form_data() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::form::urlencoded::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::form::urlencoded::rs".to_string(),
+            json!({
                 "api_path": "test/rs/form/urlencoded",
                 "http_method": "POST",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -1016,16 +994,14 @@ async fn multipart_form_data() {
     );
 
     let _trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: "test::api::form::multipart::rs".to_string(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            "test::api::form::multipart::rs".to_string(),
+            json!({
                 "api_path": "test/rs/form/multipart",
                 "http_method": "POST",
             }),
-            metadata: None,
-            namespace: None,
-        })
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -1073,16 +1049,14 @@ async fn conflicting_route_structure_is_rejected() {
             Ok(json!({"status_code": 200, "body": {"ok": true}}))
         }),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "test::api::conflict::a::rs".to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        "test::api::conflict::a::rs".to_string(),
+        json!({
             "api_path": "test/rs/conflict/:listId/:userId",
             "http_method": "GET",
         }),
-        metadata: None,
-        namespace: None,
-    })
+    ))
     .expect("register trigger a");
 
     // Second route has the same axum shape with swapped param names -> conflict.
@@ -1092,16 +1066,14 @@ async fn conflicting_route_structure_is_rejected() {
             Ok(json!({"status_code": 200, "body": {"ok": true}}))
         }),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "test::api::conflict::b::rs".to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        "test::api::conflict::b::rs".to_string(),
+        json!({
             "api_path": "test/rs/conflict/:userId/:listId",
             "http_method": "GET",
         }),
-        metadata: None,
-        namespace: None,
-    })
+    ))
     .expect("register trigger b");
 
     common::settle().await;

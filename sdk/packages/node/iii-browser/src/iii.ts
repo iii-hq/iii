@@ -95,6 +95,52 @@ function randomId(): string {
   return Math.random().toString(16).slice(2, 10)
 }
 
+/**
+ * The worker's namespace, refusing one that was named and left blank.
+ *
+ * Absent and blank mean opposite things. Absent asks for the engine's
+ * `default`; blank names a namespace and gives nothing to name it with. Read as
+ * absent, the worker registers in `default`, and since a worker's calls and
+ * triggers follow its namespace, the whole project quietly serves from a place
+ * its declaration never named -- the one thing an operator cannot see by
+ * reading the declaration.
+ *
+ * The browser has no `III_NAMESPACE` to fall back to, so unlike the other SDKs
+ * there is only the option here, and an option that was written and left empty
+ * is never what someone meant.
+ */
+/**
+ * The namespace one call or one binding resolves in.
+ *
+ * `undefined` inherits the worker's. A blank one is refused: named and left
+ * empty asks for the opposite of what absent asks for, and the two are only
+ * ever confused by accident -- `??` forwards the empty string, Python's `or`
+ * coerced it and Go dropped it, so one mistake produced three behaviours.
+ */
+function callNamespace(
+  explicit: string | undefined,
+  worker: string | undefined,
+  source: string,
+): string | undefined {
+  if (explicit !== undefined && explicit.trim() === '') {
+    throw new Error(
+      `namespace is empty: ${source} was set to ${JSON.stringify(explicit)}. ` +
+        "Give it a name, or leave it unset to stay in this worker's namespace.",
+    )
+  }
+  return explicit ?? worker
+}
+
+function resolveNamespace(optionNamespace?: string): string | undefined {
+  if (optionNamespace !== undefined && optionNamespace.trim() === '') {
+    throw new Error(
+      `namespace is empty: options.namespace was set to ${JSON.stringify(optionNamespace)}. ` +
+        'Give it a name, or leave it unset to register in `default`.',
+    )
+  }
+  return optionNamespace
+}
+
 class Sdk implements ISdk {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
@@ -120,8 +166,9 @@ class Sdk implements ISdk {
     private readonly options?: InitOptions,
   ) {
     this.workerName = options?.workerName ?? `browser:${randomId()}`
-    // No env fallback: the browser has no `process.env`.
-    this.namespace = options?.namespace
+    // No env fallback: the browser has no `process.env`, so the option is the
+    // only source -- and the only thing that can be wrong.
+    this.namespace = resolveNamespace(options?.namespace)
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
       ...DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -229,6 +276,19 @@ class Sdk implements ISdk {
       ...trigger,
       id,
       message_type: MessageType.RegisterTrigger,
+      // Unset means this worker's namespace, not the engine's default. A
+      // trigger names a function, and the function a worker registers lands in
+      // the worker's namespace, so defaulting anywhere else registers a trigger
+      // that fires and resolves nothing. Naming another namespace, `default`
+      // included, stays a matter of saying so.
+      ...(() => {
+        const namespace = callNamespace(
+          trigger.namespace,
+          this.namespace,
+          'RegisterTriggerInput.namespace',
+        )
+        return namespace !== undefined ? { namespace } : {}
+      })(),
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
@@ -369,7 +429,12 @@ class Sdk implements ISdk {
   trigger = async <TInput = unknown, TOutput = any>(
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs, namespace } = request
+    const { function_id, payload, action, timeoutMs } = request
+    // Same rule as `registerTrigger`: a call with no namespace stays in the
+    // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
+    // `default`, a neighbour in another project -- is done by naming that
+    // namespace.
+    const namespace = callNamespace(request.namespace, this.namespace, 'TriggerRequest.namespace')
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     if (action?.type === 'void') {
@@ -377,7 +442,7 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
       return undefined as TOutput
@@ -411,7 +476,7 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
     })

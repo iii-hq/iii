@@ -47,13 +47,11 @@ async fn a_trigger_registers_in_the_workers_namespace() {
     let mock = MockEngine::start().await;
     let iii = worker_in(&mock, Some("orders"));
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "api::process".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        "cron".to_string(),
+        "api::process".to_string(),
+        json!({}),
+    ))
     .expect("registertrigger");
 
     assert_eq!(
@@ -71,13 +69,10 @@ async fn an_explicit_namespace_still_wins() {
     // Including `default`: a worker that means the engine's namespace says so,
     // which is the only way to bind a trigger to a builtin from inside a
     // namespace.
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "state::sweep".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: Some("default".to_string()),
-    })
+    iii.register_trigger(
+        RegisterTriggerInput::new("cron".to_string(), "state::sweep".to_string(), json!({}))
+            .in_namespace("default".to_string()),
+    )
     .expect("registertrigger");
 
     assert_eq!(
@@ -91,13 +86,11 @@ async fn a_worker_without_a_namespace_is_unchanged() {
     let mock = MockEngine::start().await;
     let iii = worker_in(&mock, None);
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "api::process".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        "cron".to_string(),
+        "api::process".to_string(),
+        json!({}),
+    ))
     .expect("registertrigger");
 
     // Absent, not null: the whole fleet runs this way today and the frame it
@@ -216,5 +209,97 @@ mod blank_namespace {
                 ..Default::default()
             },
         );
+    }
+
+    /// `register_worker` resolved its namespace before handing it over, so the
+    /// check never ran on the entry point a caller can reach directly.
+    /// A blank namespace is the same mistake wherever it is made.
+    #[test]
+    #[should_panic(expected = "namespace is empty")]
+    fn set_namespace_refuses_a_blank_one_too() {
+        let client = iii_sdk::IIIClient::new("ws://127.0.0.1:1");
+        client.set_namespace("");
+    }
+
+    #[test]
+    fn set_namespace_still_takes_a_real_one() {
+        // The control, so a run that refuses everything cannot pass.
+        let client = iii_sdk::IIIClient::with_metadata(
+            "ws://127.0.0.1:1",
+            iii_sdk::iii::WorkerMetadata {
+                name: "tester".to_string(),
+                ..Default::default()
+            },
+        );
+        client.set_namespace("orders");
+        assert_eq!(client.namespace().as_deref(), Some("orders"));
+    }
+}
+
+/// A namespace named and left blank on one call is the same mistake as one
+/// declared blank at construction -- and until now each SDK made a different
+/// one of it, because `??`, `or_else` and `or` disagree about the empty string.
+///
+/// An error rather than a panic: unlike `InitOptions.namespace`, a per-call
+/// namespace can come from data, and the caller can do something with it.
+mod blank_call_namespace {
+    use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+    use iii_sdk::{IIIClient, InitOptions, register_worker};
+    use serde_json::json;
+
+    fn worker() -> IIIClient {
+        register_worker(
+            "ws://127.0.0.1:1",
+            InitOptions {
+                namespace: Some("orders".to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn register_trigger_refuses_it() {
+        let err = worker()
+            .register_trigger(
+                RegisterTriggerInput::new(
+                    "cron".to_string(),
+                    "api::process".to_string(),
+                    json!({}),
+                )
+                .in_namespace(String::new()),
+            )
+            .err()
+            .expect("a blank namespace is a mistake, not the worker's");
+        assert!(err.to_string().contains("namespace is empty"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn trigger_refuses_it() {
+        let err = worker()
+            .trigger(
+                TriggerRequest {
+                    function_id: "api::ping".to_string(),
+                    payload: json!({}),
+                    action: None,
+                    timeout_ms: Some(500),
+                }
+                .namespace(""),
+            )
+            .await
+            .expect_err("a blank namespace is a mistake");
+        assert!(err.to_string().contains("namespace is empty"), "{err}");
+    }
+
+    #[test]
+    fn an_absent_one_still_inherits() {
+        // The control: absent is not blank, and still means this worker's.
+        let bound = worker()
+            .register_trigger(RegisterTriggerInput::new(
+                "cron".to_string(),
+                "api::process".to_string(),
+                json!({}),
+            ))
+            .is_ok();
+        assert!(bound, "absent is not a mistake");
     }
 }

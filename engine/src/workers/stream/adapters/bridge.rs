@@ -277,16 +277,14 @@ impl StreamAdapter for BridgeAdapter {
             }),
         );
 
-        let _ = self.bridge.register_trigger(RegisterTriggerInput {
-            trigger_type: "subscribe".to_string(),
-            function_id: handler_function_id,
-            config: serde_json::to_value(SubscribeTrigger {
+        let _ = self.bridge.register_trigger(RegisterTriggerInput::new(
+            "subscribe".to_string(),
+            handler_function_id,
+            serde_json::to_value(SubscribeTrigger {
                 topic: STREAM_EVENTS_TOPIC.to_string(),
             })
             .unwrap_or_default(),
-            metadata: None,
-            namespace: None,
-        });
+        ));
 
         self.pub_sub.watch_events().await;
         Ok(())

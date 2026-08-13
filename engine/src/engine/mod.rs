@@ -96,6 +96,16 @@ enum NamespaceState {
     Aborted(String),
 }
 
+/// The refusal every blank-namespace guard sends back, naming the field so the
+/// caller knows which of the two on a trigger was the empty one.
+fn blank_namespace_message(field: &str) -> String {
+    format!(
+        "`{field}` is empty: it was named and left blank. Give it a name, or omit it to use \
+         `{}`.",
+        DEFAULT_NAMESPACE
+    )
+}
+
 /// Registration messages are the only ones whose effect depends on the
 /// connection's namespace, so they are the only ones worth buffering.
 ///
@@ -103,6 +113,14 @@ enum NamespaceState {
 /// registration: leaving it unbuffered would let it run against an empty
 /// registry while the matching `RegisterFunction` still sits in the queue,
 /// inverting the pair and resurrecting a function the worker retired.
+///
+/// `RegisterTriggerType` is buffered because a provider is filed under
+/// `(namespace, type_id)` taken from the connection. Handling one while the
+/// namespace is still `Pending` files it under `default` — where it replaces
+/// the engine's own provider for that id and is handed everyone's bindings.
+/// Whether that happens comes down to whether an SDK flushes its registrations
+/// before or after `engine::workers::register`, which is not something a worker
+/// author chooses.
 ///
 /// `RegisterTrigger` is buffered too, to preserve arrival order relative to the
 /// same connection's `RegisterFunction`s. A trigger carries an explicit target
@@ -119,6 +137,7 @@ fn is_namespaced_registration(msg: &Message) -> bool {
             | Message::UnregisterFunction { .. }
             | Message::RegisterTrigger { .. }
             | Message::UnregisterTrigger { .. }
+            | Message::RegisterTriggerType { .. }
     )
 }
 
@@ -1116,6 +1135,9 @@ impl Engine {
                     return Ok(());
                 };
                 let stored_trigger_type = trigger_entry.trigger_type.clone();
+                // The provider this binding actually resolved to: the result
+                // may only come from the worker serving *that* one.
+                let stored_provider = trigger_entry.provider_key();
                 let stored_function_id = trigger_entry.function_id.clone();
                 let originator_id = trigger_entry.worker_id;
                 drop(trigger_entry);
@@ -1127,7 +1149,7 @@ impl Engine {
                 let registrator_worker_id = self
                     .trigger_registry
                     .trigger_types
-                    .get(&stored_trigger_type)
+                    .get(&stored_provider)
                     .and_then(|tt| tt.worker_id);
                 if registrator_worker_id != Some(worker.id) {
                     tracing::warn!(
@@ -1184,10 +1206,32 @@ impl Engine {
                 description,
                 trigger_request_format,
                 call_request_format,
+                namespace,
             } => {
+                // No ack exists for this message, so a refusal can only be
+                // logged. It is logged loudly: the provider will never be
+                // reachable, and every binding meant for it parks.
+                if crate::protocol::is_blank_namespace(namespace) {
+                    tracing::error!(
+                        worker_id = %worker.id,
+                        trigger_type_id = %id,
+                        "{}",
+                        blank_namespace_message("namespace")
+                    );
+                    return Ok(());
+                }
+
+                // The connection's namespace unless the message overrides it.
+                // This is what stops two projects providing the same type id
+                // from overwriting each other — and what makes a provider
+                // shipped inside a project reachable from that project first.
+                let provider_namespace = namespace
+                    .clone()
+                    .unwrap_or_else(|| self.connection_namespace(worker));
                 tracing::debug!(
                     worker_id = %worker.id,
                     trigger_type_id = %id,
+                    namespace = %provider_namespace,
                     description = %description,
                     "RegisterTriggerType"
                 );
@@ -1238,7 +1282,8 @@ impl Engine {
                     }
                 }
 
-                let mut trigger_type = TriggerType::new(
+                let mut trigger_type = TriggerType::new_ns(
+                    provider_namespace,
                     reg_id,
                     reg_description,
                     Box::new(worker.clone()),
@@ -1278,6 +1323,7 @@ impl Engine {
                 config,
                 metadata,
                 namespace,
+                trigger_namespace,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
@@ -1286,6 +1332,32 @@ impl Engine {
                     config = ?config,
                     "RegisterTrigger"
                 );
+
+                // Either namespace named and left empty is refused. They are
+                // different questions -- one locates the target, the other the
+                // provider -- and both are answerable to the caller here.
+                for (field, value) in [
+                    ("namespace", namespace),
+                    ("trigger_namespace", trigger_namespace),
+                ] {
+                    if crate::protocol::is_blank_namespace(value) {
+                        let _ = self
+                            .send_msg(
+                                worker,
+                                Message::TriggerRegistrationResult {
+                                    id: id.clone(),
+                                    trigger_type: trigger_type.clone(),
+                                    function_id: function_id.clone(),
+                                    error: Some(crate::protocol::ErrorBody::new(
+                                        crate::protocol::INVALID_NAMESPACE,
+                                        blank_namespace_message(field),
+                                    )),
+                                },
+                            )
+                            .await;
+                        return Ok(());
+                    }
+                }
 
                 let mut reg_trigger_id = id.clone();
                 let mut reg_trigger_type = trigger_type.clone();
@@ -1319,7 +1391,7 @@ impl Engine {
                             // The namespace the trigger's target will resolve in
                             // (the message's, or `default` when absent), so the
                             // hook can authorize per target namespace.
-                            "namespace": crate::protocol::effective_namespace(&namespace),
+                            "namespace": crate::protocol::effective_namespace(namespace),
                             "context": session.context,
                         });
                         match self.call(hook_fn_id, hook_input).await {
@@ -1362,9 +1434,16 @@ impl Engine {
                 // connection: absent means the engine's default namespace. A
                 // worker can therefore expose a function in any namespace, and
                 // must opt in explicitly to reach its own namespaced functions.
-                let trigger_namespace = namespace
+                let target_namespace = namespace
                     .clone()
                     .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string());
+
+                // Where the binding looks for its provider, and where it looks
+                // first. `trigger_namespace` absent is not `default`: it asks
+                // the registry to try home before falling back, which is what
+                // carries an unmigrated worker onto the engine's provider while
+                // letting a project's own provider win when it has one.
+                let home_namespace = self.connection_namespace(worker);
 
                 // Gate the target the same way `InvokeFunction` does: RBAC is
                 // keyed by function id but inspects the `Function` this trigger
@@ -1372,11 +1451,11 @@ impl Engine {
                 // worker could expose any namespace's function over a trigger.
                 if let Some(session) = &worker.session {
                     let function = self
-                        .resolve_function(Some(&trigger_namespace), &reg_function_id)
+                        .resolve_function(Some(&target_namespace), &reg_function_id)
                         .ok();
                     if !crate::workers::worker::rbac_config::is_function_allowed(
                         &reg_function_id,
-                        &trigger_namespace,
+                        &target_namespace,
                         session.config.rbac.clone(),
                         &session.allowed_functions,
                         &session.forbidden_functions,
@@ -1386,7 +1465,7 @@ impl Engine {
                             worker_id = %worker.id,
                             trigger_id = %reg_trigger_id,
                             function_id = %reg_function_id,
-                            namespace = %trigger_namespace,
+                            namespace = %target_namespace,
                             "trigger registration denied by RBAC"
                         );
                         // Name the id that was actually authorized (post-prefix),
@@ -1394,7 +1473,7 @@ impl Engine {
                         // is moved into the struct below, so build the text first.
                         let denied_message = format!(
                             "function '{}' not allowed in namespace '{}'",
-                            reg_function_id, trigger_namespace
+                            reg_function_id, target_namespace
                         );
                         let result_msg = Message::TriggerRegistrationResult {
                             id: reg_trigger_id,
@@ -1419,7 +1498,12 @@ impl Engine {
                         config: reg_config,
                         worker_id: Some(worker.id),
                         metadata: metadata.clone(),
-                        namespace: trigger_namespace,
+                        namespace: target_namespace,
+                        trigger_namespace: trigger_namespace.clone(),
+                        home_namespace,
+                        // Written by the registry once it resolves; this is
+                        // only the value it starts from.
+                        provider_namespace: crate::protocol::default_namespace(),
                     })
                     .await
                 {
@@ -1483,6 +1567,38 @@ impl Engine {
                     "InvokeFunction"
                 );
 
+                // A named-but-empty namespace is a mistake, not a request for
+                // `default`. Answering the caller beats resolving somewhere
+                // they did not ask for: the call would otherwise land in
+                // whatever the empty string routes to and look like a miss.
+                if crate::protocol::is_blank_namespace(namespace) {
+                    if let Some(invocation_id) = invocation_id {
+                        let _ = self
+                            .send_msg(
+                                worker,
+                                Message::InvocationResult {
+                                    invocation_id: *invocation_id,
+                                    function_id: function_id.clone(),
+                                    result: None,
+                                    error: Some(crate::protocol::ErrorBody::new(
+                                        crate::protocol::INVALID_NAMESPACE,
+                                        blank_namespace_message("namespace"),
+                                    )),
+                                    traceparent: None,
+                                    baggage: None,
+                                },
+                            )
+                            .await;
+                    } else {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %function_id,
+                            "InvokeFunction carried an empty namespace; dropped"
+                        );
+                    }
+                    return Ok(());
+                }
+
                 if let Some(session) = &worker.session {
                     // Resolve strictly in the requested namespace first: RBAC is
                     // still keyed by function id, but the `Function` it inspects
@@ -1495,7 +1611,7 @@ impl Engine {
                         .ok();
                     if !crate::workers::worker::rbac_config::is_function_allowed(
                         function_id,
-                        crate::protocol::effective_namespace(&namespace),
+                        crate::protocol::effective_namespace(namespace),
                         session.config.rbac.clone(),
                         &session.allowed_functions,
                         &session.forbidden_functions,
@@ -1540,13 +1656,13 @@ impl Engine {
                     // middleware keeps intercepting user code.
                     if let Some(middleware_id) = &session.config.middleware_function_id
                         && !self
-                            .is_engine_owned_builtin(effective_namespace(&namespace), function_id)
+                            .is_engine_owned_builtin(effective_namespace(namespace), function_id)
                     {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
                         // Resolve the middleware in the caller's namespace and hand
                         // it that namespace, so a namespaced invoke reaches the
                         // matching middleware and can re-target the same namespace.
-                        let ns = effective_namespace(&namespace).to_string();
+                        let ns = effective_namespace(namespace).to_string();
                         let middleware_input = serde_json::json!({
                             "function_id": function_id,
                             "payload": data,
@@ -1607,7 +1723,7 @@ impl Engine {
                         // Capture the invoke's namespace so the queue provider
                         // enqueues (and the consumer later resolves) the target
                         // in the caller's namespace rather than `default`.
-                        let target_namespace = effective_namespace(&namespace).to_string();
+                        let target_namespace = effective_namespace(namespace).to_string();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
                         let queued_baggage = crate::telemetry::baggage_with_function_id(
@@ -2972,10 +3088,11 @@ impl EngineTrait for Engine {
         if self
             .trigger_registry
             .trigger_types
-            .contains_key(&trigger_type.id)
+            .contains_key(&trigger_type.key())
         {
             tracing::info!(
                 trigger_type_id = %trigger_type.id,
+                namespace = %trigger_type.namespace,
                 "Trigger type re-registered; replacing registrator and re-delivering its registrations"
             );
         }
@@ -3712,6 +3829,7 @@ mod tests {
             config: serde_json::json!({ "api_path": "charge", "http_method": "POST" }),
             metadata: None,
             namespace: Some("default".to_string()),
+            trigger_namespace: None,
         };
         // dispatch directly to skip the namespace buffer (test worker never
         // announces a namespace); we only exercise the RBAC gate.
@@ -4014,6 +4132,7 @@ mod tests {
             description: "A test trigger type".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -4024,7 +4143,10 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key("my_trigger_type"),
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "my_trigger_type"
+                )),
             "trigger type should be registered"
         );
 
@@ -4036,6 +4158,7 @@ mod tests {
             config: serde_json::json!({"key": "value"}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -4065,6 +4188,7 @@ mod tests {
             description: "Trigger type for unregister test".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -4079,6 +4203,7 @@ mod tests {
             config: serde_json::json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -4619,7 +4744,10 @@ mod tests {
         let trigger_type = engine
             .trigger_registry
             .trigger_types
-            .get("duplicate")
+            .get(&crate::trigger::type_key(
+                crate::protocol::DEFAULT_NAMESPACE,
+                "duplicate",
+            ))
             .expect("trigger type should remain registered");
         assert_eq!(trigger_type._description, "second");
     }
@@ -4652,6 +4780,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
         engine.trigger_registry.triggers.insert(
@@ -4664,6 +4795,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -4940,6 +5074,7 @@ mod tests {
             description: "Trigger type for cleanup test".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -4954,6 +5089,7 @@ mod tests {
             config: serde_json::json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -4970,7 +5106,10 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key("cleanup_trigger_type")
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "cleanup_trigger_type"
+                ))
         );
 
         // Drain channel messages
@@ -4991,7 +5130,10 @@ mod tests {
             !engine
                 .trigger_registry
                 .trigger_types
-                .contains_key("cleanup_trigger_type"),
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "cleanup_trigger_type"
+                )),
             "trigger type should be removed after worker cleanup"
         );
 
@@ -5145,7 +5287,7 @@ mod tests {
 
     fn insert_trigger_type_for(engine: &Engine, type_id: &str, registrator: &WorkerConnection) {
         engine.trigger_registry.trigger_types.insert(
-            type_id.to_string(),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &type_id.to_string()),
             crate::trigger::TriggerType::new(
                 type_id,
                 "test trigger type",
@@ -5179,6 +5321,9 @@ mod tests {
                 worker_id: Some(user.id),
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -5280,6 +5425,9 @@ mod tests {
                     worker_id: Some(user.id),
                     metadata: None,
                     namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
             );
 
@@ -5347,6 +5495,9 @@ mod tests {
                     worker_id: Some(user.id),
                     metadata: None,
                     namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
             );
 
@@ -5422,6 +5573,9 @@ mod tests {
                 worker_id: Some(user.id),
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -5493,6 +5647,9 @@ mod tests {
                 worker_id: Some(user.id),
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -5536,6 +5693,7 @@ mod tests {
             config: serde_json::json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
 
         engine
@@ -5559,6 +5717,120 @@ mod tests {
         assert!(!engine.trigger_registry.triggers.contains_key("trig-1"));
     }
 
+    // ── A namespace named and left blank ─────────────────────────────────
+    //
+    // The SDKs each refuse this at construction, in four different ways, and
+    // one of them (the browser) did not refuse it at all. The engine is the
+    // one party every client goes through, so it refuses too -- and it refuses
+    // rather than reading blank as absent, because the two ask for opposite
+    // things.
+
+    #[tokio::test]
+    async fn a_blank_namespace_on_invoke_is_answered_not_routed() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "svc::run".to_string(),
+                    data: serde_json::json!({}),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: None,
+                    namespace: Some(String::new()),
+                },
+            )
+            .await
+            .expect("the message is handled, not dropped");
+
+        let out = rx.try_recv().expect("the caller must be answered");
+        let Outbound::Protocol(Message::InvocationResult { error, .. }) = out else {
+            panic!("expected an InvocationResult, got {out:?}");
+        };
+        let error = error.expect("a blank namespace is an error, not a miss");
+        assert_eq!(error.code, crate::protocol::INVALID_NAMESPACE);
+    }
+
+    #[tokio::test]
+    async fn a_blank_namespace_on_a_trigger_names_which_field_was_empty() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        // A trigger carries two namespaces for two questions, so the refusal
+        // has to say which one was blank.
+        for (field, namespace, trigger_namespace) in [
+            ("namespace", Some(String::new()), None),
+            ("trigger_namespace", None, Some("  ".to_string())),
+        ] {
+            engine
+                .router_msg(
+                    &worker,
+                    &Message::RegisterTrigger {
+                        id: "t1".to_string(),
+                        trigger_type: "cron".to_string(),
+                        function_id: "svc::run".to_string(),
+                        config: serde_json::json!({}),
+                        metadata: None,
+                        namespace,
+                        trigger_namespace,
+                    },
+                )
+                .await
+                .expect("handled");
+
+            let out = rx.try_recv().expect("the worker must be told");
+            let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = out else {
+                panic!("expected a TriggerRegistrationResult, got {out:?}");
+            };
+            let error = error.expect("a blank namespace is an error");
+            assert_eq!(error.code, crate::protocol::INVALID_NAMESPACE);
+            assert!(error.message.contains(field), "{}", error.message);
+        }
+
+        assert!(
+            engine.trigger_registry.triggers.is_empty()
+                && engine.trigger_registry.pending_triggers.is_empty(),
+            "a refused binding must not be parked either"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blank_namespace_on_a_trigger_type_registers_nothing() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterTriggerType {
+                    id: "webhook".to_string(),
+                    description: "blank namespace".to_string(),
+                    trigger_request_format: None,
+                    call_request_format: None,
+                    namespace: Some(String::new()),
+                },
+            )
+            .await
+            .expect("handled");
+
+        assert!(
+            engine.trigger_registry.trigger_types.is_empty(),
+            "a provider with no namespace to serve must not be filed anywhere"
+        );
+    }
+
     #[tokio::test]
     async fn test_deferred_trigger_activates_when_provider_registers_type() {
         ensure_default_meter();
@@ -5577,6 +5849,7 @@ mod tests {
             config: serde_json::json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -5598,6 +5871,7 @@ mod tests {
             description: "arrives after its triggers".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&provider, &tt_msg)
@@ -5633,6 +5907,7 @@ mod tests {
             config: serde_json::json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker, &msg)
@@ -5663,6 +5938,7 @@ mod tests {
             description: "arrives after the owner died".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&provider, &tt_msg)
@@ -5690,6 +5966,7 @@ mod tests {
             description: "provided by worker A".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker_a, &tt_msg)
@@ -5707,6 +5984,7 @@ mod tests {
             config: serde_json::json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker_b, &reg_msg)
@@ -5774,6 +6052,9 @@ mod tests {
                 worker_id: Some(dead_worker),
                 metadata: None,
                 namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -5787,6 +6068,7 @@ mod tests {
             description: "arrives after the leak".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&provider, &tt_msg)
@@ -6695,6 +6977,7 @@ mod tests {
                         description: "provider".to_string(),
                         trigger_request_format: None,
                         call_request_format: None,
+                        namespace: None,
                     },
                 )
                 .await
@@ -6718,6 +7001,7 @@ mod tests {
                 config: serde_json::json!({}),
                 metadata: None,
                 namespace: None,
+                trigger_namespace: None,
             };
             engine
                 .router_msg(&old_worker, &reg_fn)
@@ -7106,6 +7390,7 @@ mod tests {
             description: "Test trigger type for cleanup".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &tt_msg)
@@ -7120,6 +7405,7 @@ mod tests {
             config: serde_json::json!({}),
             metadata: None,
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker, &t_msg)
@@ -7275,6 +7561,7 @@ mod tests {
             description: "Trigger type for metadata test".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -7288,6 +7575,7 @@ mod tests {
             config: serde_json::json!({"key": "value"}),
             metadata: Some(serde_json::json!({"team": "platform", "env": "staging"})),
             namespace: None,
+            trigger_namespace: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -7418,6 +7706,7 @@ mod tests {
                 config: serde_json::json!({}),
                 metadata: None,
                 namespace: None,
+                trigger_namespace: None,
             },
             Message::UnregisterTrigger {
                 id: "t1".to_string(),

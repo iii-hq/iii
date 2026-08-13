@@ -1197,9 +1197,7 @@ where
                     // finals never land in memory storage, so pending
                     // snapshots would never be replaced.
                     SdkTracerProvider::builder()
-                        .with_span_processor(
-                            iii_helpers::observability::BaggageSpanProcessor::default(),
-                        )
+                        .with_span_processor(iii_helpers::observability::BaggageSpanProcessor)
                         .with_batch_exporter(exporter)
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
@@ -1222,9 +1220,8 @@ where
                         memory_storage.clone(),
                         config.service_name.clone(),
                     );
-                    let mut builder = SdkTracerProvider::builder().with_span_processor(
-                        iii_helpers::observability::BaggageSpanProcessor::default(),
-                    );
+                    let mut builder = SdkTracerProvider::builder()
+                        .with_span_processor(iii_helpers::observability::BaggageSpanProcessor);
                     if config.live_spans {
                         builder = builder.with_span_processor(LiveSpanProcessor::new(
                             memory_storage,
@@ -1255,7 +1252,7 @@ where
             );
 
             let mut builder = SdkTracerProvider::builder()
-                .with_span_processor(iii_helpers::observability::BaggageSpanProcessor::default());
+                .with_span_processor(iii_helpers::observability::BaggageSpanProcessor);
             if config.live_spans {
                 // After BaggageSpanProcessor, so pending snapshots carry the
                 // baggage-stamped attributes.
@@ -1290,9 +1287,8 @@ where
                         config.service_name.clone(),
                     );
 
-                    let mut builder = SdkTracerProvider::builder().with_span_processor(
-                        iii_helpers::observability::BaggageSpanProcessor::default(),
-                    );
+                    let mut builder = SdkTracerProvider::builder()
+                        .with_span_processor(iii_helpers::observability::BaggageSpanProcessor);
                     if config.live_spans {
                         // Pending snapshots feed ONLY the memory side; the
                         // OTLP half of the tee still sees spans on close only.
@@ -1319,9 +1315,8 @@ where
                         memory_storage.clone(),
                         config.service_name.clone(),
                     );
-                    let mut builder = SdkTracerProvider::builder().with_span_processor(
-                        iii_helpers::observability::BaggageSpanProcessor::default(),
-                    );
+                    let mut builder = SdkTracerProvider::builder()
+                        .with_span_processor(iii_helpers::observability::BaggageSpanProcessor);
                     if config.live_spans {
                         builder = builder.with_span_processor(LiveSpanProcessor::new(
                             memory_storage,

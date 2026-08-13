@@ -281,13 +281,11 @@ impl QueueAdapter for BridgeAdapter {
             }),
         );
 
-        let trigger = match self.bridge.register_trigger(RegisterTriggerInput {
-            trigger_type: "durable:subscriber".to_string(),
-            function_id: handler_path.clone(),
-            config: serde_json::json!({ "topic": topic }),
-            metadata: None,
-            namespace: None,
-        }) {
+        let trigger = match self.bridge.register_trigger(RegisterTriggerInput::new(
+            "durable:subscriber".to_string(),
+            handler_path.clone(),
+            serde_json::json!({ "topic": topic }),
+        )) {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(
