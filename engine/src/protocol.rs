@@ -44,6 +44,26 @@ pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
 /// refused; the connection stays open.
 pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
 
+/// A namespace field was present and held nothing but whitespace.
+pub const INVALID_NAMESPACE: &str = "INVALID_NAMESPACE";
+
+/// Whether a namespace field was named and left empty.
+///
+/// Absent and blank are opposite intents. Absent asks for [`DEFAULT_NAMESPACE`];
+/// blank names a namespace and gives nothing to name it with. Reading blank as
+/// absent puts the worker in `default` — somewhere it never asked for, where
+/// every call and trigger it makes then follows it, and the one place an
+/// operator cannot see by reading the declaration. Filing it under the empty
+/// string is worse still: a namespace nobody can address or type.
+///
+/// The SDKs refuse this at construction, each in its own way. The engine
+/// refuses it again because it is the only party every client goes through, and
+/// because an SDK that forgets (or a hand-rolled client) must not be able to
+/// create a namespace with no name.
+pub fn is_blank_namespace(ns: &Option<String>) -> bool {
+    ns.as_deref().is_some_and(|ns| ns.trim().is_empty())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationRef {
     pub url: String,
