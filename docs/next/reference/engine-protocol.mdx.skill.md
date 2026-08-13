@@ -103,7 +103,12 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
   "function_id": "math::add",
   "config": { "api_path": "/math/add", "http_method": "POST" },
   "metadata": null,
+<<<<<<< HEAD
   "namespace": "orders"
+=======
+  "namespace": null,
+  "trigger_namespace": null
+>>>>>>> 78d0d93d (feat(engine)!: a trigger type's provider belongs to a namespace, and a blank namespace is refused (#2057))
 }
 ```
 
@@ -118,9 +123,35 @@ A trigger can call a function in a different namespace. For this reason, `Regist
 the target `namespace`. If this field is not present, `function_id` resolves in `default`. A present
 field must be a non-empty string; the engine rejects `null` and any other non-string value.
 
+<<<<<<< HEAD
 The SDKs fill the field from the worker namespace when the caller sets no namespace on the binding,
 so the frame carries the worker's own namespace, or `default` when the worker declared none. A
 caller that sets `namespace` targets that namespace instead.
+=======
+Both SDK paths set this field to the worker's namespace when the caller omits it: the typed helper
+`registerTriggerType(...).registerTrigger` and the low-level `registerTrigger`. A trigger names a
+function, and a worker's functions land in the worker's namespace, so a trigger that defaulted
+anywhere else would fire and resolve nothing.
+
+The wire default is unchanged: an absent `namespace` still means `default` to the engine. It is the
+SDKs that stopped omitting it. Set `namespace` explicitly to target another namespace, `default`
+included — that is how a worker inside a namespace reaches an engine builtin.
+
+`trigger_namespace` specifies where to find the trigger type's provider. It is a different question
+from `namespace`: one locates the target function, the other locates the provider that fires it.
+
+If `trigger_namespace` is not present, the engine resolves it in two steps: the registering
+connection's namespace first, then `default`. This is not the same as sending `"default"`. The two
+steps let a project register its own provider for a trigger type id that the engine also provides,
+while a worker that names nothing still reaches the engine's provider.
+
+If `trigger_namespace` is present, resolution is strict: that namespace or nothing. A binding that
+names a namespace is never moved to another provider.
+
+When a provider registers in a namespace after a binding already resolved to `default`, the engine
+moves that binding to the new provider. Start order does not decide which provider serves a
+project.
+>>>>>>> 78d0d93d (feat(engine)!: a trigger type's provider belongs to a namespace, and a blank namespace is refused (#2057))
 
 These fields target `math::add` in `default`:
 
@@ -142,13 +173,21 @@ These fields target `math::add` in `orders`:
   "id": "webhook",
   "description": "HTTP webhook trigger",
   "trigger_request_format": { "type": "object", ... },
-  "call_request_format": { "type": "object", ... }
+  "call_request_format": { "type": "object", ... },
+  "namespace": null
 }
 ```
 
 `trigger_request_format` is the JSON Schema for the trigger's per-binding `config`.
 `call_request_format` is the JSON Schema for the payload delivered to bound functions when the
 trigger fires.
+
+`namespace` is the namespace this provider serves. If it is not present, the engine files the
+provider under the registering connection's namespace. Providers are keyed by
+`(namespace, trigger_type_id)`, so two workers in different namespaces can advertise the same
+`trigger_type` id without replacing each other.
+
+The engine's own providers (`http`, `cron`, `state`, `stream`) register in `default`.
 
 ## `InvokeFunction`
 

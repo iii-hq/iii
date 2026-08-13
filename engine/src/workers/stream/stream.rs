@@ -2485,6 +2485,9 @@ mod tests {
                     worker_id: None,
                     metadata: None,
                     namespace: "default".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2505,6 +2508,9 @@ mod tests {
                     worker_id: None,
                     metadata: None,
                     namespace: "default".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2525,6 +2531,9 @@ mod tests {
                     worker_id: None,
                     metadata: None,
                     namespace: "default".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2545,6 +2554,9 @@ mod tests {
                     worker_id: None,
                     metadata: None,
                     namespace: "default".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2565,6 +2577,9 @@ mod tests {
                     worker_id: None,
                     metadata: None,
                     namespace: "default".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2672,6 +2687,9 @@ mod tests {
                     worker_id: None,
                     metadata: None,
                     namespace: "orders".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -2743,27 +2761,15 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(
-            module
-                .engine
-                .trigger_registry
-                .trigger_types
-                .contains_key(JOIN_TRIGGER_TYPE)
-        );
-        assert!(
-            module
-                .engine
-                .trigger_registry
-                .trigger_types
-                .contains_key(LEAVE_TRIGGER_TYPE)
-        );
-        assert!(
-            module
-                .engine
-                .trigger_registry
-                .trigger_types
-                .contains_key(STREAM_TRIGGER_TYPE)
-        );
+        assert!(module.engine.trigger_registry.trigger_types.contains_key(
+            &crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, JOIN_TRIGGER_TYPE)
+        ));
+        assert!(module.engine.trigger_registry.trigger_types.contains_key(
+            &crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, LEAVE_TRIGGER_TYPE)
+        ));
+        assert!(module.engine.trigger_registry.trigger_types.contains_key(
+            &crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, STREAM_TRIGGER_TYPE)
+        ));
         assert!(adapter.watch_events_called.load(Ordering::SeqCst));
 
         module.destroy().await.expect("stream destroy should work");

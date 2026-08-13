@@ -157,10 +157,8 @@ impl SocketStreamConnection {
                             }
                         }
                     }
-                    Err(e) => {
-                        if event_type == JOIN_TRIGGER_TYPE {
-                            tracing::error!(error = ?e, "Failed to invoke trigger function");
-                        }
+                    Err(e) if event_type == JOIN_TRIGGER_TYPE => {
+                        tracing::error!(error = ?e, "Failed to invoke trigger function");
                     }
                     _ => {}
                 }
@@ -538,6 +536,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
         connection
             .triggers
@@ -552,6 +553,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
 
         let join_result = connection
@@ -624,6 +628,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "orders".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
 
         connection
@@ -659,6 +666,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
 
         connection
@@ -791,6 +801,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
 
         connection
@@ -945,6 +958,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
 
         let result = connection
@@ -978,6 +994,9 @@ mod tests {
                 worker_id: None,
                 metadata: None,
                 namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             });
 
         let result = connection

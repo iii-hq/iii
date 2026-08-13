@@ -141,6 +141,9 @@ pub enum Message {
         trigger_request_format: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         call_request_format: Option<Value>,
+        /// Namespace this provider serves. Absent means the connection's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     RegisterTrigger {
         id: String,
@@ -153,6 +156,10 @@ pub enum Message {
         /// engine's default namespace, independent of the connection's namespace.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
+        /// Namespace to find the provider in. Absent asks the engine to resolve
+        /// it: this connection's namespace first, then the engine's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger_namespace: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,
@@ -263,6 +270,11 @@ pub struct RegisterTriggerTypeMessage {
     pub trigger_request_format: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_request_format: Option<Value>,
+    /// Namespace this provider serves. `None` lets the engine use the
+    /// connection's own, which is what a worker providing a trigger type for
+    /// its own project wants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl RegisterTriggerTypeMessage {
@@ -272,6 +284,7 @@ impl RegisterTriggerTypeMessage {
             description: self.description.clone(),
             trigger_request_format: self.trigger_request_format.clone(),
             call_request_format: self.call_request_format.clone(),
+            namespace: self.namespace.clone(),
         }
     }
 }
@@ -279,11 +292,16 @@ impl RegisterTriggerTypeMessage {
 /// Input for [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
 /// The `id` is auto-generated internally.
 ///
-/// **Breaking change:** the `namespace` field was added. Code that constructs
-/// this with a struct literal must now set it (use `namespace: None` for the
-/// engine default). To avoid struct-literal churn, prefer the builder:
-/// `IIITrigger::Http(..).for_function(id).in_namespace(ns)`, which fills every
-/// field including `namespace`.
+/// Build it with [`RegisterTriggerInput::new`], or with
+/// [`IIITrigger`](crate::builtin_triggers::IIITrigger) for a type the engine
+/// provides. A struct literal has to name every field, so each field added here
+/// breaks it -- `namespace` did that once and `trigger_namespace` did it again,
+/// which is why the constructors exist.
+///
+/// The two are different questions. `namespace` is where the target function
+/// resolves; `trigger_namespace` is where the trigger type's provider is found,
+/// and `None` there asks the engine to take this worker's namespace first and
+/// the engine's own second.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterTriggerInput {
     /// Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
@@ -299,13 +317,72 @@ pub struct RegisterTriggerInput {
     /// engine's default namespace, independent of this connection's namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
+    /// Namespace to find the trigger type's provider in. `None` asks the
+    /// engine to resolve it: this worker's namespace first, the engine's own
+    /// second. Naming one is strict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_namespace: Option<String>,
 }
 
 impl RegisterTriggerInput {
-    /// Resolve this trigger's target function in `namespace` instead of the
-    /// engine's default namespace.
+    /// A trigger of `trigger_type`, bound to `function_id`, configured by
+    /// `config`.
+    ///
+    /// Use this for a trigger type nothing built in provides -- one this worker
+    /// or a neighbour registered. For the engine's own types, prefer
+    /// [`IIITrigger`](crate::builtin_triggers::IIITrigger), which knows the id
+    /// and the config shape:
+    ///
+    /// ```no_run
+    /// # use iii_sdk::protocol::RegisterTriggerInput;
+    /// # use serde_json::json;
+    /// RegisterTriggerInput::new("kick", "orders::sync", json!({ "every": "1m" }))
+    ///     .in_namespace("billing")
+    ///     .in_trigger_namespace("shop-a");
+    /// ```
+    ///
+    /// Everything else defaults to "not named", which is what the great
+    /// majority of registrations want. Reaching for a struct literal instead
+    /// means every field added here becomes a breaking change for the caller,
+    /// which is what this exists to stop.
+    pub fn new(
+        trigger_type: impl Into<String>,
+        function_id: impl Into<String>,
+        config: Value,
+    ) -> Self {
+        Self {
+            trigger_type: trigger_type.into(),
+            function_id: function_id.into(),
+            config,
+            metadata: None,
+            namespace: None,
+            trigger_namespace: None,
+        }
+    }
+
+    /// Resolve this trigger's target function in `namespace` instead of this
+    /// worker's.
     pub fn in_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// Find the trigger type's provider in `namespace`, and only there.
+    ///
+    /// A different question from [`in_namespace`](Self::in_namespace): that one
+    /// locates the target function, this one locates the provider that fires
+    /// it. Left unset, the engine resolves it -- this worker's namespace first,
+    /// then its own -- which is what carries a worker that has not been
+    /// migrated onto the engine's providers without saying anything.
+    pub fn in_trigger_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.trigger_namespace = Some(namespace.into());
+        self
+    }
+
+    /// Deliver `metadata` to the handler alongside every payload this trigger
+    /// fires.
+    pub fn with_metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
         self
     }
 }
@@ -320,6 +397,8 @@ pub struct RegisterTriggerMessage {
     pub metadata: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_namespace: Option<String>,
 }
 
 impl RegisterTriggerMessage {
@@ -331,6 +410,7 @@ impl RegisterTriggerMessage {
             config: self.config.clone(),
             metadata: self.metadata.clone(),
             namespace: self.namespace.clone(),
+            trigger_namespace: self.trigger_namespace.clone(),
         }
     }
 }

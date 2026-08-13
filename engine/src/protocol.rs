@@ -44,6 +44,26 @@ pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
 /// refused; the connection stays open.
 pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
 
+/// A namespace field was present and held nothing but whitespace.
+pub const INVALID_NAMESPACE: &str = "INVALID_NAMESPACE";
+
+/// Whether a namespace field was named and left empty.
+///
+/// Absent and blank are opposite intents. Absent asks for [`DEFAULT_NAMESPACE`];
+/// blank names a namespace and gives nothing to name it with. Reading blank as
+/// absent puts the worker in `default` — somewhere it never asked for, where
+/// every call and trigger it makes then follows it, and the one place an
+/// operator cannot see by reading the declaration. Filing it under the empty
+/// string is worse still: a namespace nobody can address or type.
+///
+/// The SDKs refuse this at construction, each in its own way. The engine
+/// refuses it again because it is the only party every client goes through, and
+/// because an SDK that forgets (or a hand-rolled client) must not be able to
+/// create a namespace with no name.
+pub fn is_blank_namespace(ns: &Option<String>) -> bool {
+    ns.as_deref().is_some_and(|ns| ns.trim().is_empty())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationRef {
     pub url: String,
@@ -78,6 +98,14 @@ pub enum Message {
         trigger_request_format: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         call_request_format: Option<Value>,
+        /// Namespace this provider serves. Absent means the registering
+        /// connection's namespace, which is what every SDK wants and what
+        /// keeps two projects providing the same type id from overwriting each
+        /// other. In-process engine providers register in
+        /// [`DEFAULT_NAMESPACE`], where the resolution in
+        /// [`crate::trigger::TriggerRegistry`] falls back to find them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     RegisterTrigger {
         id: String,
@@ -92,6 +120,16 @@ pub enum Message {
         /// send it stay wire-compatible.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
+        /// Namespace to find `trigger_type`'s provider in.
+        ///
+        /// Absent is not "default": it asks the engine to resolve, taking the
+        /// registering connection's namespace first and [`DEFAULT_NAMESPACE`]
+        /// second. That is what lets a project ship its own provider for a
+        /// type id the engine also provides, while every worker that has not
+        /// been migrated keeps reaching the engine's one without saying so.
+        /// Naming a namespace here is strict: that namespace or nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger_namespace: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,

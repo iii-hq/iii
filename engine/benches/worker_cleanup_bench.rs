@@ -259,6 +259,9 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                                             worker_id: Some(worker.id),
                                             metadata: None,
                                             namespace: "default".to_string(),
+                                            trigger_namespace: None,
+                                            home_namespace: iii::protocol::default_namespace(),
+                                            provider_namespace: iii::protocol::default_namespace(),
                                         })
                                         .await
                                         .expect("register trigger");
