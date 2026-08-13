@@ -27,9 +27,8 @@ agents within your iii system. You can add a provider worker later at any time.
   <input className="iii-qs-radio" type="radio" name="iii-qs" id="qs-llamacpp" />
 
 <div className="iii-qs-head">
-  <span className="iii-qs-title">quickstart</span>
+  <span className="iii-qs-title">select your llm provider</span>
   <div className="iii-qs-picker">
-    <span className="iii-qs-picker-label">select your llm provider</span>
     <label className="iii-qs-pill" htmlFor="qs-none">
       no llm
     </label>
@@ -37,7 +36,7 @@ agents within your iii system. You can add a provider worker later at any time.
       openai api
     </label>
     <label className="iii-qs-pill" htmlFor="qs-openai-codex">
-      openai codex (chatgpt)
+      openai codex
     </label>
     <label className="iii-qs-pill" htmlFor="qs-anthropic">
       anthropic
