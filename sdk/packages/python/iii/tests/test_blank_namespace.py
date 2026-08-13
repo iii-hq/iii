@@ -57,3 +57,32 @@ def test_a_named_namespace_still_resolves(monkeypatch: pytest.MonkeyPatch) -> No
     assert _client(None)._worker_namespace() == "billing"
     # An explicit option still wins over the managed environment.
     assert _client("orders")._worker_namespace() == "orders"
+
+
+class TestBlankCallNamespace:
+    """The same rule on the per-call path.
+
+    Python's ``or`` treats ``""`` as falsy, so a blank namespace here was
+    silently replaced by the worker's while Node and Rust forwarded it and Go
+    dropped it -- one mistake, four behaviours, none of them chosen.
+    """
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+    def test_a_blank_one_is_refused(self, blank: str) -> None:
+        client = _client("orders")
+        with pytest.raises(ValueError, match="namespace is empty"):
+            client._call_namespace(blank, "TriggerRequest.namespace")
+
+    def test_the_message_names_the_field(self) -> None:
+        client = _client("orders")
+        with pytest.raises(ValueError, match="TriggerRequest.namespace"):
+            client._call_namespace("", "TriggerRequest.namespace")
+
+    def test_an_absent_one_inherits_the_workers(self) -> None:
+        # The control: absent is not blank, and still means this worker's.
+        client = _client("orders")
+        assert client._call_namespace(None, "TriggerRequest.namespace") == "orders"
+
+    def test_an_explicit_one_still_wins(self) -> None:
+        client = _client("orders")
+        assert client._call_namespace("billing", "TriggerRequest.namespace") == "billing"

@@ -143,3 +143,45 @@ describe('a blank namespace is refused', () => {
     expect(() => registerWorker('ws://test:49135', {})).not.toThrow()
   })
 })
+
+/**
+ * The same rule on the per-call path.
+ *
+ * `??` forwards the empty string, Python's `or` replaced it with the worker's
+ * and Go dropped it -- one mistake, four behaviours, none of them chosen. Each
+ * SDK now refuses it where it is written.
+ */
+describe('a blank namespace on one call is refused', () => {
+  let engine: MockEngine
+  let sdk: ISdk
+
+  beforeEach(async () => {
+    engine = new MockEngine()
+    engine.install()
+    sdk = registerWorker('ws://test:49135', { namespace: 'orders' })
+    await engine.waitForOpen()
+  })
+
+  afterEach(async () => {
+    await sdk.shutdown()
+    engine.uninstall()
+  })
+
+  it('refuses it on registerTrigger', () => {
+    expect(() =>
+      sdk.registerTrigger({ type: 'cron', function_id: 'api::process', config: {}, namespace: '' }),
+    ).toThrow(/namespace is empty/)
+  })
+
+  it('refuses it on trigger', async () => {
+    await expect(
+      sdk.trigger({ function_id: 'api::ping', payload: {}, namespace: '   ' }),
+    ).rejects.toThrow(/namespace is empty/)
+  })
+
+  it('still inherits when absent', () => {
+    // The control: absent is not blank, and still means this worker's.
+    sdk.registerTrigger({ type: 'cron', function_id: 'api::process', config: {} })
+    expect(engine.findSent('registertrigger')).toMatchObject({ namespace: 'orders' })
+  })
+})

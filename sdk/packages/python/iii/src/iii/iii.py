@@ -187,6 +187,25 @@ class III:
         >>> worker = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
 
+    def _call_namespace(self, explicit: str | None, source: str) -> str | None:
+        """The namespace one call or one binding resolves in.
+
+        ``None`` inherits the worker's. A blank one raises: named and left empty
+        asks for the opposite of what absent asks for, and the two are only ever
+        confused by accident. Python's ``or`` treats ``""`` as falsy, so a blank
+        namespace was silently replaced by the worker's here while Node and Rust
+        forwarded it and Go dropped it -- one mistake, four behaviours.
+
+        Raises:
+            ValueError: when ``explicit`` is present and holds only whitespace.
+        """
+        if explicit is not None and not explicit.strip():
+            raise ValueError(
+                f"namespace is empty: {source} was set to {explicit!r}. Give it a name, or "
+                "leave it unset to stay in this worker's namespace."
+            )
+        return explicit if explicit is not None else self._worker_namespace()
+
     def _worker_namespace(self) -> str | None:
         """Effective worker namespace: explicit option, then ``III_NAMESPACE`` env,
         else ``None`` (the engine applies its ``default`` namespace).
@@ -1159,7 +1178,9 @@ class III:
             # registers a trigger that fires and resolves nothing. Naming
             # another namespace, ``default`` included, stays a matter of saying
             # so.
-            namespace=trigger.namespace or self._worker_namespace(),
+            namespace=self._call_namespace(
+                trigger.namespace, "RegisterTriggerInput.namespace"
+            ),
             # Passed through untouched, ``None`` included. ``None`` is the
             # engine's two-step resolution -- this worker's namespace, then the
             # engine's own -- which carries an unmigrated worker onto the
@@ -1420,7 +1441,7 @@ class III:
         # the caller's. Reaching a worker that lives elsewhere -- an engine
         # builtin in ``default``, a neighbour in another project -- is done by
         # naming that namespace.
-        namespace = req.get("namespace") or self._worker_namespace()
+        namespace = self._call_namespace(req.get("namespace"), "TriggerRequest.namespace")
 
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 

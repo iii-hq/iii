@@ -117,6 +117,28 @@ function resolveAddress(address?: string): string {
   return DEFAULT_ENGINE_URL
 }
 
+/**
+ * The namespace one call or one binding resolves in.
+ *
+ * `undefined` inherits the worker's. A blank one is refused: named and left
+ * empty asks for the opposite of what absent asks for, and the two are only
+ * ever confused by accident -- `??` forwards the empty string, Python's `or`
+ * coerced it and Go dropped it, so one mistake produced three behaviours.
+ */
+function callNamespace(
+  explicit: string | undefined,
+  worker: string | undefined,
+  source: string,
+): string | undefined {
+  if (explicit !== undefined && explicit.trim() === '') {
+    throw new Error(
+      `namespace is empty: ${source} was set to ${JSON.stringify(explicit)}. ` +
+        "Give it a name, or leave it unset to stay in this worker's namespace.",
+    )
+  }
+  return explicit ?? worker
+}
+
 function resolveNamespace(optionNamespace?: string): string | undefined {
   // III_NAMESPACE carries the namespace for managed workers (set by iii-worker
   // at spawn), mirroring III_WORKER_NAME. An explicit option wins; otherwise
@@ -364,11 +386,14 @@ class Sdk implements IIIClient {
       // the worker's namespace, so defaulting anywhere else registers a trigger
       // that fires and resolves nothing. Naming another namespace, `default`
       // included, stays a matter of saying so.
-      ...(trigger.namespace !== undefined
-        ? { namespace: trigger.namespace }
-        : this.namespace !== undefined
-          ? { namespace: this.namespace }
-          : {}),
+      ...(() => {
+        const namespace = callNamespace(
+          trigger.namespace,
+          this.namespace,
+          'RegisterTriggerInput.namespace',
+        )
+        return namespace !== undefined ? { namespace } : {}
+      })(),
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
@@ -593,7 +618,7 @@ class Sdk implements IIIClient {
     // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
     // `default`, a neighbour in another project -- is done by naming that
     // namespace.
-    const namespace = request.namespace ?? this.namespace
+    const namespace = callNamespace(request.namespace, this.namespace, 'TriggerRequest.namespace')
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     // Void is fire-and-forget, no invocation_id, no response

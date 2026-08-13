@@ -270,3 +270,41 @@ func TestBlankEnvironmentNamespaceIsLeftAlone(t *testing.T) {
 		t.Fatalf("expected no namespace, got %q", c.namespace)
 	}
 }
+
+// TestBlankCallNamespaceIsRefused: the same rule on the per-call path.
+//
+// Go dropped the empty string with `omitempty` and sent the call to the
+// engine's default, while Node and Rust forwarded it verbatim and Python
+// replaced it with the worker's. One mistake, four behaviours, none of them
+// chosen -- each language's null-coalescing operator disagreed about "".
+func TestBlankCallNamespaceIsRefused(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m)
+
+	if err := c.RegisterTriggerNamespaced("t1", "cron", "api::process", "  ", nil); err == nil {
+		t.Fatal("a blank namespace on a binding must be refused")
+	} else if !strings.Contains(err.Error(), "namespace is empty") {
+		t.Fatalf("unexpected reason: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "api::ping", Namespace: " "})
+	if err == nil {
+		t.Fatal("a blank namespace on a call must be refused")
+	}
+	if !strings.Contains(err.Error(), "namespace is empty") {
+		t.Fatalf("unexpected reason: %v", err)
+	}
+}
+
+// TestAbsentCallNamespaceIsNotRefused is the control: absent is not blank, and
+// a run that refuses everything must not be able to pass.
+func TestAbsentCallNamespaceIsNotRefused(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m)
+
+	if err := c.RegisterTrigger("t1", "cron", "api::process", nil); err != nil {
+		t.Fatalf("no namespace given is not a mistake: %v", err)
+	}
+}

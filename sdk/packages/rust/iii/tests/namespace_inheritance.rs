@@ -245,3 +245,75 @@ mod blank_namespace {
         assert_eq!(client.namespace().as_deref(), Some("orders"));
     }
 }
+
+/// A namespace named and left blank on one call is the same mistake as one
+/// declared blank at construction -- and until now each SDK made a different
+/// one of it, because `??`, `or_else` and `or` disagree about the empty string.
+///
+/// An error rather than a panic: unlike `InitOptions.namespace`, a per-call
+/// namespace can come from data, and the caller can do something with it.
+mod blank_call_namespace {
+    use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+    use iii_sdk::{IIIClient, InitOptions, register_worker};
+    use serde_json::json;
+
+    fn worker() -> IIIClient {
+        register_worker(
+            "ws://127.0.0.1:1",
+            InitOptions {
+                namespace: Some("orders".to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn register_trigger_refuses_it() {
+        let err = worker()
+            .register_trigger(RegisterTriggerInput {
+                trigger_type: "cron".to_string(),
+                function_id: "api::process".to_string(),
+                config: json!({}),
+                metadata: None,
+                namespace: Some(String::new()),
+                trigger_namespace: None,
+            })
+            .err()
+            .expect("a blank namespace is a mistake, not the worker's");
+        assert!(err.to_string().contains("namespace is empty"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn trigger_refuses_it() {
+        let err = worker()
+            .trigger(
+                TriggerRequest {
+                    function_id: "api::ping".to_string(),
+                    payload: json!({}),
+                    action: None,
+                    timeout_ms: Some(500),
+                }
+                .namespace(""),
+            )
+            .await
+            .expect_err("a blank namespace is a mistake");
+        assert!(err.to_string().contains("namespace is empty"), "{err}");
+    }
+
+    #[test]
+    fn an_absent_one_still_inherits() {
+        // The control: absent is not blank, and still means this worker's.
+        let trigger = worker()
+            .register_trigger(RegisterTriggerInput {
+                trigger_type: "cron".to_string(),
+                function_id: "api::process".to_string(),
+                config: json!({}),
+                metadata: None,
+                namespace: None,
+                trigger_namespace: None,
+            })
+            .ok()
+            .expect("absent is not a mistake");
+        drop(trigger);
+    }
+}
