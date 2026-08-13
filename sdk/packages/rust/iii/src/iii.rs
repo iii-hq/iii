@@ -348,14 +348,29 @@ impl Default for WorkerMetadata {
 /// any connection, so it fails the worker at startup the way `iii compose`
 /// refuses `--ns ""`, rather than producing a client that serves in a place
 /// nobody asked for.
+/// Refuses a namespace that was named and left blank, whatever named it.
+///
+/// Absent and blank ask for opposite things. Absent asks for the engine's
+/// `default`; blank names a namespace and gives nothing to name it with. Read
+/// as absent, the worker registers in `default`, and since a worker's calls and
+/// triggers follow its namespace, the whole project quietly serves from a place
+/// its declaration never named.
+///
+/// Panics rather than returning an error: this is a mistake in the program
+/// text, made once at construction, and there is nothing a caller could do with
+/// a `Result` here except unwrap it.
+pub(crate) fn reject_blank_namespace(declared: &str, source: &str) {
+    if declared.trim().is_empty() {
+        panic!(
+            "namespace is empty: `{source}` was set to {declared:?}. \
+             Give it a name, or leave it unset to register in `default`."
+        );
+    }
+}
+
 pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
     if let Some(declared) = explicit {
-        if declared.trim().is_empty() {
-            panic!(
-                "namespace is empty: `InitOptions.namespace` was set to {declared:?}. \
-                 Give it a name, or leave it unset to register in `default`."
-            );
-        }
+        reject_blank_namespace(&declared, "InitOptions.namespace");
         return Some(declared);
     }
 
@@ -914,9 +929,18 @@ impl IIIClient {
     /// Override the worker's target namespace (call before connect). Applied by
     /// [`register_worker`](crate::register_worker) after resolving
     /// `InitOptions.namespace` and `III_NAMESPACE`.
+    ///
+    /// # Panics
+    ///
+    /// If `namespace` is empty or only whitespace. `register_worker` resolves
+    /// its own namespace before calling this, so the check is here for the
+    /// callers that reach it directly: a blank one is the same mistake
+    /// wherever it is made, and this entry point skipped it.
     pub fn set_namespace(&self, namespace: impl Into<String>) {
+        let namespace = namespace.into();
+        reject_blank_namespace(&namespace, "IIIClient::set_namespace");
         if let Some(md) = self.inner.worker_metadata.lock_or_recover().as_mut() {
-            md.namespace = Some(namespace.into());
+            md.namespace = Some(namespace);
         }
     }
 

@@ -95,6 +95,30 @@ function randomId(): string {
   return Math.random().toString(16).slice(2, 10)
 }
 
+/**
+ * The worker's namespace, refusing one that was named and left blank.
+ *
+ * Absent and blank mean opposite things. Absent asks for the engine's
+ * `default`; blank names a namespace and gives nothing to name it with. Read as
+ * absent, the worker registers in `default`, and since a worker's calls and
+ * triggers follow its namespace, the whole project quietly serves from a place
+ * its declaration never named -- the one thing an operator cannot see by
+ * reading the declaration.
+ *
+ * The browser has no `III_NAMESPACE` to fall back to, so unlike the other SDKs
+ * there is only the option here, and an option that was written and left empty
+ * is never what someone meant.
+ */
+function resolveNamespace(optionNamespace?: string): string | undefined {
+  if (optionNamespace !== undefined && optionNamespace.trim() === '') {
+    throw new Error(
+      `namespace is empty: options.namespace was set to ${JSON.stringify(optionNamespace)}. ` +
+        'Give it a name, or leave it unset to register in `default`.',
+    )
+  }
+  return optionNamespace
+}
+
 class Sdk implements ISdk {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
@@ -120,8 +144,9 @@ class Sdk implements ISdk {
     private readonly options?: InitOptions,
   ) {
     this.workerName = options?.workerName ?? `browser:${randomId()}`
-    // No env fallback: the browser has no `process.env`.
-    this.namespace = options?.namespace
+    // No env fallback: the browser has no `process.env`, so the option is the
+    // only source -- and the only thing that can be wrong.
+    this.namespace = resolveNamespace(options?.namespace)
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
       ...DEFAULT_BRIDGE_RECONNECTION_CONFIG,

@@ -220,4 +220,28 @@ mod blank_namespace {
             },
         );
     }
+
+    /// `register_worker` resolved its namespace before handing it over, so the
+    /// check never ran on the entry point a caller can reach directly.
+    /// A blank namespace is the same mistake wherever it is made.
+    #[test]
+    #[should_panic(expected = "namespace is empty")]
+    fn set_namespace_refuses_a_blank_one_too() {
+        let client = iii_sdk::IIIClient::new("ws://127.0.0.1:1");
+        client.set_namespace("");
+    }
+
+    #[test]
+    fn set_namespace_still_takes_a_real_one() {
+        // The control, so a run that refuses everything cannot pass.
+        let client = iii_sdk::IIIClient::with_metadata(
+            "ws://127.0.0.1:1",
+            iii_sdk::iii::WorkerMetadata {
+                name: "tester".to_string(),
+                ..Default::default()
+            },
+        );
+        client.set_namespace("orders");
+        assert_eq!(client.namespace().as_deref(), Some("orders"));
+    }
 }

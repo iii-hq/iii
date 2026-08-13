@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,10 @@ type Client struct {
 	// the engine's default namespace. Resolved once at construction: an explicit
 	// WithNamespace wins, else the III_NAMESPACE env var, else default.
 	namespace string
+	// namespaceSet records that WithNamespace was called, which "" alone cannot
+	// say. Without it, a namespace named and left blank is indistinguishable
+	// from one never given -- and they ask for opposite things.
+	namespaceSet bool
 
 	// outbound carries connection-AGNOSTIC frames (registrations + offline-buffered
 	// invokes) to the single writer goroutine. It is shared across the client's lifetime
@@ -164,11 +169,23 @@ func WithName(name string) Option {
 	return func(cl *Client) { cl.name = name }
 }
 
-// WithNamespace sets the namespace this worker registers into. An empty
-// namespace (the default) uses the engine's `default` namespace. Takes
-// precedence over the III_NAMESPACE environment variable.
+// WithNamespace sets the namespace this worker registers into. Takes precedence
+// over the III_NAMESPACE environment variable.
+//
+// A namespace named and left blank is refused, not read as "no namespace": the
+// client is put in a terminal failed state, so [Client.Connect] returns the
+// reason and [Client.FatalError] reports it. Absent and blank ask for opposite
+// things -- absent asks for the engine's `default`, blank names a namespace and
+// gives nothing to name it with. Read as absent, the worker registers in
+// `default`, and since a worker's calls and triggers follow its namespace, the
+// whole project quietly serves from a place its declaration never named.
+//
+// To register in the engine's default namespace, do not call this.
 func WithNamespace(namespace string) Option {
-	return func(cl *Client) { cl.namespace = namespace }
+	return func(cl *Client) {
+		cl.namespace = namespace
+		cl.namespaceSet = true
+	}
 }
 
 // New creates a [Client] for the engine at url (e.g. [DefaultEngineURL]). It does not
@@ -193,10 +210,26 @@ func New(url string, opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
-	// Env fallback: an explicit WithNamespace already set c.namespace, so only
-	// consult III_NAMESPACE when none was given. Mirrors the other SDKs.
-	if c.namespace == "" {
-		c.namespace = os.Getenv("III_NAMESPACE")
+	if c.namespaceSet {
+		// Refused rather than read as absent, and refused here so nothing is
+		// dialled: the mistake is in the program text, and every call and
+		// trigger this worker makes would inherit it.
+		if strings.TrimSpace(c.namespace) == "" {
+			c.failFatally(fmt.Errorf(
+				"iii: namespace is empty: WithNamespace was called with %q. "+
+					"Give it a name, or do not call it to register in the engine's default namespace",
+				c.namespace,
+			))
+		}
+	} else {
+		// III_NAMESPACE is left alone when blank. `FOO=` is how a shell says
+		// "not set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly
+		// that -- so reading it as absent is what the caller meant. Only the
+		// option is a mistake: nobody writes a namespace parameter and passes
+		// nothing on purpose. Mirrors the other SDKs.
+		if managed := os.Getenv("III_NAMESPACE"); strings.TrimSpace(managed) != "" {
+			c.namespace = managed
+		}
 	}
 	return c
 }
@@ -475,11 +508,23 @@ func (c *Client) startSupervisor() {
 // backoff) until Close. Connect is safe to call multiple times and from multiple
 // goroutines; only one supervisor ever runs.
 func (c *Client) Connect(ctx context.Context) error {
+	// A client that is already terminally failed -- a namespace named and left
+	// blank, or a rejection from an earlier attempt -- has its reason on hand.
+	// Reporting retry exhaustion instead would describe the symptom.
+	if err := c.FatalError(); err != nil {
+		return err
+	}
+
 	c.startSupervisor()
 
 	select {
 	case <-c.connected:
 		return nil
+	case <-c.fatal:
+		if err := c.FatalError(); err != nil {
+			return err
+		}
+		return ErrNotConnected
 	case <-c.failed:
 		// The supervisor gave up (MaxRetries exceeded) before ever connecting.
 		return fmt.Errorf("iii: connection failed after exhausting retries: %w", ErrNotConnected)
@@ -867,6 +912,18 @@ func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
 	if conn != nil {
 		_ = conn.CloseNow()
 	}
+}
+
+// failFatally puts the client in the terminal failed state without a
+// connection ever being involved: the cause is in the program text, so dialling
+// would only produce a second, less honest error.
+func (c *Client) failFatally(err error) {
+	c.mu.Lock()
+	c.fatalErr = err
+	c.state = StateFailed
+	c.mu.Unlock()
+	c.fatalOnce.Do(func() { close(c.fatal) })
+	c.failOnce.Do(func() { close(c.failed) })
 }
 
 // FatalError returns the terminal registration rejection that stopped this
