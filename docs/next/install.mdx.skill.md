@@ -71,7 +71,7 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-slot" data-qs="openai">
       <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history</div>
+      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span> export OPENAI_API_KEY=yourkey</span>
@@ -88,7 +88,7 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-slot" data-qs="anthropic">
       <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history</div>
+      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span> export ANTHROPIC_API_KEY=yourkey</span>
@@ -96,7 +96,7 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-slot" data-qs="deepseek">
       <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history</div>
+      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span> export DEEPSEEK_API_KEY=yourkey</span>
@@ -104,7 +104,7 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-slot" data-qs="kimi">
       <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history</div>
+      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span> export MOONSHOT_API_KEY=yourkey</span>
@@ -112,7 +112,7 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-slot" data-qs="openrouter">
       <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history</div>
+      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span> export OPENROUTER_API_KEY=yourkey</span>
@@ -120,7 +120,7 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-slot" data-qs="xai">
       <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history</div>
+      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span> export XAI_API_KEY=yourkey</span>
@@ -128,7 +128,7 @@ agents within your iii system. You can add a provider worker later at any time.
     </div>
     <div className="iii-qs-slot" data-qs="zai">
       <div className="iii-qs-comment"># Set up your llm provider</div>
-      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history</div>
+      <div className="iii-qs-comment"># The leading space keeps the export out of bash/zsh history (if you have history control enabled)</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span> export ZAI_API_KEY=yourkey</span>
@@ -137,11 +137,6 @@ agents within your iii system. You can add a provider worker later at any time.
     <div className="iii-qs-slot" data-qs="github-copilot">
       <div className="iii-qs-comment"># Set up your llm provider</div>
       <div className="iii-qs-comment"># No api key. Your github copilot subscription grants the models.</div>
-      <div className="iii-qs-comment"># Sign in once the engine is up:</div>
-      <div className="iii-qs-cmd">
-        <span className="iii-qs-prompt">$</span>
-        <span>iii trigger provider::github-copilot::login::start</span>
-      </div>
     </div>
     <div className="iii-qs-slot" data-qs="llamacpp">
       <div className="iii-qs-comment"># Set up your llm provider</div>
@@ -227,6 +222,11 @@ agents within your iii system. You can add a provider worker later at any time.
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
         <span>iii worker add harness console provider-github-copilot</span>
+      </div>
+      <div className="iii-qs-comment"># Sign in once the provider worker is up:</div>
+      <div className="iii-qs-cmd">
+        <span className="iii-qs-prompt">$</span>
+        <span>iii trigger provider::github-copilot::login::start</span>
       </div>
     </div>
     <div className="iii-qs-slot" data-qs="llamacpp">

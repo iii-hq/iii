@@ -14,21 +14,17 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
   />
 </Frame>
 
-<Info title="Install iii before proceeding">
+<Tip title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the
-  [Install](./install) guide first.
-</Info>
+  [Install](./install) guide first. There you can also learn how to [set up iii for agentic
+  development](./install#start-a-project).
+</Tip>
 
 <Note>
   The Quickstart is a barebones tutorial intended to be completed within minutes. If you are more
   interested in learning and exploring the full power of iii then visit our [real world
   tutorial](./tutorials/linkly/overview).
 </Note>
-
-<Tip title="Want to jump in with an agent instead?">
-  Add harness and your LLM provider with the [Start a project](./install#start-a-project) tabs on
-  the Install page.
-</Tip>
 
 ## 1. Create the project
 
