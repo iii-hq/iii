@@ -229,6 +229,16 @@ class Sdk implements ISdk {
       ...trigger,
       id,
       message_type: MessageType.RegisterTrigger,
+      // Unset means this worker's namespace, not the engine's default. A
+      // trigger names a function, and the function a worker registers lands in
+      // the worker's namespace, so defaulting anywhere else registers a trigger
+      // that fires and resolves nothing. Naming another namespace, `default`
+      // included, stays a matter of saying so.
+      ...(trigger.namespace !== undefined
+        ? { namespace: trigger.namespace }
+        : this.namespace !== undefined
+          ? { namespace: this.namespace }
+          : {}),
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
@@ -369,7 +379,12 @@ class Sdk implements ISdk {
   trigger = async <TInput = unknown, TOutput = any>(
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
-    const { function_id, payload, action, timeoutMs, namespace } = request
+    const { function_id, payload, action, timeoutMs } = request
+    // Same rule as `registerTrigger`: a call with no namespace stays in the
+    // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
+    // `default`, a neighbour in another project -- is done by naming that
+    // namespace.
+    const namespace = request.namespace ?? this.namespace
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     if (action?.type === 'void') {
@@ -377,7 +392,7 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
       return undefined as TOutput
@@ -411,7 +426,7 @@ class Sdk implements ISdk {
         function_id,
         data: payload,
         action,
-        // Omit when absent so the engine routes within its default namespace.
+        // Omitted only when this worker has no namespace either.
         ...(namespace !== undefined ? { namespace } : {}),
       })
     })
