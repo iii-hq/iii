@@ -206,15 +206,8 @@ fn register_subscriber(iii: &IIIClient, function_id: &str, filter: Value) -> Sub
         })
         .description("e2e test subscriber"),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "worker".into(),
-        function_id: function_id.to_string(),
-        config: filter,
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    })
-    .expect("register worker trigger");
+    iii.register_trigger(RegisterTriggerInput::new("worker", function_id, filter))
+        .expect("register worker trigger");
     Subscriber { rx }
 }
 

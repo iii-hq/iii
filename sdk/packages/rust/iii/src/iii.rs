@@ -195,14 +195,17 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         config: C,
         metadata: Option<Value>,
     ) -> Result<Trigger, Error> {
-        self.iii.register_trigger(RegisterTriggerInput {
-            trigger_type: self.trigger_type_id.clone(),
-            function_id: function_id.into(),
-            config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
-            metadata,
-            namespace: self.iii.namespace(),
-            trigger_namespace: None,
-        })
+        let mut input = RegisterTriggerInput::new(
+            self.trigger_type_id.clone(),
+            function_id,
+            serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
+        );
+        // This typed helper pairs a function with its trigger, so it names the
+        // worker's namespace for the target; the low-level path resolves the
+        // same thing, and saying it here keeps the two from drifting.
+        input.metadata = metadata;
+        input.namespace = self.iii.namespace();
+        self.iii.register_trigger(input)
     }
 }
 
@@ -1315,13 +1318,11 @@ impl IIIClient {
     /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
     /// # let worker = IIIClient::new("ws://localhost:49134");
-    /// let trigger = worker.register_trigger(RegisterTriggerInput {
-    ///     trigger_type: "http".to_string(),
-    ///     function_id: "greet".to_string(),
-    ///     config: json!({ "api_path": "/greet", "http_method": "GET" }),
-    ///     metadata: None,
-    ///     namespace: None,
-    /// })?;
+    /// let trigger = worker.register_trigger(RegisterTriggerInput::new(
+    ///     "http",
+    ///     "greet",
+    ///     json!({ "api_path": "/greet", "http_method": "GET" }),
+    /// ))?;
     /// // Later...
     /// trigger.unregister();
     /// # Ok::<(), iii_sdk::Error>(())
@@ -2662,14 +2663,11 @@ mod tests {
     async fn register_trigger_unregister_removes_entry() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let trigger = iii
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: "demo".to_string(),
-                function_id: "functions.echo".to_string(),
-                config: json!({ "foo": "bar" }),
-                metadata: None,
-                namespace: None,
-                trigger_namespace: None,
-            })
+            .register_trigger(RegisterTriggerInput::new(
+                "demo",
+                "functions.echo",
+                json!({ "foo": "bar" }),
+            ))
             .unwrap();
 
         assert_eq!(iii.inner.triggers.lock().unwrap().len(), 1);

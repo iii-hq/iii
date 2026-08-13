@@ -276,14 +276,11 @@ impl ConfigurationAdapter for BridgeAdapter {
 
         let trigger = self
             .bridge
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: "configuration".to_string(),
-                function_id: RELAY_FUNCTION_ID.to_string(),
-                config: serde_json::json!({}),
-                metadata: None,
-                namespace: None,
-                trigger_namespace: None,
-            })
+            .register_trigger(RegisterTriggerInput::new(
+                "configuration".to_string(),
+                RELAY_FUNCTION_ID.to_string(),
+                serde_json::json!({}),
+            ))
             .map_err(|e| {
                 anyhow::anyhow!("failed to subscribe to remote configuration trigger: {}", e)
             })?;

@@ -292,11 +292,11 @@ impl RegisterTriggerTypeMessage {
 /// Input for [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
 /// The `id` is auto-generated internally.
 ///
-/// **Breaking change:** the `namespace` and `trigger_namespace` fields were
-/// added. Code that constructs this with a struct literal must now set them
-/// (`None` for both is the ordinary case). To avoid struct-literal churn,
-/// prefer the builder: `IIITrigger::Http(..).for_function(id).in_namespace(ns)`,
-/// which fills every field.
+/// Build it with [`RegisterTriggerInput::new`], or with
+/// [`IIITrigger`](crate::builtin_triggers::IIITrigger) for a type the engine
+/// provides. A struct literal has to name every field, so each field added here
+/// breaks it -- `namespace` did that once and `trigger_namespace` did it again,
+/// which is why the constructors exist.
 ///
 /// The two are different questions. `namespace` is where the target function
 /// resolves; `trigger_namespace` is where the trigger type's provider is found,
@@ -325,10 +325,64 @@ pub struct RegisterTriggerInput {
 }
 
 impl RegisterTriggerInput {
-    /// Resolve this trigger's target function in `namespace` instead of the
-    /// engine's default namespace.
+    /// A trigger of `trigger_type`, bound to `function_id`, configured by
+    /// `config`.
+    ///
+    /// Use this for a trigger type nothing built in provides -- one this worker
+    /// or a neighbour registered. For the engine's own types, prefer
+    /// [`IIITrigger`](crate::builtin_triggers::IIITrigger), which knows the id
+    /// and the config shape:
+    ///
+    /// ```no_run
+    /// # use iii_sdk::protocol::RegisterTriggerInput;
+    /// # use serde_json::json;
+    /// RegisterTriggerInput::new("kick", "orders::sync", json!({ "every": "1m" }))
+    ///     .in_namespace("billing")
+    ///     .in_trigger_namespace("shop-a");
+    /// ```
+    ///
+    /// Everything else defaults to "not named", which is what the great
+    /// majority of registrations want. Reaching for a struct literal instead
+    /// means every field added here becomes a breaking change for the caller,
+    /// which is what this exists to stop.
+    pub fn new(
+        trigger_type: impl Into<String>,
+        function_id: impl Into<String>,
+        config: Value,
+    ) -> Self {
+        Self {
+            trigger_type: trigger_type.into(),
+            function_id: function_id.into(),
+            config,
+            metadata: None,
+            namespace: None,
+            trigger_namespace: None,
+        }
+    }
+
+    /// Resolve this trigger's target function in `namespace` instead of this
+    /// worker's.
     pub fn in_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// Find the trigger type's provider in `namespace`, and only there.
+    ///
+    /// A different question from [`in_namespace`](Self::in_namespace): that one
+    /// locates the target function, this one locates the provider that fires
+    /// it. Left unset, the engine resolves it -- this worker's namespace first,
+    /// then its own -- which is what carries a worker that has not been
+    /// migrated onto the engine's providers without saying anything.
+    pub fn in_trigger_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.trigger_namespace = Some(namespace.into());
+        self
+    }
+
+    /// Deliver `metadata` to the handler alongside every payload this trigger
+    /// fires.
+    pub fn with_metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
         self
     }
 }

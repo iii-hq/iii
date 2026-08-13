@@ -47,14 +47,11 @@ async fn a_trigger_registers_in_the_workers_namespace() {
     let mock = MockEngine::start().await;
     let iii = worker_in(&mock, Some("orders"));
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "api::process".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        "cron".to_string(),
+        "api::process".to_string(),
+        json!({}),
+    ))
     .expect("registertrigger");
 
     assert_eq!(
@@ -72,14 +69,10 @@ async fn an_explicit_namespace_still_wins() {
     // Including `default`: a worker that means the engine's namespace says so,
     // which is the only way to bind a trigger to a builtin from inside a
     // namespace.
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "state::sweep".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: Some("default".to_string()),
-        trigger_namespace: None,
-    })
+    iii.register_trigger(
+        RegisterTriggerInput::new("cron".to_string(), "state::sweep".to_string(), json!({}))
+            .in_namespace("default".to_string()),
+    )
     .expect("registertrigger");
 
     assert_eq!(
@@ -93,14 +86,11 @@ async fn a_worker_without_a_namespace_is_unchanged() {
     let mock = MockEngine::start().await;
     let iii = worker_in(&mock, None);
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "api::process".to_string(),
-        config: json!({}),
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        "cron".to_string(),
+        "api::process".to_string(),
+        json!({}),
+    ))
     .expect("registertrigger");
 
     // Absent, not null: the whole fleet runs this way today and the frame it
@@ -270,14 +260,14 @@ mod blank_call_namespace {
     #[test]
     fn register_trigger_refuses_it() {
         let err = worker()
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: "cron".to_string(),
-                function_id: "api::process".to_string(),
-                config: json!({}),
-                metadata: None,
-                namespace: Some(String::new()),
-                trigger_namespace: None,
-            })
+            .register_trigger(
+                RegisterTriggerInput::new(
+                    "cron".to_string(),
+                    "api::process".to_string(),
+                    json!({}),
+                )
+                .in_namespace(String::new()),
+            )
             .err()
             .expect("a blank namespace is a mistake, not the worker's");
         assert!(err.to_string().contains("namespace is empty"), "{err}");
@@ -303,17 +293,13 @@ mod blank_call_namespace {
     #[test]
     fn an_absent_one_still_inherits() {
         // The control: absent is not blank, and still means this worker's.
-        let trigger = worker()
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: "cron".to_string(),
-                function_id: "api::process".to_string(),
-                config: json!({}),
-                metadata: None,
-                namespace: None,
-                trigger_namespace: None,
-            })
-            .ok()
-            .expect("absent is not a mistake");
-        drop(trigger);
+        let bound = worker()
+            .register_trigger(RegisterTriggerInput::new(
+                "cron".to_string(),
+                "api::process".to_string(),
+                json!({}),
+            ))
+            .is_ok();
+        assert!(bound, "absent is not a mistake");
     }
 }

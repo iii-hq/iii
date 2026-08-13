@@ -396,14 +396,11 @@ async fn reactive_state() {
 
     let key_clone = key.clone();
     let trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "state".to_string(),
-            function_id: fn_ref.id.clone(),
-            config: json!({"scope": SCOPE, "key": key_clone}),
-            metadata: None,
-            namespace: None,
-            trigger_namespace: None,
-        })
+        .register_trigger(RegisterTriggerInput::new(
+            "state".to_string(),
+            fn_ref.id.clone(),
+            json!({"scope": SCOPE, "key": key_clone}),
+        ))
         .expect("register state trigger");
 
     let expected = Some(json!({"name": "New Test Data", "value": 200}));

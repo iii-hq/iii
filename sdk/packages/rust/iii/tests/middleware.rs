@@ -41,18 +41,15 @@ async fn middleware_continue_to_handler() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "test::mw::continue::handler::rs".to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        "test::mw::continue::handler::rs".to_string(),
+        json!({
             "api_path": "test/rs/mw/continue",
             "http_method": "GET",
             "middleware_function_ids": ["test::mw::continue::rs"],
         }),
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    })
+    ))
     .expect("register trigger");
 
     common::settle().await;
@@ -103,18 +100,15 @@ async fn middleware_short_circuit() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "test::mw::block::handler::rs".to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        "test::mw::block::handler::rs".to_string(),
+        json!({
             "api_path": "test/rs/mw/block",
             "http_method": "GET",
             "middleware_function_ids": ["test::mw::block::rs"],
         }),
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    })
+    ))
     .expect("register trigger");
 
     common::settle().await;
@@ -176,10 +170,10 @@ async fn multiple_middleware_ordering() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "test::mw::order::handler::rs".to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        "test::mw::order::handler::rs".to_string(),
+        json!({
             "api_path": "test/rs/mw/order",
             "http_method": "GET",
             "middleware_function_ids": [
@@ -187,10 +181,7 @@ async fn multiple_middleware_ordering() {
                 "test::mw::order::second::rs",
             ],
         }),
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    })
+    ))
     .expect("register trigger");
 
     common::settle().await;
@@ -221,17 +212,14 @@ async fn no_middleware_regression() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "test::mw::none::rs".to_string(),
-        config: json!({
+    iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        "test::mw::none::rs".to_string(),
+        json!({
             "api_path": "test/rs/mw/none",
             "http_method": "GET",
         }),
-        metadata: None,
-        namespace: None,
-        trigger_namespace: None,
-    })
+    ))
     .expect("register trigger");
 
     common::settle().await;
