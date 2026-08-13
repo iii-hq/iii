@@ -1078,3 +1078,77 @@ async fn workers_info_excludes_connectionless_trigger_types_from_a_namespaced_ws
          namespaced WS worker by name; got: {result}"
     );
 }
+
+/// A namespace named and left blank is refused, not read as absent.
+///
+/// The two ask for opposite things: absent asks for `default`, blank names a
+/// namespace and gives nothing to name it with. Read as absent, the worker
+/// lands in `default` and every call and trigger it makes follows it there --
+/// a whole project quietly serving from the wrong namespace, and the one thing
+/// an operator cannot see by reading the declaration. Filed under the empty
+/// string instead, it lands in a namespace nobody can address or type.
+///
+/// The SDKs refuse it at construction, each in its own way, and one of them did
+/// not refuse it at all. The engine is the party every client goes through.
+#[tokio::test]
+async fn a_blank_namespace_on_register_is_refused() {
+    let (port, engine) = spawn_engine().await;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/"))
+        .await
+        .expect("connect");
+    let _registered = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("WorkerRegistered")
+        .expect("stream")
+        .expect("frame");
+
+    let invocation = uuid::Uuid::new_v4();
+    ws.send(WsMessage::Text(
+        json!({
+            "type": "invokefunction",
+            "invocation_id": invocation,
+            "function_id": "engine::workers::register",
+            "data": { "runtime": "node", "name": "blank-ns", "pid": 4700, "namespace": "  " },
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("send register");
+
+    // The refusal comes back on the invocation, so a worker learns why rather
+    // than discovering it later through calls that resolve nowhere.
+    let mut refused = None;
+    for _ in 0..20 {
+        let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_secs(3), ws.next()).await
+        else {
+            break;
+        };
+        let Ok(msg) = serde_json::from_str::<Value>(frame.to_text().unwrap_or_default()) else {
+            continue;
+        };
+        if msg["type"] == "invocationresult" && msg["invocation_id"] == json!(invocation) {
+            refused = Some(msg);
+            break;
+        }
+    }
+
+    let refused = refused.expect("the register call must be answered");
+    assert_eq!(
+        refused["error"]["code"], "INVALID_NAMESPACE",
+        "unexpected: {refused}"
+    );
+
+    // And nothing was filed: no worker under the blank namespace, and none
+    // quietly placed in `default` either.
+    let listed = call_engine_fn(&engine, "engine::workers::list", json!({})).await;
+    let names: Vec<&str> = listed["workers"]
+        .as_array()
+        .map(|w| w.iter().filter_map(|w| w["name"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        !names.contains(&"blank-ns"),
+        "a refused registration must leave nothing behind: {names:?}"
+    );
+}

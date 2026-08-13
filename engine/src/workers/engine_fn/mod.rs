@@ -1943,6 +1943,25 @@ impl EngineFunctionsWorker {
     ) -> FunctionResult<RegisterWorkerResult, ErrorBody> {
         let mut input = input;
         let worker_id = input.worker_id.clone();
+
+        // Refused rather than read as absent. This is the namespace the whole
+        // connection inherits -- its lease, its functions, and everything it
+        // calls or binds afterwards -- so getting it wrong here is not a local
+        // mistake.
+        if crate::protocol::is_blank_namespace(&input.namespace) {
+            return FunctionResult::Failure(ErrorBody {
+                code: crate::protocol::INVALID_NAMESPACE.into(),
+                message: format!(
+                    "namespace is empty: worker '{}' declared {:?}. Give it a name, or omit \
+                     the field to register in '{}'.",
+                    input.name.as_deref().unwrap_or("<unnamed>"),
+                    input.namespace.as_deref().unwrap_or_default(),
+                    crate::protocol::DEFAULT_NAMESPACE
+                ),
+                stacktrace: None,
+            });
+        }
+
         let declared = crate::protocol::effective_namespace(&input.namespace).to_string();
 
         // The grace timer fixes a connection to `default` when no

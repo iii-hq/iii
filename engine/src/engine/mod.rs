@@ -96,6 +96,16 @@ enum NamespaceState {
     Aborted(String),
 }
 
+/// The refusal every blank-namespace guard sends back, naming the field so the
+/// caller knows which of the two on a trigger was the empty one.
+fn blank_namespace_message(field: &str) -> String {
+    format!(
+        "`{field}` is empty: it was named and left blank. Give it a name, or omit it to use \
+         `{}`.",
+        DEFAULT_NAMESPACE
+    )
+}
+
 /// Registration messages are the only ones whose effect depends on the
 /// connection's namespace, so they are the only ones worth buffering.
 ///
@@ -1198,6 +1208,19 @@ impl Engine {
                 call_request_format,
                 namespace,
             } => {
+                // No ack exists for this message, so a refusal can only be
+                // logged. It is logged loudly: the provider will never be
+                // reachable, and every binding meant for it parks.
+                if crate::protocol::is_blank_namespace(namespace) {
+                    tracing::error!(
+                        worker_id = %worker.id,
+                        trigger_type_id = %id,
+                        "{}",
+                        blank_namespace_message("namespace")
+                    );
+                    return Ok(());
+                }
+
                 // The connection's namespace unless the message overrides it.
                 // This is what stops two projects providing the same type id
                 // from overwriting each other — and what makes a provider
@@ -1309,6 +1332,32 @@ impl Engine {
                     config = ?config,
                     "RegisterTrigger"
                 );
+
+                // Either namespace named and left empty is refused. They are
+                // different questions -- one locates the target, the other the
+                // provider -- and both are answerable to the caller here.
+                for (field, value) in [
+                    ("namespace", namespace),
+                    ("trigger_namespace", trigger_namespace),
+                ] {
+                    if crate::protocol::is_blank_namespace(value) {
+                        let _ = self
+                            .send_msg(
+                                worker,
+                                Message::TriggerRegistrationResult {
+                                    id: id.clone(),
+                                    trigger_type: trigger_type.clone(),
+                                    function_id: function_id.clone(),
+                                    error: Some(crate::protocol::ErrorBody::new(
+                                        crate::protocol::INVALID_NAMESPACE,
+                                        blank_namespace_message(field),
+                                    )),
+                                },
+                            )
+                            .await;
+                        return Ok(());
+                    }
+                }
 
                 let mut reg_trigger_id = id.clone();
                 let mut reg_trigger_type = trigger_type.clone();
@@ -1517,6 +1566,38 @@ impl Engine {
                     payload = ?data,
                     "InvokeFunction"
                 );
+
+                // A named-but-empty namespace is a mistake, not a request for
+                // `default`. Answering the caller beats resolving somewhere
+                // they did not ask for: the call would otherwise land in
+                // whatever the empty string routes to and look like a miss.
+                if crate::protocol::is_blank_namespace(namespace) {
+                    if let Some(invocation_id) = invocation_id {
+                        let _ = self
+                            .send_msg(
+                                worker,
+                                Message::InvocationResult {
+                                    invocation_id: *invocation_id,
+                                    function_id: function_id.clone(),
+                                    result: None,
+                                    error: Some(crate::protocol::ErrorBody::new(
+                                        crate::protocol::INVALID_NAMESPACE,
+                                        blank_namespace_message("namespace"),
+                                    )),
+                                    traceparent: None,
+                                    baggage: None,
+                                },
+                            )
+                            .await;
+                    } else {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %function_id,
+                            "InvokeFunction carried an empty namespace; dropped"
+                        );
+                    }
+                    return Ok(());
+                }
 
                 if let Some(session) = &worker.session {
                     // Resolve strictly in the requested namespace first: RBAC is
@@ -5634,6 +5715,120 @@ mod tests {
             "intent should be parked in pending_triggers"
         );
         assert!(!engine.trigger_registry.triggers.contains_key("trig-1"));
+    }
+
+    // ── A namespace named and left blank ─────────────────────────────────
+    //
+    // The SDKs each refuse this at construction, in four different ways, and
+    // one of them (the browser) did not refuse it at all. The engine is the
+    // one party every client goes through, so it refuses too -- and it refuses
+    // rather than reading blank as absent, because the two ask for opposite
+    // things.
+
+    #[tokio::test]
+    async fn a_blank_namespace_on_invoke_is_answered_not_routed() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "svc::run".to_string(),
+                    data: serde_json::json!({}),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: None,
+                    namespace: Some(String::new()),
+                },
+            )
+            .await
+            .expect("the message is handled, not dropped");
+
+        let out = rx.try_recv().expect("the caller must be answered");
+        let Outbound::Protocol(Message::InvocationResult { error, .. }) = out else {
+            panic!("expected an InvocationResult, got {out:?}");
+        };
+        let error = error.expect("a blank namespace is an error, not a miss");
+        assert_eq!(error.code, crate::protocol::INVALID_NAMESPACE);
+    }
+
+    #[tokio::test]
+    async fn a_blank_namespace_on_a_trigger_names_which_field_was_empty() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        // A trigger carries two namespaces for two questions, so the refusal
+        // has to say which one was blank.
+        for (field, namespace, trigger_namespace) in [
+            ("namespace", Some(String::new()), None),
+            ("trigger_namespace", None, Some("  ".to_string())),
+        ] {
+            engine
+                .router_msg(
+                    &worker,
+                    &Message::RegisterTrigger {
+                        id: "t1".to_string(),
+                        trigger_type: "cron".to_string(),
+                        function_id: "svc::run".to_string(),
+                        config: serde_json::json!({}),
+                        metadata: None,
+                        namespace,
+                        trigger_namespace,
+                    },
+                )
+                .await
+                .expect("handled");
+
+            let out = rx.try_recv().expect("the worker must be told");
+            let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = out else {
+                panic!("expected a TriggerRegistrationResult, got {out:?}");
+            };
+            let error = error.expect("a blank namespace is an error");
+            assert_eq!(error.code, crate::protocol::INVALID_NAMESPACE);
+            assert!(error.message.contains(field), "{}", error.message);
+        }
+
+        assert!(
+            engine.trigger_registry.triggers.is_empty()
+                && engine.trigger_registry.pending_triggers.is_empty(),
+            "a refused binding must not be parked either"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blank_namespace_on_a_trigger_type_registers_nothing() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterTriggerType {
+                    id: "webhook".to_string(),
+                    description: "blank namespace".to_string(),
+                    trigger_request_format: None,
+                    call_request_format: None,
+                    namespace: Some(String::new()),
+                },
+            )
+            .await
+            .expect("handled");
+
+        assert!(
+            engine.trigger_registry.trigger_types.is_empty(),
+            "a provider with no namespace to serve must not be filed anywhere"
+        );
     }
 
     #[tokio::test]

@@ -144,7 +144,7 @@ async fn start_daemon_named(port: u16, daemon_namespace: &str) -> Arc<Daemon> {
 }
 
 const TWO_WORKERS: &str = r#"
-name: orders
+namespace: orders
 startup_timeout: 2s
 stop_timeout: 1s
 containers:
@@ -162,7 +162,7 @@ containers:
 /// The same project under another name, so two of them can be held at once
 /// without their workers competing for one namespace.
 const ONE_WORKER: &str = r#"
-name: billing
+namespace: billing
 startup_timeout: 2s
 stop_timeout: 1s
 containers:
@@ -519,7 +519,7 @@ async fn a_configuration_that_cannot_be_read_stops_the_container() {
     let file = project(
         tmp.path(),
         r#"
-name: orders
+namespace: orders
 startup_timeout: 2s
 stop_timeout: 1s
 containers:
