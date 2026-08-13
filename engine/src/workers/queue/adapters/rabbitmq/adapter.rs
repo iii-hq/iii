@@ -10,13 +10,13 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
 };
 
 use async_trait::async_trait;
-use lapin::{Channel, Connection, ConnectionProperties, message::Delivery, options::*};
+use lapin::{message::Delivery, options::*, Channel, Connection, ConnectionProperties};
 use serde_json::Value;
 use tokio::{sync::RwLock, task::JoinHandle};
 use uuid::Uuid;
@@ -24,8 +24,8 @@ use uuid::Uuid;
 use crate::{
     engine::Engine,
     workers::queue::{
-        FunctionQueueConfig, QueueAdapter, SubscriberQueueConfig,
         registry::{QueueAdapterFuture, QueueAdapterRegistration},
+        FunctionQueueConfig, QueueAdapter, SubscriberQueueConfig,
     },
 };
 
@@ -284,8 +284,15 @@ impl QueueAdapter for RabbitMQAdapter {
         // `maxPriority`, and clamps it to its own `x-max-priority`.
         let priority =
             super::types::priority_from_data(&data, self.config.priority_field.as_deref());
-        let job = Job::new(topic, data, self.config.max_attempts, traceparent, baggage)
-            .with_priority(priority);
+        let job = Job::new(
+            topic,
+            data,
+            self.config.max_attempts,
+            traceparent,
+            baggage,
+            None,
+        )
+        .with_priority(priority);
 
         if let Err(e) = self.topology.setup_topic(topic).await {
             tracing::error!(
@@ -861,6 +868,7 @@ impl QueueAdapter for RabbitMQAdapter {
         queue_name: &str,
         function_id: &str,
         data: Value,
+        metadata: Option<Value>,
         message_id: &str,
         _max_retries: u32,
         _backoff_ms: u64,
@@ -896,6 +904,20 @@ impl QueueAdapter for RabbitMQAdapter {
                 "baggage".into(),
                 lapin::types::AMQPValue::LongString(bg.as_str().into()),
             );
+        }
+        if let Some(metadata) = metadata {
+            match serde_json::to_string(&metadata) {
+                Ok(serialized) => {
+                    headers.insert(
+                        "metadata".into(),
+                        lapin::types::AMQPValue::LongString(serialized.into()),
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, queue = %queue_name, "Failed to serialize function queue metadata");
+                    return;
+                }
+            }
         }
 
         let mut properties = lapin::BasicProperties::default()
@@ -1017,6 +1039,17 @@ impl QueueAdapter for RabbitMQAdapter {
                                     _ => None,
                                 });
 
+                        let metadata =
+                            headers
+                                .and_then(|h| h.inner().get("metadata"))
+                                .and_then(|v| match v {
+                                    lapin::types::AMQPValue::LongString(s) => {
+                                        serde_json::from_str::<serde_json::Value>(&s.to_string())
+                                            .ok()
+                                    }
+                                    _ => None,
+                                });
+
                         let attempt = headers
                             .and_then(|h| h.inner().get("x-attempt"))
                             .and_then(|v| match v {
@@ -1037,6 +1070,7 @@ impl QueueAdapter for RabbitMQAdapter {
                             delivery_id,
                             function_id,
                             data,
+                            metadata,
                             attempt,
                             message_id,
                             traceparent,

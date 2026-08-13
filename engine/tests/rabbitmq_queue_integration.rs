@@ -8,12 +8,12 @@
 
 mod common;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use lapin::{Connection, ConnectionProperties, options::*};
-use serde_json::{Value, json};
+use lapin::{options::*, Connection, ConnectionProperties};
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -87,6 +87,7 @@ async fn missing_dlq_inspection_does_not_close_function_queue_channel() {
             &function_queue,
             "test::rmq_dlq_channel",
             json!({"source": "dlq-channel-regression"}),
+            None,
             "dlq-channel-regression-message",
             config.max_retries,
             config.backoff_ms,
@@ -373,7 +374,7 @@ async fn concurrent_processing() {
             &module,
             &format!("{prefix}-default"),
             "test::rmq_slow",
-            json!({"idx": i}),
+            json!({ "idx": i }),
         )
         .await
         .expect("Enqueue should succeed");
@@ -436,7 +437,7 @@ async fn multiple_queues_operate_independently() {
             &module,
             &format!("{prefix}-default"),
             "test::rmq_default",
-            json!({"idx": i}),
+            json!({ "idx": i }),
         )
         .await
         .expect("Enqueue to default should succeed");

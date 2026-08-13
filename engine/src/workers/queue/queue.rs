@@ -8,8 +8,8 @@ use std::{
     collections::HashMap,
     pin::Pin,
     sync::{
-        Arc, Mutex as StdMutex, RwLock,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex as StdMutex, RwLock,
     },
 };
 
@@ -20,13 +20,13 @@ use futures::{Future, FutureExt};
 use once_cell::sync::Lazy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::panic::AssertUnwindSafe;
 use tokio::task::AbortHandle;
 
 use super::{
-    QueueAdapter, SubscriberQueueConfig, TopicInfo,
     config::{FunctionQueueConfig, QueueModuleConfig},
+    QueueAdapter, SubscriberQueueConfig, TopicInfo,
 };
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -35,7 +35,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     protocol::ErrorBody,
-    telemetry::{SpanExt, inject_baggage_from_context, inject_traceparent_from_context},
+    telemetry::{inject_baggage_from_context, inject_traceparent_from_context, SpanExt},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
     workers::traits::{AdapterFactory, ConfigurableWorker, Worker},
 };
@@ -161,6 +161,7 @@ impl QueueWorker {
         queue_name: &str,
         function_id: &str,
         data: Value,
+        metadata: Option<Value>,
         message_id: &str,
         traceparent: Option<String>,
         baggage: Option<String>,
@@ -224,6 +225,7 @@ impl QueueWorker {
                 queue_name,
                 function_id,
                 data,
+                metadata,
                 message_id,
                 queue_config.max_retries,
                 queue_config.backoff_ms,
@@ -860,11 +862,14 @@ impl QueueWorker {
                         baggage.as_deref(),
                     );
 
-                    let result =
-                        AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
-                            .catch_unwind()
-                            .instrument(span)
-                            .await;
+                    let result = AssertUnwindSafe(async {
+                        engine
+                            .call_with_metadata(&function_id, msg.data, msg.metadata)
+                            .await
+                    })
+                    .catch_unwind()
+                    .instrument(span)
+                    .await;
 
                     match result {
                         Ok(Ok(_)) => {
@@ -1537,6 +1542,7 @@ mod tests {
         unsubscribe_count: AtomicU64,
         last_topic: Mutex<String>,
         last_data: Mutex<Option<Value>>,
+        last_function_queue_metadata: Mutex<Option<Value>>,
         last_traceparent: Mutex<Option<String>>,
         last_baggage: Mutex<Option<String>>,
         redrive_dlq_result: AtomicU64,
@@ -1565,6 +1571,7 @@ mod tests {
                 unsubscribe_count: AtomicU64::new(0),
                 last_topic: Mutex::new(String::new()),
                 last_data: Mutex::new(None),
+                last_function_queue_metadata: Mutex::new(None),
                 last_traceparent: Mutex::new(None),
                 last_baggage: Mutex::new(None),
                 redrive_dlq_result: AtomicU64::new(0),
@@ -1610,6 +1617,7 @@ mod tests {
             _queue_name: &str,
             _function_id: &str,
             _data: Value,
+            metadata: Option<Value>,
             _message_id: &str,
             _max_retries: u32,
             _backoff_ms: u64,
@@ -1618,6 +1626,7 @@ mod tests {
             _priority: Option<u8>,
         ) {
             self.enqueue_to_queue_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_function_queue_metadata.lock().await = metadata;
         }
 
         async fn subscribe(
@@ -2201,12 +2210,10 @@ mod tests {
         let (engine, module, _adapter) = setup_queue_module();
         let result = module.initialize().await;
         assert!(result.is_ok());
-        assert!(
-            engine
-                .trigger_registry
-                .trigger_types
-                .contains_key("durable:subscriber")
-        );
+        assert!(engine
+            .trigger_registry
+            .trigger_types
+            .contains_key("durable:subscriber"));
     }
 
     // =========================================================================
@@ -2225,7 +2232,7 @@ mod tests {
 
     #[test]
     fn build_provisions_builtin_default_queue() {
-        use super::super::config::{DEFAULT_QUEUE_NAME, QueueModuleConfig};
+        use super::super::config::{QueueModuleConfig, DEFAULT_QUEUE_NAME};
 
         crate::workers::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
@@ -2243,7 +2250,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_to_default_queue_succeeds_without_config() {
-        use super::super::config::{DEFAULT_QUEUE_NAME, QueueModuleConfig};
+        use super::super::config::{QueueModuleConfig, DEFAULT_QUEUE_NAME};
 
         crate::workers::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
@@ -2257,6 +2264,7 @@ mod tests {
                 DEFAULT_QUEUE_NAME,
                 "fn-1",
                 json!({"key": "value"}),
+                None,
                 "test-msg-id",
                 None,
                 None,
@@ -2328,6 +2336,7 @@ mod tests {
                 "nonexistent",
                 "fn-1",
                 json!({"key": "value"}),
+                None,
                 "test-msg-id",
                 None,
                 None,
@@ -2350,6 +2359,7 @@ mod tests {
                 "payment",
                 "fn-1",
                 json!({"amount": 100}), // missing "transaction_id"
+                None,
                 "test-msg-id",
                 None,
                 None,
@@ -2372,6 +2382,7 @@ mod tests {
                 "payment",
                 "fn-1",
                 json!({"transaction_id": null, "amount": 100}),
+                None,
                 "test-msg-id",
                 None,
                 None,
@@ -2394,6 +2405,7 @@ mod tests {
                 "payment",
                 "fn-1",
                 json!({"transaction_id": "txn-123", "amount": 100}),
+                None,
                 "test-msg-id",
                 None,
                 None,
@@ -2411,6 +2423,7 @@ mod tests {
                 "default",
                 "fn-1",
                 json!({"key": "value"}),
+                None,
                 "test-msg-id",
                 None,
                 None,
@@ -2418,6 +2431,38 @@ mod tests {
             .await;
         assert!(result.is_ok());
         assert_eq!(adapter.enqueue_to_queue_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn enqueue_to_function_queue_forwards_metadata_to_adapter() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        let metadata = json!({
+            "object": { "nested": true },
+            "array": [1, "two", null],
+            "string": "value",
+            "number": 3,
+            "bool": false,
+            "null": null
+        });
+
+        let result = module
+            .enqueue_to_function_queue(
+                "default",
+                "fn-1",
+                json!({"key": "value"}),
+                Some(metadata.clone()),
+                "test-msg-id",
+                None,
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(adapter.enqueue_to_queue_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *adapter.last_function_queue_metadata.lock().await,
+            Some(metadata)
+        );
     }
 
     // =========================================================================
@@ -2513,6 +2558,7 @@ mod tests {
                 "default",
                 "integration::ack_fn",
                 json!({"task": "do_work"}),
+                None,
                 "test-msg-id",
                 3,
                 1000,
@@ -2541,6 +2587,69 @@ mod tests {
             1,
             "Function should have been called exactly once"
         );
+    }
+
+    #[tokio::test]
+    async fn integration_enqueue_consume_preserves_metadata_without_changing_data() {
+        let (engine, module, adapter) = setup_integration_module().await;
+
+        let captured_data = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let captured_metadata = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let data_store = captured_data.clone();
+        let metadata_store = captured_metadata.clone();
+
+        let function = crate::function::Function {
+            handler: Arc::new(move |_invocation_id, input, _session, metadata| {
+                let data_store = data_store.clone();
+                let metadata_store = metadata_store.clone();
+                Box::pin(async move {
+                    data_store.lock().await.push(input);
+                    metadata_store.lock().await.push(metadata);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: "integration::metadata_fn".to_string(),
+            _description: Some("test".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function("integration::metadata_fn".to_string(), function);
+
+        let data = json!({"task": "do_work"});
+        let metadata = json!({"iii.ccp": {"version": "1"}, "array": [1, true, null]});
+
+        adapter
+            .publish_to_function_queue(
+                "default",
+                "integration::metadata_fn",
+                data.clone(),
+                Some(metadata.clone()),
+                "test-msg-id",
+                3,
+                1000,
+                None,
+                None,
+                None,
+            )
+            .await;
+
+        module
+            .initialize()
+            .await
+            .expect("initialize should succeed");
+        let (_shutdown_tx_keep, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, _shutdown_tx_keep.clone())
+            .await
+            .expect("start_background_tasks should succeed");
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        assert_eq!(*captured_data.lock().await, vec![data]);
+        assert_eq!(*captured_metadata.lock().await, vec![Some(metadata)]);
     }
 
     #[tokio::test]
@@ -2577,6 +2686,7 @@ mod tests {
                 "default",
                 "integration::fail_fn",
                 json!({"task": "will_fail"}),
+                None,
                 "test-msg-id",
                 3,
                 100,
@@ -2644,6 +2754,7 @@ mod tests {
                     "payment",
                     "integration::fifo_fn",
                     json!({"transaction_id": txn_id, "amount": 100}),
+                    None,
                     "test-msg-id",
                     3,
                     1000,
@@ -2720,7 +2831,8 @@ mod tests {
                 .publish_to_function_queue(
                     "default",
                     "integration::concurrent_fn",
-                    json!({"task_id": format!("task-{}", i)}),
+                    json!({ "task_id": format!("task-{}", i) }),
+                    None,
                     "test-msg-id",
                     3,
                     1000,

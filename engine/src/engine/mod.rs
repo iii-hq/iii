@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
-    invocation::{InvocationHandler, http_function::HttpFunctionConfig},
+    invocation::{http_function::HttpFunctionConfig, InvocationHandler},
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
@@ -35,7 +35,7 @@ use crate::{
     workers::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsWorker,
-        worker::{WorkerManagerConfig, channels::ChannelManager, rbac_session},
+        worker::{channels::ChannelManager, rbac_session, WorkerManagerConfig},
     },
 };
 
@@ -1027,6 +1027,7 @@ impl Engine {
                         let queue = queue.to_string();
                         let message_receipt_id = Uuid::new_v4().to_string();
                         let data = data.clone();
+                        let metadata = metadata.clone();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
                         let queued_baggage = crate::telemetry::baggage_with_function_id(
@@ -1069,6 +1070,7 @@ impl Engine {
                                             "queue": queue.clone(),
                                             "function_id": function_id.clone(),
                                             "data": data,
+                                            "metadata": metadata,
                                             "messageReceiptId": message_receipt_id.clone(),
                                             "traceparent": traceparent.clone(),
                                             "baggage": queued_baggage,
@@ -2132,8 +2134,8 @@ mod tests {
     use std::{
         collections::HashMap,
         sync::{
-            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
         },
         time::Duration,
     };
@@ -2149,7 +2151,7 @@ mod tests {
         worker_connections::WorkerConnection,
         workers::{
             engine_fn::TRIGGER_WORKERS_AVAILABLE,
-            http_functions::{HttpFunctionsWorker, config::HttpFunctionsConfig},
+            http_functions::{config::HttpFunctionsConfig, HttpFunctionsWorker},
             observability::metrics::ensure_default_meter,
             traits::Worker,
         },
@@ -2254,21 +2256,17 @@ mod tests {
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
 
-        assert!(
-            http_module
-                .http_functions()
-                .contains_key("external.my_lambda")
-        );
+        assert!(http_module
+            .http_functions()
+            .contains_key("external.my_lambda"));
 
         engine.cleanup_worker(&worker).await;
 
         assert!(engine.functions.get("external.my_lambda").is_none());
 
-        assert!(
-            !http_module
-                .http_functions()
-                .contains_key("external.my_lambda")
-        );
+        assert!(!http_module
+            .http_functions()
+            .contains_key("external.my_lambda"));
     }
 
     // ---------------------------------------------------------------
@@ -2358,7 +2356,7 @@ mod tests {
     /// the rest of the fields at sensible defaults for register/unregister
     /// tests. Used by the prefix regression tests for iii-hq/iii#1508.
     fn session_with_prefix(prefix: &str) -> crate::workers::worker::rbac_session::Session {
-        use crate::workers::worker::{WorkerManagerConfig, rbac_session::Session};
+        use crate::workers::worker::{rbac_session::Session, WorkerManagerConfig};
         use uuid::Uuid;
         Session {
             engine: Arc::new(Engine::new()),
@@ -2641,12 +2639,10 @@ mod tests {
             .await
             .expect("register trigger should succeed");
 
-        assert!(
-            engine
-                .trigger_registry
-                .triggers
-                .contains_key("unreg_trigger")
-        );
+        assert!(engine
+            .trigger_registry
+            .triggers
+            .contains_key("unreg_trigger"));
 
         // Drain channel messages from register
         while rx.try_recv().is_ok() {}
@@ -2831,7 +2827,12 @@ mod tests {
                     action: Some(crate::protocol::TriggerAction::Enqueue {
                         queue: "harness-turn".to_string(),
                     }),
-                    metadata: None,
+                    metadata: Some(json!({
+                        "iii.ccp": {
+                            "version": "1",
+                            "id": "ccp-provider-test"
+                        }
+                    })),
                 },
             )
             .await
@@ -2863,6 +2864,15 @@ mod tests {
         assert_eq!(input["queue"], "harness-turn");
         assert_eq!(input["function_id"], "harness::turn");
         assert_eq!(input["data"], json!({"session_id": "s1"}));
+        assert_eq!(
+            input["metadata"],
+            json!({
+                "iii.ccp": {
+                    "version": "1",
+                    "id": "ccp-provider-test"
+                }
+            })
+        );
         assert_eq!(input["messageReceiptId"], receipt);
         assert_eq!(
             input["traceparent"],
@@ -3447,18 +3457,14 @@ mod tests {
             .await
             .expect("register trigger should succeed");
 
-        assert!(
-            engine
-                .trigger_registry
-                .triggers
-                .contains_key("cleanup_trigger")
-        );
-        assert!(
-            engine
-                .trigger_registry
-                .trigger_types
-                .contains_key("cleanup_trigger_type")
-        );
+        assert!(engine
+            .trigger_registry
+            .triggers
+            .contains_key("cleanup_trigger"));
+        assert!(engine
+            .trigger_registry
+            .trigger_types
+            .contains_key("cleanup_trigger_type"));
 
         // Drain channel messages
         while rx.try_recv().is_ok() {}
@@ -4062,12 +4068,10 @@ mod tests {
             .router_msg(&worker, &msg)
             .await
             .expect("RegisterTrigger should succeed at protocol level");
-        assert!(
-            engine
-                .trigger_registry
-                .pending_triggers
-                .contains_key("trig-early")
-        );
+        assert!(engine
+            .trigger_registry
+            .pending_triggers
+            .contains_key("trig-early"));
 
         // The provider shows up and registers the type: the parked intent
         // is activated and forwarded to the provider.
@@ -4117,12 +4121,10 @@ mod tests {
             .router_msg(&worker, &msg)
             .await
             .expect("RegisterTrigger should succeed at protocol level");
-        assert!(
-            engine
-                .trigger_registry
-                .pending_triggers
-                .contains_key("trig-orphan")
-        );
+        assert!(engine
+            .trigger_registry
+            .pending_triggers
+            .contains_key("trig-orphan"));
 
         // The worker disconnects while its registration is still parked: the
         // intent must be reaped with the connection, exactly like a live
@@ -4330,12 +4332,10 @@ mod tests {
             .await
             .expect("RegisterService without description should succeed");
 
-        assert!(
-            engine
-                .service_registry
-                .services
-                .contains_key("minimal-service")
-        );
+        assert!(engine
+            .service_registry
+            .services
+            .contains_key("minimal-service"));
     }
 
     // =========================================================================
@@ -5358,23 +5358,19 @@ mod tests {
         // Drain channel
         while rx.try_recv().is_ok() {}
 
-        assert!(
-            engine
-                .trigger_registry
-                .triggers
-                .contains_key("cleanup_trigger")
-        );
+        assert!(engine
+            .trigger_registry
+            .triggers
+            .contains_key("cleanup_trigger"));
 
         // Cleanup
         engine.cleanup_worker(&worker).await;
 
         // Trigger should be removed (unregister_worker removes all triggers for the worker)
-        assert!(
-            !engine
-                .trigger_registry
-                .triggers
-                .contains_key("cleanup_trigger")
-        );
+        assert!(!engine
+            .trigger_registry
+            .triggers
+            .contains_key("cleanup_trigger"));
     }
 
     #[tokio::test]
@@ -5431,12 +5427,10 @@ mod tests {
 
         assert!(engine.functions.get("nonexistent").is_none());
         assert!(!engine.trigger_registry.triggers.contains_key("anything"));
-        assert!(
-            !engine
-                .worker_registry
-                .workers
-                .contains_key(&uuid::Uuid::new_v4())
-        );
+        assert!(!engine
+            .worker_registry
+            .workers
+            .contains_key(&uuid::Uuid::new_v4()));
     }
 
     // =========================================================================
@@ -5517,12 +5511,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            engine
-                .trigger_registry
-                .triggers
-                .contains_key("trigger_meta_1")
-        );
+        assert!(engine
+            .trigger_registry
+            .triggers
+            .contains_key("trigger_meta_1"));
         let trigger = engine
             .trigger_registry
             .triggers
