@@ -56,7 +56,7 @@ pub struct TriggerArgs {
     /// Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's
     /// `default` namespace; routing is strict, so a function registered in
     /// another namespace is only reachable with this flag.
-    #[arg(long, value_name = "NS")]
+    #[arg(short = 'n', long, value_name = "NS")]
     pub namespace: Option<String>,
 
     /// Print help. With a FUNCTION_PATH, queries a running engine for that
