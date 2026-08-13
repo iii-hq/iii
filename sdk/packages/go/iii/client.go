@@ -318,6 +318,26 @@ func (c *Client) RegisterTriggerType(id, description string, handler TriggerHand
 	return nil
 }
 
+// refuseBlankCallNamespace refuses a namespace that was named and left blank on
+// one call or one binding.
+//
+// Named and left empty asks for the opposite of what absent asks for, and the
+// two are only ever confused by accident: Go dropped the empty string with
+// `omitempty` and sent the call to the engine's default, while Node and Rust
+// forwarded it verbatim and Python replaced it with the worker's. One mistake,
+// four behaviours.
+//
+// Unlike the other SDKs, absent here still means the engine's `default` rather
+// than this worker's namespace: Go has not adopted namespace inheritance yet.
+func refuseBlankCallNamespace(namespace, source string) error {
+	if namespace != "" && strings.TrimSpace(namespace) == "" {
+		return fmt.Errorf(
+			"iii: namespace is empty: %s was set to %q. Give it a name, or leave it unset "+
+				"to resolve in the engine's default namespace", source, namespace)
+	}
+	return nil
+}
+
 // RegisterTrigger registers a trigger instance: fire functionID when a trigger of
 // triggerType matches config. config and optional metadata are raw JSON (may be nil).
 func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json.RawMessage, metadata ...json.RawMessage) error {
@@ -331,6 +351,9 @@ func (c *Client) RegisterTriggerNamespaced(id, triggerType, functionID, namespac
 }
 
 func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
+	if err := refuseBlankCallNamespace(namespace, "RegisterTriggerNamespaced namespace"); err != nil {
+		return err
+	}
 	if config == nil {
 		config = json.RawMessage("{}")
 	}
@@ -384,6 +407,9 @@ type TriggerRequest struct {
 // ctx bounds the wait independently of [TriggerRequest.Timeout]: if ctx is cancelled
 // first, its error is returned and the pending entry is reclaimed.
 func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessage, error) {
+	if err := refuseBlankCallNamespace(req.Namespace, "TriggerRequest.Namespace"); err != nil {
+		return nil, err
+	}
 	data := req.Data
 	if data == nil {
 		data = json.RawMessage("{}")

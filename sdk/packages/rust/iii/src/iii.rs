@@ -368,6 +368,32 @@ pub(crate) fn reject_blank_namespace(declared: &str, source: &str) {
     }
 }
 
+/// The namespace one call or one binding resolves in.
+///
+/// `None` inherits the worker's. `Some("")` is refused: a namespace named and
+/// left blank asks for the opposite of what absent asks for, and the two are
+/// only ever confused by accident -- `??`, `or_else` and `or` each disagree
+/// about the empty string, which is how the SDKs ended up forwarding it,
+/// coercing it and dropping it respectively.
+///
+/// An `Err` rather than a panic: unlike a namespace declared once in
+/// `InitOptions`, a per-call one can come from data, and a caller can do
+/// something with the error.
+pub(crate) fn call_namespace(
+    explicit: Option<String>,
+    worker: Option<String>,
+    source: &str,
+) -> Result<Option<String>, Error> {
+    match explicit {
+        Some(declared) if declared.trim().is_empty() => Err(Error::Handler(format!(
+            "namespace is empty: `{source}` was set to {declared:?}. Give it a name, or leave \
+             it unset to stay in this worker's namespace."
+        ))),
+        Some(declared) => Ok(Some(declared)),
+        None => Ok(worker),
+    }
+}
+
 pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
     if let Some(declared) = explicit {
         reject_blank_namespace(&declared, "InitOptions.namespace");
@@ -1314,7 +1340,11 @@ impl IIIClient {
             // registers a trigger that fires and resolves nothing. Naming
             // another namespace, `default` included, stays a matter of saying
             // so.
-            namespace: input.namespace.or_else(|| self.namespace()),
+            namespace: call_namespace(
+                input.namespace,
+                self.namespace(),
+                "RegisterTriggerInput.namespace",
+            )?,
             // Passed through untouched, including when it is `None`. `None` is
             // the engine's two-step resolution — this worker's namespace, then
             // the engine's own — which is what lets a project ship its own
@@ -1410,7 +1440,11 @@ impl IIIClient {
         // the caller's. Reaching a worker that lives elsewhere -- an engine
         // builtin in `default`, a neighbour in another project -- is done by
         // naming that namespace.
-        let namespace = request.namespace.or_else(|| self.namespace());
+        let namespace = call_namespace(
+            request.namespace,
+            self.namespace(),
+            "TriggerRequest.namespace",
+        )?;
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response
