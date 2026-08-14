@@ -15,6 +15,7 @@ import headExtras from '../components/landing/head-extras.html?raw'
 
 import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
 import friction from '../components/landing/sections/02a-friction.html?raw'
+import frictionAnim from '../components/landing/sections/02b-friction-anim.html?raw'
 import explained from '../components/landing/sections/02-explained.html?raw'
 import hero from '../components/landing/sections/03-hero.html?raw'
 import experience from '../components/landing/sections/04-experience.html?raw'
@@ -33,6 +34,7 @@ import tweaksPanelStyle from '../components/landing/scripts/04-tweaks-panel-styl
 import heroViz from '../components/landing/scripts/05-hero-viz-engine.html?raw'
 import agentSections from '../components/landing/scripts/06-agent-sections-a-harness-collapse-c-.html?raw'
 import tweaksPanel from '../components/landing/scripts/07-tweaks-panel.html?raw'
+import frictionAnimEngine from '../components/landing/scripts/08-friction-anim.html?raw'
 
 // Fragments are consecutive line ranges of the original page; each ends with
 // a newline, so plain concatenation reproduces the source region exactly.
@@ -54,6 +56,7 @@ const body = [
   heroViz,
   agentSections,
   tweaksPanel,
+  frictionAnimEngine,
 ].join('')
 ---
 
@@ -78,6 +81,7 @@ const body = [
     ]}
   />
   <Fragment set:html={hero} />
+  <Fragment set:html={frictionAnim} />
   <Fragment set:html={friction} />
   <Fragment set:html={explained} />
   <ConsoleLive />
