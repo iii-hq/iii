@@ -108,7 +108,14 @@
     row-gap:40px;
     align-items:stretch;
   }
-  .hero-left{ min-width:0; }
+  /* Row 1 holds the headline block and the viz, so the viz spans exactly from
+     the top of the headline to the bottom of the subheadline. Row 2 is the
+     copy, which runs under the viz in the left column only. */
+  .hero-head{ grid-column:1; grid-row:1; min-width:0; }
+  /* The copy sits beside the headline, in the slot the viz used to hold. */
+  .hero-copy{ grid-column:2; grid-row:1; min-width:0; }
+  .hero-copy > .hero-sub:first-child{ margin-top:0; }
+  .hero-left{ grid-column:1; grid-row:2; min-width:0; }
   .hero-eyebrow{
     display:inline-flex; align-items:center; gap:10px;
     margin:0 0 28px;
@@ -441,10 +448,15 @@
     display:grid;
     grid-template-rows: auto 1fr auto;
     min-width:0;
-    /* Matches the copy column's height: the canvas row absorbs whatever is
-       left, so both columns end on the same line. */
-    align-self:stretch;
     position:relative;
+  }
+  /* Hidden for now: the hero copy holds this column instead. The panel and its
+     engine stay in place for when it comes back. */
+  .hero-viz-fit{
+    display:none;
+    grid-column:2; grid-row:1 / span 2;
+    align-self:start;
+    min-width:0;
   }
   @media (min-width: 881px){
     .hero-viz:not([data-design="triptych"]){
@@ -492,11 +504,9 @@
 
   .hero-viz-canvas{
     position:relative;
-    aspect-ratio: 5 / 4;
+    /* Matches the drawing's 400 x 118 viewBox. */
+    aspect-ratio: 200 / 59;
     width:100%;
-    /* The stretched grid row wins over the aspect ratio, so the drawing scales
-       down instead of pushing the panel past the copy column. */
-    min-height:0;
     overflow:hidden;
   }
   .hero-viz-canvas svg{
@@ -617,8 +627,9 @@
     font-family:'Chivo Mono', ui-monospace, monospace;
   }
   .hv-complex-chart{
+    /* preserveAspectRatio="none": the curves stretch to whatever box they get. */
     width:100%;
-    height:80px;
+    height:56px;
     display:block;
     overflow:visible;
   }
@@ -831,6 +842,9 @@
   @media (max-width: 880px){
     .hero{ padding:60px 18px 72px; }
     .hero-inner{ grid-template-columns: 1fr; column-gap:48px; row-gap:40px; }
+    /* One column: the blocks stack in source order and the panel runs at its
+       natural size again. */
+    .hero-head, .hero-copy, .hero-left, .hero-viz-fit{ grid-column:1; grid-row:auto; }
     .hero-headline{ letter-spacing:-0.02em; }
     .hero-cta{ gap:28px; }
     .hero-viz{ min-width:0; max-width:100%; overflow:hidden; }
