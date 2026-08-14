@@ -21,8 +21,7 @@ import headExtras from '../components/landing/head-extras.html?raw'
 import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
 
 // Raw-HTML sections (no component inside). The feature blocks with a console
-// live in HarnessFeatures.astro; these carry the grid, FAQ, and closer.
-import notBuilt from '../components/landing/sections/harness/10-not-built.html?raw'
+// live in HarnessFeatures.astro; these carry the FAQ and closer.
 import faq from '../components/landing/sections/harness/11-faq.html?raw'
 import closer from '../components/landing/sections/harness/12-closer.html?raw'
 
@@ -34,7 +33,7 @@ import footer from '../components/landing/sections/11-footer.html?raw'
 // it is safe even though only some of its targets exist on this page.
 import pageBehaviors from '../components/landing/scripts/02-page-behaviors.html?raw'
 
-const body = [notBuilt, faq, closer, footer, pageBehaviors].join('')
+const body = [faq, closer, footer, pageBehaviors].join('')
 ---
 
 <HtmlShell
@@ -53,7 +52,6 @@ const body = [notBuilt, faq, closer, footer, pageBehaviors].join('')
       { id: 'models', label: 'models' },
       { id: 'state', label: 'state' },
       { id: 'triggers', label: 'triggers' },
-      { id: 'not-built', label: 'not built' },
       { id: 'faq', label: 'faq' },
     ]}
   />

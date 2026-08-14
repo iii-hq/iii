@@ -3,19 +3,33 @@
    from HarnessConsole.astro's own stylesheet). Everything here is scoped to
    "hz-" prefixed classes that don't exist anywhere else on the site. */
 /* ============= hero =============
-   The hero reuses the homepage's .hero grid (.hero-inner splits left copy and
-   a right visual). The right visual here is a static HarnessConsole instead of
-   the animated hero-viz, so it gets the .hz-hero-viz aside and a couple of
-   page-scoped tweaks: the copy column is shorter than the homepage's, so the
-   two columns center against each other, and the console gets a lift. */
-.hz-hero .hero-inner{ align-items:center; }
-.hz-hero-viz{ min-width:0; }
-.hz-hero-viz .hc{
-  box-shadow:0 24px 60px rgba(0,0,0,.10);
-  max-height:520px;
+   The hero overrides the homepage's 2-col .hero-inner grid with a single
+   stacked column, all three blocks sharing one width (60%) so they line
+   up edge-to-edge: headline, then the video embed, then the
+   subheadlines/CTA/trust row (still grouped in .hero-left below). */
+.hz-hero .hero-inner{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:40px;
 }
+.hz-hero-headline{
+  max-width:60%; width:60%;
+  font-size:clamp(22px, 2.6vw, 38px);
+}
+.hz-hero-viz{ min-width:0; width:60%; }
+.hz-hero-video{
+  display:block;
+  border-radius:12px;
+  box-shadow:0 24px 60px rgba(0,0,0,.10);
+}
+.hz-hero .hero-left{ width:60%; max-width:60%; }
+.hz-hero .hero-sub{ max-width:none; }
 @media (max-width: 880px){
-  .hz-hero-viz{ margin-top:8px; }
+  .hz-hero .hero-inner{ align-items:stretch; gap:28px; }
+  .hz-hero-headline{ max-width:100%; width:100%; font-size:clamp(28px, 6vw, 44px); }
+  .hz-hero-viz{ width:100%; }
+  .hz-hero .hero-left{ width:100%; max-width:100%; }
 }
 
 /* ============= shared section header (accent claim, mute line) =============
@@ -176,6 +190,20 @@
 .hz-faq .a .accent{ color:var(--accent); font-weight:500; }
 .hz-faq .a a{ color:var(--ink); }
 .hz-faq .a a:hover{ color:var(--accent); }
+.hz-faq .a p{ margin:0; }
+.hz-faq-primitives{
+  margin:16px 0 0; padding:16px 0 0;
+  border-top:1px solid var(--rule);
+  display:flex; flex-direction:column; gap:14px;
+}
+.hz-faq-primitive{ margin:0; }
+.hz-faq-primitive dt{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:11.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase;
+  color:var(--ink);
+  margin:0 0 4px;
+}
+.hz-faq-primitive dd{ margin:0; color:var(--ink-2); }
 
 /* ============= final CTA closer (sits directly above the reused footer) */
 .hz-closer{ padding:96px 36px 0; text-align:center; }

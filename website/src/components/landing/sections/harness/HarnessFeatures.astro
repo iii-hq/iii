@@ -48,7 +48,7 @@ import HarnessConsole from '../../HarnessConsole.astro'
       <p class="hz-kicker">extensibility <span class="dot"></span></p>
       <h2 class="hz-feature-title">change the <span class="accent">system,</span> not your workflow.</h2>
       <div class="hz-feature-body">
-        <p>pi customizes itself on the fly — write an extension, <code>/reload</code>, keep going. iii takes the same instinct one level down: the thing you extend isn't the harness, it's the running system.</p>
+        <p>other harnesses customize themselves on the fly — write an extension, <code>/reload</code>, keep going. iii takes the same instinct one level down: the thing you extend isn't the harness, it's the running system.</p>
         <p>need a capability that doesn't exist? register a worker. it's live the moment it connects — no reload, no rebuild, no restart — and callable by every other worker and every agent already on the engine, in any language.</p>
         <p>the loop closes: an agent can register a worker mid-task and immediately use what it just added. that's the tight loop between extending a system and using it that a sealed harness can't structurally offer.</p>
       </div>
@@ -110,7 +110,7 @@ import HarnessConsole from '../../HarnessConsole.astro'
       <p class="hz-kicker">state <span class="dot"></span></p>
       <h2 class="hz-feature-title">sessions are <span class="accent">state,</span> not files.</h2>
       <div class="hz-feature-body">
-        <p>pi keeps sessions as trees in a single file you navigate, export to HTML, or push to a gist. that's a history you look at. on iii, a session is state that is accessible from the same runtime as everything else.</p>
+        <p>other harnesses keep sessions as trees in a single file you navigate, export to HTML, or push to a gist. that's a history you look at. on iii, a session is state that is accessible from the same runtime as everything else.</p>
         <p>an agent's memory is state. its progress is state. any worker can read it, branch it, or resume from it, because it's not locked inside one harness's file format.</p>
         <p>and because triggers are durable and replay, nothing is lost when a process restarts: workers reconnect, re-register, and pick up where the state says they were. the history isn't an artifact you share — it's the system, continuing.</p>
       </div>
@@ -140,8 +140,8 @@ import HarnessConsole from '../../HarnessConsole.astro'
       <p class="hz-kicker">context <span class="dot"></span></p>
       <h2 class="hz-feature-title">context engineering, <span class="accent">subtracted.</span></h2>
       <div class="hz-feature-body">
-        <p>pi gives you real context engineering: a minimal system prompt, AGENTS.md, skills, compaction. you decide what goes into the window. iii's answer is that the window shouldn't have to hold the system at all.</p>
-        <p>every function and trigger a worker exposes is published to the engine's live registry the moment it connects. the agent doesn't load a skill file describing what's possible — it queries the system and gets the actual, current list, with schemas.</p>
+        <p>other harnesses give you context engineering: a system prompt, AGENTS.md, skills, compaction, and make you decide what goes into the window. iii's answer is that the window shouldn't have to hold the system at all.</p>
+        <p>every function and trigger a worker exposes is published to the engine's live registry the moment it connects. the agent doesn't load a skill file describing what's possible — it queries the system and gets the current list, with schemas.</p>
         <p>one set of primitives, one always-accurate source of truth. an agent can reason about the whole system in a single context window because there's so little of it to hold.</p>
       </div>
     </div>
@@ -170,7 +170,7 @@ import HarnessConsole from '../../HarnessConsole.astro'
       <p class="hz-kicker">triggers <span class="dot"></span></p>
       <h2 class="hz-feature-title">steer the turn. <span class="accent">or outlive it.</span></h2>
       <div class="hz-feature-body">
-        <p>pi lets you steer a running agent or queue a follow-up. useful, while the agent is running. but most backend work doesn't fit in a turn — it runs on a schedule, on a state change, on an event from somewhere else in the system.</p>
+        <p>other harnesses let you steer a running agent or queue a follow-up. useful, while the agent is running. but most backend work doesn't fit in a turn — it runs on a schedule, on a state change, on an event from somewhere else in the system.</p>
         <p>on iii that's a trigger: the cause primitive, registered engine-side. it fires with no live turn, keeps firing after the turn ends, and is replayed after a restart.</p>
         <p>so "follow up" stops being a keybinding. it's the system, reacting — a cron that reconciles the ledger nightly, a state trigger that kicks the next stage the moment the last one writes its result. the agent registers it and moves on; the engine keeps it alive.</p>
       </div>
@@ -229,7 +229,7 @@ import HarnessConsole from '../../HarnessConsole.astro'
       <p class="hz-kicker">primitives <span class="dot"></span></p>
       <h2 class="hz-feature-title">primitives, <span class="accent">not features.</span></h2>
       <div class="hz-feature-body">
-        <p>pi's bet is that a minimal core plus extensions beats a feature list. iii makes the same bet about the whole system: three primitives — <strong>worker</strong>, <strong>trigger</strong>, <strong>function</strong> — compose into every capability you'll ever need.</p>
+        <p>other harnesses bet that a minimal core plus extensions beats a feature list. iii makes the same bet about the whole system: three primitives — <strong>worker</strong>, <strong>trigger</strong>, <strong>function</strong> — compose into every capability you'll ever need.</p>
         <p>something hosts work, something causes it, something does it. queues, cron, streaming, sandboxing, observability, agents, business logic — each is a pattern on those three, not a new subsystem to learn, configure, and monitor.</p>
         <p>sub-agents, plan mode, permission gates? not features to wait for. they're workers and triggers you add — as easy to install as a library, live the moment they connect.</p>
       </div>

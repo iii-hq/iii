@@ -1,20 +1,27 @@
 ---
 // HARNESS HERO — pi.dev's "many agent harnesses, but this one is yours"
 // becomes iii's claim: the harness is not the product, the system is, and the
-// harness is one worker in it. The right column is a static HarnessConsole
-// (the same console the race animates) mid-run on a backend task — iii's home
-// turf. Astro, not a raw fragment, so the console can be a real element.
-import HarnessConsole from '../../HarnessConsole.astro'
+// harness is one worker in it. The right column is a Mux video embed.
 ---
 
 <section class="hero hz-hero" aria-label="Hero">
   <div class="hero-inner">
-    <div class="hero-left">
-      <h1 class="hero-headline">
-        <span class="line">there are many agent harnesses.</span>
-        <span class="line mute">this one is part of your backend.</span>
-      </h1>
+    <h1 class="hero-headline hz-hero-headline">
+      <span class="line">there are many agent harnesses.</span>
+      <span class="line mute">this one is part of your backend.</span>
+    </h1>
 
+    <aside class="hz-hero-viz" aria-label="The iii harness building a backend">
+      <iframe
+        src="https://player.mux.com/rpdfLwndjoEJhD02jpgFQvMoKb3400uEPV00aBVNUTn8QY"
+        class="hz-hero-video"
+        style="width: 100%; border: none; aspect-ratio: 53/30;"
+        allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+        allowfullscreen
+      ></iframe>
+    </aside>
+
+    <div class="hero-left">
       <p class="hero-sub">most harnesses let you work on your system, but every time you need to make a change you need to rebuild context from scratch because the harness sits on the outside.</p>
       <p class="hero-sub">
         iii is different. with iii, the harness is just one part of the backend. workers, triggers, and functions on <span class="accent">one protocol</span>, so the agent builds on what's already running instead of recreating it every session.
@@ -51,30 +58,5 @@ import HarnessConsole from '../../HarnessConsole.astro'
         <span class="pron">pronounced "three-eye"</span>
       </div>
     </div>
-
-    <aside class="hz-hero-viz" aria-label="The iii harness building a backend">
-      <HarnessConsole
-        status="31% · 118k/1.0M"
-        triggers="4 triggers registered"
-        workers={[
-          { label: 'http', on: true },
-          { label: 'state' },
-          { label: 'database', on: true },
-          { label: 'queue' },
-          { label: 'payments-ledger', on: true },
-        ]}
-      >
-        <div class="hc-line hc-prompt"><span class="ghost">$ </span>build a payments ledger service with a durable db</div>
-        <div class="hc-line hc-muted">Finding workers...</div>
-        <div class="hc-line hc-ok">found existing database worker</div>
-        <div class="hc-fn"><div class="sig">payments::charge::record {'{'} amount, customer_id {'}'}</div><div class="doc">Record an authorized charge</div></div>
-        <div class="hc-fn"><div class="sig">payments::ledger::reconcile {'{'} period {'}'}</div><div class="doc">Reconcile the ledger for a period</div></div>
-        <div class="hc-line hc-muted">Registering functions to http triggers [/charge/record, /ledger/reconcile]</div>
-        <div class="hc-line hc-muted">Running tests on dev ... <span class="hc-badge">pass</span></div>
-        <div class="hc-worker"><span class="dot"></span><span class="name">payments-ledger</span><span class="kind">node</span><span class="tag">STANDALONE</span></div>
-        <div class="hc-line hc-ok">Deploy to production? <span class="hc-badge">yes</span></div>
-        <div class="hc-line hc-ok">joined prod · 25 workers connected</div>
-      </HarnessConsole>
-    </aside>
   </div>
 </section>

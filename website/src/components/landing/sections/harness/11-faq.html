@@ -10,11 +10,31 @@
   <div class="hz-faq">
     <details>
       <summary><span>is iii a harness?</span><span class="q-ico" aria-hidden="true">+</span></summary>
-      <p class="a">it does what a harness does, from the layer below. most harnesses solve one slice — a chat loop, a tool sandbox, a chained workflow. iii is the runtime the whole system already runs on, so it's <span class="accent">inherently agentic</span>: an agent is a worker that can, with permission, act on every part of the system.</p>
+      <div class="a">
+        <p>it does what a harness does, from the layer below. most harnesses solve one slice — a chat loop, a tool sandbox, a chained workflow. iii is the runtime the whole system already runs on, built on three engine primitives: <span class="accent">worker, function, trigger.</span></p>
+        <dl class="hz-faq-primitives">
+          <div class="hz-faq-primitive">
+            <dt>the iii engine primitives</dt>
+            <dd>think of it like React's component model, but for traditional and agentic services. a minimal, common mental model for building systems — less cognitive complexity, fewer tokens, easier to reason about and scale.</dd>
+          </div>
+          <div class="hz-faq-primitive">
+            <dt>protocol</dt>
+            <dd>allows any runtime, language, process, endpoint, browser, or device to become a worker and expose its functions and reactive triggers through the same typed interface.</dd>
+          </div>
+          <div class="hz-faq-primitive">
+            <dt>live system surface</dt>
+            <dd>as workers connect, their functions and triggers become part of a live, typed catalog that the rest of the system can immediately discover and use. developers and agents operate against the same model.</dd>
+          </div>
+          <div class="hz-faq-primitive">
+            <dt>worker connection + communication management</dt>
+            <dd>manages worker connections, discovery, routing, and serialization, so an agent is a worker that can, with permission, act on every part of the system.</dd>
+          </div>
+        </dl>
+      </div>
     </details>
     <details>
       <summary><span>do i give up my current harness?</span><span class="q-ico" aria-hidden="true">+</span></summary>
-      <p class="a">no. run it as a worker. your harness keeps its interface; iii becomes the system underneath it, so the tools it calls are real functions and the work it starts outlives the turn. see <a href="/pi">how pi itself runs on iii</a>.</p>
+      <p class="a">no. run it as a worker. your harness keeps its interface; iii becomes the system underneath it, so the tools it calls are real functions and the work it starts outlives the turn.</p>
     </details>
     <details>
       <summary><span>is this MCP?</span><span class="q-ico" aria-hidden="true">+</span></summary>
