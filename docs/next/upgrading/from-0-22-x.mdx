@@ -111,9 +111,11 @@ The rule does not reject these functions. It applies to a custom worker connecti
 
 ## Step 5: Scope RBAC rules when adopting a namespace
 
-`expose_functions` rules on the `iii-worker-manager` RBAC listener are namespace-scoped. A rule that
-names no namespace applies to `default` only, so it will not expose a function reached in another
-namespace. When you move a worker into a namespace, scope its rules to match:
+Two RBAC surfaces changed, and both matter only for a worker that leaves `default`.
+
+First, `expose_functions` rules on the `iii-worker-manager` RBAC listener are namespace-scoped. A
+rule that names no namespace applies to `default` only, so it will not expose a function reached in
+another namespace. When you move a worker into a namespace, scope its rules to match:
 
 ```yaml
 expose_functions:
@@ -121,29 +123,18 @@ expose_functions:
     namespace: orders
 ```
 
-The function-id `match` value supports `*` wildcards. The `namespace` value is exact and does not
-support wildcards. Add one rule for each namespace. See
-[Namespace-scoped function rules](../creating-workers/worker-manager#namespace-scoped-function-rules).
+Add one rule for each namespace the session reaches. See
+[Namespace-scoped function rules](../creating-workers/worker-manager#namespace-scoped-function-rules)
+for the matching syntax.
 
-`forbidden_functions` still matches on the bare function id and applies in every namespace. A denial
-that held in one namespace and not another is a denial nobody can reason about.
-
-`allowed_functions` no longer does. It now applies in `default` only. A grant issued with no
-namespace used to answer in every namespace, so a grant for one tenant answered for every other
-tenant exposing the same function id. If your auth function returns `allowed_functions` for a worker
-that runs in a namespace, move those grants into `namespaces`, which the auth result now carries:
-
-```json
-{
-  "namespaces": { "orders": ["svc::*"] }
-}
-```
-
-The keys are also the namespaces that session may declare on `engine::workers::register`, so an auth
-function that scopes grants also scopes where the worker may register. Leave `namespaces` empty to
-keep the previous behaviour: the session declares any namespace, and only `allowed_functions` and
-`expose_functions` apply. See
+Second, `allowed_functions` on the auth result now applies in `default` only. It used to apply in
+every namespace, so a grant issued for one tenant answered for every other tenant exposing the same
+function id. If your auth function returns `allowed_functions` for a worker that runs in a
+namespace, move those grants into `namespaces`, which the auth result now carries. See
 [Scope a session to namespaces](../creating-workers/worker-manager#scope-a-session-to-namespaces).
+
+`forbidden_functions` is unchanged and still applies in every namespace. An auth function that
+returns no `namespaces` keeps the behaviour it had.
 
 ## Migration checklist
 
