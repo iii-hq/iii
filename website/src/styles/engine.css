@@ -1,0 +1,150 @@
+/* iii.dev/engine — page-specific rules layered on top of landing.css
+   (tokens, fonts, base reset, .sheet, and the shared footer come from there).
+   Where /harness is a comparative landing page (two columns, one claim per
+   screen), /engine reads like a blog post explaining the same architecture:
+   one narrow column of prose, headings in reading order, and the visuals
+   (the primitives row, the console break, the closing grid) are breaks in
+   the text rather than the main event. Everything here is scoped to "en-"
+   prefixed classes that don't exist anywhere else on the site. */
+
+.en-article{
+  max-width:700px;
+  margin:0 auto;
+  padding:88px 28px 96px;
+}
+
+/* ============= header ============= */
+.en-eyebrow{
+  display:inline-flex; align-items:center; gap:10px;
+  margin:0 0 20px;
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-weight:500; font-size:12px;
+  letter-spacing:0.14em; text-transform:uppercase;
+  color:var(--ink-faint);
+}
+.en-eyebrow .dot{ width:6px; height:6px; background:var(--accent); display:inline-block; }
+.en-title{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-weight:600;
+  font-size:clamp(32px, 4.6vw, 48px);
+  line-height:1.08;
+  letter-spacing:-0.02em;
+  color:var(--ink);
+  margin:0;
+  text-transform:lowercase;
+}
+
+/* ============= hero video (same embed as /harness) ============= */
+.en-hero-video{ margin:32px 0 0; }
+.en-hero-video-frame{
+  display:block;
+  border-radius:12px;
+  box-shadow:0 20px 48px rgba(0,0,0,.08);
+}
+
+/* ============= body typography ============= */
+.en-section{ margin-top:56px; }
+.en-section h2{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-weight:600;
+  font-size:clamp(20px, 2.6vw, 25px);
+  line-height:1.25;
+  letter-spacing:-0.01em;
+  color:var(--ink);
+  margin:0 0 18px;
+  text-transform:lowercase;
+}
+.en-section p{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:14.5px;
+  line-height:1.8;
+  color:var(--ink-2);
+  margin:0 0 18px;
+  text-wrap:pretty;
+}
+.en-section p:last-child{ margin-bottom:0; }
+.en-section strong{ color:var(--ink); font-weight:600; }
+.en-section em{ font-style:normal; color:var(--ink); font-weight:500; }
+
+/* ============= primitives row (visual break #1) ============= */
+.en-primitives-row{
+  margin-top:32px;
+  display:grid;
+  grid-template-columns:repeat(3, 1fr);
+  border:1px solid var(--rule);
+}
+.en-prim{
+  padding:22px 18px;
+  border-right:1px solid var(--rule);
+  text-align:center;
+}
+.en-prim:last-child{ border-right:0; }
+.en-prim-name{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-weight:600; font-size:14px; color:var(--ink);
+  text-transform:lowercase;
+  margin:0 0 6px;
+}
+.en-prim-doc{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px; color:var(--ink-faint);
+  margin:0;
+}
+@media (max-width: 560px){
+  .en-primitives-row{ grid-template-columns:1fr; }
+  .en-prim{ border-right:0; border-bottom:1px solid var(--rule); }
+  .en-prim:last-child{ border-bottom:0; }
+}
+
+/* ============= console break (visual break #2) ============= */
+.en-console-break{ margin:56px 0; }
+.en-console-break .hc{
+  box-shadow:0 20px 48px rgba(0,0,0,.08);
+  max-height:480px;
+}
+
+/* ============= in-total closing grid ============= */
+.en-total{ margin-top:64px; }
+.en-total-grid{
+  margin-top:8px;
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:1px;
+  background:var(--rule);
+  border:1px solid var(--rule);
+}
+.en-total-item{ background:var(--bg); padding:20px 20px 22px; }
+.en-total-name{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-weight:600; font-size:14px; color:var(--accent);
+  text-transform:lowercase;
+  margin:0 0 8px;
+}
+.en-total-doc{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:13px; line-height:1.65; color:var(--ink-faint);
+  margin:0;
+}
+@media (max-width: 560px){
+  .en-total-grid{ grid-template-columns:1fr; }
+}
+
+/* ============= closer (mirrors the harness closer, page-scoped copy) ===== */
+.en-closer{ padding:96px 36px 0; text-align:center; }
+.en-closer p{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:clamp(15px, 2.6vw, 19px);
+  line-height:1.6;
+  margin:0 0 10px;
+  color:var(--ink-faint);
+}
+.en-closer p:last-child{ margin-bottom:0; }
+.en-closer p .ink{ color:var(--ink); }
+.en-closer .ink{ color:var(--ink); font-weight:500; }
+.en-closer .mute{ color:var(--ink-faint); }
+.en-closer .accent{ color:var(--accent); font-weight:500; }
+
+@media (max-width: 640px){
+  .en-article{ padding:64px 20px 72px; }
+  .en-section{ margin-top:44px; }
+}
