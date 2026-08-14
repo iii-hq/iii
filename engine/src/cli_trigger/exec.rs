@@ -99,21 +99,34 @@ fn map_trigger_error(e: Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii::workers::telemetry::environment::CI_ENV_VARS;
     use serial_test::serial;
+
+    /// Runs `body` with the process looking like a developer machine whose
+    /// telemetry setting is `enabled`. `temp_env` restores every variable on the
+    /// way out, including on a panic.
+    ///
+    /// The whole CI set has to be cleared, not just `CI`: `is_telemetry_disabled`
+    /// treats any CI marker as an opt-out and `III_TELEMETRY_ENABLED=true` does
+    /// not override it, so clearing one variable passes locally and fails on a
+    /// runner that also sets `GITHUB_ACTIONS`. The list comes from the predicate's
+    /// own constant so the two cannot drift apart.
+    fn as_developer_machine(enabled: &str, body: impl FnOnce()) {
+        let mut vars = vec![
+            ("III_TELEMETRY_ENABLED", Some(enabled)),
+            ("III_TELEMETRY_DEV", None),
+        ];
+        vars.extend(CI_ENV_VARS.iter().map(|var| (*var, None)));
+        temp_env::with_vars(vars, body);
+    }
 
     #[test]
     #[serial]
     fn cli_worker_metadata_marks_the_name_when_telemetry_is_enabled() {
-        unsafe {
-            std::env::set_var("III_TELEMETRY_ENABLED", "true");
-            std::env::remove_var("CI");
-            std::env::remove_var("III_TELEMETRY_DEV");
-        }
-        let metadata = cli_worker_metadata().expect("metadata when enabled");
-        assert_eq!(metadata.name, "iii-cli:trigger");
-        unsafe {
-            std::env::remove_var("III_TELEMETRY_ENABLED");
-        }
+        as_developer_machine("true", || {
+            let metadata = cli_worker_metadata().expect("metadata when enabled");
+            assert_eq!(metadata.name, "iii-cli:trigger");
+        });
     }
 
     #[test]
@@ -121,12 +134,8 @@ mod tests {
     fn cli_worker_metadata_is_absent_when_the_cli_opted_out() {
         // The engine counts whatever name it receives, so an opted-out CLI must
         // not mark itself even when the target engine has telemetry enabled.
-        unsafe {
-            std::env::set_var("III_TELEMETRY_ENABLED", "false");
-        }
-        assert!(cli_worker_metadata().is_none());
-        unsafe {
-            std::env::remove_var("III_TELEMETRY_ENABLED");
-        }
+        as_developer_machine("false", || {
+            assert!(cli_worker_metadata().is_none());
+        });
     }
 }

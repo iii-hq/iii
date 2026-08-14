@@ -925,12 +925,16 @@ impl Worker for TelemetryWorker {
             tokio::pin!(delay);
             loop {
                 tokio::select! {
-                    _ = &mut delay => break,
+                    // Shutdown is checked first. With both branches ready in the
+                    // same poll, an unbiased select could take the delay and
+                    // report for a worker that is already stopping.
+                    biased;
                     result = boot_shutdown_rx.changed() => {
                         if result.is_err() || *boot_shutdown_rx.borrow() {
                             return;
                         }
                     }
+                    _ = &mut delay => break,
                 }
             }
 
@@ -2832,29 +2836,56 @@ mod tests {
         reset_telemetry_globals();
     }
 
-    /// Points the project root and `$HOME` at temporary directories so the
-    /// heartbeat stamp and the first-run marker never touch the real ones.
-    fn isolated_state_dirs() -> (tempfile::TempDir, tempfile::TempDir) {
+    /// Puts `III_PROJECT_ROOT` and `HOME` back as they were, on drop, so a
+    /// failing test cannot leave the next one without a `$HOME`.
+    ///
+    /// `temp_env` covers this for sync tests, but its async form sits behind a
+    /// feature flag that would pull an optional dependency into the manifest to
+    /// unlock a handful of lines, so this stays local.
+    struct StateDirs {
+        _project: tempfile::TempDir,
+        _home: tempfile::TempDir,
+        original: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl Drop for StateDirs {
+        fn drop(&mut self) {
+            for (key, value) in &self.original {
+                unsafe {
+                    match value {
+                        Some(value) => env::set_var(key, value),
+                        None => env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Points the project root and `$HOME` at temporary directories, so the
+    /// heartbeat stamp and the first-run marker never touch the real ones. Hold
+    /// the returned value for the length of the test.
+    fn isolated_state_dirs() -> StateDirs {
+        let keys = ["III_PROJECT_ROOT", "HOME"];
+        let original = keys.iter().map(|key| (*key, env::var_os(key))).collect();
+
         let project = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         unsafe {
             env::set_var("III_PROJECT_ROOT", project.path());
             env::set_var("HOME", home.path());
         }
-        (project, home)
-    }
 
-    fn clear_isolated_state_dirs() {
-        unsafe {
-            env::remove_var("III_PROJECT_ROOT");
-            env::remove_var("HOME");
+        StateDirs {
+            _project: project,
+            _home: home,
+            original,
         }
     }
 
     #[tokio::test(start_paused = true)]
     #[serial]
     async fn test_boot_heartbeat_reports_once_the_delay_elapses() {
-        let (_project, _home) = isolated_state_dirs();
+        let _dirs = isolated_state_dirs();
         reset_telemetry_globals();
         collector::take_cli_commands();
         collector::track_cli_command("trigger");
@@ -2885,7 +2916,6 @@ mod tests {
             "the boot heartbeat should have drained the CLI counts"
         );
 
-        clear_isolated_state_dirs();
         reset_telemetry_globals();
     }
 
@@ -2894,7 +2924,7 @@ mod tests {
     async fn test_boot_heartbeat_task_gives_up_when_the_worker_stops() {
         // A config reload stops this worker while the process keeps running. The
         // boot task has to abandon its delay instead of reporting afterwards.
-        let (_project, _home) = isolated_state_dirs();
+        let _dirs = isolated_state_dirs();
         reset_telemetry_globals();
         collector::take_cli_commands();
         collector::track_cli_command("trigger");
@@ -2924,7 +2954,6 @@ mod tests {
             "a stopped worker must not report a boot heartbeat"
         );
 
-        clear_isolated_state_dirs();
         reset_telemetry_globals();
     }
 
