@@ -80,13 +80,14 @@ WantedBy=multi-user.target
 
 ## The `compose::*` functions
 
-All six functions accept the same payload.
+All seven functions accept the same payload.
 
 | Field       | Type   | Description                                                                       |
 | ----------- | ------ | --------------------------------------------------------------------------------- |
 | `file`      | string | Which project: the path to its compose file.                                      |
 | `container` | string | Restricts the operation to one container and the containers it depends on.        |
 | `namespace` | string | Which daemon the caller believed they were reaching. A guard, see below.          |
+| `worker`    | string | `compose::add` only: the worker to declare. Ignored by the rest.                  |
 
 A project is its compose file, and nothing else names one. The same file reached twice is the same
 project however it was spelled, so there is no second identity to keep in sync and no way to point
@@ -106,7 +107,26 @@ one at the wrong file.
 | `compose::status`   | `file`    | The project's namespace, file, state directory, daemon pid, container states.  |
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
+| `compose::add`      | `file`, `worker` | What the edit did, and the `down` and `up` that followed.               |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
+
+### Adding a worker
+
+`compose::add` declares a worker in the compose file and restarts the project.
+`worker=` takes a registry name (`state`), a name with a version (`state@0.21.4`)
+or a directory (`./workers/api`); a leading `.` or `/` is what makes it a path,
+since a registry reference may carry a host of its own.
+
+An unpinned name is resolved once and written out as an exact version, so a
+later `up` cannot quietly get a different build. The same worker at the same
+version changes nothing and says so; at a different version it is replaced,
+which is how an upgrade or a rollback is asked for.
+
+The file is edited, not rewritten: comments, blank lines and quoting survive,
+the entry is appended, and the result is parsed before it is written, so a bad
+edit never reaches disk. This first version writes `worker` and `version` only —
+no `scripts`, no `depends_on` — so a `path://` worker needs `scripts.start` in
+its own `iii.worker.yaml` to start.
 
 ```bash
 iii trigger compose::up     --namespace dev file=./worker-compose.yaml
@@ -114,6 +134,7 @@ iii trigger compose::up     --namespace dev file=./worker-compose.yaml container
 iii trigger compose::status --namespace dev file=./worker-compose.yaml
 iii trigger compose::down   --namespace dev file=./worker-compose.yaml
 iii trigger compose::list   --namespace dev
+iii trigger compose::add    --namespace dev file=./worker-compose.yaml worker=state
 iii trigger compose::stop   --namespace dev
 ```
 

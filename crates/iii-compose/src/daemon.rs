@@ -23,6 +23,7 @@ use std::{
     time::Duration,
 };
 
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::{
@@ -166,6 +167,98 @@ impl Daemon {
         Ok(project.up(container, operation_id).await)
     }
 
+    /// Adds a container to a project's file, then restarts the project.
+    ///
+    /// The file is the operator's, so it is edited rather than rewritten: see
+    /// [`crate::edit`]. A version the caller did not pin is resolved once and
+    /// written out, because `compose::add` promising "the latest" and a later
+    /// `up` silently getting a different one is the drift a compose file exists
+    /// to prevent.
+    ///
+    /// Restart is `down` then `up`, and deliberately unclever for now. A failed
+    /// `up` leaves the file as edited and reports the failure: the edit is what
+    /// was asked for, and undoing it would hide the reason the project will not
+    /// start.
+    pub async fn add(
+        &self,
+        file: Option<&Path>,
+        worker: Option<&str>,
+        operation_id: String,
+    ) -> Result<Value> {
+        let Some(worker) = worker else {
+            return Err(ComposeError::InvalidWorkerSpec {
+                spec: String::new(),
+                reason: "no worker was named. Pass worker=<name|name@version|./path>".to_string(),
+            });
+        };
+
+        let path = self.resolve_file(file)?;
+        let mut new = crate::edit::parse_worker(worker)?;
+        if let crate::edit::Source::Package { reference, version } = &new.source
+            && version.is_none()
+        {
+            let resolved = crate::registry::latest_version(&new.key, reference).await?;
+            new.source = crate::edit::Source::Package {
+                reference: reference.clone(),
+                version: Some(resolved),
+            };
+        }
+
+        let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let outcome = crate::edit::upsert_container(&text, &new)?;
+
+        let (edited, action) = match &outcome {
+            crate::edit::Outcome::Unchanged => {
+                return Ok(serde_json::json!({
+                    "status": "ok",
+                    "container": new.key,
+                    "changed": false,
+                    "detail": "already declared at this version",
+                }));
+            }
+            crate::edit::Outcome::Added(text) => (text, "added".to_string()),
+            crate::edit::Outcome::Replaced { text, from, to } => {
+                (text, format!("replaced {from} with {to}"))
+            }
+        };
+
+        // Parsed before it is written, so a splice that would not load leaves
+        // the operator's file exactly as it was.
+        crate::ComposeFile::parse(edited, path)?;
+        write_atomically(path, edited)?;
+
+        let down = self
+            .down(file, None, format!("{operation_id}-down"))
+            .await?;
+        // Dropped from the cache only once its children are stopped. A project
+        // is held as the file was when it was first read, so `up` would
+        // otherwise start exactly what was running before and report success
+        // without the container that was just added.
+        self.forget(path).await;
+        let up = self.up(file, None, format!("{operation_id}-up")).await?;
+        Ok(serde_json::json!({
+            "status": up.status,
+            "container": new.key,
+            "changed": true,
+            "detail": action,
+            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
+            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
+        }))
+    }
+
+    /// Drops a project from the cache, so the next call re-reads its file.
+    ///
+    /// Only safe once the project is stopped: the cached entry owns the child
+    /// handles, and forgetting it while they run would leave them supervised by
+    /// nothing.
+    async fn forget(&self, file: &Path) {
+        let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        self.projects.lock().await.remove(&key);
+    }
+
     /// Takes a project down.
     pub async fn down(
         &self,
@@ -288,3 +381,20 @@ impl Daemon {
 /// engine hands to one connection, so a second daemon is refused at
 /// registration rather than left running unreachable.
 pub const DAEMON_WORKER_NAME: &str = "compose";
+
+/// Writes through a temporary file in the same directory, then renames.
+///
+/// A compose file half-written is a project that will not start and an operator
+/// with no copy of what it said before. The rename is atomic within a
+/// filesystem, so a reader sees the old file or the new one.
+fn write_atomically(path: &Path, text: &str) -> Result<()> {
+    let temp = path.with_extension("compose-add-tmp");
+    std::fs::write(&temp, text).map_err(|source| ComposeError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    std::fs::rename(&temp, path).map_err(|source| ComposeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}

@@ -187,6 +187,14 @@ pub async fn install(
     })
 }
 
+/// The version the registry hands back for `*`, so `compose::add` can pin what
+/// it just resolved rather than writing a range that drifts under the operator.
+pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
+    let (registry, name) = split_reference(reference);
+    let resolved = resolve(container, &registry, &name, "*", host_target()).await?;
+    Ok(resolved.version)
+}
+
 /// Installs a native executable for this host's target.
 async fn install_binary(
     container: &str,

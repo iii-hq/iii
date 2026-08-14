@@ -47,6 +47,9 @@ pub struct ComposeRequest {
     pub file: Option<String>,
     /// Restrict the operation to one container and what it needs.
     pub container: Option<String>,
+    /// `compose::add` only: the worker to declare, as `name`, `name@version`
+    /// or a path. Ignored by every other operation.
+    pub worker: Option<String>,
 }
 
 /// Registers the control surface. Every id is verbatim — compose never renames
@@ -61,6 +64,7 @@ pub fn register(daemon: &Arc<Daemon>) {
         ("status", Operation::Status),
         ("stop", Operation::Stop),
         ("validate", Operation::Validate),
+        ("add", Operation::Add),
     ] {
         let daemon = Arc::clone(daemon);
         let function = format!("compose::{name}");
@@ -85,6 +89,7 @@ enum Operation {
     Status,
     Stop,
     Validate,
+    Add,
 }
 
 async fn dispatch(
@@ -122,6 +127,13 @@ async fn dispatch(
             .await
         {
             Ok(result) => Ok(to_value(&result)),
+            Err(err) => Err(compose_error(&err)),
+        },
+        Operation::Add => match daemon
+            .add(file.as_deref(), request.worker.as_deref(), operation_id())
+            .await
+        {
+            Ok(result) => Ok(result),
             Err(err) => Err(compose_error(&err)),
         },
         Operation::Down => match daemon

@@ -23,6 +23,7 @@ pub mod config;
 pub mod configuration;
 pub mod daemon;
 pub mod dag;
+pub mod edit;
 pub mod engine;
 pub mod error;
 pub mod hooks;

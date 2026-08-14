@@ -104,6 +104,10 @@ pub enum ComposeError {
         kind: String,
     },
 
+    /// `worker=` did not name anything installable.
+    #[error("cannot read worker '{spec}': {reason}")]
+    InvalidWorkerSpec { spec: String, reason: String },
+
     /// A bundle on a platform with no VM to put it in.
     ///
     /// Separate from [`Self::UnsupportedPackageKind`] because the answer is
@@ -341,6 +345,7 @@ impl ComposeError {
             Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
+            Self::InvalidWorkerSpec { .. } => "INVALID_WORKER_SPEC",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
             Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",
