@@ -103,12 +103,8 @@ functions (`HttpInvocationRef`); leave it `null` for in-process handlers.
   "function_id": "math::add",
   "config": { "api_path": "/math/add", "http_method": "POST" },
   "metadata": null,
-<<<<<<< HEAD
-  "namespace": "orders"
-=======
-  "namespace": null,
+  "namespace": "orders",
   "trigger_namespace": null
->>>>>>> 78d0d93d (feat(engine)!: a trigger type's provider belongs to a namespace, and a blank namespace is refused (#2057))
 }
 ```
 
@@ -123,19 +119,16 @@ A trigger can call a function in a different namespace. For this reason, `Regist
 the target `namespace`. If this field is not present, `function_id` resolves in `default`. A present
 field must be a non-empty string; the engine rejects `null` and any other non-string value.
 
-<<<<<<< HEAD
-The SDKs fill the field from the worker namespace when the caller sets no namespace on the binding,
-so the frame carries the worker's own namespace, or `default` when the worker declared none. A
-caller that sets `namespace` targets that namespace instead.
-=======
 Both SDK paths set this field to the worker's namespace when the caller omits it: the typed helper
 `registerTriggerType(...).registerTrigger` and the low-level `registerTrigger`. A trigger names a
 function, and a worker's functions land in the worker's namespace, so a trigger that defaulted
 anywhere else would fire and resolve nothing.
 
-The wire default is unchanged: an absent `namespace` still means `default` to the engine. It is the
-SDKs that stopped omitting it. Set `namespace` explicitly to target another namespace, `default`
-included — that is how a worker inside a namespace reaches an engine builtin.
+The wire default is unchanged: an absent `namespace` still means `default` to the engine. What
+changed is that the SDKs stopped omitting it, except for a worker that declared no namespace of its
+own -- there is nothing to inherit, so the field stays absent and the engine reads it as `default`.
+Set `namespace` explicitly to target another namespace, `default` included: that is how a worker
+inside a namespace reaches an engine builtin.
 
 `trigger_namespace` specifies where to find the trigger type's provider. It is a different question
 from `namespace`: one locates the target function, the other locates the provider that fires it.
@@ -151,7 +144,6 @@ names a namespace is never moved to another provider.
 When a provider registers in a namespace after a binding already resolved to `default`, the engine
 moves that binding to the new provider. Start order does not decide which provider serves a
 project.
->>>>>>> 78d0d93d (feat(engine)!: a trigger type's provider belongs to a namespace, and a blank namespace is refused (#2057))
 
 These fields target `math::add` in `default`:
 
