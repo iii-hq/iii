@@ -71,6 +71,7 @@ fn session_with(
         }),
         ip_address: "127.0.0.1".to_string(),
         session_id: Uuid::new_v4(),
+        namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: forbidden,
         allowed_trigger_types: None,

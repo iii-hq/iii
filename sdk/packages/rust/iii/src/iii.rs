@@ -270,9 +270,10 @@ pub struct WorkerMetadata {
     pub telemetry: Option<TelemetryOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
-    /// Namespace this worker registers under. Absent means the engine applies
-    /// its default namespace. Resolved from `InitOptions.namespace` /
-    /// `III_NAMESPACE` (see [`resolve_namespace`]).
+    /// Namespace this worker belongs to, and therefore the one its calls and
+    /// its trigger bindings resolve in unless they name another. Absent means
+    /// the engine applies its default namespace. Resolved from
+    /// `InitOptions.namespace` / `III_NAMESPACE` (see [`resolve_namespace`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
 }

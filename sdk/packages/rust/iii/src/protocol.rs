@@ -85,8 +85,11 @@ impl TriggerRequest {
 
     /// Target a specific namespace for this invocation without adding a
     /// required field to [`TriggerRequest`] struct literals. Serializes into
-    /// [`Message::InvokeFunction`]'s `namespace`; omitted when unset (the
-    /// engine then routes within its default namespace).
+    /// [`Message::InvokeFunction`]'s `namespace`.
+    ///
+    /// Leaving it unset does not mean the engine's default: the call inherits
+    /// this worker's namespace. Say `default` to reach the engine's from a
+    /// namespaced worker.
     pub fn namespace(self, namespace: impl Into<String>) -> TriggerRequestWithMetadata {
         TriggerRequestWithMetadata {
             request: self,
@@ -152,8 +155,13 @@ pub enum Message {
         config: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
-        /// Namespace the trigger's target function resolves in. Absent means the
-        /// engine's default namespace, independent of the connection's namespace.
+        /// Namespace the trigger's target function resolves in.
+        ///
+        /// The engine reads an absent field as its default namespace. The SDK
+        /// does not leave it absent: `register_trigger` fills it from this
+        /// worker's namespace, because the function a trigger names is one this
+        /// worker registered, and that landed in the worker's namespace. Name
+        /// another namespace, `default` included, to bind elsewhere.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
         /// Namespace to find the provider in. Absent asks the engine to resolve
@@ -206,9 +214,12 @@ pub enum Message {
         /// for wire compatibility with engines that don't send it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
-        /// Target namespace for routing. Optional and additive: absent means
-        /// the engine's default namespace, so older peers that don't send it
-        /// stay wire-compatible.
+        /// Target namespace for routing. Optional and additive, so older peers
+        /// that don't send it stay wire-compatible, and the engine reads an
+        /// absent field as its default namespace.
+        ///
+        /// A call made through this SDK does not arrive absent: `trigger` fills
+        /// it from this worker's namespace unless the request names one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
     },

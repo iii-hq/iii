@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -36,7 +37,19 @@ pub struct Session {
     pub config: Arc<WorkerManagerConfig>,
     pub ip_address: String,
     pub session_id: Uuid,
+    /// Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`.
+    ///
+    /// The keys are also the namespaces this connection may declare on
+    /// `engine::workers::register` and address on a call. An empty map means
+    /// the auth function did not scope anything, and the connection keeps the
+    /// pre-namespace behaviour: it may declare any namespace, and only
+    /// `allowed_functions` applies.
+    pub namespaces: HashMap<String, Vec<String>>,
+    /// Grants that name no namespace. They apply in `default` only.
     pub allowed_functions: Vec<String>,
+    /// Denials. Global on purpose: a denial that held in one namespace and not
+    /// another would be a denial nobody can reason about, and deny-wins is the
+    /// side to fail on.
     pub forbidden_functions: Vec<String>,
     pub allowed_trigger_types: Option<Vec<String>>,
     pub allow_trigger_type_registration: bool,
@@ -47,6 +60,8 @@ pub struct Session {
 
 #[derive(Deserialize, Debug)]
 pub(crate) struct AuthResult {
+    #[serde(default)]
+    namespaces: HashMap<String, Vec<String>>,
     #[serde(default)]
     allowed_functions: Vec<String>,
     #[serde(default)]
@@ -75,6 +90,7 @@ impl Session {
         let headers = headers_to_map(&headers);
         let Some(auth_fn_id) = rbac_config.and_then(|c| c.auth_function_id) else {
             return Ok(AuthResult {
+                namespaces: HashMap::new(),
                 allowed_functions: vec![],
                 forbidden_functions: vec![],
                 allowed_trigger_types: None,
@@ -133,6 +149,7 @@ pub async fn handle_session(
         config,
         ip_address,
         session_id: Uuid::new_v4(),
+        namespaces: auth.namespaces,
         allowed_functions: auth.allowed_functions,
         forbidden_functions: auth.forbidden_functions,
         allowed_trigger_types: auth.allowed_trigger_types,

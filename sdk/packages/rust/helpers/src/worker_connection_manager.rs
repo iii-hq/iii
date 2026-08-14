@@ -27,7 +27,19 @@ pub struct AuthInput {
 /// context is forwarded to the middleware.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthResult {
-    /// Additional function IDs to allow beyond the `expose_functions` config.
+    /// Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. A value
+    /// is an exact function ID or a wildcard, in either the bare (`svc::*`) or
+    /// the `match("svc::*")` spelling.
+    ///
+    /// The keys are also the namespaces the session may declare on
+    /// `engine::workers::register`. Leave it empty to scope nothing: the
+    /// session declares any namespace, and only `allowed_functions` and
+    /// `expose_functions` apply.
+    #[serde(default)]
+    pub namespaces: HashMap<String, Vec<String>>,
+    /// Additional function IDs to allow beyond the `expose_functions` config,
+    /// in the `default` namespace only. Put per-namespace grants in
+    /// [`AuthResult::namespaces`].
     #[serde(default)]
     pub allowed_functions: Vec<String>,
     /// Function IDs to deny even if they match `expose_functions`.
@@ -183,6 +195,7 @@ mod tests {
     #[test]
     fn auth_result_defaults_match_engine() {
         let result: AuthResult = serde_json::from_str("{}").unwrap();
+        assert!(result.namespaces.is_empty());
         assert_eq!(result.allowed_functions, Vec::<String>::new());
         assert_eq!(result.forbidden_functions, Vec::<String>::new());
         assert_eq!(result.allowed_trigger_types, None);

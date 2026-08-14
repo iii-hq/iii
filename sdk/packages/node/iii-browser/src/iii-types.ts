@@ -72,8 +72,12 @@ export type RegisterTriggerMessage = {
   /** Trigger-type-specific configuration, matching the shape the trigger type expects. */
   config: unknown
   /**
-   * Namespace the trigger's target function resolves in. Omit for the engine's
-   * default namespace, independent of this connection's namespace.
+   * Namespace the trigger's target function resolves in.
+   *
+   * Omitting it does not bind in the engine's default: `registerTrigger` fills
+   * it from this worker's namespace, because the function a trigger names is
+   * one this worker registered, and that landed in the worker's namespace. Name
+   * another namespace, `default` included, to bind elsewhere.
    */
   namespace?: string
 }
@@ -156,7 +160,17 @@ export type AuthInput = {
  * middleware.
  */
 export type AuthResult = {
-  /** Additional function IDs to allow beyond the `expose_functions` config. Defaults to `[]` if omitted. */
+  /**
+   * Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an
+   * exact function ID or a wildcard, in either the bare (`svc::*`) or the
+   * `match("svc::*")` spelling.
+   *
+   * The keys are also the namespaces the session may declare on
+   * `engine::workers::register`. Omit to scope nothing: the session declares any
+   * namespace, and only `allowed_functions` and `expose_functions` apply.
+   */
+  namespaces?: Record<string, string[]>
+  /** Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. */
   allowed_functions?: string[]
   /** Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. */
   forbidden_functions?: string[]
@@ -319,7 +333,7 @@ export type TriggerRequest<TInput = unknown> = {
   action?: TriggerAction
   /** Override the default invocation timeout, in milliseconds. */
   timeoutMs?: number
-  /** Namespace to route this invocation to. Omit to use the engine's default namespace. */
+  /** Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker. */
   namespace?: string
 }
 
@@ -350,7 +364,9 @@ export type InvokeFunctionMessage = {
    */
   action?: TriggerAction
   /**
-   * Namespace to route this invocation to. Omitted when routing within the default namespace.
+   * Namespace to route this invocation to. The engine reads an absent field as
+   * its default namespace; a call made through this SDK does not arrive absent,
+   * because `trigger` fills it from this worker's namespace.
    */
   namespace?: string
 }

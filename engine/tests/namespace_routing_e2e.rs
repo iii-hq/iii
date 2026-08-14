@@ -382,6 +382,7 @@ async fn rbac_metadata_filters_see_the_function_from_the_requested_namespace() {
         }),
         ip_address: "127.0.0.1".to_string(),
         session_id: uuid::Uuid::new_v4(),
+        namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: vec![],
         allowed_trigger_types: None,

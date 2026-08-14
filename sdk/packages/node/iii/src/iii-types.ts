@@ -81,8 +81,12 @@ export type RegisterTriggerMessage = {
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: Record<string, unknown>
   /**
-   * Namespace the trigger's target function resolves in. Omit for the engine's
-   * default namespace, independent of this connection's namespace.
+   * Namespace the trigger's target function resolves in.
+   *
+   * Omitting it does not bind in the engine's default: `registerTrigger` fills
+   * it from this worker's namespace, because the function a trigger names is
+   * one this worker registered, and that landed in the worker's namespace. Name
+   * another namespace, `default` included, to bind elsewhere.
    */
   namespace?: string
   /**
@@ -200,9 +204,9 @@ export type TriggerRequest<TInput = unknown> = {
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: unknown
   /**
-   * Target namespace for routing. Omit to route within the engine's default
-   * namespace. Serialized into the {@link InvokeFunctionMessage} `namespace`
-   * field; omitted from the wire when undefined.
+   * Target namespace for routing. Omit to inherit this worker's; say `default`
+   * to reach the engine's from a namespaced worker. Serialized into the
+   * {@link InvokeFunctionMessage} `namespace` field.
    */
   namespace?: string
 }
@@ -241,8 +245,11 @@ export type InvokeFunctionMessage = {
   metadata?: JsonValue
   /**
    * Target namespace for routing. Optional and additive: omitted from the JSON
-   * when undefined, and absence on inbound means the engine's default
+   * when undefined, and the engine reads an absent field as its default
    * namespace (backward compatible with older engines).
+   *
+   * A call made through this SDK does not arrive absent: `trigger` fills it
+   * from this worker's namespace unless the request names one.
    */
   namespace?: string
 }

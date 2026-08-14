@@ -70,9 +70,15 @@ pub struct InitOptions {
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
     pub otel: Option<iii_helpers::observability::OtelConfig>,
-    /// Namespace this worker registers under. Resolution order:
+    /// Namespace this worker belongs to. Resolution order:
     /// `namespace` > env `III_NAMESPACE` > `None` (the engine then applies its
     /// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+    ///
+    /// It scopes more than the registration. The worker and its functions
+    /// register here, and everything the worker does afterwards follows it: a
+    /// [`IIIClient::trigger`] resolves its target here and a
+    /// [`IIIClient::register_trigger`] binds here, unless the call names
+    /// another namespace.
     pub namespace: Option<String>,
 }
 
