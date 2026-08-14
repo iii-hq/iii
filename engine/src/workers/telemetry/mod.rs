@@ -892,8 +892,24 @@ impl Worker for TelemetryWorker {
         let client_for_started = Arc::clone(self.active_client());
         let posthog_client_for_started = self.posthog_client.clone();
         let ctx_for_started = self.ctx.clone();
+        let mut boot_shutdown_rx = shutdown_rx.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(BOOT_HEARTBEAT_DELAY_SECS)).await;
+            // Give up if the worker stops before the delay elapses. A config
+            // reload stops this worker while the process keeps running, so
+            // without this the task outlives its worker and reports afterwards.
+            let delay =
+                tokio::time::sleep(std::time::Duration::from_secs(BOOT_HEARTBEAT_DELAY_SECS));
+            tokio::pin!(delay);
+            loop {
+                tokio::select! {
+                    _ = &mut delay => break,
+                    result = boot_shutdown_rx.changed() => {
+                        if result.is_err() || *boot_shutdown_rx.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
 
             let snap = collect_engine_snapshot(&engine_for_started);
 
@@ -2734,6 +2750,102 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         module.destroy().await.expect("destroy telemetry module");
 
+        reset_telemetry_globals();
+    }
+
+    /// Points the project root and `$HOME` at temporary directories so the
+    /// heartbeat stamp and the first-run marker never touch the real ones.
+    fn isolated_state_dirs() -> (tempfile::TempDir, tempfile::TempDir) {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var("III_PROJECT_ROOT", project.path());
+            env::set_var("HOME", home.path());
+        }
+        (project, home)
+    }
+
+    fn clear_isolated_state_dirs() {
+        unsafe {
+            env::remove_var("III_PROJECT_ROOT");
+            env::remove_var("HOME");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[serial]
+    async fn test_boot_heartbeat_reports_once_the_delay_elapses() {
+        let (_project, _home) = isolated_state_dirs();
+        reset_telemetry_globals();
+        collector::take_cli_commands();
+        collector::track_cli_command("trigger");
+
+        let module = build_manual_module(make_test_engine(), false, 6 * 60 * 60);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
+            .expect("start background tasks");
+
+        // Let the task poll once so its delay is registered against the paused
+        // clock. Advancing before that leaves the timer unregistered, and the
+        // task would simply start its delay from the new now.
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(BOOT_HEARTBEAT_DELAY_SECS + 5)).await;
+        // The boot task has several await points after its delay, so give it
+        // scheduling turns rather than assume one yield carries it through.
+        for _ in 0..200 {
+            if collector::collector().cli_commands.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            collector::collector().cli_commands.is_empty(),
+            "the boot heartbeat should have drained the CLI counts"
+        );
+
+        clear_isolated_state_dirs();
+        reset_telemetry_globals();
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[serial]
+    async fn test_boot_heartbeat_task_gives_up_when_the_worker_stops() {
+        // A config reload stops this worker while the process keeps running. The
+        // boot task has to abandon its delay instead of reporting afterwards.
+        let (_project, _home) = isolated_state_dirs();
+        reset_telemetry_globals();
+        collector::take_cli_commands();
+        collector::track_cli_command("trigger");
+
+        let module = build_manual_module(make_test_engine(), false, 6 * 60 * 60);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
+            .await
+            .expect("start background tasks");
+
+        // Poll once so the task is actually waiting on its delay, otherwise this
+        // would pass simply because the task never started.
+        tokio::task::yield_now().await;
+        shutdown_tx.send(true).expect("signal shutdown");
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+        // Pushing past the delay must not resurrect the report either.
+        tokio::time::advance(Duration::from_secs(BOOT_HEARTBEAT_DELAY_SECS * 2)).await;
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            !collector::take_cli_commands().is_empty(),
+            "a stopped worker must not report a boot heartbeat"
+        );
+
+        clear_isolated_state_dirs();
         reset_telemetry_globals();
     }
 

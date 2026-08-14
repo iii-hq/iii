@@ -186,7 +186,10 @@ pub fn claim_heartbeat(interval_secs: u64) -> bool {
     };
 
     let now = chrono::Utc::now().timestamp();
-    let min_gap = interval_secs.saturating_sub(HEARTBEAT_STAMP_SLACK_SECS) as i64;
+    // Clamp rather than cast: an interval past `i64::MAX` wraps negative, which
+    // would invert the comparison below and suppress nothing.
+    let min_gap =
+        i64::try_from(interval_secs.saturating_sub(HEARTBEAT_STAMP_SLACK_SECS)).unwrap_or(i64::MAX);
 
     if let Some(last) = read_heartbeat_stamp(&path)
         && now >= last
@@ -1219,6 +1222,17 @@ state:
         assert!(claim_heartbeat(SIX_HOURS));
 
         env::set_current_dir(cwd).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_suppresses_for_an_interval_past_i64() {
+        // `u64::MAX` less the slack window does not fit in an i64. Casting would
+        // wrap negative and stop suppressing anything.
+        let _dir = project_root_fixture();
+        assert!(claim_heartbeat(u64::MAX));
+        assert!(!claim_heartbeat(u64::MAX));
+        clear_project_root();
     }
 
     #[test]

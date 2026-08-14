@@ -11,6 +11,21 @@ use serde_json::Value;
 
 use super::TriggerCliError;
 
+/// Metadata for the trigger connection. Registering under a marked name is how
+/// the engine counts this command in the heartbeat's CLI aggregate: the CLI
+/// process is too short-lived to report anything itself, and the connection it
+/// already opens carries the name.
+///
+/// Returns `None` when this CLI has opted out of telemetry. The engine counts
+/// whatever name it receives, so marking it regardless would let an engine with
+/// telemetry enabled record commands from a CLI that opted out.
+fn cli_worker_metadata() -> Option<iii_sdk::iii::WorkerMetadata> {
+    (!crate::cli::telemetry::is_telemetry_disabled()).then(|| iii_sdk::iii::WorkerMetadata {
+        name: format!("{CLI_WORKER_NAME_PREFIX}trigger"),
+        ..Default::default()
+    })
+}
+
 pub async fn invoke(
     function_path: &str,
     payload: Value,
@@ -19,16 +34,10 @@ pub async fn invoke(
     timeout_ms: u64,
 ) -> Result<(), TriggerCliError> {
     let url = format!("ws://{}:{}", address, port);
-    // Register under a marked name so the engine counts this command in the
-    // heartbeat's CLI aggregate. The CLI process is too short-lived to report
-    // anything itself, and the connection it already opens carries the name.
     let iii = register_worker(
         &url,
         InitOptions {
-            metadata: Some(iii_sdk::iii::WorkerMetadata {
-                name: format!("{CLI_WORKER_NAME_PREFIX}trigger"),
-                ..Default::default()
-            }),
+            metadata: cli_worker_metadata(),
             ..Default::default()
         },
     );
@@ -84,5 +93,40 @@ fn map_trigger_error(e: Error) -> anyhow::Error {
         ),
         Error::WebSocket(msg) => anyhow::anyhow!("WebSocket error: {}", msg),
         other => anyhow::Error::new(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn cli_worker_metadata_marks_the_name_when_telemetry_is_enabled() {
+        unsafe {
+            std::env::set_var("III_TELEMETRY_ENABLED", "true");
+            std::env::remove_var("CI");
+            std::env::remove_var("III_TELEMETRY_DEV");
+        }
+        let metadata = cli_worker_metadata().expect("metadata when enabled");
+        assert_eq!(metadata.name, "iii-cli:trigger");
+        unsafe {
+            std::env::remove_var("III_TELEMETRY_ENABLED");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn cli_worker_metadata_is_absent_when_the_cli_opted_out() {
+        // The engine counts whatever name it receives, so an opted-out CLI must
+        // not mark itself even when the target engine has telemetry enabled.
+        unsafe {
+            std::env::set_var("III_TELEMETRY_ENABLED", "false");
+        }
+        assert!(cli_worker_metadata().is_none());
+        unsafe {
+            std::env::remove_var("III_TELEMETRY_ENABLED");
+        }
     }
 }

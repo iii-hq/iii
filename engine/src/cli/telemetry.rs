@@ -17,7 +17,7 @@ use iii::workers::telemetry::amplitude::{
 };
 use iii::workers::telemetry::environment;
 
-fn is_telemetry_disabled() -> bool {
+pub(crate) fn is_telemetry_disabled() -> bool {
     if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
         && (val == "false" || val == "0")
     {
