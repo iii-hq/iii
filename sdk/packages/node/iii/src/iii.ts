@@ -201,11 +201,15 @@ export type InitOptions = {
   /** Display name for this worker. Defaults to `hostname:pid`. */
   workerName?: string
   /**
-   * Namespace this worker registers under. Resolution order:
+   * Namespace this worker belongs to. Resolution order:
    * `options.namespace` -> `process.env.III_NAMESPACE` -> undefined. When
-   * undefined the engine applies its `default` namespace. Scopes worker and
-   * function registrations so identically-named entries can coexist across
-   * namespaces.
+   * undefined the engine applies its `default` namespace.
+   *
+   * It scopes more than the registration. The worker and its functions
+   * register here, so identically-named entries coexist across namespaces, and
+   * everything the worker does afterwards follows it: a `trigger` resolves its
+   * target here, and a `registerTrigger` binds here, unless the call names
+   * another namespace. One declaration places the whole worker.
    */
   namespace?: string
   /**

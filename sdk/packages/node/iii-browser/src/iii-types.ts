@@ -72,8 +72,12 @@ export type RegisterTriggerMessage = {
   /** Trigger-type-specific configuration, matching the shape the trigger type expects. */
   config: unknown
   /**
-   * Namespace the trigger's target function resolves in. Omit for the engine's
-   * default namespace, independent of this connection's namespace.
+   * Namespace the trigger's target function resolves in.
+   *
+   * Omitting it does not bind in the engine's default: `registerTrigger` fills
+   * it from this worker's namespace, because the function a trigger names is
+   * one this worker registered, and that landed in the worker's namespace. Name
+   * another namespace, `default` included, to bind elsewhere.
    */
   namespace?: string
 }
@@ -329,7 +333,7 @@ export type TriggerRequest<TInput = unknown> = {
   action?: TriggerAction
   /** Override the default invocation timeout, in milliseconds. */
   timeoutMs?: number
-  /** Namespace to route this invocation to. Omit to use the engine's default namespace. */
+  /** Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker. */
   namespace?: string
 }
 
@@ -360,7 +364,9 @@ export type InvokeFunctionMessage = {
    */
   action?: TriggerAction
   /**
-   * Namespace to route this invocation to. Omitted when routing within the default namespace.
+   * Namespace to route this invocation to. The engine reads an absent field as
+   * its default namespace; a call made through this SDK does not arrive absent,
+   * because `trigger` fills it from this worker's namespace.
    */
   namespace?: string
 }

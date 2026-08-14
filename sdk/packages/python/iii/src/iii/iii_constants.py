@@ -59,9 +59,13 @@ class InitOptions:
         worker_name: Display name for this worker. Defaults to ``hostname:pid``.
         worker_description: One-line, human/LLM-readable summary of what this
             worker does. Surfaces in ``engine::workers::list`` / ``engine::workers::info``.
-        namespace: Routing namespace this worker registers its functions into.
-            Falls back to the ``III_NAMESPACE`` env var; when neither is set the
-            engine applies ``default``.
+        namespace: Namespace this worker belongs to. Falls back to the
+            ``III_NAMESPACE`` env var; when neither is set the engine applies
+            ``default``. It scopes more than the registration: the worker and
+            its functions register here, and everything the worker does
+            afterwards follows it -- ``trigger`` resolves its target here and
+            ``register_trigger`` binds here, unless the call names another
+            namespace.
         enable_metrics_reporting: Enable worker metrics via OpenTelemetry. Default ``True``.
         invocation_timeout_ms: Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
         reconnection_config: WebSocket reconnection behavior.

@@ -116,8 +116,11 @@ class RegisterTriggerInput(BaseModel):
     namespace: str | None = Field(
         default=None,
         description=(
-            "Namespace the trigger's target function resolves in. Omit for the engine's "
-            "default namespace, independent of this connection's namespace."
+            "Namespace the trigger's target function resolves in. Omitting it does not "
+            "bind in the engine's default: ``register_trigger`` fills it from this "
+            "worker's namespace, because the function a trigger names is one this worker "
+            "registered, and that landed in the worker's namespace. Name another "
+            "namespace, ``default`` included, to bind elsewhere."
         ),
     )
     trigger_namespace: str | None = Field(
@@ -278,8 +281,8 @@ class TriggerRequest(BaseModel):
         timeout_ms: Override the default invocation timeout, in milliseconds.
         metadata: Arbitrary user-specifiable metadata supplied to the triggered
             handler function on every invocation.
-        namespace: Target namespace for routing. Omit to resolve in the engine's
-            default namespace.
+        namespace: Target namespace for routing. Omit to inherit this worker's;
+            say ``default`` to reach the engine's from a namespaced worker.
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
@@ -304,7 +307,8 @@ class TriggerRequest(BaseModel):
     namespace: str | None = Field(
         default=None,
         description=(
-            "Target namespace for routing. Omit to resolve in the engine's default namespace."
+            "Target namespace for routing. Omit to inherit this worker's; say ``default`` "
+            "to reach the engine's from a namespaced worker."
         ),
     )
 
