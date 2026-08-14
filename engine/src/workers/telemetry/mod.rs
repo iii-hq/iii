@@ -16,7 +16,6 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::engine::Engine;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
@@ -386,7 +385,7 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     m.insert("workers".into(), serde_json::json!(snap.wd.workers));
     m.insert(
         "worker_names".into(),
-        serde_json::json!(hashed_worker_names(&snap.wd.worker_names)),
+        serde_json::json!(snap.wd.worker_names),
     );
     m
 }
@@ -403,16 +402,31 @@ fn insert_cli_commands(props: &mut serde_json::Map<String, serde_json::Value>) {
     props.insert("cli_commands".into(), serde_json::json!(counts));
 }
 
-fn hashed_worker_names(worker_names: &[String]) -> Vec<String> {
-    worker_names
-        .iter()
-        .map(|name| {
-            let mut hasher = Sha256::new();
-            hasher.update(b"iii-worker-name-v1");
-            hasher.update(name.as_bytes());
-            format!("sha256:{:x}", hasher.finalize())
-        })
-        .collect()
+/// Stand-in for the SDKs' `hostname:pid` worker-name fallback. The hostname is
+/// not ours to report and the pid changes on every restart, so a configured name
+/// is reported as-is and this covers the unnamed case. The trailing index only
+/// separates several unnamed workers within one heartbeat; it is not an identity
+/// that carries across heartbeats.
+const GENERIC_WORKER_NAME_PREFIX: &str = "fallback-generic-hostname-pid-";
+
+/// Whether a worker name is the SDKs' `hostname:pid` fallback rather than a name
+/// someone configured.
+///
+/// The SDK builds that fallback from the same pid it reports, so a matching
+/// suffix identifies it exactly. With no pid reported, fall back to "ends in a
+/// colon followed by digits", which is the shape of the fallback and not of a
+/// package name.
+fn is_hostname_pid_fallback(name: &str, pid: Option<u32>) -> bool {
+    let Some((host, tail)) = name.rsplit_once(':') else {
+        return false;
+    };
+    if host.is_empty() || tail.is_empty() {
+        return false;
+    }
+    match pid {
+        Some(pid) => tail == pid.to_string(),
+        None => tail.chars().all(|c| c.is_ascii_digit()),
+    }
 }
 
 // TODO: Re-enable delta metrics reporting once more important dashboards are ready.
@@ -578,6 +592,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
     let mut worker_count_total = 0usize;
     let mut workers: Vec<String> = Vec::new();
     let mut worker_names: Vec<String> = Vec::new();
+    let mut unnamed_workers = 0usize;
 
     for entry in engine.worker_registry.workers.iter() {
         let worker = entry.value();
@@ -590,7 +605,11 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
         *runtime_counts.entry(runtime.clone()).or_insert(0) += 1;
 
         if let Some(name) = worker.name.as_ref().filter(|name| !name.trim().is_empty()) {
-            worker_names.push(name.clone());
+            if is_hostname_pid_fallback(name, worker.pid) {
+                unnamed_workers += 1;
+            } else {
+                worker_names.push(name.clone());
+            }
         }
 
         let framework = worker
@@ -617,6 +636,10 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
             best_telemetry = Some((worker.id, telemetry.clone()));
         }
     }
+
+    // One placeholder per unnamed worker, so several of them report separately
+    // instead of collapsing into one entry.
+    worker_names.extend((1..=unnamed_workers).map(|n| format!("{GENERIC_WORKER_NAME_PREFIX}{n}")));
 
     let sdk_telemetry = best_telemetry.map(|(_, t)| t);
 
@@ -2179,14 +2202,8 @@ mod tests {
         );
         assert_eq!(
             props["worker_names"],
-            serde_json::json!(hashed_worker_names(&[
-                "checkout-worker".to_string(),
-                "agent-memory-worker".to_string()
-            ]))
-        );
-        assert_ne!(
-            props["worker_names"],
-            serde_json::json!(["checkout-worker"])
+            serde_json::json!(["checkout-worker", "agent-memory-worker"]),
+            "configured worker names are reported as they are"
         );
     }
 
@@ -2206,6 +2223,68 @@ mod tests {
         assert!(wd.sdk_languages.is_empty());
         assert!(wd.workers.is_empty());
         assert!(wd.worker_names.is_empty());
+    }
+
+    /// Registers a connected worker with the given name and reported pid.
+    fn register_named_worker(engine: &Arc<Engine>, name: &str, pid: Option<u32>) {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut worker = crate::worker_connections::WorkerConnection::new(tx);
+        worker.runtime = Some("rust".to_string());
+        worker.name = Some(name.to_string());
+        worker.pid = pid;
+        engine.worker_registry.workers.insert(worker.id, worker);
+    }
+
+    #[test]
+    fn test_is_hostname_pid_fallback_matches_only_the_sdk_fallback() {
+        // The SDK builds the fallback from the same pid it reports.
+        assert!(is_hostname_pid_fallback("my-laptop:4242", Some(4242)));
+        assert!(is_hostname_pid_fallback("host.local:1", Some(1)));
+
+        // A configured name is not a fallback, even when a pid is reported.
+        assert!(!is_hostname_pid_fallback("checkout-worker", Some(4242)));
+        assert!(!is_hostname_pid_fallback("paper-sources", Some(4242)));
+
+        // A colon alone is not enough: the suffix has to be this worker's pid.
+        assert!(!is_hostname_pid_fallback("my-laptop:4242", Some(99)));
+        assert!(!is_hostname_pid_fallback("scope:name", Some(4242)));
+        assert!(!is_hostname_pid_fallback(":4242", Some(4242)));
+        assert!(!is_hostname_pid_fallback("my-laptop:", None));
+
+        // With no pid reported, the shape decides.
+        assert!(is_hostname_pid_fallback("my-laptop:4242", None));
+        assert!(!is_hostname_pid_fallback("scope:name", None));
+    }
+
+    #[test]
+    fn test_collect_worker_data_reports_configured_names_verbatim() {
+        let engine = make_test_engine();
+        register_named_worker(&engine, "checkout-worker", Some(4242));
+        register_named_worker(&engine, "agent-memory", None);
+
+        let mut names = collect_worker_data(&engine).worker_names;
+        names.sort();
+        assert_eq!(names, vec!["agent-memory", "checkout-worker"]);
+    }
+
+    #[test]
+    fn test_collect_worker_data_replaces_the_hostname_pid_fallback() {
+        // Unnamed workers must not leak the hostname, and several of them have to
+        // stay countable rather than collapse into one entry.
+        let engine = make_test_engine();
+        register_named_worker(&engine, "my-laptop:111", Some(111));
+        register_named_worker(&engine, "my-laptop:222", Some(222));
+        register_named_worker(&engine, "checkout-worker", Some(333));
+
+        let names = collect_worker_data(&engine).worker_names;
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"checkout-worker".to_string()));
+        assert!(names.contains(&"fallback-generic-hostname-pid-1".to_string()));
+        assert!(names.contains(&"fallback-generic-hostname-pid-2".to_string()));
+        assert!(
+            !names.iter().any(|n| n.contains("my-laptop")),
+            "the hostname must never be reported: {names:?}"
+        );
     }
 
     #[test]
