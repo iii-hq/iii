@@ -36,6 +36,9 @@
       },
       {
         id: 'iii', label: 'the iii way',
+        // Half the steps, so it plays slower: otherwise the phase captions are
+        // gone before they can be read.
+        rate: 0.6,
         headline: 'the same stack, without the seams.',
         sub: 'decide, add. what runs in dev is what runs in prod. extending it is test, ship.',
         depT0: 0.8, depGap: 0.95, depDone: 0.55, depStep: 0.34,
@@ -52,6 +55,16 @@
         ]
       }
     ];
+
+    // Each list item holds for the same wall-clock time on both sides, whatever
+    // the side's rate is: a rework step for STEP_S, a phase caption for PHASE_S.
+    // Story time runs at `rate`, so the story-time values are scaled by it.
+    const STEP_S = 1.25, PHASE_S = 0.3;
+    WAYS.forEach((s) => {
+      const r = s.rate || 1;
+      s.dur = STEP_S * r;
+      s.depStep = PHASE_S * r;
+    });
 
     // ---- DOM the engine drives ----
     const $tensions = document.getElementById('fanim-tensions');
@@ -88,7 +101,8 @@
       return st > s.rw ? Math.min(s.rework.length - 1, Math.floor((st - s.rw) / s.dur)) : -1;
     };
     const arrive = (i) => { const s = W(); return s.depT0 + i * s.depGap; };
-    const now = () => ((performance.now() - t0) / 1000) * PACE;
+    const pace = () => PACE * (W().rate || 1);
+    const now = () => ((performance.now() - t0) / 1000) * pace();
 
     function recolor(){
       const cs = getComputedStyle(canvas);
@@ -136,7 +150,7 @@
       const at = i === 0 ? 0.2 : i === 1 ? s.ring - 0.3 : s.feat - 0.5;
       logX = undefined;
       P.forEach((p, n) => { if (i === 0 || n >= 6){ p.born = false; p.a = 0; p.d = 0; p.f = 0; } });
-      t0 = performance.now() - (at * 1000) / PACE;
+      t0 = performance.now() - (at * 1000) / pace();
       state.sub = i; state.ph = phase(at);
       render();
     }
@@ -215,7 +229,7 @@
     }
 
     function frame(stamp){
-      let dt = ((stamp - last) / 1000) * PACE; last = stamp;
+      let dt = ((stamp - last) / 1000) * pace(); last = stamp;
       dt = Math.min(0.05, dt); dtLast = dt;
       const st = now();
       const k = 1 - Math.exp(-7 * dt);

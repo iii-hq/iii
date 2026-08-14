@@ -45,7 +45,8 @@
       font-family: inherit;
       font-size: 15px;
       letter-spacing: 0.14em;
-      text-transform: uppercase;
+      /* Never uppercased: it would render iii as III. */
+      text-transform: lowercase;
       color: var(--ink-ghost);
       transition:
         color 0.35s ease,
