@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+use iii::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{Error, InitOptions, register_worker};
 use serde_json::Value;
@@ -18,7 +19,19 @@ pub async fn invoke(
     timeout_ms: u64,
 ) -> Result<(), TriggerCliError> {
     let url = format!("ws://{}:{}", address, port);
-    let iii = register_worker(&url, InitOptions::default());
+    // Register under a marked name so the engine counts this command in the
+    // heartbeat's CLI aggregate. The CLI process is too short-lived to report
+    // anything itself, and the connection it already opens carries the name.
+    let iii = register_worker(
+        &url,
+        InitOptions {
+            metadata: Some(iii_sdk::iii::WorkerMetadata {
+                name: format!("{CLI_WORKER_NAME_PREFIX}trigger"),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
 
     let result = iii
         .trigger(TriggerRequest {

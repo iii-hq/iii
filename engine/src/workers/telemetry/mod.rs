@@ -391,6 +391,18 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     m
 }
 
+/// Attaches the CLI commands invoked since the previous heartbeat and clears the
+/// record, so counts never span two heartbeats. Only for a heartbeat that is
+/// actually sent.
+fn insert_cli_commands(props: &mut serde_json::Map<String, serde_json::Value>) {
+    let counts = collector::take_cli_commands();
+    props.insert(
+        "cli_commands_total".into(),
+        serde_json::json!(counts.values().sum::<u64>()),
+    );
+    props.insert("cli_commands".into(), serde_json::json!(counts));
+}
+
 fn hashed_worker_names(worker_names: &[String]) -> Vec<String> {
     worker_names
         .iter()
@@ -923,6 +935,7 @@ impl Worker for TelemetryWorker {
                 "uptime_secs".into(),
                 serde_json::json!(start_time.elapsed().as_secs()),
             );
+            insert_cli_commands(&mut props);
             // TODO: Re-enable delta metrics once more important dashboards are ready.
             // let d = DeltaAccumulator::new().snapshot();
             // props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
@@ -989,6 +1002,7 @@ impl Worker for TelemetryWorker {
                         props.insert("worker_count_by_language".into(), serde_json::json!(snap.wd.worker_count_by_language));
                         props.insert("period_secs".into(), serde_json::json!(interval_secs));
                         props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
+                        insert_cli_commands(&mut props);
                         // props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
                         // d.insert_into(&mut props);
 
