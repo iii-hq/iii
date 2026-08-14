@@ -29,6 +29,10 @@ use crate::error::{ComposeError, Result};
 /// Registry used when a `package://` reference names no host.
 pub const DEFAULT_REGISTRY: &str = "https://api.workers.iii.dev";
 
+/// A bundle archive carries its manifest at the root; the start command lives
+/// there rather than in the compose file.
+pub const BUNDLE_MANIFEST: &str = "iii.worker.yaml";
+
 /// How long the registry has to answer. Resolution is a single small request;
 /// a minute means something is wrong, not slow.
 const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -51,6 +55,12 @@ struct ResolvedWorker {
     kind: String,
     #[serde(default)]
     binaries: std::collections::HashMap<String, Artifact>,
+    /// A bundle ships one archive for every platform, named here rather than in
+    /// `binaries`. The registry sends both fields or neither.
+    #[serde(default)]
+    archive_url: Option<String>,
+    #[serde(default)]
+    sha256: Option<String>,
     /// The worker's own default configuration, if it ships one.
     #[serde(default)]
     config: Option<serde_json::Value>,
@@ -62,13 +72,23 @@ struct Artifact {
     url: String,
 }
 
+/// What was installed, and therefore how it is started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    /// A native executable, run as a child process.
+    Binary(PathBuf),
+    /// An extracted bundle directory holding `iii.worker.yaml`. The command it
+    /// declares is publisher-controlled, so it runs in a VM rather than on the
+    /// host — see `lifecycle::start_one`.
+    Bundle(PathBuf),
+}
+
 /// A package resolved and installed locally.
 #[derive(Debug, Clone)]
 pub struct InstalledPackage {
     pub name: String,
     pub version: String,
-    /// The executable to run.
-    pub program: PathBuf,
+    pub payload: Payload,
     /// Configuration the worker ships with, to be merged under anything the
     /// compose file overrides.
     pub default_config: Option<serde_yaml::Value>,
@@ -126,16 +146,43 @@ pub async fn install(
 
     let resolved = resolve(container, &registry, &name, version_range, target).await?;
 
-    // `engine` workers are compiled into the engine itself: there is no
-    // artefact to install and nothing for compose to start.
-    if resolved.kind != "binary" {
-        return Err(ComposeError::UnsupportedPackageKind {
-            container: container.to_string(),
-            name: resolved.name,
-            kind: resolved.kind,
-        });
-    }
+    let payload = match resolved.kind.as_str() {
+        "binary" => {
+            Payload::Binary(install_binary(container, &resolved, target, cache_root).await?)
+        }
+        "bundle" => Payload::Bundle(install_bundle(container, &resolved, cache_root).await?),
+        // `engine` workers are compiled into the engine itself: there is no
+        // artefact to install and nothing for compose to start. `image` workers
+        // have one, but running it needs the OCI runtime.
+        _ => {
+            return Err(ComposeError::UnsupportedPackageKind {
+                container: container.to_string(),
+                name: resolved.name,
+                kind: resolved.kind,
+            });
+        }
+    };
 
+    let default_config = match resolved.config {
+        Some(config) if !config.is_null() => serde_yaml::to_value(config).ok(),
+        _ => None,
+    };
+
+    Ok(InstalledPackage {
+        name: resolved.name,
+        version: resolved.version,
+        payload,
+        default_config,
+    })
+}
+
+/// Installs a native executable for this host's target.
+async fn install_binary(
+    container: &str,
+    resolved: &ResolvedWorker,
+    target: &str,
+    cache_root: &Path,
+) -> Result<PathBuf> {
     let artifact =
         resolved
             .binaries
@@ -153,28 +200,66 @@ pub async fn install(
             })?;
 
     let install_dir = cache_root.join(format!("{}-{}-{}", resolved.name, resolved.version, target));
-    let program = if let Some(existing) = installed_binary(&install_dir) {
-        existing
-    } else {
-        download_and_extract(container, artifact, &install_dir).await?;
-        installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
+    if let Some(existing) = installed_binary(&install_dir) {
+        return Ok(existing);
+    }
+    download_and_extract(container, artifact, &install_dir).await?;
+    installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
+        container: container.to_string(),
+        name: resolved.name.clone(),
+        path: install_dir.clone(),
+    })
+}
+
+/// Installs a bundle: one archive, no target in its identity.
+///
+/// The install is compose's own, not the machine-wide `~/.iii/workers-bundle/`
+/// that `iii add` keeps. That one is keyed by name alone and is replaced on
+/// every install, so two compose projects pinning different versions of the
+/// same bundle would overwrite each other between one `up` and the next.
+async fn install_bundle(
+    container: &str,
+    resolved: &ResolvedWorker,
+    cache_root: &Path,
+) -> Result<PathBuf> {
+    // The registry sends both or neither. Without the digest the archive cannot
+    // be verified, and an unverifiable artefact is not installed.
+    let (url, sha256) = match (&resolved.archive_url, &resolved.sha256) {
+        (Some(url), Some(sha256)) => (url, sha256),
+        _ => {
+            return Err(ComposeError::PackageNotResolved {
+                container: container.to_string(),
+                name: resolved.name.clone(),
+                range: resolved.version.clone(),
+                message: "the registry resolved it as a bundle but sent no archive_url + sha256 \
+                          pair, so the archive could not be verified"
+                    .to_string(),
+            });
+        }
+    };
+
+    let install_dir = cache_root.join(format!("{}-{}-bundle", resolved.name, resolved.version));
+    // The manifest is the bundle's entry point, so its presence is what makes
+    // an install dir a cache hit — not the first executable, which a bundle
+    // need not have at all.
+    if install_dir.join(BUNDLE_MANIFEST).is_file() {
+        return Ok(install_dir);
+    }
+
+    let artifact = Artifact {
+        sha256: sha256.clone(),
+        url: url.clone(),
+    };
+    download_and_extract(container, &artifact, &install_dir).await?;
+
+    if !install_dir.join(BUNDLE_MANIFEST).is_file() {
+        return Err(ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
             name: resolved.name.clone(),
             path: install_dir.clone(),
-        })?
-    };
-
-    let default_config = match resolved.config {
-        Some(config) if !config.is_null() => serde_yaml::to_value(config).ok(),
-        _ => None,
-    };
-
-    Ok(InstalledPackage {
-        name: resolved.name,
-        version: resolved.version,
-        program,
-        default_config,
-    })
+        });
+    }
+    Ok(install_dir)
 }
 
 async fn resolve(

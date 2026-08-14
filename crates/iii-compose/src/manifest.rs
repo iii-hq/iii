@@ -29,6 +29,10 @@ pub enum StartSpec {
     /// A resolved package binary. Package resolution is not implemented yet, so
     /// nothing produces this variant today.
     Exec { program: PathBuf, args: Vec<String> },
+    /// An installed bundle, started in a VM. The command is the `scripts.start`
+    /// of the manifest in `install_dir`, and it is publisher-controlled: it is
+    /// read and run inside the guest, never on the host.
+    Vm { install_dir: PathBuf },
 }
 
 #[derive(Debug, Clone)]

@@ -240,6 +240,24 @@ Each key under `containers` is the worker name the container registers under.
 `MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during
 validation.
 
+### Worker kinds
+
+The registry answers with a kind, and it decides how the container runs. A kind compose cannot run
+fails with `UNSUPPORTED_PACKAGE_KIND`.
+
+| Kind     | How it runs                                                                     |
+| -------- | ------------------------------------------------------------------------------- |
+| `binary` | A child process on the host.                                                    |
+| `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
+| `engine` | Not installable: it is compiled into the engine and always present.             |
+| `image`  | Not supported: it needs the OCI runtime.                                        |
+
+A bundle is published code that compose did not build, so it is started behind the same boundary
+`iii add` puts it behind, rather than as a host process. Its configuration is published into the
+guest, so `III_CONFIG` names a path inside the VM; a worker reads it the same way either way.
+Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
+honours.
+
 ### Scripts
 
 | Field               | Type   | Default | Description                                                  |
@@ -333,9 +351,10 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | Path                        | Contents                                             |
 | --------------------------- | ---------------------------------------------------- |
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
-| `<ns>/<project>/config/`    | Resolved configuration files.                        |
+| `<ns>/<project>/config/`    | Resolved configuration files, one directory each.    |
 | `<ns>/<project>/logs/`      | What each container printed while starting.          |
-| `packages/`                 | Installed `package://` binaries, shared by projects. |
+| `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each.  |
+| `packages/`                 | Installed `package://` artefacts, shared by projects. |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:
 readable enough to recognise, hashed enough that two projects in directories of the same name stay

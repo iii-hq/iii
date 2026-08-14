@@ -349,6 +349,13 @@ impl Project {
         self.store.dir().join("logs")
     }
 
+    /// Per-container VM state for bundle containers: rootfs, boot script, pid
+    /// file. Keyed by project rather than by worker name, so two projects
+    /// running the same bundle under the same container key stay apart.
+    fn vm_dir(&self) -> PathBuf {
+        self.store.dir().join("vm")
+    }
+
     /// Installed packages live at the root, not inside a daemon or a project:
     /// the same `state 0.21.4` serves every project on this machine, and
     /// deriving this by walking up from the state directory would silently
@@ -363,6 +370,7 @@ impl Project {
         let config_dir = self.config_dir();
         let log_dir = self.log_dir();
         let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
 
@@ -374,6 +382,7 @@ impl Project {
             config_dir: &config_dir,
             log_dir: &log_dir,
             package_cache: &package_cache,
+            vm_dir: &vm_dir,
         };
 
         let result =
@@ -389,6 +398,7 @@ impl Project {
         let config_dir = self.config_dir();
         let log_dir = self.log_dir();
         let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
         let mut inner = self.inner.lock().await;
         let Inner { children, state } = &mut *inner;
 
@@ -400,6 +410,7 @@ impl Project {
             config_dir: &config_dir,
             log_dir: &log_dir,
             package_cache: &package_cache,
+            vm_dir: &vm_dir,
         };
 
         let result =

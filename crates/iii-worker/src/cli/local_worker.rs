@@ -9,7 +9,7 @@
 
 use colored::Colorize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::project::{ProjectInfo, WORKER_MANIFEST, load_project_info};
 use super::rootfs::clone_rootfs;
@@ -876,14 +876,20 @@ fn needs_rootfs_clone(managed_dir: &std::path::Path) -> bool {
 }
 
 pub async fn start_local_worker(worker_name: &str, worker_path: &str, port: u16) -> i32 {
-    start_worker_impl(
+    match start_worker_impl(
         worker_name,
         worker_path,
         port,
         /*disable_watcher=*/ false,
         /*is_bundle=*/ false,
+        None,
     )
     .await
+    {
+        VmStart::Exit(code) => code,
+        // Unreachable without an override, which this path does not pass.
+        VmStart::Plan(_) => 1,
+    }
 }
 
 /// Start a bundle worker VM. Same libkrun rails as
@@ -910,14 +916,64 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
         );
         return 1;
     }
-    start_worker_impl(
+    match start_worker_impl(
         worker_name,
         worker_path,
         port,
         /*disable_watcher=*/ true,
         /*is_bundle=*/ true,
+        None,
     )
     .await
+    {
+        VmStart::Exit(code) => code,
+        VmStart::Plan(_) => 1,
+    }
+}
+
+/// Builds the VM for an installed bundle worker without starting it.
+///
+/// For a caller that supervises its own children — compose stops them, watches
+/// them exit, and captures their output — and therefore needs the handle rather
+/// than a detached VM tracked by a pid file. Every gate `start_bundle_worker`
+/// applies is applied here too: the operator kill switch, the manifest
+/// re-validation that assumes the install dir may have been tampered with since
+/// install, and the start-time resource clamp.
+///
+/// The returned command is not spawned, so the caller decides how its output is
+/// captured and when it dies.
+pub async fn bundle_vm_command(
+    worker_name: &str,
+    install_dir: &Path,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    if super::bundle_download::bundle_workers_disabled() {
+        return Err(format!(
+            "bundle workers are disabled via {}=1; refusing to start '{worker_name}'",
+            super::bundle_download::ENV_BUNDLE_WORKERS_DISABLED,
+        ));
+    }
+
+    match start_worker_impl(
+        worker_name,
+        &install_dir.to_string_lossy(),
+        // The guest reaches the engine through `over.engine_url`; no port is
+        // derived here.
+        0,
+        /*disable_watcher=*/ true,
+        /*is_bundle=*/ true,
+        Some(over),
+    )
+    .await
+    {
+        VmStart::Plan(built) => Ok(built),
+        // The reason was written to stderr on the way out: the failures are
+        // spread across rootfs, firmware and manifest handling, and each one
+        // reports what it knows at the point it fails.
+        VmStart::Exit(_) => Err(format!(
+            "could not prepare the VM for bundle worker '{worker_name}'"
+        )),
+    }
 }
 
 /// Shared body for `start_local_worker` and `start_bundle_worker`.
@@ -930,6 +986,37 @@ pub async fn start_bundle_worker(worker_name: &str, worker_path: &str, port: u16
 ///     rather than the permissive `parse_manifest_resources`. Local
 ///     workers continue to honor whatever the user wrote.
 ///
+/// What a caller supplies when it will spawn and supervise the VM itself.
+///
+/// Without one, the worker name is the whole identity: state lands in
+/// `~/.iii/managed/<worker_name>` and a start first kills whatever else answers
+/// to that name. Compose cannot live with either — two of its projects may
+/// legitimately run the same bundle under the same container key, and killing
+/// by name would stop the other project's VM.
+pub struct VmOverride<'a> {
+    /// Per-caller VM state: rootfs (or overlay trampoline), boot script, pid
+    /// file. Replaces the name-keyed managed dir.
+    pub state_dir: PathBuf,
+    /// Engine URL the guest connects to, replacing the one derived from `port`.
+    pub engine_url: &'a str,
+    /// Merged over the manifest's own env, and under the reserved keys
+    /// [`build_local_env`] owns.
+    pub extra_env: HashMap<String, String>,
+    /// Host directory published to the guest at [`GUEST_CONFIG_DIR`]. The
+    /// caller points `III_CONFIG` at a file inside it.
+    pub config_dir: Option<PathBuf>,
+}
+
+/// Where a caller-supplied config directory appears inside the guest.
+pub const GUEST_CONFIG_DIR: &str = "/run/iii/config";
+
+pub enum VmStart {
+    /// The VM was started (or failed to), and this is the exit code.
+    Exit(i32),
+    /// The VM is built but not spawned, for a caller with its own supervisor.
+    Plan(super::worker_manager::libkrun::VmCommand),
+}
+
 /// Re-copies project files, builds env, and runs via libkrun.
 async fn start_worker_impl(
     worker_name: &str,
@@ -937,9 +1024,14 @@ async fn start_worker_impl(
     port: u16,
     disable_watcher: bool,
     is_bundle: bool,
-) -> i32 {
-    // Kill any stale process from a previous engine run
-    super::managed::kill_stale_worker(worker_name).await;
+    over: Option<VmOverride<'_>>,
+) -> VmStart {
+    // Kill any stale process from a previous engine run. Skipped when the
+    // caller owns the VM's identity: the name is not unique across projects
+    // there, so this would reach into someone else's.
+    if over.is_none() {
+        super::managed::kill_stale_worker(worker_name).await;
+    }
 
     #[cfg(unix)]
     restore_terminal_cooked_mode();
@@ -952,7 +1044,7 @@ async fn start_worker_impl(
             "error:".red(),
             worker_path
         );
-        return 1;
+        return VmStart::Exit(1);
     }
 
     // 1a. Bundle workers: re-run the strict manifest validator before
@@ -974,7 +1066,7 @@ async fn start_worker_impl(
             "error:".red(),
             e,
         );
-        return 1;
+        return VmStart::Exit(1);
     }
 
     // 1b. Local (non-bundle) workers: strict key validation at start too, so a
@@ -993,13 +1085,13 @@ async fn start_worker_impl(
                         "error:".red(),
                         e
                     );
-                    return 1;
+                    return VmStart::Exit(1);
                 }
             }
             Ok(None) => {} // auto-detected worker, no manifest to validate
             Err(e) => {
                 eprintln!("{} {}", "error:".red(), e);
-                return 1;
+                return VmStart::Exit(1);
             }
         }
     }
@@ -1013,13 +1105,13 @@ async fn start_worker_impl(
                 "error:".red(),
                 worker_path
             );
-            return 1;
+            return VmStart::Exit(1);
         }
     };
 
     if let Err(msg) = project.validate() {
         eprintln!("{} {}", "error:".red(), msg);
-        return 1;
+        return VmStart::Exit(1);
     }
 
     // Treat an empty/whitespace `kind:` field in the manifest the same
@@ -1045,16 +1137,19 @@ async fn start_worker_impl(
              Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/",
             "error:".red()
         );
-        return 1;
+        return VmStart::Exit(1);
     }
 
     // 4. Prepare managed dir — clone rootfs on first start
-    let managed_dir = match dirs::home_dir() {
-        Some(h) => h.join(".iii").join("managed").join(worker_name),
-        None => {
-            eprintln!("{} Cannot determine home directory", "error:".red());
-            return 1;
-        }
+    let managed_dir = match over.as_ref() {
+        Some(over) => over.state_dir.clone(),
+        None => match dirs::home_dir() {
+            Some(h) => h.join(".iii").join("managed").join(worker_name),
+            None => {
+                eprintln!("{} Cannot determine home directory", "error:".red());
+                return VmStart::Exit(1);
+            }
+        },
     };
 
     // Detect "managed_dir exists but the rootfs was never cloned here"
@@ -1095,7 +1190,7 @@ async fn start_worker_impl(
                 managed_dir.display(),
                 e
             );
-            return 1;
+            return VmStart::Exit(1);
         }
         // Reclaim orphaned legacy-clone artifacts (dep cache + prepared
         // marker) and stamp the overlay layout marker. Idempotent and a no-op
@@ -1112,7 +1207,7 @@ async fn start_worker_impl(
                 managed_dir.display(),
                 e
             );
-            return 1;
+            return VmStart::Exit(1);
         }
         let base_rootfs =
             match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref())
@@ -1121,12 +1216,12 @@ async fn start_worker_impl(
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("{} {}", "error:".red(), e);
-                    return 1;
+                    return VmStart::Exit(1);
                 }
             };
         if let Err(e) = clone_rootfs(&base_rootfs, &managed_dir) {
             eprintln!("{} Failed to create project rootfs: {}", "error:".red(), e);
-            return 1;
+            return VmStart::Exit(1);
         }
     }
 
@@ -1148,7 +1243,7 @@ async fn start_worker_impl(
             workspace_dir.display(),
             e
         );
-        return 1;
+        return VmStart::Exit(1);
     }
 
     // Check the .iii-prepared marker. Silent when true — the boot script
@@ -1163,12 +1258,26 @@ async fn start_worker_impl(
     let is_prepared = prepared_marker.exists();
 
     // 6. Build env with engine URL + OCI env + config.yaml env
-    let engine_url = engine_url_for_runtime("libkrun", "0.0.0.0", port, &None);
-    let config_env = super::config_file::get_worker_config_as_env(worker_name);
+    let engine_url = match over.as_ref() {
+        Some(over) => over.engine_url.to_string(),
+        None => engine_url_for_runtime("libkrun", "0.0.0.0", port, &None),
+    };
 
     let mut combined_project_env = project.env.clone();
-    for (k, v) in &config_env {
-        combined_project_env.insert(k.clone(), v.clone());
+    match over.as_ref() {
+        // The caller's env is the whole story: it is not a machine-wide
+        // `config.yaml` entry, and reading one keyed by worker name would pull
+        // in another project's values.
+        Some(over) => {
+            for (k, v) in &over.extra_env {
+                combined_project_env.insert(k.clone(), v.clone());
+            }
+        }
+        None => {
+            for (k, v) in &super::config_file::get_worker_config_as_env(worker_name) {
+                combined_project_env.insert(k.clone(), v.clone());
+            }
+        }
     }
 
     let mut env = build_local_env(&engine_url, worker_name, &combined_project_env);
@@ -1179,7 +1288,7 @@ async fn start_worker_impl(
             Ok(p) => p,
             Err(e) => {
                 eprintln!("{} {}", "error:".red(), e);
-                return 1;
+                return VmStart::Exit(1);
             }
         };
     let oci_env = super::worker_manager::oci::read_oci_env(&base_rootfs);
@@ -1215,12 +1324,12 @@ async fn start_worker_impl(
     };
     if let Err(e) = std::fs::create_dir_all(&script_dir) {
         eprintln!("{} Failed to create run-script dir: {}", "error:".red(), e);
-        return 1;
+        return VmStart::Exit(1);
     }
     let script_path = script_dir.join("dev-run.sh");
     if let Err(e) = std::fs::write(&script_path, &script) {
         eprintln!("{} Failed to write run script: {}", "error:".red(), e);
-        return 1;
+        return VmStart::Exit(1);
     }
     #[cfg(unix)]
     {
@@ -1249,7 +1358,7 @@ async fn start_worker_impl(
         Ok(p) => p,
         Err(e) => {
             eprintln!("{} Failed to provision iii-init: {}", "error:".red(), e);
-            return 1;
+            return VmStart::Exit(1);
         }
     };
 
@@ -1261,7 +1370,7 @@ async fn start_worker_impl(
                 "error:".red(),
                 e
             );
-            return 1;
+            return VmStart::Exit(1);
         }
         #[cfg(unix)]
         {
@@ -1330,6 +1439,16 @@ async fn start_worker_impl(
         "/workspace"
     };
     let mut mounts = build_local_mounts(project_path, workspace_guest);
+    // The caller's config directory, so `III_CONFIG` can name a file the guest
+    // can actually open. Only this container's config is shared: the directory
+    // is per-container, because virtiofs publishes a whole tree and the
+    // project's config dir holds every sibling's file too.
+    if let Some(config_dir) = over.as_ref().and_then(|over| over.config_dir.as_ref()) {
+        mounts.push((
+            config_dir.to_string_lossy().into_owned(),
+            GUEST_CONFIG_DIR.to_string(),
+        ));
+    }
     if overlay {
         // Make the host-written dev-run.sh visible in the (post-pivot) overlay
         // root at /opt/iii. iii-init mkdir_p's the guest path before mounting,
@@ -1352,7 +1471,7 @@ async fn start_worker_impl(
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{} failed to build base erofs: {}", "error:".red(), e);
-                return 1;
+                return VmStart::Exit(1);
             }
         };
         let upper = if crate::cli::upper::has_golden() {
@@ -1364,7 +1483,7 @@ async fn start_worker_impl(
                         "error:".red(),
                         e
                     );
-                    return 1;
+                    return VmStart::Exit(1);
                 }
             }
         } else {
@@ -1374,6 +1493,30 @@ async fn start_worker_impl(
     } else {
         (None, String::new(), None)
     };
+
+    // A caller with its own supervisor takes the built command and stops here:
+    // spawning, waiting and stopping are its job, and the source watcher below
+    // has nothing to watch on an immutable install.
+    if over.is_some() {
+        return match super::worker_manager::libkrun::build_vm_command(
+            exec_path,
+            &args,
+            env,
+            vcpus,
+            ram,
+            managed_dir,
+            rootfs_lower,
+            rootfs_mode,
+            rootfs_upper,
+            &mounts,
+        ) {
+            Ok(built) => VmStart::Plan(built),
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                VmStart::Exit(1)
+            }
+        };
+    }
 
     let managed_dir_for_watcher = managed_dir.clone();
     let exit_code = super::worker_manager::libkrun::run_dev(
@@ -1416,7 +1559,7 @@ async fn start_worker_impl(
         );
     }
 
-    exit_code
+    VmStart::Exit(exit_code)
 }
 
 // Sidecar pidfile writes delegate to super::pidfile::write_pid_file for

@@ -94,8 +94,8 @@ pub enum ComposeError {
     },
 
     #[error(
-        "container '{container}': '{name}' is a {kind} worker. compose can install binary \
-         workers; engine workers are built into the engine and image workers need the OCI \
+        "container '{container}': '{name}' is a {kind} worker. compose can install binary and \
+         bundle workers; engine workers are built into the engine and image workers need the OCI \
          runtime"
     )]
     UnsupportedPackageKind {

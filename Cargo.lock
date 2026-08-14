@@ -2780,6 +2780,7 @@ dependencies = [
  "flate2",
  "hex",
  "iii-sdk",
+ "iii-worker",
  "indexmap 2.14.0",
  "nix 0.31.2",
  "reqwest 0.12.28",

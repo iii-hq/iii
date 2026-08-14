@@ -21,6 +21,10 @@ dirs = { workspace = true }
 colored = { workspace = true }
 # The daemon is an ordinary worker: it talks to the engine through the SDK.
 iii-sdk = { workspace = true }
+# Bundle containers boot in a libkrun VM. The rails are iii-worker's: the
+# operator kill switch, the manifest re-validation and the resource clamp are
+# the same ones `iii add` applies, rather than a second copy that can drift.
+iii-worker = { path = "../iii-worker" }
 # Registry resolution and artefact download.
 reqwest = { workspace = true }
 flate2 = "1"

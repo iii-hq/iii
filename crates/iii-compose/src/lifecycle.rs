@@ -97,6 +97,8 @@ pub struct LifecycleCtx<'a> {
     /// serves it — this is the record for a worker that dies before it can
     /// tell the engine anything.
     pub log_dir: &'a std::path::Path,
+    /// Root of the per-container VM state for bundle containers.
+    pub vm_dir: &'a std::path::Path,
 }
 
 /// Containers currently supervised by this daemon, keyed by container id.
@@ -309,13 +311,20 @@ async fn start_one(
                 key,
                 &format!("starting {} {}", installed.name, installed.version),
             );
-            (
-                StartSpec::Exec {
-                    program: installed.program,
-                    args: Vec::new(),
-                },
-                installed.default_config,
-            )
+            match installed.payload {
+                crate::registry::Payload::Binary(program) => (
+                    StartSpec::Exec {
+                        program,
+                        args: Vec::new(),
+                    },
+                    installed.default_config,
+                ),
+                // The start command is the bundle's own, read from its manifest
+                // inside the VM. Nothing on the host runs it.
+                crate::registry::Payload::Bundle(install_dir) => {
+                    (StartSpec::Vm { install_dir }, installed.default_config)
+                }
+            }
         }
         crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
     };
@@ -352,12 +361,24 @@ async fn start_one(
             })?;
     }
 
-    let (child, output) =
-        spawn_supervised_piped(spawn_plan(&spawn_ctx).command()).map_err(|err| {
-            ComposeError::SpawnFailed {
+    let plan = spawn_plan(&spawn_ctx);
+    let command = match plan.command() {
+        Some(command) => command,
+        // A bundle: publisher-controlled code, so it is booted in a VM instead
+        // of run here. The handle that comes back is an ordinary child, so
+        // readiness, stop, crash cascade and log capture below are unchanged.
+        None => vm_command(ctx, key, &start, &plan, config.as_ref())
+            .await
+            .map_err(|message| ComposeError::SpawnFailed {
                 container: key.to_string(),
-                message: err.to_string(),
-            }
+                message,
+            })?,
+    };
+
+    let (child, output) =
+        spawn_supervised_piped(command).map_err(|err| ComposeError::SpawnFailed {
+            container: key.to_string(),
+            message: err.to_string(),
         })?;
     // Capture before waiting on readiness: whatever the child prints while
     // starting is exactly what an operator needs when it does not.
@@ -391,6 +412,61 @@ async fn start_one(
     let record = ChildRecord::from_supervised(&child, ChildStatus::Ready);
     children.insert(key.to_string(), child);
     Ok(record)
+}
+
+/// Builds the boot command for a bundle container.
+///
+/// The environment is the same one a host container would get, with one
+/// substitution: `III_CONFIG` names a host path, and the guest cannot open it.
+/// The container's config directory is published into the VM and the variable
+/// is repointed at the file inside it, so a worker reads its configuration the
+/// same way whichever side of the boundary it runs on.
+async fn vm_command(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    start: &StartSpec,
+    plan: &crate::spawn::SpawnPlan,
+    config: Option<&ResolvedConfig>,
+) -> std::result::Result<tokio::process::Command, String> {
+    let StartSpec::Vm { install_dir } = start else {
+        return Err("not a VM container".to_string());
+    };
+
+    let mut env: std::collections::HashMap<String, String> = plan
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    let config_dir = match config {
+        Some(config) => {
+            let path = config.file.path();
+            let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(format!("config file has no directory: {}", path.display()));
+            };
+            env.insert(
+                "III_CONFIG".to_string(),
+                format!(
+                    "{}/{}",
+                    iii_worker::cli::local_worker::GUEST_CONFIG_DIR,
+                    name.to_string_lossy()
+                ),
+            );
+            Some(dir.to_path_buf())
+        }
+        None => None,
+    };
+
+    let over = iii_worker::cli::local_worker::VmOverride {
+        state_dir: ctx.vm_dir.join(key),
+        engine_url: ctx.engine_url,
+        extra_env: env,
+        config_dir,
+    };
+
+    iii_worker::cli::local_worker::bundle_vm_command(key, install_dir, over)
+        .await
+        .map(|built| built.command)
 }
 
 async fn stop_one(
@@ -518,7 +594,11 @@ async fn resolve_config(
     // And as a file, which is what a worker written for compose reads. The two
     // carry the same value, so whichever a worker trusts, it gets the same
     // answer.
-    let file = ConfigFile::write(ctx.config_dir, key, &value)?;
+    // One directory per container, not one file per container in a shared one.
+    // A bundle container is handed its configuration by publishing the
+    // directory into its VM, and virtiofs shares a whole tree: a flat layout
+    // would put every sibling's resolved secrets inside every bundle's guest.
+    let file = ConfigFile::write(&ctx.config_dir.join(key), key, &value)?;
     Ok(Some(ResolvedConfig {
         file,
         name: container.config_name.clone(),

@@ -177,7 +177,11 @@ fn spawn_hook(ctx: &SpawnCtx<'_>, script: &str) -> std::io::Result<HookProcess> 
     let mut hook_ctx = ctx.clone();
     hook_ctx.start = &start;
 
-    let mut command = spawn_plan(&hook_ctx).command();
+    // A hook is a shell script and runs on the host even for a container that
+    // does not, so the plan always yields a command here.
+    let mut command = spawn_plan(&hook_ctx)
+        .command()
+        .expect("a hook is always a host shell command");
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);

@@ -30,7 +30,8 @@ fn spawn(script: &str, cwd: &Path) -> Supervised {
         working_dir: cwd,
         user_env: empty_env(),
     };
-    spawn_supervised(spawn_plan(&ctx).command()).expect("child should spawn")
+    spawn_supervised(spawn_plan(&ctx).command().expect("a host container"))
+        .expect("child should spawn")
 }
 
 fn state_with(child: &Supervised, compose: &Path) -> DaemonState {

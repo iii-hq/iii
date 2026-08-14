@@ -162,6 +162,10 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
     let (program, args) = match ctx.start {
         StartSpec::Shell(command) => shell_invocation(command),
         StartSpec::Exec { program, args } => (program.to_string_lossy().to_string(), args.clone()),
+        // The host execs nothing for a VM container: the start command is the
+        // bundle's own and runs inside the guest. Only the environment and the
+        // working directory computed above carry over.
+        StartSpec::Vm { .. } => (String::new(), Vec::new()),
     };
 
     SpawnPlan {
@@ -191,7 +195,15 @@ fn shell_invocation(command: &str) -> (String, Vec<String>) {
 impl SpawnPlan {
     /// Turns the plan into a runnable command. Process-group placement and exit
     /// watching are the supervisor's job and are not applied here.
-    pub fn command(&self) -> tokio::process::Command {
+    ///
+    /// `None` when the container runs in a VM. There is no host program then,
+    /// and `env` is not this command's environment either: it belongs to the
+    /// guest, and reaches it as boot arguments rather than through the boot
+    /// process, which keeps the daemon's own environment to find its firmware.
+    pub fn command(&self) -> Option<tokio::process::Command> {
+        if self.program.is_empty() {
+            return None;
+        }
         let mut command = tokio::process::Command::new(&self.program);
         command.args(&self.args).current_dir(&self.working_dir);
         // Clear first: the plan is the child's entire environment, so nothing
@@ -200,7 +212,7 @@ impl SpawnPlan {
         for (name, value) in &self.env {
             command.env(name, value);
         }
-        command
+        Some(command)
     }
 }
 

@@ -90,9 +90,57 @@ pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<Strin
 /// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
 /// Uses a separate process for crash isolation.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_dev(
-    _kind: &str,
-    _project_path: &str,
+/// A `__vm-boot` invocation, built but not spawned.
+///
+/// `run_dev` spawns it and owns the wait; a caller that has its own supervisor
+/// (compose tracks children itself, to stop them and to see them crash) spawns
+/// it instead and keeps the handle. Both go through [`build_vm_command`] so the
+/// boot arguments — and with them the isolation the guest gets — cannot drift
+/// between the two.
+pub struct VmCommand {
+    pub command: tokio::process::Command,
+    /// Where the supervisor records the VM pid. `run_dev` writes it after the
+    /// spawn; a caller holding its own child handle does not need it.
+    pub pid_file: PathBuf,
+}
+
+/// The binary that answers `__vm-boot`.
+///
+/// Only `iii-worker` does. Under `iii worker start` that is the running
+/// program, so `current_exe` is the answer and always version-matched. Compose
+/// runs inside `iii`, which keeps `iii-worker` beside it and dispatches worker
+/// commands there; the sibling is preferred over `PATH` for the same reason —
+/// a stray older copy earlier in `PATH` would boot a VM built for a different
+/// engine.
+fn vm_boot_program() -> Result<PathBuf, String> {
+    let current =
+        std::env::current_exe().map_err(|e| format!("cannot locate the running binary: {e}"))?;
+    if current.file_stem().is_some_and(|name| name == "iii-worker") {
+        return Ok(current);
+    }
+
+    let name = format!("iii-worker{}", std::env::consts::EXE_SUFFIX);
+    let sibling = current.with_file_name(&name);
+    if sibling.is_file() {
+        return Ok(sibling);
+    }
+
+    std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join(&name))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            format!(
+                "cannot find {name}: it boots the VM, and it is neither beside {} nor on PATH",
+                current.display()
+            )
+        })
+}
+
+/// Builds the `__vm-boot` command for one VM. No process is started.
+#[allow(clippy::too_many_arguments)]
+pub fn build_vm_command(
     exec_path: &str,
     args: &[String],
     env: HashMap<String, String>,
@@ -102,19 +150,11 @@ pub async fn run_dev(
     rootfs_lower: Option<PathBuf>,
     rootfs_mode: String,
     rootfs_upper: Option<PathBuf>,
-    background: bool,
-    worker_name: &str,
     mounts: &[(String, String)],
-) -> i32 {
+) -> Result<VmCommand, String> {
     let env = build_vm_env(env);
 
-    let self_exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: cannot locate iii-worker binary: {}", e);
-            return 1;
-        }
-    };
+    let self_exe = vm_boot_program()?;
 
     #[cfg(target_os = "macos")]
     {
@@ -171,15 +211,72 @@ pub async fn run_dev(
         );
     }
 
-    #[cfg(unix)]
+    cmd.stdin(std::process::Stdio::null());
+
+    // Deliberately no `setsid` here: how the child is detached belongs to
+    // whoever spawns it. `run_dev` calls [`detach`] because its VMs outlive it;
+    // a caller that supervises its own children puts them in a process group it
+    // can signal, and the two cannot both be applied — `setsid` fails once the
+    // child is already a group leader, and the spawn fails with it.
+    Ok(VmCommand {
+        command: cmd,
+        pid_file,
+    })
+}
+
+/// Puts the VM in its own session, so it survives the process that started it.
+#[cfg(unix)]
+pub fn detach(cmd: &mut tokio::process::Command) {
     unsafe {
         cmd.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;
             Ok(())
         });
     }
+}
 
-    cmd.stdin(std::process::Stdio::null());
+pub async fn run_dev(
+    _kind: &str,
+    _project_path: &str,
+    exec_path: &str,
+    args: &[String],
+    env: HashMap<String, String>,
+    vcpus: u32,
+    ram_mib: u32,
+    rootfs: PathBuf,
+    rootfs_lower: Option<PathBuf>,
+    rootfs_mode: String,
+    rootfs_upper: Option<PathBuf>,
+    background: bool,
+    worker_name: &str,
+    mounts: &[(String, String)],
+) -> i32 {
+    let VmCommand {
+        command: mut cmd,
+        pid_file,
+    } = match build_vm_command(
+        exec_path,
+        args,
+        env,
+        vcpus,
+        ram_mib,
+        rootfs,
+        rootfs_lower,
+        rootfs_mode,
+        rootfs_upper,
+        mounts,
+    ) {
+        Ok(built) => built,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return 1;
+        }
+    };
+
+    // These VMs are detached by design: they outlive the `iii worker start`
+    // that asked for them.
+    #[cfg(unix)]
+    detach(&mut cmd);
 
     if background {
         let logs_dir = dirs::home_dir()
