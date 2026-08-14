@@ -14,6 +14,7 @@ import '../styles/landing.css'
 import headExtras from '../components/landing/head-extras.html?raw'
 
 import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
+import friction from '../components/landing/sections/02a-friction.html?raw'
 import explained from '../components/landing/sections/02-explained.html?raw'
 import hero from '../components/landing/sections/03-hero.html?raw'
 import experience from '../components/landing/sections/04-experience.html?raw'
@@ -58,7 +59,7 @@ const body = [
 
 <HtmlShell
   title="iii — Three primitives. Zero integration cost."
-  description="The latest docs on how to use iii, a new paradigm to effortlessly compose, extend, and observe every service in any system in real-time for the first time ever."
+  description="Effortlessly discover, compose, extend, and observe every service in real-time for the first time ever."
   canonicalPath="/"
   keywords="iii, worker, trigger, function, three primitives, distributed systems, durable execution, polyglot runtime, AI agents, agent runtime, TypeScript, Python, Rust, WebSocket, interoperability, live discovery, live observability, queues, cron, http, state, streams, sandbox"
 >
@@ -67,7 +68,8 @@ const body = [
   <SiteNav />
   <ScrollNav
     links={[
-      { id: 'explained', label: 'what is iii' },
+      { id: 'friction', label: 'what is iii' },
+      { id: 'explained', label: 'many things' },
       { id: 'console-live', label: 'agents' },
       { id: 'harness', label: 'harness' },
       { id: 'experience', label: 'why iii' },
@@ -76,6 +78,7 @@ const body = [
     ]}
   />
   <Fragment set:html={hero} />
+  <Fragment set:html={friction} />
   <Fragment set:html={explained} />
   <ConsoleLive />
   <HarnessRace />

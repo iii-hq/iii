@@ -104,8 +104,9 @@
     margin:0 auto;
     display:grid;
     grid-template-columns: 1fr 1fr;
-    gap:64px;
-    align-items:start;
+    column-gap:64px;
+    row-gap:40px;
+    align-items:stretch;
   }
   .hero-left{ min-width:0; }
   .hero-eyebrow{
@@ -136,13 +137,14 @@
   }
   .hero-headline .line{ display:block; }
   .hero-headline .mute{ color:var(--ink-faint); }
+  .hero-headline .accent{ color:var(--accent); }
   .hero-headline .desc{
     display:inline-block;
     color:var(--accent);
     transition: opacity .4s ease, transform .4s ease;
     will-change: opacity, transform;
   }
-  /* Second carousel on the same line — keeps the single-accent look by
+  /* Second carousel on the same headline — keeps the single-accent look by
      rotating in ink rather than a second orange word. */
   .hero-headline .desc.plain{ color:var(--ink); }
   .hero-headline .desc.is-anim{
@@ -150,13 +152,41 @@
     transform: translateY(14px);
   }
 
+  /* Subheader: the same four stacked lines, sized under the headline. */
+  .hero-subhead{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:500;
+    font-size: clamp(20px, 2.1vw, 28px);
+    line-height:1.15;
+    letter-spacing:-0.01em;
+    color:var(--ink);
+    margin:28px 0 0;
+    text-transform:lowercase;
+  }
+  .hero-subhead .line{ display:block; }
+  .hero-subhead .mute{ color:var(--ink-faint); }
+  .hero-subhead .accent{ color:var(--accent); }
+  .hero-subhead .desc{
+    display:inline-block;
+    /* Reserves the longest verb in the rotation ("discover"), so the words
+       after it never shift. Chivo Mono, so 1ch is one glyph. */
+    min-width:8ch;
+    color:var(--accent);
+    transition: opacity .4s ease, transform .4s ease;
+    will-change: opacity, transform;
+  }
+  .hero-subhead .desc.is-anim{
+    opacity:0;
+    transform: translateY(10px);
+  }
+
   .hero-sub{
     font-family:'Chivo Mono', ui-monospace, monospace;
     font-weight:400;
-    font-size:14px;
+    font-size:18px;
     line-height:1.7;
     color:var(--ink-faint);
-    max-width:46ch;
+    max-width:58ch;
     text-wrap:pretty;
     margin:40px 0 0;
   }
@@ -411,7 +441,9 @@
     display:grid;
     grid-template-rows: auto 1fr auto;
     min-width:0;
-    align-self:start;
+    /* Matches the copy column's height: the canvas row absorbs whatever is
+       left, so both columns end on the same line. */
+    align-self:stretch;
     position:relative;
   }
   @media (min-width: 881px){
@@ -462,6 +494,9 @@
     position:relative;
     aspect-ratio: 5 / 4;
     width:100%;
+    /* The stretched grid row wins over the aspect ratio, so the drawing scales
+       down instead of pushing the panel past the copy column. */
+    min-height:0;
     overflow:hidden;
   }
   .hero-viz-canvas svg{
@@ -795,7 +830,7 @@
 
   @media (max-width: 880px){
     .hero{ padding:60px 18px 72px; }
-    .hero-inner{ grid-template-columns: 1fr; gap:48px; }
+    .hero-inner{ grid-template-columns: 1fr; column-gap:48px; row-gap:40px; }
     .hero-headline{ letter-spacing:-0.02em; }
     .hero-cta{ gap:28px; }
     .hero-viz{ min-width:0; max-width:100%; overflow:hidden; }

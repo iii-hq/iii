@@ -72,8 +72,8 @@
   });
 
   // ============= Hero rotating descriptors =============
-  // The headline reads "an agentic development environment" on arrival and
-  // holds it long enough to be read as a claim before anything starts moving.
+  // Both carousels hold their first word long enough to be read as a claim
+  // before anything starts moving.
   const HERO_HOLD_MS = 8000;
   function rotateWords(el, words, period){
     if (!el) return;
@@ -88,19 +88,14 @@
     };
     setTimeout(() => { tick(); setInterval(tick, period); }, HERO_HOLD_MS);
   }
-  // Two carousels on one headline. The subject turns slowly, and its period is
-  // not a multiple of the noun's, so the two keep landing on fresh pairings.
   rotateWords(document.getElementById('hero-desc'), [
-    'development','production','testing','staging','debugging',
-    'orchestration','integration','deployment'
+    'simple','scalable','durable','extensible','fast',
+    'composable','observable','reliable','interoperable'
   ], 3000);
-  // Held back with its markup in 03-hero.html — three rotating lines at once
-  // is too much motion. rotateWords no-ops on the missing element either way.
-  // rotateWords(document.getElementById('hero-for'), [
-  //   'building','architecting','experimenting','vibing','shipping',
-  //   'prototyping','refactoring','exploring'
-  // ], 5000);
-  rotateWords(document.getElementById('hero-subj'), ['an agentic','a human'], 8000);
+  // Subheader verb.
+  rotateWords(document.getElementById('hero-verb'), [
+    'discover','compose','extend','observe'
+  ], 3000);
 
   // ============= Email signup helpers =============
   function getMailmodoFormUrl(){

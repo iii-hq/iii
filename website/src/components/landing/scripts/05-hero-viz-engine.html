@@ -133,7 +133,7 @@
         formulaSub: "",
       },
       actual: {
-        name: "implementation",
+        name: "current approach",
         count: String(actualEdges.length),
         accentCount: false,
         formula:
@@ -141,7 +141,7 @@
         formulaSub: "",
       },
       iii: {
-        name: "iii",
+        name: "iii solution",
         count: "0",
         accentCount: true,
         formula: "<math><mi>O</mi><mo>(</mo><mn>0</mn><mo>)</mo></math>",
@@ -325,7 +325,7 @@
     function buildTriptych() {
       if (triptychBuilt) return;
       triptychBuilt = true;
-      const labels = ["problem space", "implementation", "iii"];
+      const labels = ["problem space", "current approach", "iii solution"];
       const counts = ["45", String(actualEdges.length), "0"];
       const stages = ["mesh", "actual", "iii"];
       for (let s = 0; s < 3; s++) {

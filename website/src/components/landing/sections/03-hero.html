@@ -3,24 +3,26 @@
   <div class="hero-inner">
     <div class="hero-left">
       <h1 class="hero-headline" id="hero-headline" aria-live="polite">
-        <!-- One carousel per line. Keeping hero-desc alone on its line stops a
-             long word like "orchestration" from rewrapping the subject above it. -->
-        <span class="line"><span class="desc plain" id="hero-subj">an agentic</span></span>
-        <span class="line"><span class="desc" id="hero-desc">development</span></span>
-        <span class="line mute">environment</span>
-        <!-- Third carousel, held back: three rotating lines at once is too much motion. -->
-        <!-- <span class="line mute">for <span class="desc" id="hero-for">building</span></span> -->
+        <span class="line">build unreasonably <span class="desc" id="hero-desc">simple</span></span>
+        <span class="line mute">software</span>
       </h1>
+
+      <!-- Subheader: only the verb on line one rotates, the rest is static. -->
+      <p class="hero-subhead">
+        <span class="line">effortlessly <span class="desc" id="hero-verb">discover</span></span>
+        <span class="line"
+          ><span class="mute">every service</span> <span class="accent">in real time</span></span
+        >
+        <span class="line">for the first time ever</span>
+      </p>
 
       <p class="hero-sub">Modern software stacks are an exercise in integrating services.</p>
       <p class="hero-sub">
         Every new capability means a new system to learn, configure, deploy, and monitor.
       </p>
-
       <p class="hero-sub">
-        The complexity of actual integrations is
-        <span class="accent">quadratic</span> which is overwhelming for devs and for AI. Leading to
-        both making bad decisions about large codebases.
+        The complexity of actual integrations is <span class="accent">quadratic</span> which is
+        overwhelming for devs and for AI. Leading to both making bad decisions about large codebases.
       </p>
       <p class="hero-sub">
         iii <span class="accent">eliminates this complexity</span> by shipping working services the
