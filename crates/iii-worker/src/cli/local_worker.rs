@@ -966,7 +966,7 @@ pub async fn bundle_vm_command(
     )
     .await
     {
-        VmStart::Plan(built) => Ok(built),
+        VmStart::Plan(built) => Ok(*built),
         // The reason was written to stderr on the way out: the failures are
         // spread across rootfs, firmware and manifest handling, and each one
         // reports what it knows at the point it fails.
@@ -1014,7 +1014,10 @@ pub enum VmStart {
     /// The VM was started (or failed to), and this is the exit code.
     Exit(i32),
     /// The VM is built but not spawned, for a caller with its own supervisor.
-    Plan(super::worker_manager::libkrun::VmCommand),
+    ///
+    /// Boxed because a built command dwarfs an exit code, and every caller of
+    /// the detached path would otherwise carry that size to hold an `i32`.
+    Plan(Box<super::worker_manager::libkrun::VmCommand>),
 }
 
 /// Re-copies project files, builds env, and runs via libkrun.
@@ -1510,7 +1513,7 @@ async fn start_worker_impl(
             rootfs_upper,
             &mounts,
         ) {
-            Ok(built) => VmStart::Plan(built),
+            Ok(built) => VmStart::Plan(Box::new(built)),
             Err(e) => {
                 eprintln!("{} {}", "error:".red(), e);
                 VmStart::Exit(1)

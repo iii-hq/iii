@@ -46,7 +46,7 @@ iii compose [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
-| `--ns <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
+| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
 
 ### `iii project`
 

@@ -64,7 +64,7 @@ fn the_namespace_is_how_one_daemon_is_told_from_another() {
     // reaches exactly one with `--namespace`.
     let ComposeCommand::Serve {
         daemon_namespace, ..
-    } = parse(&["iii", "compose", "--ns", "pc-da-xuxa"])
+    } = parse(&["iii", "compose", "--namespace", "pc-da-xuxa"])
         .plan()
         .unwrap();
     assert_eq!(daemon_namespace, "pc-da-xuxa");
@@ -76,7 +76,7 @@ fn a_namespace_that_cannot_also_be_a_directory_is_refused() {
     // ~/.iii/compose, so a separator or an empty string would be a broken
     // daemon discovered later, at the first write.
     for bad in ["", "   ", "a/b", "a\\b", ".."] {
-        let err = parse(&["iii", "compose", "--ns", bad])
+        let err = parse(&["iii", "compose", "--namespace", bad])
             .plan()
             .expect_err("{bad:?} should be refused");
         assert_eq!(err.code(), "INVALID_NAMESPACE", "for {bad:?}");
@@ -85,13 +85,13 @@ fn a_namespace_that_cannot_also_be_a_directory_is_refused() {
 
 #[test]
 fn the_flag_is_held_to_the_same_charset_as_the_file() {
-    // `--ns` used to refuse a path separator and accept a space, while `name:`
-    // in the compose file was silently rewritten to fit. One string therefore
-    // meant two different namespaces depending on which of the two said it:
-    // `--ns 'My Shop!'` registered under `My Shop!`, and `name: "My Shop!"`
-    // registered under `my-shop`.
+    // The flag used to refuse a path separator and accept a space, while
+    // `name:` in the compose file was silently rewritten to fit. One string
+    // therefore meant two different namespaces depending on which of the two
+    // said it: `'My Shop!'` on the command line registered under `My Shop!`,
+    // and `name: "My Shop!"` registered under `my-shop`.
     for bad in ["My Shop!", "my shop", "MY-SHOP", "a.b", "olá"] {
-        let err = parse(&["iii", "compose", "--ns", bad])
+        let err = parse(&["iii", "compose", "--namespace", bad])
             .plan()
             .expect_err("{bad:?} should be refused");
         assert_eq!(err.code(), "INVALID_NAMESPACE", "for {bad:?}");
@@ -99,7 +99,9 @@ fn the_flag_is_held_to_the_same_charset_as_the_file() {
 
     for good in ["my-shop", "shop_2", "a"] {
         assert!(
-            parse(&["iii", "compose", "--ns", good]).plan().is_ok(),
+            parse(&["iii", "compose", "--namespace", good])
+                .plan()
+                .is_ok(),
             "{good:?} should be accepted"
         );
     }

@@ -42,10 +42,10 @@ pub struct ComposeCli {
     /// It is the address an operator reaches exactly one of them with:
     /// `iii trigger compose::up --namespace <NS> file=<PATH>`. Omitted, the
     /// daemon generates one and prints it.
-    /// `--ns` is kept as an alias so a daemon started by an older script keeps
-    /// running; it is not advertised, and `-n` / `--namespace` is the spelling
-    /// everything else in the CLI uses.
-    #[arg(short = 'n', long = "namespace", alias = "ns", value_name = "NS")]
+    ///
+    /// Spelled the way the rest of the CLI spells it, and only that way: this
+    /// has not shipped, so there is nothing calling it `--ns` to keep working.
+    #[arg(short = 'n', long = "namespace", value_name = "NS")]
     pub ns: Option<String>,
 }
 
@@ -70,7 +70,7 @@ impl ComposeCli {
         })
     }
 
-    /// `--ns`, or a fresh uuid when it is absent.
+    /// `--namespace`, or a fresh uuid when it is absent.
     ///
     /// There is no safe well-known default. A shared one — `default`, the
     /// hostname — is the collision the namespace exists to prevent: the second
@@ -84,7 +84,7 @@ impl ComposeCli {
     /// ```
     ///
     /// A generated one is new on every start, so a daemon meant to find its own
-    /// children again after a restart passes `--ns` and keeps it.
+    /// children again after a restart passes `--namespace` and keeps it.
     ///
     /// Validated here rather than at first use: it is both a namespace the
     /// engine routes on and a directory under `~/.iii/compose`, so a separator
@@ -95,7 +95,7 @@ impl ComposeCli {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
     }
 
-    /// `--ns` as given, checked. `None` when it was not given — the caller
+    /// `--namespace` as given, checked. `None` when it was not given — the caller
     /// decides whether that means "generate one" or "go and find it".
     pub fn validated_namespace(&self) -> Result<Option<String>> {
         let Some(namespace) = &self.ns else {

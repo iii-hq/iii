@@ -421,6 +421,7 @@ async fn start_one(
 /// The container's config directory is published into the VM and the variable
 /// is repointed at the file inside it, so a worker reads its configuration the
 /// same way whichever side of the boundary it runs on.
+#[cfg(unix)]
 async fn vm_command(
     ctx: &LifecycleCtx<'_>,
     key: &str,
@@ -467,6 +468,24 @@ async fn vm_command(
     iii_worker::cli::local_worker::bundle_vm_command(key, install_dir, over)
         .await
         .map(|built| built.command)
+}
+
+/// Unreachable: the registry refuses a bundle on this platform before it is
+/// installed, so nothing produces [`StartSpec::Vm`] here. It exists so the
+/// branch that calls it still compiles, and it repeats the refusal rather than
+/// panicking, in case a future caller finds another way in.
+#[cfg(not(unix))]
+async fn vm_command(
+    _ctx: &LifecycleCtx<'_>,
+    key: &str,
+    _start: &StartSpec,
+    _plan: &crate::spawn::SpawnPlan,
+    _config: Option<&ResolvedConfig>,
+) -> std::result::Result<tokio::process::Command, String> {
+    Err(format!(
+        "container '{key}' is a bundle worker, and bundles run in a VM, which windows has no \
+         support for. Run compose under WSL"
+    ))
 }
 
 async fn stop_one(

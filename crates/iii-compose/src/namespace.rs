@@ -8,7 +8,7 @@
 //!
 //! One namespace holds everything a project puts on the engine: the daemon's
 //! own `compose::*` and every container's functions. Resolution has three
-//! steps and no derivation — `--ns` on the command line, then `name:` in the
+//! steps and no derivation — `--namespace` on the command line, then `name:` in the
 //! compose file, then `default`.
 //!
 //! Nothing is hashed into it. A namespace an operator cannot predict is one
@@ -19,11 +19,11 @@
 
 /// Namespace the daemon and its containers register in.
 ///
-/// `explicit` is `--ns`; `declared` is `name:` in the compose file. Blank
+/// `explicit` is `--namespace`; `declared` is `name:` in the compose file. Blank
 /// values count as absent: a file with `name: ""` has not named anything.
 ///
 /// Both have already been checked by [`check`] — `name:` when the compose file
-/// parsed, `--ns` when the command line did — so this only picks one.
+/// parsed, `--namespace` when the command line did — so this only picks one.
 pub fn project_namespace(explicit: Option<&str>, declared: Option<&str>) -> String {
     first_present([explicit, declared])
         .map(str::to_string)
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn blank_counts_as_absent() {
-        // `name: ""` has not named anything, and `--ns ""` has not either.
+        // `name: ""` has not named anything, and `--namespace ""` has not either.
         assert_eq!(project_namespace(Some("  "), Some("orders")), "orders");
         assert_eq!(project_namespace(Some("  "), None), DEFAULT_NAMESPACE);
         assert_eq!(project_namespace(None, Some("")), DEFAULT_NAMESPACE);

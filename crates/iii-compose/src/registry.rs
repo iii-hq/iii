@@ -150,6 +150,17 @@ pub async fn install(
         "binary" => {
             Payload::Binary(install_binary(container, &resolved, target, cache_root).await?)
         }
+        // Refused before the download on a platform that could not start it:
+        // the archive is megabytes, and an operator learns nothing from having
+        // fetched it.
+        #[cfg(not(unix))]
+        "bundle" => {
+            return Err(ComposeError::BundleNeedsAVm {
+                container: container.to_string(),
+                name: resolved.name,
+            });
+        }
+        #[cfg(unix)]
         "bundle" => Payload::Bundle(install_bundle(container, &resolved, cache_root).await?),
         // `engine` workers are compiled into the engine itself: there is no
         // artefact to install and nothing for compose to start. `image` workers
@@ -213,10 +224,13 @@ async fn install_binary(
 
 /// Installs a bundle: one archive, no target in its identity.
 ///
+/// Unix only, because starting one is: see [`ComposeError::BundleNeedsAVm`].
+///
 /// The install is compose's own, not the machine-wide `~/.iii/workers-bundle/`
 /// that `iii add` keeps. That one is keyed by name alone and is replaced on
 /// every install, so two compose projects pinning different versions of the
 /// same bundle would overwrite each other between one `up` and the next.
+#[cfg(unix)]
 async fn install_bundle(
     container: &str,
     resolved: &ResolvedWorker,

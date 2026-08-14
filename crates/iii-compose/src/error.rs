@@ -104,6 +104,19 @@ pub enum ComposeError {
         kind: String,
     },
 
+    /// A bundle on a platform with no VM to put it in.
+    ///
+    /// Separate from [`Self::UnsupportedPackageKind`] because the answer is
+    /// about the machine, not the worker: the same compose file works on linux
+    /// and macOS, and saying "compose cannot install bundle workers" would send
+    /// an operator looking for a fault in their project.
+    #[error(
+        "container '{container}': '{name}' is a bundle worker, and bundles run in a VM, which \
+         windows has no support for. Run compose under WSL, where the VM has KVM to run on, or \
+         ask the worker's publisher for a binary build"
+    )]
+    BundleNeedsAVm { container: String, name: String },
+
     #[error(
         "container '{container}': {name} {version} has no build for {target}. It ships: \
          {available}"
@@ -327,6 +340,7 @@ impl ComposeError {
             Self::RegistryUnreachable { .. } => "REGISTRY_UNREACHABLE",
             Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
+            Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
             Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",

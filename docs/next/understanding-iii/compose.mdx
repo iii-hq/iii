@@ -32,7 +32,7 @@ started accidentally.
 A compose call names three things, and confusing any two of them is the mistake worth naming up
 front.
 
-The **daemon namespace** is which machine. It comes from `--ns`, and it is where that daemon
+The **daemon namespace** is which machine. It comes from `--namespace`, and it is where that daemon
 answers `compose::*`, so `iii trigger compose::up --namespace dev` reaches one daemon and not its
 neighbour. Several daemons attach to one engine, which is what lets compose supervise workers where
 their resources are rather than only beside the engine.

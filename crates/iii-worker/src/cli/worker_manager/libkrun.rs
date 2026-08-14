@@ -87,9 +87,6 @@ pub(crate) fn build_vm_env(caller_env: HashMap<String, String>) -> HashMap<Strin
     merged
 }
 
-/// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
-/// Uses a separate process for crash isolation.
-#[allow(clippy::too_many_arguments)]
 /// A `__vm-boot` invocation, built but not spawned.
 ///
 /// `run_dev` spawns it and owns the wait; a caller that has its own supervisor
@@ -235,6 +232,9 @@ pub fn detach(cmd: &mut tokio::process::Command) {
     }
 }
 
+/// Spawns `iii-worker __vm-boot` as a child process which boots the VM via libkrun FFI.
+/// Uses a separate process for crash isolation.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_dev(
     _kind: &str,
     _project_path: &str,

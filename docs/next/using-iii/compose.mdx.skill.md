@@ -17,7 +17,7 @@ iii compose [OPTIONS]
 
 | Option           | Description                                                                            |
 | ---------------- | -------------------------------------------------------------------------------------- |
-| `--ns <NS>`      | Namespace this daemon answers `compose::*` in. Generated and printed when absent.      |
+| `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Generated and printed when absent.      |
 | `--engine <URL>` | Engine WebSocket address. Falls back to `III_URL`, then `ws://127.0.0.1:49134`.        |
 
 A daemon holds any number of projects, and any number of daemons share one engine. What tells them
@@ -25,7 +25,7 @@ apart is the namespace: the worker name is always `compose`, so the engine lease
 compose)` to one connection. Two daemons with different namespaces coexist; a second claiming one
 that is taken is refused at registration with `DAEMON_ALREADY_SERVING`.
 
-Without `--ns` the daemon generates one and prints it. There is no well-known default, because a
+Without `--namespace` the daemon generates one and prints it. There is no well-known default, because a
 shared name is the collision the namespace exists to prevent.
 
 ```text
@@ -38,7 +38,7 @@ compose serving
 
 <Warning>
   A generated namespace is new on every start, and a project's durable state is stored under it. A
-  daemon that has to find its own children again after a restart passes `--ns` and keeps it.
+  daemon that has to find its own children again after a restart passes `--namespace` and keeps it.
 </Warning>
 
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
@@ -53,7 +53,7 @@ to something that already does both.
 For a quick session, a shell redirect is enough:
 
 ```bash
-iii compose --ns dev >> ~/iii-compose.log 2>&1 &
+iii compose --namespace dev >> ~/iii-compose.log 2>&1 &
 ```
 
 On a server, a unit file gives restart-on-failure and hands the output to the journal. Name the
@@ -66,7 +66,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/iii compose --ns prod
+ExecStart=/usr/local/bin/iii compose --namespace prod
 Restart=always
 
 [Install]
@@ -234,6 +234,28 @@ Each key under `containers` is the worker name the container registers under.
 `MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during
 validation.
 
+### Worker kinds
+
+The registry answers with a kind, and it decides how the container runs. A kind compose cannot run
+fails with `UNSUPPORTED_PACKAGE_KIND`.
+
+| Kind     | How it runs                                                                     |
+| -------- | ------------------------------------------------------------------------------- |
+| `binary` | A child process on the host.                                                    |
+| `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
+| `engine` | Not installable: it is compiled into the engine and always present.             |
+| `image`  | Not supported: it needs the OCI runtime.                                        |
+
+A bundle is published code that compose did not build, so it is started behind the same boundary
+`iii add` puts it behind, rather than as a host process. Its configuration is published into the
+guest, so `III_CONFIG` names a path inside the VM; a worker reads it the same way either way.
+Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
+honours.
+
+Bundles need a VM, and windows has none: a bundle container there fails with
+`BUNDLE_NEEDS_A_VM` before anything is downloaded. Run compose under WSL, where the VM has KVM to
+run on. Every other worker kind runs on windows as it always has.
+
 ### Scripts
 
 | Field               | Type   | Default | Description                                                  |
@@ -327,9 +349,10 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | Path                        | Contents                                             |
 | --------------------------- | ---------------------------------------------------- |
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
-| `<ns>/<project>/config/`    | Resolved configuration files.                        |
+| `<ns>/<project>/config/`    | Resolved configuration files, one directory each.    |
 | `<ns>/<project>/logs/`      | What each container printed while starting.          |
-| `packages/`                 | Installed `package://` binaries, shared by projects. |
+| `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each.  |
+| `packages/`                 | Installed `package://` artefacts, shared by projects. |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:
 readable enough to recognise, hashed enough that two projects in directories of the same name stay

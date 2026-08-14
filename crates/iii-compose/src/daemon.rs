@@ -6,7 +6,7 @@
 
 //! The daemon: one engine connection, many projects.
 //!
-//! Two addresses, and they answer different questions. `--ns` is the daemon —
+//! Two addresses, and they answer different questions. `--namespace` is the daemon —
 //! the namespace it serves `compose::*` in, and how an operator reaches this
 //! machine rather than a neighbour. `file=` is the project: a daemon holds as
 //! many as it is given, and the compose file is the only thing that names one.
