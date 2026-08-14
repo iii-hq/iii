@@ -134,6 +134,7 @@ fn ensure_functions_registered() {
 
                     match token.as_deref() {
                         None => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec![],
                             allowed_trigger_types: None,
@@ -143,6 +144,7 @@ fn ensure_functions_registered() {
                             function_registration_prefix: None,
                         }),
                         Some("valid-token") => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec!["test::ew::valid-token-echo".to_string()],
                             forbidden_functions: vec![],
                             allowed_trigger_types: None,
@@ -152,6 +154,7 @@ fn ensure_functions_registered() {
                             function_registration_prefix: None,
                         }),
                         Some("restricted-token") => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec!["test::ew::echo".to_string()],
                             allowed_trigger_types: None,
@@ -161,6 +164,7 @@ fn ensure_functions_registered() {
                             function_registration_prefix: None,
                         }),
                         Some("prefix-token") => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec![],
                             allowed_trigger_types: None,
