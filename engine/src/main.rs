@@ -361,7 +361,13 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 serde_json::json!({})
             };
-            cli::telemetry::send_install_lifecycle_event(event_type, properties).await;
+            // Bounded: the transport retries for up to ~93s on a hung or
+            // blackholed endpoint, and install.sh calls this synchronously.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                cli::telemetry::send_install_lifecycle_event(event_type, properties),
+            )
+            .await;
         }
         return Ok(());
     }
