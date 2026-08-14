@@ -208,10 +208,11 @@
     max-width:100%;
     min-width:0;
     display:flex;
-    flex-direction:column;
+    /* One row: the buttons on the left, the email signup pushed to the right. */
+    flex-direction:row;
     flex-wrap:nowrap;
-    gap:20px;
-    align-items:flex-start;
+    gap:24px;
+    align-items:center;
   }
   /* Reference solid + ghost buttons */
   .cta-get-started{
@@ -787,9 +788,9 @@
     max-width:240px;
   }
   .hero-cta .cta-email{
-    width:100%;
-    max-width:min(100%, 420px);
-    flex:none;
+    /* Sits right after the buttons and takes the rest of the row. */
+    max-width:min(100%, 480px);
+    flex:1 1 380px;
   }
   .email-row{
     position:relative;
@@ -846,7 +847,9 @@
        natural size again. */
     .hero-head, .hero-copy, .hero-left, .hero-viz-fit{ grid-column:1; grid-row:auto; }
     .hero-headline{ letter-spacing:-0.02em; }
-    .hero-cta{ gap:28px; }
+    /* Narrow: back to a stack, the email under the buttons. */
+    .hero-cta{ flex-direction:column; align-items:flex-start; gap:28px; }
+    .hero-cta .cta-email{ flex:none; }
     .hero-viz{ min-width:0; max-width:100%; overflow:hidden; }
     .hero-viz-canvas{ overflow:hidden; max-width:100%; }
     .hero-viz-head .label{ display:none; }

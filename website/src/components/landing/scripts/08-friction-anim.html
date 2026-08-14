@@ -55,7 +55,8 @@
 
     // ---- DOM the engine drives ----
     const $tensions = document.getElementById('fanim-tensions');
-    const $ways = stage.querySelectorAll('.fanim-ways button');
+    const $ways = stage.querySelectorAll('.fanim-switch button');
+    const $marker = document.getElementById('fanim-switch-marker');
 
     const tensionEls = WAYS[0].tensions.map((_, i) => {
       const el = document.createElement('div');
@@ -373,7 +374,14 @@
     // ---- DOM render: nav state and where each tension sits ----
     function render(){
       const s = W();
-      $ways.forEach((b) => b.classList.toggle('on', Number(b.dataset.way) === state.way));
+      $ways.forEach((b) => {
+        const on = Number(b.dataset.way) === state.way;
+        b.classList.toggle('on', on);
+        if (on){
+          $marker.style.transform = 'translateX(' + b.offsetLeft + 'px)';
+          $marker.style.width = b.offsetWidth + 'px';
+        }
+      });
 
       if (!sized) return;
       const z = zones();
@@ -408,6 +416,9 @@
     resize();
 
     $ways.forEach((b) => b.addEventListener('click', () => setWay(Number(b.dataset.way))));
+    // The marker is measured from the label widths, which move when the mono
+    // font finishes loading.
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
 
     new ResizeObserver(resize).observe(canvas);
     // The site's theme toggle rewrites data-theme on <html>; the canvas colors

@@ -25,42 +25,47 @@
       display: block;
     }
 
-    .fanim-bar {
+    /* The two states of the story, centred at the top. The marker slides from
+       one to the other when the animation changes state on its own. */
+    .fanim-switch {
       position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
+      top: 26px;
+      left: 50%;
+      transform: translateX(-50%);
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 24px;
-      padding: 20px 36px;
-      border-bottom: 1px solid var(--rule);
+      gap: 36px;
+      padding-bottom: 12px;
     }
-    .fanim-mark {
-      font-weight: 600;
-      font-size: 18px;
-      letter-spacing: -0.02em;
-    }
-    .fanim-ways {
-      display: flex;
-      align-items: center;
-      gap: 22px;
-    }
-    .fanim-ways button {
+    .fanim-switch button {
       background: none;
       border: 0;
       padding: 0;
       cursor: pointer;
       font-family: inherit;
-      font-size: 14px;
+      font-size: 15px;
       letter-spacing: 0.14em;
       text-transform: uppercase;
       color: var(--ink-ghost);
-      transition: color 0.2s ease;
+      transition:
+        color 0.35s ease,
+        opacity 0.35s ease;
+      opacity: 0.7;
     }
-    .fanim-ways button.on {
+    .fanim-switch button.on {
       color: var(--ink);
+      opacity: 1;
+    }
+    .fanim-switch-marker {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 0;
+      height: 2px;
+      background: var(--accent);
+      transition:
+        transform 0.55s cubic-bezier(0.4, 0, 0.2, 1),
+        width 0.55s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     /* The three tensions. Each one docks to its moment in the story when it is
@@ -133,12 +138,10 @@
   <div class="fanim-stage" id="fanim-stage">
     <canvas class="fanim-canvas" id="fanim-canvas" aria-hidden="true"></canvas>
 
-    <div class="fanim-bar">
-      <span class="fanim-mark">iii</span>
-      <div class="fanim-ways">
-        <button type="button" class="on" data-way="0">the old way</button>
-        <button type="button" data-way="1">the iii way</button>
-      </div>
+    <div class="fanim-switch" id="fanim-switch">
+      <button type="button" class="on" data-way="0">today</button>
+      <button type="button" data-way="1">with iii</button>
+      <span class="fanim-switch-marker" id="fanim-switch-marker" aria-hidden="true"></span>
     </div>
 
     <div class="fanim-tensions" id="fanim-tensions"></div>
