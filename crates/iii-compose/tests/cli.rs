@@ -47,13 +47,24 @@ fn an_unnamed_daemon_names_itself() {
         ..
     } = parse(&["iii", "compose"]).plan().unwrap();
 
+    // Two words, because the name is printed for an operator to read once and
+    // type from memory. It is still held to the namespace charset: it is also a
+    // directory and a routing key.
     assert!(
-        uuid::Uuid::parse_str(&first).is_ok(),
-        "an unnamed daemon should get a uuid, got {first:?}"
+        iii_compose::namespace::check(&first).is_ok(),
+        "a generated name must be a valid namespace, got {first:?}"
     );
+    assert_eq!(
+        first.split('-').count(),
+        2,
+        "expected adjective-noun, got {first:?}"
+    );
+    // Not a uniqueness guarantee — two words collide, and `generate` is given a
+    // predicate for the state directory precisely because they do. This only
+    // catches a generator that returns a constant.
     assert_ne!(
         first, second,
-        "two daemons that did not name themselves must not collide"
+        "two daemons that did not name themselves drew the same name"
     );
 }
 

@@ -70,7 +70,7 @@ impl ComposeCli {
         })
     }
 
-    /// `--namespace`, or a fresh uuid when it is absent.
+    /// `--namespace`, or a generated name when it is absent.
     ///
     /// There is no safe well-known default. A shared one — `default`, the
     /// hostname — is the collision the namespace exists to prevent: the second
@@ -90,9 +90,15 @@ impl ComposeCli {
     /// engine routes on and a directory under `~/.iii/compose`, so a separator
     /// or an empty string is a daemon that half-works until the first write.
     pub fn daemon_namespace(&self) -> Result<String> {
-        Ok(self
-            .validated_namespace()?
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+        Ok(self.validated_namespace()?.unwrap_or_else(|| {
+            // A name already holding state on this machine belongs to a daemon
+            // that ran before, and taking it would mean adopting what it left.
+            let root = crate::state::StateStore::root().ok();
+            crate::name::generate(|candidate| {
+                root.as_ref()
+                    .is_some_and(|root| root.join(candidate).exists())
+            })
+        }))
     }
 
     /// `--namespace` as given, checked. `None` when it was not given — the caller

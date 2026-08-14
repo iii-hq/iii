@@ -29,6 +29,7 @@ pub mod error;
 pub mod hooks;
 pub mod lifecycle;
 pub mod manifest;
+pub mod name;
 pub mod namespace;
 pub mod process;
 pub mod project;
@@ -110,8 +111,8 @@ async fn serve(engine_url: String, daemon_namespace: String) -> Result<()> {
     println!("  {} {}", "namespace:".dimmed(), daemon.daemon_namespace);
     // Printed with this daemon's own address already in it. Several daemons
     // share an engine, and which one a call reaches is a flag an operator
-    // should not have to work out — least of all when the id is a uuid nobody
-    // is going to retype.
+    // should not have to work out, and a generated name is meant to be read
+    // once and typed from memory.
     println!(
         "  {} iii trigger compose::up --namespace {} file=./worker-compose.yaml",
         "start a project:".dimmed(),

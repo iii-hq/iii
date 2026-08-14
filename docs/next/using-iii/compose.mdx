@@ -31,15 +31,17 @@ apart is the namespace: the worker name is always `compose`, so the engine lease
 compose)` to one connection. Two daemons with different namespaces coexist; a second claiming one
 that is taken is refused at registration with `DAEMON_ALREADY_SERVING`.
 
-Without `--namespace` the daemon generates one and prints it. There is no well-known default, because a
-shared name is the collision the namespace exists to prevent.
+Without `--namespace` the daemon generates one and prints it: two words, so it can be read once and
+typed from memory. There is no well-known default, because a shared name is the collision the
+namespace exists to prevent. A generated name never reuses one that already holds state on this
+machine, and the engine refuses a second daemon claiming a namespace that is already served.
 
 ```text
 $ iii compose
 compose serving
   engine: ws://127.0.0.1:49134
-  namespace: 550e8400-e29b-41d4-a716-446655440000
-  start a project: iii trigger compose::up --namespace 550e8400-… file=./worker-compose.yaml
+  namespace: cobalt-meadow
+  start a project: iii trigger compose::up --namespace cobalt-meadow file=./worker-compose.yaml
 ```
 
 <Warning>
