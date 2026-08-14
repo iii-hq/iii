@@ -257,6 +257,7 @@ fn session_exposing_metadata(
         config: Arc::new(config),
         ip_address: "127.0.0.1".to_string(),
         session_id: uuid::Uuid::new_v4(),
+        namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: vec![],
         allowed_trigger_types: None,

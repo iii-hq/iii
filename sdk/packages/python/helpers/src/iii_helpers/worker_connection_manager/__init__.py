@@ -43,7 +43,11 @@ class AuthResult(BaseModel):
     context is forwarded to the middleware.
 
     Attributes:
-        allowed_functions: Additional function IDs to allow beyond ``expose_functions``.
+        namespaces: Grants scoped to one namespace each, e.g. ``{"orders": ["svc::*"]}``.
+            The keys are also the namespaces the session may declare on
+            ``engine::workers::register``. Leave empty to scope nothing.
+        allowed_functions: Additional function IDs to allow beyond ``expose_functions``,
+            in the ``default`` namespace only. Put per-namespace grants in ``namespaces``.
         forbidden_functions: Function IDs to deny even if they match ``expose_functions``.
         allowed_trigger_types: Trigger type IDs the worker may register triggers for.
             When ``None``, all types are allowed.
@@ -54,9 +58,20 @@ class AuthResult(BaseModel):
         context: Arbitrary context forwarded to the middleware function on every invocation.
     """
 
+    namespaces: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Grants scoped to one namespace each, e.g. ``{\"orders\": [\"svc::*\"]}``. A value is an "
+            "exact function ID or a wildcard, bare or in the ``match(\"...\")`` spelling. The keys "
+            "are also the namespaces the session may declare on ``engine::workers::register``."
+        ),
+    )
     allowed_functions: list[str] = Field(
         default_factory=list,
-        description="Additional function IDs to allow beyond ``expose_functions``.",
+        description=(
+            "Additional function IDs to allow beyond ``expose_functions``, in the ``default`` "
+            "namespace only. Put per-namespace grants in ``namespaces``."
+        ),
     )
     forbidden_functions: list[str] = Field(
         default_factory=list,

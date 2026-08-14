@@ -156,7 +156,17 @@ export type AuthInput = {
  * middleware.
  */
 export type AuthResult = {
-  /** Additional function IDs to allow beyond the `expose_functions` config. Defaults to `[]` if omitted. */
+  /**
+   * Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an
+   * exact function ID or a wildcard, in either the bare (`svc::*`) or the
+   * `match("svc::*")` spelling.
+   *
+   * The keys are also the namespaces the session may declare on
+   * `engine::workers::register`. Omit to scope nothing: the session declares any
+   * namespace, and only `allowed_functions` and `expose_functions` apply.
+   */
+  namespaces?: Record<string, string[]>
+  /** Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. */
   allowed_functions?: string[]
   /** Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. */
   forbidden_functions?: string[]

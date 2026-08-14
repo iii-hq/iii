@@ -395,20 +395,42 @@ pub(crate) fn is_infrastructure_function(function_id: &str) -> bool {
     INFRASTRUCTURE_FUNCTIONS.contains(&function_id)
 }
 
-/// Namespace awareness is deliberately partial:
+/// Whether one scoped grant covers `function_id`.
 ///
-/// - `forbidden_functions` and `allowed_functions` match on the bare function id
-///   and are **global** — a grant or denial of an id applies in every namespace.
-///   These come from the session/auth result, which has no notion of namespace,
-///   so scoping them would be a wider protocol change; they are intentionally not
-///   namespace-aware.
-/// - `expose_functions` filters ARE namespace-scoped: a rule matches only in the
-///   namespace it names (or `default` when it names none). `namespace` here is the
-///   namespace the request resolves the target in.
+/// A grant is an exact id or a wildcard. Both spellings of the wildcard are
+/// accepted: bare (`svc::*`), which is what anyone writes in a list of grants,
+/// and wrapped (`match("svc::*")`), which is the form `expose_functions` uses —
+/// an operator who learned one should not be told the other is invalid.
+fn grant_matches(grant: &str, function_id: &str) -> bool {
+    // Unwrap first, so `match("svc::get")` — wrapped and with no wildcard in it
+    // — is compared as the id it names rather than as the literal it is written
+    // as. A grant that never matches anything is worse than a rejected one.
+    let raw = parse_match_pattern(grant).unwrap_or_else(|| grant.to_string());
+    raw == function_id || (raw.contains('*') && WildcardPattern::new(&raw).matches(function_id))
+}
+
+/// Every input here is namespace-aware except the denials, and that is
+/// deliberate:
+///
+/// - `forbidden_functions` is **global**. A denial that held in one namespace
+///   and not another is a denial nobody can reason about, and deny-wins is the
+///   side to fail on. It also wins over the infrastructure carve-out.
+/// - `session_namespaces` carries the auth function's scoped grants:
+///   `{ "orders": ["svc::*"] }`. A grant applies in the namespace that names it
+///   and nowhere else. Patterns use the same wildcard syntax as
+///   `expose_functions`, so an operator writes one thing in two places.
+/// - `allowed_functions` is what an auth function returns when it names no
+///   namespace. It applies in [`DEFAULT_NAMESPACE`] only. It used to apply
+///   everywhere, which meant a grant issued for one tenant answered for every
+///   other tenant exposing the same function id — the leak this signature
+///   exists to close.
+/// - `expose_functions` filters are namespace-scoped already: a rule matches
+///   only in the namespace it names, or `default` when it names none.
 pub fn is_function_allowed(
     function_id: &str,
     namespace: &str,
     config: Option<RbacConfig>,
+    session_namespaces: &HashMap<String, Vec<String>>,
     allowed_functions: &[String],
     forbidden_functions: &[String],
     function: Option<&Function>,
@@ -424,7 +446,19 @@ pub fn is_function_allowed(
         return false;
     }
 
-    if allowed_functions.iter().any(|f| f == function_id) {
+    // A grant that names this namespace, by exact id or by pattern.
+    if let Some(granted) = session_namespaces.get(namespace)
+        && granted
+            .iter()
+            .any(|grant| grant_matches(grant, function_id))
+    {
+        return true;
+    }
+
+    // A grant that names no namespace answers in `default` and nowhere else.
+    if namespace == crate::protocol::DEFAULT_NAMESPACE
+        && allowed_functions.iter().any(|f| f == function_id)
+    {
         return true;
     }
 
@@ -610,6 +644,7 @@ mod tests {
             "test::fn",
             crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
+            &HashMap::new(),
             &allowed,
             &forbidden,
             None
@@ -630,6 +665,7 @@ mod tests {
             "test::fn",
             crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
+            &HashMap::new(),
             &allowed,
             &[],
             None
@@ -649,6 +685,7 @@ mod tests {
             "engine::channels::create",
             crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
+            &HashMap::new(),
             &[],
             &[],
             None
@@ -668,6 +705,7 @@ mod tests {
             "internal::fn",
             crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
+            &HashMap::new(),
             &[],
             &[],
             None
@@ -697,6 +735,7 @@ mod tests {
                     id,
                     crate::protocol::DEFAULT_NAMESPACE,
                     Some(config),
+                    &HashMap::new(),
                     &[],
                     &[],
                     None
@@ -712,12 +751,187 @@ mod tests {
                     id,
                     crate::protocol::DEFAULT_NAMESPACE,
                     Some(config),
+                    &HashMap::new(),
                     &[],
                     &[],
                     None
                 ),
                 "expected {} to be allowed when only api::* exposed",
                 id
+            );
+        }
+    }
+
+    fn grants(pairs: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(ns, ids)| {
+                (
+                    ns.to_string(),
+                    ids.iter().map(|id| id.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn rbac_denying_everything() -> RbacConfig {
+        // No `expose_functions`, so nothing gets through on the operator's
+        // config alone. Whatever passes below passed on the session's grants.
+        rbac_config_with_expose(&["nothing::matches"])
+    }
+
+    #[test]
+    fn scoped_grant_answers_in_its_own_namespace_only() {
+        let scoped = grants(&[("orders", &["svc::get"])]);
+        assert!(is_function_allowed(
+            "svc::get",
+            "orders",
+            Some(rbac_denying_everything()),
+            &scoped,
+            &[],
+            &[],
+            None,
+        ));
+        // The same id, the same session, a namespace nobody granted.
+        assert!(!is_function_allowed(
+            "svc::get",
+            "analytics",
+            Some(rbac_denying_everything()),
+            &scoped,
+            &[],
+            &[],
+            None,
+        ));
+    }
+
+    #[test]
+    fn scoped_grant_accepts_a_wildcard_in_either_spelling() {
+        for grant in ["svc::*", "match(\"svc::*\")"] {
+            let scoped = grants(&[("orders", &[grant])]);
+            assert!(
+                is_function_allowed(
+                    "svc::get",
+                    "orders",
+                    Some(rbac_denying_everything()),
+                    &scoped,
+                    &[],
+                    &[],
+                    None,
+                ),
+                "expected grant {grant} to cover svc::get"
+            );
+            assert!(
+                !is_function_allowed(
+                    "other::get",
+                    "orders",
+                    Some(rbac_denying_everything()),
+                    &scoped,
+                    &[],
+                    &[],
+                    None,
+                ),
+                "grant {grant} must not cover an unrelated id"
+            );
+        }
+    }
+
+    #[test]
+    fn scoped_grant_accepts_an_exact_id_in_either_spelling() {
+        for grant in ["svc::get", "match(\"svc::get\")"] {
+            let scoped = grants(&[("orders", &[grant])]);
+            assert!(
+                is_function_allowed(
+                    "svc::get",
+                    "orders",
+                    Some(rbac_denying_everything()),
+                    &scoped,
+                    &[],
+                    &[],
+                    None,
+                ),
+                "expected grant {grant} to cover svc::get"
+            );
+        }
+    }
+
+    #[test]
+    fn a_namespace_key_alone_grants_nothing() {
+        // Present with an empty list: the session may declare and address the
+        // namespace, and gets no function grants inside it.
+        let scoped = grants(&[("orders", &[])]);
+        assert!(!is_function_allowed(
+            "svc::get",
+            "orders",
+            Some(rbac_denying_everything()),
+            &scoped,
+            &[],
+            &[],
+            None,
+        ));
+    }
+
+    #[test]
+    fn unscoped_allowed_functions_apply_in_default_only() {
+        let allowed = vec!["svc::get".to_string()];
+        assert!(is_function_allowed(
+            "svc::get",
+            crate::protocol::DEFAULT_NAMESPACE,
+            Some(rbac_denying_everything()),
+            &HashMap::new(),
+            &allowed,
+            &[],
+            None,
+        ));
+        // The leak this signature exists to close: a grant issued with no
+        // namespace used to answer for every tenant exposing the same id.
+        assert!(!is_function_allowed(
+            "svc::get",
+            "orders",
+            Some(rbac_denying_everything()),
+            &HashMap::new(),
+            &allowed,
+            &[],
+            None,
+        ));
+    }
+
+    #[test]
+    fn forbidden_stays_global_across_namespaces() {
+        let scoped = grants(&[("orders", &["svc::get"])]);
+        let forbidden = vec!["svc::get".to_string()];
+        for namespace in [crate::protocol::DEFAULT_NAMESPACE, "orders", "analytics"] {
+            assert!(
+                !is_function_allowed(
+                    "svc::get",
+                    namespace,
+                    Some(rbac_denying_everything()),
+                    &scoped,
+                    &[],
+                    &forbidden,
+                    None,
+                ),
+                "a denial must hold in {namespace} too"
+            );
+        }
+    }
+
+    #[test]
+    fn infrastructure_stays_reachable_from_a_scoped_namespace() {
+        // A session scoped to `orders` still needs to log, register, and open
+        // channels from there, or it cannot work at all.
+        let scoped = grants(&[("orders", &[])]);
+        for id in INFRASTRUCTURE_FUNCTIONS.iter() {
+            assert!(
+                is_function_allowed(
+                    id,
+                    "orders",
+                    Some(rbac_denying_everything()),
+                    &scoped,
+                    &[],
+                    &[],
+                    None,
+                ),
+                "expected {id} to stay reachable in a scoped namespace"
             );
         }
     }
@@ -730,6 +944,7 @@ mod tests {
             "svc::get",
             crate::protocol::DEFAULT_NAMESPACE,
             Some(config.clone()),
+            &HashMap::new(),
             &[],
             &[],
             None,
@@ -740,6 +955,7 @@ mod tests {
             "svc::get",
             "orders",
             Some(config),
+            &HashMap::new(),
             &[],
             &[],
             None,
@@ -760,6 +976,7 @@ mod tests {
             "svc::get",
             "orders",
             Some(config.clone()),
+            &HashMap::new(),
             &[],
             &[],
             None,
@@ -769,6 +986,7 @@ mod tests {
             "svc::get",
             crate::protocol::DEFAULT_NAMESPACE,
             Some(config.clone()),
+            &HashMap::new(),
             &[],
             &[],
             None,
@@ -777,6 +995,7 @@ mod tests {
             "svc::get",
             "analytics",
             Some(config),
+            &HashMap::new(),
             &[],
             &[],
             None,
@@ -827,6 +1046,7 @@ mod tests {
                     id,
                     crate::protocol::DEFAULT_NAMESPACE,
                     Some(config),
+                    &HashMap::new(),
                     &[],
                     &forbidden,
                     None
@@ -847,6 +1067,7 @@ mod tests {
                     id,
                     crate::protocol::DEFAULT_NAMESPACE,
                     Some(config),
+                    &HashMap::new(),
                     &allowed,
                     &[],
                     None
@@ -880,6 +1101,7 @@ mod tests {
                     id,
                     crate::protocol::DEFAULT_NAMESPACE,
                     Some(config),
+                    &HashMap::new(),
                     &[],
                     &[],
                     None
@@ -897,6 +1119,7 @@ mod tests {
             "engine::functions::list",
             crate::protocol::DEFAULT_NAMESPACE,
             Some(config),
+            &HashMap::new(),
             &[],
             &[],
             None
@@ -933,6 +1156,7 @@ mod tests {
                     id,
                     crate::protocol::DEFAULT_NAMESPACE,
                     Some(config.clone()),
+                    &HashMap::new(),
                     &[],
                     &[],
                     None
@@ -955,7 +1179,15 @@ mod tests {
             .iter(),
         ) {
             assert!(
-                is_function_allowed(id, crate::protocol::DEFAULT_NAMESPACE, None, &[], &[], None),
+                is_function_allowed(
+                    id,
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    None,
+                    &HashMap::new(),
+                    &[],
+                    &[],
+                    None
+                ),
                 "expected {} to be allowed when config is None",
                 id
             );

@@ -1457,6 +1457,7 @@ impl Engine {
                         &reg_function_id,
                         &target_namespace,
                         session.config.rbac.clone(),
+                        &session.namespaces,
                         &session.allowed_functions,
                         &session.forbidden_functions,
                         function.as_ref(),
@@ -1613,6 +1614,7 @@ impl Engine {
                         function_id,
                         crate::protocol::effective_namespace(namespace),
                         session.config.rbac.clone(),
+                        &session.namespaces,
                         &session.allowed_functions,
                         &session.forbidden_functions,
                         function.as_ref(),
@@ -1644,6 +1646,48 @@ impl Engine {
                         )
                         .await;
                         return Ok(());
+                    }
+
+                    // The namespace a connection declares is an authorization
+                    // decision, not a preference. Once the auth function scopes
+                    // a session to a set of namespaces, registering outside them
+                    // is refused here — before the lease is claimed, so nothing
+                    // has to be undone. An unscoped session (empty map) declares
+                    // freely, which is every deployment that has not adopted
+                    // scoped grants.
+                    if function_id == "engine::workers::register" && !session.namespaces.is_empty()
+                    {
+                        let declared = data
+                            .get("namespace")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(crate::protocol::DEFAULT_NAMESPACE);
+                        if !session.namespaces.contains_key(declared) {
+                            let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                            let mut permitted: Vec<&str> =
+                                session.namespaces.keys().map(String::as_str).collect();
+                            permitted.sort_unstable();
+                            self.send_msg(
+                                worker,
+                                Message::InvocationResult {
+                                    invocation_id: inv_id,
+                                    function_id: function_id.clone(),
+                                    result: None,
+                                    error: Some(ErrorBody::new(
+                                        "FORBIDDEN",
+                                        format!(
+                                            "namespace '{}' not allowed for this session \
+                                             (permitted: {})",
+                                            declared,
+                                            permitted.join(", ")
+                                        ),
+                                    )),
+                                    traceparent: traceparent.clone(),
+                                    baggage: baggage.clone(),
+                                },
+                            )
+                            .await;
+                            return Ok(());
+                        }
                     }
 
                     // Bypass middleware for the engine's own `engine::*` builtins
@@ -3782,6 +3826,7 @@ mod tests {
             config: Arc::new(WorkerManagerConfig::default()),
             ip_address: "127.0.0.1".to_string(),
             session_id: Uuid::new_v4(),
+            namespaces: Default::default(),
             allowed_functions: vec![],
             forbidden_functions: vec![],
             allowed_trigger_types: None,
@@ -3800,6 +3845,7 @@ mod tests {
             config: Arc::new(WorkerManagerConfig::default()),
             ip_address: "127.0.0.1".to_string(),
             session_id: Uuid::new_v4(),
+            namespaces: Default::default(),
             allowed_functions: vec![],
             forbidden_functions: vec![function_id.to_string()],
             allowed_trigger_types: None,
