@@ -197,11 +197,11 @@ See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tut
 ## Star History
 
 <p align="center">
-  <a href="https://www.star-history.com/?repos=iii-hq%2Fiii&type=date&legend=top-left">
+  <a href="https://star-history.dera.page/#iii-hq/iii&type=date&legend=top-left">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=iii-hq/iii&type=date&theme=dark&legend=bottom-right" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=iii-hq/iii&type=date&legend=bottom-right" />
-      <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=iii-hq/iii&type=date&legend=bottom-right" />
+      <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=iii-hq/iii&type=date&theme=dark&legend=bottom-right" />
+      <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=iii-hq/iii&type=date&legend=bottom-right" />
+      <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=iii-hq/iii&type=date&legend=bottom-right" />
     </picture>
   </a>
 </p>
