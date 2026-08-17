@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # configuration
 
 Schema-validated, reactive registry of named configuration entries. Workers register their configuration ids with a JSON Schema, publish values that are validated against it, and emit `configuration` triggers on every change so other workers react without polling.

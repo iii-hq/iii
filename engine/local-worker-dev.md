@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # Building and Running `iii worker add` / `iii worker dev` Locally
 
 This guide explains how to build and run the `iii worker add` and `iii worker dev` commands in your local development environment without creating a GitHub release.

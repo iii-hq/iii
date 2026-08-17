@@ -3,6 +3,8 @@
 # Worker Registry
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 ## Browsing the registry
 
 The iii Worker Registry at [workers.iii.dev](https://workers.iii.dev/) is the index of installable

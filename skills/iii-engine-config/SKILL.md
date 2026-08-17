@@ -6,6 +6,8 @@ description: >-
   customizing the engine.
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # Engine Config
 
 Comparable to: infrastructure as code, worker manifests, runtime policy config

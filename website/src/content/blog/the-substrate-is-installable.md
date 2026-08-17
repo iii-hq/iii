@@ -7,6 +7,8 @@ tags: ['agents', 'architecture', 'substrate', 'registry']
 ogImage: ../../assets/blog/the-substrate-is-installable/banner.png
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 ![The substrate is installable — every category collapses into iii worker add](../../assets/blog/the-substrate-is-installable/banner.png)
 
 A really good piece from Yohei this week, named something a lot of us building agent infrastructure feel, but have not articulated well. Every long-running agent ends up needing the same surrounding layer: task state, event logs, replay, approvals, memory, retries, branching, provenance, and capability tracking. Everyone is independently rebuilding it. He calls what's missing a "persistent, reactive, inspectable, evolving state substrate."

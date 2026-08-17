@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-bridge
 
 Connects this III Engine instance to another III instance over iii-sdk so you can expose local functions to the remote instance and forward local calls to remote functions.

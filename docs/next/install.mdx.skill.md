@@ -3,6 +3,8 @@
 # Install
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 {/* TODO (community feedback): Add a direct binary-download path alongside the curl|sh installer so users who do not want to verify a remote script with a bot, or are on Windows, have an alternative. Link to the GitHub Releases page for the engine and include PATH setup instructions per OS (especially Windows). */}
 
 ## Start a project

@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-worker-manager
 
 Mandatory engine worker that opens WebSocket listeners for SDK workers to connect to. The first `iii-worker-manager` entry in `iii-config.yaml` sets the main engine port (default `49134`); additional entries start independent listeners — typically a public RBAC listener with its own auth, middleware, and registration hooks. Channel WebSocket endpoints are mounted on every listener at `/ws/channels/{channel_id}`.

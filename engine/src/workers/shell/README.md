@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-exec
 
 Execute shell commands as part of engine startup — building assets, running migrations, or starting long-lived processes.

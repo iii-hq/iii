@@ -3,6 +3,8 @@
 # Overview
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 ## Introduction
 
 In this tutorial, you will learn how to bring iii into an existing system incrementally, without a

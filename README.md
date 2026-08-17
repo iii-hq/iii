@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii
 
 ![iii: point-to-point integrations vs zero-integration via shared runtime](.github/assets/zero-integration.png)

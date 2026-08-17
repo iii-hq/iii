@@ -3,6 +3,8 @@
 # Ch. 6: Move bulk data with channels
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 Where a stream is for a live trickle of events, a **channel** is for **moving a large amount of data
 at once**: a direct streaming pipe between two endpoints, rather than one request and response.
 Channels are bidirectional (each end has both a reader and a writer), but here you'll stream in one

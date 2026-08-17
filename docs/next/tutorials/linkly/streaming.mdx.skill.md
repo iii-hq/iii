@@ -3,6 +3,8 @@
 # Ch. 5: Stream live clicks
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 `iii-stream` is for **real-time data transmission**: pushing data to a client the moment it changes,
 like a live feed of clicks for a dashboard. A stream is bidirectional (subscribers can send messages
 back as well as receive them), but here you only need to broadcast clicks outward. You'll move the

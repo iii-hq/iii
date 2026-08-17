@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-state
 
 Distributed key-value state storage with scope-based organization and reactive triggers that fire on any state change.

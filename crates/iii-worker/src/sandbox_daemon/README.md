@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-sandbox
 
 Spawn ephemeral microVMs from worker code or the terminal. The daemon registers 16 `sandbox::*` triggers — 4 lifecycle ops, 10 filesystem ops, the one-shot `sandbox::run`, and `sandbox::catalog::list` — every one called via `iii.trigger()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.

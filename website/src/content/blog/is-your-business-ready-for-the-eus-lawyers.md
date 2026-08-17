@@ -7,6 +7,8 @@ tags: ['agents', 'compliance', 'observability', 'eu-ai-act']
 ogImage: ../../assets/blog/is-your-business-ready-for-the-eus-lawyers/banner.png
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 ![Is Your Business Ready for the EU's Lawyers? -- Article 12 agent recording, Article 86 customer explanation, Article 19/26 retention requirements, and AI Act deadlines, all flowing through iii-observability on the loop system bus.](../../assets/blog/is-your-business-ready-for-the-eus-lawyers/banner.png)
 
 I am not a lawyer and this is not legal advice. What I am is the person who updates the software stacks when the lawyers say we need to comply with a new regulation, and as such I want to share my well informed opinion on how most software companies will deal with the EU AI Act when it's in full effect: terribly, and with countless billable hours reconciling logs when enforcement comes knocking. This is because present day logging infrastructure, even if "end-to-end," is not designed for the court room, it's designed to find outages and bugs. It won't survive contact with the coming requirements.

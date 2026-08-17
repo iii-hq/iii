@@ -7,6 +7,8 @@ owner: "devrel"
 type: "how-to"
 ---
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 0.22.x drops the `iii-` prefix from the workers that ship with the engine, removes one engine CLI
 flag, and removes one Rust SDK constructor. The worker rename is a deprecation with a migration
 window: the old names still resolve but emit a warning. The other two are clean breaks. Apply the

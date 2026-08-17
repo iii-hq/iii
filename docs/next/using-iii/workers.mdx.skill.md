@@ -53,6 +53,12 @@ connection flow are documented on the
 
 ## Managing workers
 
+<Warning>
+  `iii compose` supersedes `iii worker`. Compose runs a group of workers as one project from a
+  `worker-compose.yaml` file. This makes development and deployment predictable and reproducible.
+  See [Compose](./compose).
+</Warning>
+
 The `iii worker` CLI commands cover the full lifecycle of every worker in your project: finding new
 ones in the registry, installing them into `config.yaml` and `iii.lock`, controlling their running
 state, inspecting their logs, and removing them when they're no longer needed.

@@ -8,6 +8,8 @@ tags: ['agents', 'architecture', 'harness', 'backend']
 ogImage: ../../assets/blog/the-harness-is-the-backend/point-to-point-vs-shared-runtime.png
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 The most important architectural question in AI infrastructure right now isn't
 which model to use. It's how much infrastructure is required to build something
 useful with it.

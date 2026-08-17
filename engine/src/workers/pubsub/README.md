@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-pubsub
 
 Topic-based publish/subscribe messaging for broadcasting events to multiple subscribers in real time.

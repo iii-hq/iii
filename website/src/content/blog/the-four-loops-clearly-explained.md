@@ -7,6 +7,8 @@ tags: ['agents', 'architecture', 'harness', 'loops', 'triggers', 'workers']
 ogImage: ../../assets/blog/the-four-loops-clearly-explained/banner.png
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 ![The Four Loops, Clearly Explained -- turn-based, goal-based, time-based, and proactive loops on one loop system bus, mapped to exploratory, measurable, recurring, and standing work.](../../assets/blog/the-four-loops-clearly-explained/banner.png)
 
 From how loop engineering is being talked about online, it may seem that
