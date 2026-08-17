@@ -281,6 +281,11 @@ guest, so `III_CONFIG` names a path inside the VM; a worker reads it the same wa
 Bundle support can be refused machine-wide with `III_BUNDLE_WORKERS_DISABLED=1`, which compose
 honours.
 
+A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii` and which needs
+glibc on Linux. Compose runs it as a process rather than linking it, so the engine stays portable;
+a bundle container on a machine without `iii-worker` fails saying so, and every other worker kind
+is unaffected.
+
 Bundles need a VM, and windows has none: a bundle container there fails with
 `BUNDLE_NEEDS_A_VM` before anything is downloaded. Run compose under WSL, where the VM has KVM to
 run on. Every other worker kind runs on windows as it always has.

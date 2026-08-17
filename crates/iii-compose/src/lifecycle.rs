@@ -414,14 +414,21 @@ async fn start_one(
     Ok(record)
 }
 
-/// Builds the boot command for a bundle container.
+/// Builds the boot command for a bundle container, by asking `iii-worker` for
+/// it.
 ///
-/// The environment is the same one a host container would get, with one
+/// A process boundary rather than a call: libkrun needs glibc, and the engine
+/// ships a musl build so it installs on any Linux. Linked, the two do not fit
+/// in one binary — the musl target does not compile. Split, the engine stays
+/// portable and the VM machinery stays where its platform rules already live,
+/// which is the same split the installer makes by shipping `iii-worker` as its
+/// own asset.
+///
+/// The environment sent is the one a host container would get, with one
 /// substitution: `III_CONFIG` names a host path, and the guest cannot open it.
 /// The container's config directory is published into the VM and the variable
 /// is repointed at the file inside it, so a worker reads its configuration the
 /// same way whichever side of the boundary it runs on.
-#[cfg(unix)]
 async fn vm_command(
     ctx: &LifecycleCtx<'_>,
     key: &str,
@@ -433,12 +440,7 @@ async fn vm_command(
         return Err("not a VM container".to_string());
     };
 
-    let mut env: std::collections::HashMap<String, String> = plan
-        .env
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
+    let mut env: BTreeMap<String, String> = plan.env.clone();
     let config_dir = match config {
         Some(config) => {
             let path = config.file.path();
@@ -447,45 +449,122 @@ async fn vm_command(
             };
             env.insert(
                 "III_CONFIG".to_string(),
-                format!(
-                    "{}/{}",
-                    iii_worker::cli::local_worker::GUEST_CONFIG_DIR,
-                    name.to_string_lossy()
-                ),
+                format!("{GUEST_CONFIG_DIR}/{}", name.to_string_lossy()),
             );
             Some(dir.to_path_buf())
         }
         None => None,
     };
 
-    let over = iii_worker::cli::local_worker::VmOverride {
-        state_dir: ctx.vm_dir.join(key),
-        engine_url: ctx.engine_url,
-        extra_env: env,
-        config_dir,
-    };
+    let request = serde_json::json!({
+        "worker_name": key,
+        "install_dir": install_dir,
+        "state_dir": ctx.vm_dir.join(key),
+        "engine_url": ctx.engine_url,
+        "extra_env": env,
+        "config_dir": config_dir,
+    });
 
-    iii_worker::cli::local_worker::bundle_vm_command(key, install_dir, over)
-        .await
-        .map(|built| built.command)
+    let plan = prepare_vm(&request).await?;
+    let mut command = tokio::process::Command::new(&plan.program);
+    command.args(&plan.args);
+    for (name, value) in &plan.env {
+        command.env(name, value);
+    }
+    // Not inherited: a lifeline from whoever started compose would tie the VM
+    // to the wrong process.
+    for name in &plan.env_remove {
+        command.env_remove(name);
+    }
+    command.stdin(std::process::Stdio::null());
+    Ok(command)
 }
 
-/// Unreachable: the registry refuses a bundle on this platform before it is
-/// installed, so nothing produces [`StartSpec::Vm`] here. It exists so the
-/// branch that calls it still compiles, and it repeats the refusal rather than
-/// panicking, in case a future caller finds another way in.
-#[cfg(not(unix))]
-async fn vm_command(
-    _ctx: &LifecycleCtx<'_>,
-    key: &str,
-    _start: &StartSpec,
-    _plan: &crate::spawn::SpawnPlan,
-    _config: Option<&ResolvedConfig>,
-) -> std::result::Result<tokio::process::Command, String> {
-    Err(format!(
-        "container '{key}' is a bundle worker, and bundles run in a VM, which windows has no \
-         support for. Run compose under WSL"
-    ))
+/// Where a container's config directory appears inside the guest. The same
+/// constant `iii-worker` mounts it at; it is part of the request contract.
+const GUEST_CONFIG_DIR: &str = "/run/iii/config";
+
+/// What `iii-worker __bundle-prepare` answers: a program, its arguments, and
+/// the environment to start it with.
+#[derive(serde::Deserialize)]
+struct VmPlan {
+    program: std::path::PathBuf,
+    args: Vec<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    env_remove: Vec<String>,
+}
+
+/// Runs `iii-worker __bundle-prepare` and reads the plan back.
+async fn prepare_vm(request: &serde_json::Value) -> std::result::Result<VmPlan, String> {
+    let program = worker_binary()?;
+    let mut child = tokio::process::Command::new(&program)
+        .arg("__bundle-prepare")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot run {}: {err}", program.display()))?;
+
+    let body = request.to_string();
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin
+            .write_all(body.as_bytes())
+            .await
+            .map_err(|err| format!("cannot send the request to iii-worker: {err}"))?;
+        // Dropped here: __bundle-prepare reads to end of file, so it would wait
+        // forever on a pipe compose still holds open.
+        drop(stdin);
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|err| format!("iii-worker did not answer: {err}"))?;
+
+    if !output.status.success() {
+        // Its stderr is the diagnosis — the kill switch, a tampered manifest, a
+        // rootfs that could not be prepared — and it is already written for a
+        // human, so it is passed through rather than summarised.
+        let reason = String::from_utf8_lossy(&output.stderr);
+        let reason = reason.trim();
+        return Err(if reason.is_empty() {
+            format!("iii-worker could not prepare the VM ({})", output.status)
+        } else {
+            reason.to_string()
+        });
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("iii-worker answered something unreadable: {err}"))
+}
+
+/// The `iii-worker` next to this binary, else one on `PATH`.
+///
+/// The sibling wins: the installer puts both in the same directory and keeps
+/// them at one version, while a copy earlier on `PATH` may belong to another
+/// install and boot a VM built for a different engine.
+fn worker_binary() -> std::result::Result<std::path::PathBuf, String> {
+    let name = format!("iii-worker{}", std::env::consts::EXE_SUFFIX);
+    if let Ok(current) = std::env::current_exe() {
+        let sibling = current.with_file_name(&name);
+        if sibling.is_file() {
+            return Ok(sibling);
+        }
+    }
+    std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join(&name))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            format!(
+                "{name} is not installed. Bundle containers run in a VM, and it is the binary \
+                 that boots one; install it beside iii, or run this project without bundles"
+            )
+        })
 }
 
 async fn stop_one(
