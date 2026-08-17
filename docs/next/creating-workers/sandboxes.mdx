@@ -131,9 +131,11 @@ iii trigger sandbox::stop sandbox_id=$SB
 
 ## Moving files in and out
 
-To copy a file between the host and a running sandbox, use the local `iii worker sandbox`
-file-transfer commands. These admin CLI commands are distinct from the `sandbox::*` trigger API used
-through the engine:
+To copy a file between the host and a running sandbox, use the `iii worker sandbox upload` and
+`iii worker sandbox download` admin commands. These are current CLI commands with no `sandbox::*`
+trigger equivalent: they stream raw bytes through an iii data channel, so transfers have no
+JSON-envelope size cap. Every other sandbox operation on this page goes through `iii trigger
+sandbox::*`; file transfer alone keeps the CLI form:
 
 ```bash
 # boot a sandbox and capture its id
