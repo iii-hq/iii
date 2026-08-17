@@ -258,6 +258,10 @@ pub enum Commands {
     #[command(name = "__vm-boot", hide = true)]
     VmBoot(super::vm_boot::VmBootArgs),
 
+    /// Internal: build a bundle worker's VM and print how to start it
+    #[command(name = "__bundle-prepare", hide = true)]
+    BundlePrepare,
+
     /// Internal: host-side source watcher sidecar for local-path workers
     #[command(name = "__watch-source", hide = true)]
     WatchSource(WatchSourceArgs),

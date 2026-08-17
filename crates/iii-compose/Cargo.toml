@@ -44,14 +44,6 @@ hex = "0.4"
 # Teardown signals whole process groups, which std cannot express.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal", "process"] }
-# Bundle containers boot in a libkrun VM, on iii-worker's rails: the operator
-# kill switch, the manifest re-validation and the resource clamp are the ones
-# `iii add` applies rather than a second copy that can drift.
-#
-# Unix only, and not as a convenience: libkrun's VMM does not build for windows
-# at all, so an unconditional dependency would stop `iii` itself from compiling
-# there. What windows gets instead is a refusal that says so.
-iii-worker = { path = "../iii-worker" }
 
 # Job Objects are the windows equivalent; console control events deliver the
 # graceful stop that unix gets from SIGTERM.

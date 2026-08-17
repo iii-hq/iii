@@ -633,6 +633,9 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::WorkerManagerDaemon(args) => {
             iii_worker::cli::worker_manager_daemon::run(args).await
         }
+        Commands::BundlePrepare => {
+            std::process::exit(iii_worker::cli::bundle_prepare::run().await);
+        }
         Commands::VmBoot(args) => {
             // Run the VM on a dedicated OS thread: `msb_krun`'s virtio-blk
             // Drop impls call `tokio::Runtime::block_on` for async shutdown,
