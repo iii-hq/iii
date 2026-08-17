@@ -126,7 +126,7 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine b
 3. Bumps all manifests in lockstep (Cargo.toml, package.json, pyproject.toml, **Go `sdkVersion` const**) into an **ephemeral commit**
 4. Pushes **only** the `iii-alpha/v{version}` tag — never a branch, never `main`
 5. Publishes, all checking out that tag:
-   - **SDK packages** — an inline `sdk-node` job (single `pnpm -r publish` over the three node packages) plus `_py.yml`, `_rust-cargo.yml`, `_go.yml`
+   - **SDK packages** — an inline `sdk-node` job (single `pnpm -r publish` over the three node packages), `_py.yml` build jobs followed by top-level OIDC publish jobs, plus `_rust-cargo.yml` and `_go.yml`
    - **Engine binaries** — `iii` and `iii-worker` via `_rust-binary.yml`, and `iii-init` via an inline `init-build` job; all attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
    - **Builtin workers + skills** — `_publish-engine-workers.yml` / `_publish-worker-skills.yml` published to the workers registry under a dedicated **`alpha`** tag (never `next`/`latest`)
 
@@ -162,7 +162,7 @@ setup (parse tag metadata, Slack notification)
   │     │           └─► homebrew-console ► _homebrew.yml (stable only)
   │     │
   │     ├─► sdk-npm ─────────────► _npm.yml
-  │     ├─► sdk-py ──────────────► _py.yml
+  │     ├─► sdk-py-build ───────► _py.yml ──► sdk-py (OIDC publish)
   │     ├─► sdk-rust ────────────► _rust-cargo.yml
   │     └─► sdk-go ──────────────► _go.yml (pushes subdir-scoped module tag)
   │
@@ -225,7 +225,7 @@ The workflow posts a sticky PR comment and publishes the `license-agreement` com
 
 ## Reusable Workflows
 
-All reusable workflows support `dry_run` mode and Slack thread notifications.
+Publish workflows support `dry_run` mode and Slack thread notifications. `_py.yml` is build-only so PyPI Trusted Publishing can run from the top-level workflow, as required by PyPI.
 
 ### `_npm.yml` — NPM Publish
 
@@ -240,11 +240,11 @@ Publishes a Node.js package to the npm registry.
 
 Uses `pnpm publish` with `--no-git-checks` and `--access public`.
 
-### `_py.yml` — PyPI Publish
+### `_py.yml` — PyPI Build
 
-Publishes a Python package to PyPI.
+Builds and validates a Python package, then uploads its distributions as a short-lived workflow artifact.
 
-Builds with `python -m build`, validates with `twine check` on dry run, publishes via `pypa/gh-action-pypi-publish`.
+The top-level `release-iii.yml` and `alpha-release.yml` workflows download that artifact and publish it with `pypa/gh-action-pypi-publish` using OIDC Trusted Publishing. Keeping the publish action in the top-level workflows is required because PyPI does not support Trusted Publishing from reusable workflows.
 
 ### `_rust-cargo.yml` — Cargo Publish
 
@@ -317,12 +317,20 @@ Publishes skill markdown for all workers with an `iii.worker.yaml` manifest and 
 |--------|---------|
 | `III_CI_APP_ID` / `III_CI_APP_PRIVATE_KEY` | GitHub App token for pushing tags, creating releases, updating homebrew-tap |
 | `NPM_TOKEN` | npm registry authentication |
-| `PYPI_API_TOKEN` | PyPI publishing |
 | `CARGO_REGISTRY_TOKEN` | crates.io publishing |
 | `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD` | DockerHub publishing |
 | `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Slack release notifications |
 | `SLACK_WEBHOOK_URL` | Slack Docker notifications |
 | `WORKERS_REGISTRY_API_KEY` | Workers registry publish (`_publish-engine-workers`, `_publish-worker-skills`) |
+
+## PyPI Trusted Publishers
+
+Each PyPI project (`iii-helpers`, `iii-observability`, and `iii-sdk`) must trust both top-level publishing workflows with owner `iii-hq`, repository `iii`, and no environment restriction:
+
+- `release-iii.yml`
+- `alpha-release.yml`
+
+The publish jobs request `id-token: write` directly and do not use the `PYPI_API_TOKEN` repository secret.
 
 ---
 
