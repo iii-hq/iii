@@ -11,7 +11,7 @@ iii worker add iii-sandbox
 ```
 
 <Note>
-  This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
+  For the full reference, see the
   [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
 </Note>
 
