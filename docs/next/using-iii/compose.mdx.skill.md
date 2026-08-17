@@ -126,8 +126,8 @@ which is how an upgrade or a rollback is asked for.
 
 The file is edited, not rewritten: comments, blank lines and quoting survive,
 the entry is appended, and the result is parsed before it is written, so a bad
-edit never reaches disk. This first version writes `worker` and `version` only —
-no `scripts`, no `depends_on` — so a `path://` worker needs `scripts.start` in
+edit never reaches disk. This first version writes `worker` and `version` only
+(no `scripts`, no `depends_on`), so a `path://` worker needs `scripts.start` in
 its own `iii.worker.yaml` to start.
 
 ```bash
@@ -262,12 +262,12 @@ validation.
 The registry answers with a kind, and it decides how the container runs. A kind compose cannot run
 fails with `UNSUPPORTED_PACKAGE_KIND`.
 
-| Kind     | How it runs                                                                     |
-| -------- | ------------------------------------------------------------------------------- |
-| `binary` | A child process on the host.                                                    |
-| `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
-| `engine` | Not installable: it is compiled into the engine and always present.             |
-| `image`  | Not supported: it needs the OCI runtime.                                        |
+| Kind     | How it runs                                                                           |
+| -------- | ------------------------------------------------------------------------------------- |
+| `binary` | A child process on the host.                                                          |
+| `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest.       |
+| `engine` | Not installable: the registry publishes no artefact, so compose has nothing to start. |
+| `image`  | Not supported: it needs the OCI runtime.                                              |
 
 A bundle is published code that compose did not build, so it is started behind the same boundary
 `iii add` puts it behind, rather than as a host process. Its configuration is published into the
