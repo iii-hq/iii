@@ -17,6 +17,10 @@ pub struct TriggerConfig {
     pub config: Value,
     /// Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     pub metadata: Option<Value>,
+    /// Namespace the trigger's target `function_id` resolves in. A provider that
+    /// stores this config and later calls `trigger()` must pass this namespace,
+    /// or it will fire in `default`. `None` means the engine's default namespace.
+    pub namespace: Option<String>,
 }
 
 /// Handler trait for custom trigger types. Implement this and pass to

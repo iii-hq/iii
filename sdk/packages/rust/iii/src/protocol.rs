@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// [`Message::RegistrationRejected`] code: another live worker already holds
+/// this `(namespace, worker_name)`. The engine closes the connection; the SDK
+/// must stop and not reconnect. Mirrors the engine constant of the same name.
+pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
+
+/// [`Message::RegistrationRejected`] code: another live worker in this
+/// namespace already exports this function id. Only that one registration is
+/// refused; the connection stays open and the worker keeps serving its other
+/// functions. Mirrors the engine constant of the same name.
+pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
+
 /// Routing action for [`TriggerRequest`]. Determines how the engine handles
 /// the invocation.
 ///
@@ -68,15 +79,46 @@ impl TriggerRequest {
         TriggerRequestWithMetadata {
             request: self,
             metadata: Some(metadata),
+            namespace: None,
+        }
+    }
+
+    /// Target a specific namespace for this invocation without adding a
+    /// required field to [`TriggerRequest`] struct literals. Serializes into
+    /// [`Message::InvokeFunction`]'s `namespace`.
+    ///
+    /// Leaving it unset does not mean the engine's default: the call inherits
+    /// this worker's namespace. Say `default` to reach the engine's from a
+    /// namespaced worker.
+    pub fn namespace(self, namespace: impl Into<String>) -> TriggerRequestWithMetadata {
+        TriggerRequestWithMetadata {
+            request: self,
+            metadata: None,
+            namespace: Some(namespace.into()),
         }
     }
 }
 
-/// Trigger request plus optional per-invocation metadata.
+/// Trigger request plus optional per-invocation metadata and target namespace.
 #[derive(Debug, Clone)]
 pub struct TriggerRequestWithMetadata {
     pub(crate) request: TriggerRequest,
     pub(crate) metadata: Option<Value>,
+    pub(crate) namespace: Option<String>,
+}
+
+impl TriggerRequestWithMetadata {
+    /// Attach per-invocation metadata.
+    pub fn metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Target a specific namespace for this invocation.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
 }
 
 impl<T> From<T> for TriggerRequestWithMetadata
@@ -87,6 +129,7 @@ where
         Self {
             request: request.into(),
             metadata: None,
+            namespace: None,
         }
     }
 }
@@ -101,6 +144,9 @@ pub enum Message {
         trigger_request_format: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         call_request_format: Option<Value>,
+        /// Namespace this provider serves. Absent means the connection's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     RegisterTrigger {
         id: String,
@@ -109,6 +155,19 @@ pub enum Message {
         config: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Namespace the trigger's target function resolves in.
+        ///
+        /// The engine reads an absent field as its default namespace. The SDK
+        /// does not leave it absent: `register_trigger` fills it from this
+        /// worker's namespace, because the function a trigger names is one this
+        /// worker registered, and that landed in the worker's namespace. Name
+        /// another namespace, `default` included, to bind elsewhere.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
+        /// Namespace to find the provider in. Absent asks the engine to resolve
+        /// it: this connection's namespace first, then the engine's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger_namespace: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,
@@ -155,6 +214,14 @@ pub enum Message {
         /// for wire compatibility with engines that don't send it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Target namespace for routing. Optional and additive, so older peers
+        /// that don't send it stay wire-compatible, and the engine reads an
+        /// absent field as its default namespace.
+        ///
+        /// A call made through this SDK does not arrive absent: `trigger` fills
+        /// it from this worker's namespace unless the request names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     InvocationResult {
         invocation_id: Uuid,
@@ -188,6 +255,20 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reattach_token: Option<String>,
     },
+    /// Pushed by the engine when a registration collides with a live worker in
+    /// the same namespace. The `code` distinguishes the two cases:
+    /// [`WORKER_NAMESPACE_CONFLICT`] is fatal (the engine closes the connection;
+    /// the SDK stops and does not reconnect), while [`FUNCTION_NAMESPACE_CONFLICT`]
+    /// refuses a single function id and keeps the connection open.
+    RegistrationRejected {
+        code: String,
+        namespace: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        function_id: Option<String>,
+        owner_worker_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +281,11 @@ pub struct RegisterTriggerTypeMessage {
     pub trigger_request_format: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_request_format: Option<Value>,
+    /// Namespace this provider serves. `None` lets the engine use the
+    /// connection's own, which is what a worker providing a trigger type for
+    /// its own project wants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl RegisterTriggerTypeMessage {
@@ -209,12 +295,24 @@ impl RegisterTriggerTypeMessage {
             description: self.description.clone(),
             trigger_request_format: self.trigger_request_format.clone(),
             call_request_format: self.call_request_format.clone(),
+            namespace: self.namespace.clone(),
         }
     }
 }
 
 /// Input for [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
 /// The `id` is auto-generated internally.
+///
+/// Build it with [`RegisterTriggerInput::new`], or with
+/// [`IIITrigger`](crate::builtin_triggers::IIITrigger) for a type the engine
+/// provides. A struct literal has to name every field, so each field added here
+/// breaks it -- `namespace` did that once and `trigger_namespace` did it again,
+/// which is why the constructors exist.
+///
+/// The two are different questions. `namespace` is where the target function
+/// resolves; `trigger_namespace` is where the trigger type's provider is found,
+/// and `None` there asks the engine to take this worker's namespace first and
+/// the engine's own second.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterTriggerInput {
     /// Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
@@ -226,6 +324,78 @@ pub struct RegisterTriggerInput {
     /// Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the trigger's target function resolves in. `None` means the
+    /// engine's default namespace, independent of this connection's namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Namespace to find the trigger type's provider in. `None` asks the
+    /// engine to resolve it: this worker's namespace first, the engine's own
+    /// second. Naming one is strict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_namespace: Option<String>,
+}
+
+impl RegisterTriggerInput {
+    /// A trigger of `trigger_type`, bound to `function_id`, configured by
+    /// `config`.
+    ///
+    /// Use this for a trigger type nothing built in provides -- one this worker
+    /// or a neighbour registered. For the engine's own types, prefer
+    /// [`IIITrigger`](crate::builtin_triggers::IIITrigger), which knows the id
+    /// and the config shape:
+    ///
+    /// ```no_run
+    /// # use iii_sdk::protocol::RegisterTriggerInput;
+    /// # use serde_json::json;
+    /// RegisterTriggerInput::new("kick", "orders::sync", json!({ "every": "1m" }))
+    ///     .in_namespace("billing")
+    ///     .in_trigger_namespace("shop-a");
+    /// ```
+    ///
+    /// Everything else defaults to "not named", which is what the great
+    /// majority of registrations want. Reaching for a struct literal instead
+    /// means every field added here becomes a breaking change for the caller,
+    /// which is what this exists to stop.
+    pub fn new(
+        trigger_type: impl Into<String>,
+        function_id: impl Into<String>,
+        config: Value,
+    ) -> Self {
+        Self {
+            trigger_type: trigger_type.into(),
+            function_id: function_id.into(),
+            config,
+            metadata: None,
+            namespace: None,
+            trigger_namespace: None,
+        }
+    }
+
+    /// Resolve this trigger's target function in `namespace` instead of this
+    /// worker's.
+    pub fn in_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// Find the trigger type's provider in `namespace`, and only there.
+    ///
+    /// A different question from [`in_namespace`](Self::in_namespace): that one
+    /// locates the target function, this one locates the provider that fires
+    /// it. Left unset, the engine resolves it -- this worker's namespace first,
+    /// then its own -- which is what carries a worker that has not been
+    /// migrated onto the engine's providers without saying anything.
+    pub fn in_trigger_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.trigger_namespace = Some(namespace.into());
+        self
+    }
+
+    /// Deliver `metadata` to the handler alongside every payload this trigger
+    /// fires.
+    pub fn with_metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +406,10 @@ pub struct RegisterTriggerMessage {
     pub config: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_namespace: Option<String>,
 }
 
 impl RegisterTriggerMessage {
@@ -246,6 +420,8 @@ impl RegisterTriggerMessage {
             function_id: self.function_id.clone(),
             config: self.config.clone(),
             metadata: self.metadata.clone(),
+            namespace: self.namespace.clone(),
+            trigger_namespace: self.trigger_namespace.clone(),
         }
     }
 }

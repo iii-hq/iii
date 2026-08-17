@@ -87,6 +87,7 @@ process can be deployed anywhere reachable on the network.
     const worker = registerWorker(url, {
       workerName: "my-worker",
       workerDescription: "One-line summary of what this worker does",
+      namespace: "orders", // scopes this worker's registrations
     });
     ```
 
@@ -101,6 +102,7 @@ process can be deployed anywhere reachable on the network.
         InitOptions(
             worker_name="my-worker",
             worker_description="One-line summary of what this worker does",
+            namespace="orders",  # scopes this worker's registrations
         ),
     )
     ```
@@ -120,6 +122,7 @@ process can be deployed anywhere reachable on the network.
                 description: Some("One-line summary of what this worker does".into()),
                 ..Default::default()
             }),
+            namespace: Some("orders".into()), // scopes this worker's registrations
             ..Default::default()
         },
     );
@@ -127,6 +130,47 @@ process can be deployed anywhere reachable on the network.
 
   </Tab>
 </Tabs>
+
+`namespace` scopes everything this worker registers, so an identically-named worker or function id
+can coexist in another namespace.
+
+Leave the option out and the SDK reads the `III_NAMESPACE` environment variable itself, so these two
+are equivalent when `III_NAMESPACE` is set in the worker's environment:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    registerWorker(url, { namespace: process.env.III_NAMESPACE });
+    registerWorker(url);
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    register_worker(url, InitOptions(namespace=os.environ.get("III_NAMESPACE")))
+    register_worker(url)
+    ```
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    register_worker(&url, InitOptions {
+        namespace: std::env::var("III_NAMESPACE").ok(),
+        ..Default::default()
+    });
+    register_worker(&url, InitOptions::default());
+    ```
+  </Tab>
+</Tabs>
+
+The SDK falls back to the `default` namespace when neither the option nor `III_NAMESPACE` gives it
+one. The browser SDK has no environment to read, so it takes the option only.
+
+Omit the option to serve many tenants from one worker package: set `III_NAMESPACE` per deployment,
+and each deployment of the same image registers in its own namespace.
+
+<Note>
+  For calling across namespaces and handling a rejected registration, see [Use
+  namespaces](../using-iii/namespaces).
+</Note>
 
 ## Worker lifecycle
 

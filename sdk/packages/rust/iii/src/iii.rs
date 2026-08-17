@@ -37,9 +37,10 @@ use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::Error,
     protocol::{
-        ErrorBody, Message, RegisterFunctionMessage, RegisterTriggerInput, RegisterTriggerMessage,
-        RegisterTriggerTypeMessage, TriggerAction, TriggerRequest, TriggerRequestWithMetadata,
-        UnregisterTriggerMessage, UnregisterTriggerTypeMessage,
+        ErrorBody, FUNCTION_NAMESPACE_CONFLICT, Message, RegisterFunctionMessage,
+        RegisterTriggerInput, RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction,
+        TriggerRequest, TriggerRequestWithMetadata, UnregisterTriggerMessage,
+        UnregisterTriggerTypeMessage, WORKER_NAMESPACE_CONFLICT,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
     types::{
@@ -68,6 +69,8 @@ pub struct WorkerInfo {
     pub active_invocations: usize,
     #[serde(default)]
     pub isolation: Option<String>,
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 /// Function information returned by `engine::functions::list`
@@ -78,6 +81,8 @@ pub struct FunctionInfo {
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 /// Trigger information returned by `engine::triggers::list`
@@ -88,6 +93,8 @@ pub struct TriggerInfo {
     pub function_id: String,
     pub config: Value,
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 /// Builder for registering a custom trigger type with optional format schemas.
@@ -177,18 +184,28 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
     }
 
     /// Register a trigger with compile-time validated trigger config and optional metadata.
+    ///
+    /// This typed helper pairs a function with its trigger, so it defaults the
+    /// trigger's namespace to this worker's — otherwise the function lands in the
+    /// worker's namespace and the trigger in `default`, never resolving it. The
+    /// low-level [`IIIClient::register_trigger`] keeps the engine default.
     pub fn register_trigger_with_metadata(
         &self,
         function_id: impl Into<String>,
         config: C,
         metadata: Option<Value>,
     ) -> Result<Trigger, Error> {
-        self.iii.register_trigger(RegisterTriggerInput {
-            trigger_type: self.trigger_type_id.clone(),
-            function_id: function_id.into(),
-            config: serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
-            metadata,
-        })
+        let mut input = RegisterTriggerInput::new(
+            self.trigger_type_id.clone(),
+            function_id,
+            serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
+        );
+        // This typed helper pairs a function with its trigger, so it names the
+        // worker's namespace for the target; the low-level path resolves the
+        // same thing, and saying it here keeps the two from drifting.
+        input.metadata = metadata;
+        input.namespace = self.iii.namespace();
+        self.iii.register_trigger(input)
     }
 }
 
@@ -253,6 +270,12 @@ pub struct WorkerMetadata {
     pub telemetry: Option<TelemetryOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
+    /// Namespace this worker belongs to, and therefore the one its calls and
+    /// its trigger bindings resolve in unless they name another. Absent means
+    /// the engine applies its default namespace. Resolved from
+    /// `InitOptions.namespace` / `III_NAMESPACE` (see [`resolve_namespace`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl Default for WorkerMetadata {
@@ -298,8 +321,97 @@ impl Default for WorkerMetadata {
             isolation: std::env::var("III_ISOLATION")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            // III_NAMESPACE carries the namespace for managed workers, the same
+            // way III_WORKER_NAME carries the name. Absent leaves routing to the
+            // engine's default namespace. `InitOptions.namespace` overrides this
+            // (see `resolve_namespace`).
+            namespace: std::env::var("III_NAMESPACE")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
+}
+
+/// Resolve the effective worker namespace: an explicit `InitOptions.namespace`
+/// wins, then the `III_NAMESPACE` env var, then `None` (the engine applies its
+/// default namespace). Mirrors the `III_WORKER_NAME` precedence.
+/// `namespace` option > `III_NAMESPACE` > `None` (the engine then applies its
+/// `default` namespace).
+///
+/// A declared-but-blank namespace is refused rather than read as "no
+/// namespace". The two mean opposite things: absent asks for the engine's
+/// default, blank names a namespace and gives nothing to name it with. Read as
+/// absent, the worker registers in `default`, and every call and trigger it
+/// makes now follows it there — a whole project quietly serving from the wrong
+/// namespace, and the one thing an operator cannot see by reading the
+/// declaration.
+///
+/// # Panics
+///
+/// When either source is present and holds only whitespace. This runs before
+/// any connection, so it fails the worker at startup the way `iii compose`
+/// refuses `--ns ""`, rather than producing a client that serves in a place
+/// nobody asked for.
+/// Refuses a namespace that was named and left blank, whatever named it.
+///
+/// Absent and blank ask for opposite things. Absent asks for the engine's
+/// `default`; blank names a namespace and gives nothing to name it with. Read
+/// as absent, the worker registers in `default`, and since a worker's calls and
+/// triggers follow its namespace, the whole project quietly serves from a place
+/// its declaration never named.
+///
+/// Panics rather than returning an error: this is a mistake in the program
+/// text, made once at construction, and there is nothing a caller could do with
+/// a `Result` here except unwrap it.
+pub(crate) fn reject_blank_namespace(declared: &str, source: &str) {
+    if declared.trim().is_empty() {
+        panic!(
+            "namespace is empty: `{source}` was set to {declared:?}. \
+             Give it a name, or leave it unset to register in `default`."
+        );
+    }
+}
+
+/// The namespace one call or one binding resolves in.
+///
+/// `None` inherits the worker's. `Some("")` is refused: a namespace named and
+/// left blank asks for the opposite of what absent asks for, and the two are
+/// only ever confused by accident -- `??`, `or_else` and `or` each disagree
+/// about the empty string, which is how the SDKs ended up forwarding it,
+/// coercing it and dropping it respectively.
+///
+/// An `Err` rather than a panic: unlike a namespace declared once in
+/// `InitOptions`, a per-call one can come from data, and a caller can do
+/// something with the error.
+pub(crate) fn call_namespace(
+    explicit: Option<String>,
+    worker: Option<String>,
+    source: &str,
+) -> Result<Option<String>, Error> {
+    match explicit {
+        Some(declared) if declared.trim().is_empty() => Err(Error::Handler(format!(
+            "namespace is empty: `{source}` was set to {declared:?}. Give it a name, or leave \
+             it unset to stay in this worker's namespace."
+        ))),
+        Some(declared) => Ok(Some(declared)),
+        None => Ok(worker),
+    }
+}
+
+pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
+    if let Some(declared) = explicit {
+        reject_blank_namespace(&declared, "InitOptions.namespace");
+        return Some(declared);
+    }
+
+    // III_NAMESPACE is left alone when blank. `FOO=` is how a shell says "not
+    // set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly that -- so
+    // reading it as absent is what the caller meant, and absent is a namespace
+    // a worker may legitimately have none of. Only the option is a mistake:
+    // nobody writes a namespace parameter and passes nothing on purpose.
+    std::env::var("III_NAMESPACE")
+        .ok()
+        .filter(|managed| !managed.trim().is_empty())
 }
 
 /// Returns a project identifier for telemetry, derived from the current
@@ -776,6 +888,8 @@ struct IIIInner {
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
+    /// Set when the engine rejects registration (fatal, no reconnect).
+    fatal_error: Mutex<Option<Error>>,
     connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     headers: Mutex<Option<HashMap<String, String>>>,
     otel_config: Mutex<Option<OtelConfig>>,
@@ -819,6 +933,7 @@ impl IIIClient {
             triggers: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
+            fatal_error: Mutex::new(None),
             connection_thread: Mutex::new(None),
             headers: Mutex::new(None),
             otel_config: Mutex::new(None),
@@ -839,6 +954,41 @@ impl IIIClient {
     /// Set custom worker metadata (call before connect)
     pub fn set_metadata(&self, metadata: WorkerMetadata) {
         *self.inner.worker_metadata.lock_or_recover() = Some(metadata);
+    }
+
+    /// Override the worker's target namespace (call before connect). Applied by
+    /// [`register_worker`](crate::register_worker) after resolving
+    /// `InitOptions.namespace` and `III_NAMESPACE`.
+    ///
+    /// # Panics
+    ///
+    /// If `namespace` is empty or only whitespace. `register_worker` resolves
+    /// its own namespace before calling this, so the check is here for the
+    /// callers that reach it directly: a blank one is the same mistake
+    /// wherever it is made, and this entry point skipped it.
+    pub fn set_namespace(&self, namespace: impl Into<String>) {
+        let namespace = namespace.into();
+        reject_blank_namespace(&namespace, "IIIClient::set_namespace");
+        if let Some(md) = self.inner.worker_metadata.lock_or_recover().as_mut() {
+            md.namespace = Some(namespace);
+        }
+    }
+
+    /// The effective worker namespace (resolved from `InitOptions.namespace` /
+    /// `III_NAMESPACE`), or `None` for the engine's `default`.
+    pub fn namespace(&self) -> Option<String> {
+        self.inner
+            .worker_metadata
+            .lock_or_recover()
+            .as_ref()
+            .and_then(|md| md.namespace.clone())
+    }
+
+    /// Fatal error that stopped the worker, if any. Set when the engine rejects
+    /// registration (see [`Error::RegistrationRejected`]); the worker does not
+    /// reconnect once this is populated.
+    pub fn fatal_error(&self) -> Option<Error> {
+        self.inner.fatal_error.lock_or_recover().clone()
     }
 
     /// Set custom HTTP headers for the WebSocket handshake (call before connect).
@@ -1117,6 +1267,10 @@ impl IIIClient {
             description: trigger_type.description,
             trigger_request_format: trigger_type.trigger_request_format,
             call_request_format: trigger_type.call_request_format,
+            // Left to the engine, which files it under this connection's
+            // namespace. A worker providing a trigger type provides it for the
+            // project it belongs to.
+            namespace: None,
         };
 
         let trigger_type_id = message.id.clone();
@@ -1165,12 +1319,11 @@ impl IIIClient {
     /// # use iii_sdk::protocol::RegisterTriggerInput;
     /// # use serde_json::json;
     /// # let worker = IIIClient::new("ws://localhost:49134");
-    /// let trigger = worker.register_trigger(RegisterTriggerInput {
-    ///     trigger_type: "http".to_string(),
-    ///     function_id: "greet".to_string(),
-    ///     config: json!({ "api_path": "/greet", "http_method": "GET" }),
-    ///     metadata: None,
-    /// })?;
+    /// let trigger = worker.register_trigger(RegisterTriggerInput::new(
+    ///     "http",
+    ///     "greet",
+    ///     json!({ "api_path": "/greet", "http_method": "GET" }),
+    /// ))?;
     /// // Later...
     /// trigger.unregister();
     /// # Ok::<(), iii_sdk::Error>(())
@@ -1183,6 +1336,25 @@ impl IIIClient {
             function_id: input.function_id,
             config: input.config,
             metadata: input.metadata,
+            // Unset means this worker's namespace, not the engine's default.
+            // A trigger names a function, and the function a worker registers
+            // lands in the worker's namespace, so defaulting anywhere else
+            // registers a trigger that fires and resolves nothing. Naming
+            // another namespace, `default` included, stays a matter of saying
+            // so.
+            namespace: call_namespace(
+                input.namespace,
+                self.namespace(),
+                "RegisterTriggerInput.namespace",
+            )?,
+            // Passed through untouched, including when it is `None`. `None` is
+            // the engine's two-step resolution — this worker's namespace, then
+            // the engine's own — which is what lets a project ship its own
+            // provider for a type id the engine also provides while every
+            // unmigrated worker keeps reaching the engine's without saying so.
+            // The SDK cannot decide this locally: a sibling worker in the same
+            // project may be the one providing the type.
+            trigger_namespace: input.trigger_namespace,
         };
 
         self.inner
@@ -1266,6 +1438,15 @@ impl IIIClient {
         let request = request.into();
         let req = request.request;
         let metadata = request.metadata;
+        // Same rule as `register_trigger`: a call with no namespace stays in
+        // the caller's. Reaching a worker that lives elsewhere -- an engine
+        // builtin in `default`, a neighbour in another project -- is done by
+        // naming that namespace.
+        let namespace = call_namespace(
+            request.namespace,
+            self.namespace(),
+            "TriggerRequest.namespace",
+        )?;
         let (tp, bg) = inject_trace_headers();
 
         // Void is fire-and-forget, no invocation_id, no response
@@ -1278,6 +1459,7 @@ impl IIIClient {
                 baggage: bg,
                 action: req.action,
                 metadata,
+                namespace,
             })?;
             return Ok(Value::Null);
         }
@@ -1300,6 +1482,7 @@ impl IIIClient {
             baggage: bg,
             action: req.action,
             metadata,
+            namespace,
         })?;
 
         match tokio::time::timeout(timeout, rx).await {
@@ -1356,6 +1539,7 @@ impl IIIClient {
                     baggage: None,
                     action: Some(TriggerAction::Void),
                     metadata: None,
+                    namespace: None,
                 });
             }
         }
@@ -1733,6 +1917,7 @@ impl IIIClient {
                 baggage,
                 action: _,
                 metadata,
+                namespace: _,
             } => {
                 self.handle_invoke_function(
                     invocation_id,
@@ -1749,8 +1934,23 @@ impl IIIClient {
                 function_id,
                 config,
                 metadata,
+                // Surfaced to the handler via `TriggerConfig.namespace`: a custom
+                // provider that stores the config and later calls `trigger()`
+                // needs it to fire the target in the right namespace.
+                namespace,
+                // Which of this provider's namespaces the bind belongs to. Only
+                // meaningful to a provider serving more than one, and the
+                // engine has already routed the message here by it.
+                trigger_namespace: _,
             } => {
-                self.handle_register_trigger(id, trigger_type, function_id, config, metadata);
+                self.handle_register_trigger(
+                    id,
+                    trigger_type,
+                    function_id,
+                    config,
+                    metadata,
+                    namespace,
+                );
             }
             Message::UnregisterTrigger { id, trigger_type } => {
                 self.handle_unregister_trigger(id, trigger_type);
@@ -1765,6 +1965,21 @@ impl IIIClient {
                 tracing::debug!(worker_id = %worker_id, "Worker registered");
                 *self.inner.worker_id.lock_or_recover() = Some(worker_id);
                 *self.inner.reattach_token.lock_or_recover() = reattach_token;
+            }
+            Message::RegistrationRejected {
+                code,
+                namespace,
+                worker_name,
+                function_id,
+                owner_worker_id,
+            } => {
+                self.handle_registration_rejected(
+                    code,
+                    namespace,
+                    worker_name,
+                    function_id,
+                    owner_worker_id,
+                );
             }
             Message::TriggerRegistrationResult {
                 id,
@@ -1785,6 +2000,96 @@ impl IIIClient {
         }
 
         Ok(())
+    }
+
+    /// Dispatch a `RegistrationRejected` message by its `code`.
+    ///
+    /// The two rejection codes carry different semantics. A worker-name
+    /// conflict is fatal — the engine has closed the connection and the SDK
+    /// must not reconnect into the same collision. A function-id conflict costs
+    /// the worker only that one function: the connection stays open and every
+    /// other export keeps serving, so it must not be treated as fatal. Any
+    /// unrecognised code is treated as fatal, the safe default.
+    fn handle_registration_rejected(
+        &self,
+        code: String,
+        namespace: String,
+        worker_name: Option<String>,
+        function_id: Option<String>,
+        owner_worker_id: String,
+    ) {
+        match code.as_str() {
+            FUNCTION_NAMESPACE_CONFLICT => {
+                tracing::warn!(
+                    code = %code,
+                    namespace = %namespace,
+                    function_id = %function_id.as_deref().unwrap_or("<unknown>"),
+                    owner_worker_id = %owner_worker_id,
+                    "function registration rejected: another worker in this namespace already \
+                     owns this function id; the worker keeps serving its other functions"
+                );
+            }
+            WORKER_NAMESPACE_CONFLICT => {
+                self.fail_registration_fatal(
+                    code,
+                    namespace,
+                    worker_name,
+                    function_id,
+                    owner_worker_id,
+                );
+            }
+            _ => {
+                tracing::error!(
+                    code = %code,
+                    "registration rejected with an unknown code; treating as fatal"
+                );
+                self.fail_registration_fatal(
+                    code,
+                    namespace,
+                    worker_name,
+                    function_id,
+                    owner_worker_id,
+                );
+            }
+        }
+    }
+
+    /// Record a fatal registration rejection: surface the error, mark the
+    /// connection failed, and clear the running flag so the connection loop
+    /// exits instead of reconnecting into the same collision.
+    fn fail_registration_fatal(
+        &self,
+        code: String,
+        namespace: String,
+        worker_name: Option<String>,
+        function_id: Option<String>,
+        owner_worker_id: String,
+    ) {
+        let err = Error::RegistrationRejected {
+            code,
+            namespace,
+            worker_name,
+            function_id,
+            owner_worker_id,
+        };
+        tracing::error!(error = %err, "worker registration rejected; not reconnecting");
+        // Fail every in-flight invocation now with the fatal error, so a
+        // `trigger()` awaiting a response returns `RegistrationRejected`
+        // immediately instead of sitting on its oneshot until the invocation
+        // timeout elapses. Mirrors Go's `handleRegistrationRejected`.
+        let drained: Vec<PendingInvocation> = self
+            .inner
+            .pending
+            .lock_or_recover()
+            .drain()
+            .map(|(_, sender)| sender)
+            .collect();
+        for sender in drained {
+            let _ = sender.send(Err(err.clone()));
+        }
+        *self.inner.fatal_error.lock_or_recover() = Some(err);
+        self.set_connection_state(IIIConnectionState::Failed);
+        self.inner.running.store(false, Ordering::SeqCst);
     }
 
     fn handle_invocation_result(
@@ -2059,6 +2364,7 @@ impl IIIClient {
         function_id: String,
         config: Value,
         metadata: Option<Value>,
+        namespace: Option<String>,
     ) {
         let handler = self
             .inner
@@ -2076,6 +2382,7 @@ impl IIIClient {
                     function_id: function_id.clone(),
                     config,
                     metadata,
+                    namespace,
                 };
 
                 match handler.register_trigger(config).await {
@@ -2131,6 +2438,8 @@ impl IIIClient {
                 function_id: String::new(),
                 config: Value::Null,
                 metadata: None,
+                // Unregister carries only the trigger id; no namespace to surface.
+                namespace: None,
             };
 
             if let Err(err) = handler.unregister_trigger(config).await {
@@ -2355,12 +2664,11 @@ mod tests {
     async fn register_trigger_unregister_removes_entry() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let trigger = iii
-            .register_trigger(RegisterTriggerInput {
-                trigger_type: "demo".to_string(),
-                function_id: "functions.echo".to_string(),
-                config: json!({ "foo": "bar" }),
-                metadata: None,
-            })
+            .register_trigger(RegisterTriggerInput::new(
+                "demo",
+                "functions.echo",
+                json!({ "foo": "bar" }),
+            ))
             .unwrap();
 
         assert_eq!(iii.inner.triggers.lock().unwrap().len(), 1);
@@ -2696,6 +3004,32 @@ mod tests {
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn fatal_registration_rejection_fails_pending_invocations() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        let id = uuid::Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+        iii.inner.pending.lock().unwrap().insert(id, tx);
+
+        iii.fail_registration_fatal(
+            "WORKER_NAMESPACE_CONFLICT".to_string(),
+            "orders".to_string(),
+            Some("state".to_string()),
+            None,
+            "owner-1".to_string(),
+        );
+
+        // The in-flight invocation is failed fast with the typed error instead
+        // of sitting on its receiver until the invocation timeout.
+        match rx.await {
+            Ok(Err(Error::RegistrationRejected { code, .. })) => {
+                assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
+            }
+            other => panic!("expected RegistrationRejected, got {other:?}"),
+        }
+        assert!(iii.inner.pending.lock().unwrap().is_empty());
+    }
+
     // Single test covers both branches so the env var mutation is serialized
     // within one function (env vars are process-global and cargo runs tests in parallel).
     #[test]
@@ -2837,6 +3171,8 @@ mod tests {
             function_id: "fn".to_string(),
             config: json!({}),
             metadata: None,
+            namespace: None,
+            trigger_namespace: None,
         }
     }
 
@@ -2846,6 +3182,7 @@ mod tests {
             description: "tt".to_string(),
             trigger_request_format: None,
             call_request_format: None,
+            namespace: None,
         }
     }
 
@@ -2858,6 +3195,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         }
     }
 
@@ -3001,5 +3339,222 @@ mod tests {
         iii.handle_message(&payload).unwrap();
 
         assert!(!logs_contain("Trigger registration failed"));
+    }
+
+    // Single test covers every namespace-resolution branch so the env var
+    // mutation is serialized within one function (env vars are process-global
+    // and cargo runs tests in parallel).
+    #[test]
+    fn namespace_resolution_reads_env_and_prefers_explicit_option() {
+        let previous = std::env::var("III_NAMESPACE").ok();
+
+        // SAFETY: env mutations are serialized within this test and restored at the end.
+        unsafe {
+            std::env::remove_var("III_NAMESPACE");
+        }
+        // Absent everywhere -> None (engine applies its default namespace).
+        assert!(WorkerMetadata::default().namespace.is_none());
+        assert!(resolve_namespace(None).is_none());
+        // Explicit option still wins with no env set.
+        assert_eq!(
+            resolve_namespace(Some("payments".into())).as_deref(),
+            Some("payments")
+        );
+
+        unsafe {
+            std::env::set_var("III_NAMESPACE", "orders");
+        }
+        // III_NAMESPACE flows into worker metadata, mirroring III_WORKER_NAME.
+        assert_eq!(
+            WorkerMetadata::default().namespace.as_deref(),
+            Some("orders")
+        );
+        // Env is the fallback when no explicit option is given.
+        assert_eq!(resolve_namespace(None).as_deref(), Some("orders"));
+        // options.namespace beats the env var.
+        assert_eq!(
+            resolve_namespace(Some("payments".into())).as_deref(),
+            Some("payments")
+        );
+
+        unsafe {
+            match previous {
+                Some(val) => std::env::set_var("III_NAMESPACE", val),
+                None => std::env::remove_var("III_NAMESPACE"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn trigger_request_namespace_is_sent_by_trigger() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let _ = iii
+            .trigger(
+                TriggerRequest {
+                    function_id: "svc::work".to_string(),
+                    payload: json!({ "x": 1 }),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                }
+                .namespace("orders"),
+            )
+            .await
+            .expect("void trigger should enqueue");
+
+        let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
+        let sent = rx.try_recv().expect("sent invoke");
+        match sent {
+            Outbound::Message(msg @ Message::InvokeFunction { .. }) => {
+                let Message::InvokeFunction { namespace, .. } = &msg else {
+                    unreachable!()
+                };
+                assert_eq!(namespace.as_deref(), Some("orders"));
+                // And it actually reaches the wire.
+                let wire = serde_json::to_string(&msg).unwrap();
+                assert!(wire.contains(r#""namespace":"orders""#), "wire: {wire}");
+            }
+            _ => panic!("expected InvokeFunction"),
+        }
+    }
+
+    #[tokio::test]
+    async fn trigger_request_without_namespace_omits_it_on_the_wire() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let _ = iii
+            .trigger(TriggerRequest {
+                function_id: "svc::work".to_string(),
+                payload: json!({ "x": 1 }),
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            })
+            .await
+            .expect("void trigger should enqueue");
+
+        let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
+        let sent = rx.try_recv().expect("sent invoke");
+        match sent {
+            Outbound::Message(msg @ Message::InvokeFunction { .. }) => {
+                let Message::InvokeFunction { namespace, .. } = &msg else {
+                    unreachable!()
+                };
+                assert!(namespace.is_none());
+                let wire = serde_json::to_string(&msg).unwrap();
+                assert!(!wire.contains("namespace"), "wire: {wire}");
+            }
+            _ => panic!("expected InvokeFunction"),
+        }
+    }
+
+    #[test]
+    fn worker_name_conflict_is_fatal_and_stops_worker() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let payload = json!({
+            "type": "registrationrejected",
+            "code": "WORKER_NAMESPACE_CONFLICT",
+            "namespace": "orders",
+            "worker_name": "checkout",
+            "owner_worker_id": "worker-abc",
+        })
+        .to_string();
+
+        iii.handle_message(&payload).unwrap();
+
+        // Fatal: the connection loop must not reconnect.
+        assert!(
+            !iii.inner.running.load(std::sync::atomic::Ordering::SeqCst),
+            "worker must stop; running flag should be cleared"
+        );
+        assert_eq!(iii.get_connection_state(), IIIConnectionState::Failed);
+
+        let err = iii.fatal_error().expect("fatal error must surface");
+        match err {
+            Error::RegistrationRejected {
+                code,
+                namespace,
+                worker_name,
+                function_id,
+                owner_worker_id,
+            } => {
+                assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
+                assert_eq!(namespace, "orders");
+                assert_eq!(worker_name.as_deref(), Some("checkout"));
+                assert!(function_id.is_none());
+                assert_eq!(owner_worker_id, "worker-abc");
+            }
+            other => panic!("expected RegistrationRejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_conflict_is_not_fatal_and_keeps_serving() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Simulate a live, connected worker.
+        iii.set_connection_state(IIIConnectionState::Connected);
+
+        // The engine refused a single duplicate function id but deliberately
+        // kept the connection open.
+        let payload = json!({
+            "type": "registrationrejected",
+            "code": "FUNCTION_NAMESPACE_CONFLICT",
+            "namespace": "orders",
+            "function_id": "orders::charge",
+            "owner_worker_id": "worker-abc",
+        })
+        .to_string();
+
+        iii.handle_message(&payload).unwrap();
+
+        // Non-fatal: the worker keeps running, stays connected, and no fatal
+        // error is recorded — its other functions are still served.
+        assert!(
+            iii.inner.running.load(std::sync::atomic::Ordering::SeqCst),
+            "worker must keep running after a function-id conflict"
+        );
+        assert_eq!(iii.get_connection_state(), IIIConnectionState::Connected);
+        assert!(
+            iii.fatal_error().is_none(),
+            "a function-id conflict must not be fatal"
+        );
+    }
+
+    #[test]
+    fn function_info_captures_namespace_and_tolerates_absence() {
+        // Engine listings now carry `namespace`; the typed struct exposes it.
+        let with_ns: FunctionInfo = serde_json::from_value(json!({
+            "function_id": "svc::work",
+            "description": null,
+            "request_format": null,
+            "response_format": null,
+            "metadata": null,
+            "namespace": "orders",
+        }))
+        .unwrap();
+        assert_eq!(with_ns.namespace.as_deref(), Some("orders"));
+
+        // Legacy payloads without the field still deserialize.
+        let without_ns: FunctionInfo = serde_json::from_value(json!({
+            "function_id": "svc::work",
+            "description": null,
+            "request_format": null,
+            "response_format": null,
+            "metadata": null,
+        }))
+        .unwrap();
+        assert!(without_ns.namespace.is_none());
     }
 }

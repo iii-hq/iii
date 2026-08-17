@@ -21,6 +21,7 @@ class MessageType(str, Enum):
     UNREGISTER_TRIGGER_TYPE = "unregistertriggertype"
     TRIGGER_REGISTRATION_RESULT = "triggerregistrationresult"
     WORKER_REGISTERED = "workerregistered"
+    REGISTRATION_REJECTED = "registrationrejected"
     REATTACH = "reattach"
 
 
@@ -31,6 +32,10 @@ class RegisterTriggerTypeMessage(BaseModel):
     description: str
     trigger_request_format: Any | None = Field(default=None)
     call_request_format: Any | None = Field(default=None)
+    #: Namespace this provider serves. ``None`` lets the engine use this
+    #: connection's own, which is what a worker providing a trigger type for
+    #: its own project wants.
+    namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER_TYPE, alias="type")
 
 
@@ -88,6 +93,8 @@ class RegisterTriggerInput(BaseModel):
         function_id: ID of the function this trigger invokes when it fires.
         config: Trigger-type-specific configuration, matching the shape the trigger type expects.
         metadata: Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
+        namespace: Namespace the target function resolves in.
+        trigger_namespace: Namespace the trigger type's provider is found in.
     """
 
     type: str = Field(
@@ -106,6 +113,24 @@ class RegisterTriggerInput(BaseModel):
             "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
         ),
     )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Namespace the trigger's target function resolves in. Omitting it does not "
+            "bind in the engine's default: ``register_trigger`` fills it from this "
+            "worker's namespace, because the function a trigger names is one this worker "
+            "registered, and that landed in the worker's namespace. Name another "
+            "namespace, ``default`` included, to bind elsewhere."
+        ),
+    )
+    trigger_namespace: str | None = Field(
+        default=None,
+        description=(
+            "Namespace to find the trigger type's provider in. Omitting it is not the "
+            "same as 'default': it asks the engine to resolve, taking this worker's "
+            "namespace first and the engine's own second. Naming one is strict."
+        ),
+    )
 
 
 class RegisterTriggerMessage(BaseModel):
@@ -116,6 +141,11 @@ class RegisterTriggerMessage(BaseModel):
     function_id: str = Field()
     config: Any
     metadata: Any | None = Field(default=None)
+    namespace: str | None = Field(default=None)
+    #: Namespace to find the trigger type's provider in. ``None`` is not
+    #: ``"default"``: it asks the engine to resolve, taking this worker's
+    #: namespace first and the engine's own second. Naming one is strict.
+    trigger_namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
 
 
@@ -216,6 +246,9 @@ class MiddlewareFunctionInput(BaseModel):
         payload: Payload sent by the caller.
         action: Routing action, if any.
         context: Auth context returned by the auth function for this session.
+        namespace: Target namespace the invoke addressed; forward the call here
+            to stay in the caller's namespace. Absent -> the engine's default
+            namespace.
     """
 
     function_id: str = Field(description="ID of the function being invoked.")
@@ -225,6 +258,14 @@ class MiddlewareFunctionInput(BaseModel):
     )
     context: dict[str, Any] = Field(
         description="Auth context returned by the auth function for this session.",
+    )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Target namespace the invoke addressed; forward the call here to "
+            "stay in the caller's namespace. Absent -> the engine's default "
+            "namespace."
+        ),
     )
 
 
@@ -240,6 +281,8 @@ class TriggerRequest(BaseModel):
         timeout_ms: Override the default invocation timeout, in milliseconds.
         metadata: Arbitrary user-specifiable metadata supplied to the triggered
             handler function on every invocation.
+        namespace: Target namespace for routing. Omit to inherit this worker's;
+            say ``default`` to reach the engine's from a namespaced worker.
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
@@ -261,6 +304,13 @@ class TriggerRequest(BaseModel):
             "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
         ),
     )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "Target namespace for routing. Omit to inherit this worker's; say ``default`` "
+            "to reach the engine's from a namespaced worker."
+        ),
+    )
 
 
 class InvokeFunctionMessage(BaseModel):
@@ -273,6 +323,7 @@ class InvokeFunctionMessage(BaseModel):
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
     action: TriggerActionEnqueue | TriggerActionVoid | None = Field(default=None)
+    namespace: str | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.INVOKE_FUNCTION, alias="type")
 
 

@@ -31,7 +31,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url);
+    const worker = registerWorker(url, { namespace: "orders" });
 
     worker.registerTrigger({
       type: "http",
@@ -48,7 +48,7 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
 
     worker = register_worker(
         os.environ.get("III_URL"),
-        InitOptions(worker_name="my-worker"),
+        InitOptions(worker_name="my-worker", namespace="orders"),
     )
 
     worker.register_trigger({
@@ -61,11 +61,18 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{InitOptions, RegisterTriggerInput, register_worker};
+    use iii_sdk::protocol::RegisterTriggerInput;
+    use iii_sdk::{InitOptions, register_worker};
     use serde_json::json;
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(&url, InitOptions::default());
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     worker.register_trigger(RegisterTriggerInput {
         trigger_type: "http".into(),
@@ -132,7 +139,7 @@ registration and stores it:
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
     // http worker not started
@@ -211,7 +218,7 @@ a queue message.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
     worker.register_trigger(RegisterTriggerInput {
@@ -280,7 +287,8 @@ is a regular registered function.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{RegisterFunction, RegisterTriggerInput};
+    use iii_sdk::protocol::RegisterTriggerInput;
+    use iii_sdk::RegisterFunction;
     use schemars::JsonSchema;
     use serde::Deserialize;
     use serde_json::json;
@@ -342,7 +350,7 @@ runtime; when the worker disconnects, all of its triggers are removed automatica
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::RegisterTriggerInput;
+    use iii_sdk::protocol::RegisterTriggerInput;
     use serde_json::json;
 
     let trigger = worker.register_trigger(RegisterTriggerInput {

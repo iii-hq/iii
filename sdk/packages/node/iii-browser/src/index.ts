@@ -1,5 +1,7 @@
 export { ChannelReader, ChannelWriter } from './channels'
 
+export { RegistrationRejectedError, type RegistrationRejectedInit } from './errors'
+
 export { EngineFunctions, EngineTriggers } from './iii-constants'
 export type { IIIConnectionState, IIIReconnectionConfig } from './iii-constants'
 

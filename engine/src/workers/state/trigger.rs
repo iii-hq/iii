@@ -187,6 +187,10 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         module
@@ -223,6 +227,10 @@ mod tests {
             }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         let error = module

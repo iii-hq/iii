@@ -98,7 +98,12 @@ mod tests {
     #[tokio::test]
     async fn hot_router_routes_requests_and_injects_engine() {
         async fn handler(Extension(engine): Extension<Arc<Engine>>) -> impl IntoResponse {
-            assert!(engine.functions.get("missing").is_none());
+            assert!(
+                engine
+                    .functions
+                    .get(crate::protocol::DEFAULT_NAMESPACE, "missing")
+                    .is_none()
+            );
             "hot-router-ok"
         }
 

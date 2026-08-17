@@ -209,6 +209,8 @@ async fn run_worker(ws_url: String, route_count: usize) {
                         "http_method": "POST",
                     }),
                     metadata: None,
+                    namespace: None,
+                    trigger_namespace: None,
                 })
                 .expect("serialize RegisterTrigger")
                 .into(),

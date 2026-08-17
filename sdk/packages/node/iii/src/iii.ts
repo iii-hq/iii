@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import * as os from 'node:os'
 import { type Data, WebSocket } from 'ws'
 import { ChannelReader, ChannelWriter } from './channels'
-import { InvocationError, isErrorBody } from './errors'
+import { InvocationError, isErrorBody, RegistrationRejectedError } from './errors'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
@@ -22,6 +22,7 @@ import {
   type JsonValue,
   MessageType,
   type RegisterFunctionMessage,
+  type RegistrationRejectedMessage,
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
   type StreamChannelRef,
@@ -65,6 +66,20 @@ import { isChannelRef } from './utils'
 const require = createRequire(import.meta.url)
 const { version: SDK_VERSION } = require('../package.json')
 
+/**
+ * `registrationrejected` code (engine `protocol.rs`): another live worker
+ * already holds this `(namespace, worker_name)`. The engine closes the
+ * connection -- fatal.
+ */
+const WORKER_NAMESPACE_CONFLICT = 'WORKER_NAMESPACE_CONFLICT'
+
+/**
+ * `registrationrejected` code (engine `protocol.rs`): another live worker in
+ * this namespace already exports this one function id. The connection stays
+ * open -- non-fatal.
+ */
+const FUNCTION_NAMESPACE_CONFLICT = 'FUNCTION_NAMESPACE_CONFLICT'
+
 function getOsInfo(): string {
   return `${os.platform()} ${os.release()} (${os.arch()})`
 }
@@ -79,6 +94,83 @@ function getDefaultWorkerName(): string {
     return managedName
   }
   return `${os.hostname()}:${process.pid}`
+}
+
+/**
+ * Engine address used when neither an explicit address nor `III_URL` is set.
+ * The IPv4 loopback is spelled out on purpose: `localhost` can resolve to `::1`
+ * on a host whose engine only listens on IPv4.
+ */
+export const DEFAULT_ENGINE_URL = 'ws://127.0.0.1:49134'
+
+function resolveAddress(address?: string): string {
+  // The supervisor that spawned this process -- `iii compose`, a container
+  // runtime, systemd -- sets III_URL, the same way it sets III_NAMESPACE and
+  // III_WORKER_NAME. An explicit address still wins.
+  if (address) {
+    return address
+  }
+  const fromEnv = process.env.III_URL
+  if (fromEnv) {
+    return fromEnv
+  }
+  return DEFAULT_ENGINE_URL
+}
+
+/**
+ * The namespace one call or one binding resolves in.
+ *
+ * `undefined` inherits the worker's. A blank one is refused: named and left
+ * empty asks for the opposite of what absent asks for, and the two are only
+ * ever confused by accident -- `??` forwards the empty string, Python's `or`
+ * coerced it and Go dropped it, so one mistake produced three behaviours.
+ */
+function callNamespace(
+  explicit: string | undefined,
+  worker: string | undefined,
+  source: string,
+): string | undefined {
+  if (explicit !== undefined && explicit.trim() === '') {
+    throw new Error(
+      `namespace is empty: ${source} was set to ${JSON.stringify(explicit)}. ` +
+        "Give it a name, or leave it unset to stay in this worker's namespace.",
+    )
+  }
+  return explicit ?? worker
+}
+
+function resolveNamespace(optionNamespace?: string): string | undefined {
+  // III_NAMESPACE carries the namespace for managed workers (set by iii-worker
+  // at spawn), mirroring III_WORKER_NAME. An explicit option wins; otherwise
+  // the env var provides the managed identity. Absent in both means undefined
+  // -- the engine applies its `default` namespace when none is on the wire.
+  //
+  // A declared-but-blank namespace throws rather than reading as "no
+  // namespace". The two mean opposite things: absent asks for the engine's
+  // default, blank names a namespace and gives nothing to name it with. Read
+  // as absent, the worker registers in `default`, and every call and trigger it
+  // makes now follows it there -- a whole project quietly serving from the
+  // wrong namespace, and the one thing an operator cannot see by reading the
+  // declaration.
+  if (optionNamespace !== undefined) {
+    if (optionNamespace.trim() === '') {
+      throw new Error(
+        `namespace is empty: options.namespace was set to ${JSON.stringify(optionNamespace)}. ` +
+          'Give it a name, or leave it unset to register in `default`.',
+      )
+    }
+    return optionNamespace
+  }
+  // III_NAMESPACE is left alone when blank. `FOO=` is how a shell says "not
+  // set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly that -- so
+  // reading it as absent is what the caller meant, and absent is a namespace a
+  // worker may legitimately have none of. Only the option is a mistake: nobody
+  // writes a namespace parameter and passes nothing on purpose.
+  const managedNamespace = process.env.III_NAMESPACE
+  if (managedNamespace) {
+    return managedNamespace
+  }
+  return undefined
 }
 
 /** Worker metadata reported to the engine (language, framework, project). */
@@ -108,6 +200,18 @@ export type TelemetryOptions = {
 export type InitOptions = {
   /** Display name for this worker. Defaults to `hostname:pid`. */
   workerName?: string
+  /**
+   * Namespace this worker belongs to. Resolution order:
+   * `options.namespace` -> `process.env.III_NAMESPACE` -> undefined. When
+   * undefined the engine applies its `default` namespace.
+   *
+   * It scopes more than the registration. The worker and its functions
+   * register here, so identically-named entries coexist across namespaces, and
+   * everything the worker does afterwards follows it: a `trigger` resolves its
+   * target here, and a `registerTrigger` binds here, unless the call names
+   * another namespace. One declaration places the whole worker.
+   */
+  namespace?: string
   /**
    * One-line, human/LLM-readable summary of what this worker does.
    * Surfaces in `engine::workers::list` / `engine::workers::info`.
@@ -143,6 +247,7 @@ class Sdk implements IIIClient {
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: Record<string, unknown>[] = []
   private workerName: string
+  private namespace?: string
   private workerDescription?: string
   private workerId?: string
   private reattachToken?: string
@@ -155,12 +260,17 @@ class Sdk implements IIIClient {
   private reconnectAttempt = 0
   private connectionState: IIIConnectionState = 'disconnected'
   private isShuttingDown = false
+  // Set when the engine fatally rejects this worker's registration (e.g. a
+  // namespace/name collision). Terminal: no reconnect follows. Mirrors the
+  // Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
+  private fatalError?: RegistrationRejectedError
 
   constructor(
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
     this.workerName = options?.workerName ?? getDefaultWorkerName()
+    this.namespace = resolveNamespace(options?.namespace)
     this.workerDescription = options?.workerDescription
     this.metricsReportingEnabled = options?.enableMetricsReporting ?? true
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
@@ -207,12 +317,17 @@ class Sdk implements IIIClient {
 
     return {
       id: triggerType.id,
+      // This typed helper pairs a function with its trigger, so it defaults the
+      // trigger's namespace to this worker's — otherwise the function would land
+      // in the worker's namespace and the trigger in `default`, and never resolve
+      // it. The low-level `registerTrigger` keeps the engine default (`default`).
       registerTrigger: (functionId: string, config: TConfig, metadata?: Record<string, unknown>) => {
         return this.registerTrigger({
           type: triggerType.id,
           function_id: functionId,
           config,
           metadata,
+          namespace: this.namespace,
         })
       },
       registerFunction: (functionId, handler, config, metadata?) => {
@@ -222,6 +337,7 @@ class Sdk implements IIIClient {
           function_id: functionId,
           config,
           metadata,
+          namespace: this.namespace,
         })
         return ref
       },
@@ -269,6 +385,19 @@ class Sdk implements IIIClient {
       ...trigger,
       id,
       message_type: MessageType.RegisterTrigger,
+      // Unset means this worker's namespace, not the engine's default. A
+      // trigger names a function, and the function a worker registers lands in
+      // the worker's namespace, so defaulting anywhere else registers a trigger
+      // that fires and resolves nothing. Naming another namespace, `default`
+      // included, stays a matter of saying so.
+      ...(() => {
+        const namespace = callNamespace(
+          trigger.namespace,
+          this.namespace,
+          'RegisterTriggerInput.namespace',
+        )
+        return namespace !== undefined ? { namespace } : {}
+      })(),
     }
     this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
     this.triggers.set(id, fullTrigger)
@@ -489,6 +618,11 @@ class Sdk implements IIIClient {
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
     const { function_id, payload, action, timeoutMs, metadata } = request
+    // Same rule as `registerTrigger`: a call with no namespace stays in the
+    // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
+    // `default`, a neighbour in another project -- is done by naming that
+    // namespace.
+    const namespace = callNamespace(request.namespace, this.namespace, 'TriggerRequest.namespace')
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     // Void is fire-and-forget, no invocation_id, no response
@@ -502,6 +636,8 @@ class Sdk implements IIIClient {
         baggage,
         action,
         metadata,
+        // Omitted only when this worker has no namespace either.
+        ...(namespace !== undefined ? { namespace } : {}),
       })
       return undefined as TOutput
     }
@@ -547,6 +683,8 @@ class Sdk implements IIIClient {
         baggage,
         action,
         metadata,
+        // Omitted only when this worker has no namespace either.
+        ...(namespace !== undefined ? { namespace } : {}),
       })
     })
   }
@@ -558,6 +696,12 @@ class Sdk implements IIIClient {
 
     this.trigger({
       function_id: EngineFunctions.REGISTER_WORKER,
+      // Named, because `trigger` now defaults to this worker's namespace and
+      // this one call must not follow it: `engine::workers::register` is
+      // compiled into the engine and served in `default` only. Routed into the
+      // worker's own namespace, the announcement reaches nothing and the worker
+      // never registers -- every function it offers then appears missing.
+      namespace: 'default',
       payload: {
         runtime: 'node',
         version: SDK_VERSION,
@@ -566,6 +710,8 @@ class Sdk implements IIIClient {
         os: getOsInfo(),
         pid: process.pid,
         isolation: process.env.III_ISOLATION || null,
+        // Omit when absent so the engine falls back to its `default` namespace.
+        ...(this.namespace !== undefined ? { namespace: this.namespace } : {}),
         telemetry: {
           language,
           project_name: telemetryOpts?.project_name ?? detectProjectName(),
@@ -594,6 +740,27 @@ class Sdk implements IIIClient {
     this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
     this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
   }
+
+  /**
+   * The current WebSocket connection state. `'failed'` is terminal — it follows
+   * a fatal registration rejection (see {@link getFatalError}). Mirrors the
+   * Python/Rust SDKs' `get_connection_state()`.
+   */
+  getConnectionState = (): IIIConnectionState => this.connectionState
+
+  /**
+   * Engine address this worker resolved to: the explicit argument, else
+   * `III_URL`, else {@link DEFAULT_ENGINE_URL}. Mirrors the Rust SDK's
+   * `address()` and the Python SDK's `get_address()`.
+   */
+  getAddress = (): string => this.address
+
+  /**
+   * The fatal registration rejection that terminated this connection, if any
+   * (e.g. a `WORKER_NAMESPACE_CONFLICT`). `undefined` while healthy. Mirrors the
+   * Python (`_fatal_error`) and Rust (`fatal_error()`) SDKs.
+   */
+  getFatalError = (): RegistrationRejectedError | undefined => this.fatalError
 
   /**
    * Gracefully shutdown the iii, cleaning up all resources.
@@ -784,9 +951,12 @@ class Sdk implements IIIClient {
     this.startHeartbeat()
 
     // Reconnect: present the previous engine-assigned identity BEFORE the
-    // registration replay so the engine retires the old connection and the
-    // replay lands on a clean slate instead of racing its cleanup. The
-    // token proves we ARE that worker (ids alone are publicly listable).
+    // metadata announce and registration replay so the engine retires the old
+    // connection and the replay lands on a clean slate instead of racing its
+    // cleanup. This must precede registerWorkerMetadata(): otherwise the old
+    // connection still holds this (namespace, worker_name) and the announce
+    // would trip WORKER_NAMESPACE_CONFLICT against ourselves. The token proves
+    // we ARE that worker (ids alone are publicly listable).
     if (this.workerId) {
       this.sendMessageRaw(
         JSON.stringify({
@@ -796,6 +966,11 @@ class Sdk implements IIIClient {
         }),
       )
     }
+
+    // Announce worker metadata (carrying the namespace) before flushing any
+    // registrations so the engine knows this connection's namespace up front.
+    this.registerWorkerMetadata()
+
 
     this.triggerTypes.forEach(({ message }) => {
       this.sendMessage(MessageType.RegisterTriggerType, message, true)
@@ -820,8 +995,6 @@ class Sdk implements IIIClient {
       }
       this.sendMessageRaw(JSON.stringify(message))
     }
-
-    this.registerWorkerMetadata()
   }
 
   private isOpen(): boolean {
@@ -880,6 +1053,87 @@ class Sdk implements IIIClient {
     } else {
       console.error(`[iii] ${message}`, error ?? '')
     }
+  }
+
+  private logWarn(message: string): void {
+    const otelLogger = getLogger()
+    if (otelLogger) {
+      otelLogger.emit({
+        severityNumber: SeverityNumber.WARN,
+        body: `[iii] ${message}`,
+      })
+    } else {
+      console.warn(`[iii] ${message}`)
+    }
+  }
+
+  /**
+   * Handle a `registrationrejected` from the engine. The `code` decides the
+   * severity:
+   *
+   * - {@link WORKER_NAMESPACE_CONFLICT}: another live worker already holds this
+   *   `(namespace, worker_name)`. The engine closes the connection, so this is
+   *   fatal -- stop the worker, do not reconnect, and surface a
+   *   {@link RegistrationRejectedError} to every pending invocation.
+   * - {@link FUNCTION_NAMESPACE_CONFLICT}: another live worker in this namespace
+   *   already exports this one function id. Only that registration is refused;
+   *   the engine keeps the connection open and the worker keeps serving its
+   *   other functions. Non-fatal -- log a warning and continue.
+   * - Any other code: treated as fatal (safe default).
+   */
+  private onRegistrationRejected(init: {
+    code: string
+    namespace: string
+    worker_name?: string
+    function_id?: string
+    owner_worker_id: string
+  }): void {
+    if (init.code === FUNCTION_NAMESPACE_CONFLICT) {
+      this.logWarn(
+        `Function registration rejected: function "${init.function_id ?? '<unknown>'}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. The worker stays connected and keeps serving its other functions.`,
+      )
+      return
+    }
+
+    const error = new RegistrationRejectedError(init)
+    // Record it so callers can poll for the terminal cause (parity with the
+    // Python/Rust SDKs); the connection also transitions to `failed` below.
+    this.fatalError = error
+    if (init.code === WORKER_NAMESPACE_CONFLICT) {
+      this.logError('Registration rejected by engine', error)
+    } else {
+      this.logError(`Registration rejected by engine with unknown code "${init.code}"; treating as fatal`, error)
+    }
+
+    // Mark shutdown first so neither onSocketClose nor scheduleReconnect can
+    // schedule a reconnect for a rejection that would only be rejected again.
+    this.isShuttingDown = true
+    this.clearReconnectTimeout()
+    this.stopHeartbeat()
+
+    // Reject every in-flight invocation with the fatal error.
+    for (const [, invocation] of this.invocations) {
+      if (invocation.timeout) {
+        clearTimeout(invocation.timeout)
+      }
+      invocation.reject(error)
+    }
+    this.invocations.clear()
+
+    // Tear down the socket without triggering the reconnect path.
+    if (this.ws) {
+      this.ws.removeAllListeners()
+      this.ws.on('error', () => {})
+      try {
+        this.ws.terminate()
+      } catch {
+        // ignore, stopping anyway
+      }
+      this.ws = undefined
+    }
+
+    this.stopMetricsReporting()
+    this.setConnectionState('failed')
   }
 
   private onInvocationResult(invocation_id: string, result: unknown, error: unknown): void {
@@ -1014,13 +1268,22 @@ class Sdk implements IIIClient {
     }
   }
 
-  private async onRegisterTrigger(message: { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> }) {
-    const { trigger_type, id, function_id, config, metadata } = message
+  private async onRegisterTrigger(message: {
+    trigger_type: string
+    id: string
+    function_id: string
+    config: unknown
+    metadata?: Record<string, unknown>
+    namespace?: string
+  }) {
+    const { trigger_type, id, function_id, config, metadata, namespace } = message
     const triggerTypeData = this.triggerTypes.get(trigger_type)
 
     if (triggerTypeData) {
       try {
-        await triggerTypeData.handler.registerTrigger({ id, function_id, config, metadata })
+        // Surface the namespace to the handler: a provider that fires the target
+        // later needs it to resolve in the right namespace, not `default`.
+        await triggerTypeData.handler.registerTrigger({ id, function_id, config, metadata, namespace })
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
           message_type: MessageType.TriggerRegistrationResult,
@@ -1120,6 +1383,9 @@ class Sdk implements IIIClient {
       this.reattachToken = reattach_token
       console.debug('[iii] Worker registered with ID:', worker_id)
       this.startMetricsReporting()
+    } else if (msgType === MessageType.RegistrationRejected) {
+      const { code, namespace, worker_name, function_id, owner_worker_id } = message as RegistrationRejectedMessage
+      this.onRegistrationRejected({ code, namespace, worker_name, function_id, owner_worker_id })
     }
   }
 }
@@ -1170,7 +1436,8 @@ export const TriggerAction = {
  * Register the worker with a iii instance, returns a connected worker client.
  * The WebSocket connection is established automatically.
  *
- * @param address - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
+ * @param address - WebSocket URL of the III engine. Omit to resolve it from
+ *   `process.env.III_URL`, falling back to {@link DEFAULT_ENGINE_URL}.
  * @param options - Optional {@link InitOptions} for worker name, timeouts, reconnection, and OTel.
  * @returns A connected {@link IIIClient} instance.
  *
@@ -1178,9 +1445,12 @@ export const TriggerAction = {
  * ```typescript
  * import { registerWorker } from 'iii-sdk'
  *
- * const worker = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
- *   workerName: 'my-worker',
- * })
+ * // Address from III_URL, set by whatever supervisor spawned this worker.
+ * const worker = registerWorker()
+ *
+ * // Or explicitly, which always wins over the environment.
+ * const other = registerWorker('ws://localhost:49134', { workerName: 'my-worker' })
  * ```
  */
-export const registerWorker = (address: string, options?: InitOptions): IIIClient => new Sdk(address, options)
+export const registerWorker = (address?: string, options?: InitOptions): IIIClient =>
+  new Sdk(resolveAddress(address), options)

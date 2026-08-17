@@ -270,7 +270,10 @@ impl Worker for PubSubWorker {
         if self
             .engine
             .functions
-            .get(configuration::CONFIG_FN_ID)
+            .get(
+                crate::protocol::DEFAULT_NAMESPACE,
+                configuration::CONFIG_FN_ID,
+            )
             .is_none()
         {
             self.register_config_handler(&self.engine);
@@ -687,6 +690,10 @@ mod tests {
             config: json!({ "topic": "orders" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         module
@@ -726,6 +733,10 @@ mod tests {
                 config: json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .expect("register trigger without topic");
@@ -749,7 +760,10 @@ mod tests {
             engine
                 .trigger_registry
                 .trigger_types
-                .contains_key("subscribe")
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "subscribe"
+                ))
         );
         assert_eq!(module.name(), "PubSubModule");
     }
@@ -851,6 +865,10 @@ mod tests {
                 config: json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .expect("register subscribe trigger");
@@ -880,6 +898,10 @@ mod tests {
                 config: json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .expect("register subscribe trigger");

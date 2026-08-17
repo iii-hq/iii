@@ -74,10 +74,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
 
-    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "hello::greet".into(), config: json!({
+    iii.register_trigger(RegisterTriggerInput::new("http", "hello::greet", json!({
         "api_path": "/greet",
         "http_method": "POST"
-    }) })?;
+    })))?;
 
     let result: serde_json::Value = iii
         .trigger(TriggerRequest::new("hello::greet", json!({ "name": "world" })))

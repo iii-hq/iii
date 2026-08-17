@@ -23,6 +23,11 @@ pub struct QueueMessage {
     pub traceparent: Option<String>,
     /// W3C baggage header for context propagation
     pub baggage: Option<String>,
+    /// Target namespace the function must resolve in. Captured at enqueue and
+    /// round-tripped through the transport's native message so a namespaced
+    /// enqueue runs the namespaced function rather than the `default` one.
+    /// `None` (old persisted messages) resolves to [`DEFAULT_NAMESPACE`].
+    pub namespace: Option<String>,
 }
 
 #[cfg(test)]
@@ -40,8 +45,10 @@ mod tests {
             message_id: Some("msg-123".to_string()),
             traceparent: Some("00-abc-def-01".to_string()),
             baggage: Some("queue=orders".to_string()),
+            namespace: Some("orders".to_string()),
         };
 
+        assert_eq!(msg.namespace.as_deref(), Some("orders"));
         assert_eq!(msg.delivery_id, 42);
         assert_eq!(msg.function_id, "functions.process_order");
         assert_eq!(msg.data["order_id"], "o-1");
@@ -60,8 +67,10 @@ mod tests {
             message_id: None,
             traceparent: None,
             baggage: None,
+            namespace: None,
         };
 
+        assert!(msg.namespace.is_none());
         assert!(msg.traceparent.is_none());
         assert!(msg.baggage.is_none());
         assert_eq!(msg.attempt, 3);

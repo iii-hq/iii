@@ -125,6 +125,26 @@ without rewriting the stored value. A field that consists of a single placeholde
 schema's scalar type after expansion: `port: ${HTTP_PORT:3111}` validates as the integer `3111`, not
 a string. Pass `raw: true` to `configuration::get` to read the stored template form.
 
+## Registration namespace timeout
+
+When a WebSocket connection opens, the engine starts a namespace resolution timer. Until
+`engine::workers::register` resolves the connection namespace, the engine holds registration-related
+messages from that connection. If the worker registration arrives before the timeout, the engine
+assigns its `namespace` value, or `default` when the value is absent, and processes the held messages.
+If the timeout expires first, the engine assigns `default`. A later worker registration cannot change
+the assigned namespace.
+
+`registration_namespace_grace_ms` is a global engine setting. Set it at the root of `config.yaml`.
+The engine reads it when it starts:
+
+```yaml config.yaml
+registration_namespace_grace_ms: 10000
+```
+
+The default is `5000 ms`. Set `III_NAMESPACE_GRACE_MS` in the engine process environment, not in a
+worker environment. It applies to namespace resolution for all new worker connections and overrides
+`registration_namespace_grace_ms`.
+
 ## How changes apply
 
 Most settings apply the moment they change such as `http`'s CORS, timeout, and port changes. A few

@@ -89,6 +89,7 @@
               {
                 "group": "Upgrading",
                 "pages": [
+                  "next/upgrading/from-0-22-x",
                   "next/upgrading/from-0-21-x"
                 ]
               },
@@ -99,6 +100,7 @@
                   "next/using-iii/workers-registry",
                   "next/using-iii/triggers",
                   "next/using-iii/functions",
+                  "next/using-iii/namespaces",
                   "next/using-iii/engine",
                   "next/using-iii/configuration",
                   "next/using-iii/console",
@@ -112,6 +114,7 @@
                 "pages": [
                   "next/understanding-iii/index",
                   "next/understanding-iii/engine",
+                  "next/understanding-iii/namespaces",
                   "next/understanding-iii/channels"
                 ]
               },

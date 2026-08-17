@@ -51,7 +51,10 @@ async fn test_basic_function_invocation() {
         handler,
     );
 
-    let function = engine.functions.get("test.function").unwrap();
+    let function = engine
+        .functions
+        .get(iii::protocol::DEFAULT_NAMESPACE, "test.function")
+        .unwrap();
     assert_eq!(function._function_id, "test.function");
 }
 
@@ -72,7 +75,12 @@ async fn test_engine_function_registration() {
         handler,
     );
 
-    assert!(engine.functions.get("another.test").is_some());
+    assert!(
+        engine
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, "another.test")
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -216,7 +224,7 @@ mod schema_tests {
 
         let func = engine
             .functions
-            .get("test.typed_schema")
+            .get(iii::protocol::DEFAULT_NAMESPACE, "test.typed_schema")
             .expect("function should be registered");
 
         // request_format should contain a JSON Schema for TestInput
@@ -258,7 +266,7 @@ mod schema_tests {
 
         let func = engine
             .functions
-            .get("test.raw_json")
+            .get(iii::protocol::DEFAULT_NAMESPACE, "test.raw_json")
             .expect("function should be registered");
 
         // request_format should be Some (Value has a JsonSchema impl)
@@ -281,7 +289,7 @@ mod schema_tests {
 
         let func = engine
             .functions
-            .get("test.no_args")
+            .get(iii::protocol::DEFAULT_NAMESPACE, "test.no_args")
             .expect("function should be registered");
 
         // request_format should be None for ()

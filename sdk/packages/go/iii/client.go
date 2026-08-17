@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +38,14 @@ type Client struct {
 	reconnect   ReconnectConfig
 	name        string
 	description string
+	// namespace is the routing dimension this worker registers into. Empty means
+	// the engine's default namespace. Resolved once at construction: an explicit
+	// WithNamespace wins, else the III_NAMESPACE env var, else default.
+	namespace string
+	// namespaceSet records that WithNamespace was called, which "" alone cannot
+	// say. Without it, a namespace named and left blank is indistinguishable
+	// from one never given -- and they ask for opposite things.
+	namespaceSet bool
 
 	// outbound carries connection-AGNOSTIC frames (registrations + offline-buffered
 	// invokes) to the single writer goroutine. It is shared across the client's lifetime
@@ -85,6 +95,13 @@ type Client struct {
 	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
 	failOnce      sync.Once
 	superviseOnce sync.Once // ensures only one supervisor goroutine runs
+
+	// fatal is closed when the engine terminally rejects this worker's
+	// registration (e.g. a WORKER_NAMESPACE_CONFLICT). The supervisor observes it
+	// and stops reconnecting; fatalErr (guarded by mu) holds the typed cause.
+	fatal     chan struct{}
+	fatalOnce sync.Once
+	fatalErr  error
 }
 
 // Handler is a registered function's implementation. data is the raw JSON the engine
@@ -152,6 +169,25 @@ func WithName(name string) Option {
 	return func(cl *Client) { cl.name = name }
 }
 
+// WithNamespace sets the namespace this worker registers into. Takes precedence
+// over the III_NAMESPACE environment variable.
+//
+// A namespace named and left blank is refused, not read as "no namespace": the
+// client is put in a terminal failed state, so [Client.Connect] returns the
+// reason and [Client.FatalError] reports it. Absent and blank ask for opposite
+// things -- absent asks for the engine's `default`, blank names a namespace and
+// gives nothing to name it with. Read as absent, the worker registers in
+// `default`, and since a worker's calls and triggers follow its namespace, the
+// whole project quietly serves from a place its declaration never named.
+//
+// To register in the engine's default namespace, do not call this.
+func WithNamespace(namespace string) Option {
+	return func(cl *Client) {
+		cl.namespace = namespace
+		cl.namespaceSet = true
+	}
+}
+
 // New creates a [Client] for the engine at url (e.g. [DefaultEngineURL]). It does not
 // connect; call [Client.Connect] to start the connection lifecycle, or use
 // [RegisterWorker] to create and connect in one step.
@@ -169,9 +205,31 @@ func New(url string, opts ...Option) *Client {
 		shutdown:     make(chan struct{}),
 		connected:    make(chan struct{}),
 		failed:       make(chan struct{}),
+		fatal:        make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)
+	}
+	if c.namespaceSet {
+		// Refused rather than read as absent, and refused here so nothing is
+		// dialled: the mistake is in the program text, and every call and
+		// trigger this worker makes would inherit it.
+		if strings.TrimSpace(c.namespace) == "" {
+			c.failFatally(fmt.Errorf(
+				"iii: namespace is empty: WithNamespace was called with %q. "+
+					"Give it a name, or do not call it to register in the engine's default namespace",
+				c.namespace,
+			))
+		}
+	} else {
+		// III_NAMESPACE is left alone when blank. `FOO=` is how a shell says
+		// "not set" -- `III_NAMESPACE=${NS}` with NS unset produces exactly
+		// that -- so reading it as absent is what the caller meant. Only the
+		// option is a mistake: nobody writes a namespace parameter and passes
+		// nothing on purpose. Mirrors the other SDKs.
+		if managed := os.Getenv("III_NAMESPACE"); strings.TrimSpace(managed) != "" {
+			c.namespace = managed
+		}
 	}
 	return c
 }
@@ -260,9 +318,42 @@ func (c *Client) RegisterTriggerType(id, description string, handler TriggerHand
 	return nil
 }
 
+// refuseBlankCallNamespace refuses a namespace that was named and left blank on
+// one call or one binding.
+//
+// Named and left empty asks for the opposite of what absent asks for, and the
+// two are only ever confused by accident: Go dropped the empty string with
+// `omitempty` and sent the call to the engine's default, while Node and Rust
+// forwarded it verbatim and Python replaced it with the worker's. One mistake,
+// four behaviours.
+//
+// Unlike the other SDKs, absent here still means the engine's `default` rather
+// than this worker's namespace: Go has not adopted namespace inheritance yet.
+func refuseBlankCallNamespace(namespace, source string) error {
+	if namespace != "" && strings.TrimSpace(namespace) == "" {
+		return fmt.Errorf(
+			"iii: namespace is empty: %s was set to %q. Give it a name, or leave it unset "+
+				"to resolve in the engine's default namespace", source, namespace)
+	}
+	return nil
+}
+
 // RegisterTrigger registers a trigger instance: fire functionID when a trigger of
 // triggerType matches config. config and optional metadata are raw JSON (may be nil).
 func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json.RawMessage, metadata ...json.RawMessage) error {
+	return c.registerTrigger(id, triggerType, functionID, "", config, metadata...)
+}
+
+// RegisterTriggerNamespaced is like [Client.RegisterTrigger] but resolves the
+// target functionID in namespace. An empty namespace means the engine's default.
+func (c *Client) RegisterTriggerNamespaced(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
+	return c.registerTrigger(id, triggerType, functionID, namespace, config, metadata...)
+}
+
+func (c *Client) registerTrigger(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error {
+	if err := refuseBlankCallNamespace(namespace, "RegisterTriggerNamespaced namespace"); err != nil {
+		return err
+	}
 	if config == nil {
 		config = json.RawMessage("{}")
 	}
@@ -279,6 +370,7 @@ func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json
 		FunctionID:  functionID,
 		Config:      config,
 		Metadata:    meta,
+		Namespace:   namespace,
 	}
 	c.mu.Lock()
 	c.triggers[id] = msg
@@ -302,6 +394,9 @@ type TriggerRequest struct {
 	Action *TriggerAction
 	// Timeout overrides [DefaultInvocationTimeout] for an await/enqueue call.
 	Timeout time.Duration
+	// Namespace routes the invocation to a specific namespace. Empty means the
+	// engine's default namespace, independent of this worker's own namespace.
+	Namespace string
 }
 
 // Trigger invokes a function on the engine. With the default (nil) or an enqueue action
@@ -312,6 +407,9 @@ type TriggerRequest struct {
 // ctx bounds the wait independently of [TriggerRequest.Timeout]: if ctx is cancelled
 // first, its error is returned and the pending entry is reclaimed.
 func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessage, error) {
+	if err := refuseBlankCallNamespace(req.Namespace, "TriggerRequest.Namespace"); err != nil {
+		return nil, err
+	}
 	data := req.Data
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -327,6 +425,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 			Action:      req.Action,
 			Traceparent: tc.traceparent,
 			Baggage:     tc.baggage,
+			Namespace:   req.Namespace,
 		})
 		if err != nil {
 			return nil, err
@@ -352,6 +451,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 		Action:       req.Action,
 		Traceparent:  tc.traceparent,
 		Baggage:      tc.baggage,
+		Namespace:    req.Namespace,
 	})
 	if err != nil {
 		c.clearPending(id)
@@ -434,11 +534,23 @@ func (c *Client) startSupervisor() {
 // backoff) until Close. Connect is safe to call multiple times and from multiple
 // goroutines; only one supervisor ever runs.
 func (c *Client) Connect(ctx context.Context) error {
+	// A client that is already terminally failed -- a namespace named and left
+	// blank, or a rejection from an earlier attempt -- has its reason on hand.
+	// Reporting retry exhaustion instead would describe the symptom.
+	if err := c.FatalError(); err != nil {
+		return err
+	}
+
 	c.startSupervisor()
 
 	select {
 	case <-c.connected:
 		return nil
+	case <-c.fatal:
+		if err := c.FatalError(); err != nil {
+			return err
+		}
+		return ErrNotConnected
 	case <-c.failed:
 		// The supervisor gave up (MaxRetries exceeded) before ever connecting.
 		return fmt.Errorf("iii: connection failed after exhausting retries: %w", ErrNotConnected)
@@ -470,6 +582,15 @@ func (c *Client) supervise() {
 		if err == nil {
 			// Clean shutdown of the connection (Close was called).
 			return
+		}
+
+		// A terminal registration rejection stops the supervisor: reconnecting
+		// would only earn the same rejection. State/failed are already set by the
+		// handler.
+		select {
+		case <-c.fatal:
+			return
+		default:
 		}
 
 		attempt++
@@ -653,6 +774,7 @@ func (c *Client) registerWorkerMetadata() {
 		Version:     sdkVersion,
 		Name:        c.name,
 		Description: c.description,
+		Namespace:   c.namespace,
 		OS:          fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH),
 		PID:         &pid,
 	}
@@ -683,13 +805,14 @@ type workerMetadata struct {
 	Version     string `json:"version"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
 	OS          string `json:"os"`
 	PID         *int   `json:"pid,omitempty"`
 }
 
 // sdkVersion is reported in the worker metadata. Kept as a const for v1; a release
 // process can wire this to the module version later.
-const sdkVersion = "0.22.1"
+const sdkVersion = "0.23.0-rc.1"
 
 // writeLoop is the single writer for one connection. It drains the shared outbound
 // channel (connection-agnostic frames) and this connection's own reply channel
@@ -764,9 +887,78 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 	case MsgTriggerRegistrationResult:
 		// Informational; nothing to do. (A trigger-registration error is the engine's
 		// to surface; the reference SDKs only log it.)
+	case MsgRegistrationRejected:
+		c.handleRegistrationRejected(dec.RegistrationRejected)
 	default:
 		// Unknown/unhandled inbound type; ignore.
 	}
+}
+
+// handleRegistrationRejected processes an engine registration rejection. A
+// FUNCTION_NAMESPACE_CONFLICT costs one function and leaves the connection open,
+// so it is logged and the worker keeps serving. Any other code (notably
+// WORKER_NAMESPACE_CONFLICT) is terminal: record the typed error, fail pending
+// invocations, and stop the supervisor so it does not reconnect into the same
+// rejection forever (the default MaxRetries of -1 would otherwise loop).
+func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
+	if msg == nil {
+		return
+	}
+	if msg.Code == "FUNCTION_NAMESPACE_CONFLICT" {
+		log.Printf("iii: function registration rejected (%s): %q in namespace %q already owned by worker %s; staying connected and serving the rest",
+			msg.Code, msg.FunctionID, msg.Namespace, msg.OwnerWorkerID)
+		return
+	}
+
+	err := &RegistrationRejectedError{
+		Code:          msg.Code,
+		Namespace:     msg.Namespace,
+		WorkerName:    msg.WorkerName,
+		FunctionID:    msg.FunctionID,
+		OwnerWorkerID: msg.OwnerWorkerID,
+	}
+	log.Printf("iii: registration rejected (%s): worker %q in namespace %q already owned by %s; fatal, not reconnecting",
+		msg.Code, msg.WorkerName, msg.Namespace, msg.OwnerWorkerID)
+
+	c.mu.Lock()
+	c.fatalErr = err
+	c.state = StateFailed
+	conn := c.conn
+	for id, ch := range c.pending {
+		ch <- invocationOutcome{err: err}
+		delete(c.pending, id)
+	}
+	c.mu.Unlock()
+
+	// Signal the supervisor to give up, and unblock any Connect caller.
+	c.fatalOnce.Do(func() { close(c.fatal) })
+	c.failOnce.Do(func() { close(c.failed) })
+
+	// Drop the socket; runConnection returns and the supervisor sees `fatal`.
+	if conn != nil {
+		_ = conn.CloseNow()
+	}
+}
+
+// failFatally puts the client in the terminal failed state without a
+// connection ever being involved: the cause is in the program text, so dialling
+// would only produce a second, less honest error.
+func (c *Client) failFatally(err error) {
+	c.mu.Lock()
+	c.fatalErr = err
+	c.state = StateFailed
+	c.mu.Unlock()
+	c.fatalOnce.Do(func() { close(c.fatal) })
+	c.failOnce.Do(func() { close(c.failed) })
+}
+
+// FatalError returns the terminal registration rejection that stopped this
+// worker, or nil while healthy. Mirrors the Node/Python/Rust SDKs' fatal-error
+// accessors.
+func (c *Client) FatalError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fatalErr
 }
 
 // enqueueOutboundDirect sends a connection-scoped reply (pong, InvocationResult,
@@ -913,6 +1105,7 @@ func (c *Client) handleRegisterTrigger(ctx context.Context, msg *RegisterTrigger
 			FunctionID: msg.FunctionID,
 			Config:     msg.Config,
 			Metadata:   msg.Metadata,
+			Namespace:  msg.Namespace,
 		}
 		if err := tt.handler.RegisterTrigger(ctx, cfg); err != nil {
 			res.Error = &ErrorBody{Code: "trigger_registration_failed", Message: err.Error()}

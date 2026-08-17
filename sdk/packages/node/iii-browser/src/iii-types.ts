@@ -8,6 +8,7 @@ export enum MessageType {
   UnregisterTrigger = 'unregistertrigger',
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
+  RegistrationRejected = 'registrationrejected',
   WorkerRegistered = 'workerregistered',
   Reattach = 'reattach',
 }
@@ -40,6 +41,25 @@ export type TriggerRegistrationResultMessage = {
   error?: unknown
 }
 
+/**
+ * The engine refused a registration. `FUNCTION_NAMESPACE_CONFLICT` costs one
+ * function and leaves the connection open; `WORKER_NAMESPACE_CONFLICT` is
+ * terminal — another live worker owns this name in the namespace.
+ */
+export type RegistrationRejectedMessage = {
+  message_type: MessageType.RegistrationRejected
+  /** Rejection code: `FUNCTION_NAMESPACE_CONFLICT` or `WORKER_NAMESPACE_CONFLICT`. */
+  code: string
+  /** Namespace the conflict occurred in. */
+  namespace: string
+  /** Contested worker name. Present only for `WORKER_NAMESPACE_CONFLICT`. */
+  worker_name?: string
+  /** Contested function id. Present only for `FUNCTION_NAMESPACE_CONFLICT`. */
+  function_id?: string
+  /** ID of the worker that already owns the name. */
+  owner_worker_id: string
+}
+
 export type RegisterTriggerMessage = {
   /** Wire discriminator; always `MessageType.RegisterTrigger`. */
   message_type: MessageType.RegisterTrigger
@@ -51,6 +71,15 @@ export type RegisterTriggerMessage = {
   function_id: string
   /** Trigger-type-specific configuration, matching the shape the trigger type expects. */
   config: unknown
+  /**
+   * Namespace the trigger's target function resolves in.
+   *
+   * Omitting it does not bind in the engine's default: `registerTrigger` fills
+   * it from this worker's namespace, because the function a trigger names is
+   * one this worker registered, and that landed in the worker's namespace. Name
+   * another namespace, `default` included, to bind elsewhere.
+   */
+  namespace?: string
 }
 
 export type RegisterFunctionFormat = {
@@ -131,7 +160,17 @@ export type AuthInput = {
  * middleware.
  */
 export type AuthResult = {
-  /** Additional function IDs to allow beyond the `expose_functions` config. Defaults to `[]` if omitted. */
+  /**
+   * Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an
+   * exact function ID or a wildcard, in either the bare (`svc::*`) or the
+   * `match("svc::*")` spelling.
+   *
+   * The keys are also the namespaces the session may declare on
+   * `engine::workers::register`. Omit to scope nothing: the session declares any
+   * namespace, and only `allowed_functions` and `expose_functions` apply.
+   */
+  namespaces?: Record<string, string[]>
+  /** Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. */
   allowed_functions?: string[]
   /** Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. */
   forbidden_functions?: string[]
@@ -161,6 +200,11 @@ export type MiddlewareFunctionInput = {
   action?: TriggerAction
   /** Auth context returned by the auth function for this session. */
   context: Record<string, unknown>
+  /**
+   * Target namespace the invoke addressed; forward the call here to stay in the
+   * caller's namespace. Absent → the engine's default namespace.
+   */
+  namespace?: string
 }
 
 /**
@@ -205,6 +249,12 @@ export type OnTriggerRegistrationInput = {
   function_id: string
   /** Trigger-specific configuration. */
   config: unknown
+  /**
+   * Namespace the trigger's target resolves in (explicit, or `default` when
+   * absent). The same id can exist in several namespaces, so the hook needs this
+   * to authorize per target namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
@@ -238,6 +288,11 @@ export type OnFunctionRegistrationInput = {
   description?: string
   /** Arbitrary metadata attached to the function. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the function registers in. The same id can exist in several
+   * namespaces, so the hook needs this to authorize per namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
@@ -278,6 +333,8 @@ export type TriggerRequest<TInput = unknown> = {
   action?: TriggerAction
   /** Override the default invocation timeout, in milliseconds. */
   timeoutMs?: number
+  /** Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker. */
+  namespace?: string
 }
 
 export type InvokeFunctionMessage = {
@@ -306,6 +363,12 @@ export type InvokeFunctionMessage = {
    * Trigger action for queue routing or fire-and-forget
    */
   action?: TriggerAction
+  /**
+   * Namespace to route this invocation to. The engine reads an absent field as
+   * its default namespace; a call made through this SDK does not arrive absent,
+   * because `trigger` fills it from this worker's namespace.
+   */
+  namespace?: string
 }
 
 export type InvocationResultMessage = {
@@ -358,3 +421,4 @@ export type IIIMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
+  | RegistrationRejectedMessage

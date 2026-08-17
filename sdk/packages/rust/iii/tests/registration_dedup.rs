@@ -149,12 +149,11 @@ async fn mixed_registration_types_each_sent_once() {
     ));
     drop(trigger_type);
     let trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "dedup::mixed::tt".to_string(),
-            function_id: "dedup::mixed::fn".to_string(),
-            config: json!({"foo": "bar"}),
-            metadata: None,
-        })
+        .register_trigger(RegisterTriggerInput::new(
+            "dedup::mixed::tt".to_string(),
+            "dedup::mixed::fn".to_string(),
+            json!({"foo": "bar"}),
+        ))
         .expect("register trigger");
     drop(trigger);
 

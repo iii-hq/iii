@@ -97,6 +97,7 @@ iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
 | `--address <ADDRESS>` | Engine host address [default: localhost] |
 | `--port <PORT>` | Engine WebSocket port [default: 49134] |
 | `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
+| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
 
 <Note>
   `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).

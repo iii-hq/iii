@@ -51,6 +51,31 @@ fn ew_url() -> String {
     std::env::var("III_RBAC_WORKER_URL").unwrap_or_else(|_| "ws://localhost:49135".to_string())
 }
 
+/// Build `InitOptions` for an RBAC worker client with an explicit, test-unique
+/// worker name.
+///
+/// The engine leases `(namespace, worker_name)` to one live worker and fatally
+/// rejects any later claimant. The SDK's default name is
+/// `III_WORKER_NAME ?? "{hostname}:{pid}"`, and `common::shared_iii()` — which
+/// every test here depends on and which stays connected for the whole binary —
+/// already holds that name in the default namespace. Both ports in
+/// `sdk/fixtures/config-test.yaml` are served by the same engine, so a
+/// default-named client on the RBAC port collides with it and gets closed.
+/// Naming each client explicitly keeps the lease uncontended.
+fn ew_options(token: &str, worker_name: &str) -> InitOptions {
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), token.to_string());
+
+    InitOptions {
+        headers: Some(headers),
+        metadata: Some(iii_sdk::runtime::WorkerMetadata {
+            name: format!("rust-sdk-rbac-{worker_name}"),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 /// Poll until `function_id` shows up in the engine registry. RBAC-port
 /// registrations go through the on-function-registration hook on
 /// `shared_iii()`; under CI load that round-trip can exceed a fixed sleep,
@@ -109,6 +134,7 @@ fn ensure_functions_registered() {
 
                     match token.as_deref() {
                         None => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec![],
                             allowed_trigger_types: None,
@@ -118,6 +144,7 @@ fn ensure_functions_registered() {
                             function_registration_prefix: None,
                         }),
                         Some("valid-token") => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec!["test::ew::valid-token-echo".to_string()],
                             forbidden_functions: vec![],
                             allowed_trigger_types: None,
@@ -127,6 +154,7 @@ fn ensure_functions_registered() {
                             function_registration_prefix: None,
                         }),
                         Some("restricted-token") => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec!["test::ew::echo".to_string()],
                             allowed_trigger_types: None,
@@ -136,6 +164,7 @@ fn ensure_functions_registered() {
                             function_registration_prefix: None,
                         }),
                         Some("prefix-token") => Ok(AuthResult {
+                            namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec![],
                             allowed_trigger_types: None,
@@ -298,16 +327,7 @@ async fn should_return_auth_result_for_valid_token() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "auth-result"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
@@ -345,16 +365,7 @@ async fn should_return_error_for_private_function() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "private-fn"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -379,16 +390,7 @@ async fn should_return_forbidden_functions_for_restricted_token() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "restricted-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("restricted-token", "forbidden-fns"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -416,16 +418,7 @@ async fn should_deny_function_registration_via_hook() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "deny-fn-reg"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -461,16 +454,7 @@ async fn should_deny_trigger_type_registration_via_hook() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "deny-tt-reg"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -523,25 +507,15 @@ async fn should_deny_trigger_registration_via_hook() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "deny-trig-reg"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let _ = iii_client.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-        trigger_type: "test-rbac-trigger".to_string(),
-        function_id: "denied-trig::my-fn".to_string(),
-        config: json!({ "key": "value" }),
-        metadata: None,
-    });
+    let _ = iii_client.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+        "test-rbac-trigger".to_string(),
+        "denied-trig::my-fn".to_string(),
+        json!({ "key": "value" }),
+    ));
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -566,16 +540,7 @@ async fn should_apply_function_registration_prefix_and_strip_on_invocation() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "prefix-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("prefix-token", "prefix"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
@@ -613,16 +578,7 @@ async fn should_only_list_allowed_functions_for_valid_token() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "list-allowed"));
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -676,16 +632,7 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "restricted-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("restricted-token", "list-exposed"));
 
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -765,16 +712,7 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "carveout-handler"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(
@@ -858,16 +796,7 @@ async fn infrastructure_logger_directly_callable_under_restricted_expose() {
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    let mut headers = HashMap::new();
-    headers.insert("x-test-token".to_string(), "valid-token".to_string());
-
-    let iii_client = register_worker(
-        &ew_url(),
-        InitOptions {
-            headers: Some(headers),
-            ..Default::default()
-        },
-    );
+    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "carveout-direct"));
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 

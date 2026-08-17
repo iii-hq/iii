@@ -980,4 +980,35 @@ mod tests {
         assert!(cli.config.is_none());
         assert!(worker_dispatch_envs(&cli).is_empty());
     }
+    #[test]
+    fn trigger_parses_namespace_flag_alongside_kv_pairs() {
+        let cli = Cli::try_parse_from([
+            "iii",
+            "trigger",
+            "compose::up",
+            "--namespace",
+            "host-a",
+            "container=api",
+        ])
+        .expect("should parse trigger --namespace");
+
+        match cli.command {
+            Some(Commands::Trigger(args)) => {
+                assert_eq!(args.namespace.as_deref(), Some("host-a"));
+                assert_eq!(args.function_path.as_deref(), Some("compose::up"));
+                assert_eq!(args.kv, vec!["container=api".to_string()]);
+            }
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
+
+    #[test]
+    fn trigger_without_the_flag_carries_no_namespace() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "state::get", "key=a"])
+            .expect("should parse a plain trigger");
+        match cli.command {
+            Some(Commands::Trigger(args)) => assert!(args.namespace.is_none()),
+            _ => panic!("expected Trigger subcommand"),
+        }
+    }
 }

@@ -1274,10 +1274,8 @@ pub fn get_worker_metrics_from_storage(worker_id: &str) -> Option<WorkerMetrics>
                                     event_loop_lag_ms = Some(value);
                                 }
                             }
-                            "iii.worker.uptime_seconds" => {
-                                if uptime_seconds.is_none() {
-                                    uptime_seconds = Some(value as u64);
-                                }
+                            "iii.worker.uptime_seconds" if uptime_seconds.is_none() => {
+                                uptime_seconds = Some(value as u64);
                             }
                             _ => {}
                         }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, InitOptions, register_worker};
+use iii_sdk::{IIIClient, register_worker};
 use serde_json::Value;
 
 use crate::{
@@ -41,7 +41,10 @@ impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(register_worker(&bridge_url, InitOptions::default()));
+        let bridge = Arc::new(register_worker(
+            &bridge_url,
+            crate::workers::bridge_client::bridge_init_options("iii-stream-bridge"),
+        ));
         let handler_function_id = format!("stream::bridge::on_pub::{}", uuid::Uuid::new_v4());
 
         Ok(Self {
@@ -274,15 +277,14 @@ impl StreamAdapter for BridgeAdapter {
             }),
         );
 
-        let _ = self.bridge.register_trigger(RegisterTriggerInput {
-            trigger_type: "subscribe".to_string(),
-            function_id: handler_function_id,
-            config: serde_json::to_value(SubscribeTrigger {
+        let _ = self.bridge.register_trigger(RegisterTriggerInput::new(
+            "subscribe".to_string(),
+            handler_function_id,
+            serde_json::to_value(SubscribeTrigger {
                 topic: STREAM_EVENTS_TOPIC.to_string(),
             })
             .unwrap_or_default(),
-            metadata: None,
-        });
+        ));
 
         self.pub_sub.watch_events().await;
         Ok(())

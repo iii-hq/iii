@@ -45,16 +45,15 @@ async fn register_healthcheck_function_and_trigger() {
     );
 
     let trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: fn_ref.id.clone(),
-            config: json!({
+        .register_trigger(RegisterTriggerInput::new(
+            "http".to_string(),
+            fn_ref.id.clone(),
+            json!({
                 "api_path": "health",
                 "http_method": "GET",
                 "description": "Healthcheck endpoint",
             }),
-            metadata: None,
-        })
+        ))
         .expect("register trigger");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);

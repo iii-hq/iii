@@ -558,7 +558,12 @@ mod tests {
         let engine = Arc::new(Engine::new());
         let module = SimpleWorker;
         module.register_functions(engine.clone());
-        assert!(engine.functions.get("missing").is_none());
+        assert!(
+            engine
+                .functions
+                .get(crate::protocol::DEFAULT_NAMESPACE, "missing")
+                .is_none()
+        );
     }
 
     #[tokio::test]

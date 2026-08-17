@@ -49,12 +49,11 @@ async fn subscribe_and_receive_published_messages() {
     );
 
     let trigger = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "subscribe".to_string(),
-            function_id: fn_id.clone(),
-            config: json!({"topic": topic}),
-            metadata: None,
-        })
+        .register_trigger(RegisterTriggerInput::new(
+            "subscribe".to_string(),
+            fn_id.clone(),
+            json!({"topic": topic}),
+        ))
         .expect("register trigger");
 
     common::settle().await;
@@ -126,20 +125,18 @@ async fn topic_isolation() {
     );
 
     let trigger_a = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "subscribe".to_string(),
-            function_id: fn_id_a.clone(),
-            config: json!({"topic": topic_a}),
-            metadata: None,
-        })
+        .register_trigger(RegisterTriggerInput::new(
+            "subscribe".to_string(),
+            fn_id_a.clone(),
+            json!({"topic": topic_a}),
+        ))
         .expect("register trigger a");
     let trigger_b = iii
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: "subscribe".to_string(),
-            function_id: fn_id_b.clone(),
-            config: json!({"topic": topic_b}),
-            metadata: None,
-        })
+        .register_trigger(RegisterTriggerInput::new(
+            "subscribe".to_string(),
+            fn_id_b.clone(),
+            json!({"topic": topic_b}),
+        ))
         .expect("register trigger b");
 
     common::settle().await;

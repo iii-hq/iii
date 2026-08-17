@@ -15,13 +15,14 @@ pub async fn print(
     address: &str,
     port: u16,
     timeout_ms: u64,
+    namespace: Option<&str>,
 ) -> Result<()> {
     match function_path {
         None => {
             print_static_help();
             Ok(())
         }
-        Some(fn_path) => match fetch_fn_meta(fn_path, address, port, timeout_ms).await {
+        Some(fn_path) => match fetch_fn_meta(fn_path, address, port, timeout_ms, namespace).await {
             Ok(Some(meta)) => {
                 render_fn_help(fn_path, &meta);
                 Ok(())
@@ -59,6 +60,7 @@ async fn fetch_fn_meta(
     address: &str,
     port: u16,
     timeout_ms: u64,
+    namespace: Option<&str>,
 ) -> Result<Option<Value>> {
     let url = format!("ws://{}:{}", address, port);
     let iii = register_worker(&url, InitOptions::default());
@@ -67,10 +69,17 @@ async fn fetch_fn_meta(
     // request/response schemas — `engine::functions::list` returns slim
     // summaries (id + description) and would leave the Parameters table
     // permanently empty.
+    // `engine::functions::info` itself lives in `default`, but it takes the
+    // target namespace in its payload: the same id can exist in several.
+    let mut payload = json!({ "function_id": fn_path });
+    if let Some(namespace) = namespace {
+        payload["namespace"] = json!(namespace);
+    }
+
     let result = iii
         .trigger(TriggerRequest {
             function_id: "engine::functions::info".to_string(),
-            payload: json!({ "function_id": fn_path }),
+            payload,
             action: None,
             timeout_ms: Some(timeout_ms),
         })

@@ -18,7 +18,17 @@ export type AuthInput = {
  * middleware.
  */
 export type AuthResult = {
-  /** Additional function IDs to allow beyond the `expose_functions` config. Defaults to `[]` if omitted. */
+  /**
+   * Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an
+   * exact function ID or a wildcard, in either the bare (`svc::*`) or the
+   * `match("svc::*")` spelling.
+   *
+   * The keys are also the namespaces the session may declare on
+   * `engine::workers::register`. Omit to scope nothing: the session declares any
+   * namespace, and only `allowed_functions` and `expose_functions` apply.
+   */
+  namespaces?: Record<string, string[]>
+  /** Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. */
   allowed_functions?: string[]
   /** Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. */
   forbidden_functions?: string[]
@@ -78,6 +88,12 @@ export type OnTriggerRegistrationInput = {
   config: unknown
   /** Arbitrary metadata attached to the trigger. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the trigger's target resolves in (explicit, or `default` when
+   * absent). The same function id can exist in several namespaces, so the hook
+   * needs this to authorize per target namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
@@ -111,6 +127,11 @@ export type OnFunctionRegistrationInput = {
   description?: string
   /** Arbitrary metadata attached to the function. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the function registers in. The same id can exist in several
+   * namespaces, so the hook needs this to authorize per namespace.
+   */
+  namespace?: string
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }

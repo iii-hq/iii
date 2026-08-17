@@ -13,6 +13,57 @@ use uuid::Uuid;
 
 use crate::invocation::{auth::HttpAuthConfig, method::HttpMethod};
 
+/// Namespace used when a message carries no explicit `namespace`.
+pub const DEFAULT_NAMESPACE: &str = "default";
+
+/// Returns the effective namespace for an optional wire-level namespace,
+/// falling back to [`DEFAULT_NAMESPACE`] when absent.
+pub fn effective_namespace(ns: &Option<String>) -> &str {
+    ns.as_deref().unwrap_or(DEFAULT_NAMESPACE)
+}
+
+/// [`DEFAULT_NAMESPACE`] as an owned `String`. Used as a `#[serde(default)]`
+/// for owned namespace fields so payloads that predate the field decode to
+/// `default` rather than failing.
+pub fn default_namespace() -> String {
+    DEFAULT_NAMESPACE.to_string()
+}
+
+/// [`Message::RegistrationRejected`] code: another live worker already runs
+/// under this name in this namespace.
+///
+/// Defined, but **not emitted yet** — deferred to Task 9.5, after the SDKs learn
+/// to handle `RegistrationRejected`. Rejecting a worker means closing its
+/// connection, and today's SDKs would simply reconnect and be rejected again,
+/// forever. See `.superpowers/sdd/task-4-report.md` for the `hostname:pid`
+/// naming problem this code has to solve before it can ship.
+pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
+
+/// [`Message::RegistrationRejected`] code: another live worker in this
+/// namespace already exports this function id. Only that one registration is
+/// refused; the connection stays open.
+pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
+
+/// A namespace field was present and held nothing but whitespace.
+pub const INVALID_NAMESPACE: &str = "INVALID_NAMESPACE";
+
+/// Whether a namespace field was named and left empty.
+///
+/// Absent and blank are opposite intents. Absent asks for [`DEFAULT_NAMESPACE`];
+/// blank names a namespace and gives nothing to name it with. Reading blank as
+/// absent puts the worker in `default` — somewhere it never asked for, where
+/// every call and trigger it makes then follows it, and the one place an
+/// operator cannot see by reading the declaration. Filing it under the empty
+/// string is worse still: a namespace nobody can address or type.
+///
+/// The SDKs refuse this at construction, each in its own way. The engine
+/// refuses it again because it is the only party every client goes through, and
+/// because an SDK that forgets (or a hand-rolled client) must not be able to
+/// create a namespace with no name.
+pub fn is_blank_namespace(ns: &Option<String>) -> bool {
+    ns.as_deref().is_some_and(|ns| ns.trim().is_empty())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationRef {
     pub url: String,
@@ -47,6 +98,14 @@ pub enum Message {
         trigger_request_format: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         call_request_format: Option<Value>,
+        /// Namespace this provider serves. Absent means the registering
+        /// connection's namespace, which is what every SDK wants and what
+        /// keeps two projects providing the same type id from overwriting each
+        /// other. In-process engine providers register in
+        /// [`DEFAULT_NAMESPACE`], where the resolution in
+        /// [`crate::trigger::TriggerRegistry`] falls back to find them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     RegisterTrigger {
         id: String,
@@ -55,6 +114,22 @@ pub enum Message {
         config: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Namespace the trigger's target function resolves in. Optional and
+        /// additive: absent means the engine's default namespace, independent
+        /// of the registering connection's namespace. Older peers that never
+        /// send it stay wire-compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
+        /// Namespace to find `trigger_type`'s provider in.
+        ///
+        /// Absent is not "default": it asks the engine to resolve, taking the
+        /// registering connection's namespace first and [`DEFAULT_NAMESPACE`]
+        /// second. That is what lets a project ship its own provider for a
+        /// type id the engine also provides, while every worker that has not
+        /// been migrated keeps reaching the engine's one without saying so.
+        /// Naming a namespace here is strict: that namespace or nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger_namespace: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,
@@ -100,6 +175,11 @@ pub enum Message {
         /// wire-compatible.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        /// Target namespace for routing. Optional and additive: absent means
+        /// [`DEFAULT_NAMESPACE`], so older peers that don't send it stay
+        /// wire-compatible.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
     },
     InvocationResult {
         invocation_id: Uuid,
@@ -148,6 +228,15 @@ pub enum Message {
         /// SDKs/engines interop cleanly.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reattach_token: Option<String>,
+    },
+    RegistrationRejected {
+        code: String,
+        namespace: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        function_id: Option<String>,
+        owner_worker_id: String,
     },
 }
 
@@ -238,7 +327,7 @@ pub struct StreamChannelRef {
 
 #[cfg(test)]
 mod tests {
-    use super::{Message, TriggerAction};
+    use super::{DEFAULT_NAMESPACE, Message, TriggerAction, effective_namespace};
     use crate::{
         invocation::{auth::HttpAuthConfig, method::HttpMethod},
         protocol::HttpInvocationRef,
@@ -456,6 +545,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: None,
+            namespace: None,
         };
         let json = serde_json::to_string(&msg).expect("message should serialize");
 
@@ -488,6 +578,7 @@ mod tests {
             baggage: None,
             action: None,
             metadata: Some(serde_json::json!({ "session_id": "s_1" })),
+            namespace: None,
         };
         let json = serde_json::to_string(&msg).expect("serialize");
         assert!(json.contains("\"metadata\""));
@@ -508,5 +599,67 @@ mod tests {
             Message::InvokeFunction { metadata, .. } => assert_eq!(metadata, None),
             _ => panic!("expected InvokeFunction"),
         }
+    }
+
+    #[test]
+    fn effective_namespace_defaults_when_absent() {
+        assert_eq!(effective_namespace(&None), DEFAULT_NAMESPACE);
+        assert_eq!(effective_namespace(&Some("orders".to_string())), "orders");
+    }
+
+    #[test]
+    fn invoke_function_serializes_namespace_when_set() {
+        let msg = Message::InvokeFunction {
+            invocation_id: None,
+            function_id: "state::get".into(),
+            data: serde_json::json!({}),
+            traceparent: None,
+            baggage: None,
+            action: None,
+            metadata: None,
+            namespace: Some("orders".into()),
+        };
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains(r#""namespace":"orders""#));
+    }
+
+    #[test]
+    fn invoke_function_omits_namespace_when_absent_and_parses_legacy() {
+        // legacy wire (sem namespace) continua parseando
+        let json = r#"{"type":"invokefunction","invocation_id":null,"function_id":"state::get","data":{}}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        match msg {
+            Message::InvokeFunction { namespace, .. } => assert!(namespace.is_none()),
+            _ => panic!("expected InvokeFunction"),
+        }
+    }
+
+    #[test]
+    fn registration_rejected_roundtrip() {
+        let worker_conflict = Message::RegistrationRejected {
+            code: "WORKER_NAMESPACE_CONFLICT".into(),
+            namespace: "orders".into(),
+            worker_name: Some("state".into()),
+            function_id: None,
+            owner_worker_id: "abc".into(),
+        };
+        let worker_json = serde_json::to_value(&worker_conflict).unwrap();
+        assert_eq!(worker_json["worker_name"], "state");
+        assert!(worker_json.get("function_id").is_none());
+        let back: Message = serde_json::from_value(worker_json).unwrap();
+        assert!(matches!(back, Message::RegistrationRejected { .. }));
+
+        let function_conflict = Message::RegistrationRejected {
+            code: "FUNCTION_NAMESPACE_CONFLICT".into(),
+            namespace: "orders".into(),
+            worker_name: None,
+            function_id: Some("state::get".into()),
+            owner_worker_id: "abc".into(),
+        };
+        let function_json = serde_json::to_value(&function_conflict).unwrap();
+        assert_eq!(function_json["function_id"], "state::get");
+        assert!(function_json.get("worker_name").is_none());
+        let back: Message = serde_json::from_value(function_json).unwrap();
+        assert!(matches!(back, Message::RegistrationRejected { .. }));
     }
 }

@@ -2,9 +2,10 @@
 
 from iii_helpers.queue import EnqueueResult
 
-from .errors import InvocationError
+from .errors import InvocationError, RegistrationRejectedError
 from .iii import TriggerAction, register_worker
 from .iii_constants import (
+    DEFAULT_ENGINE_URL,
     ConnectionStateCallback,
     IIIConnectionState,
     InitOptions,
@@ -25,8 +26,10 @@ from .types import (
 __all__ = [
     # Errors
     "InvocationError",
+    "RegistrationRejectedError",
     # Core
     "ConnectionStateCallback",
+    "DEFAULT_ENGINE_URL",
     "IIIConnectionState",
     "InitOptions",
     "register_worker",

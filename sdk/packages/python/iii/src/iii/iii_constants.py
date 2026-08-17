@@ -12,6 +12,11 @@ ConnectionStateCallback = Callable[["IIIConnectionState"], None]
 DEFAULT_INVOCATION_TIMEOUT_MS = 30000
 MAX_QUEUE_SIZE = 1000
 
+#: Engine address used when neither an explicit address nor ``III_URL`` is set.
+#: The IPv4 loopback is spelled out on purpose: ``localhost`` can resolve to
+#: ``::1`` on a host whose engine only listens on IPv4.
+DEFAULT_ENGINE_URL = "ws://127.0.0.1:49134"
+
 
 DEFAULT_RECONNECTION_CONFIG = ReconnectionConfig()
 
@@ -54,6 +59,13 @@ class InitOptions:
         worker_name: Display name for this worker. Defaults to ``hostname:pid``.
         worker_description: One-line, human/LLM-readable summary of what this
             worker does. Surfaces in ``engine::workers::list`` / ``engine::workers::info``.
+        namespace: Namespace this worker belongs to. Falls back to the
+            ``III_NAMESPACE`` env var; when neither is set the engine applies
+            ``default``. It scopes more than the registration: the worker and
+            its functions register here, and everything the worker does
+            afterwards follows it -- ``trigger`` resolves its target here and
+            ``register_trigger`` binds here, unless the call names another
+            namespace.
         enable_metrics_reporting: Enable worker metrics via OpenTelemetry. Default ``True``.
         invocation_timeout_ms: Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
         reconnection_config: WebSocket reconnection behavior.
@@ -64,6 +76,7 @@ class InitOptions:
 
     worker_name: str | None = None
     worker_description: str | None = None
+    namespace: str | None = None
     enable_metrics_reporting: bool = True
     invocation_timeout_ms: int = DEFAULT_INVOCATION_TIMEOUT_MS
     reconnection_config: ReconnectionConfig | None = None

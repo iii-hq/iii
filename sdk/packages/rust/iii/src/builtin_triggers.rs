@@ -317,12 +317,11 @@ impl IIITrigger {
 
     /// Create a [`RegisterTriggerInput`] binding this trigger to a function.
     pub fn for_function(self, function_id: impl Into<String>) -> RegisterTriggerInput {
-        RegisterTriggerInput {
-            trigger_type: self.trigger_type_id().to_string(),
-            function_id: function_id.into(),
-            config: serde_json::to_value(&self).unwrap(),
-            metadata: None,
-        }
+        RegisterTriggerInput::new(
+            self.trigger_type_id().to_string(),
+            function_id.into(),
+            serde_json::to_value(&self).unwrap(),
+        )
     }
 }
 

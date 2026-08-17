@@ -329,6 +329,10 @@ mod tests {
             config: json!({ "configuration_id": "iii-stream" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         worker.register_trigger(trigger.clone()).await.unwrap();
         assert_eq!(worker.triggers.id_trigger_count("iii-stream").await, 1);
@@ -377,6 +381,10 @@ mod tests {
             config: json!({ "configuration_id": "iii-stream" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         worker.register_trigger(trigger.clone()).await.unwrap();
         worker.unregister_trigger(trigger).await.unwrap();
@@ -433,6 +441,10 @@ mod tests {
             config: json!({ "configuration_id": "iii-stream" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         worker.register_trigger(trigger_a.clone()).await.unwrap();
         worker.unregister_trigger(trigger_a).await.unwrap();
@@ -446,6 +458,10 @@ mod tests {
             config: json!({ "configuration_id": "iii-stream" }),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         worker.register_trigger(trigger_b).await.unwrap();
         assert!(!worker.triggers.has_pending_expiry("iii-stream").await);
@@ -473,6 +489,10 @@ mod tests {
                     config: json!({}),
                     worker_id: None,
                     metadata: None,
+                    namespace: "default".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
             },
         );
@@ -492,6 +512,10 @@ mod tests {
                     config: json!({ "configuration_id": "iii-stream" }),
                     worker_id: None,
                     metadata: None,
+                    namespace: "default".to_string(),
+                    trigger_namespace: None,
+                    home_namespace: crate::protocol::default_namespace(),
+                    provider_namespace: crate::protocol::default_namespace(),
                 },
             },
         );

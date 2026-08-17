@@ -14,8 +14,9 @@ use iii::{
 };
 
 use common::queue_helpers::{
-    builtin_queue_config, create_engine_with_queue, dlq_count, enqueue, register_counting_function,
-    register_failing_function, register_order_recording_function, register_slow_function,
+    builtin_queue_config, create_engine_with_queue, dlq_count, enqueue, enqueue_ns,
+    register_counting_function, register_failing_function, register_order_recording_function,
+    register_slow_function,
 };
 
 // ---------------------------------------------------------------------------
@@ -502,5 +503,69 @@ async fn start_paused_smoke_test() {
         elapsed >= Duration::from_secs(60),
         "tokio time should have auto-advanced by 60s, but elapsed was {:?}",
         elapsed
+    );
+}
+
+/// The `TriggerAction::Enqueue` path must run the enqueued function in the
+/// namespace captured at enqueue, not `default`. `svc::react` exists in both
+/// `orders` ("from-orders") and `default` ("from-default"); enqueuing with
+/// namespace "orders" must fire the orders target. The namespace rides the
+/// builtin queue's persisted job envelope and is resolved by the consumer via
+/// `call_with_metadata_ns`. Reverting the consumer to `engine.call` (or dropping
+/// the envelope namespace) turns this RED with "from-default".
+#[tokio::test]
+async fn builtin_enqueue_runs_target_in_captured_namespace() {
+    fn register_tagged_ns(
+        engine: &Arc<Engine>,
+        ns: &str,
+        function_id: &str,
+        tag: &str,
+    ) -> Arc<Mutex<Vec<String>>> {
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = fired.clone();
+        let tag = tag.to_string();
+        let function = Function {
+            handler: Arc::new(move |_invocation_id, _input, _session, _metadata| {
+                let sink = sink.clone();
+                let tag = tag.clone();
+                Box::pin(async move {
+                    sink.lock().await.push(tag);
+                    FunctionResult::Success(Some(json!({ "ok": true })))
+                })
+            }),
+            _function_id: function_id.to_string(),
+            _description: Some("namespaced queue handler".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function_ns(ns, function_id.to_string(), function);
+        fired
+    }
+
+    let (engine, worker) = create_engine_with_queue(builtin_queue_config()).await;
+
+    let fired_orders = register_tagged_ns(&engine, "orders", "svc::react", "from-orders");
+    let _fired_default = register_tagged_ns(&engine, "default", "svc::react", "from-default");
+
+    enqueue_ns(
+        &worker,
+        "default",
+        "svc::react",
+        json!({ "n": 1 }),
+        "orders",
+    )
+    .await
+    .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let fired = fired_orders.lock().await.clone();
+    assert_eq!(
+        fired,
+        vec!["from-orders".to_string()],
+        "the enqueue must run the orders target captured at enqueue time; got: {fired:?}"
     );
 }

@@ -53,6 +53,12 @@ pub struct TriggerArgs {
     #[arg(long, default_value_t = 30_000)]
     pub timeout_ms: u64,
 
+    /// Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's
+    /// `default` namespace; routing is strict, so a function registered in
+    /// another namespace is only reachable with this flag.
+    #[arg(short = 'n', long, value_name = "NS")]
+    pub namespace: Option<String>,
+
     /// Print help. With a FUNCTION_PATH, queries a running engine for that
     /// function's description and request schema.
     #[arg(short = 'h', long = "help", action = clap::ArgAction::SetTrue)]
@@ -66,6 +72,7 @@ pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
             &args.address,
             args.port,
             args.timeout_ms,
+            args.namespace.as_deref(),
         )
         .await?;
         return Ok(());
@@ -80,6 +87,7 @@ pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
         &args.address,
         args.port,
         args.timeout_ms,
+        args.namespace.as_deref(),
     )
     .await
 }
@@ -98,6 +106,7 @@ mod tests {
             port: DEFAULT_PORT,
             timeout_ms: 800,
             help: false,
+            namespace: None,
         };
         let err = run_trigger(&args).await.unwrap_err().to_string();
         assert!(
@@ -117,6 +126,7 @@ mod tests {
             port: 19999,
             timeout_ms: 800,
             help: false,
+            namespace: None,
         };
         let err = run_trigger(&args).await.unwrap_err().to_string();
         // The OS may immediately return ECONNREFUSED on closed ports, in which
@@ -143,6 +153,7 @@ mod tests {
             port: DEFAULT_PORT,
             timeout_ms: 30_000,
             help: false,
+            namespace: None,
         };
         let err = run_trigger(&args).await.unwrap_err().to_string();
         assert!(

@@ -18,6 +18,22 @@ being callable until it reconnects.
   Workers](../creating-workers/workers#connecting-to-the-engine).
 </Note>
 
+## Worker identity and namespaces
+
+A worker's identity is the pair `(namespace, name)`, not the name alone. A connection declares its
+namespace when it registers; one that declares none lands in `default`. Two workers may therefore
+share a name as long as they run in different namespaces, and `engine::workers::list` reports a
+`namespace` field on every row to tell them apart.
+
+Within one namespace the name is exclusive. A worker that claims a name a live worker already holds
+there is rejected with a `WORKER_NAMESPACE_CONFLICT` and its connection is closed. A worker
+restarting against its own not-yet-cleaned connection is not affected; it reclaims its own name.
+
+<Note>
+  To put workers in namespaces and call across them, see [Use
+  namespaces](./namespaces).
+</Note>
+
 ## Untrusted workers and access control
 
 The default engine listener trusts anything that connects to it, which is fine for workers you run.

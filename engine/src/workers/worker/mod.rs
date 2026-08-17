@@ -398,4 +398,13 @@ mod tests {
         assert!(config.rbac.is_none());
         assert_eq!(config.handshake_timeout_ms, DEFAULT_HANDSHAKE_TIMEOUT_MS);
     }
+
+    #[test]
+    fn worker_config_rejects_registration_namespace_grace() {
+        let result = serde_json::from_str::<WorkerManagerConfig>(
+            r#"{"registration_namespace_grace_ms":10000}"#,
+        );
+
+        assert!(result.is_err());
+    }
 }

@@ -149,12 +149,11 @@ pub fn register_triggers(bridge: &IIIClient) -> Result<(), Error> {
 
         info!("Registering API trigger: {} -> {}", api_path, function_path);
 
-        bridge.register_trigger(RegisterTriggerInput {
-            trigger_type: "http".to_string(),
-            function_id: function_path.to_string(),
-            config,
-            metadata: None,
-        })?;
+        // Nothing named: the console's routes resolve where the console
+        // registered them, and its `http` provider is found the same way every
+        // unmigrated worker finds one — this connection's namespace first, then
+        // the engine's own.
+        bridge.register_trigger(RegisterTriggerInput::new("http", function_path, config))?;
     }
 
     Ok(())

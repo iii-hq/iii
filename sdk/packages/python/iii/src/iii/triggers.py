@@ -33,6 +33,10 @@ class TriggerConfig(BaseModel, Generic[TConfig]):
     function_id: str
     config: Any  # TConfig
     metadata: dict[str, Any] | None = None
+    # Namespace the trigger's target resolves in. A provider that stores this
+    # config and later calls trigger() must pass this namespace, or it fires in
+    # `default`. None means the engine's default namespace.
+    namespace: str | None = None
 
 
 class TriggerHandler(ABC, Generic[TConfig]):
@@ -111,12 +115,17 @@ class TriggerTypeRef(Generic[C, R]):
         else:
             config_value = config
 
+        # Pairs a function with its trigger, so it defaults the trigger's
+        # namespace to this worker's — otherwise the function lands in the
+        # worker's namespace and the trigger in `default`, never resolving it.
+        # The low-level `register_trigger` keeps the engine default (`default`).
         return self._iii.register_trigger(
             {
                 "type": self._trigger_type_id,
                 "function_id": function_id,
                 "config": config_value,
                 "metadata": metadata,
+                "namespace": self._iii._worker_namespace(),
             }
         )
 

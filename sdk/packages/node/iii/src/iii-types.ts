@@ -24,6 +24,7 @@ export enum MessageType {
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
   WorkerRegistered = 'workerregistered',
+  RegistrationRejected = 'registrationrejected',
   Reattach = 'reattach',
 }
 
@@ -33,6 +34,12 @@ export type RegisterTriggerTypeMessage = {
   id: string
   /** Human-readable description of what this trigger type does. */
   description: string
+  /**
+   * Namespace this provider serves. Omit to let the engine use this
+   * connection's own, which is what a worker providing a trigger type for its
+   * own project wants.
+   */
+  namespace?: string
 }
 
 export type UnregisterTriggerTypeMessage = {
@@ -73,6 +80,25 @@ export type RegisterTriggerMessage = {
   config: unknown
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: Record<string, unknown>
+  /**
+   * Namespace the trigger's target function resolves in.
+   *
+   * Omitting it does not bind in the engine's default: `registerTrigger` fills
+   * it from this worker's namespace, because the function a trigger names is
+   * one this worker registered, and that landed in the worker's namespace. Name
+   * another namespace, `default` included, to bind elsewhere.
+   */
+  namespace?: string
+  /**
+   * Namespace to find the trigger type's provider in.
+   *
+   * Omitting it is not the same as `'default'`: it asks the engine to resolve,
+   * taking this worker's namespace first and the engine's own second. That is
+   * what lets a project ship its own provider for a type id the engine also
+   * provides, while a worker that has not been migrated keeps reaching the
+   * engine's without saying so. Naming one is strict.
+   */
+  trigger_namespace?: string
 }
 
 export type RegisterFunctionFormat = {
@@ -154,6 +180,11 @@ export type MiddlewareFunctionInput = {
   action?: TriggerAction
   /** Auth context returned by the auth function for this session. */
   context: Record<string, unknown>
+  /**
+   * Target namespace the invoke addressed; forward the call here to stay in the
+   * caller's namespace. Absent → the engine's default namespace.
+   */
+  namespace?: string
 }
 
 /**
@@ -172,6 +203,12 @@ export type TriggerRequest<TInput = unknown> = {
   timeoutMs?: number
   /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
   metadata?: unknown
+  /**
+   * Target namespace for routing. Omit to inherit this worker's; say `default`
+   * to reach the engine's from a namespaced worker. Serialized into the
+   * {@link InvokeFunctionMessage} `namespace` field.
+   */
+  namespace?: string
 }
 
 export type InvokeFunctionMessage = {
@@ -206,6 +243,15 @@ export type InvokeFunctionMessage = {
    * inbound means "no metadata" (backward compatible with older engines).
    */
   metadata?: JsonValue
+  /**
+   * Target namespace for routing. Optional and additive: omitted from the JSON
+   * when undefined, and the engine reads an absent field as its default
+   * namespace (backward compatible with older engines).
+   *
+   * A call made through this SDK does not arrive absent: `trigger` fills it
+   * from this worker's namespace unless the request names one.
+   */
+  namespace?: string
 }
 
 export type InvocationResultMessage = {
@@ -237,6 +283,32 @@ export type WorkerRegisteredMessage = {
   reattach_token?: string
 }
 
+/**
+ * Sent by the engine when this worker's registration collides with a live
+ * worker in `namespace`. The `code` decides severity:
+ *
+ * - `WORKER_NAMESPACE_CONFLICT`: another worker already holds this
+ *   `(namespace, worker_name)`. The engine closes the connection -- fatal: the
+ *   SDK stops the worker and does not reconnect.
+ * - `FUNCTION_NAMESPACE_CONFLICT`: another worker already exports this one
+ *   `function_id`. The engine keeps the connection
+ *   open -- non-fatal: only that registration is refused and the worker keeps
+ *   serving its other functions.
+ */
+export type RegistrationRejectedMessage = {
+  message_type: MessageType.RegistrationRejected
+  /** Machine-readable rejection code (`WORKER_NAMESPACE_CONFLICT` | `FUNCTION_NAMESPACE_CONFLICT`). */
+  code: string
+  /** Namespace in which the collision occurred. */
+  namespace: string
+  /** Contested worker name. Present only for `WORKER_NAMESPACE_CONFLICT`. */
+  worker_name?: string
+  /** Contested function id. Present only for `FUNCTION_NAMESPACE_CONFLICT`. */
+  function_id?: string
+  /** ID of the live worker that already owns the contested identity. */
+  owner_worker_id: string
+}
+
 export type UnregisterFunctionMessage = {
   message_type: MessageType.UnregisterFunction
   id: string
@@ -266,3 +338,4 @@ export type IIIMessage =
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
   | WorkerRegisteredMessage
+  | RegistrationRejectedMessage

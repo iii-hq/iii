@@ -27,7 +27,19 @@ pub struct AuthInput {
 /// context is forwarded to the middleware.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthResult {
-    /// Additional function IDs to allow beyond the `expose_functions` config.
+    /// Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. A value
+    /// is an exact function ID or a wildcard, in either the bare (`svc::*`) or
+    /// the `match("svc::*")` spelling.
+    ///
+    /// The keys are also the namespaces the session may declare on
+    /// `engine::workers::register`. Leave it empty to scope nothing: the
+    /// session declares any namespace, and only `allowed_functions` and
+    /// `expose_functions` apply.
+    #[serde(default)]
+    pub namespaces: HashMap<String, Vec<String>>,
+    /// Additional function IDs to allow beyond the `expose_functions` config,
+    /// in the `default` namespace only. Put per-namespace grants in
+    /// [`AuthResult::namespaces`].
     #[serde(default)]
     pub allowed_functions: Vec<String>,
     /// Function IDs to deny even if they match `expose_functions`.
@@ -87,6 +99,12 @@ pub struct OnTriggerTypeRegistrationResult {
     pub description: Option<String>,
 }
 
+/// Wire-compat default for [`OnTriggerRegistrationInput::namespace`] when an
+/// older engine omits the field.
+fn default_namespace_field() -> String {
+    "default".to_string()
+}
+
 /// Input passed to the `on_trigger_registration_function_id` hook
 /// when a worker attempts to register a trigger through the RBAC port.
 /// Return an [`OnTriggerRegistrationResult`] with the (possibly mapped)
@@ -104,6 +122,11 @@ pub struct OnTriggerRegistrationInput {
     /// Arbitrary metadata attached to the trigger.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the trigger's target resolves in (explicit, or `default` when
+    /// absent). The same function id can exist in several namespaces, so the hook
+    /// needs this to authorize per target namespace.
+    #[serde(default = "default_namespace_field")]
+    pub namespace: String,
     /// Auth context from `AuthResult.context` for this session.
     pub context: Value,
 }
@@ -140,6 +163,10 @@ pub struct OnFunctionRegistrationInput {
     /// Arbitrary metadata attached to the function.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the function registers in. The same id can exist in several
+    /// namespaces, so the hook needs this to authorize per namespace.
+    #[serde(default = "default_namespace_field")]
+    pub namespace: String,
     /// Auth context from `AuthResult.context` for this session.
     pub context: Value,
 }
@@ -168,6 +195,7 @@ mod tests {
     #[test]
     fn auth_result_defaults_match_engine() {
         let result: AuthResult = serde_json::from_str("{}").unwrap();
+        assert!(result.namespaces.is_empty());
         assert_eq!(result.allowed_functions, Vec::<String>::new());
         assert_eq!(result.forbidden_functions, Vec::<String>::new());
         assert_eq!(result.allowed_trigger_types, None);

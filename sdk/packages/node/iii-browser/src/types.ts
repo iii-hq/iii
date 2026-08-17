@@ -1,4 +1,5 @@
 import type { ChannelReader, ChannelWriter } from './channels'
+import type { RegistrationRejectedError } from './errors'
 import type { IIIConnectionState } from './iii-constants'
 import type {
   RegisterFunctionMessage,
@@ -211,6 +212,13 @@ export interface ISdk {
    * ```
    */
   addConnectionStateListener(handler: (state: IIIConnectionState) => void): () => void
+
+  /**
+   * The fatal registration rejection that terminated this connection, if any
+   * (e.g. a `WORKER_NAMESPACE_CONFLICT`); `undefined` while healthy. Mirrors the
+   * Node/Python/Rust SDKs.
+   */
+  getFatalError(): RegistrationRejectedError | undefined
 }
 
 /**

@@ -54,6 +54,38 @@ func (e *InvocationError) Error() string {
 	return fmt.Sprintf("iii: invocation failed: %s: %s", e.Code, e.Message)
 }
 
+// RegistrationRejectedError is the terminal error the engine returns when a
+// worker's registration is refused for good — typically a WORKER_NAMESPACE_CONFLICT,
+// where another live worker already owns this name in the namespace. It is
+// delivered to every pending invocation and reported by [Client.FatalError];
+// the worker stops and does not reconnect. Mirrors the Node/Python/Rust SDKs.
+//
+// Recover the details with errors.As:
+//
+//	var re *iii.RegistrationRejectedError
+//	if errors.As(err, &re) { ... re.Code, re.Namespace ... }
+type RegistrationRejectedError struct {
+	// Code is the rejection code, e.g. "WORKER_NAMESPACE_CONFLICT".
+	Code string
+	// Namespace is the namespace the conflict occurred in.
+	Namespace string
+	// WorkerName is the rejected worker name for a worker conflict.
+	WorkerName string
+	// FunctionID is the rejected function id for a function conflict.
+	FunctionID string
+	// OwnerWorkerID is the id of the worker that already owns the name.
+	OwnerWorkerID string
+}
+
+func (e *RegistrationRejectedError) Error() string {
+	if e.FunctionID != "" {
+		return fmt.Sprintf("iii: registration rejected (%s): function %q in namespace %q already owned by worker %s",
+			e.Code, e.FunctionID, e.Namespace, e.OwnerWorkerID)
+	}
+	return fmt.Sprintf("iii: registration rejected (%s): worker %q in namespace %q already owned by worker %s",
+		e.Code, e.WorkerName, e.Namespace, e.OwnerWorkerID)
+}
+
 // newInvocationError builds an InvocationError from a wire ErrorBody and the function
 // it targeted. body must be non-nil.
 func newInvocationError(body *ErrorBody, functionID string) *InvocationError {

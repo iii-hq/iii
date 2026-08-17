@@ -64,8 +64,25 @@ pub enum RegisterTriggerOutcome {
     Deferred,
 }
 
+/// What identifies a provider: the namespace it serves and the type id it
+/// answers for.
+///
+/// The id alone was the key until trigger types became namespaced, and two
+/// projects providing the same id overwrote each other — silently, and taking
+/// the loser's bindings with them into the winner's provider.
+pub type TypeKey = (String, String);
+
+/// Builds a [`TypeKey`] without the call sites spelling out two `to_string()`s.
+pub fn type_key(namespace: &str, id: &str) -> TypeKey {
+    (namespace.to_string(), id.to_string())
+}
+
 pub struct TriggerType {
     pub id: String,
+    /// Namespace this provider serves. In-process engine providers use
+    /// [`DEFAULT_NAMESPACE`]; an SDK worker's provider uses its connection's
+    /// namespace.
+    pub namespace: String,
     pub _description: String,
     pub trigger_request_format: Option<Value>,
     pub call_request_format: Option<Value>,
@@ -75,7 +92,25 @@ pub struct TriggerType {
 }
 
 impl TriggerType {
+    /// A provider in [`DEFAULT_NAMESPACE`] — where every in-process engine
+    /// provider lives, and where a resolved lookup falls back to.
     pub fn new(
+        id: impl Into<String>,
+        description: impl Into<String>,
+        registrator: Box<dyn TriggerRegistrator>,
+        worker_id: Option<Uuid>,
+    ) -> Self {
+        Self::new_ns(
+            crate::protocol::DEFAULT_NAMESPACE,
+            id,
+            description,
+            registrator,
+            worker_id,
+        )
+    }
+
+    pub fn new_ns(
+        namespace: impl Into<String>,
         id: impl Into<String>,
         description: impl Into<String>,
         registrator: Box<dyn TriggerRegistrator>,
@@ -87,6 +122,7 @@ impl TriggerType {
         let call_response_format = Self::call_response_format_for(&id);
         Self {
             id,
+            namespace: namespace.into(),
             _description: description.into(),
             trigger_request_format,
             call_request_format,
@@ -94,6 +130,11 @@ impl TriggerType {
             registrator,
             worker_id,
         }
+    }
+
+    /// The key this provider is filed under.
+    pub fn key(&self) -> TypeKey {
+        (self.namespace.clone(), self.id.clone())
     }
 
     pub fn with_trigger_request_format<T: schemars::JsonSchema>(mut self) -> Self {
@@ -214,6 +255,70 @@ pub struct Trigger {
     pub worker_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Namespace the target `function_id` resolves in when this trigger fires.
+    /// Taken from the `RegisterTrigger` message's `namespace` (not the registering
+    /// connection): the trigger names its target namespace explicitly, and an
+    /// absent value means [`crate::protocol::DEFAULT_NAMESPACE`] — see
+    /// `Engine::fire_triggers`. Also defaults to `default` for engine-internal /
+    /// durable registrations and for wire payloads that predate the field.
+    #[serde(default = "crate::protocol::default_namespace")]
+    pub namespace: String,
+    /// Namespace the caller named for the provider, if any.
+    ///
+    /// `Some` is strict: that namespace or nothing. `None` asks for the
+    /// resolution in [`TriggerRegistry::resolve_provider_key`] — `home_namespace`
+    /// first, then [`DEFAULT_NAMESPACE`] — which is what carries workers that
+    /// have not been migrated onto the engine's own providers without them
+    /// saying anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_namespace: Option<String>,
+    /// The registering connection's namespace: the first place a resolved
+    /// lookup looks, and the namespace a provider must later register in to
+    /// claim this binding back from the fallback.
+    ///
+    /// Kept apart from `namespace`, which is the *target*'s: a worker may bind
+    /// a trigger whose function lives elsewhere, and its provider should still
+    /// be the one at home.
+    #[serde(default = "crate::protocol::default_namespace")]
+    pub home_namespace: String,
+    /// Where the provider was actually found. Written by the registry at bind
+    /// time and read by everything that has to reach the same provider again:
+    /// replay, unregister, and the disconnect sweep.
+    #[serde(default = "crate::protocol::default_namespace")]
+    pub provider_namespace: String,
+}
+
+impl Trigger {
+    /// The three namespace fields for an engine-internal binding: one declared
+    /// in engine configuration, or registered through
+    /// `engine::register_trigger` rather than by a worker connection.
+    ///
+    /// These are engine orchestration, so they are at home in
+    /// [`DEFAULT_NAMESPACE`] and resolve their provider there — which is also
+    /// where every in-process provider registers. They stay resolvable rather
+    /// than explicit so a project that later provides the type can still be
+    /// preferred if such a binding is ever given a different home.
+    pub fn internal_namespaces() -> (Option<String>, String, String) {
+        (
+            None,
+            crate::protocol::default_namespace(),
+            crate::protocol::default_namespace(),
+        )
+    }
+
+    /// The provider this binding is currently bound to.
+    pub fn provider_key(&self) -> TypeKey {
+        (self.provider_namespace.clone(), self.trigger_type.clone())
+    }
+
+    /// Whether this binding is only on the fallback provider, and so would
+    /// prefer a provider that registers at home later.
+    ///
+    /// Explicit bindings are never re-homed: naming a namespace means that one
+    /// and no other.
+    pub fn is_on_fallback(&self) -> bool {
+        self.trigger_namespace.is_none() && self.provider_namespace != self.home_namespace
+    }
 }
 
 // Only `id` is considered for Hash and Eq/PartialEq
@@ -231,7 +336,8 @@ impl std::hash::Hash for Trigger {
 
 #[derive(Default)]
 pub struct TriggerRegistry {
-    pub trigger_types: Arc<DashMap<String, TriggerType>>,
+    /// Providers, by `(namespace, type id)`.
+    pub trigger_types: Arc<DashMap<TypeKey, TriggerType>>,
     pub triggers: Arc<DashMap<String, Trigger>>,
     /// Registration intents whose trigger type is not currently available or
     /// whose activation did not complete: the type never registered, its
@@ -260,8 +366,137 @@ impl TriggerRegistry {
         }
     }
 
+    /// The namespace a fired trigger's target/condition function resolves in,
+    /// looked up LIVE by trigger id at fire time.
+    ///
+    /// Message-broker triggers (queue `durable:subscriber`, `subscribe`) invoke
+    /// their target inside an adapter task that holds only the trigger id — the
+    /// enqueued/published message carries no namespace. Resolving against the
+    /// registry here uses the trigger's CURRENT binding, exactly as the
+    /// in-process workers (state/stream/cron/...) read the live `Trigger`. A
+    /// message that sits in a durable queue while its trigger is re-registered
+    /// therefore resolves against the new namespace, and one whose trigger has
+    /// been unregistered falls back to [`DEFAULT_NAMESPACE`] (there is no binding
+    /// left to consult). This is the intended semantic for this plan, not an
+    /// accident of lookup.
+    pub fn namespace_of(&self, trigger_id: &str) -> String {
+        self.triggers
+            .get(trigger_id)
+            .map(|t| t.namespace.clone())
+            .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string())
+    }
+
+    /// Where this binding's provider lives, or `None` when nothing provides it.
+    ///
+    /// Two steps, and the order is the whole migration story: a project that
+    /// ships its own provider for a type id gets it, and everything that has
+    /// not been migrated reaches the engine's provider in
+    /// [`DEFAULT_NAMESPACE`] without having to say so. Naming a namespace
+    /// explicitly skips both steps — that namespace or nothing, because a
+    /// caller who was specific should not be quietly served by someone else.
+    pub fn resolve_provider_key(&self, trigger: &Trigger) -> Option<TypeKey> {
+        if let Some(explicit) = &trigger.trigger_namespace {
+            let key = type_key(explicit, &trigger.trigger_type);
+            return self.trigger_types.contains_key(&key).then_some(key);
+        }
+
+        let home = type_key(&trigger.home_namespace, &trigger.trigger_type);
+        if self.trigger_types.contains_key(&home) {
+            return Some(home);
+        }
+
+        let fallback = type_key(crate::protocol::DEFAULT_NAMESPACE, &trigger.trigger_type);
+        self.trigger_types
+            .contains_key(&fallback)
+            .then_some(fallback)
+    }
+
+    /// Bindings that fell back to [`DEFAULT_NAMESPACE`] and would rather have
+    /// the provider that just registered at `namespace`.
+    ///
+    /// Without this the resolution is order-dependent: a worker that binds
+    /// before its project's provider announces itself lands on the engine's
+    /// one and stays there for good — so whether a project's own provider is
+    /// used comes down to which container started first, which is not
+    /// something anyone can see or control.
+    fn fallback_bindings_for(&self, namespace: &str, type_id: &str) -> Vec<Trigger> {
+        self.triggers
+            .iter()
+            .filter(|pair| {
+                let trigger = pair.value();
+                trigger.trigger_type == type_id
+                    && trigger.home_namespace == namespace
+                    && trigger.is_on_fallback()
+            })
+            .map(|pair| pair.value().clone())
+            .collect()
+    }
+
+    /// Move fallback bindings onto the provider that just registered at home.
+    ///
+    /// The old provider is told to let go first. A failure there is logged and
+    /// not fatal: the binding still moves, because leaving it on a provider
+    /// this registry no longer routes to would make it fire from a place
+    /// nothing can unregister.
+    async fn rehome_fallback_bindings(&self, trigger_type: &TriggerType) {
+        let candidates = self.fallback_bindings_for(&trigger_type.namespace, &trigger_type.id);
+        if candidates.is_empty() {
+            return;
+        }
+
+        for mut trigger in candidates {
+            let previous = trigger.provider_key();
+            if let Some(old) = self.trigger_types.get(&previous)
+                && let Err(err) = old.registrator.unregister_trigger(trigger.clone()).await
+            {
+                tracing::warn!(
+                    error = %err,
+                    trigger_id = %trigger.id,
+                    from = %previous.0,
+                    "Could not detach a trigger from its fallback provider; re-homing anyway"
+                );
+            }
+
+            trigger.provider_namespace = trigger_type.namespace.clone();
+            match trigger_type
+                .registrator
+                .replay_trigger(trigger.clone())
+                .await
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        "{} Trigger {} (type {}) moved from {} to its own namespace {}",
+                        "[RE-HOMED]".green(),
+                        trigger.id.purple(),
+                        trigger.trigger_type.purple(),
+                        previous.0.purple(),
+                        trigger_type.namespace.purple(),
+                    );
+                    self.triggers.insert(trigger.id.clone(), trigger);
+                }
+                Err(err) => {
+                    // It is off the old provider and the new one refused it.
+                    // Park rather than leave it pointing at a provider that is
+                    // no longer routed: pending is the bucket that gets
+                    // retried on the next registration.
+                    tracing::error!(
+                        error = %err,
+                        trigger_id = %trigger.id,
+                        "Re-homing failed; the binding is parked until the trigger type re-registers"
+                    );
+                    let _park = self
+                        .park_transition
+                        .lock()
+                        .expect("park_transition lock poisoned");
+                    self.triggers.remove(&trigger.id);
+                    self.pending_triggers.insert(trigger.id.clone(), trigger);
+                }
+            }
+        }
+    }
+
     pub async fn unregister_worker(&self, worker_id: &Uuid) {
-        let worker_trigger_type_ids: Vec<String> = self
+        let worker_trigger_type_keys: Vec<TypeKey> = self
             .trigger_types
             .iter()
             .filter(|pair| pair.value().worker_id == Some(*worker_id))
@@ -295,7 +530,7 @@ impl TriggerRegistry {
                 continue;
             }
 
-            if let Some(trigger_type) = self.trigger_types.get(&trigger.trigger_type) {
+            if let Some(trigger_type) = self.trigger_types.get(&trigger.provider_key()) {
                 tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
 
                 let result: Result<(), anyhow::Error> = trigger_type
@@ -315,8 +550,8 @@ impl TriggerRegistry {
         self.pending_triggers
             .retain(|_, trigger| trigger.worker_id != Some(*worker_id));
 
-        for trigger_type_id in worker_trigger_type_ids {
-            tracing::debug!(trigger_type_id = %trigger_type_id, "Removing trigger type");
+        for key in worker_trigger_type_keys {
+            tracing::debug!(trigger_type_id = %key.1, namespace = %key.0, "Removing trigger type");
             // The entry may have been replaced by a new provider between the
             // snapshot above and now (worker restart: the replacement can
             // register before the old connection's cleanup runs). Only remove
@@ -324,43 +559,74 @@ impl TriggerRegistry {
             // then are its bindings orphaned; a replaced type keeps firing.
             let removed = self
                 .trigger_types
-                .remove_if(&trigger_type_id, |_, tt| tt.worker_id == Some(*worker_id))
+                .remove_if(&key, |_, tt| tt.worker_id == Some(*worker_id))
                 .is_some();
             if !removed {
                 tracing::debug!(
-                    trigger_type_id = %trigger_type_id,
+                    trigger_type_id = %key.1,
                     "Trigger type already replaced by another worker; leaving it"
                 );
                 continue;
             }
-            tracing::debug!(trigger_type_id = %trigger_type_id, "Trigger type removed");
+            tracing::debug!(trigger_type_id = %key.1, "Trigger type removed");
 
-            // Bindings from other owners that reference the departed type are
-            // now orphaned: nothing can fire them. Park them as pending
-            // intents so they are re-activated when the type (re)registers —
-            // a provider worker restart must not silently drop everyone
-            // else's bindings.
+            // Bindings this provider served are now orphaned: nothing can fire
+            // them. Each resolves again — a binding that only resolved here
+            // because it is at home can fall back to the engine's provider in
+            // `default`, which is the same step that carried it before its own
+            // provider existed. Whatever still resolves nowhere is parked, so a
+            // provider restart never silently drops everyone else's bindings.
             let orphaned: Vec<Trigger> = self
                 .triggers
                 .iter()
-                .filter(|pair| pair.value().trigger_type == trigger_type_id)
+                .filter(|pair| pair.value().provider_key() == key)
                 .map(|pair| pair.value().clone())
                 .collect();
-            for trigger in orphaned {
-                // Park only when this call is the one that removed the
-                // binding: a concurrent owner-disconnect cleanup may have
-                // already reaped it, and parking it anyway would resurrect a
-                // dead worker's binding as a pending intent.
+            for mut trigger in orphaned {
+                // Act only when this call is the one that removed the binding:
+                // a concurrent owner-disconnect cleanup may have already
+                // reaped it, and re-adding it would resurrect a dead worker's
+                // binding.
                 if self.triggers.remove(&trigger.id).is_none() {
                     continue;
                 }
-                tracing::warn!(
-                    "{} Trigger {} (type {}, function {}) is disabled: its trigger type was unregistered. It will be re-registered automatically when the trigger type returns.",
-                    "[DISABLED]".yellow(),
-                    trigger.id.purple(),
-                    trigger.trigger_type.purple(),
-                    trigger.function_id.purple(),
-                );
+
+                match self.resolve_provider_key(&trigger) {
+                    Some(next) => {
+                        trigger.provider_namespace = next.0.clone();
+                        let replayed = match self.trigger_types.get(&next) {
+                            Some(provider) => {
+                                provider.registrator.replay_trigger(trigger.clone()).await
+                            }
+                            None => Err(anyhow::anyhow!("provider vanished during failover")),
+                        };
+                        match replayed {
+                            Ok(()) => {
+                                tracing::info!(
+                                    "{} Trigger {} (type {}) fell back to {} after its provider left",
+                                    "[RE-HOMED]".green(),
+                                    trigger.id.purple(),
+                                    trigger.trigger_type.purple(),
+                                    next.0.purple(),
+                                );
+                                self.triggers.insert(trigger.id.clone(), trigger);
+                                continue;
+                            }
+                            Err(err) => tracing::error!(
+                                error = %err,
+                                trigger_id = %trigger.id,
+                                "Fallback provider refused the binding; parking it"
+                            ),
+                        }
+                    }
+                    None => tracing::warn!(
+                        "{} Trigger {} (type {}, function {}) is disabled: its trigger type was unregistered. It will be re-registered automatically when the trigger type returns.",
+                        "[DISABLED]".yellow(),
+                        trigger.id.purple(),
+                        trigger.trigger_type.purple(),
+                        trigger.function_id.purple(),
+                    ),
+                }
                 self.pending_triggers.insert(trigger.id.clone(), trigger);
             }
         }
@@ -370,12 +636,14 @@ impl TriggerRegistry {
         &self,
         trigger_type: TriggerType,
     ) -> Result<(), anyhow::Error> {
+        let key = trigger_type.key();
         let trigger_type_id = trigger_type.id.clone();
 
         tracing::info!(
-            "{} Trigger Type {}",
+            "{} Trigger Type {} in {}",
             "[REGISTERED]".green(),
-            trigger_type_id.purple()
+            trigger_type_id.purple(),
+            trigger_type.namespace.purple()
         );
 
         // Publish the type BEFORE any replay so every concurrent path
@@ -388,20 +656,22 @@ impl TriggerRegistry {
         //    its ownership check (see `unregister_worker`) instead of parking
         //    bindings this registration is about to replay — which would
         //    deliver them twice.
-        self.trigger_types
-            .insert(trigger_type_id.clone(), trigger_type);
+        self.trigger_types.insert(key.clone(), trigger_type);
 
+        // Only the bindings this provider actually serves. Filtering by type
+        // id alone is what sent one project's bindings into another project's
+        // provider, so the resolved key is the filter.
         let matching_triggers: Vec<Trigger> = self
             .triggers
             .iter()
-            .filter(|pair| pair.value().trigger_type == trigger_type_id)
+            .filter(|pair| pair.value().provider_key() == key)
             .map(|pair| pair.value().clone())
             .collect();
 
         // Re-fetch instead of using the inserted value: if an even newer
         // generation replaced the entry in the meantime, replay must route to
         // that one.
-        if let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) {
+        if let Some(trigger_type) = self.trigger_types.get(&key) {
             for trigger in matching_triggers {
                 let result = trigger_type
                     .registrator
@@ -412,21 +682,37 @@ impl TriggerRegistry {
                 }
             }
 
+            // A parked intent resolves again from scratch: it may have been
+            // parked when nothing provided the type at all, and this
+            // registration is what makes it resolvable.
             let pending: Vec<String> = self
                 .pending_triggers
                 .iter()
-                .filter(|pair| pair.value().trigger_type == trigger_type_id)
+                .filter(|pair| {
+                    pair.value().trigger_type == trigger_type_id
+                        && self.resolve_provider_key(pair.value()).as_ref() == Some(&key)
+                })
                 .map(|pair| pair.key().clone())
                 .collect();
 
             for trigger_id in pending {
                 // `remove` claims the intent, so a concurrent drain of the
                 // same type cannot activate it twice.
-                let Some((_, trigger)) = self.pending_triggers.remove(&trigger_id) else {
+                let Some((_, mut trigger)) = self.pending_triggers.remove(&trigger_id) else {
                     continue;
                 };
+                trigger.provider_namespace = key.0.clone();
                 self.activate_pending_trigger(&trigger_type, trigger).await;
             }
+        }
+
+        // Claim back what settled on the fallback before this provider existed.
+        // Re-fetched for the same reason as above, and after the replay so a
+        // binding is never in flight to two providers at once.
+        if key.0 != crate::protocol::DEFAULT_NAMESPACE
+            && let Some(trigger_type) = self.trigger_types.get(&key)
+        {
+            self.rehome_fallback_bindings(&trigger_type).await;
         }
 
         Ok(())
@@ -497,8 +783,17 @@ impl TriggerRegistry {
         &self,
         trigger: Trigger,
     ) -> Result<RegisterTriggerOutcome, anyhow::Error> {
-        let trigger_type_id = trigger.trigger_type.clone();
-        let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
+        let mut trigger = trigger;
+        let resolved = self.resolve_provider_key(&trigger);
+        if let Some(key) = &resolved {
+            trigger.provider_namespace = key.0.clone();
+        }
+        let trigger = trigger;
+
+        let Some(trigger_type) = resolved
+            .as_ref()
+            .and_then(|key| self.trigger_types.get(key))
+        else {
             // Park the intent instead of failing: workers may connect in any
             // order, and a binding that arrives before its trigger type's
             // provider must survive until the provider shows up.
@@ -510,11 +805,16 @@ impl TriggerRegistry {
             // lookup above and the park, its pending drain may have already
             // run. Re-check and activate the intent ourselves — claiming it
             // via `remove` so we never double-activate with a drain.
-            if let Some(trigger_type) = self.trigger_types.get(&trigger_type_id)
-                && let Some((_, parked)) = self.pending_triggers.remove(&trigger.id)
-                && self.activate_pending_trigger(&trigger_type, parked).await
+            // Resolved again rather than reusing the earlier miss: the
+            // provider that appeared in the meantime may be either step.
+            if let Some(key) = self.resolve_provider_key(&trigger)
+                && let Some(trigger_type) = self.trigger_types.get(&key)
+                && let Some((_, mut parked)) = self.pending_triggers.remove(&trigger.id)
             {
-                return Ok(RegisterTriggerOutcome::Registered);
+                parked.provider_namespace = key.0.clone();
+                if self.activate_pending_trigger(&trigger_type, parked).await {
+                    return Ok(RegisterTriggerOutcome::Registered);
+                }
             }
 
             return Ok(RegisterTriggerOutcome::Deferred);
@@ -591,7 +891,7 @@ impl TriggerRegistry {
             trigger_entry.value().clone()
         };
 
-        if let Some(tt) = self.trigger_types.get(&trigger.trigger_type) {
+        if let Some(tt) = self.trigger_types.get(&trigger.provider_key()) {
             tt.registrator.unregister_trigger(trigger.clone()).await?;
         }
 
@@ -630,9 +930,9 @@ impl TriggerRegistry {
                 function_id = %failed.function_id,
                 "Trigger registration rejected by provider; parked as pending until the trigger type re-registers"
             );
-            let trigger_type_id = failed.trigger_type.clone();
+            let provider = failed.provider_key();
             self.pending_triggers.insert(failed.id.clone(), failed);
-            trigger_type_id
+            provider
         };
 
         // Close the park/replacement race (mirror of the unknown-type park in
@@ -656,6 +956,7 @@ impl TriggerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::DEFAULT_NAMESPACE;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -749,7 +1050,352 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         }
+    }
+
+    /// A binding as a worker at `home` would register it: the provider is
+    /// resolved, not named.
+    fn resolved_trigger(id: &str, trigger_type: &str, home: &str) -> Trigger {
+        Trigger {
+            home_namespace: home.to_string(),
+            ..make_trigger(id, trigger_type)
+        }
+    }
+
+    /// A binding that names its provider's namespace: strict, no fallback.
+    fn explicit_trigger(id: &str, trigger_type: &str, home: &str, provider: &str) -> Trigger {
+        Trigger {
+            home_namespace: home.to_string(),
+            trigger_namespace: Some(provider.to_string()),
+            ..make_trigger(id, trigger_type)
+        }
+    }
+
+    fn make_trigger_type_ns(namespace: &str, id: &str) -> TriggerType {
+        TriggerType::new_ns(
+            namespace,
+            id,
+            format!("Test trigger type {} in {}", id, namespace),
+            Box::new(MockRegistrator::new()),
+            None,
+        )
+    }
+
+    // ── The four resolutions ─────────────────────────────────────────────
+    //
+    // A binding names two namespaces, and they answer different questions:
+    // where the provider is, and where the target function is. These four
+    // cover every combination of "at home" and "somewhere else".
+
+    #[tokio::test]
+    async fn a_provider_at_home_serves_its_own_namespace() {
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type_ns("shop", "webhook"))
+            .await
+            .unwrap();
+
+        let trigger = resolved_trigger("t1", "webhook", "shop");
+        assert_eq!(
+            registry.register_trigger(trigger).await.unwrap(),
+            RegisterTriggerOutcome::Registered
+        );
+
+        let stored = registry.triggers.get("t1").unwrap();
+        assert_eq!(stored.provider_namespace, "shop");
+        assert!(!stored.is_on_fallback());
+    }
+
+    #[tokio::test]
+    async fn a_worker_with_no_provider_at_home_falls_back_to_default() {
+        // The migration case: the engine's providers live in `default`, and a
+        // worker in another namespace reaches them without saying anything.
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type("cron"))
+            .await
+            .unwrap();
+
+        let trigger = resolved_trigger("t1", "cron", "shop");
+        assert_eq!(
+            registry.register_trigger(trigger).await.unwrap(),
+            RegisterTriggerOutcome::Registered
+        );
+
+        let stored = registry.triggers.get("t1").unwrap();
+        assert_eq!(stored.provider_namespace, DEFAULT_NAMESPACE);
+        assert!(stored.is_on_fallback(), "it is only borrowing the engine's");
+    }
+
+    #[tokio::test]
+    async fn home_wins_over_the_fallback_when_both_exist() {
+        // Both providers are up before the bind. The project's own is the one
+        // that should serve it — that is what makes shipping a replacement for
+        // a built-in type possible at all.
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type("state"))
+            .await
+            .unwrap();
+        registry
+            .register_trigger_type(make_trigger_type_ns("shop", "state"))
+            .await
+            .unwrap();
+
+        registry
+            .register_trigger(resolved_trigger("t1", "state", "shop"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.triggers.get("t1").unwrap().provider_namespace,
+            "shop"
+        );
+        // And both providers are still there: one did not replace the other.
+        assert_eq!(registry.trigger_types.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn naming_a_namespace_takes_that_one_and_no_other() {
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type("cron"))
+            .await
+            .unwrap();
+        registry
+            .register_trigger_type(make_trigger_type_ns("shop", "cron"))
+            .await
+            .unwrap();
+
+        // Explicit `default` from a worker at home in `shop`: the provider at
+        // home exists and must NOT be preferred. A caller who was specific is
+        // not quietly served by someone else.
+        registry
+            .register_trigger(explicit_trigger("t1", "cron", "shop", DEFAULT_NAMESPACE))
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.triggers.get("t1").unwrap().provider_namespace,
+            DEFAULT_NAMESPACE
+        );
+
+        // And an explicit namespace nobody provides does not fall back — it
+        // parks, the same as any other unavailable provider.
+        assert_eq!(
+            registry
+                .register_trigger(explicit_trigger("t2", "cron", "shop", "nowhere"))
+                .await
+                .unwrap(),
+            RegisterTriggerOutcome::Deferred
+        );
+        assert!(registry.pending_triggers.contains_key("t2"));
+    }
+
+    #[tokio::test]
+    async fn the_target_namespace_is_independent_of_the_provider() {
+        // Everything outside its own namespace: the provider is the engine's,
+        // the target is a third namespace, and the worker's own appears in
+        // neither resolution.
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type("cron"))
+            .await
+            .unwrap();
+
+        let trigger = Trigger {
+            namespace: "billing".to_string(),
+            ..resolved_trigger("t1", "cron", "shop")
+        };
+        registry.register_trigger(trigger).await.unwrap();
+
+        let stored = registry.triggers.get("t1").unwrap();
+        assert_eq!(stored.provider_namespace, DEFAULT_NAMESPACE, "provider");
+        assert_eq!(stored.namespace, "billing", "target");
+        assert_eq!(stored.home_namespace, "shop", "the worker's own");
+    }
+
+    // ── Re-homing ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_provider_arriving_late_claims_back_what_fell_back() {
+        // The ordering that would otherwise decide everything silently: the
+        // binding is made before the project's own provider is up.
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type("state"))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(resolved_trigger("t1", "state", "shop"))
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.triggers.get("t1").unwrap().provider_namespace,
+            DEFAULT_NAMESPACE
+        );
+
+        // The project's provider registers afterwards.
+        registry
+            .register_trigger_type(make_trigger_type_ns("shop", "state"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.triggers.get("t1").unwrap().provider_namespace,
+            "shop",
+            "a binding must not be stuck on the fallback because of start order"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_binding_is_never_re_homed() {
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type("state"))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(explicit_trigger("t1", "state", "shop", DEFAULT_NAMESPACE))
+            .await
+            .unwrap();
+
+        registry
+            .register_trigger_type(make_trigger_type_ns("shop", "state"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.triggers.get("t1").unwrap().provider_namespace,
+            DEFAULT_NAMESPACE,
+            "naming a namespace means that one, whatever appears later"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_namespace_provider_does_not_take_another_namespace_bindings() {
+        // The defect this whole change exists for: two providers of the same
+        // type id used to overwrite each other, and the winner was handed the
+        // loser's bindings.
+        let registry = TriggerRegistry::new();
+        registry
+            .register_trigger_type(make_trigger_type_ns("shop-a", "webhook"))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(resolved_trigger("t-a", "webhook", "shop-a"))
+            .await
+            .unwrap();
+
+        registry
+            .register_trigger_type(make_trigger_type_ns("shop-b", "webhook"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registry.trigger_types.len(),
+            2,
+            "neither overwrote the other"
+        );
+        assert_eq!(
+            registry.triggers.get("t-a").unwrap().provider_namespace,
+            "shop-a",
+            "shop-a's binding must stay with shop-a's provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_departing_home_provider_hands_its_bindings_back_to_the_fallback() {
+        // The symmetric case. A project provider restarting must not disable
+        // the bindings it was serving when the engine still provides the type.
+        let registry = TriggerRegistry::new();
+        let worker = Uuid::new_v4();
+        registry
+            .register_trigger_type(make_trigger_type("state"))
+            .await
+            .unwrap();
+        registry
+            .register_trigger_type(TriggerType::new_ns(
+                "shop",
+                "state",
+                "the project's own",
+                Box::new(MockRegistrator::new()),
+                Some(worker),
+            ))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(resolved_trigger("t1", "state", "shop"))
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.triggers.get("t1").unwrap().provider_namespace,
+            "shop"
+        );
+
+        registry.unregister_worker(&worker).await;
+
+        let stored = registry
+            .triggers
+            .get("t1")
+            .expect("the binding must survive");
+        assert_eq!(
+            stored.provider_namespace, DEFAULT_NAMESPACE,
+            "it should fall back rather than be disabled"
+        );
+        assert!(registry.pending_triggers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_no_fallback_a_departing_provider_still_parks_its_bindings() {
+        let registry = TriggerRegistry::new();
+        let worker = Uuid::new_v4();
+        registry
+            .register_trigger_type(TriggerType::new_ns(
+                "shop",
+                "custom",
+                "only provider anywhere",
+                Box::new(MockRegistrator::new()),
+                Some(worker),
+            ))
+            .await
+            .unwrap();
+        registry
+            .register_trigger(resolved_trigger("t1", "custom", "shop"))
+            .await
+            .unwrap();
+
+        registry.unregister_worker(&worker).await;
+
+        assert!(registry.triggers.is_empty());
+        assert!(registry.pending_triggers.contains_key("t1"));
+    }
+
+    #[tokio::test]
+    async fn a_parked_binding_activates_on_whichever_step_appears_first() {
+        let registry = TriggerRegistry::new();
+        // Nothing provides it yet.
+        assert_eq!(
+            registry
+                .register_trigger(resolved_trigger("t1", "webhook", "shop"))
+                .await
+                .unwrap(),
+            RegisterTriggerOutcome::Deferred
+        );
+
+        // The fallback appears: the intent activates there.
+        registry
+            .register_trigger_type(make_trigger_type("webhook"))
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.triggers.get("t1").unwrap().provider_namespace,
+            DEFAULT_NAMESPACE
+        );
+        assert!(registry.pending_triggers.is_empty());
     }
 
     fn make_trigger_type(id: &str) -> TriggerType {
@@ -783,7 +1429,14 @@ mod tests {
         let result = registry.register_trigger_type(tt).await;
         assert!(result.is_ok());
         assert_eq!(registry.trigger_types.len(), 1);
-        assert!(registry.trigger_types.contains_key("cron"));
+        assert!(
+            registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "cron"
+                ))
+        );
     }
 
     #[tokio::test]
@@ -932,7 +1585,10 @@ mod tests {
 
             let tt = registry
                 .trigger_types
-                .get("evt")
+                .get(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "evt",
+                ))
                 .expect("replacement type survives the stale cleanup");
             assert_eq!(tt.worker_id, Some(new_worker));
             drop(tt);
@@ -1215,6 +1871,45 @@ mod tests {
         assert!(registry.triggers.contains_key("t_other"));
     }
 
+    /// Recovery must preserve the namespace. A trigger registered in `orders`
+    /// while its type is unavailable is parked in `pending_triggers`; when the
+    /// type is (re)registered it is activated into the live `triggers` map. The
+    /// recovered binding must still resolve in `orders` — every dispatch path
+    /// reads `namespace_of`, so if recovery dropped the namespace the trigger
+    /// would silently fire in `default` (BUG 1 via the recovery path).
+    #[tokio::test]
+    async fn a_recovered_pending_trigger_keeps_its_namespace() {
+        let registry = TriggerRegistry::new();
+
+        // Arrives before its type exists → parked pending.
+        let mut trig = make_trigger("t_ns", "evt");
+        trig.namespace = "orders".to_string();
+        registry.register_trigger(trig).await.unwrap();
+        assert!(registry.pending_triggers.contains_key("t_ns"));
+        assert!(!registry.triggers.contains_key("t_ns"));
+
+        // The type registers: the parked intent is activated (recovered).
+        let healthy = Arc::new(ControlledRegistrator::new(false, false));
+        registry
+            .register_trigger_type(TriggerType::new(
+                "evt",
+                "gen A",
+                Box::new(Arc::clone(&healthy)),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert!(registry.triggers.contains_key("t_ns"), "trigger recovered");
+        assert!(registry.pending_triggers.is_empty());
+        assert_eq!(
+            registry.namespace_of("t_ns"),
+            "orders",
+            "a recovered trigger must still resolve in the namespace it was registered in, \
+             not fall back to default"
+        );
+    }
+
     #[tokio::test]
     async fn unregister_worker_drops_its_own_pending_intents() {
         let registry = TriggerRegistry::new();
@@ -1424,7 +2119,14 @@ mod tests {
         let result = registry.register_trigger_type(tt).await;
         assert!(result.is_ok());
         // The trigger type was inserted.
-        assert!(registry.trigger_types.contains_key("webhook"));
+        assert!(
+            registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "webhook"
+                ))
+        );
         // A trigger for this type was already registered explicitly, so
         // the registrator's register_trigger should have been called
         // (tested implicitly -- no panic means success).
@@ -1507,7 +2209,14 @@ mod tests {
         registry.register_trigger_type(trigger_type).await.unwrap();
 
         assert_eq!(registrator.register_count.load(Ordering::SeqCst), 1);
-        assert!(registry.trigger_types.contains_key("webhook"));
+        assert!(
+            registry
+                .trigger_types
+                .contains_key(&crate::trigger::type_key(
+                    crate::protocol::DEFAULT_NAMESPACE,
+                    "webhook"
+                ))
+        );
     }
 
     #[tokio::test]
@@ -1587,7 +2296,7 @@ mod tests {
         let registry = TriggerRegistry::new();
         let failing = Arc::new(ControlledRegistrator::new(true, false));
         registry.trigger_types.insert(
-            "webhook".to_string(),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"webhook".to_string()),
             TriggerType::new("webhook", "Webhook", Box::new(Arc::clone(&failing)), None),
         );
         registry
@@ -1610,7 +2319,7 @@ mod tests {
     async fn undeliverable_reregistration_of_live_binding_ends_parked_not_split() {
         let registry = TriggerRegistry::new();
         registry.trigger_types.insert(
-            "webhook".to_string(),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"webhook".to_string()),
             TriggerType::new(
                 "webhook",
                 "Webhook",
@@ -1641,7 +2350,7 @@ mod tests {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(false, false));
         registry.trigger_types.insert(
-            "webhook".to_string(),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"webhook".to_string()),
             TriggerType::new(
                 "webhook",
                 "Webhook",
@@ -1791,6 +2500,10 @@ mod tests {
             config: serde_json::json!({"interval": 5}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let t2 = Trigger {
             id: "trigger-1".to_string(),
@@ -1799,6 +2512,10 @@ mod tests {
             config: serde_json::json!({"url": "https://example.com"}),
             worker_id: Some(Uuid::new_v4()),
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         // Same id means equal, even though other fields differ.
@@ -1820,6 +2537,10 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let t2 = Trigger {
             id: "trigger-2".to_string(),
@@ -1828,6 +2549,10 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
 
         assert_ne!(t1, t2);
@@ -1857,6 +2582,10 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: Some(serde_json::json!({"team": "platform", "priority": "high"})),
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();
@@ -1875,6 +2604,10 @@ mod tests {
             config: serde_json::json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();

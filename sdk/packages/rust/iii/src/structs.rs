@@ -20,4 +20,38 @@ pub struct MiddlewareFunctionInput {
     pub action: Option<TriggerAction>,
     /// Auth context returned by the auth function for this session.
     pub context: Value,
+    /// Target namespace the invoke addressed; forward the call here to stay in
+    /// the caller's namespace. Absent → the engine's default namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn deserializes_namespace_from_engine_middleware_input() {
+        // Mirrors the wire object the engine builds (engine/src/engine/mod.rs).
+        let input: MiddlewareFunctionInput = serde_json::from_value(json!({
+            "function_id": "orders::create",
+            "payload": {},
+            "context": {},
+            "namespace": "orders",
+        }))
+        .unwrap();
+        assert_eq!(input.namespace, Some("orders".to_string()));
+    }
+
+    #[test]
+    fn namespace_is_optional() {
+        let input: MiddlewareFunctionInput = serde_json::from_value(json!({
+            "function_id": "orders::create",
+            "payload": {},
+            "context": {},
+        }))
+        .unwrap();
+        assert_eq!(input.namespace, None);
+    }
 }

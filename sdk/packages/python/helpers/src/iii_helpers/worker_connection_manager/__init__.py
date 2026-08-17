@@ -43,7 +43,11 @@ class AuthResult(BaseModel):
     context is forwarded to the middleware.
 
     Attributes:
-        allowed_functions: Additional function IDs to allow beyond ``expose_functions``.
+        namespaces: Grants scoped to one namespace each, e.g. ``{"orders": ["svc::*"]}``.
+            The keys are also the namespaces the session may declare on
+            ``engine::workers::register``. Leave empty to scope nothing.
+        allowed_functions: Additional function IDs to allow beyond ``expose_functions``,
+            in the ``default`` namespace only. Put per-namespace grants in ``namespaces``.
         forbidden_functions: Function IDs to deny even if they match ``expose_functions``.
         allowed_trigger_types: Trigger type IDs the worker may register triggers for.
             When ``None``, all types are allowed.
@@ -54,9 +58,20 @@ class AuthResult(BaseModel):
         context: Arbitrary context forwarded to the middleware function on every invocation.
     """
 
+    namespaces: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Grants scoped to one namespace each, e.g. ``{\"orders\": [\"svc::*\"]}``. A value is an "
+            "exact function ID or a wildcard, bare or in the ``match(\"...\")`` spelling. The keys "
+            "are also the namespaces the session may declare on ``engine::workers::register``."
+        ),
+    )
     allowed_functions: list[str] = Field(
         default_factory=list,
-        description="Additional function IDs to allow beyond ``expose_functions``.",
+        description=(
+            "Additional function IDs to allow beyond ``expose_functions``, in the ``default`` "
+            "namespace only. Put per-namespace grants in ``namespaces``."
+        ),
     )
     forbidden_functions: list[str] = Field(
         default_factory=list,
@@ -134,6 +149,11 @@ class OnTriggerRegistrationInput(BaseModel):
     function_id: str = Field(description="ID of the function this trigger is bound to.")
     config: Any = Field(default=None, description="Trigger-specific configuration.")
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the trigger.")
+    namespace: str = Field(
+        default="default",
+        description="Namespace the trigger's target resolves in (explicit, or `default` when absent); "
+        "the same id can exist in several namespaces, so the hook needs this to authorize per namespace.",
+    )
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 
@@ -170,6 +190,11 @@ class OnFunctionRegistrationInput(BaseModel):
     function_id: str = Field(description="ID of the function being registered.")
     description: str | None = Field(default=None, description="Human-readable description of the function.")
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
+    namespace: str = Field(
+        default="default",
+        description="Namespace the function registers in; the same id can exist in several namespaces, "
+        "so the hook needs this to authorize per namespace.",
+    )
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 

@@ -32,6 +32,7 @@ pub async fn invoke(
     address: &str,
     port: u16,
     timeout_ms: u64,
+    namespace: Option<&str>,
 ) -> Result<(), TriggerCliError> {
     let url = format!("ws://{}:{}", address, port);
     let iii = register_worker(
@@ -42,14 +43,19 @@ pub async fn invoke(
         },
     );
 
-    let result = iii
-        .trigger(TriggerRequest {
-            function_id: function_path.to_string(),
-            payload,
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        })
-        .await;
+    let request = TriggerRequest {
+        function_id: function_path.to_string(),
+        payload,
+        action: None,
+        timeout_ms: Some(timeout_ms),
+    };
+
+    // Omitted when absent so the engine keeps resolving in `default`: the
+    // caller's own namespace never influences routing.
+    let result = match namespace {
+        Some(namespace) => iii.trigger(request.namespace(namespace)).await,
+        None => iii.trigger(request).await,
+    };
 
     iii.shutdown_async().await;
 

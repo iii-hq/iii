@@ -52,14 +52,24 @@ fn remove_worker_registrations_clears_functions() {
     engine
         .functions
         .register_function(function_id.clone(), make_dummy_function(&function_id));
-    assert!(engine.functions.get(&function_id).is_some());
+    assert!(
+        engine
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, &function_id)
+            .is_some()
+    );
 
     let regs = WorkerRegistrations {
         function_ids: vec![function_id.clone()],
     };
     engine.remove_worker_registrations(&regs);
 
-    assert!(engine.functions.get(&function_id).is_none());
+    assert!(
+        engine
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, &function_id)
+            .is_none()
+    );
 }
 
 #[test]
@@ -84,7 +94,12 @@ fn register_function_outside_scope_does_not_track() {
         "test::Worker::handler".to_string(),
         make_dummy_function("test::Worker::handler"),
     );
-    assert!(engine.functions.get("test::Worker::handler").is_some());
+    assert!(
+        engine
+            .functions
+            .get(iii::protocol::DEFAULT_NAMESPACE, "test::Worker::handler")
+            .is_some()
+    );
 
     // Open a fresh scope afterwards — it should be empty because the registration
     // happened before begin_worker_scope.
@@ -196,6 +211,7 @@ fn isolated_config_entry() -> (iii::workers::config::WorkerEntry, tempfile::Temp
 fn minimal_config_for_builder_tests() -> (iii::workers::config::EngineConfig, tempfile::TempDir) {
     let (config_entry, config_dir) = isolated_config_entry();
     let config = iii::workers::config::EngineConfig {
+        registration_namespace_grace_ms: 5000,
         modules: Vec::new(),
         workers: vec![
             iii::workers::config::WorkerEntry {
@@ -273,6 +289,7 @@ async fn serve_returns_on_sigterm() {
     // running in parallel.
     let (config_entry, _config_dir) = isolated_config_entry();
     let config = EngineConfig {
+        registration_namespace_grace_ms: 5000,
         modules: Vec::new(),
         workers: vec![
             iii::workers::config::WorkerEntry {

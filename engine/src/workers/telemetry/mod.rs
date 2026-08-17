@@ -548,10 +548,12 @@ fn is_hostname_pid_fallback(name: &str, pid: Option<u32>) -> bool {
 // }
 
 fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
+    // Keys are `(namespace, function_id)`; telemetry reports bare ids, and the
+    // same id in two namespaces is two distinct registrations.
     let functions: Vec<String> = engine
         .functions
         .iter()
-        .map(|entry| entry.key().clone())
+        .map(|entry| entry.key().1.clone())
         .filter(|id| !is_iii_builtin_function_id(id))
         .collect();
 
@@ -1224,12 +1226,15 @@ mod tests {
                 metadata: None,
             },
         );
-        engine
-            .service_registry
-            .insert_service(Service::new("svc".to_string(), "svc-1".to_string()));
-        engine
-            .service_registry
-            .insert_function_to_service(&"svc".to_string(), "worker");
+        engine.service_registry.insert_service(
+            crate::protocol::DEFAULT_NAMESPACE,
+            Service::new("svc".to_string(), "svc-1".to_string()),
+        );
+        engine.service_registry.insert_function_to_service(
+            crate::protocol::DEFAULT_NAMESPACE,
+            "svc",
+            "worker",
+        );
     }
 
     struct NoopRegistrator;
@@ -2089,6 +2094,10 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -2101,6 +2110,10 @@ mod tests {
                 config: serde_json::json!({}),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             },
         );
 
@@ -2792,6 +2805,10 @@ mod tests {
                 config: serde_json::json!({ "topic": "orders" }),
                 worker_id: None,
                 metadata: None,
+                namespace: "default".to_string(),
+                trigger_namespace: None,
+                home_namespace: crate::protocol::default_namespace(),
+                provider_namespace: crate::protocol::default_namespace(),
             })
             .await
             .expect("register trigger");

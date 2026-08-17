@@ -61,6 +61,15 @@ impl TriggerRegistrator for WorkerConnection {
                     function_id: trigger.function_id,
                     config: trigger.config,
                     metadata: trigger.metadata,
+                    namespace: (trigger.namespace != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.namespace),
+                    // Which of its namespaces this bind belongs to. The message
+                    // only ever reaches the provider filed under this key, so
+                    // it is a statement rather than a request — and it lets a
+                    // provider serving more than one namespace tell them apart.
+                    trigger_namespace: (trigger.provider_namespace
+                        != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.provider_namespace),
                 }))
                 .await;
             if let Err(err) = sent {
@@ -110,6 +119,15 @@ impl TriggerRegistrator for WorkerConnection {
                     function_id: trigger.function_id,
                     config: trigger.config,
                     metadata: trigger.metadata,
+                    namespace: (trigger.namespace != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.namespace),
+                    // Which of its namespaces this bind belongs to. The message
+                    // only ever reaches the provider filed under this key, so
+                    // it is a statement rather than a request — and it lets a
+                    // provider serving more than one namespace tell them apart.
+                    trigger_namespace: (trigger.provider_namespace
+                        != crate::protocol::DEFAULT_NAMESPACE)
+                        .then_some(trigger.provider_namespace),
                 }))
                 .await
                 .map_err(|err| {
@@ -201,6 +219,7 @@ impl FunctionHandler for WorkerConnection {
                     baggage,
                     action: None,
                     metadata,
+                    namespace: None,
                 }))
                 .await;
 
@@ -239,6 +258,10 @@ mod tests {
             config: json!({}),
             worker_id,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         }
     }
 
@@ -338,6 +361,10 @@ mod tests {
             config: json!({}),
             worker_id: None,
             metadata: None,
+            namespace: "default".to_string(),
+            trigger_namespace: None,
+            home_namespace: crate::protocol::default_namespace(),
+            provider_namespace: crate::protocol::default_namespace(),
         };
         worker.unregister_trigger(trigger).await.unwrap();
         let msg = rx.recv().await.unwrap();
