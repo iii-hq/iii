@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786105906932,
+  "lastUpdate": 1786969568997,
   "repoUrl": "https://github.com/iii-hq/iii",
   "entries": {
     "iii Engine Benchmarks": [
@@ -35635,6 +35635,136 @@ window.BENCHMARK_DATA = {
             "name": "http_concurrency_loopback/128",
             "value": 55548115,
             "range": "± 7217775",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "iii-ci[bot]@users.noreply.github.com",
+            "name": "iii-ci[bot]"
+          },
+          "committer": {
+            "email": "iii-ci[bot]@users.noreply.github.com",
+            "name": "iii-ci[bot]"
+          },
+          "distinct": true,
+          "id": "f76a152d015817fd82b5d4abdf08fd6697bd8619",
+          "message": "chore: bump versions for release -- iii(iii/v0.23.0-rc.1)",
+          "timestamp": "2026-08-17T12:02:42Z",
+          "tree_id": "12ab94133dd98abe8725198e9d3676febec3af44",
+          "url": "https://github.com/iii-hq/iii/commit/f76a152d015817fd82b5d4abdf08fd6697bd8619"
+        },
+        "date": 1786969567736,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "concurrent_invocation/1",
+            "value": 2922,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_invocation/8",
+            "value": 20437,
+            "range": "± 121",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_invocation/32",
+            "value": 86536,
+            "range": "± 173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_invocation/128",
+            "value": 356855,
+            "range": "± 1219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/functions_register_remove/100",
+            "value": 53779,
+            "range": "± 2667",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/workers_register_unregister/100",
+            "value": 271028,
+            "range": "± 2373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/triggers_register_unregister/100",
+            "value": 137514,
+            "range": "± 1503",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/functions_register_remove/1000",
+            "value": 570272,
+            "range": "± 1046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/workers_register_unregister/1000",
+            "value": 7533453,
+            "range": "± 127653",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/triggers_register_unregister/1000",
+            "value": 1403716,
+            "range": "± 10321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/functions_register_remove/5000",
+            "value": 3003673,
+            "range": "± 27589",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/workers_register_unregister/5000",
+            "value": 48785311,
+            "range": "± 471017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_plane_churn/triggers_register_unregister/5000",
+            "value": 7428447,
+            "range": "± 75072",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "core_runtime/engine_call_registered_handler",
+            "value": 2379,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http_concurrency_loopback/1",
+            "value": 515442,
+            "range": "± 6273",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http_concurrency_loopback/8",
+            "value": 42609391,
+            "range": "± 113946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http_concurrency_loopback/32",
+            "value": 47255060,
+            "range": "± 805195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http_concurrency_loopback/128",
+            "value": 56423606,
+            "range": "± 3897925",
             "unit": "ns/iter"
           }
         ]
