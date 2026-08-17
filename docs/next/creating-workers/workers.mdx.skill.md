@@ -56,6 +56,12 @@ scaffold into any other non-empty directory.
   add`. See [Using iii / Workers](../using-iii/workers#finding-workers) for the registry surface.
 </Note>
 
+<Info title="Engine and SDK versions">
+  The engine and SDK packages can have different patch versions within the same minor line. Keep the
+  engine and SDKs on the same minor version, for example `0.11.x`, unless a release note says
+  otherwise.
+</Info>
+
 ## Connecting to the engine
 
 A worker connects to the engine over WebSocket. The convention is to set the engine URL via the

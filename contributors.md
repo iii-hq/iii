@@ -13,3 +13,4 @@ The following users make all of their contributions to iii under the Apache 2 li
 - @Pranjal0410
 - @racso-dev
 - @SeCuReDmE-main-dev
+- @SimonFoobar648

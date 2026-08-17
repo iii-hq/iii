@@ -131,14 +131,6 @@ class RegisterTriggerInput(BaseModel):
             "namespace first and the engine's own second. Naming one is strict."
         ),
     )
-    trigger_namespace: str | None = Field(
-        default=None,
-        description=(
-            "Namespace to find the trigger type's provider in. Omitting it is not the "
-            "same as 'default': it asks the engine to resolve, taking this worker's "
-            "namespace first and the engine's own second. Naming one is strict."
-        ),
-    )
 
 
 class RegisterTriggerMessage(BaseModel):

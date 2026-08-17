@@ -34,16 +34,13 @@ body {
   background: var(--iii-bg) !important;
   color: var(--iii-ink) !important;
   font-family:
-    "Chivo Mono",
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    "Liberation Mono",
-    "Courier New",
-    monospace !important;
-  font-feature-settings: "liga" 0, "clig" 0, "calt" 0, "dlig" 0;
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace !important;
+  font-feature-settings:
+    "liga" 0,
+    "clig" 0,
+    "calt" 0,
+    "dlig" 0;
   scrollbar-gutter: stable;
 }
 
@@ -81,15 +78,8 @@ select,
 code,
 pre {
   font-family:
-    "Chivo Mono",
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    "Liberation Mono",
-    "Courier New",
-    monospace !important;
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace !important;
 }
 
 a {
@@ -119,15 +109,8 @@ h5,
 h6 {
   color: var(--iii-ink) !important;
   font-family:
-    "Chivo Mono",
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    "Liberation Mono",
-    "Courier New",
-    monospace !important;
+    "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace !important;
   letter-spacing: -0.02em;
 }
 
@@ -217,7 +200,9 @@ pre code,
 }
 
 .code-block .line.line-highlight::after,
-.code-block [data-component-part="code-block-root"]:not(.has-line-numbers) .line.line-highlight::before {
+.code-block
+  [data-component-part="code-block-root"]:not(.has-line-numbers)
+  .line.line-highlight::before {
   background: #c5e4c0 !important;
   border-left-color: #6da46d !important;
 }
@@ -228,9 +213,15 @@ html.dark .code-block .line.line-highlight,
 }
 
 html.dark .code-block .line.line-highlight::after,
-html.dark .code-block [data-component-part="code-block-root"]:not(.has-line-numbers) .line.line-highlight::before,
+html.dark
+  .code-block
+  [data-component-part="code-block-root"]:not(.has-line-numbers)
+  .line.line-highlight::before,
 [data-theme="dark"] .code-block .line.line-highlight::after,
-[data-theme="dark"] .code-block [data-component-part="code-block-root"]:not(.has-line-numbers) .line.line-highlight::before {
+[data-theme="dark"]
+  .code-block
+  [data-component-part="code-block-root"]:not(.has-line-numbers)
+  .line.line-highlight::before {
   background: #3d5e3d !important;
   border-left-color: #8fbf8f !important;
 }
@@ -316,8 +307,7 @@ td:first-child {
   line-height: 1.4 !important;
   padding-block: 0.28rem !important;
   text-decoration: none !important;
-  transition:
-    color 150ms ease;
+  transition: color 150ms ease;
   white-space: normal !important;
 }
 
@@ -440,7 +430,9 @@ html.iii-navbar-hidden #sidebar {
 }
 
 #content-side-layout {
-  transition: top 200ms ease, height 200ms ease;
+  transition:
+    top 200ms ease,
+    height 200ms ease;
 }
 
 html.iii-navbar-hidden #content-side-layout {
@@ -495,4 +487,178 @@ body,
 .tab-container > [role="tablist"] + div > [role="tabpanel"].hidden {
   display: block !important;
   visibility: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Install-page quickstart panel (`.iii-qs`).
+
+   A terminal-style recipe whose llm-provider pills swap two slots in place:
+   the provider setup lines at the top and the `iii worker add` line near the
+   bottom. Every variant ships in the markup; a hidden radio group plus
+   `:has(:checked)` decides which one is displayed, so the picker needs no
+   javascript and keeps working with keyboard and screen readers (the pills
+   are real `<label>`s for real radios).
+   --------------------------------------------------------------------------- */
+
+.iii-qs {
+  border: 1px solid var(--iii-rule);
+  background: var(--iii-bg);
+  margin: 1.5rem 0;
+}
+
+/* Clipped rather than `display: none`: the radios stay focusable, so the
+   picker is reachable by keyboard and announced as a radio group. */
+.iii-qs-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.iii-qs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  border-bottom: 1px solid var(--iii-rule);
+  background: var(--iii-panel);
+  padding: 0.5rem 1rem;
+}
+
+.iii-qs-title {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  color: var(--iii-ink-faint);
+}
+
+.iii-qs-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.iii-qs-picker-label {
+  font-size: 11px;
+  color: var(--iii-ink-faint);
+  margin-right: 0.25rem;
+}
+
+.iii-qs-pill {
+  border: 1px solid var(--iii-rule);
+  background: var(--iii-bg);
+  color: var(--iii-ink-faint);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0.3125rem 0.5rem;
+  user-select: none;
+}
+
+.iii-qs-pill:hover {
+  color: var(--iii-ink);
+  border-color: var(--iii-ink-ghost);
+}
+
+/* Keyboard focus lands on the clipped radio, so ring its pill instead. */
+.iii-qs:has(#qs-none:focus-visible) .iii-qs-pill[for="qs-none"],
+.iii-qs:has(#qs-openai:focus-visible) .iii-qs-pill[for="qs-openai"],
+.iii-qs:has(#qs-anthropic:focus-visible) .iii-qs-pill[for="qs-anthropic"],
+.iii-qs:has(#qs-deepseek:focus-visible) .iii-qs-pill[for="qs-deepseek"],
+.iii-qs:has(#qs-kimi:focus-visible) .iii-qs-pill[for="qs-kimi"],
+.iii-qs:has(#qs-openrouter:focus-visible) .iii-qs-pill[for="qs-openrouter"],
+.iii-qs:has(#qs-xai:focus-visible) .iii-qs-pill[for="qs-xai"],
+.iii-qs:has(#qs-zai:focus-visible) .iii-qs-pill[for="qs-zai"],
+.iii-qs:has(#qs-github-copilot:focus-visible) .iii-qs-pill[for="qs-github-copilot"],
+.iii-qs:has(#qs-openai-codex:focus-visible) .iii-qs-pill[for="qs-openai-codex"],
+.iii-qs:has(#qs-llamacpp:focus-visible) .iii-qs-pill[for="qs-llamacpp"] {
+  outline: 2px solid var(--iii-accent);
+  outline-offset: 2px;
+}
+
+.iii-qs:has(#qs-none:checked) .iii-qs-pill[for="qs-none"],
+.iii-qs:has(#qs-openai:checked) .iii-qs-pill[for="qs-openai"],
+.iii-qs:has(#qs-anthropic:checked) .iii-qs-pill[for="qs-anthropic"],
+.iii-qs:has(#qs-deepseek:checked) .iii-qs-pill[for="qs-deepseek"],
+.iii-qs:has(#qs-kimi:checked) .iii-qs-pill[for="qs-kimi"],
+.iii-qs:has(#qs-openrouter:checked) .iii-qs-pill[for="qs-openrouter"],
+.iii-qs:has(#qs-xai:checked) .iii-qs-pill[for="qs-xai"],
+.iii-qs:has(#qs-zai:checked) .iii-qs-pill[for="qs-zai"],
+.iii-qs:has(#qs-github-copilot:checked) .iii-qs-pill[for="qs-github-copilot"],
+.iii-qs:has(#qs-openai-codex:checked) .iii-qs-pill[for="qs-openai-codex"],
+.iii-qs:has(#qs-llamacpp:checked) .iii-qs-pill[for="qs-llamacpp"] {
+  background: var(--iii-ink);
+  border-color: var(--iii-ink);
+  color: var(--iii-bg);
+}
+
+.iii-qs-body {
+  padding: 0.75rem 1rem;
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+
+.iii-qs-comment {
+  color: var(--iii-ink-ghost);
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  /* Keeps comments and the `$` prompt out of a click-and-drag selection, so
+     copying the recipe yields runnable lines only. */
+  user-select: none;
+}
+
+.iii-qs-cmd {
+  display: flex;
+  gap: 0.5rem;
+  color: var(--iii-ink);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Mintlify auto-links bare urls. In a command line that reads as an invitation
+   to click something meant to be copied, so keep those inert; urls inside a
+   comment line stay clickable. */
+.iii-qs-cmd a {
+  color: inherit !important;
+  font-weight: inherit !important;
+  text-decoration: none !important;
+  border-bottom: 0 !important;
+  pointer-events: none;
+}
+
+.iii-qs-prompt {
+  color: var(--iii-accent);
+  user-select: none;
+}
+
+.iii-qs-gap {
+  height: 0.75rem;
+}
+
+/* Only the selected provider's slots are shown. */
+.iii-qs-slot {
+  display: none;
+}
+
+.iii-qs:has(#qs-none:checked) .iii-qs-slot[data-qs="none"],
+.iii-qs:has(#qs-openai:checked) .iii-qs-slot[data-qs="openai"],
+.iii-qs:has(#qs-anthropic:checked) .iii-qs-slot[data-qs="anthropic"],
+.iii-qs:has(#qs-deepseek:checked) .iii-qs-slot[data-qs="deepseek"],
+.iii-qs:has(#qs-kimi:checked) .iii-qs-slot[data-qs="kimi"],
+.iii-qs:has(#qs-openrouter:checked) .iii-qs-slot[data-qs="openrouter"],
+.iii-qs:has(#qs-xai:checked) .iii-qs-slot[data-qs="xai"],
+.iii-qs:has(#qs-zai:checked) .iii-qs-slot[data-qs="zai"],
+.iii-qs:has(#qs-github-copilot:checked) .iii-qs-slot[data-qs="github-copilot"],
+.iii-qs:has(#qs-openai-codex:checked) .iii-qs-slot[data-qs="openai-codex"],
+.iii-qs:has(#qs-llamacpp:checked) .iii-qs-slot[data-qs="llamacpp"] {
+  display: block;
 }

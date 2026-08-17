@@ -14,10 +14,11 @@ In this tutorial you will learn how iii makes it unreasonably simple to build an
   />
 </Frame>
 
-<Info title="Install iii before proceeding">
+<Tip title="Install iii before proceeding">
   Make sure you have installed iii before proceeding. If you haven't then visit the
-  [Install](./install) guide first.
-</Info>
+  [Install](./install) guide first. There you can also learn how to [set up iii for agentic
+  development](./install#start-a-project).
+</Tip>
 
 <Note>
   The Quickstart is a barebones tutorial intended to be completed within minutes. If you are more
@@ -147,8 +148,8 @@ From the folder containing iii's `config.yaml` run:
 iii worker add state
 ```
 
-Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block so
-the handler looks like this:
+Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block
+so the handler looks like this:
 
 ```python
 def add_handler(payload: dict) -> dict:
@@ -212,7 +213,10 @@ Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the b
 worker.registerFunction(
   "http::add_two_numbers",
   async (payload: { body: { a: number; b: number } }) => {
-    const result = await worker.trigger<{ a: number; b: number }, { c: number; running_total: number }>({
+    const result = await worker.trigger<
+      { a: number; b: number },
+      { c: number; running_total: number }
+    >({
       function_id: "math::add_two_numbers",
       payload: payload.body,
     });
