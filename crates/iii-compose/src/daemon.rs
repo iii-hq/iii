@@ -193,37 +193,56 @@ impl Daemon {
         };
 
         let path = self.resolve_file(file)?;
-        let mut new = crate::edit::parse_worker(worker)?;
-        if let crate::edit::Source::Package { reference, version } = &new.source
-            && version.is_none()
-        {
-            let resolved = crate::registry::latest_version(&new.key, reference).await?;
-            new.source = crate::edit::Source::Package {
-                reference: reference.clone(),
-                version: Some(resolved),
-            };
-        }
+        let asked = crate::edit::parse_worker(worker)?;
+        // A worker is not useful alone: its manifest names what it calls, and
+        // the registry answers with that whole graph already pinned to versions
+        // that satisfy each other. They are declared rather than started
+        // behind the file, so what runs is still what the file says.
+        //
+        // Dependencies first and the worker last: with no `depends_on`, start
+        // order is declaration order, so this is what makes a worker start
+        // after the things it calls.
+        let wanted = self.expand(&asked).await?;
 
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
         })?;
-        let outcome = crate::edit::upsert_container(&text, &new)?;
+        let mut edited = text.clone();
+        let mut added: Vec<String> = Vec::new();
+        let mut replaced: Vec<String> = Vec::new();
+        for container in &wanted {
+            match crate::edit::upsert_container(&edited, container)? {
+                crate::edit::Outcome::Unchanged => {}
+                crate::edit::Outcome::Added(text) => {
+                    edited = text;
+                    added.push(container.key.clone());
+                }
+                crate::edit::Outcome::Replaced { text, from, to } => {
+                    edited = text;
+                    replaced.push(format!("{} {from} to {to}", container.key));
+                }
+            }
+        }
 
-        let (edited, action) = match &outcome {
-            crate::edit::Outcome::Unchanged => {
-                return Ok(serde_json::json!({
-                    "status": "ok",
-                    "container": new.key,
-                    "changed": false,
-                    "detail": "already declared at this version",
-                }));
-            }
-            crate::edit::Outcome::Added(text) => (text, "added".to_string()),
-            crate::edit::Outcome::Replaced { text, from, to } => {
-                (text, format!("replaced {from} with {to}"))
-            }
+        if added.is_empty() && replaced.is_empty() {
+            return Ok(serde_json::json!({
+                "status": "ok",
+                "container": asked.key,
+                "changed": false,
+                "detail": "already declared at this version",
+            }));
+        }
+        let action = match (added.is_empty(), replaced.is_empty()) {
+            (false, true) => format!("added {}", added.join(", ")),
+            (true, false) => format!("replaced {}", replaced.join(", ")),
+            _ => format!(
+                "added {}; replaced {}",
+                added.join(", "),
+                replaced.join(", ")
+            ),
         };
+        let edited = &edited;
 
         // Parsed before it is written, so a splice that would not load leaves
         // the operator's file exactly as it was.
@@ -241,12 +260,95 @@ impl Daemon {
         let up = self.up(file, None, format!("{operation_id}-up")).await?;
         Ok(serde_json::json!({
             "status": up.status,
-            "container": new.key,
+            "container": asked.key,
             "changed": true,
+            "declared": added,
             "detail": action,
             "down": serde_json::to_value(&down).unwrap_or(Value::Null),
             "up": serde_json::to_value(&up).unwrap_or(Value::Null),
         }))
+    }
+
+    /// The worker asked for, plus everything it needs, in start order.
+    ///
+    /// A `path://` worker is taken alone: its dependencies are declared in a
+    /// manifest on disk, and resolving those means asking the registry per name
+    /// rather than reading one answer. That is worth doing, and is not done
+    /// here yet.
+    ///
+    /// `engine` workers are skipped. They are compiled into the engine and are
+    /// already serving before compose starts anything; declaring one would
+    /// produce a container with no artefact to install.
+    async fn expand(
+        &self,
+        asked: &crate::edit::NewContainer,
+    ) -> Result<Vec<crate::edit::NewContainer>> {
+        let crate::edit::Source::Package { reference, version } = &asked.source else {
+            return Ok(vec![asked.clone()]);
+        };
+
+        let range = version.clone().unwrap_or_else(|| "*".to_string());
+        let graph = crate::registry::resolve_graph(&asked.key, reference, &range).await?;
+        let host = reference
+            .rsplit_once('/')
+            .map(|(host, _)| host)
+            .unwrap_or("");
+
+        // Only what compose can run becomes a container, and only those can be
+        // depended on: an `engine` worker is already serving before compose
+        // starts, so an edge to one names nothing this file declares.
+        let declarable: std::collections::BTreeSet<&str> = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind != "engine")
+            .map(|node| node.name.as_str())
+            .collect();
+
+        let needs = |name: &str| -> Vec<String> {
+            let mut needed: Vec<String> = graph
+                .edges
+                .iter()
+                .filter(|(from, to)| from == name && to != name && declarable.contains(to.as_str()))
+                .map(|(_, to)| to.clone())
+                .collect();
+            needed.sort();
+            needed.dedup();
+            needed
+        };
+
+        let container = |node: &crate::registry::Node| crate::edit::NewContainer {
+            key: node.name.clone(),
+            source: crate::edit::Source::Package {
+                reference: if host.is_empty() {
+                    node.name.clone()
+                } else {
+                    format!("{host}/{}", node.name)
+                },
+                version: Some(node.version.clone()),
+            },
+            depends_on: needs(&node.name),
+        };
+
+        let mut wanted: Vec<crate::edit::NewContainer> = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind != "engine")
+            .filter(|node| node.name != asked.key)
+            .map(container)
+            .collect();
+
+        // The worker itself last, pinned to what the graph resolved and
+        // depending on everything it calls.
+        let mut root = asked.clone();
+        root.depends_on = needs(&asked.key);
+        if let Some(node) = graph.nodes.iter().find(|node| node.name == asked.key) {
+            root.source = crate::edit::Source::Package {
+                reference: reference.clone(),
+                version: Some(node.version.clone()),
+            };
+        }
+        wanted.push(root);
+        Ok(wanted)
     }
 
     /// Drops a project from the cache, so the next call re-reads its file.

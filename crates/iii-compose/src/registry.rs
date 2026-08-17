@@ -45,6 +45,17 @@ const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300
 #[derive(Debug, Deserialize)]
 struct ResolveResponse {
     graph: Vec<ResolvedWorker>,
+    /// Who calls whom. Two workers may need the same one, so this is a graph
+    /// and not a tree: the shared worker is declared once and depended on
+    /// twice.
+    #[serde(default)]
+    edges: Vec<ResolvedEdge>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolvedEdge {
+    from: String,
+    to: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +206,52 @@ pub async fn latest_version(container: &str, reference: &str) -> Result<String> 
     Ok(resolved.version)
 }
 
+/// One worker in a resolved graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    pub name: String,
+    pub version: String,
+    /// `binary`, `bundle`, `engine`, `image` — what it is, and therefore
+    /// whether compose can run it at all.
+    pub kind: String,
+}
+
+/// A resolved graph: what to declare, and what each one needs.
+#[derive(Debug, Clone, Default)]
+pub struct Graph {
+    pub nodes: Vec<Node>,
+    /// `(from, to)`: `from` calls `to`.
+    pub edges: Vec<(String, String)>,
+}
+
+/// Everything a worker needs, resolved in one request.
+///
+/// The registry answers `/resolve` with the whole graph, not just the worker
+/// named: its dependencies come back already pinned to versions that satisfy
+/// each other. Asking again per dependency would be slower and could resolve a
+/// different set, because each answer is computed on its own.
+pub async fn resolve_graph(container: &str, reference: &str, version_range: &str) -> Result<Graph> {
+    let (registry, name) = split_reference(reference);
+    let target = host_target();
+    let response = resolve_response(container, &registry, &name, version_range, target).await?;
+    Ok(Graph {
+        nodes: response
+            .graph
+            .into_iter()
+            .map(|worker| Node {
+                name: worker.name,
+                version: worker.version,
+                kind: worker.kind,
+            })
+            .collect(),
+        edges: response
+            .edges
+            .into_iter()
+            .map(|edge| (edge.from, edge.to))
+            .collect(),
+    })
+}
+
 /// Installs a native executable for this host's target.
 async fn install_binary(
     container: &str,
@@ -284,13 +341,14 @@ async fn install_bundle(
     Ok(install_dir)
 }
 
-async fn resolve(
+/// The raw `/resolve` answer: the worker and everything it depends on.
+async fn resolve_response(
     container: &str,
     registry: &str,
     name: &str,
     version_range: &str,
     target: &str,
-) -> Result<ResolvedWorker> {
+) -> Result<ResolveResponse> {
     let client = reqwest::Client::builder()
         .timeout(RESOLVE_TIMEOUT)
         .build()
@@ -323,9 +381,22 @@ async fn resolve(
         .await
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
-    // The graph carries the worker's dependencies too. Compose declares its own
-    // graph, so only the root is installed here; a dependency the project did
-    // not declare is the project's omission to fix, not ours to paper over.
+    Ok(resolved)
+}
+
+/// The named worker out of its own graph.
+///
+/// Installing takes only the root: what a project runs is what its compose file
+/// declares. `compose::add` is where the rest of the graph is turned into
+/// declarations, so an operator sees them before they run.
+async fn resolve(
+    container: &str,
+    registry: &str,
+    name: &str,
+    version_range: &str,
+    target: &str,
+) -> Result<ResolvedWorker> {
+    let resolved = resolve_response(container, registry, name, version_range, target).await?;
     resolved
         .graph
         .into_iter()

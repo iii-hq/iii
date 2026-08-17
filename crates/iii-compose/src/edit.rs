@@ -42,6 +42,9 @@ pub enum Source {
 pub struct NewContainer {
     pub key: String,
     pub source: Source,
+    /// Containers this one calls. Two workers may need the same one, so the
+    /// shared worker is declared once and named here by both.
+    pub depends_on: Vec<String>,
 }
 
 /// What the edit did, so the caller can report it and decide whether to restart.
@@ -83,6 +86,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
             source: Source::Path {
                 path: spec.to_string(),
             },
+            depends_on: Vec::new(),
         });
     }
 
@@ -114,6 +118,7 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
     Ok(NewContainer {
         key: key.to_string(),
         source: Source::Package { reference, version },
+        depends_on: Vec::new(),
     })
 }
 
@@ -282,6 +287,12 @@ fn render(new: &NewContainer, indent: &str) -> String {
         }
         Source::Path { path } => {
             out.push_str(&format!("{inner}worker: path://{path}\n"));
+        }
+    }
+    if !new.depends_on.is_empty() {
+        out.push_str(&format!("{inner}depends_on:\n"));
+        for dependency in &new.depends_on {
+            out.push_str(&format!("{inner}{indent}- {dependency}\n"));
         }
     }
     out

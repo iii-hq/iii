@@ -124,11 +124,25 @@ later `up` cannot quietly get a different build. The same worker at the same
 version changes nothing and says so; at a different version it is replaced,
 which is how an upgrade or a rollback is asked for.
 
+A worker is rarely alone. Its manifest names what it calls, and the registry
+answers with that whole graph already pinned to versions that satisfy each
+other, so those are declared too — as containers, with their own `depends_on`.
+Nothing starts behind the file: what runs is still what the file says, and an
+operator can read it, pin it differently, or take a container out.
+
+Two rules shape the expansion. Workers compiled into the engine are skipped,
+because they are already serving and have no artefact to install; an edge to
+one is dropped rather than written, since `depends_on` may only name a
+container the file declares. And a worker two others need is declared once,
+named by both.
+
 The file is edited, not rewritten: comments, blank lines and quoting survive,
-the entry is appended, and the result is parsed before it is written, so a bad
-edit never reaches disk. This first version writes `worker` and `version` only
-(no `scripts`, no `depends_on`), so a `path://` worker needs `scripts.start` in
-its own `iii.worker.yaml` to start.
+entries are appended, and the result is parsed before it is written, so a bad
+edit never reaches disk. What is written is `worker`, `version` and
+`depends_on` — no `scripts`, so a `path://` worker needs `scripts.start` in its
+own `iii.worker.yaml` to start. A `path://` worker is added alone: its
+dependencies are declared in a manifest on disk rather than in the registry's
+answer.
 
 ```bash
 iii trigger compose::up     --namespace dev file=./worker-compose.yaml
@@ -377,9 +391,10 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | Path                        | Contents                                             |
 | --------------------------- | ---------------------------------------------------- |
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
-| `<ns>/<project>/config/`    | Resolved configuration files, one directory each.    |
+| `<ns>/<project>/config/`    | Resolved configuration files.                        |
 | `<ns>/<project>/logs/`      | What each container printed while starting.          |
-| `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each.  |
+| `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each,  |
+|                             | plus the config each one publishes into its guest.   |
 | `packages/`                 | Installed `package://` artefacts, shared by projects. |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:

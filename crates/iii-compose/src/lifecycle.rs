@@ -443,15 +443,33 @@ async fn vm_command(
     let mut env: BTreeMap<String, String> = plan.env.clone();
     let config_dir = match config {
         Some(config) => {
+            // Published through a directory of this container's own, not the
+            // project's `config/`. virtiofs shares a whole tree, so mounting
+            // the shared one would put every sibling's resolved secrets inside
+            // this guest. Beside the rootfs rather than inside it: the rootfs
+            // is the guest's `/`, and a `config` directory there would collide
+            // with whatever the image already has.
             let path = config.file.path();
-            let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-                return Err(format!("config file has no directory: {}", path.display()));
+            let Some(name) = path.file_name() else {
+                return Err(format!("config file has no name: {}", path.display()));
             };
+            let dir = ctx.vm_dir.join(format!("{key}-config"));
+            std::fs::create_dir_all(&dir)
+                .map_err(|err| format!("cannot make {}: {err}", dir.display()))?;
+            let published = dir.join(name);
+            std::fs::copy(path, &published)
+                .map_err(|err| format!("cannot publish the config for the VM: {err}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&published, std::fs::Permissions::from_mode(0o600));
+            }
             env.insert(
                 "III_CONFIG".to_string(),
                 format!("{GUEST_CONFIG_DIR}/{}", name.to_string_lossy()),
             );
-            Some(dir.to_path_buf())
+            Some(dir)
         }
         None => None,
     };
@@ -692,11 +710,7 @@ async fn resolve_config(
     // And as a file, which is what a worker written for compose reads. The two
     // carry the same value, so whichever a worker trusts, it gets the same
     // answer.
-    // One directory per container, not one file per container in a shared one.
-    // A bundle container is handed its configuration by publishing the
-    // directory into its VM, and virtiofs shares a whole tree: a flat layout
-    // would put every sibling's resolved secrets inside every bundle's guest.
-    let file = ConfigFile::write(&ctx.config_dir.join(key), key, &value)?;
+    let file = ConfigFile::write(ctx.config_dir, key, &value)?;
     Ok(Some(ResolvedConfig {
         file,
         name: container.config_name.clone(),
