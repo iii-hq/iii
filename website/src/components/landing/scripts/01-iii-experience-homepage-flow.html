@@ -716,15 +716,15 @@
     el.innerHTML = ''
       + '<div class="seq-finish">'
       +   '<div class="lead">Try it for yourself</div>'
-      +   '<a href="https://workers.iii.dev/" class="quick" target="_blank" rel="noopener noreferrer">Worker Registry \u2192</a>'
+      +   '<a href="https://iii.dev/docs/quickstart" class="quick" target="_blank" rel="noopener noreferrer">Quickstart Guide \u2192</a>'
       + '</div>';
     seqScroll.appendChild(el);
     const quickLink = el.querySelector('.quick');
     if (quickLink) quickLink.addEventListener('click', () => {
       iiiTrack('cta_click', {
-        cta_id: 'worker-registry',
+        cta_id: 'quickstart',
         cta_location: 'experience_finish',
-        cta_label: 'worker registry',
+        cta_label: 'quickstart guide',
         cta_href: quickLink.getAttribute('href') || ''
       });
     });
