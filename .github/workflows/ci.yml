@@ -325,6 +325,13 @@ jobs:
         with:
           key: compose-test-${{ matrix.os }}
 
+      # Bundle containers reach libkrun through iii-worker, which links cap-ng.
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
+
       # Process-group and job-object behaviour cannot be cross-checked: only the
       # host OS can prove that a teardown really reaches a worker's children.
       # The unix suites are cfg-gated, so the windows run exercises the portable
