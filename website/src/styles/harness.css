@@ -36,6 +36,23 @@
    Same shape as .xp-title/.pi-section-title elsewhere, generalized under one
    class so every section on this page uses it. */
 
+/* ============= page measure =============
+   The sheet runs to 1440px and .hz-section only sets padding, so an uncapped
+   section stretched its copy, grids, and consoles across ~1370px — past a
+   comfortable reading measure, and wider than the footer band (.foot-cols,
+   1080px) rendered at the bottom of this same page. Every band below the hero
+   now shares ONE content width and centers in the sheet, so the page reads as a
+   single column on desktop; below the cap nothing changes.
+   --hz-measure is the CONTENT width; +72px covers the 36px of side padding.
+   The hero keeps its own narrower 60% column on purpose (it lands at ~864px,
+   the same narrow measure as the footer's 880px CTA block). */
+:root{ --hz-measure:1080px; }
+.hz-section,
+.hz-closer{
+  max-width:calc(var(--hz-measure) + 72px);
+  margin-inline:auto;
+}
+
 .hz-section{ position:relative; padding:88px 36px 0; }
 .hz-section-head{ max-width:900px; margin:0 0 36px; }
 .hz-section-title{
@@ -126,7 +143,9 @@
   .hz-feature.flip .hz-feature-viz{ order:2; }
 }
 
-/* ============= "what we didn't build" grid — sharp cells sharing 1px rules */
+/* ============= 3-across cell grid — sharp cells sharing 1px rules
+   Used by the primitives primer (worker/function/trigger) and any
+   "what we didn't build"-style block. */
 .hz-grid{
   display:grid;
   grid-template-columns:repeat(3, minmax(0,1fr));
@@ -163,6 +182,12 @@
   .hz-cell:nth-last-child(-n+3){ border-bottom:1px solid var(--rule); }
   .hz-cell:last-child{ border-bottom:0; }
 }
+
+/* The primitives primer stacks lede → grid → lede inside one section. The grid
+   carries its own 1px border, so the gaps live here rather than on .hz-lede,
+   which is also used on its own in other sections. */
+.hz-lede + .hz-grid{ margin-top:32px; }
+.hz-grid + .hz-lede{ margin-top:28px; }
 
 /* ============= FAQ ============= */
 .hz-faq{ border-top:1px solid var(--rule); max-width:900px; }

@@ -21,7 +21,10 @@ import headExtras from '../components/landing/head-extras.html?raw'
 import sheetOpen from '../components/landing/sections/01-sheet-open.html?raw'
 
 // Raw-HTML sections (no component inside). The feature blocks with a console
-// live in HarnessFeatures.astro; these carry the FAQ and closer.
+// live in HarnessFeatures.astro; these carry the primitives primer (which
+// defines worker/trigger/function before the page starts using the words),
+// the FAQ, and the closer.
+import primitivesPrimer from '../components/landing/sections/harness/01-primitives-primer.html?raw'
 import faq from '../components/landing/sections/harness/11-faq.html?raw'
 import closer from '../components/landing/sections/harness/12-closer.html?raw'
 
@@ -47,6 +50,7 @@ const body = [faq, closer, footer, pageBehaviors].join('')
   <SiteNav pageTitle="harness" />
   <ScrollNav
     links={[
+      { id: 'primitives', label: 'primitives' },
       { id: 'why', label: 'why' },
       { id: 'extend', label: 'extend' },
       { id: 'models', label: 'models' },
@@ -56,6 +60,7 @@ const body = [faq, closer, footer, pageBehaviors].join('')
     ]}
   />
   <HarnessHero />
+  <Fragment set:html={primitivesPrimer} />
   <HarnessFeatures />
   <Fragment set:html={body} />
 </HtmlShell>

@@ -222,14 +222,18 @@ import HarnessConsole from '../../HarnessConsole.astro'
   </div>
 </section>
 
-<!-- 09 · PRIMITIVES — pi.dev's "primitives, not features" → three primitives. -->
-<section class="hz-section hz-body" id="primitives" aria-label="Three primitives">
+<!-- 09 · PRIMITIVES — pi.dev's "primitives, not features" → three primitives.
+     The primitives are DEFINED before the feature blocks start, in
+     sections/harness/01-primitives-primer.html (which owns id="primitives" and
+     the ScrollNav anchor); this block is the design argument for them, so it
+     carries its own id. -->
+<section class="hz-section hz-body" id="not-features" aria-label="Primitives, not features">
   <div class="hz-feature flip">
     <div class="hz-feature-copy">
       <p class="hz-kicker">primitives <span class="dot"></span></p>
       <h2 class="hz-feature-title">primitives, <span class="accent">not features.</span></h2>
       <div class="hz-feature-body">
-        <p>other harnesses bet that a minimal core plus extensions beats a feature list. iii makes the same bet about the whole system: three primitives — <strong>worker</strong>, <strong>trigger</strong>, <strong>function</strong> — compose into every capability you'll ever need.</p>
+        <p>other harnesses bet that a minimal core plus extensions beats a feature list. iii makes the same bet about the whole system: the three primitives from the top of this page — <strong>worker</strong>, <strong>trigger</strong>, <strong>function</strong> — compose into every capability you'll ever need.</p>
         <p>something hosts work, something causes it, something does it. queues, cron, streaming, sandboxing, observability, agents, business logic — each is a pattern on those three, not a new subsystem to learn, configure, and monitor.</p>
         <p>sub-agents, plan mode, permission gates? not features to wait for. they're workers and triggers you add — as easy to install as a library, live the moment they connect.</p>
       </div>

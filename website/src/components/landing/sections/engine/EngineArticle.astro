@@ -36,23 +36,30 @@ import HarnessConsole from '../../HarnessConsole.astro'
 
   <section class="en-section" id="primitives">
     <h2>the iii engine primitives: worker, function, trigger</h2>
-    <p>everything iii runs on reduces to three things. a <strong>worker</strong> hosts work. a <strong>function</strong> does it. a <strong>trigger</strong> causes it. that's the whole vocabulary.</p>
+    <p>everything iii runs on reduces to three things. a <strong>worker</strong> hosts work. a <strong>function</strong> does it. a <strong>trigger</strong> causes it. that's the whole vocabulary — nothing in iii is a fourth kind of thing.</p>
     <p>think of it like react's component model, but for traditional and agentic services — a minimal, common mental model for building systems instead of a different shape for every service you stand up. less cognitive complexity, fewer tokens spent describing the system, and something that's easier to reason about and scale, because everything you're looking at is one of the same three things.</p>
 
     <div class="en-primitives-row">
       <div class="en-prim">
         <p class="en-prim-name">worker</p>
         <p class="en-prim-doc">something hosts work</p>
+        <p class="en-prim-eg">any process that connects to the engine — a python script, a rust binary, an HTTP service you already run, a browser tab, the harness itself. it connects and publishes what it can do.</p>
       </div>
       <div class="en-prim">
         <p class="en-prim-name">function</p>
         <p class="en-prim-doc">something does it</p>
+        <p class="en-prim-eg">one named capability a worker exposes, with a typed schema. the id is the entire contract — a caller never learns where it runs or what language it's written in.</p>
       </div>
       <div class="en-prim">
         <p class="en-prim-name">trigger</p>
         <p class="en-prim-doc">something causes it</p>
+        <p class="en-prim-eg">the reason a function runs: a schedule, a state change, an HTTP request, an event from another worker. registered engine-side, so it fires with no one watching.</p>
       </div>
     </div>
+
+    <p>keeping the vocabulary that small is what buys interoperability nobody has to build. every part of an application — a service you already run, a database, a nightly job, a browser tab, an agent — enters the system as one of those three shapes, so all of it can already reach all the rest: any worker can call any function the moment it registers, and any trigger can cause any of them. no adapters, no client library per pair of services, no integration work. the interop comes from the shape, not from the wiring.</p>
+
+    <p>everything after this section is those same three seen from a different angle. the protocol is how anything at all can speak them; the live surface is the list of the ones running right now; the registry is how you install more; and the harness is a worker with functions and triggers like any other. that last one is why an agent here can extend the system it's running inside instead of only describing it.</p>
   </section>
 
   <section class="en-section" id="protocol">

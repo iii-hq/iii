@@ -74,9 +74,11 @@
   border:1px solid var(--rule);
 }
 .en-prim{
-  padding:22px 18px;
+  padding:20px 18px 22px;
   border-right:1px solid var(--rule);
-  text-align:center;
+  /* Left-aligned rather than centered: each cell carries a sentence of
+     explanation under the label, and centered prose reads badly at 3-up. */
+  text-align:left;
 }
 .en-prim:last-child{ border-right:0; }
 .en-prim-name{
@@ -87,8 +89,17 @@
 }
 .en-prim-doc{
   font-family:'Chivo Mono', ui-monospace, monospace;
-  font-size:12px; color:var(--ink-faint);
+  font-size:12px; color:var(--ink-2);
   margin:0;
+}
+/* The plain-language gloss under each primitive: what it actually is for a
+   reader who has never met the word in this sense. */
+.en-prim-eg{
+  font-family:'Chivo Mono', ui-monospace, monospace;
+  font-size:12px; line-height:1.6; color:var(--ink-faint);
+  margin:10px 0 0;
+  padding-top:10px;
+  border-top:1px solid var(--rule);
 }
 @media (max-width: 560px){
   .en-primitives-row{ grid-template-columns:1fr; }
