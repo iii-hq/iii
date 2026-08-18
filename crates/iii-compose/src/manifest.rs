@@ -97,11 +97,14 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
         });
     }
 
-    let manifest = read_manifest(dir)?;
-
+    // Before the manifest is read, not after: a compose file that says how to
+    // run the worker does not need one, and a broken `iii.worker.yaml` next
+    // door should not fail a container that never consults it.
     if let Some(run) = &container.scripts.run {
         return Ok(StartSpec::Shell(run.clone()));
     }
+
+    let manifest = read_manifest(dir)?;
     if let Some(start) = manifest.and_then(|manifest| manifest.start) {
         return Ok(StartSpec::Shell(start));
     }

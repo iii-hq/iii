@@ -381,7 +381,46 @@ async fn resolve_response(
         .await
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
+    check_names(container, registry, &resolved)?;
     Ok(resolved)
+}
+
+/// Whether a value from the registry may be used to build a path.
+///
+/// Compose installs into a directory named after the package, so a name or
+/// version holding a separator or `..` would place the download outside the
+/// cache. The registry is whatever `package://<host>/…` names, so this is not a
+/// check on our own service: it is a check on wherever compose was pointed.
+fn is_path_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value != ".."
+        && !value.starts_with('.')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Refuses a resolve answer before anything in it reaches the filesystem.
+///
+/// The whole graph is checked, not only the worker asked for: `compose::add`
+/// turns every node into a declaration, and each one can later be installed
+/// under its own name.
+fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> Result<()> {
+    let refuse = |field: &str, value: &str| ComposeError::RegistryNameRefused {
+        container: container.to_string(),
+        registry: registry.to_string(),
+        field: field.to_string(),
+        value: value.to_string(),
+    };
+    for worker in &resolved.graph {
+        if !is_path_safe(&worker.name) {
+            return Err(refuse("name", &worker.name));
+        }
+        if !is_path_safe(&worker.version) {
+            return Err(refuse("version", &worker.version));
+        }
+    }
+    Ok(())
 }
 
 /// The named worker out of its own graph.
@@ -721,5 +760,50 @@ mod tests {
             registry_message(500, r#"{"oops":1}"#),
             r#"HTTP 500: {"oops":1}"#
         );
+    }
+    #[test]
+    fn a_package_name_that_would_leave_the_cache_is_refused() {
+        // What compose does with the name: `cache_root.join(format!(...))`.
+        // Anything here that holds a separator or `..` writes outside it.
+        for escape in [
+            "../../etc/cron.d/x",
+            "..",
+            "/etc/passwd",
+            "state/../../..",
+            ".ssh",
+            "a\\b",
+        ] {
+            assert!(!is_path_safe(escape), "{escape} must be refused");
+        }
+    }
+
+    #[test]
+    fn ordinary_names_and_versions_are_allowed() {
+        for ok in [
+            "state",
+            "llm-router",
+            "context_manager",
+            "0.21.4-alpha.4",
+            "x86_64-unknown-linux-gnu",
+        ] {
+            assert!(is_path_safe(ok), "{ok} must be allowed");
+        }
+    }
+
+    #[test]
+    fn a_dependency_is_checked_too_not_only_the_worker_asked_for() {
+        // `compose::add` declares the whole graph, and each node is installed
+        // under its own name later.
+        let response: ResolveResponse = serde_json::from_value(serde_json::json!({
+            "graph": [
+                {"name": "state", "version": "1.0.0", "type": "binary"},
+                {"name": "../escape", "version": "1.0.0", "type": "binary"},
+            ]
+        }))
+        .unwrap();
+
+        let err = check_names("api", "https://workers.iii.dev", &response).unwrap_err();
+        assert_eq!(err.code(), "REGISTRY_NAME_REFUSED");
+        assert!(err.to_string().contains("../escape"));
     }
 }

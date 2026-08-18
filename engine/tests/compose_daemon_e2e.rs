@@ -118,8 +118,14 @@ async fn call_in(
 /// project ids, which are the subdirectory under this root.
 fn isolate_state() {
     static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let root = ROOT.get_or_init(|| tempfile::tempdir().expect("state root"));
-    unsafe { std::env::set_var("III_COMPOSE_STATE_DIR", root.path()) };
+    ROOT.get_or_init(|| {
+        let root = tempfile::tempdir().expect("state root");
+        // SAFETY: `get_or_init` runs this once and serialises the callers, so
+        // the write happens a single time rather than on every call — which is
+        // what the comment above claimed and the code did not do.
+        unsafe { std::env::set_var("III_COMPOSE_STATE_DIR", root.path()) };
+        root
+    });
 }
 
 async fn start_daemon(port: u16) -> Arc<Daemon> {

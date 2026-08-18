@@ -62,6 +62,20 @@ impl ConfigFile {
             path: dir.to_path_buf(),
             source,
         })?;
+        // `create_dir_all` takes the process umask, which is usually 0755. The
+        // files inside are 0600, but a directory anyone can list and enter is
+        // half a boundary — and compose publishes this directory into a bundle
+        // VM, so its mode travels with it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(
+                |source| ComposeError::Io {
+                    path: dir.to_path_buf(),
+                    source,
+                },
+            )?;
+        }
 
         let path = dir.join(format!("{container_key}.yaml"));
         let text = serde_yaml::to_string(value).map_err(|err| ComposeError::Yaml {
@@ -183,5 +197,32 @@ mod tests {
             let mode = std::fs::metadata(file.path()).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "resolved config must be owner-only");
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn resolved_configuration_is_owner_only_even_when_it_was_already_there() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("config");
+
+        // A file left by an earlier run under a looser umask. `OpenOptions`
+        // only applies its mode when it creates the file, so this is the case
+        // that used to keep the wide mode and the resolved secrets with it.
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("api.yaml");
+        std::fs::write(&path, "stale: true\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        ConfigFile::write(&dir, "api", &yaml("server:\n  port: 3000\n")).unwrap();
+
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600, "the file must not stay group readable");
+        assert_eq!(
+            mode(&dir),
+            0o700,
+            "nor may the directory holding it be listable"
+        );
     }
 }

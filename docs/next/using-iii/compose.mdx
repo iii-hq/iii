@@ -108,7 +108,7 @@ one at the wrong file.
   pointed.
 </Warning>
 
-| Function            | Requires  | Returns                                                                        |
+| Function            | Takes     | Returns                                                                        |
 | ------------------- | --------- | ------------------------------------------------------------------------------ |
 | `compose::up`       | `file`    | An operation result.                                                           |
 | `compose::down`     | `file`    | An operation result.                                                           |
@@ -118,6 +118,9 @@ one at the wrong file.
 | `compose::add`      | `file`, `worker` | What the edit did, and the `down` and `up` that followed.               |
 | `compose::restart`  | `file`    | The `down` and the `up`, each an operation result.                             |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
+
+`file` is not required. Left out, it falls back to a `worker-compose.yaml` in the daemon's own
+working directory. `worker` has no fallback.
 
 ### Adding a worker
 
@@ -406,8 +409,7 @@ Everything sits under `~/.iii/compose`, or under `$III_COMPOSE_STATE_DIR` when t
 | `<ns>/<project>/state.json` | One project's child records. Owner-only.             |
 | `<ns>/<project>/config/`    | Resolved configuration files.                        |
 | `<ns>/<project>/logs/`      | What each container printed while starting.          |
-| `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each,  |
-|                             | plus the config each one publishes into its guest.   |
+| `<ns>/<project>/vm/`        | VM state for bundle containers, one directory each, plus the config each one publishes into its guest. |
 | `packages/`                 | Installed `package://` artefacts, shared by projects. |
 
 `<ns>` is the daemon's namespace. `<project>` is derived from the compose file's canonical path:

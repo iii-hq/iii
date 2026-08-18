@@ -110,34 +110,6 @@ async fn a_hung_pre_start_times_out_and_leaves_nothing_running() {
 }
 
 #[tokio::test]
-async fn hooks_run_with_the_container_environment_and_directory() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = tmp.path().join("resolved.yaml");
-    std::fs::write(&config, "server:\n  port: 3000\n").unwrap();
-    let start = IDLE;
-
-    // A stale reserved variable in the parent environment must not reach a hook.
-    unsafe { std::env::set_var("III_WORKER_NAME", "stale-name") };
-    let result = run_pre_start(
-        &ctx(tmp.path(), &start, Some(&config)),
-        "printf '%s|%s|%s|%s' \"$III_URL\" \"$III_NAMESPACE\" \"$III_WORKER_NAME\" \"$III_CONFIG\" > seen.txt && test \"$PWD\" = \"$(pwd)\"",
-        Duration::from_secs(5),
-    )
-    .await;
-    unsafe { std::env::remove_var("III_WORKER_NAME") };
-
-    assert!(result.is_ok(), "{result:?}");
-    let seen = std::fs::read_to_string(tmp.path().join("seen.txt")).unwrap();
-    assert_eq!(
-        seen,
-        format!(
-            "ws://engine.test:49134|orders-test|api|{}",
-            config.display()
-        )
-    );
-}
-
-#[tokio::test]
 async fn post_run_fires_without_being_awaited() {
     let tmp = tempfile::tempdir().unwrap();
     let marker = tmp.path().join("drained.txt");

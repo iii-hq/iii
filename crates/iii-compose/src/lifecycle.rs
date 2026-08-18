@@ -675,10 +675,17 @@ async fn stop_one(
     // that cannot be rebuilt (a container that vanished from the file, an
     // env_file that is gone) simply means no hook runs — teardown never fails
     // because of its own cleanup hook.
+    //
+    // The spec is the hook's own. A hook is a host shell command whatever the
+    // container was, and asking `resolve_start` for one instead gated the hook
+    // on an answer only a `path://` container has: a package container's spec
+    // comes from what was installed, which teardown cannot resolve offline. So
+    // post_run never fired for the containers most likely to need it.
     if let Some(container) = ctx.file.containers.get(key)
+        && let Some(script) = container.scripts.post_run.clone()
         && let Ok(user_env) = container.resolve_user_env(key)
-        && let Ok(start) = resolve_start(key, container)
     {
+        let start = StartSpec::Shell(script);
         let working_dir = resolve_working_dir(
             container.working_dir.as_deref(),
             container.worker_dir(),

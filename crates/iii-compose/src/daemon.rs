@@ -24,7 +24,7 @@ use std::{
 };
 
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 use crate::{
     config::ComposeFile,
@@ -52,7 +52,11 @@ pub struct Daemon {
     /// path of its compose file. Nothing else identifies a project: a name
     /// someone chose would be a second identity, and a second identity can be
     /// pointed at the wrong file.
-    projects: Mutex<BTreeMap<PathBuf, Arc<Project>>>,
+    /// The value is a per-key cell rather than the project itself, so two
+    /// callers naming the same file wait on one load instead of each running
+    /// their own. Two `Project::open` calls on one file both adopt the same
+    /// surviving children, and the loser of the insert is still handed out.
+    projects: Mutex<BTreeMap<PathBuf, Arc<OnceCell<Arc<Project>>>>>,
     /// Set by `compose::stop`. The serve loop reads it and leaves through the
     /// same path a SIGTERM takes, so a remote stop and a local one cannot
     /// diverge in what they tear down.
@@ -110,38 +114,54 @@ impl Daemon {
         }
         let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
 
-        if let Some(existing) = self.projects.lock().await.get(&key).cloned() {
-            return Ok(existing);
-        }
+        // The map lock is held only long enough to claim the cell. Loading under
+        // it would make one slow project block `compose::list` and every other
+        // project on the daemon.
+        let cell = {
+            let mut projects = self.projects.lock().await;
+            Arc::clone(projects.entry(key.clone()).or_default())
+        };
 
-        let compose = ComposeFile::load(file)?;
-        // Validate before announcing: a project that cannot start is better
-        // refused here than half-started later.
-        let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
-        crate::manifest::validate_offline(&compose, &namespace)?;
+        cell.get_or_try_init(|| async {
+            let compose = ComposeFile::load(file)?;
+            // Validate before announcing: a project that cannot start is better
+            // refused here than half-started later.
+            let namespace = crate::namespace::project_namespace(None, compose.namespace.as_deref());
+            crate::manifest::validate_offline(&compose, &namespace)?;
 
-        let project = Project::open(
-            &self.daemon_namespace,
-            compose,
-            Arc::clone(&self.engine),
-            self.engine_url.clone(),
-        )
-        .await?;
+            let project = Project::open(
+                &self.daemon_namespace,
+                compose,
+                Arc::clone(&self.engine),
+                self.engine_url.clone(),
+            )
+            .await?;
 
+            crate::report::daemon_line(
+                &format!("project {} loaded into {namespace}", key.display()),
+                false,
+            );
+            Ok(project)
+        })
+        .await
+        .cloned()
+    }
+
+    /// Every project that finished loading. A cell still being filled has no
+    /// project to act on yet, so it is skipped rather than waited for: the
+    /// caller asking for a list must not block on somebody else's `up`.
+    async fn loaded(&self) -> Vec<Arc<Project>> {
         self.projects
             .lock()
             .await
-            .insert(key.clone(), Arc::clone(&project));
-        crate::report::daemon_line(
-            &format!("project {} loaded into {namespace}", key.display()),
-            false,
-        );
-        Ok(project)
+            .values()
+            .filter_map(|cell| cell.get().cloned())
+            .collect()
     }
 
     /// Every project this daemon knows, for `compose::list`.
     pub async fn list(&self) -> Vec<serde_json::Value> {
-        let projects: Vec<Arc<Project>> = self.projects.lock().await.values().cloned().collect();
+        let projects: Vec<Arc<Project>> = self.loaded().await;
         let mut listed = Vec::new();
         for project in projects {
             listed.push(serde_json::json!({
@@ -465,7 +485,7 @@ impl Daemon {
 
     /// Intentional shutdown: every project goes down, then the connection.
     pub async fn shutdown(&self) {
-        let projects: Vec<Arc<Project>> = self.projects.lock().await.values().cloned().collect();
+        let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.shutdown().await;
         }
@@ -475,7 +495,7 @@ impl Daemon {
     /// Leaves without touching what was not started here. Used when the engine
     /// refuses this daemon's registration.
     pub async fn abandon(&self) {
-        let projects: Vec<Arc<Project>> = self.projects.lock().await.values().cloned().collect();
+        let projects: Vec<Arc<Project>> = self.loaded().await;
         for project in projects {
             project.abandon().await;
         }
@@ -500,8 +520,7 @@ impl Daemon {
                 let reconnected = connected && !was_connected;
                 was_connected = connected;
 
-                let projects: Vec<Arc<Project>> =
-                    daemon.projects.lock().await.values().cloned().collect();
+                let projects: Vec<Arc<Project>> = daemon.loaded().await;
                 for project in projects {
                     if reconnected {
                         project.reconcile_after_reconnect().await;

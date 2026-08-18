@@ -207,6 +207,12 @@ impl EngineClient {
         };
 
         let value = response.get("value").cloned().unwrap_or(response);
+        // A stored `null` is an entry with nothing in it, which is what an
+        // absent one is. Passing it on as a value makes a container start
+        // against a configuration of `null` instead of its own defaults.
+        if value.is_null() {
+            return Ok(None);
+        }
         serde_yaml::to_value(value)
             .map(Some)
             .map_err(|err| ComposeError::ConfigFetchFailed {

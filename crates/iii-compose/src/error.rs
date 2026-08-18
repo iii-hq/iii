@@ -93,6 +93,20 @@ pub enum ComposeError {
         message: String,
     },
 
+    /// The registry answered with a name or version compose will not put in a
+    /// path. Everything installed lands in a directory built from these, so a
+    /// value carrying a separator or `..` writes outside the cache.
+    #[error(
+        "container '{container}': the registry at {registry} answered with an unusable {field} \
+         '{value}'. A package {field} may hold only letters, digits, '.', '_' and '-'"
+    )]
+    RegistryNameRefused {
+        container: String,
+        registry: String,
+        field: String,
+        value: String,
+    },
+
     #[error(
         "container '{container}': '{name}' is a {kind} worker. compose can install binary and \
          bundle workers; engine workers are built into the engine and image workers need the OCI \
@@ -102,6 +116,21 @@ pub enum ComposeError {
         container: String,
         name: String,
         kind: String,
+    },
+
+    /// `compose::add` would turn a declaration into a different kind of thing.
+    /// A registry package and a local directory are not two versions of one
+    /// worker, and replacing one with the other loses whatever the operator
+    /// wrote.
+    #[error(
+        "container '{container}' is already declared as a {from} worker, and '{name}' resolves to \
+         a {to} one. Remove the entry first, or add the new worker under another name"
+    )]
+    WorkerSourceChanged {
+        container: String,
+        name: String,
+        from: String,
+        to: String,
     },
 
     /// `worker=` did not name anything installable.
@@ -343,9 +372,11 @@ impl ComposeError {
             Self::MissingEnvFile { .. } => "MISSING_ENV_FILE",
             Self::RegistryUnreachable { .. } => "REGISTRY_UNREACHABLE",
             Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
+            Self::RegistryNameRefused { .. } => "REGISTRY_NAME_REFUSED",
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
             Self::InvalidWorkerSpec { .. } => "INVALID_WORKER_SPEC",
+            Self::WorkerSourceChanged { .. } => "WORKER_SOURCE_CHANGED",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
             Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",

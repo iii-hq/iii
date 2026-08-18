@@ -37,6 +37,16 @@ pub enum Source {
     Path { path: String },
 }
 
+impl Source {
+    /// The word used when a change of kind is refused.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Package { .. } => "package",
+            Self::Path { .. } => "path",
+        }
+    }
+}
+
 /// A container to splice in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewContainer {
@@ -143,6 +153,23 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
 
     match find_entry(&lines, &containers, &indent, &new.key) {
         Some(entry) => {
+            // A package and a directory are not two versions of one worker.
+            // Without this the version comparison below reads `unpinned` for a
+            // `path://` entry, calls a resolved package a version change, and
+            // rewrites the operator's local worker away.
+            let declared = declared_kind(&lines[entry.clone()]);
+            let wanted_kind = new.source.kind();
+            if let Some(declared) = declared
+                && declared != wanted_kind
+            {
+                return Err(ComposeError::WorkerSourceChanged {
+                    container: new.key.clone(),
+                    name: new.key.clone(),
+                    from: declared.to_string(),
+                    to: wanted_kind.to_string(),
+                });
+            }
+
             let existing = declared_version(&lines[entry.clone()]);
             let wanted = wanted_version(new);
             // Version alone is not the whole declaration. An entry written
@@ -305,6 +332,23 @@ fn declared_needs(entry: &[&str]) -> Vec<String> {
 }
 
 /// The `version:` an entry declares, if it declares one.
+/// Whether the entry names a registry package or a directory, read from its
+/// `worker:` line. `None` when the entry has none, which a hand-written file
+/// may do when the manifest supplies it.
+fn declared_kind(entry: &[&str]) -> Option<&'static str> {
+    entry.iter().find_map(|line| {
+        let value = line.trim().strip_prefix("worker:")?.trim();
+        let value = value.trim_matches(['"', '\'']);
+        if value.starts_with("path://") || value.starts_with('.') || value.starts_with('/') {
+            Some("path")
+        } else if value.starts_with("package://") {
+            Some("package")
+        } else {
+            None
+        }
+    })
+}
+
 fn declared_version(entry: &[&str]) -> Option<String> {
     entry.iter().find_map(|line| {
         let trimmed = line.trim();
@@ -669,5 +713,59 @@ containers:
     fn a_file_without_a_trailing_newline_keeps_not_having_one() {
         let out = added(FILE.trim_end());
         assert!(!out.ends_with('\n'), "gained a trailing newline");
+    }
+    #[test]
+    fn a_package_never_replaces_a_local_worker_of_the_same_name() {
+        // The hazard is quiet: `path://` carries no version, so comparing
+        // versions alone reads this as unpinned -> 1.2.3 and rewrites the
+        // entry, dropping whatever the operator kept under it.
+        let text =
+            "containers:\n  state:\n    worker: path://./workers/state\n    working_dir: .\n";
+        let new = NewContainer {
+            key: "state".to_string(),
+            source: Source::Package {
+                reference: "workers.iii.dev/state".to_string(),
+                version: Some("1.2.3".to_string()),
+            },
+            depends_on: vec![],
+        };
+
+        let err = upsert_container(text, &new).unwrap_err();
+        assert_eq!(err.code(), "WORKER_SOURCE_CHANGED");
+    }
+
+    #[test]
+    fn a_local_worker_never_replaces_a_package_either() {
+        let text = "containers:\n  state:\n    worker: package://workers.iii.dev/state\n    version: \"1.2.3\"\n";
+        let new = NewContainer {
+            key: "state".to_string(),
+            source: Source::Path {
+                path: "./workers/state".to_string(),
+            },
+            depends_on: vec![],
+        };
+
+        assert_eq!(
+            upsert_container(text, &new).unwrap_err().code(),
+            "WORKER_SOURCE_CHANGED"
+        );
+    }
+
+    #[test]
+    fn a_version_change_within_one_kind_is_still_a_replacement() {
+        let text = "containers:\n  state:\n    worker: package://workers.iii.dev/state\n    version: \"1.0.0\"\n";
+        let new = NewContainer {
+            key: "state".to_string(),
+            source: Source::Package {
+                reference: "workers.iii.dev/state".to_string(),
+                version: Some("1.2.3".to_string()),
+            },
+            depends_on: vec![],
+        };
+
+        assert!(matches!(
+            upsert_container(text, &new).unwrap(),
+            Outcome::Replaced { .. }
+        ));
     }
 }
