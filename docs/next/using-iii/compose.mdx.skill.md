@@ -127,7 +127,7 @@ which is how an upgrade or a rollback is asked for.
 
 A worker is rarely alone. Its manifest names what it calls, and the registry
 answers with that whole graph already pinned to versions that satisfy each
-other, so those are declared too — as containers, with their own `depends_on`.
+other, so those are declared too, as containers with their own `depends_on`.
 Nothing starts behind the file: what runs is still what the file says, and an
 operator can read it, pin it differently, or take a container out.
 
@@ -140,8 +140,8 @@ named by both.
 The file is edited, not rewritten: comments, blank lines and quoting survive,
 entries are appended, and the result is parsed before it is written, so a bad
 edit never reaches disk. What is written is `worker`, `version` and
-`depends_on` — no `scripts`, so a `path://` worker needs `scripts.start` in its
-own `iii.worker.yaml` to start. A `path://` worker is added alone: its
+`depends_on`. It writes no `scripts`, so a `path://` worker needs
+`scripts.start` in its own `iii.worker.yaml` to start. A `path://` worker is added alone: its
 dependencies are declared in a manifest on disk rather than in the registry's
 answer.
 
@@ -160,7 +160,7 @@ A project-scoped call may leave `file` out when the daemon's own working directo
 `worker-compose.yaml`; without one, it fails with `NO_COMPOSE_FILE`. A relative `file` resolves
 against the daemon's directory, not the caller's, so pass an absolute path when they differ.
 
-`compose::restart` is a `down` followed by an `up`, with the compose file read again between them —
+`compose::restart` is a `down` followed by an `up`, with the compose file read again between them,
 so an edit made by hand takes effect without restarting the daemon. It accepts `container` like the
 two halves it is made of. Nothing cleverer yet: no rolling restart, and no keeping a container that
 did not change.
