@@ -397,16 +397,12 @@ file names the values it wants instead, with `${VAR}`.
 containers:
   queue:
     worker: path://${WORKERS_DIR}/queue
-    config_override:
-      adapter:
-        config:
-          file_path: ${DATA_DIR:-./data}/queue
     environment:
-      RUST_LOG: ${RUST_LOG}
+      RUST_LOG: ${RUST_LOG:-info}
 ```
 
-References expand before the YAML is read, so they work in any value, not only in `environment`.
-The file on disk is never rewritten.
+References expand in any value, not only in `environment`: a worker path, a version, an `env_file`
+entry. The file on disk is never rewritten.
 
 | Written        | Means                                                                  |
 | -------------- | ---------------------------------------------------------------------- |
@@ -415,11 +411,21 @@ The file on disk is never rewritten.
 | `$VAR`         | Nothing. A bare name is left alone, so a `scripts.run` holding `$PWD` still reaches the shell. |
 | `$${VAR}`      | A literal `${VAR}`.                                                    |
 
-<Warning>
-  The configuration worker resolves `${VAR}` references of its own, at read time, which is how a
-  secret is stored as a reference instead of as a value. A `config_override` that carries one writes
-  `$${DB_PASSWORD}`, or compose expands it here and the value is written down.
-</Warning>
+#### What `config_override` keeps
+
+`config_override` is never expanded, at any depth. That block is not compose's to read: it is
+carried to the configuration worker, which resolves `${VAR}` references of its own at read time.
+That is how a secret is stored as a reference rather than as a value.
+
+```yaml
+    config_override:
+      # Reaches the worker as written. The value is never in the compose file,
+      # and never in what compose stores.
+      api_key: ${ANTHROPIC_API_KEY}
+```
+
+A name that compose's environment does not hold is therefore not an error inside this block. Nothing
+in it is compose's to resolve.
 
 ## Readiness
 

@@ -24,15 +24,56 @@
 //! `$PWD` or `$III_WORKER_NAME` before the shell sees them would break the one
 //! field most likely to hold them.
 //!
-//! `$${VAR}` writes a literal `${VAR}`. That is not a courtesy: the
-//! configuration worker resolves `${VAR}` references of its own, at read time
-//! and on purpose, so that a secret is stored as a reference rather than as a
-//! value. A `config_override` meant to carry one writes `$${DB_PASSWORD}` and
-//! keeps it deferred.
+//! `config_override` is not expanded at all. That block is not compose's
+//! language: it is data compose carries to the configuration worker, which
+//! resolves `${VAR}` references of its own at read time — that is how a secret
+//! is stored as a reference rather than as a value. Expanding one here would
+//! write the value down, permanently, in the entry that existed to avoid it.
+//!
+//! `$${VAR}` still writes a literal `${VAR}`, for a reference that has to sit
+//! somewhere else. It should be rare: the block that carries them is already
+//! left alone.
 
 use std::path::Path;
 
 use crate::error::{ComposeError, Result};
+
+/// The one block compose carries without reading. See the module docs.
+const NOT_OURS: &str = "config_override";
+
+/// Expands every string in a parsed compose document, except under
+/// [`NOT_OURS`].
+///
+/// Walking the parsed document rather than the text is what makes that
+/// exception possible: `${VAR}` and the block it sits in are only
+/// distinguishable once the shape is known.
+pub fn expand_tree(
+    value: &mut serde_yaml::Value,
+    path: &Path,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<()> {
+    match value {
+        serde_yaml::Value::String(text) => *text = expand(text, path, lookup)?,
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                expand_tree(item, path, lookup)?;
+            }
+        }
+        serde_yaml::Value::Mapping(entries) => {
+            for (key, entry) in entries.iter_mut() {
+                // Keys are identities — a container name, a variable name — and
+                // an operator naming one from the environment is not a thing
+                // compose supports.
+                if key.as_str() == Some(NOT_OURS) {
+                    continue;
+                }
+                expand_tree(entry, path, lookup)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 /// Expands every `${...}` in `text`, reading `lookup` for each name.
 ///
@@ -219,5 +260,84 @@ mod tests {
     fn a_file_with_nothing_to_expand_comes_back_unchanged() {
         let text = "containers:\n  api:\n    worker: path://./api\n";
         assert_eq!(run(text, &[]).unwrap(), text);
+    }
+    fn tree(yaml: &str, pairs: &[(&str, &str)]) -> Result<serde_yaml::Value> {
+        let mut value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        expand_tree(&mut value, Path::new("worker-compose.yaml"), &env(pairs))?;
+        Ok(value)
+    }
+
+    fn at<'a>(value: &'a serde_yaml::Value, path: &[&str]) -> &'a str {
+        let mut cursor = value;
+        for step in path {
+            cursor = &cursor[*step];
+        }
+        cursor.as_str().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_config_override_keeps_its_own_references() {
+        // The configuration worker resolves these at read time, which is how a
+        // secret stays a reference. Expanding one here would write the value
+        // into the entry that existed to avoid exactly that.
+        let value = tree(
+            "containers:\n  api:\n    worker: path://${DIR}/api\n    config_override:\n      api_key: ${ANTHROPIC_API_KEY}\n      nested:\n        deep: ${ALSO_LEFT}\n",
+            &[
+                ("DIR", "./workers"),
+                ("ANTHROPIC_API_KEY", "sk-secret"),
+                ("ALSO_LEFT", "no"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            at(&value, &["containers", "api", "worker"]),
+            "path://./workers/api"
+        );
+        assert_eq!(
+            at(&value, &["containers", "api", "config_override", "api_key"]),
+            "${ANTHROPIC_API_KEY}",
+            "the block compose only carries must come through untouched"
+        );
+        assert_eq!(
+            at(
+                &value,
+                &["containers", "api", "config_override", "nested", "deep"]
+            ),
+            "${ALSO_LEFT}",
+            "including below the first level"
+        );
+    }
+
+    #[test]
+    fn a_name_missing_under_config_override_is_not_an_error() {
+        // Nothing there is compose's to resolve, so nothing there can be
+        // missing as far as compose is concerned.
+        let value = tree(
+            "containers:\n  api:\n    config_override:\n      key: ${NOT_ON_THIS_HOST}\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            at(&value, &["containers", "api", "config_override", "key"]),
+            "${NOT_ON_THIS_HOST}"
+        );
+    }
+
+    #[test]
+    fn everything_outside_that_block_still_expands() {
+        let value = tree(
+            "containers:\n  api:\n    environment:\n      LEVEL: ${LEVEL}\n    env_file:\n      - ${DIR}/.env\n",
+            &[("LEVEL", "debug"), ("DIR", "./cfg")],
+        )
+        .unwrap();
+        assert_eq!(
+            at(&value, &["containers", "api", "environment", "LEVEL"]),
+            "debug"
+        );
+        assert_eq!(
+            value["containers"]["api"]["env_file"][0].as_str().unwrap(),
+            "./cfg/.env"
+        );
     }
 }

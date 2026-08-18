@@ -137,14 +137,29 @@ impl ComposeFile {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        // Before the YAML is read, so a `${VAR}` works in any value rather than
-        // in the handful of fields somebody thought to support. The file on
-        // disk is never rewritten: this is the text compose reads, not the text
-        // the operator keeps.
-        let text = crate::interpolate::expand(text, &path, &|name| std::env::var(name).ok())?;
+        // Read as a document, expanded, then read as a compose file. The two
+        // steps are what let `config_override` keep its own `${VAR}`: which
+        // block a reference sits in is only knowable once the shape is.
+        //
+        // The file on disk is never rewritten. This is the text compose reads,
+        // not the text the operator keeps.
+        let mut document: serde_yaml::Value =
+            serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+                path: path.clone(),
+                message: err.to_string(),
+            })?;
+        crate::interpolate::expand_tree(&mut document, &path, &|name| std::env::var(name).ok())?;
 
+        // Back to text before the compose file is read out of it. Reading the
+        // document directly would tighten the types: YAML says `30` is a
+        // number, and `startup_timeout: 30` would fail as a malformed file
+        // rather than as the duration without a unit that it is.
+        let expanded = serde_yaml::to_string(&document).map_err(|err| ComposeError::Yaml {
+            path: path.clone(),
+            message: err.to_string(),
+        })?;
         let raw: RawComposeFile =
-            serde_yaml::from_str(&text).map_err(|err| ComposeError::Yaml {
+            serde_yaml::from_str(&expanded).map_err(|err| ComposeError::Yaml {
                 path: path.clone(),
                 message: err.to_string(),
             })?;
