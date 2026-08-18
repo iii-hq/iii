@@ -137,10 +137,17 @@ impl ComposeFile {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let raw: RawComposeFile = serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
-            path: path.clone(),
-            message: err.to_string(),
-        })?;
+        // Before the YAML is read, so a `${VAR}` works in any value rather than
+        // in the handful of fields somebody thought to support. The file on
+        // disk is never rewritten: this is the text compose reads, not the text
+        // the operator keeps.
+        let text = crate::interpolate::expand(text, &path, &|name| std::env::var(name).ok())?;
+
+        let raw: RawComposeFile =
+            serde_yaml::from_str(&text).map_err(|err| ComposeError::Yaml {
+                path: path.clone(),
+                message: err.to_string(),
+            })?;
 
         if raw.containers.is_empty() {
             return Err(ComposeError::EmptyContainers);

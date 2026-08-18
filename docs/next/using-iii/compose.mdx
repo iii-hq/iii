@@ -394,6 +394,39 @@ in both cases at `compose::validate` time.
   see [Understanding iii / Compose](../understanding-iii/compose).
 </Note>
 
+### Reading a value from the host
+
+The baseline is short on purpose, so nothing an operator exported reaches a worker by accident. A
+file names the values it wants instead, with `${VAR}`.
+
+```yaml
+containers:
+  queue:
+    worker: path://${WORKERS_DIR}/queue
+    config_override:
+      adapter:
+        config:
+          file_path: ${DATA_DIR:-./data}/queue
+    environment:
+      RUST_LOG: ${RUST_LOG}
+```
+
+References expand before the YAML is read, so they work in any value, not only in `environment`.
+The file on disk is never rewritten.
+
+| Written        | Means                                                                  |
+| -------------- | ---------------------------------------------------------------------- |
+| `${VAR}`       | The value from compose's own environment. Unset, the file is refused with `UNDEFINED_VARIABLE`. |
+| `${VAR:-text}` | The value, or `text` when it is unset. `${VAR:-}` makes it optional and empty. |
+| `$VAR`         | Nothing. A bare name is left alone, so a `scripts.run` holding `$PWD` still reaches the shell. |
+| `$${VAR}`      | A literal `${VAR}`.                                                    |
+
+<Warning>
+  The configuration worker resolves `${VAR}` references of its own, at read time, which is how a
+  secret is stored as a reference instead of as a value. A `config_override` that carries one writes
+  `$${DB_PASSWORD}`, or compose expands it here and the value is written down.
+</Warning>
+
 ## Readiness
 
 A container is considered up when the engine reports a worker of that name in the project's

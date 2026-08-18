@@ -27,6 +27,7 @@ pub mod edit;
 pub mod engine;
 pub mod error;
 pub mod hooks;
+pub mod interpolate;
 pub mod lifecycle;
 pub mod manifest;
 pub mod name;

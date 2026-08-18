@@ -139,6 +139,32 @@ pub enum ComposeError {
     #[error("{path} did not start")]
     ProjectDidNotStart { path: std::path::PathBuf },
 
+    /// `${VAR}` in a compose file, with nothing to put there.
+    #[error(
+        "{path}: ${{{name}}} is not set in this environment. Export it, or write \
+         ${{{name}:-<default>}} to give it one"
+    )]
+    UndefinedVariable {
+        path: std::path::PathBuf,
+        name: String,
+    },
+
+    #[error("{path}: '{reference}' opens a ${{...}} reference that is never closed")]
+    UnterminatedReference {
+        path: std::path::PathBuf,
+        reference: String,
+    },
+
+    #[error(
+        "{path}: '${{{name}}}' is not a variable name. A name holds letters, digits and \
+         '_', and does not start with a digit. To write it through untouched, double the \
+         sign: $${{{name}}}"
+    )]
+    InvalidReference {
+        path: std::path::PathBuf,
+        name: String,
+    },
+
     /// `worker=` did not name anything installable.
     #[error("cannot read worker '{spec}': {reason}")]
     InvalidWorkerSpec { spec: String, reason: String },
@@ -382,6 +408,9 @@ impl ComposeError {
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
             Self::InvalidWorkerSpec { .. } => "INVALID_WORKER_SPEC",
+            Self::UndefinedVariable { .. } => "UNDEFINED_VARIABLE",
+            Self::UnterminatedReference { .. } => "UNTERMINATED_REFERENCE",
+            Self::InvalidReference { .. } => "INVALID_REFERENCE",
             Self::ProjectDidNotStart { .. } => "PROJECT_DID_NOT_START",
             Self::WorkerSourceChanged { .. } => "WORKER_SOURCE_CHANGED",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
