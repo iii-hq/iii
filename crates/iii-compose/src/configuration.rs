@@ -80,6 +80,19 @@ impl ConfigFile {
             path: path.clone(),
             source,
         })?;
+        // `mode` above applies to a file this call creates. One already there
+        // keeps whatever it had, so a run that wrote it under a looser umask
+        // would leave resolved secrets readable. Set it on the handle every
+        // time, before anything is written into it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|source| ComposeError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+        }
         file.write_all(text.as_bytes())
             .map_err(|source| ComposeError::Io {
                 path: path.clone(),

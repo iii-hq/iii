@@ -91,6 +91,13 @@ pub fn outline(file: &ComposeFile, order: &[String]) -> Vec<(String, usize)> {
     // Who waits for whom, keeping declaration order so the choice is stable.
     let mut parent: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     for (key, container) in &file.containers {
+        // Both ends have to be drawn. `up container=x` plans a partial order,
+        // and a parent outside it is never walked — so the dependency under it
+        // would be neither a root nor reachable, and would vanish from a block
+        // whose whole job is to show everything.
+        if !shown.contains(key.as_str()) {
+            continue;
+        }
         for dependency in &container.depends_on {
             if shown.contains(dependency.as_str()) {
                 parent.entry(dependency.as_str()).or_insert(key.as_str());

@@ -155,7 +155,11 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
                 return Ok(Outcome::Unchanged);
             }
             let mut out: Vec<String> = lines[..entry.start].iter().map(|l| l.to_string()).collect();
-            out.extend(block.lines().map(str::to_string));
+            out.extend(
+                rewrite(&lines[entry.clone()], new, &indent)
+                    .lines()
+                    .map(str::to_string),
+            );
             out.extend(lines[entry.end..].iter().map(|l| l.to_string()));
             Ok(Outcome::Replaced {
                 text: join(&out, text),
@@ -267,6 +271,22 @@ fn declared_needs(entry: &[&str]) -> Vec<String> {
     let mut needs = Vec::new();
     for line in entry {
         let trimmed = line.trim();
+        // `depends_on: [queue, state]` declares the same thing as a block list,
+        // and reading it as empty would rewrite an entry that already says what
+        // was asked for — and a rewrite is where fields get lost.
+        if let Some(inline) = trimmed.strip_prefix("depends_on:")
+            && let Some(list) = inline
+                .trim()
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+        {
+            needs.extend(
+                list.split(',')
+                    .map(|name| name.trim().trim_matches(['"', '\'']).to_string())
+                    .filter(|name| !name.is_empty()),
+            );
+            continue;
+        }
         if trimmed == "depends_on:" {
             inside = true;
             continue;
@@ -300,6 +320,75 @@ fn wanted_version(new: &NewContainer) -> Option<String> {
         Source::Package { version, .. } => version.clone(),
         Source::Path { .. } => None,
     }
+}
+
+/// Rewrites an existing entry, keeping every line it does not own.
+///
+/// A replacement changes the version and the dependencies. Everything else in
+/// the entry belongs to whoever wrote it — `env_file` naming the credentials a
+/// worker needs, `config_name`, `working_dir`, a `scripts.run` — and rendering
+/// the block afresh would drop all of it, leaving a project that starts and
+/// cannot work.
+fn rewrite(entry: &[&str], new: &NewContainer, indent: &str) -> String {
+    let inner = format!("{indent}{indent}");
+    let mut kept: Vec<&str> = Vec::new();
+    let mut skipping_list = false;
+
+    for line in entry
+        .iter()
+        .skip_while(|line| !line.trim_end().ends_with(':'))
+        .skip(1)
+    {
+        let trimmed = line.trim();
+        // The list items under a `depends_on:` we are replacing.
+        if skipping_list {
+            if trimmed.starts_with("- ") {
+                continue;
+            }
+            skipping_list = false;
+        }
+        if trimmed.starts_with("worker:") || trimmed.starts_with("version:") {
+            continue;
+        }
+        if trimmed.starts_with("depends_on:") {
+            skipping_list = !trimmed.contains('[');
+            continue;
+        }
+        kept.push(line);
+    }
+
+    let mut out = String::new();
+    // The comments above the key, and the key itself, exactly as they were.
+    for line in entry
+        .iter()
+        .take_while(|line| !line.trim_end().ends_with(':'))
+    {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("{indent}{}:\n", new.key));
+    match &new.source {
+        Source::Package { reference, version } => {
+            out.push_str(&format!("{inner}worker: package://{reference}\n"));
+            if let Some(version) = version {
+                out.push_str(&format!("{inner}version: \"{version}\"\n"));
+            }
+        }
+        Source::Path { path } => {
+            out.push_str(&format!("{inner}worker: path://{path}\n"));
+        }
+    }
+    if !new.depends_on.is_empty() {
+        out.push_str(&format!("{inner}depends_on:\n"));
+        for dependency in &new.depends_on {
+            out.push_str(&format!("{inner}{indent}- {dependency}\n"));
+        }
+    }
+    for line in kept {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 /// The YAML for one entry, indented to match the file.
@@ -501,6 +590,64 @@ containers:
         assert_eq!(
             upsert_container(&out, &with_deps).unwrap(),
             Outcome::Unchanged
+        );
+    }
+
+    /// A replacement rewrites the version, not the container. Everything else
+    /// in the entry is the operator's: `env_file` carries the credentials a
+    /// worker needs, and losing it on an upgrade is a project that starts and
+    /// cannot work.
+    #[test]
+    fn a_replacement_keeps_what_it_does_not_own() {
+        let file = "\
+namespace: default
+
+containers:
+  llm-router:
+    worker: package://api.workers.iii.dev/llm-router
+    version: \"1.4.7\"
+    config_name: llm-router
+    env_file:
+      - ./providers.env
+";
+        let out = match upsert_container(file, &parse_worker("llm-router@1.5.0").unwrap()).unwrap()
+        {
+            Outcome::Replaced { text, .. } => text,
+            other => panic!("expected a replacement, got {other:?}"),
+        };
+        assert!(out.contains("version: \"1.5.0\""), "{out}");
+        assert!(out.contains("env_file:"), "lost env_file: {out}");
+        assert!(
+            out.contains("- ./providers.env"),
+            "lost the file it named: {out}"
+        );
+        assert!(
+            out.contains("config_name: llm-router"),
+            "lost config_name: {out}"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
+    }
+
+    /// `depends_on: [queue]` is the same declaration as a block list, so it has
+    /// to compare equal — otherwise an entry is rewritten for no reason, and a
+    /// rewrite is where fields get lost.
+    #[test]
+    fn an_inline_depends_on_is_read_like_a_block_one() {
+        let file = "\
+namespace: default
+
+containers:
+  api:
+    worker: package://api.workers.iii.dev/api
+    version: \"1.0.0\"
+    depends_on: [queue, state]
+";
+        let mut wanted = parse_worker("api@1.0.0").unwrap();
+        wanted.depends_on = vec!["queue".to_string(), "state".to_string()];
+        assert_eq!(
+            upsert_container(file, &wanted).unwrap(),
+            Outcome::Unchanged,
+            "an inline list should read as the dependencies it declares"
         );
     }
 

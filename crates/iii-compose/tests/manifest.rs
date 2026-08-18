@@ -391,3 +391,34 @@ containers:
         assert_eq!(wave.len(), 1, "a chain cannot overlap: {waves:?}");
     }
 }
+
+/// A partial order — what `up container=x` plans — must still draw every
+/// container it holds. A parent outside the order is never walked, so treating
+/// it as one would drop the dependency under it.
+#[test]
+fn a_partial_order_still_outlines_everything_in_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: orders
+containers:
+  database:
+    worker: package://workers.iii.dev/database
+    version: "1.0.0"
+  api:
+    worker: package://workers.iii.dev/api
+    version: "1.0.0"
+    depends_on: [database]
+"#,
+        &[],
+    );
+
+    // `database` alone: its dependent is not being started.
+    let outline = iii_compose::dag::outline(&file, &["database".to_string()]);
+    assert_eq!(
+        outline,
+        vec![("database".to_string(), 0)],
+        "the container in the order must be drawn: {outline:?}"
+    );
+}
