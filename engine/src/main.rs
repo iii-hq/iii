@@ -880,21 +880,35 @@ mod tests {
         }
     }
 
-    /// What used to be a subcommand must fail rather than be swallowed as a
-    /// stray argument: `iii compose up` doing nothing quietly is the failure
-    /// mode this guards.
+    /// A word that is not a subcommand must fail rather than be swallowed as a
+    /// stray argument: `iii compose down` doing nothing quietly is the failure
+    /// mode this guards. `up` is the exception, and the test below is what
+    /// holds it to being one.
     #[test]
-    fn the_old_subcommands_no_longer_parse() {
+    fn a_word_that_is_not_a_subcommand_does_not_parse() {
         for removed in [
-            ["iii", "compose", "up"],
             ["iii", "compose", "down"],
             ["iii", "compose", "logs"],
             ["iii", "compose", "validate"],
         ] {
             assert!(
                 Cli::try_parse_from(removed).is_err(),
-                "{removed:?} should no longer parse"
+                "{removed:?} should not parse"
             );
+        }
+    }
+
+    /// The one step that cannot be a `compose::*` call: a daemon has to exist
+    /// before a call can reach it.
+    #[test]
+    fn compose_up_reaches_the_subcommand() {
+        let cli = Cli::try_parse_from(["iii", "compose", "up", "-n", "dev"]).expect("should parse");
+        match cli.command {
+            Some(Commands::Compose(args)) => {
+                assert_eq!(args.ns.as_deref(), Some("dev"));
+                assert!(args.command.is_some(), "up should reach the subcommand");
+            }
+            _ => panic!("expected Compose subcommand"),
         }
     }
 
