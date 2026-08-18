@@ -650,7 +650,12 @@ mod tests {
     fn the_binary_search_prefers_a_root_file_and_is_deterministic() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("README"), "not executable").unwrap();
-        let binary = tmp.path().join("state");
+        // Executable means the mode bit on unix and the extension on windows,
+        // so the fixture has to be executable in the sense of the platform the
+        // test runs on — a bare name here found nothing there.
+        let binary = tmp
+            .path()
+            .join(format!("state{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&binary, "#!/bin/sh\n").unwrap();
         #[cfg(unix)]
         {

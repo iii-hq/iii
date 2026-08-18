@@ -162,10 +162,19 @@ async fn a_surviving_child_is_re_adopted() {
 
     let reloaded = store.load().unwrap().expect("state should reload");
     let record = &reloaded.containers["api"];
+    // Adoption needs a fingerprint, and only linux and windows have one:
+    // `birth_identity` answers `Unavailable` elsewhere, so a live child there
+    // is reported rather than adopted. Asserting `Adopt` everywhere asserted
+    // the platform, not the behaviour.
+    let expected = if cfg!(any(target_os = "linux", windows)) {
+        Reconciliation::Adopt
+    } else {
+        Reconciliation::Unverifiable
+    };
     assert_eq!(
         iii_compose::state::reconcile(record),
-        Reconciliation::Adopt,
-        "a live child with a matching fingerprint must be adopted, not restarted"
+        expected,
+        "a live child must be adopted where it can be identified, and reported where it cannot"
     );
 
     child.stop(Duration::from_secs(2)).await;

@@ -856,24 +856,24 @@ mod tests {
         assert_eq!(cli_usage_command_path(&cli), "compose");
         match cli.command {
             Some(Commands::Compose(args)) => {
-                assert!(!args.detach);
-                assert!(!args.attach);
                 assert!(args.engine.is_none());
+                assert!(args.ns.is_none());
             }
             _ => panic!("expected Compose subcommand"),
         }
     }
 
-    /// The two flags that survived say where the daemon runs, not what it
-    /// does. They are parsed here and resolved in the crate.
+    /// The flags that survived say where the daemon runs and which namespace
+    /// it answers in, not what it does. They are parsed here and resolved in
+    /// the crate.
     #[test]
     fn compose_carries_its_placement_flags() {
-        let cli = Cli::try_parse_from(["iii", "compose", "-d", "--engine", "ws://host:1"])
-            .expect("should parse detached compose");
+        let cli = Cli::try_parse_from(["iii", "compose", "-n", "dev", "--engine", "ws://host:1"])
+            .expect("should parse a placed compose");
         assert_eq!(cli_usage_command_path(&cli), "compose");
         match cli.command {
             Some(Commands::Compose(args)) => {
-                assert!(args.detach);
+                assert_eq!(args.ns.as_deref(), Some("dev"));
                 assert_eq!(args.engine.as_deref(), Some("ws://host:1"));
             }
             _ => panic!("expected Compose subcommand"),
