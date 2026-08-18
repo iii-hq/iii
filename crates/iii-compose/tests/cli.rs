@@ -1,9 +1,8 @@
-//! Mode selection: what the two remaining flags resolve to.
+//! Mode selection: what an invocation resolves to.
 //!
-//! There is one command now, and it only ever serves in the foreground.
-//! Everything an operator does to a project goes through `iii trigger
-//! compose::*`, so the only decisions left here are which namespace this
-//! daemon answers in and which engine it talks to.
+//! Compose always serves in the foreground. The decisions left here are which
+//! namespace this daemon answers in, which engine it talks to, and whether it
+//! starts holding a project or holding nothing.
 
 use clap::Parser;
 use iii_compose::{ComposeCli, ComposeCommand};
@@ -120,13 +119,16 @@ fn the_flag_is_held_to_the_same_charset_as_the_file() {
 
 #[test]
 fn the_project_flags_are_gone_rather_than_ignored() {
-    // `file` is a call argument, not a process argument, and the subcommands
-    // are `compose::*` calls now. Accepting either here would silently do
-    // nothing, so parsing has to fail and say so.
+    // Everything an operator does to a running project is a `compose::*` call,
+    // so `down`, `logs` and `stop` are not process arguments. `up` is the one
+    // exception, and only because a daemon has to exist before the first call
+    // can be made: it is the step that cannot be a call.
+    //
+    // `--file` belongs to `up` alone. On the bare command there is no project
+    // for it to name, and accepting it would silently do nothing.
     for removed in [
         &["iii", "compose", "--file", "c.yaml"][..],
         &["iii", "compose", "--id", "a"][..],
-        &["iii", "compose", "up"][..],
         &["iii", "compose", "down"][..],
         &["iii", "compose", "logs"][..],
         &["iii", "compose", "stop"][..],
@@ -169,4 +171,47 @@ fn a_project_namespace_still_comes_from_the_file_or_default() {
     assert_eq!(project_namespace(Some("shop"), Some("loja")), "shop");
     assert_eq!(project_namespace(None, Some("loja")), "loja");
     assert_eq!(project_namespace(None, None), DEFAULT_NAMESPACE);
+}
+
+#[test]
+fn bare_compose_starts_holding_nothing() {
+    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose"]).plan().unwrap();
+    assert_eq!(
+        start, None,
+        "a bare daemon learns about a project from a call"
+    );
+}
+
+#[test]
+fn up_names_the_file_in_the_current_directory() {
+    // The point of the command: in a project directory, one word starts it.
+    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose", "up"]).plan().unwrap();
+    assert_eq!(
+        start.as_deref(),
+        Some(std::path::Path::new("worker-compose.yaml"))
+    );
+}
+
+#[test]
+fn up_takes_a_file_of_its_own() {
+    let ComposeCommand::Serve { start, .. } =
+        parse(&["iii", "compose", "up", "-f", "./other.yaml"])
+            .plan()
+            .unwrap();
+    assert_eq!(start.as_deref(), Some(std::path::Path::new("./other.yaml")));
+}
+
+#[test]
+fn the_namespace_reads_the_same_on_either_side_of_the_subcommand() {
+    // `-n` is global, so an operator who types it where it feels natural does
+    // not get told it belongs somewhere else.
+    for args in [
+        ["iii", "compose", "-n", "orders", "up"],
+        ["iii", "compose", "up", "-n", "orders"],
+    ] {
+        let cli = parse(&args);
+        assert_eq!(cli.daemon_namespace().unwrap(), "orders");
+        let ComposeCommand::Serve { start, .. } = cli.plan().unwrap();
+        assert!(start.is_some(), "{args:?} should still be an up");
+    }
 }

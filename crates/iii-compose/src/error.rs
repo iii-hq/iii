@@ -133,6 +133,12 @@ pub enum ComposeError {
         to: String,
     },
 
+    /// `iii compose up` could not bring its project up. The container that
+    /// failed has already reported itself; this is the command saying so with
+    /// an exit code.
+    #[error("{path} did not start")]
+    ProjectDidNotStart { path: std::path::PathBuf },
+
     /// `worker=` did not name anything installable.
     #[error("cannot read worker '{spec}': {reason}")]
     InvalidWorkerSpec { spec: String, reason: String },
@@ -376,6 +382,7 @@ impl ComposeError {
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",
             Self::InvalidWorkerSpec { .. } => "INVALID_WORKER_SPEC",
+            Self::ProjectDidNotStart { .. } => "PROJECT_DID_NOT_START",
             Self::WorkerSourceChanged { .. } => "WORKER_SOURCE_CHANGED",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",

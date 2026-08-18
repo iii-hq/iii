@@ -46,6 +46,32 @@ compose serving
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
 does the same over the engine.
 
+### Starting a project with the daemon
+
+`iii compose up` serves and brings one project up, without waiting for a call to name it.
+
+```text
+iii compose up [-f, --file <PATH>]
+```
+
+`--file` defaults to `./worker-compose.yaml`, the same fallback a `compose::*` call gets when it
+names no file. The daemon then stays in the foreground and serves, so every other operation is a
+`compose::*` call as usual.
+
+```text
+$ iii compose up -n orders
+compose serving
+  engine: ws://127.0.0.1:49134
+  namespace: orders
+
+→ api starting
+✓ api ready (250ms)
+up: 1 of 1 changed in 250ms
+```
+
+A project that does not start ends the command with `PROJECT_DID_NOT_START`. Rollback has already
+stopped whatever came up, so there is nothing left to supervise.
+
 ### Running it in the background
 
 Compose never backgrounds itself. It serves in the foreground and writes to stdout, which is the

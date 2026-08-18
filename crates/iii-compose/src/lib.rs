@@ -39,7 +39,7 @@ pub mod report;
 pub mod spawn;
 pub mod state;
 
-pub use cli::{ComposeCli, ComposeCommand};
+pub use cli::{ComposeCli, ComposeCommand, ComposeSub};
 pub use config::{ComposeFile, Container, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport};
@@ -68,7 +68,8 @@ pub async fn run(cli: ComposeCli) -> i32 {
         ComposeCommand::Serve {
             engine_url,
             daemon_namespace,
-        } => match serve(engine_url, daemon_namespace).await {
+            start,
+        } => match serve(engine_url, daemon_namespace, start).await {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -77,10 +78,15 @@ pub async fn run(cli: ComposeCli) -> i32 {
 
 /// Serves `compose::*` until asked to stop.
 ///
-/// No project is loaded here. A daemon that has just started knows nothing,
-/// and the first `compose::up id=… file=…` is what teaches it — which is what
-/// lets one daemon hold several projects without being restarted for each.
-async fn serve(engine_url: String, daemon_namespace: String) -> Result<()> {
+/// `start` is the project `iii compose up` named. Without it no project is
+/// loaded: a daemon that has just started knows nothing, and the first
+/// `compose::up file=…` is what teaches it — which is what lets one daemon hold
+/// several projects without being restarted for each.
+async fn serve(
+    engine_url: String,
+    daemon_namespace: String,
+    start: Option<std::path::PathBuf>,
+) -> Result<()> {
     use colored::Colorize;
 
     let daemon = daemon::Daemon::start(engine_url, daemon_namespace);
@@ -113,11 +119,37 @@ async fn serve(engine_url: String, daemon_namespace: String) -> Result<()> {
     // share an engine, and which one a call reaches is a flag an operator
     // should not have to work out, and a generated name is meant to be read
     // once and typed from memory.
-    println!(
-        "  {} iii trigger compose::up --namespace {} file=./worker-compose.yaml",
-        "start a project:".dimmed(),
-        daemon.daemon_namespace
-    );
+    //
+    // Not printed when a project was named: the operator already started one,
+    // and the line would be telling them to do what they just did.
+    if start.is_none() {
+        println!(
+            "  {} iii trigger compose::up --namespace {} file=./worker-compose.yaml",
+            "start a project:".dimmed(),
+            daemon.daemon_namespace
+        );
+    }
+
+    // The project named on the command line, brought up before the first call
+    // can arrive. A failure ends the command: rollback has already stopped
+    // whatever started, so there is nothing left for this daemon to supervise
+    // and staying would serve an empty project nobody asked for.
+    if let Some(file) = &start {
+        println!();
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let result = daemon.up(Some(file), None, operation_id).await;
+        match result {
+            Ok(result) if result.status == lifecycle::OpStatus::Failed => {
+                daemon.shutdown().await;
+                return Err(ComposeError::ProjectDidNotStart { path: file.clone() });
+            }
+            Ok(_) => {}
+            Err(err) => {
+                daemon.shutdown().await;
+                return Err(err);
+            }
+        }
+    }
 
     // Serve until asked to stop, or until the engine refuses this identity.
     //

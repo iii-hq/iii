@@ -6,9 +6,15 @@
 
 //! `iii compose` command surface.
 //!
-//! One command. `iii compose` connects to an engine and serves `compose::*` in
-//! the foreground; everything an operator does to a project goes through `iii
+//! `iii compose` connects to an engine and serves `compose::*` in the
+//! foreground; everything an operator does to a project goes through `iii
 //! trigger` from there, naming the project with `file=`.
+//!
+//! `iii compose up` is the same daemon with the first call already made. A
+//! daemon that serves nothing is not what an operator wants in a project
+//! directory: they want the project running, and the daemon is how it stays
+//! running. Two commands to reach one state is a step that exists only because
+//! of how compose is built.
 //!
 //! It never backgrounds itself. That is the shape a process supervisor already
 //! wants, and it hands log rotation and restart-on-failure to systemd, launchd
@@ -17,7 +23,9 @@
 //! ([`ComposeCli::plan`]) so the resolved invocation is testable without
 //! touching a socket.
 
-use clap::Args;
+use std::path::PathBuf;
+
+use clap::{Args, Subcommand};
 
 use crate::error::{ComposeError, Result};
 
@@ -33,7 +41,9 @@ pub const DEFAULT_COMPOSE_FILE: &str = "worker-compose.yaml";
 pub struct ComposeCli {
     /// Engine WebSocket address. Falls back to III_URL, then
     /// ws://127.0.0.1:49134.
-    #[arg(long, value_name = "URL")]
+    ///
+    /// Global, so it reads the same before or after a subcommand.
+    #[arg(long, value_name = "URL", global = true)]
     pub engine: Option<String>,
 
     /// Namespace this daemon answers `compose::*` in. Several attach to one
@@ -45,8 +55,23 @@ pub struct ComposeCli {
     ///
     /// Spelled the way the rest of the CLI spells it, and only that way: this
     /// has not shipped, so there is nothing calling it `--ns` to keep working.
-    #[arg(short = 'n', long = "namespace", value_name = "NS")]
+    #[arg(short = 'n', long = "namespace", value_name = "NS", global = true)]
     pub ns: Option<String>,
+
+    /// Absent, the daemon starts holding nothing.
+    #[command(subcommand)]
+    pub command: Option<ComposeSub>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ComposeSub {
+    /// Serve, with one project brought up first.
+    Up {
+        /// The compose file. Defaults to `./worker-compose.yaml`, the same
+        /// fallback `compose::up` uses when a call names no file.
+        #[arg(short = 'f', long, value_name = "PATH")]
+        file: Option<PathBuf>,
+    },
 }
 
 /// What an invocation resolved to, after the flag combination is checked.
@@ -56,6 +81,9 @@ pub enum ComposeCommand {
     Serve {
         engine_url: String,
         daemon_namespace: String,
+        /// A project to bring up before the first call arrives. `None` is a
+        /// daemon that starts holding nothing.
+        start: Option<PathBuf>,
     },
 }
 
@@ -64,9 +92,17 @@ impl ComposeCli {
     pub fn plan(&self) -> Result<ComposeCommand> {
         let daemon_namespace = self.daemon_namespace()?;
 
+        // A missing `--file` is not "no file": it is the same fallback a call
+        // with no `file=` gets, the compose file in the working directory.
+        let start = self.command.as_ref().map(|ComposeSub::Up { file }| {
+            file.clone()
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_COMPOSE_FILE))
+        });
+
         Ok(ComposeCommand::Serve {
             engine_url: self.engine_url(),
             daemon_namespace,
+            start,
         })
     }
 
