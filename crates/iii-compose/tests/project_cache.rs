@@ -19,10 +19,27 @@ use iii_compose::daemon::Daemon;
 /// insert is hit, rather than hoping two tasks interleave.
 const RACERS: usize = 16;
 
+/// Keeps this binary's state out of `~/.iii/compose`, which is a real
+/// directory on a real machine: a test that writes there leaves a daemon's
+/// worth of state behind on every run.
+///
+/// The variable is process-wide, so it is written once under `get_or_init`
+/// while cargo runs the tests of this binary on parallel threads.
+fn isolate_state() {
+    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = tempfile::tempdir().expect("state root");
+        // SAFETY: `get_or_init` runs this once, before any caller returns.
+        unsafe { std::env::set_var("III_COMPOSE_STATE_DIR", root.path()) };
+        root
+    });
+}
+
 /// No engine is started. `Daemon::start` only kicks off a background connect,
 /// and loading a project reads the file and the state store rather than the
 /// engine, so the cache can be exercised on its own.
 fn daemon() -> Arc<Daemon> {
+    isolate_state();
     Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("cache-test-{}", std::process::id()),
