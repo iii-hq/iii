@@ -162,19 +162,10 @@ async fn a_surviving_child_is_re_adopted() {
 
     let reloaded = store.load().unwrap().expect("state should reload");
     let record = &reloaded.containers["api"];
-    // Adoption needs a fingerprint, and only linux and windows have one:
-    // `birth_identity` answers `Unavailable` elsewhere, so a live child there
-    // is reported rather than adopted. Asserting `Adopt` everywhere asserted
-    // the platform, not the behaviour.
-    let expected = if cfg!(any(target_os = "linux", windows)) {
-        Reconciliation::Adopt
-    } else {
-        Reconciliation::Unverifiable
-    };
     assert_eq!(
         iii_compose::state::reconcile(record),
-        expected,
-        "a live child must be adopted where it can be identified, and reported where it cannot"
+        Reconciliation::Adopt,
+        "a live child must be adopted, or teardown walks past it"
     );
 
     child.stop(Duration::from_secs(2)).await;
@@ -222,8 +213,8 @@ async fn an_unverifiable_fingerprint_is_never_adopted() {
     let tmp = tempfile::tempdir().unwrap();
     let child = spawn("while :; do sleep 0.05; done", tmp.path());
 
-    // Platforms without a fingerprint (macOS today) record Unavailable. A live
-    // PID then still resolves to Unverifiable, never to Adopt.
+    // A record written where no fingerprint was available. The PID is live, and
+    // it still resolves to Unverifiable rather than Adopt.
     let record = ChildRecord::new(child.pid, BirthIdentity::Unavailable, ChildStatus::Ready);
     assert_eq!(
         iii_compose::state::reconcile(&record),

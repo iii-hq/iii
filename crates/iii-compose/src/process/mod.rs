@@ -35,8 +35,9 @@ pub use windows::{ChildOutput, Supervised, spawn_supervised, spawn_supervised_pi
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BirthIdentity {
-    /// Process start time: clock ticks since boot on linux, the creation
-    /// FILETIME on windows.
+    /// Process start time: clock ticks since boot on linux, microseconds since
+    /// the epoch on macOS, the creation FILETIME on windows. The unit differs
+    /// per platform and is never compared across one.
     StartTime(u64),
     /// The platform has no cheap fingerprint available. Treated as
     /// unverifiable: a recorded PID with this identity is never signalled.
@@ -79,9 +80,15 @@ pub fn birth_identity(pid: u32) -> BirthIdentity {
             .map(BirthIdentity::StartTime)
             .unwrap_or(BirthIdentity::Unavailable)
     }
-    // macOS needs libproc for the same fact; until that path is written and
-    // tested on a mac, its PIDs are deliberately unverifiable.
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(target_os = "macos")]
+    {
+        macos_start_time(pid)
+            .map(BirthIdentity::StartTime)
+            .unwrap_or(BirthIdentity::Unavailable)
+    }
+    // Any other unix has no fingerprint written for it, so its PIDs stay
+    // unverifiable: adoption refuses them rather than risk a stranger.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = pid;
         BirthIdentity::Unavailable
@@ -113,4 +120,45 @@ fn linux_start_time(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_comm = &stat[stat.rfind(')')? + 1..];
     after_comm.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Start time in microseconds, from libproc — macOS has no `/proc` to read the
+/// same fact from.
+///
+/// The kernel records when this PID started, so the value changes the moment
+/// the number is handed to somebody else. That is the whole requirement: a
+/// daemon restarting must be able to tell its own child from a stranger that
+/// inherited its PID.
+#[cfg(target_os = "macos")]
+fn macos_start_time(pid: u32) -> Option<u64> {
+    use nix::libc;
+
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let want = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: the buffer is a whole `proc_bsdinfo` and `want` is its true size,
+    // so the call cannot write past it. Nothing else is passed by pointer.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            want,
+        )
+    };
+    // A short write means the struct is not filled in — including the ESRCH of
+    // a PID that is already gone.
+    if written != want {
+        return None;
+    }
+    // SAFETY: the call reported a full write.
+    let info = unsafe { info.assume_init() };
+    if info.pbi_pid != pid {
+        return None;
+    }
+    Some(
+        info.pbi_start_tvsec
+            .saturating_mul(1_000_000)
+            .saturating_add(info.pbi_start_tvusec),
+    )
 }

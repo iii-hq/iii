@@ -145,10 +145,10 @@ async fn a_recycled_pid_is_never_recognised() {
     assert!(!recorded.matches(&other));
     assert!(!BirthIdentity::Unavailable.matches(&BirthIdentity::Unavailable));
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     assert!(
         matches!(recorded, BirthIdentity::StartTime(_)),
-        "linux should fingerprint children"
+        "every platform compose ships on must fingerprint its children"
     );
 }
 
