@@ -249,15 +249,7 @@ impl Daemon {
         crate::ComposeFile::parse(edited, path)?;
         write_atomically(path, edited)?;
 
-        let down = self
-            .down(file, None, format!("{operation_id}-down"))
-            .await?;
-        // Dropped from the cache only once its children are stopped. A project
-        // is held as the file was when it was first read, so `up` would
-        // otherwise start exactly what was running before and report success
-        // without the container that was just added.
-        self.forget(path).await;
-        let up = self.up(file, None, format!("{operation_id}-up")).await?;
+        let (down, up) = self.restart_project(file, None, &operation_id).await?;
         Ok(serde_json::json!({
             "status": up.status,
             "container": asked.key,
@@ -349,6 +341,50 @@ impl Daemon {
         }
         wanted.push(root);
         Ok(wanted)
+    }
+
+    /// Stops a project and starts it again.
+    ///
+    /// Down then up, and nothing cleverer yet: no rolling restart, no keeping
+    /// what did not change. It is the shape every later refinement will be
+    /// measured against, so it is worth having plainly first.
+    pub async fn restart(
+        &self,
+        file: Option<&Path>,
+        container: Option<&str>,
+        operation_id: String,
+    ) -> Result<Value> {
+        let (down, up) = self.restart_project(file, container, &operation_id).await?;
+        Ok(serde_json::json!({
+            "status": up.status,
+            "changed": down.changed || up.changed,
+            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
+            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
+        }))
+    }
+
+    /// The two halves of a restart, with the project re-read between them.
+    ///
+    /// Dropped from the cache only once its children are stopped: the entry
+    /// owns their handles, and forgetting it while they run would leave them
+    /// supervised by nothing. Re-reading is the point — a project is held as
+    /// its file was when it was first loaded, so without this a restart would
+    /// start exactly what was already running and report success.
+    async fn restart_project(
+        &self,
+        file: Option<&Path>,
+        container: Option<&str>,
+        operation_id: &str,
+    ) -> Result<(OpResult, OpResult)> {
+        let path = self.resolve_file(file)?.to_path_buf();
+        let down = self
+            .down(file, container, format!("{operation_id}-down"))
+            .await?;
+        self.forget(&path).await;
+        let up = self
+            .up(file, container, format!("{operation_id}-up"))
+            .await?;
+        Ok((down, up))
     }
 
     /// Drops a project from the cache, so the next call re-reads its file.

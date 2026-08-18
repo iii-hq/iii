@@ -324,3 +324,70 @@ containers:
     assert_eq!(report.resolved.len(), 1);
     assert_eq!(report.resolved[0].env_file.len(), 1);
 }
+
+/// Waves are what makes a start parallel: everything in one has nothing to
+/// wait for inside it. A project where one worker calls the other three is two
+/// waves, not four steps.
+#[test]
+fn independent_containers_share_a_wave() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: orders
+containers:
+  a:
+    worker: package://workers.iii.dev/a
+    version: "1.0.0"
+  b:
+    worker: package://workers.iii.dev/b
+    version: "1.0.0"
+  c:
+    worker: package://workers.iii.dev/c
+    version: "1.0.0"
+  hub:
+    worker: package://workers.iii.dev/hub
+    version: "1.0.0"
+    depends_on: [a, b, c]
+"#,
+        &[],
+    );
+
+    let order = iii_compose::dag::topo_order(&file).expect("a graph without cycles");
+    let waves = iii_compose::dag::waves(&file, &order);
+    assert_eq!(waves.len(), 2, "expected two waves, got {waves:?}");
+    assert_eq!(waves[0], vec!["a", "b", "c"], "{waves:?}");
+    assert_eq!(waves[1], vec!["hub"], "{waves:?}");
+}
+
+/// And a chain cannot be flattened: each link waits for the one before it.
+#[test]
+fn a_chain_is_one_container_per_wave() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: orders
+containers:
+  first:
+    worker: package://workers.iii.dev/first
+    version: "1.0.0"
+  second:
+    worker: package://workers.iii.dev/second
+    version: "1.0.0"
+    depends_on: [first]
+  third:
+    worker: package://workers.iii.dev/third
+    version: "1.0.0"
+    depends_on: [second]
+"#,
+        &[],
+    );
+
+    let order = iii_compose::dag::topo_order(&file).expect("a graph without cycles");
+    let waves = iii_compose::dag::waves(&file, &order);
+    assert_eq!(waves.len(), 3, "{waves:?}");
+    for wave in &waves {
+        assert_eq!(wave.len(), 1, "a chain cannot overlap: {waves:?}");
+    }
+}

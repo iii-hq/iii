@@ -510,11 +510,39 @@ async fn download_and_extract(
             source,
         })?;
     }
+    publish(&staging, install_dir)
+}
+
+/// Moves a verified install into place without ever unmaking one.
+///
+/// Containers start in parallel, so two may need the same artefact at once and
+/// race to install it. Removing the destination first would open a window where
+/// a directory another container is executing from does not exist. Renaming
+/// onto a populated directory fails instead, and that failure is the answer:
+/// somebody else got there, their copy passed the same digest check, so theirs
+/// is used and this one is dropped.
+///
+/// A directory left half-written by an interrupted run is the one case worth
+/// clearing: it is not another writer's, and nothing can start from it.
+fn publish(staging: &Path, install_dir: &Path) -> Result<()> {
+    match std::fs::rename(staging, install_dir) {
+        Ok(()) => return Ok(()),
+        Err(_) if is_populated(install_dir) => {
+            let _ = std::fs::remove_dir_all(staging);
+            return Ok(());
+        }
+        Err(_) => {}
+    }
+
     let _ = std::fs::remove_dir_all(install_dir);
-    std::fs::rename(&staging, install_dir).map_err(|source| ComposeError::Io {
+    std::fs::rename(staging, install_dir).map_err(|source| ComposeError::Io {
         path: install_dir.to_path_buf(),
         source,
     })
+}
+
+fn is_populated(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// Finds the executable inside an install directory.

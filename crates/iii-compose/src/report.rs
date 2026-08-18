@@ -54,24 +54,145 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(90);
 /// Erase the current line and return to its start.
 const CLEAR_LINE: &str = "\r\x1b[2K";
 
+/// The live block: every container of the operation, and what it is doing.
+///
+/// One spinner was enough while containers started one at a time. They start in
+/// waves now, so what an operator wants is not "which one is compose on" but
+/// "where is all of it" — which is a block that is redrawn, not a line that is
+/// replaced.
 struct Console {
-    /// The container currently being waited on, if any. `up` starts containers
-    /// one at a time, so there is never more than one.
-    spinner: Option<Spinner>,
+    rows: Vec<Row>,
+    /// How many lines the block occupies on screen, so the next draw knows how
+    /// far up to go. Zero when nothing is drawn.
+    drawn: usize,
+    frame: usize,
 }
 
-struct Spinner {
-    /// Already-styled text drawn to the right of the frame.
-    label: String,
-    frame: usize,
+struct Row {
+    key: String,
+    /// How far in it sits: a container is drawn under the one that waits for
+    /// it, so a graph reads as what needs what.
+    depth: usize,
+    state: RowState,
+}
+
+#[derive(Clone)]
+enum RowState {
+    /// Declared, and waiting on something earlier in the graph.
+    Waiting,
+    Starting,
+    Ready(Duration),
+    Failed,
+    /// Already running, or otherwise not this operation's to start.
+    Skipped(String),
 }
 
 fn console() -> &'static Mutex<Console> {
     static CONSOLE: OnceLock<Mutex<Console>> = OnceLock::new();
-    CONSOLE.get_or_init(|| Mutex::new(Console { spinner: None }))
+    CONSOLE.get_or_init(|| {
+        Mutex::new(Console {
+            rows: Vec::new(),
+            drawn: 0,
+            frame: 0,
+        })
+    })
 }
 
-/// Whether progress can animate. A pipe or a file gets static lines.
+/// Announces what this operation will touch, in the shape it will touch it.
+///
+/// `rows` is `(container, depth)` in the order to draw. Nothing is drawn on a
+/// terminal that cannot animate: there, each container reports itself as it
+/// settles, which is what a log wants anyway.
+pub fn plan(rows: &[(String, usize)]) {
+    if !animated() {
+        return;
+    }
+    {
+        let console = console();
+        let mut state = console
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.rows = rows
+            .iter()
+            .map(|(key, depth)| Row {
+                key: key.clone(),
+                depth: *depth,
+                state: RowState::Waiting,
+            })
+            .collect();
+        state.drawn = 0;
+        state.frame = 0;
+        redraw(&mut state);
+    }
+    ensure_ticker();
+}
+
+/// Releases the block so later output does not overwrite it.
+pub fn plan_done() {
+    let console = console();
+    let mut state = console
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.rows.clear();
+    state.drawn = 0;
+}
+
+fn set(key: &str, to: RowState) -> bool {
+    let console = console();
+    let mut state = console
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(row) = state.rows.iter_mut().find(|row| row.key == key) else {
+        return false;
+    };
+    row.state = to;
+    redraw(&mut state);
+    true
+}
+
+/// Redraws the block in place: up over what was drawn, then every row again.
+fn redraw(state: &mut Console) {
+    let mut out = String::new();
+    if state.drawn > 0 {
+        out.push_str(&format!("\x1b[{}A", state.drawn));
+    }
+    for row in &state.rows {
+        out.push_str(CLEAR_LINE);
+        out.push_str(&render_row(row, state.frame));
+        out.push('\n');
+    }
+    state.drawn = state.rows.len();
+    let mut stderr = std::io::stderr().lock();
+    let _ = write!(stderr, "{out}");
+    let _ = stderr.flush();
+}
+
+fn render_row(row: &Row, frame: usize) -> String {
+    let indent = "  ".repeat(row.depth);
+    match &row.state {
+        RowState::Waiting => format!("{indent}{} {}", SKIPPED.dimmed(), row.key.dimmed()),
+        RowState::Starting => format!(
+            "{indent}{} {}",
+            FRAMES[frame % FRAMES.len()].cyan(),
+            row.key.bold()
+        ),
+        RowState::Ready(elapsed) => format!(
+            "{indent}{} {} {}",
+            OK.green(),
+            row.key.bold(),
+            format!("({})", format_elapsed(*elapsed)).dimmed()
+        ),
+        RowState::Failed => format!("{indent}{} {}", FAILED.red(), row.key.bold().red()),
+        RowState::Skipped(why) => format!(
+            "{indent}{} {} {}",
+            SKIPPED.dimmed(),
+            row.key.dimmed(),
+            why.dimmed()
+        ),
+    }
+}
+
+/// Whether progress can animate./// Whether progress can animate. A pipe or a file gets static lines.
 fn animated() -> bool {
     static ANIMATED: OnceLock<bool> = OnceLock::new();
     *ANIMATED.get_or_init(|| std::io::stderr().is_terminal())
@@ -97,46 +218,32 @@ pub fn daemon_line(message: &str, warn: bool) {
 
 pub fn line(text: &str) {
     let console = console();
-    let state = console
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut stderr = std::io::stderr().lock();
-
-    if state.spinner.is_some() {
-        let _ = write!(stderr, "{CLEAR_LINE}");
-    }
-    let _ = writeln!(stderr, "{text}");
-    if let Some(spinner) = &state.spinner {
-        let _ = write!(stderr, "{}", frame_of(spinner));
-        let _ = stderr.flush();
-    }
-}
-
-/// Replaces the spinner with its final line.
-fn finish(text: &str) {
-    let console = console();
     let mut state = console
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut stderr = std::io::stderr().lock();
 
-    if state.spinner.take().is_some() {
-        let _ = write!(stderr, "{CLEAR_LINE}");
+    // The block owns the bottom of the screen, so a line goes above it: rewind
+    // over it, print, and draw it again underneath.
+    if state.drawn > 0 {
+        let _ = write!(stderr, "\x1b[{}A", state.drawn);
+        for _ in 0..state.drawn {
+            let _ = writeln!(stderr, "{CLEAR_LINE}");
+        }
+        let _ = write!(stderr, "\x1b[{}A", state.drawn);
     }
     let _ = writeln!(stderr, "{text}");
+    if state.drawn > 0 {
+        state.drawn = 0;
+        redraw(&mut state);
+    } else {
+        let _ = stderr.flush();
+    }
 }
 
-fn frame_of(spinner: &Spinner) -> String {
-    format!(
-        "{} {}",
-        FRAMES[spinner.frame % FRAMES.len()].cyan(),
-        spinner.label
-    )
-}
-
-/// Advances every spinner that appears, for as long as the process lives. One
-/// task, started on the first spinner: a task per container would leave the
-/// frames beating against each other.
+/// Turns the frame for the whole block. One task, not one per container: the
+/// rows share a frame so they turn together instead of beating against each
+/// other.
 fn ensure_ticker() {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
@@ -147,11 +254,13 @@ fn ensure_ticker() {
                 let mut state = console
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if let Some(spinner) = &mut state.spinner {
-                    spinner.frame = spinner.frame.wrapping_add(1);
-                    let mut stderr = std::io::stderr().lock();
-                    let _ = write!(stderr, "{CLEAR_LINE}{}", frame_of(spinner));
-                    let _ = stderr.flush();
+                let turning = state
+                    .rows
+                    .iter()
+                    .any(|row| matches!(row.state, RowState::Starting));
+                if turning {
+                    state.frame = state.frame.wrapping_add(1);
+                    redraw(&mut state);
                 }
             }
         });
@@ -161,34 +270,22 @@ fn ensure_ticker() {
 /// A container is being worked on. On a terminal this spins until the container
 /// settles; anywhere else it is a plain line.
 pub fn starting(key: &str, what: &str) {
-    if !animated() {
-        line(&format!(
-            "{} {} {}",
-            RUNNING.dimmed(),
-            key.bold(),
-            what.dimmed()
-        ));
+    if set(key, RowState::Starting) {
         return;
     }
-
-    let label = format!("{} {}", key.bold(), what.dimmed());
-    let console = console();
-    {
-        let mut state = console
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.spinner = Some(Spinner { label, frame: 0 });
-        let mut stderr = std::io::stderr().lock();
-        if let Some(spinner) = &state.spinner {
-            let _ = write!(stderr, "{CLEAR_LINE}{}", frame_of(spinner));
-            let _ = stderr.flush();
-        }
-    }
-    ensure_ticker();
+    line(&format!(
+        "{} {} {}",
+        RUNNING.dimmed(),
+        key.bold(),
+        what.dimmed()
+    ));
 }
 
 pub fn ready(key: &str, elapsed: Duration) {
-    finish(&format!(
+    if set(key, RowState::Ready(elapsed)) {
+        return;
+    }
+    line(&format!(
         "{} {} {} {}",
         OK.green(),
         key.bold(),
@@ -198,7 +295,10 @@ pub fn ready(key: &str, elapsed: Duration) {
 }
 
 pub fn failed(key: &str, code: &str, message: &str) {
-    finish(&format!(
+    // Marked in the block, and the reason printed above it: a row is one line
+    // wide and the reason is the part worth reading.
+    set(key, RowState::Failed);
+    line(&format!(
         "{} {} {} {}",
         FAILED.red(),
         key.bold(),
@@ -209,7 +309,10 @@ pub fn failed(key: &str, code: &str, message: &str) {
 
 /// Already in the desired state — nothing was done to it.
 pub fn unchanged(key: &str, what: &str) {
-    finish(&format!(
+    if set(key, RowState::Skipped(what.to_string())) {
+        return;
+    }
+    line(&format!(
         "{} {} {}",
         SKIPPED.dimmed(),
         key.bold(),
@@ -218,7 +321,7 @@ pub fn unchanged(key: &str, what: &str) {
 }
 
 pub fn stopped(key: &str) {
-    finish(&format!(
+    line(&format!(
         "{} {} {}",
         OK.dimmed(),
         key.bold(),
@@ -228,7 +331,7 @@ pub fn stopped(key: &str) {
 
 /// Undone by a rollback. Amber, not red: nothing went wrong with this one.
 pub fn rolled_back(key: &str) {
-    finish(&format!(
+    line(&format!(
         "{} {} {}",
         SKIPPED.yellow(),
         key.bold(),
@@ -243,7 +346,7 @@ pub fn summary_ok(action: &str, changed: usize, total: usize, elapsed: Duration)
     } else {
         format!("{action}: {changed} of {total} changed")
     };
-    finish(&format!(
+    line(&format!(
         "{} {}",
         body.green(),
         format!("in {}", format_elapsed(elapsed)).dimmed()
@@ -251,7 +354,7 @@ pub fn summary_ok(action: &str, changed: usize, total: usize, elapsed: Duration)
 }
 
 pub fn summary_failed(action: &str, code: &str, elapsed: Duration) {
-    finish(&format!(
+    line(&format!(
         "{} {} {}",
         format!("{action} failed").red().bold(),
         format!("[{code}]").red(),
@@ -502,10 +605,31 @@ mod tests {
     /// modulo the frame count, so a long wait cannot panic on overflow.
     #[test]
     fn frames_wrap_instead_of_overflowing() {
-        let spinner = Spinner {
-            label: String::new(),
-            frame: usize::MAX,
+        let row = Row {
+            key: "api".to_string(),
+            depth: 0,
+            state: RowState::Starting,
         };
-        assert!(!frame_of(&spinner).is_empty());
+        assert!(!render_row(&row, usize::MAX).is_empty());
+    }
+
+    /// Depth is what makes the block a graph rather than a list, and it is
+    /// drawn as indentation, so a nested row starts further in than its parent.
+    #[test]
+    fn depth_is_drawn_as_indentation() {
+        let parent = Row {
+            key: "harness".to_string(),
+            depth: 0,
+            state: RowState::Ready(Duration::from_millis(10)),
+        };
+        let child = Row {
+            key: "queue".to_string(),
+            depth: 1,
+            state: RowState::Ready(Duration::from_millis(10)),
+        };
+        let drawn_parent = render_row(&parent, 0);
+        let drawn_child = render_row(&child, 0);
+        assert!(!drawn_parent.starts_with(' '), "{drawn_parent:?}");
+        assert!(drawn_child.starts_with("  "), "{drawn_child:?}");
     }
 }

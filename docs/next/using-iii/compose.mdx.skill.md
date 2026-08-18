@@ -82,7 +82,7 @@ WantedBy=multi-user.target
 
 ## The `compose::*` functions
 
-All seven functions accept the same payload.
+All eight functions accept the same payload.
 
 | Field       | Type   | Description                                                                       |
 | ----------- | ------ | --------------------------------------------------------------------------------- |
@@ -110,6 +110,7 @@ one at the wrong file.
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
 | `compose::add`      | `file`, `worker` | What the edit did, and the `down` and `up` that followed.               |
+| `compose::restart`  | `file`    | The `down` and the `up`, each an operation result.                             |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
 
 ### Adding a worker
@@ -151,12 +152,18 @@ iii trigger compose::status --namespace dev file=./worker-compose.yaml
 iii trigger compose::down   --namespace dev file=./worker-compose.yaml
 iii trigger compose::list   --namespace dev
 iii trigger compose::add    --namespace dev file=./worker-compose.yaml worker=state
+iii trigger compose::restart --namespace dev file=./worker-compose.yaml
 iii trigger compose::stop   --namespace dev
 ```
 
 A project-scoped call may leave `file` out when the daemon's own working directory holds a
 `worker-compose.yaml`; without one, it fails with `NO_COMPOSE_FILE`. A relative `file` resolves
 against the daemon's directory, not the caller's, so pass an absolute path when they differ.
+
+`compose::restart` is a `down` followed by an `up`, with the compose file read again between them —
+so an edit made by hand takes effect without restarting the daemon. It accepts `container` like the
+two halves it is made of. Nothing cleverer yet: no rolling restart, and no keeping a container that
+did not change.
 
 `compose::stop` stops a compose project but returns before the daemon exits.
 

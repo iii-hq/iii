@@ -23,6 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures::StreamExt;
 use serde::Serialize;
 
 use crate::{
@@ -101,6 +102,16 @@ pub struct LifecycleCtx<'a> {
     pub vm_dir: &'a std::path::Path,
 }
 
+/// What one container's start produced: which one, how long it took, and
+/// whether it came up.
+type StartOutcome = (String, Duration, Result<(ChildRecord, Supervised)>);
+
+/// How many containers may start at once inside one wave.
+///
+/// Not unbounded: a wave can be the whole file, and each start may download an
+/// artefact, spawn a process, or boot a VM.
+const STARTS_AT_ONCE: usize = 8;
+
 /// Containers currently supervised by this daemon, keyed by container id.
 pub type Children = BTreeMap<String, Supervised>;
 
@@ -128,57 +139,109 @@ pub async fn up(
     // Only what *this* operation started may be rolled back.
     let mut started: Vec<String> = Vec::new();
 
-    for key in &order {
-        if is_running(children, key) {
-            report::unchanged(key, "already running");
-            results.push(ContainerResult {
-                container: key.clone(),
-                state: ChildStatus::Ready,
-                changed: false,
-                error: None,
-            });
-            continue;
-        }
+    // Everything this operation will touch, drawn before any of it moves, so an
+    // operator sees the shape rather than a line at a time.
+    report::plan(&dag::outline(ctx.file, &order));
 
-        report::starting(key, "starting");
-        let container_began = Instant::now();
-
-        match start_one(ctx, children, key).await {
-            Ok(record) => {
-                report::ready(key, container_began.elapsed());
-                records.insert(key.clone(), record);
-                started.push(key.clone());
+    // Grouped rather than listed: only a declared dependency has to wait, and
+    // in a project of fourteen where one worker calls the other thirteen, the
+    // thirteen have nothing to wait for.
+    for wave in dag::waves(ctx.file, &order) {
+        let mut starting: Vec<String> = Vec::new();
+        for key in &wave {
+            if is_running(children, key) {
+                report::unchanged(key, "already running");
                 results.push(ContainerResult {
                     container: key.clone(),
                     state: ChildStatus::Ready,
-                    changed: true,
+                    changed: false,
                     error: None,
                 });
+                continue;
             }
-            Err(error) => {
-                report::failed(
-                    key,
-                    error.code(),
-                    &strip_container_prefix(&error.to_string(), key),
-                );
-                results.push(ContainerResult {
-                    container: key.clone(),
-                    state: ChildStatus::Failed,
-                    changed: false,
-                    error: Some(OpError::from(&error)),
-                });
-                rollback(ctx, children, records, &started, &mut results).await;
-                report::summary_failed("up", error.code(), began.elapsed());
-                return OpResult {
-                    operation_id,
-                    status: OpStatus::Failed,
-                    changed: !started.is_empty(),
-                    containers: results,
-                };
+            report::starting(key, "starting");
+            starting.push(key.clone());
+        }
+        if starting.is_empty() {
+            continue;
+        }
+
+        // Bounded: a wave may hold every container in the file, and each one
+        // can be a download, a process, or a VM. An operator's machine should
+        // not have to survive all of them at once.
+        let outcomes: Vec<StartOutcome> =
+            futures::stream::iter(starting.into_iter().map(|key| async move {
+                let began = Instant::now();
+                let outcome = start_one(ctx, &key).await;
+                (key, began.elapsed(), outcome)
+            }))
+            .buffer_unordered(STARTS_AT_ONCE)
+            .collect()
+            .await;
+
+        // The whole wave is awaited before a failure is acted on. Stopping
+        // early would leave containers half-started, which is a worse state to
+        // describe than one more container that came up and is then rolled
+        // back.
+        let mut failure: Option<(String, ComposeError)> = None;
+        for (key, took, outcome) in outcomes {
+            let key = &key;
+            match outcome {
+                Ok((record, child)) => {
+                    report::ready(key, took);
+                    records.insert(key.clone(), record);
+                    children.insert(key.clone(), child);
+                    started.push(key.clone());
+                    results.push(ContainerResult {
+                        container: key.clone(),
+                        state: ChildStatus::Ready,
+                        changed: true,
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    report::failed(
+                        key,
+                        error.code(),
+                        &strip_container_prefix(&error.to_string(), key),
+                    );
+                    results.push(ContainerResult {
+                        container: key.clone(),
+                        state: ChildStatus::Failed,
+                        changed: false,
+                        error: Some(OpError::from(&error)),
+                    });
+                    if failure.is_none() {
+                        failure = Some((key.clone(), error));
+                    }
+                }
             }
+        }
+
+        if let Some((_, error)) = failure {
+            report::plan_done();
+            rollback(ctx, children, records, &started, &mut results).await;
+            report::summary_failed("up", error.code(), began.elapsed());
+            return OpResult {
+                operation_id,
+                status: OpStatus::Failed,
+                changed: !started.is_empty(),
+                containers: results,
+            };
         }
     }
 
+    // Declaration order, whatever order they finished in: the JSON is a
+    // contract, and a caller diffing two runs should not see the machine's
+    // scheduling.
+    results.sort_by_key(|result| {
+        ctx.file
+            .containers
+            .get_index_of(&result.container)
+            .unwrap_or(usize::MAX)
+    });
+
+    report::plan_done();
     let changed = results.iter().filter(|result| result.changed).count();
     report::summary_ok("up", changed, results.len(), began.elapsed());
     OpResult {
@@ -265,11 +328,12 @@ pub async fn down(
 /// Resolves config, runs `pre_start`, spawns, and waits for the engine to see
 /// the child. Every step before the spawn can fail without leaving a process
 /// behind.
-async fn start_one(
-    ctx: &LifecycleCtx<'_>,
-    children: &mut Children,
-    key: &str,
-) -> Result<ChildRecord> {
+/// Starts one container and hands back the child rather than filing it.
+///
+/// The caller owns the map, because containers with no dependency between them
+/// start together and a shared `&mut` would serialise exactly what this exists
+/// to overlap.
+async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Supervised)> {
     let container = ctx
         .file
         .containers
@@ -410,8 +474,7 @@ async fn start_one(
     capture.stop();
 
     let record = ChildRecord::from_supervised(&child, ChildStatus::Ready);
-    children.insert(key.to_string(), child);
-    Ok(record)
+    Ok((record, child))
 }
 
 /// Builds the boot command for a bundle container, by asking `iii-worker` for
@@ -543,11 +606,23 @@ async fn prepare_vm(request: &serde_json::Value) -> std::result::Result<VmPlan, 
         .map_err(|err| format!("iii-worker did not answer: {err}"))?;
 
     if !output.status.success() {
-        // Its stderr is the diagnosis — the kill switch, a tampered manifest, a
-        // rootfs that could not be prepared — and it is already written for a
-        // human, so it is passed through rather than summarised.
         let reason = String::from_utf8_lossy(&output.stderr);
         let reason = reason.trim();
+        // The one failure whose message says nothing useful. Two binaries with
+        // one contract between them can be installed apart, and clap answers a
+        // subcommand it does not know by printing usage — which reads as a bug
+        // in compose rather than as the version skew it is.
+        if reason.contains("unrecognized subcommand") {
+            return Err(format!(
+                "{} is too old: it does not know `__bundle-prepare`, which compose uses to \
+                 build a bundle's VM. Install it from the same release as iii — they are \
+                 shipped together and are updated together",
+                program.display()
+            ));
+        }
+        // Otherwise its stderr is the diagnosis — the kill switch, a tampered
+        // manifest, a rootfs that could not be prepared — already written for a
+        // human, so it is passed through rather than summarised.
         return Err(if reason.is_empty() {
             format!("iii-worker could not prepare the VM ({})", output.status)
         } else {

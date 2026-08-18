@@ -65,6 +65,7 @@ pub fn register(daemon: &Arc<Daemon>) {
         ("stop", Operation::Stop),
         ("validate", Operation::Validate),
         ("add", Operation::Add),
+        ("restart", Operation::Restart),
     ] {
         let daemon = Arc::clone(daemon);
         let function = format!("compose::{name}");
@@ -90,6 +91,7 @@ enum Operation {
     Stop,
     Validate,
     Add,
+    Restart,
 }
 
 async fn dispatch(
@@ -131,6 +133,17 @@ async fn dispatch(
         },
         Operation::Add => match daemon
             .add(file.as_deref(), request.worker.as_deref(), operation_id())
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(err) => Err(compose_error(&err)),
+        },
+        Operation::Restart => match daemon
+            .restart(
+                file.as_deref(),
+                request.container.as_deref(),
+                operation_id(),
+            )
             .await
         {
             Ok(result) => Ok(result),

@@ -79,6 +79,92 @@ fn visit<'a>(
 
 /// Start order: every dependency precedes its dependents. Ready containers are
 /// emitted in declaration order.
+/// The graph as something to draw: `(container, depth)`, a container under the
+/// one that waits for it.
+///
+/// A container two others need has one place to sit, and it takes the first in
+/// declaration order — a tree cannot show a diamond, and repeating the row
+/// would make the same worker look like two.
+pub fn outline(file: &ComposeFile, order: &[String]) -> Vec<(String, usize)> {
+    let shown: std::collections::BTreeSet<&str> = order.iter().map(String::as_str).collect();
+
+    // Who waits for whom, keeping declaration order so the choice is stable.
+    let mut parent: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for (key, container) in &file.containers {
+        for dependency in &container.depends_on {
+            if shown.contains(dependency.as_str()) {
+                parent.entry(dependency.as_str()).or_insert(key.as_str());
+            }
+        }
+    }
+
+    let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for key in order {
+        if let Some(owner) = parent.get(key.as_str()) {
+            children.entry(owner).or_default().push(key.as_str());
+        }
+    }
+
+    fn walk(
+        key: &str,
+        depth: usize,
+        children: &std::collections::HashMap<&str, Vec<&str>>,
+        out: &mut Vec<(String, usize)>,
+    ) {
+        out.push((key.to_string(), depth));
+        for child in children.get(key).cloned().unwrap_or_default() {
+            walk(child, depth + 1, children, out);
+        }
+    }
+
+    let mut out = Vec::new();
+    for key in order {
+        if !parent.contains_key(key.as_str()) {
+            walk(key, 0, &children, &mut out);
+        }
+    }
+    out
+}
+
+/// The same order, grouped by what can happen at once.
+///
+/// Each wave holds containers whose dependencies are all in earlier waves, so
+/// nothing inside one waits on anything else inside it. A file with no
+/// `depends_on` is a single wave; a chain is one container per wave.
+///
+/// The grouping is derived from the order rather than computed again, so the
+/// two cannot disagree about what depends on what.
+pub fn waves(file: &ComposeFile, order: &[String]) -> Vec<Vec<String>> {
+    let mut placed: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut waves: Vec<Vec<String>> = Vec::new();
+
+    for key in order {
+        let at = file
+            .containers
+            .get(key)
+            .map(|container| {
+                container
+                    .depends_on
+                    .iter()
+                    // A dependency outside `order` is one this operation is not
+                    // starting — already running, or not targeted — so it does
+                    // not hold anything back.
+                    .filter_map(|dependency| placed.get(dependency.as_str()))
+                    .map(|wave| wave + 1)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+
+        placed.insert(key.as_str(), at);
+        if waves.len() <= at {
+            waves.resize(at + 1, Vec::new());
+        }
+        waves[at].push(key.clone());
+    }
+    waves
+}
+
 pub fn topo_order(file: &ComposeFile) -> Result<Vec<String>> {
     let mut pending: HashMap<&str, usize> = HashMap::new();
     let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();

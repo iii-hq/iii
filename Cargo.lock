@@ -2778,6 +2778,7 @@ dependencies = [
  "colored",
  "dirs 6.0.0",
  "flate2",
+ "futures",
  "hex",
  "iii-sdk",
  "indexmap 2.14.0",

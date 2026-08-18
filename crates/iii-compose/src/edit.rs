@@ -145,7 +145,13 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
         Some(entry) => {
             let existing = declared_version(&lines[entry.clone()]);
             let wanted = wanted_version(new);
-            if existing == wanted {
+            // Version alone is not the whole declaration. An entry written
+            // before its dependencies were known carries the right version and
+            // no `depends_on`, and leaving it would start the worker by where
+            // its line happens to sit rather than after what it calls.
+            let mut needs = new.depends_on.clone();
+            needs.sort();
+            if existing == wanted && declared_needs(&lines[entry.clone()]) == needs {
                 return Ok(Outcome::Unchanged);
             }
             let mut out: Vec<String> = lines[..entry.start].iter().map(|l| l.to_string()).collect();
@@ -253,6 +259,30 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
 }
 
 type Entry = std::ops::Range<usize>;
+
+/// The `depends_on:` an entry declares, sorted so two lists compare by content
+/// rather than by the order someone wrote them in.
+fn declared_needs(entry: &[&str]) -> Vec<String> {
+    let mut inside = false;
+    let mut needs = Vec::new();
+    for line in entry {
+        let trimmed = line.trim();
+        if trimmed == "depends_on:" {
+            inside = true;
+            continue;
+        }
+        if inside {
+            match trimmed.strip_prefix("- ") {
+                Some(name) => needs.push(name.trim().trim_matches(['"', '\'']).to_string()),
+                // The list ended; anything after it belongs to another key.
+                None if !trimmed.is_empty() => break,
+                None => {}
+            }
+        }
+    }
+    needs.sort();
+    needs
+}
 
 /// The `version:` an entry declares, if it declares one.
 fn declared_version(entry: &[&str]) -> Option<String> {
@@ -440,6 +470,38 @@ containers:
         assert!(out.contains("version: \"0.22.0\""), "{out}");
         assert!(!out.contains("version: \"0.21.4\""), "{out}");
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
+    }
+
+    /// An entry written before its dependencies were known has the right
+    /// version and no `depends_on`. Leaving it alone would start the worker by
+    /// where its line sits rather than after what it calls — which is how a
+    /// worker added by an older build kept starting fourth out of eight.
+    #[test]
+    fn an_entry_missing_its_dependencies_is_rewritten() {
+        let with_deps = NewContainer {
+            key: "state".to_string(),
+            source: Source::Package {
+                reference: "api.workers.iii.dev/state".to_string(),
+                version: Some("0.21.4".to_string()),
+            },
+            depends_on: vec!["queue".to_string()],
+        };
+
+        let once = added(FILE);
+        // Same key, same version, but the graph now says it needs something.
+        let out = match upsert_container(&once, &with_deps).unwrap() {
+            Outcome::Replaced { text, .. } => text,
+            other => panic!("expected a rewrite, got {other:?}"),
+        };
+        assert!(out.contains("depends_on:"), "{out}");
+        assert!(out.contains("- queue"), "{out}");
+        assert_eq!(out.matches("state:").count(), 1, "duplicated: {out}");
+
+        // And with the dependencies already written, it is left alone.
+        assert_eq!(
+            upsert_container(&out, &with_deps).unwrap(),
+            Outcome::Unchanged
+        );
     }
 
     #[test]
