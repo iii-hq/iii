@@ -206,6 +206,19 @@ class III:
             )
         return explicit if explicit is not None else self._worker_namespace()
 
+    def _invocation_namespace(
+        self, explicit: str | None, function_id: str
+    ) -> str | None:
+        """Resolve one invocation namespace.
+
+        An explicit namespace wins. Otherwise, engine-owned builtins resolve in
+        ``default`` and all other calls inherit this worker's namespace.
+        """
+        namespace = self._call_namespace(explicit, "TriggerRequest.namespace")
+        if explicit is None and function_id.startswith("engine::"):
+            return "default"
+        return namespace
+
     def _worker_namespace(self) -> str | None:
         """Effective worker namespace: explicit option, then ``III_NAMESPACE`` env,
         else ``None`` (the engine applies its ``default`` namespace).
@@ -1437,11 +1450,9 @@ class III:
         payload = req.get("payload")
         action = req.get("action")
         metadata = req.get("metadata")
-        # Same rule as ``register_trigger``: a call with no namespace stays in
-        # the caller's. Reaching a worker that lives elsewhere -- an engine
-        # builtin in ``default``, a neighbour in another project -- is done by
-        # naming that namespace.
-        namespace = self._call_namespace(req.get("namespace"), "TriggerRequest.namespace")
+        # Engine-owned builtins stay in ``default``. Other implicit calls stay
+        # in this worker's namespace. An explicit request namespace wins.
+        namespace = self._invocation_namespace(req.get("namespace"), function_id)
 
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 

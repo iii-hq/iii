@@ -42,6 +42,24 @@ async fn namespace_of(mock: &MockEngine, kind: &str) -> Option<Value> {
         .and_then(|m| m.get("namespace").cloned())
 }
 
+async fn invocation_namespace_of(mock: &MockEngine, function_id: &str) -> Option<Value> {
+    let frames = mock
+        .wait_for(
+            |messages| {
+                messages.iter().any(|message| {
+                    message.get("function_id").and_then(Value::as_str) == Some(function_id)
+                })
+            },
+            Duration::from_secs(3),
+        )
+        .await;
+
+    frames
+        .into_iter()
+        .find(|message| message.get("function_id").and_then(Value::as_str) == Some(function_id))
+        .and_then(|message| message.get("namespace").cloned())
+}
+
 #[tokio::test]
 async fn a_trigger_registers_in_the_workers_namespace() {
     let mock = MockEngine::start().await;
@@ -117,6 +135,49 @@ async fn an_invocation_stays_in_the_callers_namespace() {
     assert_eq!(
         namespace_of(&mock, "invokefunction").await,
         Some(json!("orders"))
+    );
+}
+
+#[tokio::test]
+async fn an_engine_invocation_stays_in_default() {
+    let mock = MockEngine::start().await;
+    let iii = worker_in(&mock, Some("orders"));
+
+    let _ = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::channels::create".to_string(),
+            payload: json!({}),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        })
+        .await;
+
+    assert_eq!(
+        invocation_namespace_of(&mock, "engine::channels::create").await,
+        Some(json!("default"))
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_namespace_wins_for_an_engine_invocation() {
+    let mock = MockEngine::start().await;
+    let iii = worker_in(&mock, Some("orders"));
+
+    let _ = iii
+        .trigger(
+            TriggerRequest {
+                function_id: "engine::channels::create".to_string(),
+                payload: json!({}),
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            }
+            .namespace("sandbox"),
+        )
+        .await;
+
+    assert_eq!(
+        invocation_namespace_of(&mock, "engine::channels::create").await,
+        Some(json!("sandbox"))
     );
 }
 

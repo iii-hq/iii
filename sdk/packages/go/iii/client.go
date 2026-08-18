@@ -338,6 +338,16 @@ func refuseBlankCallNamespace(namespace, source string) error {
 	return nil
 }
 
+// invocationNamespace keeps engine-owned builtins in the engine's default
+// namespace. An explicit namespace always wins. Go does not yet inherit the
+// worker namespace for other calls, so their absent namespace stays absent.
+func invocationNamespace(functionID, explicit string) string {
+	if explicit == "" && strings.HasPrefix(functionID, "engine::") {
+		return "default"
+	}
+	return explicit
+}
+
 // RegisterTrigger registers a trigger instance: fire functionID when a trigger of
 // triggerType matches config. config and optional metadata are raw JSON (may be nil).
 func (c *Client) RegisterTrigger(id, triggerType, functionID string, config json.RawMessage, metadata ...json.RawMessage) error {
@@ -410,6 +420,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 	if err := refuseBlankCallNamespace(req.Namespace, "TriggerRequest.Namespace"); err != nil {
 		return nil, err
 	}
+	namespace := invocationNamespace(req.FunctionID, req.Namespace)
 	data := req.Data
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -425,7 +436,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 			Action:      req.Action,
 			Traceparent: tc.traceparent,
 			Baggage:     tc.baggage,
-			Namespace:   req.Namespace,
+			Namespace:   namespace,
 		})
 		if err != nil {
 			return nil, err
@@ -451,7 +462,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 		Action:       req.Action,
 		Traceparent:  tc.traceparent,
 		Baggage:      tc.baggage,
-		Namespace:    req.Namespace,
+		Namespace:    namespace,
 	})
 	if err != nil {
 		c.clearPending(id)

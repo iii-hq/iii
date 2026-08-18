@@ -139,6 +139,16 @@ function callNamespace(
   return explicit ?? worker
 }
 
+/** Resolve one function invocation without leaking engine builtins into a worker namespace. */
+function invocationNamespace(
+  explicit: string | undefined,
+  worker: string | undefined,
+  functionId: string,
+): string | undefined {
+  const namespace = callNamespace(explicit, worker, 'TriggerRequest.namespace')
+  return explicit === undefined && functionId.startsWith('engine::') ? 'default' : namespace
+}
+
 function resolveNamespace(optionNamespace?: string): string | undefined {
   // III_NAMESPACE carries the namespace for managed workers (set by iii-worker
   // at spawn), mirroring III_WORKER_NAME. An explicit option wins; otherwise
@@ -618,11 +628,9 @@ class Sdk implements IIIClient {
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
     const { function_id, payload, action, timeoutMs, metadata } = request
-    // Same rule as `registerTrigger`: a call with no namespace stays in the
-    // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
-    // `default`, a neighbour in another project -- is done by naming that
-    // namespace.
-    const namespace = callNamespace(request.namespace, this.namespace, 'TriggerRequest.namespace')
+    // Engine-owned builtins stay in `default`. Other implicit calls stay in
+    // this worker's namespace. An explicit request namespace always wins.
+    const namespace = invocationNamespace(request.namespace, this.namespace, function_id)
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     // Void is fire-and-forget, no invocation_id, no response
@@ -696,12 +704,6 @@ class Sdk implements IIIClient {
 
     this.trigger({
       function_id: EngineFunctions.REGISTER_WORKER,
-      // Named, because `trigger` now defaults to this worker's namespace and
-      // this one call must not follow it: `engine::workers::register` is
-      // compiled into the engine and served in `default` only. Routed into the
-      // worker's own namespace, the announcement reaches nothing and the worker
-      // never registers -- every function it offers then appears missing.
-      namespace: 'default',
       payload: {
         runtime: 'node',
         version: SDK_VERSION,

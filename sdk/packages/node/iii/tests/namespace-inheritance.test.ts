@@ -95,15 +95,41 @@ describe('namespace inheritance', () => {
     expect(call).toMatchObject({ namespace: 'orders' })
   })
 
+  it('keeps an implicit engine invocation in default', async () => {
+    sdk = registerWorker(url, { workerName: 'tester', namespace: 'orders', otel: { enabled: false } })
+    await settle()
+    void sdk.trigger({
+      function_id: 'engine::channels::create',
+      payload: {},
+      action: { type: 'void' },
+    } as never)
+    await settle()
+
+    const call = frames.find((f) => f.type === 'invokefunction' && f.function_id === 'engine::channels::create')
+    expect(call).toMatchObject({ namespace: 'default' })
+  })
+
+  it('lets an explicit namespace win for an engine invocation', async () => {
+    sdk = registerWorker(url, { workerName: 'tester', namespace: 'orders', otel: { enabled: false } })
+    await settle()
+    void sdk.trigger({
+      function_id: 'engine::channels::create',
+      payload: {},
+      action: { type: 'void' },
+      namespace: 'sandbox',
+    } as never)
+    await settle()
+
+    const call = frames.find((f) => f.type === 'invokefunction' && f.function_id === 'engine::channels::create')
+    expect(call).toMatchObject({ namespace: 'sandbox' })
+  })
+
   /**
    * The regression this file exists for.
    *
    * The SDK announces itself with `engine::workers::register`, and it does so
-   * through `trigger`. Once `trigger` inherited, the announcement followed the
-   * worker into its own namespace — where the engine does not serve that
-   * function — so the worker never registered and every function it offered
-   * looked missing. The namespace smoke suite caught it as eight scenarios
-   * failing with `function_not_found`.
+   * through `trigger`. The generic engine-builtin rule must keep the
+   * announcement in `default`; callers must not need a one-off override.
    */
   it('never redirects the workers own registration', async () => {
     sdk = registerWorker(url, { workerName: 'tester', namespace: 'orders', otel: { enabled: false } })

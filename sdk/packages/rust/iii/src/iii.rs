@@ -398,6 +398,26 @@ pub(crate) fn call_namespace(
     }
 }
 
+/// The namespace in which one function invocation resolves.
+///
+/// An explicit namespace always wins. Without one, engine-owned builtins stay
+/// in `default`; all other calls inherit the worker's namespace.
+pub(crate) fn invocation_namespace(
+    explicit: Option<String>,
+    worker: Option<String>,
+    function_id: &str,
+    source: &str,
+) -> Result<Option<String>, Error> {
+    let is_implicit = explicit.is_none();
+    let namespace = call_namespace(explicit, worker, source)?;
+
+    if is_implicit && function_id.starts_with("engine::") {
+        Ok(Some("default".to_string()))
+    } else {
+        Ok(namespace)
+    }
+}
+
 pub(crate) fn resolve_namespace(explicit: Option<String>) -> Option<String> {
     if let Some(declared) = explicit {
         reject_blank_namespace(&declared, "InitOptions.namespace");
@@ -1438,13 +1458,12 @@ impl IIIClient {
         let request = request.into();
         let req = request.request;
         let metadata = request.metadata;
-        // Same rule as `register_trigger`: a call with no namespace stays in
-        // the caller's. Reaching a worker that lives elsewhere -- an engine
-        // builtin in `default`, a neighbour in another project -- is done by
-        // naming that namespace.
-        let namespace = call_namespace(
+        // Engine-owned builtins always live in `default`. Other implicit calls
+        // stay in the caller's namespace. An explicit request namespace wins.
+        let namespace = invocation_namespace(
             request.namespace,
             self.namespace(),
+            &req.function_id,
             "TriggerRequest.namespace",
         )?;
         let (tp, bg) = inject_trace_headers();
