@@ -269,8 +269,8 @@ containers:
     environment:
       RUST_LOG: info
     scripts:
-      pre_start: npm run migrate
-      pre_start_timeout: 2m
+      pre_run: npm run migrate
+      pre_run_timeout: 2m
       run: npm start
       post_run: ./scripts/cleanup.sh
   state:
@@ -342,12 +342,12 @@ run on. Every other worker kind runs on windows as it always has.
 
 ### Scripts
 
-| Field               | Type   | Default | Description                                                  |
-| ------------------- | ------ | ------- | ------------------------------------------------------------ |
-| `pre_start`         | string | absent  | Runs to completion before the container is spawned.          |
-| `pre_start_timeout` | string | `60s`   | Budget for `pre_start`. Rejected without a `pre_start`.      |
-| `run`               | string | absent  | Start command. Rejected for `package://` containers.         |
-| `post_run`          | string | absent  | Runs after the container's exit is confirmed. Never awaited. |
+| Field             | Type   | Default | Description                                                  |
+| ----------------- | ------ | ------- | ------------------------------------------------------------ |
+| `pre_run`         | string | absent  | Runs to completion before the container is spawned.          |
+| `pre_run_timeout` | string | `60s`   | Budget for `pre_run`. Rejected without a `pre_run`.          |
+| `run`             | string | absent  | Start command. Rejected for `package://` containers.         |
+| `post_run`        | string | absent  | Runs after the container's exit is confirmed. Never awaited. |
 
 Both hooks run with the container's environment, working directory, and their own process group.
 
@@ -510,7 +510,7 @@ Compose errors cross the wire with a stable code and a message.
 | Area                  | Codes                                                                                                                                                                                                                                                                              |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Compose file          | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`                                                                                                |
-| Container declaration | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `PRE_START_TIMEOUT_WITHOUT_PRE_START`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                  |
+| Container declaration | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                  |
 | Worker resolution     | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`                                                                                                                                                                                                            |
 | Packages              | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`                                                                        |
 | Start and readiness   | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `ENGINE_CALL_FAILED` |

@@ -29,9 +29,9 @@ use crate::{
     spawn::RESERVED_ENV,
 };
 
-/// Default `pre_start` budget. A blocking migration or asset build routinely
+/// Default `pre_run` budget. A blocking migration or asset build routinely
 /// takes tens of seconds; anything past this is treated as hung.
-pub const DEFAULT_PRE_START_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_PRE_RUN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Default readiness budget: how long `up` waits for a spawned container to
 /// show up in the engine before calling it failed.
@@ -50,8 +50,8 @@ pub enum WorkerSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scripts {
-    pub pre_start: Option<String>,
-    pub pre_start_timeout: Duration,
+    pub pre_run: Option<String>,
+    pub pre_run_timeout: Duration,
     pub run: Option<String>,
     pub post_run: Option<String>,
 }
@@ -59,8 +59,8 @@ pub struct Scripts {
 impl Default for Scripts {
     fn default() -> Self {
         Self {
-            pre_start: None,
-            pre_start_timeout: DEFAULT_PRE_START_TIMEOUT,
+            pre_run: None,
+            pre_run_timeout: DEFAULT_PRE_RUN_TIMEOUT,
             run: None,
             post_run: None,
         }
@@ -250,13 +250,13 @@ fn validate_container(
                     container: key.to_string(),
                 });
             }
-            if raw_scripts.pre_start_timeout.is_some() && raw_scripts.pre_start.is_none() {
-                return Err(ComposeError::PreStartTimeoutWithoutPreStart {
+            if raw_scripts.pre_run_timeout.is_some() && raw_scripts.pre_run.is_none() {
+                return Err(ComposeError::PreRunTimeoutWithoutPreRun {
                     container: key.to_string(),
                 });
             }
-            let pre_start_timeout = match &raw_scripts.pre_start_timeout {
-                None => DEFAULT_PRE_START_TIMEOUT,
+            let pre_run_timeout = match &raw_scripts.pre_run_timeout {
+                None => DEFAULT_PRE_RUN_TIMEOUT,
                 Some(value) => {
                     parse_duration(value).ok_or_else(|| ComposeError::InvalidDuration {
                         container: key.to_string(),
@@ -265,8 +265,8 @@ fn validate_container(
                 }
             };
             Scripts {
-                pre_start: raw_scripts.pre_start.clone(),
-                pre_start_timeout,
+                pre_run: raw_scripts.pre_run.clone(),
+                pre_run_timeout,
                 run: raw_scripts.run.clone(),
                 post_run: raw_scripts.post_run.clone(),
             }
@@ -554,9 +554,9 @@ struct RawContainer {
 #[serde(deny_unknown_fields)]
 struct RawScripts {
     #[serde(default)]
-    pre_start: Option<String>,
+    pre_run: Option<String>,
     #[serde(default)]
-    pre_start_timeout: Option<String>,
+    pre_run_timeout: Option<String>,
     #[serde(default)]
     run: Option<String>,
     #[serde(default)]

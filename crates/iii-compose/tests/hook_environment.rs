@@ -9,7 +9,7 @@
 
 use std::{path::Path, time::Duration};
 
-use iii_compose::{hooks::run_pre_start, manifest::StartSpec, spawn::SpawnCtx};
+use iii_compose::{hooks::await_pre_run, manifest::StartSpec, spawn::SpawnCtx};
 
 #[tokio::test]
 async fn a_stale_reserved_variable_never_reaches_a_hook() {
@@ -32,7 +32,7 @@ async fn a_stale_reserved_variable_never_reaches_a_hook() {
     // SAFETY: this is the only test in the binary, so no other thread is
     // reading or writing the environment while this runs.
     unsafe { std::env::set_var("III_WORKER_NAME", "stale-name") };
-    let result = run_pre_start(
+    let result = await_pre_run(
         &ctx,
         "printf '%s|%s|%s|%s' \"$III_URL\" \"$III_NAMESPACE\" \"$III_WORKER_NAME\" \"$III_CONFIG\" > seen.txt && test \"$PWD\" = \"$(pwd)\"",
         Duration::from_secs(5),

@@ -34,8 +34,8 @@ containers:
       server:
         port: 3000
     scripts:
-      pre_start: ./scripts/migrate.sh
-      pre_start_timeout: 90s
+      pre_run: ./scripts/migrate.sh
+      pre_run_timeout: 90s
       run: cargo run --release
       post_run: ./scripts/drain.sh
     working_dir: ./workers/api
@@ -53,7 +53,7 @@ fn accepts_the_canonical_project() {
     assert_eq!(api.depends_on, vec!["database".to_string()]);
     assert_eq!(api.config_name.as_deref(), Some("orders-api"));
     assert_eq!(
-        api.scripts.pre_start_timeout,
+        api.scripts.pre_run_timeout,
         std::time::Duration::from_secs(90)
     );
     assert_eq!(api.scripts.run.as_deref(), Some("cargo run --release"));
@@ -70,7 +70,7 @@ fn accepts_the_canonical_project() {
 }
 
 #[test]
-fn pre_start_timeout_defaults_to_sixty_seconds() {
+fn pre_run_timeout_defaults_to_sixty_seconds() {
     let file = parse(
         r#"
 namespace: orders
@@ -82,7 +82,7 @@ containers:
     .unwrap();
 
     assert_eq!(
-        file.containers["api"].scripts.pre_start_timeout,
+        file.containers["api"].scripts.pre_run_timeout,
         std::time::Duration::from_secs(60)
     );
 }
@@ -387,7 +387,7 @@ containers:
 }
 
 #[test]
-fn rejects_a_pre_start_timeout_without_a_pre_start() {
+fn rejects_a_pre_run_timeout_without_a_pre_run() {
     assert_eq!(
         code(
             r#"
@@ -396,10 +396,10 @@ containers:
   api:
     worker: path://./workers/api
     scripts:
-      pre_start_timeout: 30s
+      pre_run_timeout: 30s
 "#
         ),
-        "PRE_START_TIMEOUT_WITHOUT_PRE_START"
+        "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN"
     );
 }
 
@@ -413,8 +413,8 @@ containers:
   api:
     worker: path://./workers/api
     scripts:
-      pre_start: ./migrate.sh
-      pre_start_timeout: 30
+      pre_run: ./migrate.sh
+      pre_run_timeout: 30
 "#
         ),
         "INVALID_DURATION"

@@ -1,11 +1,11 @@
-//! pre_start and post_run behaviour against real scripts.
+//! pre_run and post_run behaviour against real scripts.
 
 #![cfg(unix)]
 
 use std::{path::Path, time::Duration};
 
 use iii_compose::{
-    hooks::{fire_post_run, run_pre_start},
+    hooks::{await_pre_run, fire_post_run},
     manifest::StartSpec,
     spawn::SpawnCtx,
 };
@@ -49,10 +49,10 @@ fn is_alive(pid: u32) -> bool {
 }
 
 #[tokio::test]
-async fn a_successful_pre_start_passes() {
+async fn a_successful_pre_run_passes() {
     let tmp = tempfile::tempdir().unwrap();
     let start = IDLE;
-    let result = run_pre_start(
+    let result = await_pre_run(
         &ctx(tmp.path(), &start, None),
         "echo migrating; exit 0",
         Duration::from_secs(5),
@@ -63,10 +63,10 @@ async fn a_successful_pre_start_passes() {
 }
 
 #[tokio::test]
-async fn a_failing_pre_start_reports_its_exit_code() {
+async fn a_failing_pre_run_reports_its_exit_code() {
     let tmp = tempfile::tempdir().unwrap();
     let start = IDLE;
-    let err = run_pre_start(
+    let err = await_pre_run(
         &ctx(tmp.path(), &start, None),
         "echo broken >&2; exit 3",
         Duration::from_secs(5),
@@ -79,7 +79,7 @@ async fn a_failing_pre_start_reports_its_exit_code() {
 }
 
 #[tokio::test]
-async fn a_hung_pre_start_times_out_and_leaves_nothing_running() {
+async fn a_hung_pre_run_times_out_and_leaves_nothing_running() {
     let tmp = tempfile::tempdir().unwrap();
     let pid_file = tmp.path().join("hook.pid");
     let start = IDLE;
@@ -90,7 +90,7 @@ async fn a_hung_pre_start_times_out_and_leaves_nothing_running() {
         wait_for_file(&path).await.trim().parse::<u32>().unwrap()
     });
 
-    let err = run_pre_start(
+    let err = await_pre_run(
         &ctx(tmp.path(), &start, None),
         &hook,
         Duration::from_millis(400),

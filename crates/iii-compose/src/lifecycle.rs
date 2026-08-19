@@ -325,7 +325,7 @@ pub async fn down(
     }
 }
 
-/// Resolves config, runs `pre_start`, spawns, and waits for the engine to see
+/// Resolves config, runs `pre_run`, spawns, and waits for the engine to see
 /// the child. Every step before the spawn can fail without leaving a process
 /// behind.
 /// Starts one container and hands back the child rather than filing it.
@@ -415,8 +415,8 @@ async fn start_one(ctx: &LifecycleCtx<'_>, key: &str) -> Result<(ChildRecord, Su
         user_env: &user_env,
     };
 
-    if let Some(script) = &container.scripts.pre_start {
-        hooks::run_pre_start(&spawn_ctx, script, container.scripts.pre_start_timeout)
+    if let Some(script) = &container.scripts.pre_run {
+        hooks::await_pre_run(&spawn_ctx, script, container.scripts.pre_run_timeout)
             .await
             .map_err(|err| ComposeError::HookFailed {
                 container: key.to_string(),

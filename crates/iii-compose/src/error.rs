@@ -51,8 +51,8 @@ pub enum ComposeError {
     #[error("container '{container}': 'run' is only valid for path:// workers")]
     RunNotAllowedForPackage { container: String },
 
-    #[error("container '{container}': 'pre_start_timeout' requires 'pre_start'")]
-    PreStartTimeoutWithoutPreStart { container: String },
+    #[error("container '{container}': 'pre_run_timeout' requires 'pre_run'")]
+    PreRunTimeoutWithoutPreRun { container: String },
 
     #[error("container '{container}': invalid duration '{value}'. Use 30s, 500ms or 2m")]
     InvalidDuration { container: String, value: String },
@@ -302,7 +302,7 @@ pub enum ComposeError {
     SpawnFailed { container: String, message: String },
 
     /// A container's hook refused to let it start. The hook's own code is
-    /// carried through: "your pre_start exited 3" and "the process would not
+    /// carried through: "your pre_run exited 3" and "the process would not
     /// spawn" are different problems and must not share one code.
     #[error("container '{container}': {message}")]
     HookFailed {
@@ -395,7 +395,7 @@ impl ComposeError {
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
             Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
-            Self::PreStartTimeoutWithoutPreStart { .. } => "PRE_START_TIMEOUT_WITHOUT_PRE_START",
+            Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
             Self::MissingStartCommand { .. } => "MISSING_START_COMMAND",

@@ -6,7 +6,7 @@
 
 //! Container hooks.
 //!
-//! `pre_start` blocks the container's start and is budgeted: a hung migration
+//! `pre_run` blocks the container's start and is budgeted: a hung migration
 //! must fail the container instead of holding the whole graph. `post_run` fires
 //! after the container's exit is confirmed and is never awaited — a cleanup
 //! script that hangs cannot be allowed to hold up a teardown.
@@ -55,14 +55,14 @@ impl HookError {
     }
 }
 
-/// Runs `pre_start` to completion. On timeout the hook's whole process group is
+/// Runs `pre_run` to completion. On timeout the hook's whole process group is
 /// killed before the error returns, so nothing survives into the next attempt.
-pub async fn run_pre_start(
+pub async fn await_pre_run(
     ctx: &SpawnCtx<'_>,
     script: &str,
     timeout: Duration,
 ) -> Result<(), HookError> {
-    const HOOK: &str = "pre_start";
+    const HOOK: &str = "pre_run";
 
     let mut hook =
         spawn_hook(ctx, script).map_err(|source| HookError::Spawn { hook: HOOK, source })?;
