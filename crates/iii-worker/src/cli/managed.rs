@@ -1012,7 +1012,8 @@ fn local_worker_manifest_paths() -> Result<BTreeMap<String, String>, String> {
 
 fn version_satisfies_range(version: &str, range: &str) -> Result<(), String> {
     let version = semver::Version::parse(version).map_err(|e| format!("invalid version: {e}"))?;
-    let range = semver::VersionReq::parse(range).map_err(|e| format!("invalid range: {e}"))?;
+    let range = super::worker_manifest_deps::parse_dependency_version_req(range)
+        .map_err(|e| format!("invalid range: {e}"))?;
     if range.matches(&version) {
         Ok(())
     } else {
@@ -1763,7 +1764,7 @@ pub(crate) async fn prepare_manifest_dependencies(
                 // If the declared range is a prerelease, preempt the common
                 // confusion: the default registry resolver filters to stable
                 // versions, so a published prerelease looks "not found."
-                let hint = semver::VersionReq::parse(range)
+                let hint = super::worker_manifest_deps::parse_dependency_version_req(range)
                     .ok()
                     .filter(|req| req.comparators.iter().any(|c| !c.pre.is_empty()))
                     .map(|_| {
@@ -4181,6 +4182,14 @@ mod tests {
     use std::sync::Mutex;
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn npm_comparator_set_matches_locked_dependency_version() {
+        assert!(version_satisfies_range("0.22.0", ">=0.22.0 <1.0.0").is_ok());
+        assert!(version_satisfies_range("0.99.9", ">=0.22.0 <1.0.0").is_ok());
+        assert!(version_satisfies_range("0.21.9", ">=0.22.0 <1.0.0").is_err());
+        assert!(version_satisfies_range("1.0.0", ">=0.22.0 <1.0.0").is_err());
+    }
 
     #[test]
     fn large_graph_requires_consent_when_non_interactive() {

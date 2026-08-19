@@ -290,12 +290,14 @@ impl WorkerLockfile {
                         "{LOCKFILE_NAME} declared dependency `{name}` has empty range"
                     ));
                 }
-                semver::VersionReq::parse(trimmed).map_err(|e| {
-                    format!(
-                        "{LOCKFILE_NAME} declared dependency `{name}` has invalid \
+                super::worker_manifest_deps::parse_dependency_version_req(trimmed).map_err(
+                    |e| {
+                        format!(
+                            "{LOCKFILE_NAME} declared dependency `{name}` has invalid \
                          semver range `{range}`: {e}"
-                    )
-                })?;
+                        )
+                    },
+                )?;
             }
 
             // Cross-check: when both fields are present they must be
@@ -1016,6 +1018,21 @@ workers:
         };
         let serialized = lock.to_yaml().unwrap();
         let parsed = WorkerLockfile::from_yaml(&serialized).unwrap();
+        assert_eq!(parsed.declared_dependencies, Some(declared));
+    }
+
+    #[test]
+    fn declared_dependencies_roundtrip_with_npm_comparator_set() {
+        let declared = BTreeMap::from([("state".to_string(), ">=0.22.0 <1.0.0".to_string())]);
+        let lock = WorkerLockfile {
+            manifest_hash: Some(super::super::sync::compute_manifest_hash(&declared)),
+            declared_dependencies: Some(declared.clone()),
+            ..Default::default()
+        };
+
+        let serialized = lock.to_yaml().unwrap();
+        let parsed = WorkerLockfile::from_yaml(&serialized).unwrap();
+
         assert_eq!(parsed.declared_dependencies, Some(declared));
     }
 

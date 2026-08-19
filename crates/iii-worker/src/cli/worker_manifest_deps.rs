@@ -8,6 +8,38 @@
 
 use std::collections::BTreeMap;
 
+/// Parse a worker dependency range using the comparator-set syntax accepted by
+/// the Registry's npm semver implementation.
+///
+/// Rust's `semver` crate requires commas between comparators, while npm uses
+/// whitespace as logical AND (`>=0.22.0 <1.0.0`). Preserve the original range
+/// for Registry requests and lockfiles, but normalize that comparator set for
+/// local validation and matching. All syntax already understood by the Rust
+/// parser keeps its existing meaning.
+pub(crate) fn parse_dependency_version_req(
+    range: &str,
+) -> Result<semver::VersionReq, semver::Error> {
+    let trimmed = range.trim();
+    let direct = semver::VersionReq::parse(trimmed);
+    let original_error = match direct {
+        Ok(requirement) => return Ok(requirement),
+        Err(error) => error,
+    };
+
+    let comparators = trimmed.split_ascii_whitespace().collect::<Vec<_>>();
+    if comparators.len() < 2
+        || comparators.iter().any(|comparator| {
+            semver::VersionReq::parse(comparator)
+                .map(|requirement| requirement.comparators.len() != 1)
+                .unwrap_or(true)
+        })
+    {
+        return Err(original_error);
+    }
+
+    semver::VersionReq::parse(&comparators.join(", ")).map_err(|_| original_error)
+}
+
 /// Parse the `dependencies:` field from an already-loaded YAML document.
 /// Returns an empty map when the field is absent. Returns `Err` when the
 /// field exists but is malformed (not a mapping, empty keys, invalid
@@ -57,7 +89,7 @@ pub fn parse_dependencies(
         }
         super::registry::validate_worker_name(name)
             .map_err(|e| format!("invalid dependency key `{name}`: {e}"))?;
-        semver::VersionReq::parse(range).map_err(|e| {
+        parse_dependency_version_req(range).map_err(|e| {
             format!("invalid semver range for dependency `{name}`: `{range}` ({e})")
         })?;
         if let Some(self_name) = self_name
@@ -98,6 +130,30 @@ mod tests {
         assert_eq!(deps.len(), 2);
         assert_eq!(deps.get("math-worker").unwrap(), "^0.1.0");
         assert_eq!(deps.get("iii-http").unwrap(), "~1.2.0");
+    }
+
+    #[test]
+    fn parses_npm_comparator_set() {
+        let doc = yaml("name: caller\ndependencies:\n  state: \">=0.22.0 <1.0.0\"\n");
+        let deps = parse_dependencies(&doc, Some("caller")).unwrap();
+        assert_eq!(deps.get("state").unwrap(), ">=0.22.0 <1.0.0");
+    }
+
+    #[test]
+    fn npm_comparator_set_preserves_both_bounds() {
+        let requirement = parse_dependency_version_req(">=0.22.0 <1.0.0").unwrap();
+
+        assert!(!requirement.matches(&semver::Version::parse("0.21.9").unwrap()));
+        assert!(requirement.matches(&semver::Version::parse("0.22.0").unwrap()));
+        assert!(requirement.matches(&semver::Version::parse("0.99.9").unwrap()));
+        assert!(!requirement.matches(&semver::Version::parse("1.0.0").unwrap()));
+    }
+
+    #[test]
+    fn rejects_invalid_npm_comparator_set() {
+        let error = parse_dependency_version_req(">=0.22.0 definitely-not-a-range").unwrap_err();
+
+        assert!(error.to_string().contains("expected comma"));
     }
 
     #[test]

@@ -85,7 +85,7 @@ pub struct WorkerManifest {
     pub env: Option<BTreeMap<String, String>>,
 
     #[schemars(
-        description = "Optional map of other-worker-name -> semver range, resolved against the registry and installed before this worker, e.g. { iii-state: \"^0.19\" }. No self-references."
+        description = "Optional map of other-worker-name -> semver range, resolved against the registry and installed before this worker. Whitespace-separated npm comparator sets are supported, e.g. { state: \">=0.22.0 <1.0.0\" }. No self-references."
     )]
     pub dependencies: Option<BTreeMap<String, String>>,
 
