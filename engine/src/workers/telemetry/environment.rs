@@ -151,6 +151,57 @@ fn find_project_root() -> Option<std::path::PathBuf> {
         })
 }
 
+/// How early a heartbeat may land and still count as on-schedule. The interval
+/// timer drifts by a few seconds per tick and an engine restart resets it, so an
+/// exact comparison would drop heartbeats that are due.
+pub(super) const HEARTBEAT_STAMP_SLACK_SECS: u64 = 600;
+
+/// Stamp file recording when the last heartbeat was sent. It lives in the
+/// project's `.iii` directory rather than `~/.iii` because a container that
+/// mounts the project keeps the stamp across restarts, where a home directory
+/// inside the image does not.
+fn heartbeat_stamp_path() -> Option<std::path::PathBuf> {
+    Some(find_project_root()?.join(".iii").join("last_heartbeat"))
+}
+
+fn read_heartbeat_stamp(path: &std::path::Path) -> Option<i64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Returns true when a heartbeat is due, and stamps the current time when it is.
+/// A heartbeat is due when the stamp is missing, unreadable, or older than
+/// `interval_secs` less the slack window.
+///
+/// Fails open: with no project directory there is nowhere to persist the stamp,
+/// so the heartbeat is sent and the in-process timers are the only limit. A
+/// stamp dated in the future (a clock moved backwards) is treated as stale and
+/// overwritten, so a bad value cannot silence heartbeats indefinitely.
+pub fn claim_heartbeat(interval_secs: u64) -> bool {
+    // ponytail: read-then-write, no lock. Two engines starting in the same
+    // project at the same moment can both see no stamp and both report. The
+    // ceiling is one extra event per interval; take a lock file if that ever
+    // shows up in the data.
+    let Some(path) = heartbeat_stamp_path() else {
+        return true;
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    // Clamp rather than cast: an interval past `i64::MAX` wraps negative, which
+    // would invert the comparison below and suppress nothing.
+    let min_gap =
+        i64::try_from(interval_secs.saturating_sub(HEARTBEAT_STAMP_SLACK_SECS)).unwrap_or(i64::MAX);
+
+    if let Some(last) = read_heartbeat_stamp(&path)
+        && now >= last
+        && now - last < min_gap
+    {
+        return false;
+    }
+
+    write_atomic(&path, &now.to_string());
+    true
+}
+
 pub fn find_project_ini_device_id() -> Option<String> {
     let root = find_project_root()?;
     let contents = std::fs::read_to_string(root.join(".iii").join("project.ini")).ok()?;
@@ -426,22 +477,25 @@ fn detect_timezone() -> String {
     std::env::var("TZ").unwrap_or_else(|_| "Unknown".to_string())
 }
 
-pub fn is_ci_environment() -> bool {
-    const CI_ENV_VARS: &[&str] = &[
-        "CI",
-        "GITHUB_ACTIONS",
-        "GITLAB_CI",
-        "CIRCLECI",
-        "JENKINS_URL",
-        "TRAVIS",
-        "BUILDKITE",
-        "TF_BUILD",
-        "CODEBUILD_BUILD_ID",
-        "BITBUCKET_BUILD_NUMBER",
-        "DRONE",
-        "TEAMCITY_VERSION",
-    ];
+/// Environment variables that mark a CI runner. Public so a test that needs to
+/// look like a developer machine can clear the whole set instead of keeping its
+/// own copy, which would drift and pass locally while failing on a runner.
+pub const CI_ENV_VARS: &[&str] = &[
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "CIRCLECI",
+    "JENKINS_URL",
+    "TRAVIS",
+    "BUILDKITE",
+    "TF_BUILD",
+    "CODEBUILD_BUILD_ID",
+    "BITBUCKET_BUILD_NUMBER",
+    "DRONE",
+    "TEAMCITY_VERSION",
+];
 
+pub fn is_ci_environment() -> bool {
     CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
 }
 
@@ -1010,5 +1064,189 @@ state:
     fn test_detect_timezone_returns_nonempty() {
         let tz = detect_timezone();
         assert!(!tz.is_empty(), "timezone should not be empty");
+    }
+
+    // =========================================================================
+    // claim_heartbeat
+    // =========================================================================
+
+    const SIX_HOURS: u64 = 6 * 60 * 60;
+
+    /// Points the project root at a fresh temporary directory and returns it.
+    /// The caller keeps the `TempDir` alive for the length of the test.
+    fn project_root_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var("III_PROJECT_ROOT", dir.path());
+        }
+        dir
+    }
+
+    fn clear_project_root() {
+        unsafe {
+            env::remove_var("III_PROJECT_ROOT");
+        }
+    }
+
+    /// Backdates the stamp by `age_secs` so a test does not have to wait.
+    fn backdate_stamp(age_secs: i64) {
+        let stamp = chrono::Utc::now().timestamp() - age_secs;
+        write_atomic(&heartbeat_stamp_path().unwrap(), &stamp.to_string());
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_sends_when_no_stamp_exists() {
+        let _dir = project_root_fixture();
+        assert!(
+            claim_heartbeat(SIX_HOURS),
+            "a first run has no stamp, so the heartbeat is due"
+        );
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_suppresses_a_restart_within_the_interval() {
+        let _dir = project_root_fixture();
+        assert!(claim_heartbeat(SIX_HOURS));
+        assert!(
+            !claim_heartbeat(SIX_HOURS),
+            "a restart moments later must not report again"
+        );
+        assert!(
+            !claim_heartbeat(SIX_HOURS),
+            "repeated restarts stay suppressed"
+        );
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_stamp_is_written_under_the_project_iii_dir() {
+        let dir = project_root_fixture();
+        assert!(claim_heartbeat(SIX_HOURS));
+
+        let stamp = dir.path().join(".iii").join("last_heartbeat");
+        assert!(
+            stamp.exists(),
+            "the stamp belongs to the project, not $HOME"
+        );
+        assert_eq!(heartbeat_stamp_path().unwrap(), stamp);
+        assert!(
+            read_heartbeat_stamp(&stamp).is_some(),
+            "the stamp holds a parsable unix timestamp"
+        );
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_sends_once_the_slack_window_is_reached() {
+        let _dir = project_root_fixture();
+
+        // One second short of the window: still suppressed.
+        backdate_stamp(SIX_HOURS as i64 - HEARTBEAT_STAMP_SLACK_SECS as i64 - 1);
+        assert!(!claim_heartbeat(SIX_HOURS));
+
+        // At the window: a tick that runs early by the slack amount is due.
+        backdate_stamp(SIX_HOURS as i64 - HEARTBEAT_STAMP_SLACK_SECS as i64);
+        assert!(claim_heartbeat(SIX_HOURS));
+
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_sends_when_the_stamp_is_dated_in_the_future() {
+        let _dir = project_root_fixture();
+        backdate_stamp(-(SIX_HOURS as i64)); // a clock that moved backwards
+        assert!(
+            claim_heartbeat(SIX_HOURS),
+            "a future stamp is stale, not a reason to stay silent forever"
+        );
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_sends_when_the_stamp_is_unreadable() {
+        let _dir = project_root_fixture();
+        let path = heartbeat_stamp_path().unwrap();
+
+        write_atomic(&path, "not a timestamp");
+        assert!(claim_heartbeat(SIX_HOURS), "a corrupt stamp fails open");
+
+        write_atomic(&path, "");
+        assert!(claim_heartbeat(SIX_HOURS), "an empty stamp fails open");
+
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_tolerates_whitespace_in_the_stamp() {
+        let _dir = project_root_fixture();
+        let stamp = chrono::Utc::now().timestamp();
+        write_atomic(&heartbeat_stamp_path().unwrap(), &format!("{stamp}\n"));
+        assert!(
+            !claim_heartbeat(SIX_HOURS),
+            "a trailing newline must still parse, or the gate never holds"
+        );
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_fails_open_when_the_stamp_cannot_be_written() {
+        // A project root that does not exist: `write_atomic` cannot land the
+        // file, so every call has to fall through to sending.
+        unsafe {
+            env::set_var("III_PROJECT_ROOT", "/nonexistent-iii-project-root/nope");
+        }
+        assert!(claim_heartbeat(SIX_HOURS));
+        assert!(claim_heartbeat(SIX_HOURS));
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_fails_open_without_a_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = env::current_dir().unwrap();
+        clear_project_root();
+        env::set_current_dir(dir.path()).unwrap();
+
+        assert!(
+            heartbeat_stamp_path().is_none(),
+            "no project means nowhere to persist the stamp"
+        );
+        assert!(claim_heartbeat(SIX_HOURS));
+        assert!(claim_heartbeat(SIX_HOURS));
+
+        env::set_current_dir(cwd).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_suppresses_for_an_interval_past_i64() {
+        // `u64::MAX` less the slack window does not fit in an i64. Casting would
+        // wrap negative and stop suppressing anything.
+        let _dir = project_root_fixture();
+        assert!(claim_heartbeat(u64::MAX));
+        assert!(!claim_heartbeat(u64::MAX));
+        clear_project_root();
+    }
+
+    #[test]
+    #[serial]
+    fn test_claim_heartbeat_gate_opens_for_intervals_inside_the_slack_window() {
+        // An operator who configures an interval shorter than the slack window
+        // has asked for frequent heartbeats, so the gate must not fight them.
+        let _dir = project_root_fixture();
+        assert!(claim_heartbeat(HEARTBEAT_STAMP_SLACK_SECS));
+        assert!(claim_heartbeat(HEARTBEAT_STAMP_SLACK_SECS));
+        assert!(claim_heartbeat(60));
+        clear_project_root();
     }
 }

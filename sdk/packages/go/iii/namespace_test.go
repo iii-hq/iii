@@ -123,6 +123,63 @@ func TestTriggerOmitsNamespaceWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestEngineTriggerDefaultsToDefaultNamespace verifies that an engine-owned
+// builtin cannot inherit or otherwise leak into a project namespace.
+func TestEngineTriggerDefaultsToDefaultNamespace(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m, WithNamespace("orders"))
+
+	_, _ = c.Trigger(context.Background(), TriggerRequest{
+		FunctionID: FnCreateChannel,
+		Action:     VoidAction(),
+	})
+
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
+		return firstWhere(msgs, func(msg map[string]json.RawMessage) bool {
+			return stringField(msg, "function_id") == FnCreateChannel
+		}) != nil
+	}, 2*time.Second)
+
+	inv := firstWhere(got, func(msg map[string]json.RawMessage) bool {
+		return stringField(msg, "function_id") == FnCreateChannel
+	})
+	if inv == nil {
+		t.Fatal("no invokefunction frame for engine::channels::create")
+	}
+	if ns := stringField(inv, "namespace"); ns != "default" {
+		t.Errorf("namespace = %q, want default", ns)
+	}
+}
+
+// TestExplicitNamespaceWinsForEngineTrigger preserves strict explicit routing
+// for callers that deliberately target a test or proxy namespace.
+func TestExplicitNamespaceWinsForEngineTrigger(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m, WithNamespace("orders"))
+
+	_, _ = c.Trigger(context.Background(), TriggerRequest{
+		FunctionID: FnCreateChannel,
+		Action:     VoidAction(),
+		Namespace:  "sandbox",
+	})
+
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
+		return firstWhere(msgs, func(msg map[string]json.RawMessage) bool {
+			return stringField(msg, "function_id") == FnCreateChannel
+		}) != nil
+	}, 2*time.Second)
+
+	inv := firstWhere(got, func(msg map[string]json.RawMessage) bool {
+		return stringField(msg, "function_id") == FnCreateChannel
+	})
+	if inv == nil {
+		t.Fatal("no invokefunction frame for engine::channels::create")
+	}
+	if ns := stringField(inv, "namespace"); ns != "sandbox" {
+		t.Errorf("namespace = %q, want sandbox", ns)
+	}
+}
+
 // TestRegistrationRejectedIsFatal verifies a WORKER_NAMESPACE_CONFLICT is
 // terminal: the client records the typed error, enters StateFailed, fails pending
 // invocations, and does not reconnect (which would loop forever under the default

@@ -51,6 +51,10 @@ pub struct TelemetryCollector {
 
     // Workers
     pub peak_active_workers: AtomicU64,
+
+    /// CLI commands invoked since the last heartbeat, keyed by command path.
+    /// Drained by each heartbeat, so counts never span two of them.
+    pub cli_commands: dashmap::DashMap<String, u64>,
 }
 
 impl Default for TelemetryCollector {
@@ -78,6 +82,7 @@ impl Default for TelemetryCollector {
             trigger_registrations: AtomicU64::new(0),
             worker_registrations: AtomicU64::new(0),
             peak_active_workers: AtomicU64::new(0),
+            cli_commands: dashmap::DashMap::new(),
         }
     }
 }
@@ -120,20 +125,68 @@ pub fn collector() -> &'static TelemetryCollector {
     TELEMETRY_COLLECTOR.get_or_init(TelemetryCollector::default)
 }
 
-static FIRST_USER_INVOCATION: OnceLock<tokio::sync::Notify> = OnceLock::new();
-static FIRST_USER_INVOCATION_SENT: AtomicBool = AtomicBool::new(false);
+static USER_FUNCTION_INVOKED: AtomicBool = AtomicBool::new(false);
 
-/// Returns the notify handle the boot heartbeat task awaits on.
-pub fn first_user_invocation_notify() -> &'static tokio::sync::Notify {
-    FIRST_USER_INVOCATION.get_or_init(tokio::sync::Notify::new)
+/// Whether a user (non-builtin) function has been invoked in this process.
+pub fn user_function_invoked() -> bool {
+    USER_FUNCTION_INVOKED.load(Ordering::Relaxed)
 }
 
-/// Signal that a user (non-builtin) function was invoked.
-/// Only the first call actually wakes the listener; subsequent calls are no-ops.
-pub fn notify_user_function_invoked() {
-    if !FIRST_USER_INVOCATION_SENT.swap(true, Ordering::Relaxed) {
-        first_user_invocation_notify().notify_one();
+/// Record that a user (non-builtin) function was invoked.
+pub fn mark_user_function_invoked() {
+    USER_FUNCTION_INVOKED.store(true, Ordering::Relaxed);
+}
+
+/// Prefix a CLI invocation puts on the worker name it registers with, so the
+/// engine can tell a CLI command apart from a real worker and count which
+/// command connected. `iii trigger` is the only command that connects today.
+pub const CLI_WORKER_NAME_PREFIX: &str = "iii-cli:";
+
+/// Most distinct command paths one heartbeat reports. The name arrives from a
+/// client, so the key space is neither closed nor trusted.
+const CLI_COMMAND_MAX_KEYS: usize = 64;
+
+/// Reduces a command path to something safe to use as a telemetry key:
+/// lowercase, no control characters, bounded length. Returns `None` when nothing
+/// usable survives.
+fn sanitize_cli_command(path: &str) -> Option<String> {
+    let kept: String = path
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | ':' | '.'))
+        .take(48)
+        .collect();
+    let trimmed = kept.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Count one CLI invocation. Recording is in-process, so it only reaches a
+/// heartbeat when the caller shares the engine's process (`serve`) or when the
+/// engine records it on behalf of a connecting CLI (`trigger`). A short-lived
+/// CLI process that never reaches an engine counts nothing, by design: the
+/// commands that matter without an engine already send their own lifecycle
+/// events (`project_init_*`, `cli_update_*`, `install_*`).
+pub fn track_cli_command(path: &str) {
+    let Some(command) = sanitize_cli_command(path) else {
+        return;
+    };
+
+    let commands = &collector().cli_commands;
+    if commands.len() >= CLI_COMMAND_MAX_KEYS && !commands.contains_key(&command) {
+        return;
     }
+    *commands.entry(command).or_insert(0) += 1;
+}
+
+/// Tallies and clears the commands counted since the previous heartbeat. Call
+/// this only for a heartbeat that is actually sent: a suppressed one leaves the
+/// counts in place for the next.
+pub fn take_cli_commands() -> std::collections::BTreeMap<String, u64> {
+    let commands = &collector().cli_commands;
+    let keys: Vec<String> = commands.iter().map(|e| e.key().clone()).collect();
+    keys.into_iter()
+        .filter_map(|key| commands.remove(&key))
+        .collect()
 }
 
 // Convenience tracking functions
@@ -660,5 +713,90 @@ mod tests {
             }
         }
         assert_eq!(peak.load(Ordering::Relaxed), 15);
+    }
+
+    // =========================================================================
+    // CLI command aggregation
+    // =========================================================================
+
+    #[test]
+    #[serial_test::serial]
+    fn test_take_cli_commands_counts_and_then_clears() {
+        take_cli_commands();
+
+        track_cli_command("trigger");
+        track_cli_command("trigger");
+        track_cli_command("worker add");
+
+        let counts = take_cli_commands();
+        assert_eq!(counts.get("trigger"), Some(&2));
+        assert_eq!(counts.get("worker add"), Some(&1));
+
+        assert!(
+            take_cli_commands().is_empty(),
+            "counts must not carry into the next heartbeat"
+        );
+
+        track_cli_command("version");
+        assert_eq!(take_cli_commands().get("version"), Some(&1));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_track_cli_command_normalizes_and_bounds_the_key() {
+        take_cli_commands();
+
+        // The name arrives from a client, so none of this is trusted input.
+        track_cli_command("  WORKER Add  ");
+        track_cli_command("worker paper-sources::list");
+        track_cli_command("trigger; rm -rf /");
+        track_cli_command("worker add\ntrigger");
+        track_cli_command(&"x".repeat(200));
+        track_cli_command("   ");
+        track_cli_command("!!!");
+
+        let counts = take_cli_commands();
+        assert_eq!(counts.get("worker add"), Some(&1), "trimmed and lowercased");
+        assert_eq!(counts.get("worker paper-sources::list"), Some(&1));
+        assert_eq!(
+            counts.get("trigger rm -rf"),
+            Some(&1),
+            "punctuation dropped"
+        );
+        assert_eq!(
+            counts.get("worker addtrigger"),
+            Some(&1),
+            "a newline cannot forge a second key"
+        );
+        assert_eq!(counts.get(&"x".repeat(48)), Some(&1), "length capped");
+        assert_eq!(counts.len(), 5, "blank and unusable paths count nothing");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_track_cli_command_caps_distinct_keys() {
+        take_cli_commands();
+
+        for i in 0..(CLI_COMMAND_MAX_KEYS + 20) {
+            track_cli_command(&format!("cmd{i}"));
+        }
+        // A command already counted still increments past the cap.
+        track_cli_command("cmd0");
+
+        let counts = take_cli_commands();
+        assert_eq!(counts.len(), CLI_COMMAND_MAX_KEYS);
+        assert_eq!(counts.get("cmd0"), Some(&2));
+    }
+
+    #[test]
+    fn test_cli_worker_name_prefix_is_not_a_plausible_worker_name() {
+        // The engine keys off this prefix to tell a CLI invocation from a real
+        // worker, so it has to stay distinctive.
+        assert!(CLI_WORKER_NAME_PREFIX.ends_with(':'));
+        assert_eq!(
+            "iii-cli:trigger".strip_prefix(CLI_WORKER_NAME_PREFIX),
+            Some("trigger")
+        );
+        assert_eq!("my-worker".strip_prefix(CLI_WORKER_NAME_PREFIX), None);
     }
 }

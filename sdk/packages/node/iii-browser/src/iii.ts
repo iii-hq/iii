@@ -131,6 +131,16 @@ function callNamespace(
   return explicit ?? worker
 }
 
+/** Resolve one function invocation without leaking engine builtins into a worker namespace. */
+function invocationNamespace(
+  explicit: string | undefined,
+  worker: string | undefined,
+  functionId: string,
+): string | undefined {
+  const namespace = callNamespace(explicit, worker, 'TriggerRequest.namespace')
+  return explicit === undefined && functionId.startsWith('engine::') ? 'default' : namespace
+}
+
 function resolveNamespace(optionNamespace?: string): string | undefined {
   if (optionNamespace !== undefined && optionNamespace.trim() === '') {
     throw new Error(
@@ -430,11 +440,9 @@ class Sdk implements ISdk {
     request: TriggerRequest<TInput>,
   ): Promise<TOutput> => {
     const { function_id, payload, action, timeoutMs } = request
-    // Same rule as `registerTrigger`: a call with no namespace stays in the
-    // caller's. Reaching a worker that lives elsewhere -- an engine builtin in
-    // `default`, a neighbour in another project -- is done by naming that
-    // namespace.
-    const namespace = callNamespace(request.namespace, this.namespace, 'TriggerRequest.namespace')
+    // Engine-owned builtins stay in `default`. Other implicit calls stay in
+    // this worker's namespace. An explicit request namespace always wins.
+    const namespace = invocationNamespace(request.namespace, this.namespace, function_id)
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     if (action?.type === 'void') {

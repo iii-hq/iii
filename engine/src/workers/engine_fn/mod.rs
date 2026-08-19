@@ -1376,6 +1376,15 @@ impl EngineFunctionsWorker {
 
         let runtime = input.runtime.unwrap_or_else(|| "unknown".to_string());
 
+        // A CLI command connects only long enough to do its work, so it cannot
+        // wait for a heartbeat to report itself. It marks the name it registers
+        // with, and the engine counts it for the next heartbeat instead.
+        if let Some(command) = input.name.as_deref().and_then(|name| {
+            name.strip_prefix(crate::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX)
+        }) {
+            crate::workers::telemetry::collector::track_cli_command(command);
+        }
+
         self.engine.worker_registry.update_worker_metadata(
             &worker_id,
             runtime,

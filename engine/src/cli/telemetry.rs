@@ -17,7 +17,7 @@ use iii::workers::telemetry::amplitude::{
 };
 use iii::workers::telemetry::environment;
 
-fn is_telemetry_disabled() -> bool {
+pub(crate) fn is_telemetry_disabled() -> bool {
     if let Ok(val) = std::env::var("III_TELEMETRY_ENABLED")
         && (val == "false" || val == "0")
     {
@@ -105,12 +105,6 @@ fn send_fire_and_forget(event: AmplitudeEvent) {
     });
 }
 
-fn send_fire_and_forget_with_timeout(event: AmplitudeEvent, timeout: std::time::Duration) {
-    tokio::spawn(async move {
-        let _ = tokio::time::timeout(timeout, send_direct(event)).await;
-    });
-}
-
 pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_json::Value) {
     let install_method = properties
         .get("install_method")
@@ -122,26 +116,20 @@ pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_js
     }
 }
 
-fn build_cli_usage_event(command_path: &str) -> Option<AmplitudeEvent> {
-    let normalized = command_path.trim();
-    if normalized.is_empty() {
-        return None;
+/// Counts a CLI invocation for the next engine heartbeat to report in
+/// aggregate, replacing the former per-invocation `cli_command_invoked` event.
+/// One heartbeat property now covers what used to be one event per command, and
+/// the CLI no longer makes a network call on every invocation.
+///
+/// The counter is in-process, so this call reaches a heartbeat only for `serve`,
+/// where the CLI process *is* the engine. Commands that connect to a running
+/// engine are counted engine-side from the name they register with; see
+/// [`iii::workers::telemetry::collector::track_cli_command`].
+pub fn record_cli_usage(command_path: &str) {
+    if is_telemetry_disabled() {
+        return;
     }
-    build_event(
-        "cli_command_invoked",
-        serde_json::json!({
-            "command": "iii",
-            "command_path": normalized,
-            "install_method": environment::detect_install_method(),
-        }),
-        None,
-    )
-}
-
-pub fn send_cli_usage(command_path: &str) {
-    if let Some(event) = build_cli_usage_event(command_path) {
-        send_fire_and_forget_with_timeout(event, std::time::Duration::from_secs(3));
-    }
+    iii::workers::telemetry::collector::track_cli_command(command_path);
 }
 
 pub fn send_cli_update_started(target_binary: &str, from_version: &str) {
@@ -318,20 +306,38 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_build_cli_usage_event_uses_sanitized_command_path() {
+    fn test_record_cli_usage_accumulates_for_the_next_heartbeat() {
+        use iii::workers::telemetry::collector::take_cli_commands;
         clear_opt_out_vars();
-        let event = build_cli_usage_event("project init").expect("event");
-        assert_eq!(event.event_type, "cli_command_invoked");
-        assert_eq!(event.event_properties["command"], "iii");
-        assert_eq!(event.event_properties["command_path"], "project init");
-        assert!(event.event_properties.get("install_method").is_some());
+        take_cli_commands();
+
+        record_cli_usage("project init");
+        record_cli_usage("trigger");
+        record_cli_usage("trigger");
+        record_cli_usage("   ");
+
+        let counts = take_cli_commands();
+        assert_eq!(counts.get("project init"), Some(&1));
+        assert_eq!(counts.get("trigger"), Some(&2));
+        assert_eq!(counts.len(), 2, "an empty command path records nothing");
     }
 
     #[test]
     #[serial]
-    fn test_build_cli_usage_event_ignores_empty_command_path() {
+    fn test_record_cli_usage_records_nothing_when_opted_out() {
+        use iii::workers::telemetry::collector::take_cli_commands;
         clear_opt_out_vars();
-        assert!(build_cli_usage_event("   ").is_none());
+        take_cli_commands();
+        unsafe {
+            std::env::set_var("III_TELEMETRY_ENABLED", "false");
+        }
+
+        record_cli_usage("trigger");
+        assert!(take_cli_commands().is_empty());
+
+        unsafe {
+            std::env::remove_var("III_TELEMETRY_ENABLED");
+        }
     }
 
     #[test]

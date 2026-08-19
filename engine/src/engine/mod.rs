@@ -698,7 +698,7 @@ impl Engine {
         match self.resolve_function(namespace, function_id) {
             Ok(function) => {
                 if !crate::workers::telemetry::is_iii_builtin_function_id(function_id) {
-                    crate::workers::telemetry::collector::notify_user_function_invoked();
+                    crate::workers::telemetry::collector::mark_user_function_invoked();
                 }
 
                 if let Some(invocation_id) = invocation_id {
@@ -3052,10 +3052,10 @@ impl Engine {
 impl EngineTrait for Engine {
     /// Internal call path used by hooks, middleware, and fire_triggers — not direct
     /// user invocations over WebSocket. We intentionally skip
-    /// `notify_user_function_invoked` here because this path serves engine
-    /// orchestration; the boot-heartbeat wakeup should only fire for actual
-    /// user-initiated invocations arriving via `remember_invocation` and not
-    /// things the engine can fire itself without user involvement, such as cron.
+    /// `mark_user_function_invoked` here because this path serves engine
+    /// orchestration; the heartbeat should only count actual user-initiated
+    /// invocations arriving via `remember_invocation` and not things the engine
+    /// can fire itself without user involvement, such as cron.
     ///
     /// `namespace` is the namespace the target function is resolved in. Hooks
     /// and middleware pass [`DEFAULT_NAMESPACE`] (via `call_with_metadata`);

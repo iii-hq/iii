@@ -83,6 +83,31 @@ describe('namespace inheritance', () => {
     expect(call).toMatchObject({ namespace: 'orders' })
   })
 
+  it('keeps an implicit engine invocation in default', async () => {
+    await connect('orders')
+    void sdk.trigger({
+      function_id: 'engine::channels::create',
+      payload: {},
+      action: { type: 'void' },
+    })
+
+    const call = engine.findAllSent('invokefunction').find((f) => f.function_id === 'engine::channels::create')
+    expect(call).toMatchObject({ namespace: 'default' })
+  })
+
+  it('lets an explicit namespace win for an engine invocation', async () => {
+    await connect('orders')
+    void sdk.trigger({
+      function_id: 'engine::channels::create',
+      payload: {},
+      action: { type: 'void' },
+      namespace: 'sandbox',
+    })
+
+    const call = engine.findAllSent('invokefunction').find((f) => f.function_id === 'engine::channels::create')
+    expect(call).toMatchObject({ namespace: 'sandbox' })
+  })
+
   /**
    * The regression the Node SDK hit when it adopted this rule.
    *

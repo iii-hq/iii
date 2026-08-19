@@ -4,11 +4,27 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+use iii::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{Error, InitOptions, register_worker};
 use serde_json::Value;
 
 use super::TriggerCliError;
+
+/// Metadata for the trigger connection. Registering under a marked name is how
+/// the engine counts this command in the heartbeat's CLI aggregate: the CLI
+/// process is too short-lived to report anything itself, and the connection it
+/// already opens carries the name.
+///
+/// Returns `None` when this CLI has opted out of telemetry. The engine counts
+/// whatever name it receives, so marking it regardless would let an engine with
+/// telemetry enabled record commands from a CLI that opted out.
+fn cli_worker_metadata() -> Option<iii_sdk::iii::WorkerMetadata> {
+    (!crate::cli::telemetry::is_telemetry_disabled()).then(|| iii_sdk::iii::WorkerMetadata {
+        name: format!("{CLI_WORKER_NAME_PREFIX}trigger"),
+        ..Default::default()
+    })
+}
 
 pub async fn invoke(
     function_path: &str,
@@ -19,7 +35,13 @@ pub async fn invoke(
     namespace: Option<&str>,
 ) -> Result<(), TriggerCliError> {
     let url = format!("ws://{}:{}", address, port);
-    let iii = register_worker(&url, InitOptions::default());
+    let iii = register_worker(
+        &url,
+        InitOptions {
+            metadata: cli_worker_metadata(),
+            ..Default::default()
+        },
+    );
 
     let request = TriggerRequest {
         function_id: function_path.to_string(),
@@ -77,5 +99,49 @@ fn map_trigger_error(e: Error) -> anyhow::Error {
         ),
         Error::WebSocket(msg) => anyhow::anyhow!("WebSocket error: {}", msg),
         other => anyhow::Error::new(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iii::workers::telemetry::environment::CI_ENV_VARS;
+    use serial_test::serial;
+
+    /// Runs `body` with the process looking like a developer machine whose
+    /// telemetry setting is `enabled`. `temp_env` restores every variable on the
+    /// way out, including on a panic.
+    ///
+    /// The whole CI set has to be cleared, not just `CI`: `is_telemetry_disabled`
+    /// treats any CI marker as an opt-out and `III_TELEMETRY_ENABLED=true` does
+    /// not override it, so clearing one variable passes locally and fails on a
+    /// runner that also sets `GITHUB_ACTIONS`. The list comes from the predicate's
+    /// own constant so the two cannot drift apart.
+    fn as_developer_machine(enabled: &str, body: impl FnOnce()) {
+        let mut vars = vec![
+            ("III_TELEMETRY_ENABLED", Some(enabled)),
+            ("III_TELEMETRY_DEV", None),
+        ];
+        vars.extend(CI_ENV_VARS.iter().map(|var| (*var, None)));
+        temp_env::with_vars(vars, body);
+    }
+
+    #[test]
+    #[serial]
+    fn cli_worker_metadata_marks_the_name_when_telemetry_is_enabled() {
+        as_developer_machine("true", || {
+            let metadata = cli_worker_metadata().expect("metadata when enabled");
+            assert_eq!(metadata.name, "iii-cli:trigger");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cli_worker_metadata_is_absent_when_the_cli_opted_out() {
+        // The engine counts whatever name it receives, so an opted-out CLI must
+        // not mark itself even when the target engine has telemetry enabled.
+        as_developer_machine("false", || {
+            assert!(cli_worker_metadata().is_none());
+        });
     }
 }

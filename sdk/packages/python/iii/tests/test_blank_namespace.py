@@ -86,3 +86,20 @@ class TestBlankCallNamespace:
     def test_an_explicit_one_still_wins(self) -> None:
         client = _client("orders")
         assert client._call_namespace("billing", "TriggerRequest.namespace") == "billing"
+
+
+class TestInvocationNamespace:
+    def test_an_implicit_engine_call_stays_in_default(self) -> None:
+        client = _client("orders")
+        assert client._invocation_namespace(None, "engine::channels::create") == "default"
+
+    def test_an_explicit_namespace_wins_for_an_engine_call(self) -> None:
+        client = _client("orders")
+        assert (
+            client._invocation_namespace("sandbox", "engine::channels::create")
+            == "sandbox"
+        )
+
+    def test_a_non_engine_call_inherits_the_worker_namespace(self) -> None:
+        client = _client("orders")
+        assert client._invocation_namespace(None, "router::chat") == "orders"
