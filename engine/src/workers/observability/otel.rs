@@ -13,7 +13,9 @@
 //! - `otlp`: Export traces to an OTLP collector via gRPC
 //! - `memory`: Store traces in memory for API querying
 
-use super::config::{LogsExporterType, ObservabilityWorkerConfig, OtelExporterType};
+use super::config::{
+    LogsExporterType, ObservabilityWorkerConfig, OtelExporterType, TraceStorageConfig,
+};
 use super::otlp_exporter::build_span_exporter;
 use super::sampler::AdvancedSampler;
 use opentelemetry::propagation::{TextMapCompositePropagator, TextMapPropagator};
@@ -28,9 +30,10 @@ use opentelemetry_sdk::{
     trace::{RandomIdGenerator, Sampler, SdkTracerProvider, SpanData, SpanExporter, SpanProcessor},
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -41,6 +44,7 @@ use tracing_subscriber::registry::LookupSpan;
 
 /// Default maximum number of spans to keep in memory.
 const DEFAULT_MEMORY_MAX_SPANS: usize = 1000;
+const DEFAULT_MEMORY_MAX_BYTES: u64 = 268_435_456;
 
 /// Global OTEL configuration. Seeded from YAML config (or the persisted
 /// configuration entry) at boot, and swappable at runtime by the
@@ -145,6 +149,8 @@ pub struct OtelConfig {
     pub sampling_ratio: f64,
     /// Maximum spans to keep in memory. Used for Memory and Both exporters.
     pub memory_max_spans: usize,
+    /// Durable trace storage configuration.
+    pub trace_storage: Option<TraceStorageConfig>,
     /// Mirror spans into the in-memory store at start as `pending` snapshots
     /// (`LiveSpanProcessor`), so live trace views show in-progress work.
     /// Resolved by [`resolve_live_spans`]: on by default for the Memory
@@ -243,6 +249,7 @@ impl Default for OtelConfig {
             .unwrap_or(DEFAULT_MEMORY_MAX_SPANS);
 
         let live_spans = resolve_live_spans(global_cfg.and_then(|c| c.live_spans), &exporter);
+        let trace_storage = global_cfg.and_then(|c| c.trace_storage.clone());
 
         Self {
             enabled,
@@ -253,6 +260,7 @@ impl Default for OtelConfig {
             endpoint,
             sampling_ratio,
             memory_max_spans,
+            trace_storage,
             live_spans,
         }
     }
@@ -346,7 +354,7 @@ fn build_sampler(config: &OtelConfig) -> Sampler {
 }
 
 /// Serializable representation of a span event (log entry).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSpanEvent {
     pub name: String,
     pub timestamp_unix_nano: u64,
@@ -354,7 +362,7 @@ pub struct StoredSpanEvent {
 }
 
 /// Serializable representation of a span link for API responses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSpanLink {
     pub trace_id: String,
     pub span_id: String,
@@ -363,7 +371,7 @@ pub struct StoredSpanLink {
 }
 
 /// Serializable representation of a span for API responses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSpan {
     pub trace_id: String,
     pub span_id: String,
@@ -531,12 +539,59 @@ pub fn now_unix_nanos() -> u64 {
         .as_nanos() as u64
 }
 
+fn approx_span_size(span: &StoredSpan) -> u64 {
+    serde_json::to_vec(span)
+        .map(|payload| payload.len() as u64)
+        .unwrap_or(0)
+}
+
+fn sensitive_attribute_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "api-key"
+            | "api_key"
+            | "access_token"
+            | "refresh_token"
+            | "password"
+            | "secret"
+            | "credential"
+    )
+}
+
+fn sanitize_attributes(attributes: &mut [(String, String)]) {
+    for (key, value) in attributes {
+        if sensitive_attribute_key(key) {
+            *value = "[REDACTED]".to_string();
+        }
+    }
+}
+
+fn sanitize_span(span: &mut StoredSpan) {
+    sanitize_attributes(&mut span.attributes);
+    for event in &mut span.events {
+        sanitize_attributes(&mut event.attributes);
+    }
+    for link in &mut span.links {
+        sanitize_attributes(&mut link.attributes);
+    }
+}
+
 /// In-memory span storage with circular buffer and broadcast channel.
 pub struct InMemorySpanStorage {
     spans: RwLock<VecDeque<StoredSpan>>,
     /// Capacity limit. Atomic so the configuration-worker apply path can
     /// retune it at runtime; enforcement happens on every insert.
     max_spans: std::sync::atomic::AtomicUsize,
+    /// Byte limit for the hot cache. `memory_max_spans` remains as a
+    /// compatibility guard, but bytes are the primary RSS protection.
+    max_bytes: AtomicU64,
+    low_watermark_ratio: AtomicU64,
+    hot_bytes: AtomicU64,
     /// Secondary index: trace_id -> set of span indices for O(1) trace lookups
     spans_by_trace_id: RwLock<HashMap<String, HashSet<usize>>>,
     /// `(trace_id, span_id)` pairs currently stored as pending (live
@@ -547,6 +602,8 @@ pub struct InMemorySpanStorage {
     /// O(1) when no pending predecessor exists. Lock order everywhere:
     /// `spans` → `spans_by_trace_id` → this.
     pending_span_ids: RwLock<HashSet<(String, String)>>,
+    /// Finalized spans waiting for the asynchronous disk writer.
+    dirty_span_ids: RwLock<HashSet<(String, String)>>,
     /// Broadcast of every span as it lands, driving the `trace` trigger
     /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
@@ -559,26 +616,58 @@ fn evict_to_capacity(
     spans: &mut VecDeque<StoredSpan>,
     index: &mut HashMap<String, HashSet<usize>>,
     pending: &mut HashSet<(String, String)>,
+    dirty: &mut HashSet<(String, String)>,
     max_spans: usize,
+    max_bytes: u64,
+    low_watermark_ratio: f64,
+    incoming_bytes: u64,
+    hot_bytes: &AtomicU64,
 ) {
-    // Loop converges after a shrink
+    let archive = get_trace_disk_storage();
+    let protect_pending = archive.is_some();
+    let protect_dirty = archive.as_ref().is_some_and(|store| !store.is_degraded());
+    let current = hot_bytes.load(Ordering::Relaxed);
+    let byte_pressure = max_bytes > 0 && current.saturating_add(incoming_bytes) > max_bytes;
+    let byte_target = if byte_pressure {
+        ((max_bytes as f64) * low_watermark_ratio.clamp(0.5, 0.95)) as u64
+    } else {
+        max_bytes
+    };
+
+    // Loop converges after a shrink. Pending snapshots and finalized spans
+    // that have not reached SQLite are protected. If every resident span is
+    // protected, retaining correctness wins over forcing the hot cache below
+    // its configured limit; the archive health surface reports the eventual
+    // write failure instead of silently losing data.
     while spans.len() >= max_spans
-        && let Some(old) = spans.pop_front()
+        || (max_bytes > 0
+            && hot_bytes
+                .load(Ordering::Relaxed)
+                .saturating_add(incoming_bytes)
+                > byte_target)
     {
+        let Some(index_to_remove) = spans.iter().position(|old| {
+            let key = (old.trace_id.clone(), old.span_id.clone());
+            (!protect_pending || !pending.contains(&key))
+                && (!protect_dirty || !dirty.contains(&key))
+        }) else {
+            break;
+        };
+        let Some(old) = spans.remove(index_to_remove) else {
+            break;
+        };
         pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
-        // Remove from index and shift all indices down
-        if let Some(set) = index.get_mut(&old.trace_id) {
-            set.remove(&0);
-            *set = set.iter().filter_map(|&i| i.checked_sub(1)).collect();
-            if set.is_empty() {
-                index.remove(&old.trace_id);
-            }
+        let was_dirty = dirty.remove(&(old.trace_id.clone(), old.span_id.clone()));
+        if was_dirty
+            && let Some(archive) = &archive
+            && archive.is_degraded()
+        {
+            archive.record_dropped_spans(1);
         }
-        // Also shift indices for all other trace_ids
-        for (trace_id, set) in index.iter_mut() {
-            if trace_id != &old.trace_id {
-                *set = set.iter().filter_map(|&i| i.checked_sub(1)).collect();
-            }
+        hot_bytes.fetch_sub(approx_span_size(&old), Ordering::Relaxed);
+        index.clear();
+        for (idx, span) in spans.iter().enumerate() {
+            index.entry(span.trace_id.clone()).or_default().insert(idx);
         }
     }
 }
@@ -598,12 +687,30 @@ impl std::fmt::Debug for InMemorySpanStorage {
 
 impl InMemorySpanStorage {
     pub fn new(max_spans: usize) -> Self {
+        Self::new_with_limits(max_spans, DEFAULT_MEMORY_MAX_BYTES)
+    }
+
+    pub fn new_with_limits(max_spans: usize, max_bytes: u64) -> Self {
+        Self::new_with_limits_and_watermark(max_spans, max_bytes, 0.75)
+    }
+
+    pub fn new_with_limits_and_watermark(
+        max_spans: usize,
+        max_bytes: u64,
+        low_watermark_ratio: f64,
+    ) -> Self {
         let (tx, _) = broadcast::channel(1024);
         Self {
-            spans: RwLock::new(VecDeque::with_capacity(max_spans)),
+            // Do not reserve the configured span count up front: legacy
+            // configurations can contain very large values.
+            spans: RwLock::new(VecDeque::new()),
             max_spans: std::sync::atomic::AtomicUsize::new(max_spans),
+            max_bytes: AtomicU64::new(max_bytes),
+            low_watermark_ratio: AtomicU64::new(low_watermark_ratio.clamp(0.5, 0.95).to_bits()),
+            hot_bytes: AtomicU64::new(0),
             spans_by_trace_id: RwLock::new(HashMap::new()),
             pending_span_ids: RwLock::new(HashSet::new()),
+            dirty_span_ids: RwLock::new(HashSet::new()),
             tx,
         }
     }
@@ -619,27 +726,100 @@ impl InMemorySpanStorage {
         if spans.len() > max {
             let mut index = self.spans_by_trace_id.write().unwrap();
             let mut pending = self.pending_span_ids.write().unwrap();
-            let excess = spans.len() - max;
-            for old in spans.drain(..excess) {
-                pending.remove(&(old.trace_id, old.span_id));
+            let mut dirty = self.dirty_span_ids.write().unwrap();
+            let archive = get_trace_disk_storage();
+            let protect_pending = archive.is_some();
+            let protect_dirty = archive.as_ref().is_some_and(|store| !store.is_degraded());
+            while spans.len() > max {
+                let Some(index_to_remove) = spans.iter().position(|old| {
+                    let key = (old.trace_id.clone(), old.span_id.clone());
+                    (!protect_pending || !pending.contains(&key))
+                        && (!protect_dirty || !dirty.contains(&key))
+                }) else {
+                    break;
+                };
+                let Some(old) = spans.remove(index_to_remove) else {
+                    break;
+                };
+                pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
+                let was_dirty = dirty.remove(&(old.trace_id, old.span_id));
+                if was_dirty
+                    && let Some(archive) = &archive
+                    && archive.is_degraded()
+                {
+                    archive.record_dropped_spans(1);
+                }
             }
             index.clear();
             for (idx, span) in spans.iter().enumerate() {
                 index.entry(span.trace_id.clone()).or_default().insert(idx);
             }
+            self.hot_bytes
+                .store(spans.iter().map(approx_span_size).sum(), Ordering::Relaxed);
         }
+    }
+
+    pub fn set_max_bytes(&self, max: u64) {
+        self.max_bytes.store(max, Ordering::Relaxed);
+        let mut spans = self.spans.write().unwrap();
+        let mut index = self.spans_by_trace_id.write().unwrap();
+        let mut pending = self.pending_span_ids.write().unwrap();
+        let mut dirty = self.dirty_span_ids.write().unwrap();
+        let archive = get_trace_disk_storage();
+        let protect_pending = archive.is_some();
+        let protect_dirty = archive.as_ref().is_some_and(|store| !store.is_degraded());
+        let mut current = self.hot_bytes.load(Ordering::Relaxed);
+        let target = ((max as f64) * self.low_watermark_ratio()).round() as u64;
+        while current > target {
+            let Some(index_to_remove) = spans.iter().position(|old| {
+                let key = (old.trace_id.clone(), old.span_id.clone());
+                (!protect_pending || !pending.contains(&key))
+                    && (!protect_dirty || !dirty.contains(&key))
+            }) else {
+                break;
+            };
+            let Some(old) = spans.remove(index_to_remove) else {
+                break;
+            };
+            pending.remove(&(old.trace_id.clone(), old.span_id.clone()));
+            let was_dirty = dirty.remove(&(old.trace_id.clone(), old.span_id.clone()));
+            if was_dirty
+                && let Some(archive) = &archive
+                && archive.is_degraded()
+            {
+                archive.record_dropped_spans(1);
+            }
+            current = current.saturating_sub(approx_span_size(&old));
+        }
+        index.clear();
+        for (idx, span) in spans.iter().enumerate() {
+            index.entry(span.trace_id.clone()).or_default().insert(idx);
+        }
+        self.hot_bytes.store(current, Ordering::Relaxed);
+    }
+
+    pub fn set_low_watermark_ratio(&self, ratio: f64) {
+        self.low_watermark_ratio
+            .store(ratio.clamp(0.5, 0.95).to_bits(), Ordering::Relaxed);
+    }
+
+    fn low_watermark_ratio(&self) -> f64 {
+        f64::from_bits(self.low_watermark_ratio.load(Ordering::Relaxed))
     }
 
     pub fn add_spans(&self, new_spans: Vec<StoredSpan>) {
         let mut spans = self.spans.write().unwrap();
         let mut index = self.spans_by_trace_id.write().unwrap();
         let mut pending = self.pending_span_ids.write().unwrap();
+        let mut dirty = self.dirty_span_ids.write().unwrap();
 
         let max_spans = self
             .max_spans
             .load(std::sync::atomic::Ordering::Relaxed)
             .max(1);
-        for span in new_spans {
+        for mut span in new_spans {
+            sanitize_span(&mut span);
+            let incoming_bytes = approx_span_size(&span);
             // A final span replacing its live (pending) snapshot overwrites in
             // place: same idx, same trace_id, so neither index changes. Keys
             // are `(trace_id, span_id)` — span ids are only unique within a
@@ -659,13 +839,31 @@ impl InMemorySpanStorage {
                     .find(|s| s.span_id == span.span_id && s.trace_id == span.trace_id)
             {
                 let _ = self.tx.send(span.clone());
+                self.hot_bytes
+                    .fetch_sub(approx_span_size(slot), Ordering::Relaxed);
+                let key = (span.trace_id.clone(), span.span_id.clone());
                 *slot = span;
+                self.hot_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
+                dirty.insert(key);
+                if let Some(archive) = get_trace_disk_storage() {
+                    archive.notify();
+                }
                 continue;
             }
             // A tracked pending whose slot was already evicted falls through
             // and appends as a fresh span.
 
-            evict_to_capacity(&mut spans, &mut index, &mut pending, max_spans);
+            evict_to_capacity(
+                &mut spans,
+                &mut index,
+                &mut pending,
+                &mut dirty,
+                max_spans,
+                self.max_bytes.load(Ordering::Relaxed),
+                self.low_watermark_ratio(),
+                incoming_bytes,
+                &self.hot_bytes,
+            );
 
             let idx = spans.len();
             let trace_id = span.trace_id.clone();
@@ -676,8 +874,14 @@ impl InMemorySpanStorage {
             // in-memory exporter, and the tee exporter all funnel through here).
             let _ = self.tx.send(span.clone());
 
+            let key = (span.trace_id.clone(), span.span_id.clone());
             spans.push_back(span);
+            self.hot_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
+            dirty.insert(key);
             index.entry(trace_id).or_default().insert(idx);
+            if let Some(archive) = get_trace_disk_storage() {
+                archive.notify();
+            }
         }
     }
 
@@ -688,21 +892,36 @@ impl InMemorySpanStorage {
     /// streams fed from it — the OTLP export path never sees them.
     pub fn add_pending_span(&self, span: StoredSpan) {
         debug_assert!(span.pending && span.end_time_unix_nano == 0);
+        let mut span = span;
+        sanitize_span(&mut span);
+        let incoming_bytes = approx_span_size(&span);
         let mut spans = self.spans.write().unwrap();
         let mut index = self.spans_by_trace_id.write().unwrap();
         let mut pending = self.pending_span_ids.write().unwrap();
+        let mut dirty = self.dirty_span_ids.write().unwrap();
 
         let max_spans = self
             .max_spans
             .load(std::sync::atomic::Ordering::Relaxed)
             .max(1);
-        evict_to_capacity(&mut spans, &mut index, &mut pending, max_spans);
+        evict_to_capacity(
+            &mut spans,
+            &mut index,
+            &mut pending,
+            &mut dirty,
+            max_spans,
+            self.max_bytes.load(Ordering::Relaxed),
+            self.low_watermark_ratio(),
+            incoming_bytes,
+            &self.hot_bytes,
+        );
 
         let idx = spans.len();
         let trace_id = span.trace_id.clone();
         pending.insert((trace_id.clone(), span.span_id.clone()));
         let _ = self.tx.send(span.clone());
         spans.push_back(span);
+        self.hot_bytes.fetch_add(incoming_bytes, Ordering::Relaxed);
         index.entry(trace_id).or_default().insert(idx);
     }
 
@@ -727,9 +946,12 @@ impl InMemorySpanStorage {
         let mut spans = self.spans.write().unwrap();
         let mut index = self.spans_by_trace_id.write().unwrap();
         let mut pending = self.pending_span_ids.write().unwrap();
+        let mut dirty = self.dirty_span_ids.write().unwrap();
         spans.clear();
         index.clear();
         pending.clear();
+        dirty.clear();
+        self.hot_bytes.store(0, Ordering::Relaxed);
     }
 
     /// Subscribe to a broadcast of every span as it lands in storage. Drives
@@ -744,6 +966,81 @@ impl InMemorySpanStorage {
 
     pub fn is_empty(&self) -> bool {
         self.spans.read().unwrap().is_empty()
+    }
+
+    pub fn hot_bytes(&self) -> u64 {
+        self.hot_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot dirty spans without removing them. The writer acknowledges
+    /// them only after a committed SQLite transaction.
+    pub fn dirty_spans(&self, limit: usize, max_bytes: u64) -> Vec<StoredSpan> {
+        let spans = self.spans.read().unwrap();
+        let dirty = self.dirty_span_ids.read().unwrap();
+        let mut bytes = 0u64;
+        let mut result = Vec::new();
+        for span in spans.iter() {
+            if !dirty.contains(&(span.trace_id.clone(), span.span_id.clone())) {
+                continue;
+            }
+            let span_bytes = approx_span_size(span);
+            if !result.is_empty()
+                && (result.len() >= limit || bytes.saturating_add(span_bytes) > max_bytes)
+            {
+                break;
+            }
+            bytes = bytes.saturating_add(span_bytes);
+            result.push(span.clone());
+        }
+        result
+    }
+
+    pub fn mark_durable(&self, keys: &[(String, String)]) {
+        let mut dirty = self.dirty_span_ids.write().unwrap();
+        for key in keys {
+            dirty.remove(key);
+        }
+    }
+
+    pub fn pending_trace_ids(&self) -> HashSet<String> {
+        self.pending_span_ids
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(trace_id, _)| trace_id.clone())
+            .collect()
+    }
+
+    /// Remove live snapshots that never received a final span. These records
+    /// are intentionally not written to the durable archive, but they must
+    /// not pin the hot cache forever when a worker crashes or a producer
+    /// abandons a span.
+    pub fn expire_pending(&self, max_age_seconds: u64) -> usize {
+        if max_age_seconds == 0 {
+            return 0;
+        }
+        let cutoff = now_unix_nanos().saturating_sub(max_age_seconds.saturating_mul(1_000_000_000));
+        let mut spans = self.spans.write().unwrap();
+        let mut index = self.spans_by_trace_id.write().unwrap();
+        let mut pending = self.pending_span_ids.write().unwrap();
+        let mut removed = 0;
+        spans.retain(|span| {
+            let expired = span.pending && span.start_time_unix_nano < cutoff;
+            if expired {
+                pending.remove(&(span.trace_id.clone(), span.span_id.clone()));
+                removed += 1;
+            }
+            !expired
+        });
+        if removed > 0 {
+            index.clear();
+            for (idx, span) in spans.iter().enumerate() {
+                index.entry(span.trace_id.clone()).or_default().insert(idx);
+            }
+            self.hot_bytes
+                .store(spans.iter().map(approx_span_size).sum(), Ordering::Relaxed);
+        }
+        removed
     }
 
     /// Calculate performance metrics (duration statistics) from stored spans.
@@ -799,9 +1096,184 @@ impl InMemorySpanStorage {
 /// Global in-memory span storage.
 static IN_MEMORY_STORAGE: OnceLock<Arc<InMemorySpanStorage>> = OnceLock::new();
 
+/// The optional durable archive. It is replaceable so test workers and
+/// restart-tier configuration changes do not inherit a stale path.
+static TRACE_DISK_STORAGE: RwLock<Option<Arc<super::trace_store::TraceDiskStore>>> =
+    RwLock::new(None);
+static TRACE_STORAGE_INIT_ERROR: RwLock<Option<String>> = RwLock::new(None);
+
+/// Configure the durable trace archive. Archive failures are intentionally
+/// non-fatal: the realtime hot store remains available and health reports the
+/// failure to callers.
+pub fn configure_trace_storage(config: Option<TraceStorageConfig>) {
+    let mut init_error = None;
+    let next = config
+        .filter(|cfg| cfg.enabled)
+        .and_then(|cfg| match super::trace_store::TraceDiskStore::open(&cfg) {
+            Ok(store) => Some(store),
+            Err(error) => {
+                init_error = Some(error.clone());
+                tracing::error!(error = %error, "trace disk storage disabled after initialization failure");
+                None
+            }
+        });
+    *TRACE_STORAGE_INIT_ERROR
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = init_error;
+    let previous = {
+        let mut guard = TRACE_DISK_STORAGE
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::replace(&mut *guard, next)
+    };
+    if let Some(previous) = previous {
+        previous.shutdown();
+    }
+}
+
+pub fn get_trace_disk_storage() -> Option<Arc<super::trace_store::TraceDiskStore>> {
+    TRACE_DISK_STORAGE
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+pub fn attach_trace_disk_storage(storage: &Arc<InMemorySpanStorage>) {
+    if let Some(archive) = get_trace_disk_storage() {
+        archive.attach_hot_storage(storage);
+    }
+}
+
+pub fn trace_storage_status() -> super::trace_store::TraceStorageStatus {
+    if let Some(storage) = get_trace_disk_storage() {
+        return storage.status();
+    }
+    let init_error = TRACE_STORAGE_INIT_ERROR
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    super::trace_store::TraceStorageStatus {
+        archive: if init_error.is_some() {
+            "degraded".to_string()
+        } else {
+            "disabled".to_string()
+        },
+        completeness: if init_error.is_some() {
+            "unknown".to_string()
+        } else {
+            "complete".to_string()
+        },
+        last_error: init_error,
+        ..Default::default()
+    }
+}
+
 /// Get the global in-memory span storage (if initialized).
 pub fn get_span_storage() -> Option<Arc<InMemorySpanStorage>> {
     IN_MEMORY_STORAGE.get().cloned()
+}
+
+/// Return the merged query view. Cold rows are loaded first and hot rows win
+/// by `(trace_id, span_id)`, which keeps pending and not-yet-committed finals
+/// visible without duplicating the durable version.
+pub fn get_query_spans() -> Vec<StoredSpan> {
+    let mut merged = HashMap::<(String, String), StoredSpan>::new();
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.get_spans() {
+            Ok(spans) => {
+                for span in spans {
+                    merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+                }
+            }
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+    if let Some(storage) = get_span_storage() {
+        for span in storage.get_spans() {
+            merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        }
+    }
+    merged.into_values().collect()
+}
+
+/// Return only trace roots for the default list view. The archive query is
+/// indexed and bounded by the number of traces, rather than materializing all
+/// historical child spans in the request process. Explicit trace queries and
+/// search/group operations still use the full trace path where their semantics
+/// require child spans.
+pub fn get_query_root_spans() -> Vec<StoredSpan> {
+    let mut merged = HashMap::<(String, String), StoredSpan>::new();
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.get_root_spans() {
+            Ok(spans) => {
+                for span in spans {
+                    merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+                }
+            }
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+    if let Some(storage) = get_span_storage() {
+        for span in storage.get_spans() {
+            merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        }
+    }
+
+    // A durable root can temporarily have a parent in the hot cache while the
+    // trace is still completing. Reapply the same dangling-parent rule used
+    // by the existing list implementation after overlaying hot rows.
+    let present_span_ids: HashSet<String> =
+        merged.values().map(|span| span.span_id.clone()).collect();
+    merged
+        .into_values()
+        .filter(|span| {
+            span.parent_span_id
+                .as_ref()
+                .is_none_or(|parent| !present_span_ids.contains(parent))
+        })
+        .collect()
+}
+
+pub fn get_query_spans_by_trace_id(trace_id: &str) -> Vec<StoredSpan> {
+    let mut merged = HashMap::<(String, String), StoredSpan>::new();
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.get_spans_by_trace_id(trace_id) {
+            Ok(spans) => {
+                for span in spans {
+                    merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+                }
+            }
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+    if let Some(storage) = get_span_storage() {
+        for span in storage.get_spans_by_trace_id(trace_id) {
+            merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        }
+    }
+    merged.into_values().collect()
+}
+
+pub fn get_query_spans_by_attribute(attribute: &str) -> Vec<StoredSpan> {
+    let mut merged = HashMap::<(String, String), StoredSpan>::new();
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.get_spans_by_attribute(attribute) {
+            Ok(spans) => {
+                for span in spans {
+                    merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+                }
+            }
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+    if let Some(storage) = get_span_storage() {
+        for span in storage.get_spans() {
+            if span.attributes.iter().any(|(key, _)| key == attribute) {
+                merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+            }
+        }
+    }
+    merged.into_values().collect()
 }
 
 /// In-memory span exporter that stores spans in a circular buffer.
@@ -1139,6 +1611,8 @@ where
         return None;
     }
 
+    configure_trace_storage(config.trace_storage.clone());
+
     // Set global propagator for W3C trace-context and baggage
     global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
         Box::new(TraceContextPropagator::new()),
@@ -1190,7 +1664,20 @@ where
 
                     // Initialize in-memory storage for SDK span ingestion (API access)
                     let memory_storage =
-                        Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
+                        Arc::new(InMemorySpanStorage::new_with_limits_and_watermark(
+                            config.memory_max_spans,
+                            config
+                                .trace_storage
+                                .as_ref()
+                                .map(|storage| storage.memory_max_bytes)
+                                .unwrap_or(DEFAULT_MEMORY_MAX_BYTES),
+                            config
+                                .trace_storage
+                                .as_ref()
+                                .map(|storage| storage.memory_low_watermark_ratio)
+                                .unwrap_or(0.75),
+                        ));
+                    attach_trace_disk_storage(&memory_storage);
                     let _ = IN_MEMORY_STORAGE.set(memory_storage);
 
                     // No LiveSpanProcessor here: in OTLP-only mode engine
@@ -1212,7 +1699,20 @@ where
                     );
                     // Fall back to memory-only mode
                     let memory_storage =
-                        Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
+                        Arc::new(InMemorySpanStorage::new_with_limits_and_watermark(
+                            config.memory_max_spans,
+                            config
+                                .trace_storage
+                                .as_ref()
+                                .map(|storage| storage.memory_max_bytes)
+                                .unwrap_or(DEFAULT_MEMORY_MAX_BYTES),
+                            config
+                                .trace_storage
+                                .as_ref()
+                                .map(|storage| storage.memory_low_watermark_ratio)
+                                .unwrap_or(0.75),
+                        ));
+                    attach_trace_disk_storage(&memory_storage);
                     if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
                         tracing::debug!("In-memory span storage already initialized");
                     }
@@ -1242,7 +1742,20 @@ where
             // `InMemorySpanExporter::new`) so the LiveSpanProcessor is
             // guaranteed to share the exact storage the exporter writes to,
             // even when the global slot was already taken by a prior init.
-            let memory_storage = Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
+            let memory_storage = Arc::new(InMemorySpanStorage::new_with_limits_and_watermark(
+                config.memory_max_spans,
+                config
+                    .trace_storage
+                    .as_ref()
+                    .map(|storage| storage.memory_max_bytes)
+                    .unwrap_or(DEFAULT_MEMORY_MAX_BYTES),
+                config
+                    .trace_storage
+                    .as_ref()
+                    .map(|storage| storage.memory_low_watermark_ratio)
+                    .unwrap_or(0.75),
+            ));
+            attach_trace_disk_storage(&memory_storage);
             if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
                 tracing::debug!("In-memory span storage already initialized");
             }
@@ -1270,7 +1783,20 @@ where
         }
         ExporterType::Both => {
             // Create memory storage first (always succeeds)
-            let memory_storage = Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
+            let memory_storage = Arc::new(InMemorySpanStorage::new_with_limits_and_watermark(
+                config.memory_max_spans,
+                config
+                    .trace_storage
+                    .as_ref()
+                    .map(|storage| storage.memory_max_bytes)
+                    .unwrap_or(DEFAULT_MEMORY_MAX_BYTES),
+                config
+                    .trace_storage
+                    .as_ref()
+                    .map(|storage| storage.memory_low_watermark_ratio)
+                    .unwrap_or(0.75),
+            ));
+            attach_trace_disk_storage(&memory_storage);
             if IN_MEMORY_STORAGE.set(memory_storage.clone()).is_err() {
                 tracing::debug!("In-memory span storage already initialized");
             }
@@ -1364,6 +1890,9 @@ where
 
 /// Shutdown OpenTelemetry, flushing any pending spans.
 pub fn shutdown_otel() {
+    if let Some(storage) = get_trace_disk_storage() {
+        storage.shutdown();
+    }
     if let Some(provider) = TRACER_PROVIDER.get()
         && let Err(e) = provider.shutdown()
     {
@@ -1540,8 +2069,6 @@ pub fn baggage_with_function_id(baggage: Option<&str>, function_id: &str) -> Opt
 // =============================================================================
 // OTLP JSON Ingestion from Node SDK
 // =============================================================================
-
-use serde::Deserialize;
 
 /// OTLP ExportTraceServiceRequest structure for JSON deserialization
 #[derive(Debug, Deserialize)]
@@ -5375,6 +5902,7 @@ mod tests {
             endpoint: "http://localhost:4317".to_string(),
             sampling_ratio: 1.0,
             memory_max_spans: 100,
+            trace_storage: None,
             live_spans: true,
         };
 
@@ -5394,6 +5922,7 @@ mod tests {
             endpoint: "http://localhost:4317".to_string(),
             sampling_ratio: 0.0,
             memory_max_spans: 100,
+            trace_storage: None,
             live_spans: true,
         };
 
@@ -5412,6 +5941,7 @@ mod tests {
             endpoint: "http://localhost:4317".to_string(),
             sampling_ratio: 0.5,
             memory_max_spans: 100,
+            trace_storage: None,
             live_spans: true,
         };
 

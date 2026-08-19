@@ -182,6 +182,97 @@ pub struct SpanCollapseRule {
     pub service: Option<String>,
 }
 
+/// Durable trace storage configuration.
+///
+/// The field is optional on the parent configuration deliberately: persisted
+/// configurations created before durable traces existed deserialize as `None`
+/// and remain memory-only. New installations get the default value from
+/// [`ObservabilityWorkerConfig::default`].
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TraceStorageConfig {
+    /// Whether completed spans should be persisted on disk.
+    #[serde(default = "default_trace_storage_enabled")]
+    pub enabled: bool,
+
+    /// Dedicated directory for the SQLite database and its WAL sidecars.
+    #[serde(default = "default_trace_storage_directory")]
+    pub directory: String,
+
+    /// Maximum physical bytes managed by the trace store directory.
+    #[serde(default = "default_trace_storage_max_disk_bytes")]
+    #[schemars(range(min = 67_108_864))]
+    pub max_disk_bytes: u64,
+
+    /// Age-based retention. Zero disables the age limit; the disk limit still
+    /// applies.
+    #[serde(default = "default_trace_storage_retention_seconds")]
+    pub retention_seconds: u64,
+
+    /// Approximate hot-cache byte limit.
+    #[serde(default = "default_trace_storage_memory_max_bytes")]
+    #[schemars(range(min = 16_777_216))]
+    pub memory_max_bytes: u64,
+
+    /// Fraction of the hot limit to retain after pressure eviction.
+    #[serde(default = "default_trace_storage_memory_low_watermark")]
+    #[schemars(range(min = 0.5, max = 0.95))]
+    pub memory_low_watermark_ratio: f64,
+
+    /// Maximum age for in-flight snapshots that never receive a final span.
+    #[serde(default = "default_trace_storage_pending_max_age_seconds")]
+    pub pending_max_age_seconds: u64,
+}
+
+const TRACE_STORAGE_DEFAULT_DIRECTORY: &str = "./data/observability/traces";
+const TRACE_STORAGE_DEFAULT_MAX_DISK_BYTES: u64 = 1_073_741_824;
+const TRACE_STORAGE_DEFAULT_RETENTION_SECONDS: u64 = 2_592_000;
+const TRACE_STORAGE_DEFAULT_MEMORY_MAX_BYTES: u64 = 268_435_456;
+const TRACE_STORAGE_DEFAULT_MEMORY_LOW_WATERMARK: f64 = 0.75;
+const TRACE_STORAGE_DEFAULT_PENDING_MAX_AGE_SECONDS: u64 = 3_600;
+
+fn default_trace_storage_enabled() -> bool {
+    true
+}
+
+fn default_trace_storage_directory() -> String {
+    TRACE_STORAGE_DEFAULT_DIRECTORY.to_string()
+}
+
+fn default_trace_storage_max_disk_bytes() -> u64 {
+    TRACE_STORAGE_DEFAULT_MAX_DISK_BYTES
+}
+
+fn default_trace_storage_retention_seconds() -> u64 {
+    TRACE_STORAGE_DEFAULT_RETENTION_SECONDS
+}
+
+fn default_trace_storage_memory_max_bytes() -> u64 {
+    TRACE_STORAGE_DEFAULT_MEMORY_MAX_BYTES
+}
+
+fn default_trace_storage_memory_low_watermark() -> f64 {
+    TRACE_STORAGE_DEFAULT_MEMORY_LOW_WATERMARK
+}
+
+fn default_trace_storage_pending_max_age_seconds() -> u64 {
+    TRACE_STORAGE_DEFAULT_PENDING_MAX_AGE_SECONDS
+}
+
+impl Default for TraceStorageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_trace_storage_enabled(),
+            directory: default_trace_storage_directory(),
+            max_disk_bytes: default_trace_storage_max_disk_bytes(),
+            retention_seconds: default_trace_storage_retention_seconds(),
+            memory_max_bytes: default_trace_storage_memory_max_bytes(),
+            memory_low_watermark_ratio: default_trace_storage_memory_low_watermark(),
+            pending_max_age_seconds: default_trace_storage_pending_max_age_seconds(),
+        }
+    }
+}
+
 /// Advanced sampling configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -254,6 +345,11 @@ pub struct ObservabilityWorkerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     pub memory_max_spans: Option<usize>,
+
+    /// Durable trace storage. `None` preserves legacy memory-only behavior;
+    /// fresh installations receive the enabled default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_storage: Option<TraceStorageConfig>,
 
     /// Mirror spans into the in-memory store at start as `pending` snapshots
     /// so live trace views show in-progress work. Defaults to on for the
@@ -358,6 +454,7 @@ impl Default for ObservabilityWorkerConfig {
             service_version: Some("${SERVICE_VERSION:__III_ENGINE_VERSION__}".to_string()),
             exporter: Some(OtelExporterType::Memory),
             memory_max_spans: Some(1_000_000),
+            trace_storage: Some(TraceStorageConfig::default()),
             metrics_enabled: Some(true),
             metrics_exporter: Some(MetricsExporterType::Memory),
             metrics_retention_seconds: Some(3600),
@@ -435,6 +532,19 @@ impl ObservabilityWorkerConfig {
             }
         }
         self.memory_max_spans = nonzero_usize(self.memory_max_spans);
+        if let Some(storage) = &mut self.trace_storage {
+            if storage.directory.trim().is_empty() {
+                storage.directory = default_trace_storage_directory();
+            }
+            if storage.max_disk_bytes < 67_108_864 {
+                storage.max_disk_bytes = default_trace_storage_max_disk_bytes();
+            }
+            if storage.memory_max_bytes < 16_777_216 {
+                storage.memory_max_bytes = default_trace_storage_memory_max_bytes();
+            }
+            storage.memory_low_watermark_ratio =
+                storage.memory_low_watermark_ratio.clamp(0.5, 0.95);
+        }
         self.metrics_max_count = nonzero_usize(self.metrics_max_count);
         self.metrics_retention_seconds = nonzero_u64(self.metrics_retention_seconds);
         self.logs_max_count = nonzero_usize(self.logs_max_count);

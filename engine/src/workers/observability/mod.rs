@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod otel;
 pub(crate) mod otlp_exporter;
 mod sampler;
+pub(crate) mod trace_store;
 
 pub mod config;
 
@@ -154,17 +155,21 @@ pub struct TracesListResult {
     pub total: usize,
     pub offset: usize,
     pub limit: usize,
+    /// Indicates whether the result includes complete durable history.
+    pub storage: Value,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TracesTreeResult {
     /// Root span-tree nodes (each a serialized, flattened span with nested children).
     pub roots: Vec<Value>,
+    pub storage: Value,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TracesGroupByResult {
     pub groups: Vec<TraceGroup>,
+    pub storage: Value,
 }
 
 /// Generic trace-tag namespace: `iii.tag.<key>` span attributes (stamped via
@@ -511,6 +516,10 @@ fn healthy_component(details: Value) -> Value {
         "status": "healthy",
         "details": details,
     })
+}
+
+fn trace_storage_status_value() -> Value {
+    serde_json::to_value(otel::trace_storage_status()).unwrap_or(Value::Null)
 }
 
 fn disabled_component() -> Value {
@@ -1178,6 +1187,18 @@ impl ObservabilityWorker {
             && let Some(max) = new.memory_max_spans
         {
             storage.set_max_spans(max);
+        }
+        if let Some(storage) = otel::get_span_storage()
+            && let Some(trace_storage) = &new.trace_storage
+        {
+            storage.set_low_watermark_ratio(trace_storage.memory_low_watermark_ratio);
+            storage.set_max_bytes(trace_storage.memory_max_bytes);
+        }
+        if let Some(archive) = otel::get_trace_disk_storage()
+            && let Some(trace_storage) = &new.trace_storage
+            && trace_storage.enabled
+        {
+            archive.update_limits(trace_storage);
         }
         // Only retune the log store; never CREATE it when logs are disabled —
         // initialize() deliberately skips log storage in that case and the
@@ -2129,7 +2150,7 @@ impl ObservabilityWorker {
         // distinct trace per coalesce tick (bounded by the 300ms window and the
         // set of traces actively streaming). Acceptable; a future optimization
         // could memoize the corrected parent map per trace.
-        let Some(storage) = otel::get_span_storage() else {
+        let Some(_storage) = otel::get_span_storage() else {
             return; // No in-memory store → nothing to correct against.
         };
         let collapse_rules = cached_collapse_rules();
@@ -2144,7 +2165,7 @@ impl ObservabilityWorker {
         }
 
         for (trace_id, arrived_ids) in arrived_by_trace {
-            let full_trace = storage.get_spans_by_trace_id(trace_id);
+            let full_trace = otel::get_query_spans_by_trace_id(trace_id);
             let to_send = corrected_detail_spans(full_trace, &arrived_ids, collapse_rules);
             if !to_send.is_empty()
                 && let Ok(spans) = serde_json::to_value(&to_send)
@@ -2167,20 +2188,22 @@ impl ObservabilityWorker {
         input: TracesListInput,
     ) -> FunctionResult<TracesListResult, ErrorBody> {
         match otel::get_span_storage() {
-            Some(storage) => {
+            Some(_storage) => {
+                let search_all = input.search_all_spans.unwrap_or(false);
                 let all_spans = if let Some(ref trace_id) = input.trace_id {
-                    storage.get_spans_by_trace_id(trace_id)
+                    otel::get_query_spans_by_trace_id(trace_id)
                 } else if let Some(ref trace_ids) = input.trace_ids {
                     trace_ids
                         .iter()
-                        .flat_map(|id| storage.get_spans_by_trace_id(id))
+                        .flat_map(|id| otel::get_query_spans_by_trace_id(id))
                         .collect()
+                } else if search_all {
+                    otel::get_query_spans()
                 } else {
-                    storage.get_spans()
+                    otel::get_query_root_spans()
                 };
 
                 let include_internal = input.include_internal.unwrap_or(false);
-                let search_all = input.search_all_spans.unwrap_or(false);
                 // One "now" for the whole listing — pending spans measure
                 // duration-so-far / activity against it.
                 let now_ns = otel::now_unix_nanos();
@@ -2389,7 +2412,7 @@ impl ObservabilityWorker {
                             // Attach trace-level tags to the returned page only
                             // (per-row index lookup, bounded by `limit`).
                             let tags =
-                                collect_trace_tags(&storage.get_spans_by_trace_id(&s.trace_id));
+                                collect_trace_tags(&otel::get_query_spans_by_trace_id(&s.trace_id));
                             let mut value = serde_json::to_value(s).unwrap_or(Value::Null);
                             if !tags.is_empty()
                                 && let Value::Object(ref mut map) = value
@@ -2405,6 +2428,7 @@ impl ObservabilityWorker {
                     total,
                     offset,
                     limit,
+                    storage: trace_storage_status_value(),
                 })
             }
             None => memory_exporter_not_enabled_error(),
@@ -2420,11 +2444,14 @@ impl ObservabilityWorker {
         input: TracesTreeInput,
     ) -> FunctionResult<TracesTreeResult, ErrorBody> {
         match otel::get_span_storage() {
-            Some(storage) => {
-                let all_spans = storage.get_spans_by_trace_id(&input.trace_id);
+            Some(_storage) => {
+                let all_spans = otel::get_query_spans_by_trace_id(&input.trace_id);
 
                 if all_spans.is_empty() {
-                    return FunctionResult::Success(TracesTreeResult { roots: Vec::new() });
+                    return FunctionResult::Success(TracesTreeResult {
+                        roots: Vec::new(),
+                        storage: trace_storage_status_value(),
+                    });
                 }
 
                 let all_spans = correct_trace_spans(all_spans, &cached_collapse_rules());
@@ -2436,6 +2463,7 @@ impl ObservabilityWorker {
                         .into_iter()
                         .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
                         .collect(),
+                    storage: trace_storage_status_value(),
                 })
             }
             None => memory_exporter_not_enabled_error(),
@@ -2452,6 +2480,14 @@ impl ObservabilityWorker {
     ) -> FunctionResult<OkResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(storage) => {
+                if let Some(archive) = otel::get_trace_disk_storage()
+                    && let Err(error) = archive.clear()
+                {
+                    return FunctionResult::Failure(ErrorBody::new(
+                        "trace_storage_clear_failed",
+                        format!("could not clear durable trace storage: {error}"),
+                    ));
+                }
                 storage.clear();
                 FunctionResult::Success(OkResult { success: true })
             }
@@ -2471,8 +2507,8 @@ impl ObservabilityWorker {
         input: TracesGroupByInput,
     ) -> FunctionResult<TracesGroupByResult, ErrorBody> {
         match otel::get_span_storage() {
-            Some(storage) => {
-                let all_spans = storage.get_spans();
+            Some(_storage) => {
+                let all_spans = otel::get_query_spans_by_attribute(&input.attribute);
 
                 let include_internal = input.include_internal.unwrap_or(false);
                 let since_ns = input.since_ms.map(|ms| ms.saturating_mul(1_000_000));
@@ -2569,7 +2605,10 @@ impl ObservabilityWorker {
                 result.sort_by(|a, b| b.first_seen_ms.cmp(&a.first_seen_ms));
                 result.truncate(limit);
 
-                FunctionResult::Success(TracesGroupByResult { groups: result })
+                FunctionResult::Success(TracesGroupByResult {
+                    groups: result,
+                    storage: trace_storage_status_value(),
+                })
             }
             None => memory_exporter_not_enabled_error(),
         }
@@ -2954,16 +2993,25 @@ impl ObservabilityWorker {
         };
 
         // Check span storage
+        let trace_storage_status = otel::trace_storage_status();
         let spans_component = if let Some(storage) = otel::get_span_storage() {
             healthy_component(serde_json::json!({
                 "stored_spans": storage.len(),
+                "hot_bytes": storage.hot_bytes(),
+                "archive": trace_storage_status,
             }))
         } else {
             disabled_component()
         };
 
+        let overall_status = if trace_storage_status.archive == "degraded" {
+            "degraded"
+        } else {
+            "healthy"
+        };
+
         FunctionResult::Success(HealthCheckResult {
-            status: "healthy".to_string(),
+            status: overall_status.to_string(),
             components: HealthComponentsView {
                 otel: otel_component,
                 metrics: metrics_component,
@@ -3455,6 +3503,38 @@ impl Worker for ObservabilityWorker {
             shutdown_rx.clone(),
             otel::get_span_storage,
         ));
+
+        // The durable archive owns its writer thread, but retention and
+        // pending-snapshot expiry are driven by the worker lifecycle so they
+        // follow reload/shutdown boundaries. The hot-cache cleanup also runs
+        // when durable storage is disabled.
+        let archive = otel::get_trace_disk_storage();
+        let mut archive_shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    result = archive_shutdown_rx.changed() => {
+                        if result.is_err() || *archive_shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        let pending_max_age = otel::get_otel_config()
+                            .and_then(|config| config.trace_storage.as_ref().map(|storage| storage.pending_max_age_seconds))
+                            .unwrap_or(3_600);
+                        if let Some(storage) = otel::get_span_storage() {
+                            storage.expire_pending(pending_max_age);
+                        }
+                        if let Some(archive) = &archive
+                            && let Err(error) = archive.retain()
+                        {
+                            archive.mark_degraded(error);
+                        }
+                    }
+                }
+            }
+        });
 
         // Log retention runs as a respawnable task; spawned below from the
         // post-adoption effective configuration.

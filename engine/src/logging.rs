@@ -411,6 +411,7 @@ fn otel_config_from_module(
     if let Some(max_spans) = module_config.memory_max_spans {
         otel_cfg.memory_max_spans = max_spans;
     }
+    otel_cfg.trace_storage = module_config.trace_storage;
     // Re-derive rather than override: the mode-aware default (memory → on)
     // must be computed against the exporter resolved just above, not the one
     // `OtelConfig::default()` saw before this block applied the yaml config.

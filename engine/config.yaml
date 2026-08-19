@@ -95,6 +95,16 @@ workers:
       # Max spans to keep in memory - used when exporter is "memory" or "both"
       memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
 
+      # === Durable Trace Storage ===
+      trace_storage:
+        enabled: ${OTEL_TRACE_STORAGE_ENABLED:true}
+        directory: ${OTEL_TRACE_STORAGE_DIRECTORY:./data/observability/traces}
+        max_disk_bytes: ${OTEL_TRACE_STORAGE_MAX_DISK_BYTES:1073741824}
+        retention_seconds: ${OTEL_TRACE_STORAGE_RETENTION_SECONDS:2592000}
+        memory_max_bytes: ${OTEL_TRACE_MEMORY_MAX_BYTES:268435456}
+        memory_low_watermark_ratio: 0.75
+        pending_max_age_seconds: 3600
+
       # === Metrics Configuration ===
       metrics_enabled: true
       metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}  # Options: memory, otlp
