@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-observability
 
 Full OpenTelemetry observability for III Engine: distributed tracing, structured logs, performance

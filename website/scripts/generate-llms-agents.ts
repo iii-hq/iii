@@ -11,6 +11,7 @@ const WEBSITE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const INDEX_PATH = path.join(WEBSITE_ROOT, 'dist', 'index.html')
 const LLMS_PATH = path.join(WEBSITE_ROOT, 'dist', 'llms.txt')
 const AGENTS_PATH = path.join(WEBSITE_ROOT, 'dist', 'AGENTS.md')
+// TODO: Replace iii worker add flows in the appendix with iii compose (compose::up / compose::add) once compose is stable.
 const AGENTS_APPENDIX_PATH = path.join(WEBSITE_ROOT, 'scripts', 'agents-appendix.md')
 
 /** llms.txt-style blockquote (one-line summary for crawlers). */

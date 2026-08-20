@@ -5,6 +5,8 @@ owner: "devrel"
 type: "tutorial"
 ---
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 In this chapter you will build the core of Linkly: a worker that creates short codes and resolves
 them back to URLs, callable first from the command line and then over HTTP. By the end you will have
 a working web service where `POST /links` mints a short code and `GET /s/:code` redirects to the

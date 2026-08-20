@@ -7,6 +7,8 @@ description: >-
   Python, and Rust.
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # Core Primitives
 
 iii has three top-level primitives:

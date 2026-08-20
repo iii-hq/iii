@@ -1,3 +1,5 @@
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # iii-http
 
 The HTTP Worker exposes registered functions as HTTP endpoints.

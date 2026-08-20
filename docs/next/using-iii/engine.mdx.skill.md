@@ -3,6 +3,8 @@
 # Engine
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 ## Engine configuration
 
 The iii engine starts from a `config.yaml` file at your project root. Pass `--config <path>` to

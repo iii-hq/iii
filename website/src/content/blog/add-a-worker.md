@@ -7,6 +7,8 @@ tags: ['agents', 'architecture', 'workers', 'cloudflare']
 ogImage: ../../assets/blog/add-a-worker/banner.png
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 ![Add a worker — every category collapses into the same primitive](../../assets/blog/add-a-worker/banner.png)
 
 The cloud is a bazaar, and that was okay until agents arrived and had to

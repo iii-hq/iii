@@ -5,6 +5,8 @@ owner: "devrel"
 type: "how-to"
 ---
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
 for agent tool-calls, REPLs, and one-off jobs. They are provided by the `iii-sandbox` worker:
 
@@ -13,7 +15,7 @@ iii worker add iii-sandbox
 ```
 
 <Note>
-  This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
+  For the full reference, see the
   [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
 </Note>
 
@@ -129,9 +131,11 @@ iii trigger sandbox::stop sandbox_id=$SB
 
 ## Moving files in and out
 
-To copy a file between the host and a running sandbox, use the local `iii worker sandbox`
-file-transfer commands. These admin CLI commands are distinct from the `sandbox::*` trigger API used
-through the engine:
+To copy a file between the host and a running sandbox, use the `iii worker sandbox upload` and
+`iii worker sandbox download` admin commands. These are current CLI commands with no `sandbox::*`
+trigger equivalent: they stream raw bytes through an iii data channel, so transfers have no
+JSON-envelope size cap. Every other sandbox operation on this page goes through `iii trigger
+sandbox::*`; file transfer alone keeps the CLI form:
 
 ```bash
 # boot a sandbox and capture its id

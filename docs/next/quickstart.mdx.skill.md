@@ -3,6 +3,8 @@
 # Quickstart
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 In this tutorial you will learn how iii makes it unreasonably simple to build and extend systems.
 
 <Frame>

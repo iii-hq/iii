@@ -7,6 +7,8 @@ tags: ['agents', 'architecture', 'harness', 'loops', 'workers']
 ogImage: ../../assets/blog/loop-engineering-is-just-software-engineering/banner.png
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 ![Loop Engineering Is Just Software Engineering. We Have a Name for That.](../../assets/blog/loop-engineering-is-just-software-engineering/banner.png)
 
 A few weeks ago [Addy Osmani](https://x.com/addyosmani), formerly of Google

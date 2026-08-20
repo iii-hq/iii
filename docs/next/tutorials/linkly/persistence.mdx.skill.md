@@ -3,6 +3,8 @@
 # Ch. 3: Persist everything
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 Linkly's links live in `state`, which you set to in-memory back in Chapter 1. Restart the engine
 and everything is gone. In this chapter you add a `database` worker (SQLite) that holds the durable
 record of links and a timestamped row for every click on a short code. `state` stays in the

@@ -6,6 +6,8 @@ description: >-
   configuration.
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 # Getting Started with iii
 
 iii replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability

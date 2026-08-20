@@ -102,7 +102,7 @@ export const AI_OVERVIEW = [
     'On iii, the answer to most capability questions is the same: add a Worker.',
     'Sandboxing, streaming, schedules, queues, observability, and adapters become Workers and',
     'compose with everything else.',
-    '`iii worker add` is the npm moment for systems: what installs is not a dead library but a',
+    '`iii trigger compose::add` is the npm moment for systems: what installs is not a dead library but a',
     'complete running service, immediately callable by every other worker.',
   ].join(' '),
   '',

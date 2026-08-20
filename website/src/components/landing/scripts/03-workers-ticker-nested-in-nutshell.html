@@ -172,7 +172,7 @@
     trgEl.textContent = '';
 
     const trig = NW_TRIGGERS[w.name] || { event:'service::event', args:'{ ... }' };
-    const addLine = `iii worker add ${w.name}`;
+    const addLine = `iii trigger compose::add worker=${w.name}`;
     const trgSingle = `trigger("${trig.event}", ${trig.args})`;
     const trgTwoLine = `trigger("${trig.event}",\n    ${trig.args})`;
 

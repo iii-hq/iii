@@ -3,6 +3,8 @@
 # Registry
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 {/* Note: move this up */}
 
 The iii registry at [workers.iii.dev](https://workers.iii.dev/) is where published workers live so

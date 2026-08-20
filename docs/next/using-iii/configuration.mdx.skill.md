@@ -3,6 +3,8 @@
 # Configuration
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 ## Two configuration layers
 
 iii splits configuration across two layers:

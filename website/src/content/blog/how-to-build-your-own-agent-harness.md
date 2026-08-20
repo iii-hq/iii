@@ -7,6 +7,8 @@ tags: ['agents', 'harness', 'architecture', 'workers', 'orchestration']
 ogImage: ../../assets/blog/how-to-build-your-own-agent-harness/cover.png
 ---
 
+<!-- TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. -->
+
 ![How to Build Your Own Agent Harness — loops, tools, memory, sandbox, and observability](../../assets/blog/how-to-build-your-own-agent-harness/cover.png)
 
 Most agent teams don't build a harness. They adopt one. LangChain, LangGraph, OpenAI Agents SDK, Anthropic SDK, CrewAI, AutoGen, the loop, the tools, the memory, the orchestration are picked off the shelf as a single decision. The harness is a framework you import. If something inside it doesn't fit, **you fork it, fight it, or work around it.**

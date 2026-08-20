@@ -3,6 +3,8 @@
 # Node.js SDK
 
 
+{/* TODO: Replace iii worker add flows with iii compose (compose::up / compose::add) once compose is stable. */}
+
 {/* AUTO-GENERATED FILE. Do not edit. Regenerate with docs/next/scripts/generate-api-docs.mts. */}
 {/* AI: any skill-check (vale/AI) text fixes belong in the source doc-comments under sdk/packages/node/iii/src (prose) or docs/next/scripts/ (structure/formatting), then regenerate. Never edit this file directly. */}
 

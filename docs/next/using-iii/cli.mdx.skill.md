@@ -29,6 +29,12 @@ command.
 | `iii cloud`   | Manage hosted iii deployments. See [Managing iii Cloud deployments](#managing-iii-cloud-deployments).                    |
 | `iii update`  | Update iii and its managed binaries. See [Updating iii itself](#updating-iii).                                    |
 
+<Warning>
+  `iii compose` supersedes `iii worker`. Compose runs a group of workers as one project from a
+  `worker-compose.yaml` file. This makes development and deployment predictable and reproducible.
+  See [Compose](./compose).
+</Warning>
+
 Running `iii` with no subcommand starts the engine from `./config.yaml` (or the path passed to
 `--config`). When the file doesn't exist yet, `iii` offers to create it with an empty workers list
 (and creates it without asking in non-interactive sessions); add workers with `iii worker add`.
