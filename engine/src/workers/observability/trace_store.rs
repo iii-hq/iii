@@ -1719,9 +1719,10 @@ mod tests {
             .push(("iii.function.kind".to_string(), "internal".to_string()));
         let mut internal_fn = test_span("trace-d", "root-d", "d");
         internal_fn.start_time_unix_nano = 4_000;
-        internal_fn
-            .attributes
-            .push(("function_id".to_string(), "engine::traces::list".to_string()));
+        internal_fn.attributes.push((
+            "function_id".to_string(),
+            "engine::traces::list".to_string(),
+        ));
         hot.add_spans(vec![root_a, child_a, dangling, internal_kind, internal_fn]);
         store.flush().expect("flush trace store");
 

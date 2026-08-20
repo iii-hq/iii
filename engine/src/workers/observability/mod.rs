@@ -1190,7 +1190,8 @@ impl ObservabilityWorker {
                 .as_ref()
                 .map(|storage| (storage.enabled, storage.directory.clone()))
         };
-        if new.trace_storage.is_some() && swap_key(&old.trace_storage) != swap_key(&new.trace_storage)
+        if new.trace_storage.is_some()
+            && swap_key(&old.trace_storage) != swap_key(&new.trace_storage)
         {
             if otel::get_span_storage().is_some() {
                 let next = new.trace_storage.clone();
@@ -2529,15 +2530,15 @@ impl ObservabilityWorker {
                 let tag_started = Instant::now();
                 let unique_page_traces = page_trace_ids.len();
                 let enrichment_trace_ids = page_trace_ids;
-                let tags_by_trace_id = match run_blocking_query(
-                    "traces::list tag enrichment",
-                    move || otel::get_query_trace_tags_by_trace_ids(&enrichment_trace_ids),
-                )
-                .await
-                {
-                    Ok(tags) => tags,
-                    Err(error) => return FunctionResult::Failure(error),
-                };
+                let tags_by_trace_id =
+                    match run_blocking_query("traces::list tag enrichment", move || {
+                        otel::get_query_trace_tags_by_trace_ids(&enrichment_trace_ids)
+                    })
+                    .await
+                    {
+                        Ok(tags) => tags,
+                        Err(error) => return FunctionResult::Failure(error),
+                    };
                 let tag_elapsed = tag_started.elapsed();
                 let serialization_started = Instant::now();
                 let result_spans: Vec<Value> = spans
@@ -8749,7 +8750,17 @@ mod tests {
         // Archived history: an external root with a child, an internal root,
         // and a root the hot cache will later shadow with a newer version.
         span_storage.add_spans(vec![
-            make_span("t-1", "root-1", None, "one", "svc", 1_000, 1_100, "OK", vec![]),
+            make_span(
+                "t-1",
+                "root-1",
+                None,
+                "one",
+                "svc",
+                1_000,
+                1_100,
+                "OK",
+                vec![],
+            ),
             make_span(
                 "t-1",
                 "child-1",
@@ -8772,7 +8783,17 @@ mod tests {
                 "OK",
                 vec![("function_id", "engine::traces::list")],
             ),
-            make_span("t-2", "root-2", None, "old", "svc", 2_000, 2_100, "OK", vec![]),
+            make_span(
+                "t-2",
+                "root-2",
+                None,
+                "old",
+                "svc",
+                2_000,
+                2_100,
+                "OK",
+                vec![],
+            ),
         ]);
         flush_test_archive();
         // Evict everything from the hot cache; the archive keeps the rows.
@@ -8782,8 +8803,28 @@ mod tests {
         // child whose parent exists only in the archive (must not list as a
         // root).
         span_storage.add_spans(vec![
-            make_span("t-2", "root-2", None, "new", "svc", 2_000, 2_200, "OK", vec![]),
-            make_span("t-3", "root-3", None, "three", "svc", 3_000, 3_100, "OK", vec![]),
+            make_span(
+                "t-2",
+                "root-2",
+                None,
+                "new",
+                "svc",
+                2_000,
+                2_200,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "t-3",
+                "root-3",
+                None,
+                "three",
+                "svc",
+                3_000,
+                3_100,
+                "OK",
+                vec![],
+            ),
             make_span(
                 "t-1",
                 "late-child",
@@ -8836,12 +8877,7 @@ mod tests {
         match result {
             FunctionResult::Success(value) => {
                 assert_eq!(value.total, 4);
-                assert!(
-                    value
-                        .spans
-                        .iter()
-                        .any(|span| span["span_id"] == "root-int")
-                );
+                assert!(value.spans.iter().any(|span| span["span_id"] == "root-int"));
             }
             _ => panic!("expected list_traces success"),
         }
@@ -8910,7 +8946,17 @@ mod tests {
 
         // Hot: only the pending parent (start before every archived child so
         // the descending page must reach past the demoted prefix).
-        let mut pending = make_span("t-p", "pending-parent", None, "parent", "svc", 500, 0, "OK", vec![]);
+        let mut pending = make_span(
+            "t-p",
+            "pending-parent",
+            None,
+            "parent",
+            "svc",
+            500,
+            0,
+            "OK",
+            vec![],
+        );
         pending.pending = true;
         span_storage.add_pending_span(pending);
 

@@ -871,7 +871,11 @@ impl Drop for ResetTraceStorage {
     }
 }
 
-fn trace_span(trace_id: &str, span_id: &str, start_ns: u64) -> iii::workers::observability::otel::StoredSpan {
+fn trace_span(
+    trace_id: &str,
+    span_id: &str,
+    start_ns: u64,
+) -> iii::workers::observability::otel::StoredSpan {
     iii::workers::observability::otel::StoredSpan {
         trace_id: trace_id.to_string(),
         span_id: span_id.to_string(),
@@ -947,10 +951,13 @@ async fn trace_storage_enable_disable_and_reenable_hot_apply() {
 
     // Disable at runtime: the archive detaches, memory stays available, and
     // the on-disk database survives for the next enable.
-    set_value(&harness, json!({ "trace_storage": {
-        "enabled": false,
-        "directory": archive_dir.path().to_str().unwrap(),
-    }}))
+    set_value(
+        &harness,
+        json!({ "trace_storage": {
+            "enabled": false,
+            "directory": archive_dir.path().to_str().unwrap(),
+        }}),
+    )
     .await;
     drive_apply(&harness).await;
     assert_eq!(trace_store::status()["archive"], "disabled");
@@ -959,15 +966,19 @@ async fn trace_storage_enable_disable_and_reenable_hot_apply() {
     assert_eq!(storage.get_spans_by_trace_id("pre-enable-1").len(), 1);
 
     // Re-enable: prior rows are still readable.
-    set_value(&harness, json!({ "trace_storage": {
-        "enabled": true,
-        "directory": archive_dir.path().to_str().unwrap(),
-    }}))
+    set_value(
+        &harness,
+        json!({ "trace_storage": {
+            "enabled": true,
+            "directory": archive_dir.path().to_str().unwrap(),
+        }}),
+    )
     .await;
     drive_apply(&harness).await;
     assert_eq!(trace_store::status()["archive"], "healthy");
     assert_eq!(
-        trace_store::status()["completeness"], "complete",
+        trace_store::status()["completeness"],
+        "complete",
         "a clean runtime disable must not mark the archive unclean"
     );
     let trace_ids: Vec<String> = trace_store::read_spans()
@@ -993,25 +1004,32 @@ async fn trace_storage_directory_change_swaps_archive_and_backfills() {
     let storage = ensure_span_storage();
     storage.clear();
 
-    set_value(&harness, json!({ "trace_storage": {
-        "enabled": true,
-        "directory": dir_a.path().to_str().unwrap(),
-    }}))
+    set_value(
+        &harness,
+        json!({ "trace_storage": {
+            "enabled": true,
+            "directory": dir_a.path().to_str().unwrap(),
+        }}),
+    )
     .await;
     drive_apply(&harness).await;
     storage.add_spans(vec![trace_span("swap-trace", "s", 1_000)]);
     trace_store::flush().expect("persist into directory A");
 
-    set_value(&harness, json!({ "trace_storage": {
-        "enabled": true,
-        "directory": dir_b.path().to_str().unwrap(),
-    }}))
+    set_value(
+        &harness,
+        json!({ "trace_storage": {
+            "enabled": true,
+            "directory": dir_b.path().to_str().unwrap(),
+        }}),
+    )
     .await;
     drive_apply(&harness).await;
 
     assert_eq!(trace_store::status()["archive"], "healthy");
     assert_eq!(
-        trace_store::status()["completeness"], "complete",
+        trace_store::status()["completeness"],
+        "complete",
         "same-process swaps must observe the previous store's clean shutdown"
     );
     trace_store::flush().expect("flush into directory B");
@@ -1044,19 +1062,25 @@ async fn trace_storage_limits_only_change_does_not_reopen_the_store() {
     let storage = ensure_span_storage();
     storage.clear();
 
-    set_value(&harness, json!({ "trace_storage": {
-        "enabled": true,
-        "directory": archive_dir.path().to_str().unwrap(),
-    }}))
+    set_value(
+        &harness,
+        json!({ "trace_storage": {
+            "enabled": true,
+            "directory": archive_dir.path().to_str().unwrap(),
+        }}),
+    )
     .await;
     drive_apply(&harness).await;
     let before = otel::get_trace_disk_storage().expect("archive installed");
 
-    set_value(&harness, json!({ "trace_storage": {
-        "enabled": true,
-        "directory": archive_dir.path().to_str().unwrap(),
-        "max_disk_bytes": 134_217_728u64,
-    }}))
+    set_value(
+        &harness,
+        json!({ "trace_storage": {
+            "enabled": true,
+            "directory": archive_dir.path().to_str().unwrap(),
+            "max_disk_bytes": 134_217_728u64,
+        }}),
+    )
     .await;
     drive_apply(&harness).await;
 
