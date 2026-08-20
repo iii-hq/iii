@@ -142,7 +142,8 @@ one at the wrong file.
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
 | `compose::add`      | `file`, `worker` | What the edit did, and the `down` and `up` that followed.               |
-| `compose::restart`  | `file`    | The `down` and the `up`, each an operation result.                             |
+| `compose::restart`  | `file`, `worker` | The `down` and the `up`, or one container's restart.                    |
+| `compose::update`   | `file`, `worker` | Both versions, and the restart that followed.                           |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
 
 `file` is not required. Left out, it falls back to a `worker-compose.yaml` in the daemon's own
@@ -205,6 +206,47 @@ did not change.
 `compose::validate` answers for a file and holds nothing: a CI job that only ever validates leaves
 the daemon owning nothing. Validation is offline, so `package://` containers are reported under
 `deferred_packages` instead of being resolved.
+
+### Restarting one worker
+
+`compose::restart worker=state` stops that container and starts it again. Nothing else moves: not
+what it depends on, and not what depends on it.
+
+That is a decision, not a shortcut. A dependent holding a connection to the worker sees it drop, and
+compose does not restart the dependents to hide it. Which of them tolerate a drop is the operator's
+knowledge, not compose's. Left out, `worker` restarts the whole project instead: `down`, then `up`, with the file
+read again between them.
+
+### Updating a worker
+
+`compose::update worker=state` moves a declared container to another version of the same package.
+
+```text
+worker=state            the version the registry calls latest
+worker=state@0.21.4     that version, which is also how a downgrade is spelled
+```
+
+The answer names both ends, because an operator who asked for "latest" does not know what it is
+until the call says so:
+
+```json
+{ "container": "state", "from": "0.21.4-alpha.4", "to": "0.22.0", "detail": "state from 0.21.4-alpha.4 to 0.22.0" }
+```
+
+Already on the version asked for, nothing is written and `changed` is `false`.
+
+The container has to be declared already, and has to be a `package://` one: this edits a version
+line, it does not add a container, and a `path://` worker has no version to move. Use
+[`compose::add`](#adding-a-worker) to declare something new.
+
+Only the version line changes. A `depends_on` written by hand comes through as it was, since
+rewriting the graph is what `compose::add` is for.
+
+<Note>
+  Unlike `compose::restart worker=`, an update restarts the whole project. A project is held as its
+  file was read, so a new version is only picked up once the project is dropped and read again.
+  Dropping it while its other containers run would leave them supervised by nothing.
+</Note>
 
 ### Operation results
 
@@ -510,7 +552,7 @@ Compose errors cross the wire with a stable code and a message.
 | Area                  | Codes                                                                                                                                                                                                                                                                              |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Compose file          | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`                                                                                                |
-| Container declaration | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                  |
+| Container declaration | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `NOT_A_PACKAGE_CONTAINER`, `PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                  |
 | Worker resolution     | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`                                                                                                                                                                                                            |
 | Packages              | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`                                                                        |
 | Start and readiness   | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `ENGINE_CALL_FAILED` |

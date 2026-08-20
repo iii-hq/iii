@@ -47,8 +47,12 @@ pub struct ComposeRequest {
     pub file: Option<String>,
     /// Restrict the operation to one container and what it needs.
     pub container: Option<String>,
-    /// `compose::add` only: the worker to declare, as `name`, `name@version`
-    /// or a path. Ignored by every other operation.
+    /// The worker a call is about.
+    ///
+    /// `compose::add` and `compose::update` read a spec: `name`,
+    /// `name@version`, or a path. `compose::restart` reads a container key,
+    /// where it is the spelling for `container` — an operator naming a worker
+    /// should not have to know which of the two words this call wanted.
     pub worker: Option<String>,
 }
 
@@ -66,6 +70,7 @@ pub fn register(daemon: &Arc<Daemon>) {
         ("validate", Operation::Validate),
         ("add", Operation::Add),
         ("restart", Operation::Restart),
+        ("update", Operation::Update),
     ] {
         let daemon = Arc::clone(daemon);
         let function = format!("compose::{name}");
@@ -92,6 +97,7 @@ enum Operation {
     Validate,
     Add,
     Restart,
+    Update,
 }
 
 async fn dispatch(
@@ -141,9 +147,17 @@ async fn dispatch(
         Operation::Restart => match daemon
             .restart(
                 file.as_deref(),
-                request.container.as_deref(),
+                // Either spelling names the same thing here.
+                request.container.as_deref().or(request.worker.as_deref()),
                 operation_id(),
             )
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(err) => Err(compose_error(&err)),
+        },
+        Operation::Update => match daemon
+            .update(file.as_deref(), request.worker.as_deref(), operation_id())
             .await
         {
             Ok(result) => Ok(result),

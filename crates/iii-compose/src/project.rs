@@ -394,6 +394,36 @@ impl Project {
         result
     }
 
+    /// Bounces one container. See [`lifecycle::restart_one`] for why this does
+    /// not take the container's graph with it.
+    pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
+        let config_dir = self.config_dir();
+        let log_dir = self.log_dir();
+        let package_cache = self.package_cache();
+        let vm_dir = self.vm_dir();
+        let mut inner = self.inner.lock().await;
+        let Inner { children, state } = &mut *inner;
+
+        let ctx = LifecycleCtx {
+            file: &self.file,
+            engine: &self.engine,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            config_dir: &config_dir,
+            log_dir: &log_dir,
+            package_cache: &package_cache,
+            vm_dir: &vm_dir,
+        };
+
+        let result =
+            lifecycle::restart_one(&ctx, children, &mut state.containers, key, operation_id).await;
+
+        let snapshot = state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        result
+    }
+
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
         let config_dir = self.config_dir();
         let log_dir = self.log_dir();

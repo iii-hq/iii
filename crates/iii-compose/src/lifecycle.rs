@@ -259,6 +259,122 @@ fn strip_container_prefix(message: &str, container: &str) -> String {
     message.strip_prefix(&prefix).unwrap_or(message).to_string()
 }
 
+/// Stops one container and starts it again, touching nothing else.
+///
+/// Deliberately narrower than `down` and `up` with a target, which take the
+/// container's dependents and dependencies with them. Restarting a worker to
+/// pick up an edit or a new version is a local act: the operator names one
+/// container and expects one container to bounce, not a graph.
+///
+/// What that costs is real and left to the operator: a dependent holding a
+/// connection to this worker sees it drop. Compose does not restart the
+/// dependents to hide that, because deciding which of them can tolerate it is
+/// not compose's to make.
+pub async fn restart_one(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+) -> OpResult {
+    let began = Instant::now();
+    if !ctx.file.containers.contains_key(key) {
+        let error = ComposeError::UnknownContainer {
+            container: key.to_string(),
+        };
+        report::summary_failed("restart", error.code(), began.elapsed());
+        return failed_op(operation_id, Some(key), &error);
+    }
+
+    report::plan(&[(key.to_string(), 0)]);
+    stop_one(ctx, children, records, key).await;
+
+    // The child is gone, but the engine learns that from a socket closing and
+    // not from us. Starting into that window makes the replacement collide
+    // with the corpse of its predecessor and fail CONTAINER_NAME_TAKEN, which
+    // is the honest answer to the wrong question. `down` then `up` never saw
+    // this because re-reading the project happened to take long enough.
+    if let Err(error) = await_name_release(ctx, key).await {
+        report::failed(key, error.code(), &error.to_string());
+        report::plan_done();
+        report::summary_failed("restart", error.code(), began.elapsed());
+        return failed_op(operation_id, Some(key), &error);
+    }
+
+    report::starting(key, "starting");
+    let started = Instant::now();
+    let outcome = start_one(ctx, key).await;
+    let took = started.elapsed();
+
+    let result = match outcome {
+        Ok((record, child)) => {
+            report::ready(key, took);
+            records.insert(key.to_string(), record);
+            children.insert(key.to_string(), child);
+            ContainerResult {
+                container: key.to_string(),
+                state: ChildStatus::Ready,
+                changed: true,
+                error: None,
+            }
+        }
+        Err(error) => {
+            report::failed(
+                key,
+                error.code(),
+                &strip_container_prefix(&error.to_string(), key),
+            );
+            report::plan_done();
+            report::summary_failed("restart", error.code(), began.elapsed());
+            return OpResult {
+                operation_id,
+                status: OpStatus::Failed,
+                changed: false,
+                containers: vec![ContainerResult {
+                    container: key.to_string(),
+                    state: ChildStatus::Failed,
+                    changed: false,
+                    error: Some(OpError::from(&error)),
+                }],
+            };
+        }
+    };
+
+    report::plan_done();
+    report::summary_ok("restart", 1, 1, began.elapsed());
+    OpResult {
+        operation_id,
+        status: OpStatus::Ok,
+        changed: true,
+        containers: vec![result],
+    }
+}
+
+/// How long a name may stay registered after the process holding it exits.
+/// Generous, because the cost of being wrong is refusing a restart that would
+/// have worked a moment later.
+const NAME_RELEASE_WITHIN: Duration = Duration::from_secs(10);
+
+/// Waits for the engine to forget a worker that has already exited.
+///
+/// Times out into `CONTAINER_NAME_TAKEN`, which by then is true rather than a
+/// race: something else is holding the name.
+async fn await_name_release(ctx: &LifecycleCtx<'_>, key: &str) -> Result<()> {
+    let deadline = Instant::now() + NAME_RELEASE_WITHIN;
+    loop {
+        if !ctx.engine.is_registered(ctx.project_namespace, key).await? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(ComposeError::ContainerNameTaken {
+                container: key.to_string(),
+                namespace: ctx.project_namespace.to_string(),
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Stops `target` (or every local container), dependents first.
 pub async fn down(
     ctx: &LifecycleCtx<'_>,

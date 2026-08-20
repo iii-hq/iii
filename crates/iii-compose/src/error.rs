@@ -165,6 +165,14 @@ pub enum ComposeError {
         name: String,
     },
 
+    /// `compose::update` was given a container it cannot move.
+    #[error(
+        "container '{container}' is a {kind} worker, and only a registry package carries a \
+         version to update. Edit the file, or use compose::add to declare a package under \
+         another name"
+    )]
+    NotAPackageContainer { container: String, kind: String },
+
     /// `worker=` did not name anything installable.
     #[error("cannot read worker '{spec}': {reason}")]
     InvalidWorkerSpec { spec: String, reason: String },
@@ -413,6 +421,7 @@ impl ComposeError {
             Self::InvalidReference { .. } => "INVALID_REFERENCE",
             Self::ProjectDidNotStart { .. } => "PROJECT_DID_NOT_START",
             Self::WorkerSourceChanged { .. } => "WORKER_SOURCE_CHANGED",
+            Self::NotAPackageContainer { .. } => "NOT_A_PACKAGE_CONTAINER",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
             Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",

@@ -363,18 +363,147 @@ impl Daemon {
         Ok(wanted)
     }
 
-    /// Stops a project and starts it again.
+    /// Moves one declared container to another version of the same package.
     ///
-    /// Down then up, and nothing cleverer yet: no rolling restart, no keeping
-    /// what did not change. It is the shape every later refinement will be
-    /// measured against, so it is worth having plainly first.
+    /// `worker=state` takes whatever the registry calls latest; `worker=state@1.2.3`
+    /// takes that one, which is how a downgrade is spelled. The container has to
+    /// be declared already — this edits a line, it does not add one, and
+    /// `compose::add` is the call that adds.
+    ///
+    /// The answer names both versions, because the operator asked for "latest"
+    /// without knowing what that is and the interesting part of the reply is
+    /// what it turned out to be.
+    pub async fn update(
+        &self,
+        file: Option<&Path>,
+        worker: Option<&str>,
+        operation_id: String,
+    ) -> Result<Value> {
+        let Some(worker) = worker else {
+            return Err(ComposeError::InvalidWorkerSpec {
+                spec: String::new(),
+                reason: "no worker was named. Pass worker=<name> or worker=<name@version>"
+                    .to_string(),
+            });
+        };
+
+        let path = self.resolve_file(file)?;
+        let asked = crate::edit::parse_worker(worker)?;
+        let crate::edit::Source::Package { reference, version } = &asked.source else {
+            return Err(ComposeError::NotAPackageContainer {
+                container: asked.key.clone(),
+                kind: "path".to_string(),
+            });
+        };
+
+        let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let compose = crate::ComposeFile::parse(&text, path)?;
+        let Some(container) = compose.containers.get(&asked.key) else {
+            return Err(ComposeError::UnknownContainer {
+                container: asked.key.clone(),
+            });
+        };
+        if !matches!(
+            container.worker,
+            crate::config::WorkerSource::Package { .. }
+        ) {
+            return Err(ComposeError::NotAPackageContainer {
+                container: asked.key.clone(),
+                kind: "path".to_string(),
+            });
+        }
+
+        // Asked for by version, or whatever the registry calls latest today.
+        let wanted = match version {
+            Some(version) => version.clone(),
+            None => crate::registry::latest_version(&asked.key, reference).await?,
+        };
+        let current = container.version.clone();
+
+        // The declared dependencies come along unchanged. An update moves a
+        // version; rewriting the graph on the way is `compose::add`'s job, and
+        // doing it here would edit lines the operator did not ask about.
+        let new = crate::edit::NewContainer {
+            key: asked.key.clone(),
+            source: crate::edit::Source::Package {
+                reference: reference.clone(),
+                version: Some(wanted.clone()),
+            },
+            depends_on: container.depends_on.clone(),
+        };
+
+        let edited = match crate::edit::upsert_container(&text, &new)? {
+            crate::edit::Outcome::Unchanged => {
+                return Ok(serde_json::json!({
+                    "status": "ok",
+                    "container": asked.key,
+                    "changed": false,
+                    "version": wanted,
+                    "detail": format!("already at {wanted}"),
+                }));
+            }
+            crate::edit::Outcome::Replaced { text, .. } => text,
+            // `upsert_container` only adds when the key is absent, and the key
+            // was read out of this same file a moment ago.
+            crate::edit::Outcome::Added(text) => text,
+        };
+
+        // Parsed before it is written, so a splice that would not load leaves
+        // the operator's file exactly as it was.
+        crate::ComposeFile::parse(&edited, path)?;
+        write_atomically(path, &edited)?;
+
+        // The whole project, not just this container, and deliberately so. A
+        // cached project is the file as it was read, so the new version is only
+        // picked up once the project is dropped and re-read — and dropping it
+        // while its other children run would leave them supervised by nothing.
+        // `compose::restart worker=` is the surgical one; this is the safe one.
+        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        let from = current.unwrap_or_else(|| "unpinned".to_string());
+        Ok(serde_json::json!({
+            "status": up.status,
+            "container": asked.key,
+            "changed": true,
+            "from": from,
+            "to": wanted,
+            "detail": format!("{} from {from} to {wanted}", asked.key),
+            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
+            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
+        }))
+    }
+
+    /// Stops a project and starts it again, or bounces one container of it.
+    ///
+    /// Named, the container is the only thing that stops and starts: not what
+    /// it depends on, and not what depends on it. Compose could restart the
+    /// dependents to hide the drop, but which of them tolerate one is the
+    /// operator's knowledge, not compose's.
+    ///
+    /// Whole-project is down then up, and nothing cleverer yet: no rolling
+    /// restart, no keeping what did not change. It is the shape every later
+    /// refinement will be measured against, so it is worth having plainly
+    /// first.
     pub async fn restart(
         &self,
         file: Option<&Path>,
         container: Option<&str>,
         operation_id: String,
     ) -> Result<Value> {
-        let (down, up) = self.restart_project(file, container, &operation_id).await?;
+        if let Some(key) = container {
+            let project = self.project(self.resolve_file(file)?).await?;
+            let result = project.restart_one(key, operation_id).await;
+            return Ok(serde_json::json!({
+                "status": result.status,
+                "container": key,
+                "changed": result.changed,
+                "restarted": serde_json::to_value(&result).unwrap_or(Value::Null),
+            }));
+        }
+
+        let (down, up) = self.restart_project(file, None, &operation_id).await?;
         Ok(serde_json::json!({
             "status": up.status,
             "changed": down.changed || up.changed,
