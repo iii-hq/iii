@@ -91,6 +91,9 @@ pub async fn register_triggers(engine: &Engine) -> anyhow::Result<()> {
         (PAGE_TRIGGER_ID, "console:script", PAGE_PATH),
         (STYLES_TRIGGER_ID, "console:style", STYLES_PATH),
     ] {
+        let (trigger_namespace, home_namespace, provider_namespace) =
+            Trigger::internal_namespaces();
+
         engine
             .trigger_registry
             .register_trigger(Trigger {
@@ -103,6 +106,10 @@ pub async fn register_triggers(engine: &Engine) -> anyhow::Result<()> {
                     "internal": true,
                     "source": "builtin",
                 })),
+                namespace: crate::protocol::default_namespace(),
+                trigger_namespace,
+                home_namespace,
+                provider_namespace,
             })
             .await
             .map_err(|error| {
