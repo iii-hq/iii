@@ -9,7 +9,7 @@
 //! making the application workload wait for disk I/O.
 
 use super::{config::TraceStorageConfig, otel::InMemorySpanStorage};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, ToSql, params, params_from_iter};
 use std::{
     collections::HashSet,
     fs,
@@ -35,6 +35,16 @@ const RETRY_DELAYS: [Duration; 3] = [
 ];
 const CAP_HIGH_WATERMARK: f64 = 0.90;
 const CAP_LOW_WATERMARK: f64 = 0.80;
+/// Keep clear of SQLite's default 999 bind-variable limit. One slot is used
+/// by the epoch, leaving a margin for future query predicates.
+const TRACE_ID_QUERY_CHUNK: usize = 900;
+
+fn database_error(database_path: &Path, operation: &str, error: impl std::fmt::Display) -> String {
+    format!(
+        "trace storage {operation} failed for '{}': {error}",
+        database_path.display()
+    )
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TraceStorageStatus {
@@ -44,6 +54,44 @@ pub struct TraceStorageStatus {
     pub physical_bytes: u64,
     pub max_disk_bytes: u64,
     pub last_error: Option<String>,
+}
+
+/// Projection used by `engine::traces::group_by`. Keeping this separate from
+/// `StoredSpan` avoids decoding events, links and attributes JSON when the
+/// aggregation only needs one grouping attribute plus a few indexed columns.
+#[derive(Debug, Clone)]
+pub(crate) struct TraceGroupRow {
+    pub trace_id: String,
+    pub span_id: String,
+    pub value: String,
+    pub label: Option<String>,
+    pub start_time_ns: u64,
+    pub end_time_ns: u64,
+    pub pending: bool,
+    pub status: String,
+    pub is_internal: bool,
+}
+
+impl TraceGroupRow {
+    pub fn effective_end_ns(&self, now_ns: u64) -> u64 {
+        if self.pending {
+            now_ns
+        } else {
+            self.end_time_ns
+        }
+    }
+}
+
+/// A trace tag attribute with just enough ordering metadata to reconstruct
+/// the existing "newest span wins" rule without deserializing span payloads.
+#[derive(Debug, Clone)]
+pub(crate) struct TraceTagRow {
+    pub trace_id: String,
+    pub span_id: String,
+    pub start_time_ns: u64,
+    pub ordinal: usize,
+    pub key: String,
+    pub value: String,
 }
 
 enum ControlMessage {
@@ -120,7 +168,8 @@ impl TraceDiskStore {
                 database_path.display()
             )
         })?;
-        configure_connection(&mut connection)?;
+        configure_connection(&mut connection)
+            .map_err(|err| database_error(&database_path, "initialization", err))?;
         set_private_permissions(&database_path, false)?;
 
         let epoch = read_epoch(&connection).unwrap_or(0);
@@ -146,7 +195,7 @@ impl TraceDiskStore {
         });
 
         set_clean_shutdown(&connection, false)
-            .map_err(|err| format!("cannot mark trace database as active: {err}"))?;
+            .map_err(|err| database_error(&store.database_path, "activation", err))?;
 
         let weak = Arc::downgrade(&store);
         thread::Builder::new()
@@ -197,6 +246,92 @@ impl TraceDiskStore {
         self.read_spans(None)
     }
 
+    /// Read a chronological archive window without decoding rows outside the
+    /// requested page. Callers merge the page with the hot cache afterwards.
+    pub fn get_spans_page_by_start_time(
+        &self,
+        offset: usize,
+        limit: usize,
+        ascending: bool,
+    ) -> Result<Vec<StoredSpan>, String> {
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| database_error(&self.database_path, "read open", err))?;
+        configure_read_connection(&mut connection)
+            .map_err(|err| database_error(&self.database_path, "read initialization", err))?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let order = if ascending { "ASC" } else { "DESC" };
+        let query = format!(
+            "SELECT payload FROM spans WHERE epoch = ?1\n             ORDER BY start_time_ns {order}, trace_id {order}, span_id {order}\n             LIMIT ?2 OFFSET ?3"
+        );
+        let mut statement = connection
+            .prepare(&query)
+            .map_err(|err| format!("cannot prepare paged trace read: {err}"))?;
+        let rows = statement
+            .query_map(params![epoch, limit as i64, offset as i64], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|err| format!("cannot query paged trace archive: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("cannot read paged trace archive row: {err}"))?;
+        Ok(self.decode_payloads(rows))
+    }
+
+    pub fn span_count(&self) -> Result<usize, String> {
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for counting: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM spans WHERE epoch = ?1",
+                params![epoch],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count.max(0) as usize)
+            .map_err(|err| format!("cannot count trace archive rows: {err}"))
+    }
+
+    /// Count keys already present on disk so a hot overlay can report an exact
+    /// merged total without loading archive payloads.
+    pub fn existing_span_key_count(&self, keys: &[(String, String)]) -> Result<usize, String> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for counting: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut unique = HashSet::with_capacity(keys.len());
+        let keys: Vec<_> = keys
+            .iter()
+            .filter(|key| unique.insert((key.0.as_str(), key.1.as_str())))
+            .collect();
+        let mut total = 0usize;
+
+        // Two bind variables per key plus the epoch.
+        for chunk in keys.chunks(TRACE_ID_QUERY_CHUNK / 2) {
+            let conditions = std::iter::repeat_n("(trace_id = ? AND span_id = ?)", chunk.len())
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let query = format!("SELECT COUNT(*) FROM spans WHERE epoch = ? AND ({conditions})");
+            let mut statement = connection
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare trace key count: {err}"))?;
+            let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 2 + 1);
+            parameters.push(&epoch);
+            for (trace_id, span_id) in chunk {
+                parameters.push(trace_id as &dyn ToSql);
+                parameters.push(span_id as &dyn ToSql);
+            }
+            let count = statement
+                .query_row(params_from_iter(parameters), |row| row.get::<_, i64>(0))
+                .map_err(|err| format!("cannot count trace archive keys: {err}"))?;
+            total = total.saturating_add(count.max(0) as usize);
+        }
+
+        Ok(total)
+    }
+
     pub fn get_root_spans(&self) -> Result<Vec<StoredSpan>, String> {
         let mut connection = Connection::open(&self.database_path)
             .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
@@ -228,6 +363,117 @@ impl TraceDiskStore {
         self.read_spans(Some(trace_id))
     }
 
+    /// Read several traces with one SQLite connection per bounded chunk. This
+    /// is used by list/tag enrichment and grouped expansions; one query per
+    /// trace turns a 500-row page into hundreds of connection opens and JSON
+    /// decodes.
+    pub fn get_spans_by_trace_ids(&self, trace_ids: &[String]) -> Result<Vec<StoredSpan>, String> {
+        if trace_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut unique_ids = HashSet::with_capacity(trace_ids.len());
+        let trace_ids: Vec<&str> = trace_ids
+            .iter()
+            .filter_map(|id| unique_ids.insert(id.as_str()).then_some(id.as_str()))
+            .collect();
+
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut rows = Vec::new();
+
+        for chunk in trace_ids.chunks(TRACE_ID_QUERY_CHUNK) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query = format!(
+                "SELECT payload FROM spans WHERE epoch = ? AND trace_id IN ({placeholders})\n                 ORDER BY start_time_ns ASC, trace_id ASC, span_id ASC"
+            );
+            let mut statement = connection
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare batched trace read: {err}"))?;
+            let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() + 1);
+            parameters.push(&epoch);
+            parameters.extend(chunk.iter().map(|id| id as &dyn ToSql));
+            let chunk_rows = statement
+                .query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))
+                .map_err(|err| format!("cannot query batched trace archive: {err}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| format!("cannot read batched trace archive row: {err}"))?;
+            rows.extend(chunk_rows);
+        }
+
+        Ok(self.decode_payloads(rows))
+    }
+
+    /// Read every trace-level tag for a set of traces in bounded SQLite
+    /// queries. This is deliberately narrower than `get_spans_by_trace_ids`:
+    /// list rows need the union of `iii.tag.*` and identity attributes, not
+    /// each span's events, links and resource payload.
+    pub(crate) fn get_trace_tag_rows_by_trace_ids(
+        &self,
+        trace_ids: &[String],
+    ) -> Result<Vec<TraceTagRow>, String> {
+        if trace_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut unique_ids = HashSet::with_capacity(trace_ids.len());
+        let trace_ids: Vec<&str> = trace_ids
+            .iter()
+            .filter_map(|id| unique_ids.insert(id.as_str()).then_some(id.as_str()))
+            .collect();
+
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for tag reading: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut tags = Vec::new();
+
+        for chunk in trace_ids.chunks(TRACE_ID_QUERY_CHUNK) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query = format!(
+                "SELECT s.trace_id, s.span_id, s.start_time_ns, a.ordinal, a.key, a.value
+                 FROM spans s
+                 INNER JOIN span_attributes a
+                   ON a.epoch = s.epoch
+                  AND a.trace_id = s.trace_id
+                  AND a.span_id = s.span_id
+                 WHERE s.epoch = ?
+                   AND s.trace_id IN ({placeholders})
+                   AND (a.key LIKE 'iii.tag.%' OR a.key IN ('iii.session.id', 'iii.session.name', 'iii.message.id'))
+                 ORDER BY s.trace_id ASC, s.start_time_ns ASC, s.span_id ASC, a.ordinal ASC"
+            );
+            let mut statement = connection
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare batched trace tag read: {err}"))?;
+            let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() + 1);
+            parameters.push(&epoch);
+            parameters.extend(chunk.iter().map(|id| id as &dyn ToSql));
+            let chunk_tags = statement
+                .query_map(params_from_iter(parameters), |row| {
+                    Ok(TraceTagRow {
+                        trace_id: row.get(0)?,
+                        span_id: row.get(1)?,
+                        start_time_ns: row.get::<_, i64>(2)?.max(0) as u64,
+                        ordinal: row.get::<_, i64>(3)?.max(0) as usize,
+                        key: row.get(4)?,
+                        value: row.get(5)?,
+                    })
+                })
+                .map_err(|err| format!("cannot query batched trace tags: {err}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| format!("cannot read batched trace tag row: {err}"))?;
+            tags.extend(chunk_tags);
+        }
+
+        Ok(tags)
+    }
+
     pub fn get_spans_by_attribute(&self, attribute: &str) -> Result<Vec<StoredSpan>, String> {
         let mut connection = Connection::open(&self.database_path)
             .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
@@ -251,6 +497,83 @@ impl TraceDiskStore {
             .map_err(|err| format!("cannot read attribute trace archive row: {err}"))?;
 
         Ok(self.decode_payloads(rows))
+    }
+
+    /// Return the narrow projection required for grouping an archive by an
+    /// attribute. The `span_attributes_lookup_idx` drives the predicate and
+    /// avoids decoding the complete `payload` column for every match.
+    pub(crate) fn get_group_rows_by_attribute(
+        &self,
+        attribute: &str,
+        label_attribute: Option<&str>,
+    ) -> Result<Vec<TraceGroupRow>, String> {
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for grouping: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut statement = connection
+            .prepare(
+                "SELECT
+                    s.trace_id,
+                    s.span_id,
+                    (SELECT a.value FROM span_attributes a
+                     WHERE a.epoch = s.epoch
+                       AND a.trace_id = s.trace_id
+                       AND a.span_id = s.span_id
+                       AND a.key = ?2
+                     ORDER BY a.ordinal ASC
+                     LIMIT 1) AS group_value,
+                    (SELECT a.value FROM span_attributes a
+                     WHERE a.epoch = s.epoch
+                       AND a.trace_id = s.trace_id
+                       AND a.span_id = s.span_id
+                       AND a.key = ?3
+                     ORDER BY a.ordinal ASC
+                     LIMIT 1) AS label_value,
+                    s.start_time_ns,
+                    s.end_time_ns,
+                    s.pending,
+                    s.status,
+                    EXISTS (
+                        SELECT 1 FROM span_attributes internal_attr
+                        WHERE internal_attr.epoch = s.epoch
+                          AND internal_attr.trace_id = s.trace_id
+                          AND internal_attr.span_id = s.span_id
+                          AND (
+                              (internal_attr.key = 'iii.function.kind' AND internal_attr.value = 'internal')
+                              OR (internal_attr.key = 'function_id' AND internal_attr.value LIKE 'engine::%')
+                          )
+                    ) AS is_internal
+                 FROM spans s
+                 WHERE s.epoch = ?1
+                   AND EXISTS (
+                       SELECT 1 FROM span_attributes grouped
+                       WHERE grouped.epoch = s.epoch
+                         AND grouped.trace_id = s.trace_id
+                         AND grouped.span_id = s.span_id
+                         AND grouped.key = ?2
+                   )",
+            )
+            .map_err(|err| format!("cannot prepare grouped trace read: {err}"))?;
+        let rows = statement
+            .query_map(params![epoch, attribute, label_attribute], |row| {
+                Ok(TraceGroupRow {
+                    trace_id: row.get(0)?,
+                    span_id: row.get(1)?,
+                    value: row.get(2)?,
+                    label: row.get(3)?,
+                    start_time_ns: row.get::<_, i64>(4)? as u64,
+                    end_time_ns: row.get::<_, i64>(5)? as u64,
+                    pending: row.get::<_, i64>(6)? != 0,
+                    status: row.get(7)?,
+                    is_internal: row.get::<_, i64>(8)? != 0,
+                })
+            })
+            .map_err(|err| format!("cannot query grouped trace archive: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("cannot read grouped trace archive row: {err}"))?;
+
+        Ok(rows)
     }
 
     pub fn clear(&self) -> Result<(), String> {
@@ -327,27 +650,27 @@ impl TraceDiskStore {
                 .prepare(
                     "SELECT payload FROM spans WHERE epoch = ?1 AND trace_id = ?2\n                     ORDER BY start_time_ns ASC, span_id ASC",
                 )
-                .map_err(|err| format!("cannot prepare trace read: {err}"))?
+                .map_err(|err| database_error(&self.database_path, "read preparation", err))?
         } else {
             connection
                 .prepare(
                     "SELECT payload FROM spans WHERE epoch = ?1\n                     ORDER BY start_time_ns ASC, trace_id ASC, span_id ASC",
                 )
-                .map_err(|err| format!("cannot prepare trace read: {err}"))?
+                .map_err(|err| database_error(&self.database_path, "read preparation", err))?
         };
 
         let rows = if let Some(trace_id) = trace_id {
             statement
                 .query_map(params![epoch, trace_id], |row| row.get::<_, String>(0))
-                .map_err(|err| format!("cannot query trace archive: {err}"))?
+                .map_err(|err| database_error(&self.database_path, "read query", err))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|err| format!("cannot read trace archive row: {err}"))?
+                .map_err(|err| database_error(&self.database_path, "read row", err))?
         } else {
             statement
                 .query_map(params![epoch], |row| row.get::<_, String>(0))
-                .map_err(|err| format!("cannot query trace archive: {err}"))?
+                .map_err(|err| database_error(&self.database_path, "read query", err))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|err| format!("cannot read trace archive row: {err}"))?
+                .map_err(|err| database_error(&self.database_path, "read row", err))?
         };
 
         Ok(self.decode_payloads(rows))
@@ -555,7 +878,7 @@ fn write_batch(
     let epoch = store.epoch.load(Ordering::Acquire) as i64;
     let tx = connection
         .transaction()
-        .map_err(|err| format!("cannot start trace transaction: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "write transaction start", err))?;
 
     for span in batch {
         if span.pending {
@@ -598,13 +921,25 @@ fn write_batch(
                 approx_bytes,
             ],
         )
-        .map_err(|err| format!("cannot persist trace {}: {err}", span.trace_id))?;
+        .map_err(|err| {
+            database_error(
+                &store.database_path,
+                &format!("write trace '{}'", span.trace_id),
+                err,
+            )
+        })?;
 
         tx.execute(
             "DELETE FROM span_attributes WHERE epoch = ?1 AND trace_id = ?2 AND span_id = ?3",
             params![epoch, span.trace_id, span.span_id],
         )
-        .map_err(|err| format!("cannot replace trace attributes: {err}"))?;
+        .map_err(|err| {
+            database_error(
+                &store.database_path,
+                &format!("replace attributes for trace '{}'", span.trace_id),
+                err,
+            )
+        })?;
         for (ordinal, (key, value)) in span.attributes.iter().enumerate() {
             tx.execute(
                 "INSERT INTO span_attributes (epoch, trace_id, span_id, ordinal, key, value)
@@ -618,7 +953,13 @@ fn write_batch(
                     value
                 ],
             )
-            .map_err(|err| format!("cannot persist trace attribute: {err}"))?;
+            .map_err(|err| {
+                database_error(
+                    &store.database_path,
+                    &format!("write attribute for trace '{}'", span.trace_id),
+                    err,
+                )
+            })?;
         }
 
         tx.execute(
@@ -639,11 +980,17 @@ fn write_batch(
                 approx_bytes,
             ],
         )
-        .map_err(|err| format!("cannot update trace metadata: {err}"))?;
+        .map_err(|err| {
+            database_error(
+                &store.database_path,
+                &format!("update metadata for trace '{}'", span.trace_id),
+                err,
+            )
+        })?;
     }
 
     tx.commit()
-        .map_err(|err| format!("cannot commit trace batch: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "write transaction commit", err))?;
     let _ = connection.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
     Ok(())
 }
@@ -656,8 +1003,12 @@ fn ensure_capacity(
 ) -> Result<(), String> {
     let max_bytes = store.max_disk_bytes.load(Ordering::Acquire);
     let tolerance = (max_bytes / 100).max(8 * 1024 * 1024);
-    let current = directory_size(&store.directory)
-        .map_err(|err| format!("cannot measure trace storage directory: {err}"))?;
+    let current = directory_size(&store.directory).map_err(|err| {
+        format!(
+            "cannot measure trace storage directory '{}': {err}",
+            store.directory.display()
+        )
+    })?;
     if current.saturating_add(incoming_bytes) <= ((max_bytes as f64) * CAP_HIGH_WATERMARK) as u64 {
         return Ok(());
     }
@@ -679,18 +1030,18 @@ fn ensure_capacity(
             "SELECT trace_id, approx_bytes FROM trace_meta
              WHERE epoch = ?1 ORDER BY last_ingest_ns ASC, trace_id ASC",
         )
-        .map_err(|err| format!("cannot prepare trace eviction: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "eviction preparation", err))?;
     let mut candidates = candidate_statement
         .query_map(params![epoch], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
-        .map_err(|err| format!("cannot list trace eviction candidates: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "eviction candidate query", err))?;
     let mut deleted = Vec::new();
     let mut remaining = current;
     while let Some((candidate, candidate_bytes)) = candidates
         .next()
         .transpose()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| database_error(&store.database_path, "eviction candidate read", err))?
     {
         if protected.contains(&candidate) {
             continue;
@@ -705,28 +1056,31 @@ fn ensure_capacity(
     drop(candidate_statement);
 
     if !deleted.is_empty() {
-        let tx = connection
-            .transaction()
-            .map_err(|err| format!("cannot start trace eviction: {err}"))?;
+        let tx = connection.transaction().map_err(|err| {
+            database_error(&store.database_path, "eviction transaction start", err)
+        })?;
         for trace_id in &deleted {
             tx.execute(
                 "DELETE FROM span_attributes WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
             )
-            .map_err(|err| format!("cannot delete trace attributes: {err}"))?;
+            .map_err(|err| {
+                database_error(&store.database_path, "eviction attribute delete", err)
+            })?;
             tx.execute(
                 "DELETE FROM spans WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
             )
-            .map_err(|err| format!("cannot delete trace spans: {err}"))?;
+            .map_err(|err| database_error(&store.database_path, "eviction span delete", err))?;
             tx.execute(
                 "DELETE FROM trace_meta WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
             )
-            .map_err(|err| format!("cannot delete trace metadata: {err}"))?;
+            .map_err(|err| database_error(&store.database_path, "eviction metadata delete", err))?;
         }
-        tx.commit()
-            .map_err(|err| format!("cannot commit trace eviction: {err}"))?;
+        tx.commit().map_err(|err| {
+            database_error(&store.database_path, "eviction transaction commit", err)
+        })?;
         let _ =
             connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;");
     }
@@ -744,22 +1098,22 @@ fn ensure_capacity(
 fn clear_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> Result<(), String> {
     let tx = connection
         .transaction()
-        .map_err(|err| format!("cannot start trace clear: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "clear transaction start", err))?;
     tx.execute("DELETE FROM span_attributes", [])
-        .map_err(|err| format!("cannot clear trace attributes: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "clear attributes", err))?;
     tx.execute("DELETE FROM spans", [])
-        .map_err(|err| format!("cannot clear trace spans: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "clear spans", err))?;
     tx.execute("DELETE FROM trace_meta", [])
-        .map_err(|err| format!("cannot clear trace metadata: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "clear metadata", err))?;
     let next_epoch = store.epoch.fetch_add(1, Ordering::AcqRel) + 1;
     tx.execute(
         "INSERT INTO storage_meta (key, value) VALUES ('epoch', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![next_epoch.to_string()],
     )
-    .map_err(|err| format!("cannot persist trace epoch: {err}"))?;
+    .map_err(|err| database_error(&store.database_path, "clear epoch update", err))?;
     tx.commit()
-        .map_err(|err| format!("cannot commit trace clear: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "clear transaction commit", err))?;
     {
         let mut state = store
             .state
@@ -773,7 +1127,7 @@ fn clear_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> R
              ON CONFLICT(key) DO UPDATE SET value = '0'",
             [],
         )
-        .map_err(|err| format!("cannot reset dropped trace count: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "clear dropped-count update", err))?;
     let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;");
     store.record_success();
     Ok(())
@@ -789,12 +1143,12 @@ fn retain_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> 
     let epoch = store.epoch.load(Ordering::Acquire) as i64;
     let mut statement = connection
         .prepare("SELECT trace_id FROM trace_meta WHERE epoch = ?1 AND last_ingest_ns < ?2")
-        .map_err(|err| format!("cannot prepare trace retention: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "retention preparation", err))?;
     let traces = statement
         .query_map(params![epoch, cutoff as i64], |row| row.get::<_, String>(0))
-        .map_err(|err| format!("cannot query trace retention: {err}"))?
+        .map_err(|err| database_error(&store.database_path, "retention query", err))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("cannot read trace retention: {err}"))?;
+        .map_err(|err| database_error(&store.database_path, "retention row read", err))?;
     drop(statement);
     for trace_id in traces {
         connection
@@ -802,19 +1156,23 @@ fn retain_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> 
                 "DELETE FROM span_attributes WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
             )
-            .map_err(|err| format!("cannot retain trace attributes: {err}"))?;
+            .map_err(|err| {
+                database_error(&store.database_path, "retention attribute delete", err)
+            })?;
         connection
             .execute(
                 "DELETE FROM spans WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
             )
-            .map_err(|err| format!("cannot retain trace spans: {err}"))?;
+            .map_err(|err| database_error(&store.database_path, "retention span delete", err))?;
         connection
             .execute(
                 "DELETE FROM trace_meta WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
             )
-            .map_err(|err| format!("cannot retain trace metadata: {err}"))?;
+            .map_err(|err| {
+                database_error(&store.database_path, "retention metadata delete", err)
+            })?;
     }
     let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;");
     let result = ensure_capacity(store, connection, 0, &[]);
@@ -981,6 +1339,8 @@ fn set_private_permissions(path: &Path, directory: bool) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    #[cfg(unix)]
+    use std::{process::Command, time::Instant};
 
     fn test_config(directory: &Path) -> TraceStorageConfig {
         TraceStorageConfig {
@@ -1087,6 +1447,80 @@ mod tests {
     }
 
     #[test]
+    fn batched_reads_and_paged_reads_preserve_archive_results() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let config = test_config(directory.path());
+        let store = TraceDiskStore::open(&config).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(32, 1_000_000));
+        store.attach_hot_storage(&hot);
+
+        let mut first = test_span("trace-1", "span-1", "first");
+        first.start_time_unix_nano = 1_000;
+        first
+            .attributes
+            .push(("iii.tag.session".to_string(), "earlier".to_string()));
+        let mut second = test_span("trace-2", "span-2", "second");
+        second.start_time_unix_nano = 3_000;
+        second
+            .attributes
+            .push(("iii.tag.message".to_string(), "group-me".to_string()));
+        second
+            .attributes
+            .push(("iii.session.name".to_string(), "trace two".to_string()));
+        let mut third = test_span("trace-3", "span-3", "third");
+        third.start_time_unix_nano = 2_000;
+        hot.add_spans(vec![first, second, third]);
+        store.flush().expect("flush trace store");
+
+        let batched = store
+            .get_spans_by_trace_ids(&[
+                "trace-1".to_string(),
+                "trace-2".to_string(),
+                "trace-1".to_string(),
+            ])
+            .expect("read trace batch");
+        assert_eq!(batched.len(), 2, "duplicate ids must not duplicate rows");
+        assert_eq!(store.span_count().expect("count archive"), 3);
+        assert_eq!(
+            store
+                .existing_span_key_count(&[
+                    ("trace-1".to_string(), "span-1".to_string()),
+                    ("missing".to_string(), "span-0".to_string()),
+                ])
+                .expect("count archive keys"),
+            1
+        );
+
+        let page = store
+            .get_spans_page_by_start_time(1, 1, false)
+            .expect("read descending page");
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].trace_id, "trace-3");
+
+        let groups = store
+            .get_group_rows_by_attribute("iii.tag.message", None)
+            .expect("read group projection");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].trace_id, "trace-2");
+        assert_eq!(groups[0].value, "group-me");
+
+        let tags = store
+            .get_trace_tag_rows_by_trace_ids(&[
+                "trace-1".to_string(),
+                "trace-2".to_string(),
+                "trace-1".to_string(),
+            ])
+            .expect("read batched trace tags");
+        assert_eq!(tags.len(), 3, "only trace-tag attributes are projected");
+        assert_eq!(tags[0].trace_id, "trace-1");
+        assert_eq!(tags[0].key, "iii.tag.session");
+        assert_eq!(tags[0].value, "earlier");
+        assert_eq!(tags[2].trace_id, "trace-2");
+        assert_eq!(tags[2].key, "iii.session.name");
+        store.shutdown();
+    }
+
+    #[test]
     fn hot_cache_preserves_the_existing_memory_only_eviction_contract() {
         let storage = InMemorySpanStorage::new_with_limits_and_watermark(1, 1_000, 0.75);
         let mut pending = test_span("trace-pending", "span-pending", "pending");
@@ -1100,5 +1534,156 @@ mod tests {
         // eviction. Durable mode enables the protection path.
         assert!(storage.get_spans_by_trace_id("trace-pending").is_empty());
         assert_eq!(storage.get_spans_by_trace_id("trace-final").len(), 1);
+    }
+
+    #[test]
+    fn corrupt_archive_is_rejected_without_replacing_the_original_file() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let database_path = directory.path().join("traces.sqlite3");
+        let corrupt_contents = b"this is not a sqlite database";
+        fs::write(&database_path, corrupt_contents).expect("write corrupt archive fixture");
+
+        let error = TraceDiskStore::open(&test_config(directory.path()))
+            .expect_err("a corrupt archive must not start a trace writer");
+
+        assert!(
+            error.contains("cannot initialize trace database"),
+            "unexpected corrupt archive error: {error}"
+        );
+        assert_eq!(
+            fs::read(&database_path).expect("read corrupt archive fixture"),
+            corrupt_contents,
+            "opening a corrupt archive must not replace the original evidence"
+        );
+    }
+
+    #[test]
+    fn disk_cap_rejects_a_protected_trace_without_partial_writes() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let mut config = test_config(directory.path());
+        // The capacity guard has an 8 MiB SQLite allocation tolerance. Keep
+        // the configured limit below it, then write two 3 MiB spans from one
+        // trace. SQLite stores each attribute in both the span payload and
+        // its lookup table, so the first write consumes most of that
+        // allowance. The second cannot evict the earlier row because the
+        // current trace is protected by the incoming batch.
+        config.max_disk_bytes = 1;
+        let store = TraceDiskStore::open(&config).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(16, 20 * 1024 * 1024));
+        store.attach_hot_storage(&hot);
+
+        let mut committed = test_span("trace-protected", "span-1", "large");
+        committed.attributes = vec![("payload".to_string(), "x".repeat(3 * 1024 * 1024))];
+        hot.add_spans(vec![committed]);
+        store
+            .flush()
+            .expect("persist the first span before the cap is reached");
+
+        let mut rejected = test_span("trace-protected", "span-2", "large");
+        rejected.attributes = vec![("payload".to_string(), "x".repeat(3 * 1024 * 1024))];
+        hot.add_spans(vec![rejected]);
+        let error = store
+            .flush()
+            .expect_err("the protected trace must be rejected once it exhausts the disk cap");
+
+        assert!(
+            error.contains("trace storage limit reached"),
+            "unexpected disk-cap error: {error}"
+        );
+        assert_eq!(
+            store
+                .get_spans_by_trace_id("trace-protected")
+                .expect("read committed archive rows")
+                .len(),
+            1,
+            "the failed batch must not partially persist its span"
+        );
+        assert_eq!(
+            hot.dirty_spans(16, 20 * 1024 * 1024).len(),
+            1,
+            "the rejected span must remain eligible for a later retry"
+        );
+
+        store.shutdown();
+        let status = store.status();
+        assert_eq!(status.archive, "degraded");
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .is_some_and(|message| message.contains("trace storage limit reached"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filesystem_write_limit_degrades_archive_without_partial_commit() {
+        const CHILD_MARKER: &str = "III_TRACE_STORE_FILE_LIMIT_CHILD";
+        const CHILD_DIRECTORY: &str = "III_TRACE_STORE_FILE_LIMIT_DIRECTORY";
+
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let directory = PathBuf::from(
+                std::env::var_os(CHILD_DIRECTORY).expect("child trace directory must be provided"),
+            );
+            let store = TraceDiskStore::open(&test_config(&directory)).expect("open trace store");
+            let hot = Arc::new(InMemorySpanStorage::new_with_limits(16, 20 * 1024 * 1024));
+            store.attach_hot_storage(&hot);
+
+            let mut span = test_span("trace-file-limit", "span-1", "large");
+            span.attributes = vec![("payload".to_string(), "x".repeat(3 * 1024 * 1024))];
+            hot.add_spans(vec![span]);
+            store.notify();
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !store.is_degraded() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            let status = store.status();
+            assert_eq!(status.archive, "degraded");
+            assert!(
+                status.last_error.as_deref().is_some_and(|error| {
+                    error.contains("cannot persist trace")
+                        || error.contains("disk I/O error")
+                        || error.contains("database or disk is full")
+                }),
+                "unexpected filesystem-limit error: {:?}",
+                status.last_error
+            );
+            assert_eq!(
+                store
+                    .span_count()
+                    .expect("count archive after failed write"),
+                0,
+                "a filesystem write failure must not commit a partial span"
+            );
+            store.shutdown();
+            return;
+        }
+
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let executable = std::env::current_exe().expect("locate trace-store test binary");
+        let output = Command::new("bash")
+            .args([
+                "-c",
+                // `ulimit -f` applies only to the isolated child process.
+                // Ignore SIGXFSZ so SQLite receives EFBIG and the archive can
+                // report degradation instead of terminating the process.
+                "ulimit -f 1024; trap '' XFSZ; exec \"$1\" --exact \"$2\" --nocapture",
+                "trace-store-file-limit-child",
+            ])
+            .arg(executable)
+            .arg("workers::observability::trace_store::tests::filesystem_write_limit_degrades_archive_without_partial_commit")
+            .env(CHILD_MARKER, "1")
+            .env(CHILD_DIRECTORY, directory.path())
+            .output()
+            .expect("run filesystem-limit child test");
+
+        assert!(
+            output.status.success(),
+            "filesystem-limit child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

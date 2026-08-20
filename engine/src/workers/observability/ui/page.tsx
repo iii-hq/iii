@@ -39,13 +39,13 @@ const BYTE_UNITS: readonly UnitOption[] = [
 ];
 
 const RETENTION_UNITS: readonly UnitOption[] = [
-  { factor: 3_600, label: "horas" },
-  { factor: 86_400, label: "dias" },
+  { factor: 3_600, label: "hours" },
+  { factor: 86_400, label: "days" },
 ];
 
 const PENDING_UNITS: readonly UnitOption[] = [
-  { factor: 60, label: "minutos" },
-  { factor: 3_600, label: "horas" },
+  { factor: 60, label: "minutes" },
+  { factor: 3_600, label: "hours" },
 ];
 
 type SectionId = "overview" | "advanced";
@@ -109,7 +109,7 @@ function detailsOf(component: HealthComponent | undefined): JsonObject {
 
 function formatQuantity(value: number): string {
   const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
-  return rounded.toLocaleString("pt-BR");
+  return rounded.toLocaleString("en-US");
 }
 
 function formatBytes(value: number | undefined): string {
@@ -262,8 +262,8 @@ function Toggle({
   checked,
   onChange,
   disabled = false,
-  onLabel = "Ativado",
-  offLabel = "Desativado",
+  onLabel = "Enabled",
+  offLabel = "Disabled",
 }: ToggleProps) {
   return (
     <button
@@ -398,7 +398,7 @@ function UnitNumberField({
         onBlur={handleBlur}
       />
       <select
-        aria-label="Unidade"
+        aria-label="Unit"
         value={String(Math.min(unitIndex, units.length - 1))}
         disabled={disabled}
         onChange={handleUnitChange}
@@ -433,7 +433,7 @@ function SelectField({
       disabled={disabled}
       onChange={(event) => onChange(event.target.value || undefined)}
     >
-      <option value="">Usar padrão</option>
+      <option value="">Use default</option>
       {options.map((option) => (
         <option key={option.value} value={option.value}>
           {option.label}
@@ -505,16 +505,16 @@ function StatusPill({
 
   if (state === "error") {
     tone = "bad";
-    text = "engine sem resposta";
+    text = "engine unavailable";
   } else if (!health) {
     tone = "muted";
-    text = "atualizando…";
+    text = "updating…";
   } else {
     const status = asString(health.status, "unknown");
     tone = statusTone(status);
-    if (status === "healthy") text = "pipeline saudável · atualiza a cada 5 s";
-    else if (status === "degraded") text = "pipeline degradado · atualiza a cada 5 s";
-    else if (status === "error" || status === "failed") text = "pipeline com falha";
+    if (status === "healthy") text = "healthy pipeline · updates every 5 s";
+    else if (status === "degraded") text = "degraded pipeline · updates every 5 s";
+    else if (status === "error" || status === "failed") text = "pipeline failure";
     else text = `pipeline: ${titleCase(status)}`;
   }
 
@@ -580,14 +580,14 @@ function PersistenceSection({
   const droppedSpans = asNumber(archive.known_dropped_spans, 0);
 
   const hasData = health !== null;
-  let caption = "aguardando dados do engine…";
+  let caption = "waiting for engine data…";
   let tone: MeterTone = "muted";
   if (hasData) {
     if (droppedSpans > 0) {
-      caption = `${droppedSpans.toLocaleString("pt-BR")} spans descartados`;
+      caption = `${droppedSpans.toLocaleString("en-US")} spans dropped`;
       tone = "warn";
     } else {
-      caption = "traces.db + WAL · nenhum trace perdido";
+      caption = "traces.db + WAL · no trace loss";
       tone = "good";
     }
   }
@@ -600,21 +600,21 @@ function PersistenceSection({
             <DatabaseIcon />
           </span>
           <div className="obs-card__titles">
-            <h3>Persistência em disco</h3>
-            <p className="obs-card__description">Histórico de traces em um banco SQLite local.</p>
+            <h3>Disk persistence</h3>
+            <p className="obs-card__description">Trace history stored in a local SQLite database.</p>
           </div>
         </div>
         <Toggle
           checked={enabled}
-          onLabel="Ativa"
-          offLabel="Desativada"
+          onLabel="Enabled"
+          offLabel="Disabled"
           onChange={(next) => updateObject(props, "trace_storage", "enabled", next)}
         />
       </div>
 
       {enabled ? (
         <UsageMeter
-          label="Espaço em uso"
+          label="Storage used"
           used={hasData ? asNumber(archive.physical_bytes, 0) : undefined}
           limit={maxDiskBytes}
           caption={caption}
@@ -624,18 +624,18 @@ function PersistenceSection({
         <div className="obs-banner obs-banner--warn">
           <WarningIcon />
           <div>
-            <strong>Somente memória — o histórico se perde ao reiniciar o engine.</strong>
+            <strong>Memory only — history is lost when the engine restarts.</strong>
             <span>
-              Sem persistência, os traces existem apenas no cache: ao atingir o limite de{" "}
-              {formatBytes(memoryMaxBytes)}, os mais antigos são descartados em definitivo.
+              Without persistence, traces exist only in the cache: once it reaches the{" "}
+              {formatBytes(memoryMaxBytes)} limit, the oldest traces are permanently discarded.
             </span>
           </div>
         </div>
       )}
 
       <Field
-        label="Limite de armazenamento"
-        description="Tamanho máximo do diretório. Ao atingir o limite, os traces mais antigos são apagados primeiro. Mínimo: 64 MiB."
+        label="Storage limit"
+        description="Maximum directory size. Once the limit is reached, the oldest traces are deleted first. Minimum: 64 MiB."
       >
         <UnitNumberField
           id="trace-storage-max-disk"
@@ -647,8 +647,8 @@ function PersistenceSection({
         />
       </Field>
       <Field
-        label="Reter traces por"
-        description="Traces além dessa idade são apagados mesmo com espaço sobrando. Use 0 para reter até o limite de espaço."
+        label="Retain traces for"
+        description="Traces older than this are deleted even when space is available. Use 0 to retain them until the storage limit is reached."
       >
         <UnitNumberField
           id="trace-storage-retention"
@@ -659,8 +659,8 @@ function PersistenceSection({
         />
       </Field>
       <Field
-        label="Diretório dos dados"
-        description="Pasta exclusiva para o banco e os arquivos WAL. Caminhos relativos partem do diretório do engine."
+        label="Data directory"
+        description="Directory reserved for the database and WAL files. Relative paths start from the engine directory."
       >
         <TextField
           id="trace-storage-directory"
@@ -693,14 +693,14 @@ function MemorySection({
   const storedSpans = asNumber(spanDetails.stored_spans, 0);
   const pct = hotBytes !== undefined && memoryMaxBytes > 0 ? (hotBytes / memoryMaxBytes) * 100 : 0;
 
-  let caption = "aguardando dados do engine…";
+  let caption = "waiting for engine data…";
   let tone: MeterTone = "muted";
   if (hasData) {
-    const spansLabel = `${storedSpans.toLocaleString("pt-BR")} spans em memória`;
+    const spansLabel = `${storedSpans.toLocaleString("en-US")} spans in memory`;
     if (pct >= 90) {
       caption = persistenceEnabled
-        ? `${spansLabel} · perto do limite`
-        : `${spansLabel} · perto do limite, traces antigos serão descartados`;
+        ? `${spansLabel} · near the limit`
+        : `${spansLabel} · near the limit, older traces will be discarded`;
       tone = "warn";
     } else {
       caption = spansLabel;
@@ -716,18 +716,18 @@ function MemorySection({
             <ChipIcon />
           </span>
           <div className="obs-card__titles">
-            <h3>Uso de memória</h3>
+            <h3>Memory usage</h3>
             <p className="obs-card__description">
               {persistenceEnabled
-                ? "Traces recentes ficam em RAM para consulta imediata."
-                : "Com a persistência desativada, o cache é o único armazenamento."}
+                ? "Recent traces stay in RAM for immediate queries."
+                : "With persistence disabled, the cache is the only storage."}
             </p>
           </div>
         </div>
       </div>
 
       <UsageMeter
-        label="Cache em uso"
+        label="Cache used"
         used={hotBytes}
         limit={memoryMaxBytes}
         caption={caption}
@@ -735,11 +735,11 @@ function MemorySection({
       />
 
       <Field
-        label="Limite do cache"
+        label="Cache limit"
         description={
           persistenceEnabled
-            ? "Acima disso, os traces mais antigos saem da memória e passam a ser lidos do disco. Mínimo: 16 MiB."
-            : "Acima disso, os traces mais antigos saem da memória. Sem persistência, eles são perdidos. Mínimo: 16 MiB."
+            ? "Above this limit, older traces leave memory and are read from disk instead. Minimum: 16 MiB."
+            : "Above this limit, older traces leave memory. Without persistence, they are lost. Minimum: 16 MiB."
         }
       >
         <NumberField
@@ -759,8 +759,8 @@ function MemorySection({
         />
       </Field>
       <Field
-        label="Manter após a limpeza"
-        description="Cada limpeza libera memória até o uso cair para esta fração do limite. Entre 50% e 95%."
+        label="Keep after cleanup"
+        description="Each cleanup frees memory until usage falls to this fraction of the limit. Between 50% and 95%."
       >
         <NumberField
           id="trace-storage-low-watermark"
@@ -780,8 +780,8 @@ function MemorySection({
         />
       </Field>
       <Field
-        label="Descartar trace inacabado após"
-        description="Um trace que nunca recebe o span final é fechado e liberado da memória após esse tempo."
+        label="Discard incomplete trace after"
+        description="A trace that never receives its final span is closed and released from memory after this time."
       >
         <UnitNumberField
           id="trace-storage-pending-age"
@@ -793,8 +793,8 @@ function MemorySection({
         />
       </Field>
       <Field
-        label="Spans retidos pelo exportador"
-        description="Vale para os exportadores Memória e Memória + OTLP. Vazio usa o padrão do engine."
+        label="Spans retained by exporter"
+        description="Applies to the Memory and Memory + OTLP exporters. Empty uses the engine default."
         className="obs-field--separated"
       >
         <NumberField
@@ -803,7 +803,7 @@ function MemorySection({
           min={1}
           step={1_000}
           suffix="spans"
-          placeholder="padrão do engine"
+          placeholder="engine default"
           onChange={(value) => updateRoot(props, "memory_max_spans", value)}
         />
       </Field>
@@ -820,30 +820,30 @@ function PipelineSection({ props }: { props: ConfigFormProps }) {
     <section className="obs-card">
       <div className="obs-card__header">
         <div className="obs-card__titles">
-          <h3>Coleta e exportação</h3>
-          <p className="obs-card__description">Como o engine coleta, amostra e encaminha a telemetria.</p>
+          <h3>Collection and export</h3>
+          <p className="obs-card__description">How the engine collects, samples, and forwards telemetry.</p>
         </div>
         <Toggle
           checked={enabled}
-          onLabel="Ativa"
-          offLabel="Desativada"
+          onLabel="Enabled"
+          offLabel="Disabled"
           onChange={(next) => updateRoot(props, "enabled", next)}
         />
       </div>
       <div className="obs-form-grid obs-form-grid--three">
-        <Field label="Exportador" description="Para onde os spans concluídos são enviados.">
+        <Field label="Exporter" description="Where completed spans are sent.">
           <SelectField
             id="pipeline-exporter"
             value={exporter || undefined}
             options={[
-              { value: "memory", label: "Memória" },
+              { value: "memory", label: "Memory" },
               { value: "otlp", label: "OTLP" },
-              { value: "both", label: "Memória + OTLP" },
+              { value: "both", label: "Memory + OTLP" },
             ]}
             onChange={(value) => updateRoot(props, "exporter", value)}
           />
         </Field>
-        <Field label="Nome do serviço" description="Identifica este engine nos traces exportados.">
+        <Field label="Service name" description="Identifies this engine in exported traces.">
           <TextField
             id="pipeline-service-name"
             value={asString(root.service_name)}
@@ -851,18 +851,18 @@ function PipelineSection({ props }: { props: ConfigFormProps }) {
             onChange={(value) => updateRoot(props, "service_name", value)}
           />
         </Field>
-        <Field label="Amostragem" description="1.0 mantém todos os traces; 0.1 mantém 1 em cada 10.">
+        <Field label="Sampling" description="1.0 keeps all traces; 0.1 keeps 1 in 10.">
           <NumberField
             id="pipeline-sampling-ratio"
             value={root.sampling_ratio === undefined ? undefined : asNumber(root.sampling_ratio)}
             min={0}
             max={1}
             step={0.05}
-            suffix="proporção"
+            suffix="ratio"
             onChange={(value) => updateRoot(props, "sampling_ratio", value)}
           />
         </Field>
-        <Field label="Endpoint OTLP" description="Usado apenas com exportador OTLP ou Memória + OTLP.">
+        <Field label="OTLP endpoint" description="Used only with the OTLP or Memory + OTLP exporter.">
           <TextField
             id="pipeline-endpoint"
             value={asString(root.endpoint)}
@@ -870,11 +870,11 @@ function PipelineSection({ props }: { props: ConfigFormProps }) {
             onChange={(value) => updateRoot(props, "endpoint", value)}
           />
         </Field>
-        <Field label="Spans ao vivo" description="Inclui traces em andamento nas consultas do console.">
+        <Field label="Live spans" description="Includes in-progress traces in Console queries.">
           <Toggle
             checked={asBoolean(root.live_spans)}
-            onLabel="Ativados"
-            offLabel="Desativados"
+            onLabel="Enabled"
+            offLabel="Disabled"
             onChange={(next) => updateRoot(props, "live_spans", next)}
           />
         </Field>
@@ -892,9 +892,9 @@ function SamplingSection({ props }: { props: ConfigFormProps }) {
     <section className="obs-card">
       <div className="obs-card__header">
         <div>
-          <p className="obs-kicker">Avançado · Amostragem</p>
-          <h3>Regras de amostragem</h3>
-          <p className="obs-card__description">Priorize operações importantes sem perder o controle de volume.</p>
+          <p className="obs-kicker">Advanced · Sampling</p>
+          <h3>Sampling rules</h3>
+          <p className="obs-card__description">Prioritize important operations without losing control of volume.</p>
         </div>
       </div>
       <div className="obs-form-grid obs-form-grid--three">
@@ -905,11 +905,11 @@ function SamplingSection({ props }: { props: ConfigFormProps }) {
             min={0}
             max={1}
             step={0.05}
-            suffix="proporção"
+            suffix="ratio"
             onChange={(value) => updateObject(props, "sampling", "default", value)}
           />
         </Field>
-        <Field label="Parent based" description="Herdar a decisão do span pai.">
+        <Field label="Parent-based" description="Inherit the decision from the parent span.">
           <Toggle
             checked={asBoolean(sampling.parent_based)}
             onChange={(next) => updateObject(props, "sampling", "parent_based", next)}
@@ -930,19 +930,19 @@ function SamplingSection({ props }: { props: ConfigFormProps }) {
       <div className="obs-subsection">
         <div className="obs-subsection__header">
           <div>
-            <strong>Regras por operação</strong>
-            <span>Aplicadas na ordem em que aparecem.</span>
+            <strong>Rules by operation</strong>
+            <span>Applied in the order shown.</span>
           </div>
           <button
             type="button"
             className="obs-button obs-button--secondary"
             onClick={() => addNestedArrayItem(props, "sampling", "rules", { rate: 0.1 })}
           >
-            Adicionar regra
+            Add rule
           </button>
         </div>
         {rules.length === 0 ? (
-          <div className="obs-empty">Nenhuma regra específica. O default ratio será usado.</div>
+          <div className="obs-empty">No specific rules. The default ratio will be used.</div>
         ) : (
           <div className="obs-rules">
             {rules.map((rawRule, index) => {
@@ -976,7 +976,7 @@ function SamplingSection({ props }: { props: ConfigFormProps }) {
                     min={0}
                     max={1}
                     step={0.05}
-                    suffix="proporção"
+                    suffix="ratio"
                     onChange={(value) => updateNestedArrayItem(props, "sampling", "rules", index, (item) => ({
                       ...item,
                       rate: value ?? 0,
@@ -1007,25 +1007,25 @@ function MetricsLogsSection({ props }: { props: ConfigFormProps }) {
     <section className="obs-card">
       <div className="obs-card__header">
         <div>
-          <p className="obs-kicker">Avançado · Sinais</p>
-          <h3>Métricas e logs</h3>
-          <p className="obs-card__description">Ajuste retenção e exportação sem alterar os traces.</p>
+          <p className="obs-kicker">Advanced · Signals</p>
+          <h3>Metrics and logs</h3>
+          <p className="obs-card__description">Adjust retention and export without changing traces.</p>
         </div>
       </div>
       <div className="obs-signal-grid">
         <div className="obs-signal-panel">
           <div className="obs-signal-panel__header">
-            <div><strong>Metrics</strong><span>Indicadores agregados do engine.</span></div>
+            <div><strong>Metrics</strong><span>Aggregated engine metrics.</span></div>
             <Toggle
               checked={asBoolean(root.metrics_enabled)}
               onChange={(next) => updateRoot(props, "metrics_enabled", next)}
             />
           </div>
-          <Field label="Exportador">
+          <Field label="Exporter">
             <SelectField
               id="metrics-exporter"
               value={asString(root.metrics_exporter) || undefined}
-              options={[{ value: "memory", label: "Memória" }, { value: "otlp", label: "OTLP" }]}
+              options={[{ value: "memory", label: "Memory" }, { value: "otlp", label: "OTLP" }]}
               onChange={(value) => updateRoot(props, "metrics_exporter", value)}
             />
           </Field>
@@ -1035,7 +1035,7 @@ function MetricsLogsSection({ props }: { props: ConfigFormProps }) {
               value={root.metrics_max_count === undefined ? undefined : asNumber(root.metrics_max_count)}
               min={1}
               step={1000}
-              suffix="itens"
+              suffix="items"
               onChange={(value) => updateRoot(props, "metrics_max_count", value)}
             />
           </Field>
@@ -1045,32 +1045,32 @@ function MetricsLogsSection({ props }: { props: ConfigFormProps }) {
               value={root.metrics_retention_seconds === undefined ? undefined : asNumber(root.metrics_retention_seconds)}
               min={1}
               step={60}
-              suffix="segundos"
+              suffix="seconds"
               onChange={(value) => updateRoot(props, "metrics_retention_seconds", value)}
             />
           </Field>
         </div>
         <div className="obs-signal-panel">
           <div className="obs-signal-panel__header">
-            <div><strong>Logs</strong><span>Eventos estruturados e saída do engine.</span></div>
+            <div><strong>Logs</strong><span>Structured events and engine output.</span></div>
             <Toggle checked={asBoolean(root.logs_enabled, true)} onChange={(next) => updateRoot(props, "logs_enabled", next)} />
           </div>
-          <Field label="Exportador">
+          <Field label="Exporter">
             <SelectField
               id="logs-exporter"
               value={asString(root.logs_exporter) || undefined}
-              options={[{ value: "memory", label: "Memória" }, { value: "otlp", label: "OTLP" }, { value: "both", label: "Memória + OTLP" }]}
+              options={[{ value: "memory", label: "Memory" }, { value: "otlp", label: "OTLP" }, { value: "both", label: "Memory + OTLP" }]}
               onChange={(value) => updateRoot(props, "logs_exporter", value)}
             />
           </Field>
-          <Field label="Amostragem">
+          <Field label="Sampling">
             <NumberField
               id="logs-sampling-ratio"
               value={asNumber(root.logs_sampling_ratio, 1)}
               min={0}
               max={1}
               step={0.05}
-              suffix="proporção"
+              suffix="ratio"
               onChange={(value) => updateRoot(props, "logs_sampling_ratio", value)}
             />
           </Field>
@@ -1117,7 +1117,7 @@ function TextJsonField({
   };
 
   return (
-    <Field label={label} description="JSON avançado; campos não editados permanecem preservados.">
+    <Field label={label} description="Advanced JSON; unedited fields remain preserved.">
       <textarea
         id={id}
         className={invalid ? "is-invalid" : ""}
@@ -1127,7 +1127,7 @@ function TextJsonField({
         onChange={(event) => setText(event.target.value)}
         onBlur={handleBlur}
       />
-      {invalid ? <span className="obs-field__error">JSON inválido. Corrija antes de sair do campo.</span> : null}
+      {invalid ? <span className="obs-field__error">Invalid JSON. Fix it before leaving this field.</span> : null}
     </Field>
   );
 }
@@ -1141,9 +1141,9 @@ function AdvancedSections({ props }: { props: ConfigFormProps }) {
       <section className="obs-card">
         <div className="obs-card__header">
           <div>
-            <p className="obs-kicker">Avançado · Runtime</p>
-            <h3>Runtime e regras</h3>
-            <p className="obs-card__description">Opções menos frequentes ficam separadas para manter a visão geral operacional.</p>
+            <p className="obs-kicker">Advanced · Runtime</p>
+            <h3>Runtime and rules</h3>
+            <p className="obs-card__description">Less frequent options are separated to keep the overview operational.</p>
           </div>
         </div>
         <div className="obs-form-grid obs-form-grid--three">
@@ -1180,7 +1180,7 @@ function AdvancedSections({ props }: { props: ConfigFormProps }) {
               value={root.logs_max_count === undefined ? undefined : asNumber(root.logs_max_count)}
               min={1}
               step={100}
-              suffix="itens"
+              suffix="items"
               onChange={(value) => updateRoot(props, "logs_max_count", value)}
             />
           </Field>
@@ -1190,7 +1190,7 @@ function AdvancedSections({ props }: { props: ConfigFormProps }) {
               value={root.logs_retention_seconds === undefined ? undefined : asNumber(root.logs_retention_seconds)}
               min={1}
               step={60}
-              suffix="segundos"
+              suffix="seconds"
               onChange={(value) => updateRoot(props, "logs_retention_seconds", value)}
             />
           </Field>
@@ -1209,8 +1209,8 @@ function ErrorSummary({ errors }: { errors?: ReadonlyMap<string, string> }) {
   if (entries.length === 0) return null;
   return (
     <div className="obs-error-summary" role="alert">
-      <strong>Revise os campos antes de salvar</strong>
-      {entries.map(([path, message]) => <span key={`${path}:${message}`}>{path || "configuração"}: {message}</span>)}
+      <strong>Review the fields before saving</strong>
+      {entries.map(([path, message]) => <span key={`${path}:${message}`}>{path || "configuration"}: {message}</span>)}
     </div>
   );
 }
@@ -1259,7 +1259,7 @@ export function ObservabilityConfigPage({ healthCheck, ...props }: Observability
   return (
     <div className="iii-observability-ui">
       <div className="obs-toolbar">
-        <div className="obs-tabs" role="tablist" aria-label="Seções de configuração">
+        <div className="obs-tabs" role="tablist" aria-label="Configuration sections">
           {(["overview", "advanced"] as const).map((id) => (
             <button
               type="button"
@@ -1269,7 +1269,7 @@ export function ObservabilityConfigPage({ healthCheck, ...props }: Observability
               key={id}
               onClick={() => setSection(id)}
             >
-              {id === "overview" ? "Visão geral" : "Avançado"}
+              {id === "overview" ? "Overview" : "Advanced"}
             </button>
           ))}
         </div>

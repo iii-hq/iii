@@ -31,11 +31,11 @@ use opentelemetry_sdk::{
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::Subscriber;
@@ -1168,6 +1168,59 @@ pub fn trace_storage_status() -> super::trace_store::TraceStorageStatus {
     }
 }
 
+/// Test-only controls for the durable trace archive. They are compiled only
+/// into this crate's self-dev-dependency, so external users never receive a
+/// trace-store control surface and production code keeps the writer fully
+/// asynchronous.
+#[cfg(feature = "test-adapters")]
+#[doc(hidden)]
+pub mod trace_storage_test_support {
+    use super::*;
+
+    pub fn configure(config: Option<TraceStorageConfig>) {
+        configure_trace_storage(config);
+    }
+
+    pub fn attach(hot: &Arc<InMemorySpanStorage>) {
+        attach_trace_disk_storage(hot);
+    }
+
+    pub fn flush() -> Result<(), String> {
+        get_trace_disk_storage()
+            .ok_or_else(|| disabled_error("flush"))?
+            .flush()
+    }
+
+    pub fn retain() -> Result<(), String> {
+        get_trace_disk_storage()
+            .ok_or_else(|| disabled_error("retention"))?
+            .retain()
+    }
+
+    pub fn read_spans() -> Result<Vec<StoredSpan>, String> {
+        get_trace_disk_storage()
+            .ok_or_else(|| disabled_error("read"))?
+            .get_spans()
+    }
+
+    pub fn status() -> serde_json::Value {
+        serde_json::to_value(trace_storage_status()).expect("trace storage status serializes")
+    }
+
+    pub fn reset() {
+        configure_trace_storage(None);
+        *TRACE_STORAGE_INIT_ERROR
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    fn disabled_error(operation: &str) -> String {
+        trace_storage_status()
+            .last_error
+            .unwrap_or_else(|| format!("trace disk storage is disabled; cannot {operation}"))
+    }
+}
+
 /// Get the global in-memory span storage (if initialized).
 pub fn get_span_storage() -> Option<Arc<InMemorySpanStorage>> {
     IN_MEMORY_STORAGE.get().cloned()
@@ -1177,10 +1230,13 @@ pub fn get_span_storage() -> Option<Arc<InMemorySpanStorage>> {
 /// by `(trace_id, span_id)`, which keeps pending and not-yet-committed finals
 /// visible without duplicating the durable version.
 pub fn get_query_spans() -> Vec<StoredSpan> {
+    let started = Instant::now();
     let mut merged = HashMap::<(String, String), StoredSpan>::new();
+    let mut archive_count = 0;
     if let Some(archive) = get_trace_disk_storage() {
         match archive.get_spans() {
             Ok(spans) => {
+                archive_count = spans.len();
                 for span in spans {
                     merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
                 }
@@ -1188,12 +1244,101 @@ pub fn get_query_spans() -> Vec<StoredSpan> {
             Err(error) => archive.mark_degraded(error),
         }
     }
+    let mut hot_count = 0;
     if let Some(storage) = get_span_storage() {
-        for span in storage.get_spans() {
+        let hot = storage.get_spans();
+        hot_count = hot.len();
+        for span in hot {
             merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
         }
     }
-    merged.into_values().collect()
+    let spans: Vec<_> = merged.into_values().collect();
+    tracing::debug!(
+        query_view = "all_spans",
+        archive_spans = archive_count,
+        hot_spans = hot_count,
+        result_spans = spans.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace query view materialized"
+    );
+    spans
+}
+
+/// A page over the merged hot + durable span view. The archive query applies
+/// ordering and pagination before JSON payloads are decoded; enough extra disk
+/// rows are fetched to account for hot rows overriding durable versions.
+pub(crate) struct QuerySpanPage {
+    pub spans: Vec<StoredSpan>,
+    pub total: usize,
+}
+
+pub(crate) fn get_query_spans_page_by_start_time(
+    offset: usize,
+    limit: usize,
+    ascending: bool,
+) -> QuerySpanPage {
+    let started = Instant::now();
+    let mut hot_by_key = HashMap::<(String, String), StoredSpan>::new();
+    if let Some(storage) = get_span_storage() {
+        for span in storage.get_spans() {
+            hot_by_key.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        }
+    }
+    let hot_keys: Vec<_> = hot_by_key.keys().cloned().collect();
+    let hot_count = hot_by_key.len();
+    let requested = offset.saturating_add(limit);
+    let mut total = hot_count;
+    let mut disk_spans = Vec::new();
+
+    if let Some(archive) = get_trace_disk_storage() {
+        match (
+            archive.span_count(),
+            archive.existing_span_key_count(&hot_keys),
+        ) {
+            (Ok(disk_total), Ok(overlaid)) => {
+                total = disk_total
+                    .saturating_sub(overlaid)
+                    .saturating_add(hot_count);
+                // At most `hot_count` durable rows can be hidden by the hot
+                // overlay, so this window contains enough candidates to fill
+                // the requested merged page without decoding older history.
+                let disk_limit = requested.saturating_add(hot_count);
+                if disk_limit > 0 {
+                    match archive.get_spans_page_by_start_time(0, disk_limit, ascending) {
+                        Ok(spans) => disk_spans = spans,
+                        Err(error) => archive.mark_degraded(error),
+                    }
+                }
+            }
+            (Err(error), _) | (_, Err(error)) => archive.mark_degraded(error),
+        }
+    }
+
+    let mut merged: Vec<_> = disk_spans
+        .into_iter()
+        .filter(|span| !hot_by_key.contains_key(&(span.trace_id.clone(), span.span_id.clone())))
+        .collect();
+    merged.extend(hot_by_key.into_values());
+    merged.sort_by(|a, b| {
+        let order = a
+            .start_time_unix_nano
+            .cmp(&b.start_time_unix_nano)
+            .then_with(|| a.trace_id.cmp(&b.trace_id))
+            .then_with(|| a.span_id.cmp(&b.span_id));
+        if ascending { order } else { order.reverse() }
+    });
+    let spans: Vec<_> = merged.into_iter().skip(offset).take(limit).collect();
+    tracing::debug!(
+        query_view = "all_spans_page",
+        offset,
+        limit,
+        hot_spans = hot_count,
+        total_spans = total,
+        returned_spans = spans.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace query page materialized"
+    );
+    QuerySpanPage { spans, total }
 }
 
 /// Return only trace roots for the default list view. The archive query is
@@ -1202,10 +1347,13 @@ pub fn get_query_spans() -> Vec<StoredSpan> {
 /// search/group operations still use the full trace path where their semantics
 /// require child spans.
 pub fn get_query_root_spans() -> Vec<StoredSpan> {
+    let started = Instant::now();
     let mut merged = HashMap::<(String, String), StoredSpan>::new();
+    let mut archive_count = 0;
     if let Some(archive) = get_trace_disk_storage() {
         match archive.get_root_spans() {
             Ok(spans) => {
+                archive_count = spans.len();
                 for span in spans {
                     merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
                 }
@@ -1213,8 +1361,11 @@ pub fn get_query_root_spans() -> Vec<StoredSpan> {
             Err(error) => archive.mark_degraded(error),
         }
     }
+    let mut hot_count = 0;
     if let Some(storage) = get_span_storage() {
-        for span in storage.get_spans() {
+        let hot = storage.get_spans();
+        hot_count = hot.len();
+        for span in hot {
             merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
         }
     }
@@ -1224,21 +1375,39 @@ pub fn get_query_root_spans() -> Vec<StoredSpan> {
     // by the existing list implementation after overlaying hot rows.
     let present_span_ids: HashSet<String> =
         merged.values().map(|span| span.span_id.clone()).collect();
-    merged
+    let spans: Vec<_> = merged
         .into_values()
         .filter(|span| {
             span.parent_span_id
                 .as_ref()
                 .is_none_or(|parent| !present_span_ids.contains(parent))
         })
-        .collect()
+        .collect();
+    tracing::debug!(
+        query_view = "root_spans",
+        archive_spans = archive_count,
+        hot_spans = hot_count,
+        result_spans = spans.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace query view materialized"
+    );
+    spans
 }
 
 pub fn get_query_spans_by_trace_id(trace_id: &str) -> Vec<StoredSpan> {
+    get_query_spans_by_trace_ids(&[trace_id.to_string()])
+}
+
+/// Return a merged view for several traces with one archive query per bounded
+/// batch. Hot rows win over durable rows by `(trace_id, span_id)`.
+pub fn get_query_spans_by_trace_ids(trace_ids: &[String]) -> Vec<StoredSpan> {
+    let started = Instant::now();
     let mut merged = HashMap::<(String, String), StoredSpan>::new();
+    let mut archive_count = 0;
     if let Some(archive) = get_trace_disk_storage() {
-        match archive.get_spans_by_trace_id(trace_id) {
+        match archive.get_spans_by_trace_ids(trace_ids) {
             Ok(spans) => {
+                archive_count = spans.len();
                 for span in spans {
                     merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
                 }
@@ -1246,12 +1415,103 @@ pub fn get_query_spans_by_trace_id(trace_id: &str) -> Vec<StoredSpan> {
             Err(error) => archive.mark_degraded(error),
         }
     }
+    let mut hot_count = 0;
     if let Some(storage) = get_span_storage() {
-        for span in storage.get_spans_by_trace_id(trace_id) {
-            merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        for trace_id in trace_ids {
+            let hot = storage.get_spans_by_trace_id(trace_id);
+            hot_count += hot.len();
+            for span in hot {
+                merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+            }
         }
     }
-    merged.into_values().collect()
+    let spans: Vec<_> = merged.into_values().collect();
+    tracing::debug!(
+        query_view = "trace_ids",
+        requested_trace_ids = trace_ids.len(),
+        archive_spans = archive_count,
+        hot_spans = hot_count,
+        result_spans = spans.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace query view materialized"
+    );
+    spans
+}
+
+/// Return trace-level tags for a page of traces without decoding every span
+/// payload. The durable side projects only the tag attributes from SQLite;
+/// the hot cache replaces durable spans by key before the newest-wins merge.
+pub(crate) fn get_query_trace_tags_by_trace_ids(
+    trace_ids: &[String],
+) -> HashMap<String, BTreeMap<String, String>> {
+    let started = Instant::now();
+    let mut archive_rows = Vec::new();
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.get_trace_tag_rows_by_trace_ids(trace_ids) {
+            Ok(rows) => archive_rows = rows,
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+
+    let mut hot_by_key = HashMap::<(String, String), StoredSpan>::new();
+    if let Some(storage) = get_span_storage() {
+        let mut unique_trace_ids = HashSet::with_capacity(trace_ids.len());
+        for trace_id in trace_ids {
+            if !unique_trace_ids.insert(trace_id.as_str()) {
+                continue;
+            }
+            for span in storage.get_spans_by_trace_id(trace_id) {
+                hot_by_key.insert((span.trace_id.clone(), span.span_id.clone()), span);
+            }
+        }
+    }
+
+    let mut rows: Vec<_> = archive_rows
+        .into_iter()
+        .filter(|row| !hot_by_key.contains_key(&(row.trace_id.clone(), row.span_id.clone())))
+        .collect();
+    for span in hot_by_key.into_values() {
+        for (ordinal, (key, value)) in span.attributes.into_iter().enumerate() {
+            if key.starts_with("iii.tag.")
+                || matches!(
+                    key.as_str(),
+                    "iii.session.id" | "iii.session.name" | "iii.message.id"
+                )
+            {
+                rows.push(super::trace_store::TraceTagRow {
+                    trace_id: span.trace_id.clone(),
+                    span_id: span.span_id.clone(),
+                    start_time_ns: span.start_time_unix_nano,
+                    ordinal,
+                    key,
+                    value,
+                });
+            }
+        }
+    }
+    rows.sort_by(|a, b| {
+        a.trace_id
+            .cmp(&b.trace_id)
+            .then_with(|| a.start_time_ns.cmp(&b.start_time_ns))
+            .then_with(|| a.span_id.cmp(&b.span_id))
+            .then_with(|| a.ordinal.cmp(&b.ordinal))
+    });
+
+    let mut tags_by_trace_id = HashMap::<String, BTreeMap<String, String>>::new();
+    for row in rows {
+        tags_by_trace_id
+            .entry(row.trace_id)
+            .or_default()
+            .insert(row.key, row.value);
+    }
+    tracing::debug!(
+        query_view = "trace_tags",
+        requested_trace_ids = trace_ids.len(),
+        returned_traces = tags_by_trace_id.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace tag query completed"
+    );
+    tags_by_trace_id
 }
 
 pub fn get_query_spans_by_attribute(attribute: &str) -> Vec<StoredSpan> {
@@ -1274,6 +1534,79 @@ pub fn get_query_spans_by_attribute(attribute: &str) -> Vec<StoredSpan> {
         }
     }
     merged.into_values().collect()
+}
+
+/// Return only the fields `group_by` needs. Archive rows are projected by
+/// SQLite rather than deserialized from their full span payload; hot spans
+/// overlay durable rows just like the full query view does.
+pub(crate) fn get_query_group_rows_by_attribute(
+    attribute: &str,
+    label_attribute: Option<&str>,
+) -> Vec<super::trace_store::TraceGroupRow> {
+    let started = Instant::now();
+    let mut merged = HashMap::<(String, String), super::trace_store::TraceGroupRow>::new();
+    let mut archive_count = 0;
+    if let Some(archive) = get_trace_disk_storage() {
+        match archive.get_group_rows_by_attribute(attribute, label_attribute) {
+            Ok(rows) => {
+                archive_count = rows.len();
+                for row in rows {
+                    merged.insert((row.trace_id.clone(), row.span_id.clone()), row);
+                }
+            }
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+
+    let mut hot_count = 0;
+    if let Some(storage) = get_span_storage() {
+        for span in storage.get_spans() {
+            let key = (span.trace_id.clone(), span.span_id.clone());
+            // A hot span is authoritative even if its final version no longer
+            // carries the group attribute that the durable predecessor had.
+            merged.remove(&key);
+            let Some((_, value)) = span.attributes.iter().find(|(key, _)| key == attribute) else {
+                continue;
+            };
+            hot_count += 1;
+            let label = label_attribute.and_then(|label_key| {
+                span.attributes
+                    .iter()
+                    .find(|(key, _)| key == label_key)
+                    .map(|(_, value)| value.clone())
+            });
+            let is_internal = span.attributes.iter().any(|(key, value)| {
+                (key == "iii.function.kind" && value == "internal")
+                    || (key == "function_id" && value.starts_with("engine::"))
+            });
+            merged.insert(
+                key,
+                super::trace_store::TraceGroupRow {
+                    trace_id: span.trace_id,
+                    span_id: span.span_id,
+                    value: value.clone(),
+                    label,
+                    start_time_ns: span.start_time_unix_nano,
+                    end_time_ns: span.end_time_unix_nano,
+                    pending: span.pending,
+                    status: span.status,
+                    is_internal,
+                },
+            );
+        }
+    }
+
+    let rows: Vec<_> = merged.into_values().collect();
+    tracing::debug!(
+        query_view = "group_by",
+        attribute,
+        archive_rows = archive_count,
+        hot_rows = hot_count,
+        result_rows = rows.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace group projection materialized"
+    );
+    rows
 }
 
 /// In-memory span exporter that stores spans in a circular buffer.

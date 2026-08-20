@@ -19,7 +19,7 @@ use std::{
     collections::{HashMap, HashSet},
     pin::Pin,
     sync::Arc,
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use async_trait::async_trait;
@@ -171,33 +171,6 @@ pub struct TracesTreeResult {
 pub struct TracesGroupByResult {
     pub groups: Vec<TraceGroup>,
     pub storage: Value,
-}
-
-/// Generic trace-tag namespace: `iii.tag.<key>` span attributes (stamped via
-/// OTel baggage; see the SDK `BaggageSpanProcessor` allowed prefixes).
-const TRACE_TAG_PREFIX: &str = "iii.tag.";
-
-/// Identity attributes surfaced alongside `iii.tag.*` as trace-level tags.
-const TRACE_TAG_EXACT_KEYS: &[&str] = &["iii.session.id", "iii.session.name", "iii.message.id"];
-
-/// Merge trace-level tags from every span of a trace. Worker-set baggage
-/// never lands on the engine-side root `call` span (it starts before the
-/// handler runs), so listing roots alone would miss these; the row instead
-/// carries the union, newest span winning on key conflicts (e.g. renames).
-fn collect_trace_tags(
-    trace_spans: &[otel::StoredSpan],
-) -> std::collections::BTreeMap<String, String> {
-    let mut spans: Vec<&otel::StoredSpan> = trace_spans.iter().collect();
-    spans.sort_by_key(|s| s.start_time_unix_nano);
-    let mut tags = std::collections::BTreeMap::new();
-    for span in spans {
-        for (k, v) in &span.attributes {
-            if k.starts_with(TRACE_TAG_PREFIX) || TRACE_TAG_EXACT_KEYS.contains(&k.as_str()) {
-                tags.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    tags
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -2191,20 +2164,44 @@ impl ObservabilityWorker {
         match otel::get_span_storage() {
             Some(_storage) => {
                 let search_all = input.search_all_spans.unwrap_or(false);
-                let all_spans = if let Some(ref trace_id) = input.trace_id {
-                    otel::get_query_spans_by_trace_id(trace_id)
-                } else if let Some(ref trace_ids) = input.trace_ids {
-                    trace_ids
-                        .iter()
-                        .flat_map(|id| otel::get_query_spans_by_trace_id(id))
-                        .collect()
-                } else if search_all {
-                    otel::get_query_spans()
-                } else {
-                    otel::get_query_root_spans()
-                };
-
                 let include_internal = input.include_internal.unwrap_or(false);
+                let offset = input.offset.unwrap_or(0);
+                let limit = input.limit.unwrap_or(100);
+                let sort_order_asc = input
+                    .sort_order
+                    .as_deref()
+                    .map(|order| order.eq_ignore_ascii_case("asc"))
+                    .unwrap_or(true);
+                let is_unfiltered_all_spans_page = search_all
+                    && include_internal
+                    && input.trace_id.is_none()
+                    && input.trace_ids.is_none()
+                    && input.service_name.is_none()
+                    && input.name.is_none()
+                    && input.status.is_none()
+                    && input.min_duration_ms.is_none()
+                    && input.max_duration_ms.is_none()
+                    && input.start_time.is_none()
+                    && input.end_time.is_none()
+                    && input.attributes.is_none()
+                    && input.exclude_attributes.is_none()
+                    && matches!(input.sort_by.as_deref(), None | Some("start_time"));
+                let query_started = Instant::now();
+                let (all_spans, prepaginated_total) = if is_unfiltered_all_spans_page {
+                    let page =
+                        otel::get_query_spans_page_by_start_time(offset, limit, sort_order_asc);
+                    (page.spans, Some(page.total))
+                } else if let Some(ref trace_id) = input.trace_id {
+                    (otel::get_query_spans_by_trace_id(trace_id), None)
+                } else if let Some(ref trace_ids) = input.trace_ids {
+                    (otel::get_query_spans_by_trace_ids(trace_ids), None)
+                } else if search_all {
+                    (otel::get_query_spans(), None)
+                } else {
+                    (otel::get_query_root_spans(), None)
+                };
+                let query_view_elapsed = query_started.elapsed();
+
                 // One "now" for the whole listing — pending spans measure
                 // duration-so-far / activity against it.
                 let now_ns = otel::now_unix_nanos();
@@ -2375,12 +2372,7 @@ impl ObservabilityWorker {
                         true
                     })
                     .collect();
-
-                let sort_order_asc = input
-                    .sort_order
-                    .as_deref()
-                    .map(|o| o.eq_ignore_ascii_case("asc"))
-                    .unwrap_or(true);
+                let filtering_elapsed = query_started.elapsed();
 
                 filtered.sort_by(|a, b| {
                     let cmp = match input.sort_by.as_deref().unwrap_or("start_time") {
@@ -2399,33 +2391,62 @@ impl ObservabilityWorker {
                     };
                     if sort_order_asc { cmp } else { cmp.reverse() }
                 });
+                let sorting_elapsed = query_started.elapsed();
 
-                let total = filtered.len();
-                let offset = input.offset.unwrap_or(0);
-                let limit = input.limit.unwrap_or(100);
+                let total = prepaginated_total.unwrap_or(filtered.len());
+                let spans: Vec<_> = if prepaginated_total.is_some() {
+                    filtered
+                } else {
+                    filtered.into_iter().skip(offset).take(limit).collect()
+                };
 
-                let spans: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
+                let page_trace_ids: Vec<String> = spans
+                    .iter()
+                    .map(|span| span.trace_id.clone())
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                let tag_started = Instant::now();
+                let tags_by_trace_id = otel::get_query_trace_tags_by_trace_ids(&page_trace_ids);
+                let tag_elapsed = tag_started.elapsed();
+                let serialization_started = Instant::now();
+                let result_spans: Vec<Value> = spans
+                    .into_iter()
+                    .map(|s| {
+                        let tags = tags_by_trace_id
+                            .get(&s.trace_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut value = serde_json::to_value(s).unwrap_or(Value::Null);
+                        if !tags.is_empty()
+                            && let Value::Object(ref mut map) = value
+                        {
+                            map.insert(
+                                "trace_tags".to_string(),
+                                serde_json::to_value(tags).unwrap_or(Value::Null),
+                            );
+                        }
+                        value
+                    })
+                    .collect();
+                let serialization_elapsed = serialization_started.elapsed();
+                tracing::debug!(
+                    operation = "engine::traces::list",
+                    search_all_spans = search_all,
+                    total,
+                    returned_spans = result_spans.len(),
+                    unique_page_traces = page_trace_ids.len(),
+                    query_view_ms = query_view_elapsed.as_secs_f64() * 1_000.0,
+                    filtering_ms = (filtering_elapsed - query_view_elapsed).as_secs_f64() * 1_000.0,
+                    sorting_ms = (sorting_elapsed - filtering_elapsed).as_secs_f64() * 1_000.0,
+                    tag_enrichment_ms = tag_elapsed.as_secs_f64() * 1_000.0,
+                    serialization_ms = serialization_elapsed.as_secs_f64() * 1_000.0,
+                    total_ms = query_started.elapsed().as_secs_f64() * 1_000.0,
+                    "trace list query completed"
+                );
 
                 FunctionResult::Success(TracesListResult {
-                    spans: spans
-                        .into_iter()
-                        .map(|s| {
-                            // Attach trace-level tags to the returned page only
-                            // (per-row index lookup, bounded by `limit`).
-                            let tags =
-                                collect_trace_tags(&otel::get_query_spans_by_trace_id(&s.trace_id));
-                            let mut value = serde_json::to_value(s).unwrap_or(Value::Null);
-                            if !tags.is_empty()
-                                && let Value::Object(ref mut map) = value
-                            {
-                                map.insert(
-                                    "trace_tags".to_string(),
-                                    serde_json::to_value(tags).unwrap_or(Value::Null),
-                                );
-                            }
-                            value
-                        })
-                        .collect(),
+                    spans: result_spans,
                     total,
                     offset,
                     limit,
@@ -2509,7 +2530,12 @@ impl ObservabilityWorker {
     ) -> FunctionResult<TracesGroupByResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(_storage) => {
-                let all_spans = otel::get_query_spans_by_attribute(&input.attribute);
+                let query_started = Instant::now();
+                let all_spans = otel::get_query_group_rows_by_attribute(
+                    &input.attribute,
+                    input.label_attribute.as_deref(),
+                );
+                let query_elapsed = query_started.elapsed();
 
                 let include_internal = input.include_internal.unwrap_or(false);
                 let since_ns = input.since_ms.map(|ms| ms.saturating_mul(1_000_000));
@@ -2531,14 +2557,8 @@ impl ObservabilityWorker {
                     std::collections::HashMap::new();
 
                 for span in &all_spans {
-                    if !include_internal {
-                        let is_internal = span.attributes.iter().any(|(k, v)| {
-                            (k == "iii.function.kind" && v == "internal")
-                                || (k == "function_id" && v.starts_with("engine::"))
-                        });
-                        if is_internal {
-                            continue;
-                        }
+                    if !include_internal && span.is_internal {
+                        continue;
                     }
                     if let Some(min_ns) = since_ns
                         && span.effective_end_ns(now_ns) < min_ns
@@ -2546,39 +2566,36 @@ impl ObservabilityWorker {
                         continue;
                     }
 
-                    let value = match span.attributes.iter().find(|(k, _)| k == &input.attribute) {
-                        Some((_, v)) => v.clone(),
-                        None => continue,
-                    };
-
                     let is_error = span.status.eq_ignore_ascii_case("error");
-                    let entry = groups.entry(value).or_insert_with(|| GroupBuilder {
-                        trace_ids: std::collections::HashSet::new(),
-                        span_count: 0,
-                        first_seen_ns: span.start_time_unix_nano,
-                        last_seen_ns: span.effective_end_ns(now_ns),
-                        error_count: 0,
-                        label: None,
-                        label_seen_at_ns: 0,
-                    });
+                    let entry = groups
+                        .entry(span.value.clone())
+                        .or_insert_with(|| GroupBuilder {
+                            trace_ids: std::collections::HashSet::new(),
+                            span_count: 0,
+                            first_seen_ns: span.start_time_ns,
+                            last_seen_ns: span.effective_end_ns(now_ns),
+                            error_count: 0,
+                            label: None,
+                            label_seen_at_ns: 0,
+                        });
                     entry.trace_ids.insert(span.trace_id.clone());
                     entry.span_count += 1;
-                    entry.first_seen_ns = entry.first_seen_ns.min(span.start_time_unix_nano);
+                    entry.first_seen_ns = entry.first_seen_ns.min(span.start_time_ns);
                     entry.last_seen_ns = entry.last_seen_ns.max(span.effective_end_ns(now_ns));
                     if is_error {
                         entry.error_count += 1;
                     }
                     // Newest span carrying the label attribute wins, so e.g.
                     // session renames surface on the group heading.
-                    if let Some(ref label_key) = input.label_attribute
-                        && span.start_time_unix_nano >= entry.label_seen_at_ns
-                        && let Some((_, label)) =
-                            span.attributes.iter().find(|(k, _)| k == label_key)
+                    if span.start_time_ns >= entry.label_seen_at_ns
+                        && let Some(label) = &span.label
                     {
                         entry.label = Some(label.clone());
-                        entry.label_seen_at_ns = span.start_time_unix_nano;
+                        entry.label_seen_at_ns = span.start_time_ns;
                     }
                 }
+
+                let grouping_elapsed = query_started.elapsed();
 
                 let mut result: Vec<TraceGroup> = groups
                     .into_iter()
@@ -2605,6 +2622,16 @@ impl ObservabilityWorker {
 
                 result.sort_by(|a, b| b.first_seen_ms.cmp(&a.first_seen_ms));
                 result.truncate(limit);
+                tracing::debug!(
+                    operation = "engine::traces::group_by",
+                    attribute = %input.attribute,
+                    source_rows = all_spans.len(),
+                    returned_groups = result.len(),
+                    query_view_ms = query_elapsed.as_secs_f64() * 1_000.0,
+                    grouping_ms = (grouping_elapsed - query_elapsed).as_secs_f64() * 1_000.0,
+                    total_ms = query_started.elapsed().as_secs_f64() * 1_000.0,
+                    "trace group query completed"
+                );
 
                 FunctionResult::Success(TracesGroupByResult {
                     groups: result,
@@ -8471,6 +8498,52 @@ mod tests {
                     .map(|s| s["trace_id"].as_str().unwrap())
                     .collect();
                 assert_eq!(trace_ids, vec!["t-1", "t-3"]);
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_pages_unfiltered_all_spans_before_archive_decode() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        span_storage.add_spans(vec![
+            make_span("t-1", "s-1", None, "one", "svc", 1_000, 1_100, "OK", vec![]),
+            make_span("t-2", "s-2", None, "two", "svc", 2_000, 2_100, "OK", vec![]),
+            make_span(
+                "t-3",
+                "s-3",
+                None,
+                "three",
+                "svc",
+                3_000,
+                3_100,
+                "OK",
+                vec![],
+            ),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                offset: Some(1),
+                limit: Some(1),
+                sort_by: Some("start_time".to_string()),
+                sort_order: Some("desc".to_string()),
+                include_internal: Some(true),
+                search_all_spans: Some(true),
+                ..Default::default()
+            })
+            .await;
+
+        match result {
+            FunctionResult::Success(value) => {
+                assert_eq!(value.total, 3);
+                assert_eq!(value.spans.len(), 1);
+                assert_eq!(value.spans[0]["trace_id"], "t-2");
             }
             _ => panic!("expected list_traces success"),
         }

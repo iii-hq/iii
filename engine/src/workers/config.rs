@@ -8,6 +8,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     future::Future,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, LazyLock, RwLock},
 };
@@ -28,6 +29,29 @@ const MIGRATED_BUILTIN_WORKERS: &[(&str, &str)] = &[
     ("iii-state", "state"),
     ("iii-pubsub", "pubsub"),
 ];
+
+/// The config watcher observes the parent directory so atomic editor writes
+/// (`tmp` + rename) are visible. Only reload when the configured file itself
+/// changed; otherwise an engine log, SQLite WAL, or any sibling file would
+/// repeatedly rebuild every worker.
+fn config_event_touches_path(changed_paths: &[PathBuf], configured_path: &Path) -> bool {
+    let configured = absolutize_path(configured_path);
+    changed_paths
+        .iter()
+        .any(|changed| absolutize_path(changed) == configured)
+}
+
+fn absolutize_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    })
+}
 
 // =============================================================================
 // EngineConfig (YAML structure)
@@ -965,13 +989,16 @@ impl EngineBuilder {
         let _watcher = if let Some(ref path) = config_path {
             let tx = config_change_tx.clone();
             let watched_path = std::path::PathBuf::from(path);
+            let configured_path = absolutize_path(&watched_path);
 
             let mut watcher = notify::RecommendedWatcher::new(
                 move |res: Result<notify::Event, notify::Error>| {
                     if let Ok(event) = res {
                         use notify::EventKind;
                         match event.kind {
-                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
+                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                                if config_event_touches_path(&event.paths, &configured_path) =>
+                            {
                                 let _ = tx.try_send(());
                             }
                             _ => {}
@@ -2479,6 +2506,20 @@ workers:
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.modules.is_empty());
         assert!(config.workers.is_empty());
+    }
+
+    #[test]
+    fn config_watcher_ignores_sibling_files() {
+        let config = PathBuf::from("/tmp/iii-config-watch-test/config.yaml");
+        assert!(config_event_touches_path(&[config.clone()], &config,));
+        assert!(config_event_touches_path(
+            &[PathBuf::from("/tmp/iii-config-watch-test/./config.yaml")],
+            &config,
+        ));
+        assert!(!config_event_touches_path(
+            &[PathBuf::from("/tmp/iii-config-watch-test/engine.log")],
+            &config,
+        ));
     }
 
     #[test]
