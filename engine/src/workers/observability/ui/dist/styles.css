@@ -1,7 +1,4 @@
 /* styles.css */
-div.max-w-3xl:has([data-iii-ui=iii-observability]) {
-  max-width: 1100px;
-}
 @scope ([data-iii-ui="iii-observability"]) {
   .iii-observability-ui {
     --obs-bg: var(--color-panel, #f9f9f9);
