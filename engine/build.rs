@@ -21,10 +21,9 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=../pnpm-lock.yaml");
 
-    if assets
-        .iter()
-        .all(|asset| asset.exists() && is_fresh(asset, &ui_dir))
-    {
+    let assets_available = assets.iter().all(|asset| asset.exists());
+
+    if assets_available && assets.iter().all(|asset| is_fresh(asset, &ui_dir)) {
         return;
     }
 
@@ -41,11 +40,21 @@ fn main() {
         return;
     }
 
-    let status = Command::new("pnpm")
+    let status = match Command::new("pnpm")
         .args(["build"])
         .current_dir(&ui_dir)
         .status()
-        .unwrap_or_else(|error| panic!("failed to run pnpm in {}: {error}", ui_dir.display()));
+    {
+        Ok(status) => status,
+        Err(error) if assets_available => {
+            println!(
+                "cargo:warning=pnpm is unavailable ({error}); using prebuilt observability UI assets from {}",
+                dist_dir.display()
+            );
+            return;
+        }
+        Err(error) => panic!("failed to run pnpm in {}: {error}", ui_dir.display()),
+    };
     if !status.success() {
         panic!("`pnpm build` failed in {} with {status}", ui_dir.display());
     }

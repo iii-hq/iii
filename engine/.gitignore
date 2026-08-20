@@ -8,6 +8,9 @@ worker_py/__pycache__/
 .vscode/
 .bin/
 dist/
+!src/workers/observability/ui/dist/
+!src/workers/observability/ui/dist/page.js
+!src/workers/observability/ui/dist/styles.css
 .DS_Store
 .idea/
 .cursor/
