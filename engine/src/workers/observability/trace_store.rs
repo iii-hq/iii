@@ -41,6 +41,31 @@ const CAP_LOW_WATERMARK: f64 = 0.80;
 /// by the epoch, leaving a margin for future query predicates.
 const TRACE_ID_QUERY_CHUNK: usize = 900;
 
+/// A span is a trace root when it has no parent or its parent row is absent.
+/// The dangling-parent half covers traces that entered iii from an external
+/// caller via an incoming `traceparent`. Requires the enclosing query to
+/// alias the spans table as `s`.
+const ROOT_SPAN_PREDICATE_SQL: &str = "(s.parent_span_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM spans p
+    WHERE p.epoch = s.epoch
+      AND p.trace_id = s.trace_id
+      AND p.span_id = s.parent_span_id
+))";
+
+/// Internal engine spans, matching the in-memory rule used by the list and
+/// group handlers. Requires the enclosing query to alias the spans table as
+/// `s`.
+const INTERNAL_SPAN_PREDICATE_SQL: &str = "EXISTS (
+    SELECT 1 FROM span_attributes internal_attr
+    WHERE internal_attr.epoch = s.epoch
+      AND internal_attr.trace_id = s.trace_id
+      AND internal_attr.span_id = s.span_id
+      AND (
+          (internal_attr.key = 'iii.function.kind' AND internal_attr.value = 'internal')
+          OR (internal_attr.key = 'function_id' AND internal_attr.value LIKE 'engine::%')
+      )
+)";
+
 fn database_error(database_path: &Path, operation: &str, error: impl std::fmt::Display) -> String {
     format!(
         "trace storage {operation} failed for '{}': {error}",
@@ -339,18 +364,14 @@ impl TraceDiskStore {
             .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
         configure_read_connection(&mut connection)?;
         let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let query = format!(
+            "SELECT s.payload FROM spans s
+             WHERE s.epoch = ?1
+               AND {ROOT_SPAN_PREDICATE_SQL}
+             ORDER BY s.start_time_ns ASC, s.trace_id ASC, s.span_id ASC"
+        );
         let mut statement = connection
-            .prepare(
-                "SELECT s.payload FROM spans s
-                 WHERE s.epoch = ?1
-                   AND (s.parent_span_id IS NULL OR NOT EXISTS (
-                       SELECT 1 FROM spans p
-                       WHERE p.epoch = s.epoch
-                         AND p.trace_id = s.trace_id
-                         AND p.span_id = s.parent_span_id
-                   ))
-                 ORDER BY s.start_time_ns ASC, s.trace_id ASC, s.span_id ASC",
-            )
+            .prepare(&query)
             .map_err(|err| format!("cannot prepare root trace read: {err}"))?;
         let rows = statement
             .query_map(params![epoch], |row| row.get::<_, String>(0))
@@ -359,6 +380,166 @@ impl TraceDiskStore {
             .map_err(|err| format!("cannot read root trace archive row: {err}"))?;
 
         Ok(self.decode_payloads(rows))
+    }
+
+    /// Read a chronological window of trace roots without decoding rows
+    /// outside the window. Root and internal filtering happen in SQL so the
+    /// default list view never materializes the full archive; callers merge
+    /// the window with the hot cache afterwards.
+    pub fn get_root_spans_page_by_start_time(
+        &self,
+        offset: usize,
+        limit: usize,
+        ascending: bool,
+        include_internal: bool,
+    ) -> Result<Vec<StoredSpan>, String> {
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| database_error(&self.database_path, "root page open", err))?;
+        configure_read_connection(&mut connection)
+            .map_err(|err| database_error(&self.database_path, "root page initialization", err))?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let order = if ascending { "ASC" } else { "DESC" };
+        let query = format!(
+            "SELECT s.payload FROM spans s
+             WHERE s.epoch = ?1
+               AND {ROOT_SPAN_PREDICATE_SQL}
+               AND (?2 OR NOT {INTERNAL_SPAN_PREDICATE_SQL})
+             ORDER BY s.start_time_ns {order}, s.trace_id {order}, s.span_id {order}
+             LIMIT ?3 OFFSET ?4"
+        );
+        let mut statement = connection
+            .prepare(&query)
+            .map_err(|err| format!("cannot prepare paged root trace read: {err}"))?;
+        let rows = statement
+            .query_map(
+                params![epoch, include_internal, limit as i64, offset as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|err| format!("cannot query paged root trace archive: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("cannot read paged root trace archive row: {err}"))?;
+        Ok(self.decode_payloads(rows))
+    }
+
+    /// Count trace roots without decoding any payload.
+    pub fn root_span_count(&self, include_internal: bool) -> Result<usize, String> {
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for counting: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let query = format!(
+            "SELECT COUNT(*) FROM spans s
+             WHERE s.epoch = ?1
+               AND {ROOT_SPAN_PREDICATE_SQL}
+               AND (?2 OR NOT {INTERNAL_SPAN_PREDICATE_SQL})"
+        );
+        connection
+            .query_row(&query, params![epoch, include_internal], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|count| count.max(0) as usize)
+            .map_err(|err| format!("cannot count trace archive roots: {err}"))
+    }
+
+    /// Count keys that `root_span_count` counted and a hot overlay shadows,
+    /// so the merged root total can subtract them without decoding payloads.
+    pub fn existing_root_span_key_count(
+        &self,
+        keys: &[(String, String)],
+        include_internal: bool,
+    ) -> Result<usize, String> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for counting: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut unique = HashSet::with_capacity(keys.len());
+        let keys: Vec<_> = keys
+            .iter()
+            .filter(|key| unique.insert((key.0.as_str(), key.1.as_str())))
+            .collect();
+        let mut total = 0usize;
+
+        // Two bind variables per key plus the epoch and the internal flag.
+        for chunk in keys.chunks(TRACE_ID_QUERY_CHUNK / 2) {
+            let conditions = std::iter::repeat_n("(s.trace_id = ? AND s.span_id = ?)", chunk.len())
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let query = format!(
+                "SELECT COUNT(*) FROM spans s
+                 WHERE s.epoch = ?
+                   AND {ROOT_SPAN_PREDICATE_SQL}
+                   AND (? OR NOT {INTERNAL_SPAN_PREDICATE_SQL})
+                   AND ({conditions})"
+            );
+            let mut statement = connection
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare root key count: {err}"))?;
+            let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 2 + 2);
+            parameters.push(&epoch);
+            parameters.push(&include_internal);
+            for (trace_id, span_id) in chunk {
+                parameters.push(trace_id as &dyn ToSql);
+                parameters.push(span_id as &dyn ToSql);
+            }
+            let count = statement
+                .query_row(params_from_iter(parameters), |row| row.get::<_, i64>(0))
+                .map_err(|err| format!("cannot count trace archive root keys: {err}"))?;
+            total = total.saturating_add(count.max(0) as usize);
+        }
+
+        Ok(total)
+    }
+
+    /// Return which of the given keys exist on disk. Used to decide whether a
+    /// hot span's parent lives in the archive (and thus the hot span is not a
+    /// root) without decoding any payload.
+    pub fn existing_span_keys(
+        &self,
+        keys: &[(String, String)],
+    ) -> Result<HashSet<(String, String)>, String> {
+        if keys.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for key lookup: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut unique = HashSet::with_capacity(keys.len());
+        let keys: Vec<_> = keys
+            .iter()
+            .filter(|key| unique.insert((key.0.as_str(), key.1.as_str())))
+            .collect();
+        let mut present = HashSet::new();
+
+        for chunk in keys.chunks(TRACE_ID_QUERY_CHUNK / 2) {
+            let conditions = std::iter::repeat_n("(trace_id = ? AND span_id = ?)", chunk.len())
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let query =
+                format!("SELECT trace_id, span_id FROM spans WHERE epoch = ? AND ({conditions})");
+            let mut statement = connection
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare span key lookup: {err}"))?;
+            let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() * 2 + 1);
+            parameters.push(&epoch);
+            for (trace_id, span_id) in chunk {
+                parameters.push(trace_id as &dyn ToSql);
+                parameters.push(span_id as &dyn ToSql);
+            }
+            let chunk_keys = statement
+                .query_map(params_from_iter(parameters), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|err| format!("cannot query span key lookup: {err}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| format!("cannot read span key lookup row: {err}"))?;
+            present.extend(chunk_keys);
+        }
+
+        Ok(present)
     }
 
     pub fn get_spans_by_trace_id(&self, trace_id: &str) -> Result<Vec<StoredSpan>, String> {
@@ -513,49 +694,41 @@ impl TraceDiskStore {
             .map_err(|err| format!("cannot open trace archive for grouping: {err}"))?;
         configure_read_connection(&mut connection)?;
         let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let query = format!(
+            "SELECT
+                s.trace_id,
+                s.span_id,
+                (SELECT a.value FROM span_attributes a
+                 WHERE a.epoch = s.epoch
+                   AND a.trace_id = s.trace_id
+                   AND a.span_id = s.span_id
+                   AND a.key = ?2
+                 ORDER BY a.ordinal ASC
+                 LIMIT 1) AS group_value,
+                (SELECT a.value FROM span_attributes a
+                 WHERE a.epoch = s.epoch
+                   AND a.trace_id = s.trace_id
+                   AND a.span_id = s.span_id
+                   AND a.key = ?3
+                 ORDER BY a.ordinal ASC
+                 LIMIT 1) AS label_value,
+                s.start_time_ns,
+                s.end_time_ns,
+                s.pending,
+                s.status,
+                {INTERNAL_SPAN_PREDICATE_SQL} AS is_internal
+             FROM spans s
+             WHERE s.epoch = ?1
+               AND EXISTS (
+                   SELECT 1 FROM span_attributes grouped
+                   WHERE grouped.epoch = s.epoch
+                     AND grouped.trace_id = s.trace_id
+                     AND grouped.span_id = s.span_id
+                     AND grouped.key = ?2
+               )"
+        );
         let mut statement = connection
-            .prepare(
-                "SELECT
-                    s.trace_id,
-                    s.span_id,
-                    (SELECT a.value FROM span_attributes a
-                     WHERE a.epoch = s.epoch
-                       AND a.trace_id = s.trace_id
-                       AND a.span_id = s.span_id
-                       AND a.key = ?2
-                     ORDER BY a.ordinal ASC
-                     LIMIT 1) AS group_value,
-                    (SELECT a.value FROM span_attributes a
-                     WHERE a.epoch = s.epoch
-                       AND a.trace_id = s.trace_id
-                       AND a.span_id = s.span_id
-                       AND a.key = ?3
-                     ORDER BY a.ordinal ASC
-                     LIMIT 1) AS label_value,
-                    s.start_time_ns,
-                    s.end_time_ns,
-                    s.pending,
-                    s.status,
-                    EXISTS (
-                        SELECT 1 FROM span_attributes internal_attr
-                        WHERE internal_attr.epoch = s.epoch
-                          AND internal_attr.trace_id = s.trace_id
-                          AND internal_attr.span_id = s.span_id
-                          AND (
-                              (internal_attr.key = 'iii.function.kind' AND internal_attr.value = 'internal')
-                              OR (internal_attr.key = 'function_id' AND internal_attr.value LIKE 'engine::%')
-                          )
-                    ) AS is_internal
-                 FROM spans s
-                 WHERE s.epoch = ?1
-                   AND EXISTS (
-                       SELECT 1 FROM span_attributes grouped
-                       WHERE grouped.epoch = s.epoch
-                         AND grouped.trace_id = s.trace_id
-                         AND grouped.span_id = s.span_id
-                         AND grouped.key = ?2
-                   )",
-            )
+            .prepare(&query)
             .map_err(|err| format!("cannot prepare grouped trace read: {err}"))?;
         let rows = statement
             .query_map(params![epoch, attribute, label_attribute], |row| {
@@ -1519,6 +1692,99 @@ mod tests {
         assert_eq!(tags[0].value, "earlier");
         assert_eq!(tags[2].trace_id, "trace-2");
         assert_eq!(tags[2].key, "iii.session.name");
+        store.shutdown();
+    }
+
+    #[test]
+    fn paged_root_reads_match_the_full_root_query() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let config = test_config(directory.path());
+        let store = TraceDiskStore::open(&config).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(32, 1_000_000));
+        store.attach_hot_storage(&hot);
+
+        let mut root_a = test_span("trace-a", "root-a", "a");
+        root_a.start_time_unix_nano = 1_000;
+        let mut child_a = test_span("trace-a", "child-a", "a-child");
+        child_a.parent_span_id = Some("root-a".to_string());
+        child_a.start_time_unix_nano = 1_500;
+        // Dangling parent: the remote caller's span is never stored → root.
+        let mut dangling = test_span("trace-b", "root-b", "b");
+        dangling.parent_span_id = Some("remote-span".to_string());
+        dangling.start_time_unix_nano = 2_000;
+        let mut internal_kind = test_span("trace-c", "root-c", "c");
+        internal_kind.start_time_unix_nano = 3_000;
+        internal_kind
+            .attributes
+            .push(("iii.function.kind".to_string(), "internal".to_string()));
+        let mut internal_fn = test_span("trace-d", "root-d", "d");
+        internal_fn.start_time_unix_nano = 4_000;
+        internal_fn
+            .attributes
+            .push(("function_id".to_string(), "engine::traces::list".to_string()));
+        hot.add_spans(vec![root_a, child_a, dangling, internal_kind, internal_fn]);
+        store.flush().expect("flush trace store");
+
+        assert_eq!(store.root_span_count(true).expect("count all roots"), 4);
+        assert_eq!(
+            store.root_span_count(false).expect("count external roots"),
+            2
+        );
+
+        let all_roots = store
+            .get_root_spans_page_by_start_time(0, 10, true, true)
+            .expect("page all roots");
+        assert_eq!(
+            all_roots
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root-a", "root-b", "root-c", "root-d"],
+            "paged roots must match the full root query, children excluded"
+        );
+
+        let external = store
+            .get_root_spans_page_by_start_time(0, 10, false, false)
+            .expect("page external roots descending");
+        assert_eq!(
+            external
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root-b", "root-a"],
+            "internal roots excluded, descending order"
+        );
+
+        let window = store
+            .get_root_spans_page_by_start_time(1, 1, true, true)
+            .expect("offset/limit window");
+        assert_eq!(window.len(), 1);
+        assert_eq!(window[0].span_id, "root-b");
+
+        assert_eq!(
+            store
+                .existing_root_span_key_count(
+                    &[
+                        ("trace-a".to_string(), "root-a".to_string()),
+                        ("trace-a".to_string(), "child-a".to_string()),
+                        ("trace-c".to_string(), "root-c".to_string()),
+                        ("missing".to_string(), "missing".to_string()),
+                    ],
+                    false,
+                )
+                .expect("count shadowed external roots"),
+            1,
+            "children, internal roots and absent keys must not count"
+        );
+        assert_eq!(
+            store
+                .existing_span_keys(&[
+                    ("trace-a".to_string(), "child-a".to_string()),
+                    ("missing".to_string(), "missing".to_string()),
+                ])
+                .expect("look up span keys"),
+            HashSet::from([("trace-a".to_string(), "child-a".to_string())])
+        );
         store.shutdown();
     }
 

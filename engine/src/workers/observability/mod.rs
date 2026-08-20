@@ -492,8 +492,29 @@ fn healthy_component(details: Value) -> Value {
     })
 }
 
+// Cheap by design: `status()` stats ~3 files (db + WAL sidecars); a blocking
+// task hop would cost more than the fs metadata reads it avoids.
 fn trace_storage_status_value() -> Value {
     serde_json::to_value(otel::trace_storage_status()).unwrap_or(Value::Null)
+}
+
+/// Run an archive-touching query off the async executor. Every trace-archive
+/// read opens a SQLite connection and decodes JSON payloads (and `clear`
+/// waits on the writer thread), so handlers must not run them on a tokio
+/// worker. JoinError only occurs on closure panic or runtime shutdown; map it
+/// to a failure instead of propagating the panic into the handler.
+async fn run_blocking_query<T: Send + 'static>(
+    operation: &'static str,
+    query: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ErrorBody> {
+    tokio::task::spawn_blocking(query)
+        .await
+        .map_err(|join_error| {
+            ErrorBody::new(
+                "observability_blocking_task_failed",
+                format!("{operation} background task failed: {join_error}"),
+            )
+        })
 }
 
 fn disabled_component() -> Value {
@@ -1098,8 +1119,10 @@ impl ObservabilityWorker {
     /// - LIMITS: storage capacities/retention are re-applied unconditionally
     ///   (idempotent atomics), so a catch-up apply converges even when the
     ///   value itself did not change.
-    /// - SWAP: sampler, alert rules, collapse-rule cache, and the engine log
-    ///   level are rebuilt only when their fields changed.
+    /// - SWAP: sampler, alert rules, collapse-rule cache, the engine log
+    ///   level, and the durable trace archive (`trace_storage.enabled` /
+    ///   `directory` replace the store live, backfilling the hot cache) are
+    ///   rebuilt only when their fields changed.
     /// - TASK-REBUILD: the log-retention, OTLP-logs-exporter, and log-trigger
     ///   subscriber tasks are respawned when their captured settings changed or
     ///   when `logs_enabled` flips false->true (which revives the store in the
@@ -1156,6 +1179,58 @@ impl ObservabilityWorker {
         // installed, per the reload above).
         otel::update_otel_config(effective);
 
+        // SWAP tier (trace archive): `enabled`/`directory` changes replace the
+        // durable store live. Runs BEFORE the LIMITS tier so `update_limits`
+        // and the hot-cache dirty-protection logic see the post-swap archive.
+        // A `None` block never swaps: legacy memory-only configs keep their
+        // boot behavior. Limits-only edits skip this and take the cheap
+        // `update_limits` path below.
+        let swap_key = |storage: &Option<config::TraceStorageConfig>| {
+            storage
+                .as_ref()
+                .map(|storage| (storage.enabled, storage.directory.clone()))
+        };
+        if new.trace_storage.is_some() && swap_key(&old.trace_storage) != swap_key(&new.trace_storage)
+        {
+            if otel::get_span_storage().is_some() {
+                let next = new.trace_storage.clone();
+                let enabled = next.as_ref().is_some_and(|storage| storage.enabled);
+                let directory = next
+                    .as_ref()
+                    .map(|storage| storage.directory.clone())
+                    .unwrap_or_default();
+                // Shutting the previous store down drains dirty spans and can
+                // block for seconds; keep it off the async executor.
+                tokio::task::spawn_blocking(move || {
+                    otel::configure_trace_storage(next);
+                    if let Some(hot) = otel::get_span_storage() {
+                        otel::attach_trace_disk_storage(&hot);
+                        if let Some(archive) = otel::get_trace_disk_storage() {
+                            // The old store's shutdown drain emptied the dirty
+                            // set; re-mark the hot cache so the new archive
+                            // backfills instead of starting empty.
+                            hot.mark_all_dirty();
+                            archive.notify();
+                        }
+                    }
+                })
+                .await
+                .map_err(|join_error| {
+                    anyhow::anyhow!("trace archive reconfigure task panicked: {join_error}")
+                })?;
+                tracing::info!(
+                    enabled,
+                    directory = %directory,
+                    "iii-observability: trace archive reconfigured"
+                );
+            } else {
+                tracing::debug!(
+                    "iii-observability: span pipeline not initialized; trace storage \
+                     changes apply at the next engine start"
+                );
+            }
+        }
+
         // LIMITS tier: idempotent, applied unconditionally.
         if let Some(storage) = otel::get_span_storage()
             && let Some(max) = new.memory_max_spans
@@ -1168,9 +1243,10 @@ impl ObservabilityWorker {
             storage.set_low_watermark_ratio(trace_storage.memory_low_watermark_ratio);
             storage.set_max_bytes(trace_storage.memory_max_bytes);
         }
+        // No `enabled` guard: after the swap tier a disabled config leaves no
+        // installed archive, so the `get_trace_disk_storage()` gate suffices.
         if let Some(archive) = otel::get_trace_disk_storage()
             && let Some(trace_storage) = &new.trace_storage
-            && trace_storage.enabled
         {
             archive.update_limits(trace_storage);
         }
@@ -2128,23 +2204,45 @@ impl ObservabilityWorker {
             return; // No in-memory store → nothing to correct against.
         };
         let collapse_rules = cached_collapse_rules();
-        let collapse_rules = collapse_rules.as_slice();
 
-        let mut arrived_by_trace: HashMap<&str, HashSet<String>> = HashMap::new();
+        let mut arrived_by_trace: HashMap<String, HashSet<String>> = HashMap::new();
         for span in batch {
             arrived_by_trace
-                .entry(&span.trace_id)
+                .entry(span.trace_id.clone())
                 .or_default()
                 .insert(span.span_id.clone());
         }
 
-        for (trace_id, arrived_ids) in arrived_by_trace {
-            let full_trace = otel::get_query_spans_by_trace_id(trace_id);
-            let to_send = corrected_detail_spans(full_trace, &arrived_ids, collapse_rules);
-            if !to_send.is_empty()
-                && let Ok(spans) = serde_json::to_value(&to_send)
-            {
-                send(engine, TRACE_SPANS_STREAM, trace_id.to_string(), spans);
+        // The trace re-reads may hit the durable archive; run them off the
+        // async executor so the coalesce tick never stalls the broadcast
+        // receiver into `Lagged` drops. Fire-and-forget on task failure — the
+        // store stays authoritative and clients self-heal on reconnect.
+        let corrected = tokio::task::spawn_blocking(move || {
+            let collapse_rules = collapse_rules.as_slice();
+            let mut corrected: Vec<(String, Value)> = Vec::new();
+            for (trace_id, arrived_ids) in arrived_by_trace {
+                let full_trace = otel::get_query_spans_by_trace_id(&trace_id);
+                let to_send = corrected_detail_spans(full_trace, &arrived_ids, collapse_rules);
+                if !to_send.is_empty()
+                    && let Ok(spans) = serde_json::to_value(&to_send)
+                {
+                    corrected.push((trace_id, spans));
+                }
+            }
+            corrected
+        })
+        .await;
+        match corrected {
+            Ok(corrected) => {
+                for (trace_id, spans) in corrected {
+                    send(engine, TRACE_SPANS_STREAM, trace_id, spans);
+                }
+            }
+            Err(join_error) => {
+                tracing::warn!(
+                    error = %join_error,
+                    "iii-observability: deferred trace-detail correction task failed"
+                );
             }
         }
     }
@@ -2172,9 +2270,7 @@ impl ObservabilityWorker {
                     .as_deref()
                     .map(|order| order.eq_ignore_ascii_case("asc"))
                     .unwrap_or(true);
-                let is_unfiltered_all_spans_page = search_all
-                    && include_internal
-                    && input.trace_id.is_none()
+                let unfiltered = input.trace_id.is_none()
                     && input.trace_ids.is_none()
                     && input.service_name.is_none()
                     && input.name.is_none()
@@ -2186,19 +2282,43 @@ impl ObservabilityWorker {
                     && input.attributes.is_none()
                     && input.exclude_attributes.is_none()
                     && matches!(input.sort_by.as_deref(), None | Some("start_time"));
+                let is_unfiltered_all_spans_page = search_all && include_internal && unfiltered;
+                // The console default: root listing with no filters.
+                // `include_internal` is deliberately NOT constrained — both
+                // values are handled in SQL by the paged root view.
+                let is_unfiltered_root_page = !search_all && unfiltered;
                 let query_started = Instant::now();
-                let (all_spans, prepaginated_total) = if is_unfiltered_all_spans_page {
-                    let page =
-                        otel::get_query_spans_page_by_start_time(offset, limit, sort_order_asc);
-                    (page.spans, Some(page.total))
-                } else if let Some(ref trace_id) = input.trace_id {
-                    (otel::get_query_spans_by_trace_id(trace_id), None)
-                } else if let Some(ref trace_ids) = input.trace_ids {
-                    (otel::get_query_spans_by_trace_ids(trace_ids), None)
-                } else if search_all {
-                    (otel::get_query_spans(), None)
-                } else {
-                    (otel::get_query_root_spans(), None)
+                // The elapsed metric includes spawn_blocking queue time — that
+                // is the latency the caller actually experiences.
+                let query_trace_id = input.trace_id.clone();
+                let query_trace_ids = input.trace_ids.clone();
+                let query_view = run_blocking_query("traces::list query view", move || {
+                    if is_unfiltered_all_spans_page {
+                        let page =
+                            otel::get_query_spans_page_by_start_time(offset, limit, sort_order_asc);
+                        (page.spans, Some(page.total))
+                    } else if is_unfiltered_root_page {
+                        let page = otel::get_query_root_spans_page_by_start_time(
+                            offset,
+                            limit,
+                            sort_order_asc,
+                            include_internal,
+                        );
+                        (page.spans, Some(page.total))
+                    } else if let Some(ref trace_id) = query_trace_id {
+                        (otel::get_query_spans_by_trace_id(trace_id), None)
+                    } else if let Some(ref trace_ids) = query_trace_ids {
+                        (otel::get_query_spans_by_trace_ids(trace_ids), None)
+                    } else if search_all {
+                        (otel::get_query_spans(), None)
+                    } else {
+                        (otel::get_query_root_spans(), None)
+                    }
+                })
+                .await;
+                let (all_spans, prepaginated_total) = match query_view {
+                    Ok(result) => result,
+                    Err(error) => return FunctionResult::Failure(error),
                 };
                 let query_view_elapsed = query_started.elapsed();
 
@@ -2407,7 +2527,17 @@ impl ObservabilityWorker {
                     .into_iter()
                     .collect();
                 let tag_started = Instant::now();
-                let tags_by_trace_id = otel::get_query_trace_tags_by_trace_ids(&page_trace_ids);
+                let unique_page_traces = page_trace_ids.len();
+                let enrichment_trace_ids = page_trace_ids;
+                let tags_by_trace_id = match run_blocking_query(
+                    "traces::list tag enrichment",
+                    move || otel::get_query_trace_tags_by_trace_ids(&enrichment_trace_ids),
+                )
+                .await
+                {
+                    Ok(tags) => tags,
+                    Err(error) => return FunctionResult::Failure(error),
+                };
                 let tag_elapsed = tag_started.elapsed();
                 let serialization_started = Instant::now();
                 let result_spans: Vec<Value> = spans
@@ -2435,7 +2565,7 @@ impl ObservabilityWorker {
                     search_all_spans = search_all,
                     total,
                     returned_spans = result_spans.len(),
-                    unique_page_traces = page_trace_ids.len(),
+                    unique_page_traces,
                     query_view_ms = query_view_elapsed.as_secs_f64() * 1_000.0,
                     filtering_ms = (filtering_elapsed - query_view_elapsed).as_secs_f64() * 1_000.0,
                     sorting_ms = (sorting_elapsed - filtering_elapsed).as_secs_f64() * 1_000.0,
@@ -2467,7 +2597,15 @@ impl ObservabilityWorker {
     ) -> FunctionResult<TracesTreeResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(_storage) => {
-                let all_spans = otel::get_query_spans_by_trace_id(&input.trace_id);
+                let trace_id = input.trace_id.clone();
+                let all_spans = match run_blocking_query("traces::tree", move || {
+                    otel::get_query_spans_by_trace_id(&trace_id)
+                })
+                .await
+                {
+                    Ok(spans) => spans,
+                    Err(error) => return FunctionResult::Failure(error),
+                };
 
                 if all_spans.is_empty() {
                     return FunctionResult::Success(TracesTreeResult {
@@ -2502,13 +2640,21 @@ impl ObservabilityWorker {
     ) -> FunctionResult<OkResult, ErrorBody> {
         match otel::get_span_storage() {
             Some(storage) => {
-                if let Some(archive) = otel::get_trace_disk_storage()
-                    && let Err(error) = archive.clear()
-                {
-                    return FunctionResult::Failure(ErrorBody::new(
-                        "trace_storage_clear_failed",
-                        format!("could not clear durable trace storage: {error}"),
-                    ));
+                // clear() waits on the writer thread (up to 5s); keep it off
+                // the async executor. The hot clear stays sync — pure memory.
+                if let Some(archive) = otel::get_trace_disk_storage() {
+                    let cleared =
+                        run_blocking_query("traces::clear", move || archive.clear()).await;
+                    match cleared {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            return FunctionResult::Failure(ErrorBody::new(
+                                "trace_storage_clear_failed",
+                                format!("could not clear durable trace storage: {error}"),
+                            ));
+                        }
+                        Err(error) => return FunctionResult::Failure(error),
+                    }
                 }
                 storage.clear();
                 FunctionResult::Success(OkResult { success: true })
@@ -2531,10 +2677,16 @@ impl ObservabilityWorker {
         match otel::get_span_storage() {
             Some(_storage) => {
                 let query_started = Instant::now();
-                let all_spans = otel::get_query_group_rows_by_attribute(
-                    &input.attribute,
-                    input.label_attribute.as_deref(),
-                );
+                let attribute = input.attribute.clone();
+                let label_attribute = input.label_attribute.clone();
+                let all_spans = match run_blocking_query("traces::group_by", move || {
+                    otel::get_query_group_rows_by_attribute(&attribute, label_attribute.as_deref())
+                })
+                .await
+                {
+                    Ok(rows) => rows,
+                    Err(error) => return FunctionResult::Failure(error),
+                };
                 let query_elapsed = query_started.elapsed();
 
                 let include_internal = input.include_internal.unwrap_or(false);
@@ -3545,8 +3697,8 @@ impl Worker for ObservabilityWorker {
         // The durable archive owns its writer thread, but retention and
         // pending-snapshot expiry are driven by the worker lifecycle so they
         // follow reload/shutdown boundaries. The hot-cache cleanup also runs
-        // when durable storage is disabled.
-        let archive = otel::get_trace_disk_storage();
+        // when durable storage is disabled. The archive is looked up per tick,
+        // not captured: the SWAP tier of apply_config can replace it live.
         let mut archive_shutdown_rx = shutdown_rx.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -3564,10 +3716,17 @@ impl Worker for ObservabilityWorker {
                         if let Some(storage) = otel::get_span_storage() {
                             storage.expire_pending(pending_max_age);
                         }
-                        if let Some(archive) = &archive
-                            && let Err(error) = archive.retain()
-                        {
-                            archive.mark_degraded(error);
+                        if let Some(archive) = otel::get_trace_disk_storage() {
+                            // retain() waits on the writer thread; keep the
+                            // wait off the async executor.
+                            let outcome = tokio::task::spawn_blocking(move || {
+                                let result = archive.retain();
+                                (archive, result)
+                            })
+                            .await;
+                            if let Ok((archive, Err(error))) = outcome {
+                                archive.mark_degraded(error);
+                            }
                         }
                     }
                 }
@@ -8544,6 +8703,234 @@ mod tests {
                 assert_eq!(value.total, 3);
                 assert_eq!(value.spans.len(), 1);
                 assert_eq!(value.spans[0]["trace_id"], "t-2");
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    /// Detaches the test archive even on panic so `#[serial]` neighbors never
+    /// inherit a stale trace store.
+    struct ArchiveTestGuard;
+
+    impl Drop for ArchiveTestGuard {
+        fn drop(&mut self) {
+            otel::configure_trace_storage(None);
+        }
+    }
+
+    fn attach_test_archive(directory: &std::path::Path) -> ArchiveTestGuard {
+        otel::configure_trace_storage(Some(config::TraceStorageConfig {
+            directory: directory.to_string_lossy().into_owned(),
+            ..config::TraceStorageConfig::default()
+        }));
+        let storage = otel::get_span_storage().expect("span storage should exist");
+        otel::attach_trace_disk_storage(&storage);
+        ArchiveTestGuard
+    }
+
+    fn flush_test_archive() {
+        otel::get_trace_disk_storage()
+            .expect("archive should be configured")
+            .flush()
+            .expect("flush trace archive");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_default_pages_archived_roots_with_hot_overlay() {
+        reset_observability_test_state();
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let _guard = attach_test_archive(directory.path());
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+
+        // Archived history: an external root with a child, an internal root,
+        // and a root the hot cache will later shadow with a newer version.
+        span_storage.add_spans(vec![
+            make_span("t-1", "root-1", None, "one", "svc", 1_000, 1_100, "OK", vec![]),
+            make_span(
+                "t-1",
+                "child-1",
+                Some("root-1"),
+                "one-child",
+                "svc",
+                1_050,
+                1_090,
+                "OK",
+                vec![],
+            ),
+            make_span(
+                "t-int",
+                "root-int",
+                None,
+                "internal",
+                "svc",
+                1_500,
+                1_600,
+                "OK",
+                vec![("function_id", "engine::traces::list")],
+            ),
+            make_span("t-2", "root-2", None, "old", "svc", 2_000, 2_100, "OK", vec![]),
+        ]);
+        flush_test_archive();
+        // Evict everything from the hot cache; the archive keeps the rows.
+        span_storage.clear();
+
+        // Hot-only state: a shadowing final for root-2, a fresh root, and a
+        // child whose parent exists only in the archive (must not list as a
+        // root).
+        span_storage.add_spans(vec![
+            make_span("t-2", "root-2", None, "new", "svc", 2_000, 2_200, "OK", vec![]),
+            make_span("t-3", "root-3", None, "three", "svc", 3_000, 3_100, "OK", vec![]),
+            make_span(
+                "t-1",
+                "late-child",
+                Some("root-1"),
+                "late",
+                "svc",
+                3_500,
+                3_600,
+                "OK",
+                vec![],
+            ),
+        ]);
+
+        let result = module
+            .list_traces(TracesListInput {
+                limit: Some(10),
+                ..Default::default()
+            })
+            .await;
+        match result {
+            FunctionResult::Success(value) => {
+                assert_eq!(value.total, 3, "archived + hot roots, internal excluded");
+                let rows: Vec<(&str, &str)> = value
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        (
+                            span["span_id"].as_str().unwrap(),
+                            span["name"].as_str().unwrap(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    rows,
+                    vec![("root-1", "one"), ("root-2", "new"), ("root-3", "three")],
+                    "hot version wins for root-2; archived child and late-child excluded"
+                );
+            }
+            _ => panic!("expected list_traces success"),
+        }
+
+        // include_internal widens the same page to the archived internal root.
+        let result = module
+            .list_traces(TracesListInput {
+                limit: Some(10),
+                include_internal: Some(true),
+                ..Default::default()
+            })
+            .await;
+        match result {
+            FunctionResult::Success(value) => {
+                assert_eq!(value.total, 4);
+                assert!(
+                    value
+                        .spans
+                        .iter()
+                        .any(|span| span["span_id"] == "root-int")
+                );
+            }
+            _ => panic!("expected list_traces success"),
+        }
+
+        // Descending offset/limit slices the merged order.
+        let result = module
+            .list_traces(TracesListInput {
+                offset: Some(1),
+                limit: Some(1),
+                sort_order: Some("desc".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match result {
+            FunctionResult::Success(value) => {
+                assert_eq!(value.total, 3);
+                assert_eq!(value.spans.len(), 1);
+                assert_eq!(value.spans[0]["span_id"], "root-2");
+                assert_eq!(value.spans[0]["name"], "new");
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_root_page_widens_past_demoted_archived_children() {
+        reset_observability_test_state();
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let _guard = attach_test_archive(directory.path());
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+
+        // Archive: five children of a parent that only exists as a hot pending
+        // span (SQL sees them as dangling roots), plus one genuinely older
+        // root beyond the initial `offset + limit + hot_count` window.
+        let mut archived = vec![make_span(
+            "t-old",
+            "root-old",
+            None,
+            "old-root",
+            "svc",
+            1_000,
+            1_100,
+            "OK",
+            vec![],
+        )];
+        for index in 0..5 {
+            archived.push(make_span(
+                "t-p",
+                &format!("child-{index}"),
+                Some("pending-parent"),
+                "child",
+                "svc",
+                2_000 + index,
+                2_100 + index,
+                "OK",
+                vec![],
+            ));
+        }
+        span_storage.add_spans(archived);
+        flush_test_archive();
+        span_storage.clear();
+
+        // Hot: only the pending parent (start before every archived child so
+        // the descending page must reach past the demoted prefix).
+        let mut pending = make_span("t-p", "pending-parent", None, "parent", "svc", 500, 0, "OK", vec![]);
+        pending.pending = true;
+        span_storage.add_pending_span(pending);
+
+        // Descending, limit 1: the window prefix is entirely demoted children;
+        // the widening loop must keep doubling until root-old surfaces.
+        let result = module
+            .list_traces(TracesListInput {
+                limit: Some(1),
+                sort_order: Some("desc".to_string()),
+                ..Default::default()
+            })
+            .await;
+        match result {
+            FunctionResult::Success(value) => {
+                assert_eq!(value.spans.len(), 1);
+                assert_eq!(
+                    value.spans[0]["span_id"], "root-old",
+                    "the widening loop must surface roots past the demoted prefix"
+                );
+                assert_eq!(value.total, 2, "root-old plus the hot pending parent");
             }
             _ => panic!("expected list_traces success"),
         }

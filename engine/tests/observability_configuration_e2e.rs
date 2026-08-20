@@ -856,3 +856,233 @@ async fn logs_exporter_respawns_on_batch_size_change() {
     )
     .await;
 }
+
+// =============================================================================
+// Trace-storage hot-apply (SWAP tier)
+// =============================================================================
+
+/// Detaches the archive even on panic so `#[serial]` neighbors never inherit
+/// a stale trace store.
+struct ResetTraceStorage;
+
+impl Drop for ResetTraceStorage {
+    fn drop(&mut self) {
+        iii::workers::observability::otel::trace_storage_test_support::reset();
+    }
+}
+
+fn trace_span(trace_id: &str, span_id: &str, start_ns: u64) -> iii::workers::observability::otel::StoredSpan {
+    iii::workers::observability::otel::StoredSpan {
+        trace_id: trace_id.to_string(),
+        span_id: span_id.to_string(),
+        parent_span_id: None,
+        name: format!("operation-{trace_id}"),
+        start_time_unix_nano: start_ns,
+        end_time_unix_nano: start_ns + 1_000,
+        status: "ok".to_string(),
+        status_description: None,
+        attributes: Vec::new(),
+        service_name: "config-e2e".to_string(),
+        events: Vec::new(),
+        links: Vec::new(),
+        instrumentation_scope_name: None,
+        instrumentation_scope_version: None,
+        flags: None,
+        trace_state: None,
+        pending: false,
+    }
+}
+
+fn ensure_span_storage() -> Arc<iii::workers::observability::otel::InMemorySpanStorage> {
+    use iii::workers::observability::otel;
+    match otel::get_span_storage() {
+        Some(storage) => storage,
+        None => {
+            let _ = otel::InMemorySpanExporter::new(1_000, "config-e2e".to_string());
+            otel::get_span_storage().expect("initialize memory span storage")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn trace_storage_enable_disable_and_reenable_hot_apply() {
+    use iii::workers::observability::otel::trace_storage_test_support as trace_store;
+
+    let _reset = ResetTraceStorage;
+    iii::workers::observability::otel::trace_storage_test_support::reset();
+    let dir = tempfile::tempdir().unwrap();
+    let archive_dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    // Legacy seed: no trace_storage block, memory-only boot.
+    let _worker = start_observability_worker(&harness, json!({})).await;
+    let storage = ensure_span_storage();
+    storage.clear();
+
+    // Spans collected while the archive was off must backfill on enable.
+    storage.add_spans(vec![
+        trace_span("pre-enable-1", "s", 1_000),
+        trace_span("pre-enable-2", "s", 2_000),
+    ]);
+
+    set_value(
+        &harness,
+        json!({ "trace_storage": {
+            "enabled": true,
+            "directory": archive_dir.path().to_str().unwrap(),
+        }}),
+    )
+    .await;
+    drive_apply(&harness).await;
+
+    assert_eq!(trace_store::status()["archive"], "healthy");
+    trace_store::flush().expect("flush newly enabled archive");
+    let trace_ids: Vec<String> = trace_store::read_spans()
+        .expect("read enabled archive")
+        .into_iter()
+        .map(|span| span.trace_id)
+        .collect();
+    assert!(trace_ids.contains(&"pre-enable-1".to_string()));
+    assert!(trace_ids.contains(&"pre-enable-2".to_string()));
+
+    // Disable at runtime: the archive detaches, memory stays available, and
+    // the on-disk database survives for the next enable.
+    set_value(&harness, json!({ "trace_storage": {
+        "enabled": false,
+        "directory": archive_dir.path().to_str().unwrap(),
+    }}))
+    .await;
+    drive_apply(&harness).await;
+    assert_eq!(trace_store::status()["archive"], "disabled");
+    assert!(trace_store::flush().is_err(), "no archive to flush");
+    assert!(archive_dir.path().join("traces.sqlite3").is_file());
+    assert_eq!(storage.get_spans_by_trace_id("pre-enable-1").len(), 1);
+
+    // Re-enable: prior rows are still readable.
+    set_value(&harness, json!({ "trace_storage": {
+        "enabled": true,
+        "directory": archive_dir.path().to_str().unwrap(),
+    }}))
+    .await;
+    drive_apply(&harness).await;
+    assert_eq!(trace_store::status()["archive"], "healthy");
+    assert_eq!(
+        trace_store::status()["completeness"], "complete",
+        "a clean runtime disable must not mark the archive unclean"
+    );
+    let trace_ids: Vec<String> = trace_store::read_spans()
+        .expect("read re-enabled archive")
+        .into_iter()
+        .map(|span| span.trace_id)
+        .collect();
+    assert!(trace_ids.contains(&"pre-enable-1".to_string()));
+}
+
+#[tokio::test]
+#[serial]
+async fn trace_storage_directory_change_swaps_archive_and_backfills() {
+    use iii::workers::observability::otel::trace_storage_test_support as trace_store;
+
+    let _reset = ResetTraceStorage;
+    iii::workers::observability::otel::trace_storage_test_support::reset();
+    let dir = tempfile::tempdir().unwrap();
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let _worker = start_observability_worker(&harness, json!({})).await;
+    let storage = ensure_span_storage();
+    storage.clear();
+
+    set_value(&harness, json!({ "trace_storage": {
+        "enabled": true,
+        "directory": dir_a.path().to_str().unwrap(),
+    }}))
+    .await;
+    drive_apply(&harness).await;
+    storage.add_spans(vec![trace_span("swap-trace", "s", 1_000)]);
+    trace_store::flush().expect("persist into directory A");
+
+    set_value(&harness, json!({ "trace_storage": {
+        "enabled": true,
+        "directory": dir_b.path().to_str().unwrap(),
+    }}))
+    .await;
+    drive_apply(&harness).await;
+
+    assert_eq!(trace_store::status()["archive"], "healthy");
+    assert_eq!(
+        trace_store::status()["completeness"], "complete",
+        "same-process swaps must observe the previous store's clean shutdown"
+    );
+    trace_store::flush().expect("flush into directory B");
+    let trace_ids: Vec<String> = trace_store::read_spans()
+        .expect("read directory B archive")
+        .into_iter()
+        .map(|span| span.trace_id)
+        .collect();
+    assert!(
+        trace_ids.contains(&"swap-trace".to_string()),
+        "the hot cache must backfill into the new directory"
+    );
+    assert!(
+        dir_a.path().join("traces.sqlite3").is_file(),
+        "the previous directory keeps its history"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn trace_storage_limits_only_change_does_not_reopen_the_store() {
+    use iii::workers::observability::otel::{self, trace_storage_test_support as trace_store};
+
+    let _reset = ResetTraceStorage;
+    trace_store::reset();
+    let dir = tempfile::tempdir().unwrap();
+    let archive_dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let _worker = start_observability_worker(&harness, json!({})).await;
+    let storage = ensure_span_storage();
+    storage.clear();
+
+    set_value(&harness, json!({ "trace_storage": {
+        "enabled": true,
+        "directory": archive_dir.path().to_str().unwrap(),
+    }}))
+    .await;
+    drive_apply(&harness).await;
+    let before = otel::get_trace_disk_storage().expect("archive installed");
+
+    set_value(&harness, json!({ "trace_storage": {
+        "enabled": true,
+        "directory": archive_dir.path().to_str().unwrap(),
+        "max_disk_bytes": 134_217_728u64,
+    }}))
+    .await;
+    drive_apply(&harness).await;
+
+    let after = otel::get_trace_disk_storage().expect("archive still installed");
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "limits-only edits must retune, not reopen, the store"
+    );
+    assert_eq!(trace_store::status()["max_disk_bytes"], 134_217_728u64);
+}
+
+#[tokio::test]
+#[serial]
+async fn legacy_config_without_trace_storage_stays_memory_only() {
+    use iii::workers::observability::otel::trace_storage_test_support as trace_store;
+
+    let _reset = ResetTraceStorage;
+    trace_store::reset();
+    let dir = tempfile::tempdir().unwrap();
+    let harness = build_harness(dir.path()).await;
+    let _worker = start_observability_worker(&harness, json!({})).await;
+    let _storage = ensure_span_storage();
+
+    // An unrelated edit on a legacy (no trace_storage block) config must not
+    // conjure an archive.
+    set_value(&harness, json!({ "logs_max_count": 256 })).await;
+    drive_apply(&harness).await;
+    assert_eq!(trace_store::status()["archive"], "disabled");
+}

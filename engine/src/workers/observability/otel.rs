@@ -1002,6 +1002,22 @@ impl InMemorySpanStorage {
         }
     }
 
+    /// Re-mark every resident finalized span as dirty. A trace-storage swap
+    /// drains the dirty set into the OLD archive on shutdown, so a
+    /// newly-installed archive (new directory, or enabled at runtime) would
+    /// otherwise never receive the hot cache. Persisting is an idempotent
+    /// upsert on `(epoch, trace_id, span_id)`, so re-marking already-durable
+    /// spans against the same directory is safe.
+    pub fn mark_all_dirty(&self) {
+        let spans = self.spans.read().unwrap();
+        let mut dirty = self.dirty_span_ids.write().unwrap();
+        for span in spans.iter() {
+            if !span.pending {
+                dirty.insert((span.trace_id.clone(), span.span_id.clone()));
+            }
+        }
+    }
+
     pub fn pending_trace_ids(&self) -> HashSet<String> {
         self.pending_span_ids
             .read()
@@ -1106,6 +1122,23 @@ static TRACE_STORAGE_INIT_ERROR: RwLock<Option<String>> = RwLock::new(None);
 /// non-fatal: the realtime hot store remains available and health reports the
 /// failure to callers.
 pub fn configure_trace_storage(config: Option<TraceStorageConfig>) {
+    // Shut the previous store down BEFORE opening the next one. On a
+    // same-directory reconfigure the next open must observe the clean-shutdown
+    // marker the previous store writes on drain; opening first would read the
+    // in-service marker (completeness "unknown") and the old shutdown would
+    // then overwrite the new store's activation marker, so a later crash
+    // would falsely report a clean archive. During the brief gap queries fall
+    // back to the hot cache and finalized spans simply accumulate as dirty.
+    let previous = {
+        let mut guard = TRACE_DISK_STORAGE
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.take()
+    };
+    if let Some(previous) = previous {
+        previous.shutdown();
+    }
+
     let mut init_error = None;
     let next = config
         .filter(|cfg| cfg.enabled)
@@ -1120,15 +1153,9 @@ pub fn configure_trace_storage(config: Option<TraceStorageConfig>) {
     *TRACE_STORAGE_INIT_ERROR
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = init_error;
-    let previous = {
-        let mut guard = TRACE_DISK_STORAGE
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::replace(&mut *guard, next)
-    };
-    if let Some(previous) = previous {
-        previous.shutdown();
-    }
+    *TRACE_DISK_STORAGE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
 }
 
 pub fn get_trace_disk_storage() -> Option<Arc<super::trace_store::TraceDiskStore>> {
@@ -1392,6 +1419,174 @@ pub fn get_query_root_spans() -> Vec<StoredSpan> {
         "trace query view materialized"
     );
     spans
+}
+
+/// The in-memory internal-span rule; must stay in lockstep with
+/// `INTERNAL_SPAN_PREDICATE_SQL` in the trace store.
+fn is_internal_span(attributes: &[(String, String)]) -> bool {
+    attributes.iter().any(|(key, value)| {
+        (key == "iii.function.kind" && value == "internal")
+            || (key == "function_id" && value.starts_with("engine::"))
+    })
+}
+
+/// A page over the merged hot + durable ROOT view. Root and internal
+/// filtering run in SQL so the default list view decodes only a window of
+/// archive payloads instead of every historical root.
+pub(crate) fn get_query_root_spans_page_by_start_time(
+    offset: usize,
+    limit: usize,
+    ascending: bool,
+    include_internal: bool,
+) -> QuerySpanPage {
+    let started = Instant::now();
+    // Hot snapshot with internal spans INCLUDED: even when the row filter
+    // drops them, they still shadow durable rows and demote durable roots.
+    let mut hot_by_key = HashMap::<(String, String), StoredSpan>::new();
+    if let Some(storage) = get_span_storage() {
+        for span in storage.get_spans() {
+            hot_by_key.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        }
+    }
+    let hot_count = hot_by_key.len();
+    let hot_keys: Vec<_> = hot_by_key.keys().cloned().collect();
+    let hot_span_ids: HashSet<String> = hot_by_key
+        .keys()
+        .map(|(_, span_id)| span_id.clone())
+        .collect();
+
+    let archive = get_trace_disk_storage();
+
+    // A hot span whose parent is absent from the hot cache may still have it
+    // in the archive; presence there disqualifies the hot span as a root.
+    let mut parents_on_disk = HashSet::new();
+    if let Some(archive) = &archive {
+        let parent_keys: Vec<(String, String)> = hot_by_key
+            .values()
+            .filter_map(|span| {
+                span.parent_span_id.as_ref().and_then(|parent| {
+                    (!hot_span_ids.contains(parent))
+                        .then(|| (span.trace_id.clone(), parent.clone()))
+                })
+            })
+            .collect();
+        match archive.existing_span_keys(&parent_keys) {
+            Ok(present) => parents_on_disk = present,
+            Err(error) => archive.mark_degraded(error),
+        }
+    }
+
+    let requested = offset.saturating_add(limit);
+    let mut disk_total = 0usize;
+    let mut overlaid = 0usize;
+    let mut surviving: Vec<StoredSpan> = Vec::new();
+    let mut archive_exhausted = archive.is_none();
+    let mut loop_iterations = 0u32;
+    if let Some(archive) = &archive {
+        match (
+            archive.root_span_count(include_internal),
+            archive.existing_root_span_key_count(&hot_keys, include_internal),
+        ) {
+            (Ok(total), Ok(shadowed)) => {
+                disk_total = total;
+                overlaid = shadowed;
+                // Shadowing removes at most `hot_count` window rows, but
+                // demotion is NOT bounded by the hot cache: one hot pending
+                // parent can demote arbitrarily many already-archived
+                // children. Double the window until the surviving prefix can
+                // fill the page or the archive is exhausted; the window is a
+                // sort-order prefix, so the resulting page is exact.
+                let mut disk_limit = requested.saturating_add(hot_count).max(1);
+                loop {
+                    loop_iterations += 1;
+                    match archive.get_root_spans_page_by_start_time(
+                        0,
+                        disk_limit,
+                        ascending,
+                        include_internal,
+                    ) {
+                        Ok(rows) => {
+                            let fetched = rows.len();
+                            surviving = rows
+                                .into_iter()
+                                .filter(|span| {
+                                    !hot_by_key.contains_key(&(
+                                        span.trace_id.clone(),
+                                        span.span_id.clone(),
+                                    )) && span
+                                        .parent_span_id
+                                        .as_ref()
+                                        .is_none_or(|parent| !hot_span_ids.contains(parent))
+                                })
+                                .collect();
+                            if fetched < disk_limit {
+                                archive_exhausted = true;
+                                break;
+                            }
+                            if surviving.len() >= requested {
+                                break;
+                            }
+                            disk_limit = disk_limit.saturating_mul(2);
+                        }
+                        Err(error) => {
+                            archive.mark_degraded(error);
+                            break;
+                        }
+                    }
+                }
+            }
+            (Err(error), _) | (_, Err(error)) => archive.mark_degraded(error),
+        }
+    }
+
+    // Hot roots under the same dangling-parent rule as the slow path.
+    let hot_roots: Vec<StoredSpan> = hot_by_key
+        .into_values()
+        .filter(|span| {
+            span.parent_span_id.as_ref().is_none_or(|parent| {
+                !hot_span_ids.contains(parent)
+                    && !parents_on_disk.contains(&(span.trace_id.clone(), parent.clone()))
+            })
+        })
+        .filter(|span| include_internal || !is_internal_span(&span.attributes))
+        .collect();
+    let hot_root_count = hot_roots.len();
+
+    let mut merged = surviving;
+    merged.extend(hot_roots);
+    merged.sort_by(|a, b| {
+        let order = a
+            .start_time_unix_nano
+            .cmp(&b.start_time_unix_nano)
+            .then_with(|| a.trace_id.cmp(&b.trace_id))
+            .then_with(|| a.span_id.cmp(&b.span_id));
+        if ascending { order } else { order.reverse() }
+    });
+    // Exact when the whole archive was fetched; otherwise subtract the disk
+    // roots the hot overlay shadows and add hot roots. Demotion beyond the
+    // fetched window transiently overcounts until the pending parent flushes.
+    let total = if archive_exhausted {
+        merged.len()
+    } else {
+        disk_total
+            .saturating_sub(overlaid)
+            .saturating_add(hot_root_count)
+    };
+    let spans: Vec<_> = merged.into_iter().skip(offset).take(limit).collect();
+    tracing::debug!(
+        query_view = "root_spans_page",
+        offset,
+        limit,
+        include_internal,
+        hot_spans = hot_count,
+        disk_roots = disk_total,
+        loop_iterations,
+        total_spans = total,
+        returned_spans = spans.len(),
+        elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+        "trace query page materialized"
+    );
+    QuerySpanPage { spans, total }
 }
 
 pub fn get_query_spans_by_trace_id(trace_id: &str) -> Vec<StoredSpan> {

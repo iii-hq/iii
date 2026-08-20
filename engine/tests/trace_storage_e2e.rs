@@ -126,6 +126,32 @@ fn missing_directory_persists_and_restart_reads_completed_trace() {
 
 #[test]
 #[serial]
+fn reconfigure_same_directory_reports_complete() {
+    let _reset = ResetTraceStorage;
+    trace_store::reset();
+    let root = tempfile::tempdir().expect("temp root");
+    let archive_config = config(root.path());
+
+    let hot = start_archive(archive_config.clone());
+    hot.add_spans(vec![span("same-dir-trace", "span-1", 1, 0)]);
+    trace_store::flush().expect("persist before reconfigure");
+
+    // An in-process reconfigure over the same directory must observe the
+    // previous store's clean shutdown, not its in-service marker.
+    trace_store::configure(Some(archive_config));
+    let status = trace_store::status();
+    assert_eq!(status["archive"], "healthy");
+    assert_eq!(
+        status["completeness"], "complete",
+        "a clean same-directory swap must not report an unclean shutdown"
+    );
+    let restored = trace_store::read_spans().expect("read after reconfigure");
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].trace_id, "same-dir-trace");
+}
+
+#[test]
+#[serial]
 fn invalid_parent_reports_actionable_error_without_modifying_it() {
     let _reset = ResetTraceStorage;
     trace_store::reset();
