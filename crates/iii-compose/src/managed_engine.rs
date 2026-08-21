@@ -178,9 +178,9 @@ fn capture_output(output: ChildOutput, log: RotatingLog) -> LogCapture {
     drop(chunks_tx);
 
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(async move {
+    tokio::task::spawn_blocking(move || {
         let mut log = Some(log);
-        while let Some(chunk) = chunks_rx.recv().await {
+        while let Some(chunk) = chunks_rx.blocking_recv() {
             if let Some(sink) = log.as_mut()
                 && sink.write_bounded(&chunk).is_err()
             {
@@ -462,8 +462,13 @@ mod tests {
             std::fs::metadata(&log).unwrap().len() <= EXPECTED_LIMIT,
             "current log exceeded its size limit"
         );
+        let archive = log.with_file_name("engine.log.1");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !archive.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert!(
-            log.with_file_name("engine.log.1").exists(),
+            archive.exists(),
             "the previous log segment was not archived"
         );
     }

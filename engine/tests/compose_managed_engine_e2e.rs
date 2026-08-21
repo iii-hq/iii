@@ -122,7 +122,11 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     );
 
     // The child had to bind this custom port for compose to reach the invalid
-    // project, and cleanup must release it before the foreground CLI returns.
+    // project. On Unix, cleanup must release it before the foreground CLI
+    // returns. Windows can keep the address unavailable in TIME_WAIT after the
+    // process has exited, so an immediate rebind is not a reliable lifecycle
+    // probe there; that path still exercises startup, logging, and cleanup.
+    #[cfg(unix)]
     TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped");
 }
 
