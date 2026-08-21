@@ -23,4 +23,158 @@ A thin iii worker that:
 3. Inside each handler, calls the existing service and returns the result as the function's
    response.
 
-{/* TODO: full worked example wrapping a real third-party API (e.g. Stripe, OpenAI, internal REST service) as an iii worker. Include the function ID conventions, error mapping from the wrapped service to iii function errors, and how to handle authentication / secrets. */}
+## Worked example: adapt X post search
+
+This worker exposes [Xquik](https://docs.xquik.com/sdks/typescript) post search as
+`social::posts::search`. The function ID describes the capability, not the provider. Callers keep a
+stable iii contract if the adapter changes later.
+
+Install the iii and Xquik TypeScript SDKs:
+
+```bash
+pnpm add iii-sdk x-twitter-scraper
+```
+
+Create the worker:
+
+```typescript
+import { registerWorker } from "iii-sdk";
+import XTwitterScraper from "x-twitter-scraper";
+
+type SearchInput = {
+  query: string;
+  limit?: number;
+};
+
+type SearchErrorCode =
+  | "invalid_input"
+  | "authentication_failed"
+  | "permission_denied"
+  | "rate_limited"
+  | "provider_error"
+  | "provider_unavailable";
+
+type SearchOutput =
+  | { ok: true; data: XTwitterScraper.X.TweetSearchResponse }
+  | { ok: false; error: { code: SearchErrorCode; retryable: boolean } };
+
+type SearchTweets = (params: {
+  q: string;
+  limit: number;
+}) => Promise<XTwitterScraper.X.TweetSearchResponse>;
+
+function failure(code: SearchErrorCode, retryable = false): SearchOutput {
+  return { ok: false, error: { code, retryable } };
+}
+
+function createSearchHandler(searchTweets: SearchTweets) {
+  return async (input: SearchInput): Promise<SearchOutput> => {
+    const query = input.query?.trim();
+    const limit = input.limit ?? 20;
+
+    if (!query || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return failure("invalid_input");
+    }
+
+    try {
+      return { ok: true, data: await searchTweets({ q: query, limit }) };
+    } catch (error) {
+      if (error instanceof XTwitterScraper.AuthenticationError) {
+        return failure("authentication_failed");
+      }
+      if (error instanceof XTwitterScraper.PermissionDeniedError) {
+        return failure("permission_denied");
+      }
+      if (error instanceof XTwitterScraper.RateLimitError) {
+        return failure("rate_limited", true);
+      }
+      if (error instanceof XTwitterScraper.APIConnectionError) {
+        return failure("provider_unavailable", true);
+      }
+      if (error instanceof XTwitterScraper.APIError) {
+        const status = error.status;
+        const retryable =
+          status === undefined ||
+          status === 408 ||
+          status === 409 ||
+          status === 429 ||
+          status >= 500;
+        return failure("provider_error", retryable);
+      }
+      throw error;
+    }
+  };
+}
+
+const iiiUrl = process.env.III_URL;
+if (!iiiUrl) throw new Error("III_URL must be set");
+
+const apiKey = process.env.X_TWITTER_SCRAPER_API_KEY;
+if (!apiKey) throw new Error("X_TWITTER_SCRAPER_API_KEY must be set");
+
+const xquik = new XTwitterScraper({
+  apiKey,
+  logLevel: "off",
+  maxRetries: 2,
+  timeout: 20_000,
+});
+const worker = registerWorker(iiiUrl, { workerName: "xquik-adapter" });
+
+worker.registerFunction(
+  "social::posts::search",
+  createSearchHandler((params) => xquik.x.tweets.search(params)),
+  {
+    description: "Search public X posts through Xquik",
+    metadata: { access: "public-read", provider: "xquik" },
+    request_format: {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 1 },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+);
+```
+
+Run the worker with both environment variables set. Then invoke the adapter like any iii function:
+
+```bash
+iii trigger social::posts::search query='from:iiidevs' limit=10
+```
+
+The adapter caps each call at 100 results to constrain latency and Xquik usage. Its request schema
+also makes those bounds visible through `iii trigger social::posts::search --help`.
+
+### Normalize expected failures
+
+Return stable error values for failures callers can handle. Let unexpected programming errors throw,
+so iii preserves their stack traces.
+
+| Provider outcome                     | Adapter code            | Retryable                       |
+| ------------------------------------ | ----------------------- | ------------------------------- |
+| Missing query or invalid limit       | `invalid_input`         | No                              |
+| Rejected API key                     | `authentication_failed` | No                              |
+| Insufficient permission              | `permission_denied`     | No                              |
+| Rate limit after SDK retries         | `rate_limited`          | Yes                             |
+| Connection failure after SDK retries | `provider_unavailable`  | Yes                             |
+| Other API response                   | `provider_error`        | Only for transient status codes |
+
+`createSearchHandler` accepts the provider call as a dependency. Unit tests can pass a fake function
+and cover validation, result mapping, and failure mapping without a network request or API key.
+
+### Keep the boundary narrow
+
+- Read `X_TWITTER_SCRAPER_API_KEY` in the worker process. Never accept it in a function payload or
+  publish it as function metadata.
+- Keep request and response logging off unless an isolated development session needs it.
+- Budget SDK and iii queue retries together. This example makes at most three provider attempts.
+- Register public reads separately from private reads or state-changing actions. Add authorization
+  and confirmation before exposing those operations.
+- Use `HttpInvocationConfig` instead when an endpoint already accepts iii's JSON payload. This
+  adapter is useful because it maps function input to query parameters and normalizes SDK errors.
+
+Xquik is an independent third-party service. Not affiliated with X Corp. "Twitter" and "X" are
+trademarks of X Corp.
