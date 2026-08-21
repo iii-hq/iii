@@ -8,7 +8,7 @@ iii trigger -n dev compose::add worker=http
 ```
 
 <Note>
-  This page is a quick tour. For path patterns, methods, headers, and response handling, see the
+  This page covers the basic endpoint flow. For path patterns, methods, headers, and response handling, see the
   [http worker docs](https://workers.iii.dev/workers/http). The worker's server settings
   (port, host, CORS, timeouts) are managed at runtime through the
   [configuration worker](../using-iii/configuration).
