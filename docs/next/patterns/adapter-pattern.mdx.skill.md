@@ -49,8 +49,22 @@ type SearchErrorCode =
   | "provider_error"
   | "provider_unavailable";
 
+type SocialPost = {
+  id: string;
+  text: string;
+  author: { id: string; displayName: string; username: string } | null;
+  createdAt: string | null;
+  url: string | null;
+};
+
+type PostSearchResult = {
+  posts: SocialPost[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
 type SearchOutput =
-  | { ok: true; data: XTwitterScraper.X.TweetSearchResponse }
+  | { ok: true; data: PostSearchResult }
   | { ok: false; error: { code: SearchErrorCode; retryable: boolean } };
 
 type SearchTweets = (params: {
@@ -62,6 +76,26 @@ function failure(code: SearchErrorCode, retryable = false): SearchOutput {
   return { ok: false, error: { code, retryable } };
 }
 
+function mapSearchResult(response: XTwitterScraper.X.TweetSearchResponse): PostSearchResult {
+  return {
+    posts: response.tweets.map((post) => ({
+      id: post.id,
+      text: post.text,
+      author: post.author
+        ? {
+            id: post.author.id,
+            displayName: post.author.name,
+            username: post.author.username,
+          }
+        : null,
+      createdAt: post.createdAt ?? null,
+      url: post.url ?? null,
+    })),
+    hasMore: response.has_next_page ?? false,
+    nextCursor: response.next_cursor || null,
+  };
+}
+
 function createSearchHandler(searchTweets: SearchTweets) {
   return async (input: unknown): Promise<SearchOutput> => {
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -70,9 +104,13 @@ function createSearchHandler(searchTweets: SearchTweets) {
 
     const candidate = input as Record<string, unknown>;
     const query = candidate.query;
-    const limit = candidate.limit ?? 20;
+    const limit = candidate.limit === undefined ? 20 : candidate.limit;
+    const hasUnknownField = Object.keys(candidate).some(
+      (key) => key !== "query" && key !== "limit",
+    );
 
     if (
+      hasUnknownField ||
       typeof query !== "string" ||
       typeof limit !== "number" ||
       !Number.isInteger(limit) ||
@@ -86,7 +124,8 @@ function createSearchHandler(searchTweets: SearchTweets) {
     if (!normalizedQuery) return failure("invalid_input");
 
     try {
-      return { ok: true, data: await searchTweets({ q: normalizedQuery, limit }) };
+      const response = await searchTweets({ q: normalizedQuery, limit });
+      return { ok: true, data: mapSearchResult(response) };
     } catch (error) {
       if (error instanceof XTwitterScraper.AuthenticationError) {
         return failure("authentication_failed");
@@ -150,6 +189,7 @@ worker.registerFunction(
 
 `request_format` documents the input for iii tooling. It does not validate values before the SDK
 invokes the handler, so the handler accepts `unknown` and checks every field at runtime.
+`mapSearchResult` also keeps provider-specific response fields behind the adapter boundary.
 
 Run the worker with both environment variables set. Then invoke the adapter like any iii function:
 
