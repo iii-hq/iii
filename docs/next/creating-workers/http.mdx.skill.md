@@ -143,10 +143,10 @@ For path patterns, request and response shapes, and the other configuration opti
 
 ## Calling the endpoint
 
-Once the trigger is registered, call the address configured for the http worker. This example
-assumes its listener is configured at `127.0.0.1:3111`:
+Once the trigger is registered, set `HTTP_WORKER_URL` to the address configured for the http worker
+and call the endpoint:
 
 ```bash
 # call the exposed function
-curl -X POST http://127.0.0.1:3111/math/add -H 'content-type: application/json' -d '{"a":2,"b":3}'
+curl -X POST "$HTTP_WORKER_URL/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
 ```
