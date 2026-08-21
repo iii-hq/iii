@@ -154,7 +154,8 @@ registration and stores it:
 </Tabs>
 
 Start the http worker afterward. The engine activates the stored binding automatically, and the
-endpoint serves requests without re-registering:
+endpoint serves requests without re-registering. The `-n` flag is the documented short form of
+`--namespace` for [`iii trigger`](../cli-reference/index#iii-trigger):
 
 ```bash
 # http worker started after registration

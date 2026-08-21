@@ -25,6 +25,10 @@ iii --config config.yaml
 iii compose --namespace dev --engine ws://127.0.0.1:49134
 ```
 
+`iii compose` is an intentional verbless daemon invocation, documented in the
+[CLI reference](../cli-reference/index#iii-compose). The `-n` used below is the short form of
+`--namespace` for [`iii trigger`](../cli-reference/index#iii-trigger).
+
 Run the remaining commands from a third terminal in that same project directory:
 
 ```bash
