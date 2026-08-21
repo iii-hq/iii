@@ -336,6 +336,8 @@ fn is_safe_log_character(character: char) -> bool {
             '\u{061c}'
                 | '\u{200e}'
                 | '\u{200f}'
+                | '\u{2028}'
+                | '\u{2029}'
                 | '\u{202a}'..='\u{202e}'
                 | '\u{2066}'..='\u{2069}'
         )
@@ -355,6 +357,7 @@ struct RotatingLog {
 
 impl RotatingLog {
     fn open(path: &Path, max_bytes: u64, archives: usize) -> std::io::Result<Self> {
+        let max_bytes = max_bytes.max(1);
         let mut options = std::fs::OpenOptions::new();
         options.create(true).read(true).append(true);
         #[cfg(unix)]
@@ -493,7 +496,8 @@ fn log_tail(path: &Path) -> Option<String> {
     let clean = sanitize_terminal_output(&bytes);
     let text = String::from_utf8_lossy(&clean);
     let text = if start > 0 {
-        text.split_once('\n')?.1
+        text.split_once('\n')
+            .map_or(text.as_ref(), |(_, rest)| rest)
     } else {
         text.as_ref()
     };
@@ -590,6 +594,16 @@ mod tests {
     }
 
     #[test]
+    fn log_tail_keeps_a_bounded_fragment_of_one_long_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("engine.log");
+        std::fs::write(&log, "x".repeat(70 * 1024)).unwrap();
+        let expected = format!("  {}", "x".repeat(240));
+
+        assert_eq!(log_tail(&log).as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
     fn log_tail_strips_terminal_escape_sequences_from_existing_logs() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("engine.log");
@@ -622,9 +636,21 @@ mod tests {
 
     #[test]
     fn terminal_sanitizer_reprocesses_invalid_utf8_and_strips_bidi_controls() {
-        let clean = sanitize_terminal_output(b"\xc3\x1b[31mred\x1b[0m \xe2\x80\xaespoof\n");
+        let clean = sanitize_terminal_output(
+            b"\xc3\x1b[31mred\x1b[0m \xe2\x80\xaespoof\xe2\x80\xa8forged\xe2\x80\xa9line\n",
+        );
 
-        assert_eq!(String::from_utf8(clean).unwrap(), "red spoof\n");
+        assert_eq!(String::from_utf8(clean).unwrap(), "red spoofforgedline\n");
+    }
+
+    #[test]
+    fn rotating_log_clamps_a_zero_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("engine.log");
+
+        let log = RotatingLog::open(&log, 0, 0).unwrap();
+
+        assert_eq!(log.max_bytes, 1);
     }
 
     #[cfg(unix)]
