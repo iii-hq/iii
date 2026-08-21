@@ -147,9 +147,10 @@ For path patterns, request and response shapes, and the other configuration opti
 
 ## Calling the endpoint
 
-Once the trigger is registered, call the path on the http worker's listener (`3111` by default):
+Once the trigger is registered, call the address configured for the http worker. This example
+assumes its listener is configured at `127.0.0.1:3111`:
 
 ```bash
 # call the exposed function
-curl -X POST http://localhost:3111/math/add -H 'content-type: application/json' -d '{"a":2,"b":3}'
+curl -X POST http://127.0.0.1:3111/math/add -H 'content-type: application/json' -d '{"a":2,"b":3}'
 ```
