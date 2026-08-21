@@ -171,6 +171,37 @@ async fn managed_daemon_requires_restart_when_its_owner_engine_section_changes()
 }
 
 #[tokio::test]
+async fn up_rechecks_the_owner_engine_section_after_the_project_is_cached() {
+    isolate_state();
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(&file, "engine: { workers: {} }\ncontainers: {}\n").unwrap();
+
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-cached-change-test-{}", std::process::id()),
+        EnginePolicy::managed(&initial).unwrap(),
+    );
+    daemon
+        .project(&file)
+        .await
+        .expect("the initial project should load into the cache");
+
+    std::fs::write(
+        &file,
+        "engine:\n  workers:\n    iii-stream: { port: 3112 }\ncontainers: {}\n",
+    )
+    .unwrap();
+
+    let err = daemon
+        .up(Some(&file), None, "cached-engine-change".to_string())
+        .await
+        .expect_err("up must reject an engine section changed after the project was cached");
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+}
+
+#[tokio::test]
 async fn managed_daemon_rejects_a_second_engine_owner() {
     isolate_state();
     let tmp = project_dir();

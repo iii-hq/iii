@@ -237,7 +237,10 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let project = self.project(self.resolve_file(file)?).await?;
+        let file = self.resolve_file(file)?;
+        let current = ComposeFile::load(file)?;
+        self.engine_policy.validate_project(&current)?;
+        let project = self.project(file).await?;
         Ok(project.up(container, operation_id).await)
     }
 
