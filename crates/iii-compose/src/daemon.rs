@@ -475,6 +475,52 @@ impl Daemon {
         }))
     }
 
+    /// Removes one declared worker and restarts the whole project.
+    ///
+    /// This is a literal edit, not a graph operation. It does not ask the
+    /// registry what the worker brought with it, remove dependencies, or
+    /// rewrite another container's `depends_on`. The restart re-reads the
+    /// result and reports if the remaining declaration cannot start.
+    pub async fn remove(
+        &self,
+        file: Option<&Path>,
+        worker: Option<&str>,
+        operation_id: String,
+    ) -> Result<Value> {
+        let Some(worker) = worker.map(str::trim).filter(|worker| !worker.is_empty()) else {
+            return Err(ComposeError::InvalidWorkerSpec {
+                spec: String::new(),
+                reason: "no worker was named. Pass worker=<name>".to_string(),
+            });
+        };
+
+        let path = self.resolve_file(file)?;
+        let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let Some(edited) = crate::edit::remove_container(&text, worker)? else {
+            return Err(ComposeError::UnknownContainer {
+                container: worker.to_string(),
+            });
+        };
+
+        // Unlike add and update, removal intentionally does not parse the
+        // edited declaration first. Parsing validates the dependency graph,
+        // which would turn a literal removal into a graph-aware operation.
+        write_atomically(path, &edited)?;
+
+        let (down, up) = self.restart_project(file, None, &operation_id).await?;
+        Ok(serde_json::json!({
+            "status": up.status,
+            "container": worker,
+            "changed": true,
+            "detail": format!("removed {worker}"),
+            "down": serde_json::to_value(&down).unwrap_or(Value::Null),
+            "up": serde_json::to_value(&up).unwrap_or(Value::Null),
+        }))
+    }
+
     /// Stops a project and starts it again, or bounces one container of it.
     ///
     /// Named, the container is the only thing that stops and starts: not what
@@ -674,7 +720,7 @@ pub const DAEMON_WORKER_NAME: &str = "compose";
 /// with no copy of what it said before. The rename is atomic within a
 /// filesystem, so a reader sees the old file or the new one.
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
-    let temp = path.with_extension("compose-add-tmp");
+    let temp = path.with_extension("compose-edit-tmp");
     std::fs::write(&temp, text).map_err(|source| ComposeError::Io {
         path: temp.clone(),
         source,

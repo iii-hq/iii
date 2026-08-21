@@ -317,6 +317,61 @@ async fn validating_a_file_does_not_take_the_project_on() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn remove_edits_only_the_named_worker_and_restarts_the_project() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: removal
+startup_timeout: 100ms
+stop_timeout: 100ms
+containers:
+  keep:
+    worker: path://./workers/keep
+    scripts:
+      run: "sleep 30"
+  discard:
+    worker: path://./workers/discard
+    scripts:
+      run: "sleep 30"
+"#,
+        &["keep", "discard"],
+    );
+
+    let result = call(
+        port,
+        "compose::remove",
+        json!({
+            "file": file.to_str().unwrap(),
+            "worker": "discard",
+        }),
+    )
+    .await
+    .expect("compose::remove should answer");
+
+    assert_eq!(result["container"], "discard", "{result}");
+    assert_eq!(result["changed"], true, "{result}");
+    assert!(result["down"].is_object(), "down was not run: {result}");
+    assert!(result["up"].is_object(), "up was not run: {result}");
+
+    let edited = std::fs::read_to_string(&file).expect("read edited compose file");
+    assert!(
+        edited.contains("  keep:"),
+        "kept worker was removed: {edited}"
+    );
+    assert!(
+        !edited.contains("  discard:"),
+        "named worker survived: {edited}"
+    );
+
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn one_file_is_one_project_however_it_is_spelled() {
     isolate_state();
     let port = spawn_engine().await;
