@@ -4,17 +4,18 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Adding a container to a compose file the operator wrote.
+//! Editing containers in a compose file the operator wrote.
 //!
 //! The file is edited as text, not parsed and re-serialised. A round trip
 //! through serde would return valid YAML and lose everything that is not data:
 //! the comments explaining why a container is pinned where it is, the blank
 //! lines grouping it, the quoting style. That file belongs to whoever wrote it,
-//! and `compose::add` is not entitled to reformat it.
+//! and compose edit operations are not entitled to reformat it.
 //!
-//! So the block is spliced in, matched to the indentation already in use, and
-//! the result is parsed before it is written. A file that would not load is not
-//! written at all.
+//! So each block is spliced in or out and matched to the indentation already in
+//! use. Add and update parse the result before it is written. Remove is the
+//! deliberate exception: it must remove only the named entry without making a
+//! decision about the resulting dependency graph.
 
 use crate::error::{ComposeError, Result};
 
@@ -209,6 +210,35 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
             Ok(Outcome::Added(join(&out, text)))
         }
     }
+}
+
+/// Removes one container entry without reading or changing its dependency graph.
+///
+/// `compose::remove` is deliberately literal: it removes the named entry and
+/// leaves every other entry byte-for-byte as the operator wrote it. In
+/// particular, a `depends_on` that names this container is not rewritten or
+/// used to refuse the edit. The following project restart reports any problem
+/// in the resulting declaration.
+pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
+    // Keep terminators in the slices. Rebuilding from `str::lines()` would
+    // silently turn every surviving CRLF into LF.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let containers = find_containers(&lines)?;
+    let indent = entry_indent(&lines, &containers);
+    let Some(entry) = find_entry(&lines, &containers, &indent, key) else {
+        return Ok(None);
+    };
+
+    let start = lines[..entry.start].iter().map(|line| line.len()).sum();
+    let end = start
+        + lines[entry.clone()]
+            .iter()
+            .map(|line| line.len())
+            .sum::<usize>();
+    let mut out = String::with_capacity(text.len() - (end - start));
+    out.push_str(&text[..start]);
+    out.push_str(&text[end..]);
+    Ok(Some(out))
 }
 
 /// Keeps the file's final newline as it was: adding one to a file without it,
@@ -714,6 +744,66 @@ containers:
         let out = added(FILE.trim_end());
         assert!(!out.ends_with('\n'), "gained a trailing newline");
     }
+
+    #[test]
+    fn removing_an_entry_keeps_the_rest_of_the_file() {
+        let out = remove_container(FILE, "todo")
+            .unwrap()
+            .expect("todo should be removed");
+
+        assert!(!out.contains("todo:"), "todo survived: {out}");
+        assert!(
+            !out.contains("# the local one"),
+            "its comment survived: {out}"
+        );
+        assert!(
+            !out.contains("run: ./bin/todo-worker"),
+            "its body survived: {out}"
+        );
+        assert!(out.contains("pi:"), "the other worker was removed: {out}");
+        assert!(
+            out.contains("version: \"0.1.12\""),
+            "the other worker changed: {out}"
+        );
+    }
+
+    #[test]
+    fn removing_does_not_check_or_rewrite_the_graph() {
+        let text = r#"containers:
+  database:
+    worker: path://./workers/database
+  api:
+    worker: path://./workers/api
+    depends_on: [database]
+"#;
+
+        let out = remove_container(text, "database")
+            .unwrap()
+            .expect("database should be removed");
+
+        assert!(!out.contains("database:"), "database survived: {out}");
+        assert!(
+            out.contains("depends_on: [database]"),
+            "the dependent was rewritten: {out}"
+        );
+    }
+
+    #[test]
+    fn removing_an_unknown_entry_changes_nothing() {
+        assert_eq!(remove_container(FILE, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn removing_preserves_crlf_in_the_surviving_bytes() {
+        let text = "containers:\r\n  keep:\r\n    worker: path://./keep\r\n  remove:\r\n    worker: path://./remove\r\n  after:\r\n    worker: path://./after\r\n";
+        let expected = "containers:\r\n  keep:\r\n    worker: path://./keep\r\n  after:\r\n    worker: path://./after\r\n";
+
+        assert_eq!(
+            remove_container(text, "remove").unwrap().as_deref(),
+            Some(expected)
+        );
+    }
+
     #[test]
     fn a_package_never_replaces_a_local_worker_of_the_same_name() {
         // The hazard is quiet: `path://` carries no version, so comparing
