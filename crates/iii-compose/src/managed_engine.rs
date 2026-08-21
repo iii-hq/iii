@@ -64,12 +64,18 @@ impl ManagedEngine {
             source,
         })?;
 
-        let log = RotatingLog::open(log_path, ENGINE_LOG_MAX_BYTES, ENGINE_LOG_ARCHIVES).map_err(
-            |source| ComposeError::Io {
-                path: log_path.to_path_buf(),
-                source,
-            },
-        )?;
+        let owned_log_path = log_path.to_path_buf();
+        let log = tokio::task::spawn_blocking(move || {
+            RotatingLog::open(&owned_log_path, ENGINE_LOG_MAX_BYTES, ENGINE_LOG_ARCHIVES)
+        })
+        .await
+        .map_err(|source| ComposeError::EngineSpawnFailed {
+            message: format!("could not prepare the engine log: {source}"),
+        })?
+        .map_err(|source| ComposeError::Io {
+            path: log_path.to_path_buf(),
+            source,
+        })?;
 
         let mut command = tokio::process::Command::new(executable);
         command
@@ -165,8 +171,8 @@ fn capture_output(output: ChildOutput, log: RotatingLog) -> LogCapture {
             .map(|stream| Box::new(stream) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
     ]
     .into_iter()
-    .flatten()
     .enumerate()
+    .filter_map(|(stream_id, stream)| stream.map(|stream| (stream_id, stream)))
     {
         let chunks_tx = chunks_tx.clone();
         tokio::spawn(async move {
@@ -237,69 +243,79 @@ impl TerminalSanitizer {
     fn sanitize(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut clean = Vec::with_capacity(bytes.len());
 
-        for &byte in bytes {
-            if self.state == TerminalState::Ground && !self.utf8.is_empty() {
-                self.utf8.push(byte);
-                if self.utf8.len() == self.utf8_expected {
-                    if let Ok(text) = std::str::from_utf8(&self.utf8)
-                        && text.chars().all(|character| !character.is_control())
-                    {
-                        clean.extend_from_slice(&self.utf8);
+        for &input in bytes {
+            let mut pending = Some(input);
+            while let Some(byte) = pending.take() {
+                if self.state == TerminalState::Ground && !self.utf8.is_empty() {
+                    if !(0x80..=0xbf).contains(&byte) {
+                        self.utf8.clear();
+                        self.utf8_expected = 0;
+                        pending = Some(byte);
+                        continue;
                     }
-                    self.utf8.clear();
-                    self.utf8_expected = 0;
-                }
-                continue;
-            }
 
-            match self.state {
-                TerminalState::Ground => match byte {
-                    0x1b => self.state = TerminalState::Escape,
-                    b'\n' | b'\t' | 0x20..=0x7e => clean.push(byte),
-                    0xc2..=0xdf => self.start_utf8(byte, 2),
-                    0xe0..=0xef => self.start_utf8(byte, 3),
-                    0xf0..=0xf4 => self.start_utf8(byte, 4),
-                    _ => {}
-                },
-                TerminalState::Escape => {
-                    self.state = match byte {
-                        0x1b => TerminalState::Escape,
-                        b'[' => TerminalState::Csi,
-                        b']' => TerminalState::Osc,
-                        b'P' | b'X' | b'^' | b'_' => TerminalState::ControlString,
-                        _ => TerminalState::Ground,
-                    };
-                }
-                TerminalState::Csi => {
-                    if byte == 0x1b {
-                        self.state = TerminalState::Escape;
-                    } else if (0x40..=0x7e).contains(&byte) {
-                        self.state = TerminalState::Ground;
+                    self.utf8.push(byte);
+                    if self.utf8.len() == self.utf8_expected {
+                        if let Ok(text) = std::str::from_utf8(&self.utf8)
+                            && text.chars().all(is_safe_log_character)
+                        {
+                            clean.extend_from_slice(&self.utf8);
+                        }
+                        self.utf8.clear();
+                        self.utf8_expected = 0;
                     }
+                    continue;
                 }
-                TerminalState::Osc => match byte {
-                    0x07 => self.state = TerminalState::Ground,
-                    0x1b => self.state = TerminalState::OscEscape,
-                    _ => {}
-                },
-                TerminalState::OscEscape => {
-                    self.state = match byte {
-                        b'\\' => TerminalState::Ground,
-                        0x1b => TerminalState::OscEscape,
-                        _ => TerminalState::Osc,
-                    };
-                }
-                TerminalState::ControlString => {
-                    if byte == 0x1b {
-                        self.state = TerminalState::ControlStringEscape;
+
+                match self.state {
+                    TerminalState::Ground => match byte {
+                        0x1b => self.state = TerminalState::Escape,
+                        b'\n' | b'\t' | 0x20..=0x7e => clean.push(byte),
+                        0xc2..=0xdf => self.start_utf8(byte, 2),
+                        0xe0..=0xef => self.start_utf8(byte, 3),
+                        0xf0..=0xf4 => self.start_utf8(byte, 4),
+                        _ => {}
+                    },
+                    TerminalState::Escape => {
+                        self.state = match byte {
+                            0x1b => TerminalState::Escape,
+                            b'[' => TerminalState::Csi,
+                            b']' => TerminalState::Osc,
+                            b'P' | b'X' | b'^' | b'_' => TerminalState::ControlString,
+                            _ => TerminalState::Ground,
+                        };
                     }
-                }
-                TerminalState::ControlStringEscape => {
-                    self.state = match byte {
-                        b'\\' => TerminalState::Ground,
-                        0x1b => TerminalState::ControlStringEscape,
-                        _ => TerminalState::ControlString,
-                    };
+                    TerminalState::Csi => {
+                        if byte == 0x1b {
+                            self.state = TerminalState::Escape;
+                        } else if (0x40..=0x7e).contains(&byte) {
+                            self.state = TerminalState::Ground;
+                        }
+                    }
+                    TerminalState::Osc => match byte {
+                        0x07 => self.state = TerminalState::Ground,
+                        0x1b => self.state = TerminalState::OscEscape,
+                        _ => {}
+                    },
+                    TerminalState::OscEscape => {
+                        self.state = match byte {
+                            b'\\' => TerminalState::Ground,
+                            0x1b => TerminalState::OscEscape,
+                            _ => TerminalState::Osc,
+                        };
+                    }
+                    TerminalState::ControlString => {
+                        if byte == 0x1b {
+                            self.state = TerminalState::ControlStringEscape;
+                        }
+                    }
+                    TerminalState::ControlStringEscape => {
+                        self.state = match byte {
+                            b'\\' => TerminalState::Ground,
+                            0x1b => TerminalState::ControlStringEscape,
+                            _ => TerminalState::ControlString,
+                        };
+                    }
                 }
             }
         }
@@ -311,6 +327,18 @@ impl TerminalSanitizer {
         self.utf8.push(byte);
         self.utf8_expected = expected;
     }
+}
+
+fn is_safe_log_character(character: char) -> bool {
+    !character.is_control()
+        && !matches!(
+            character,
+            '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
 }
 
 fn sanitize_terminal_output(bytes: &[u8]) -> Vec<u8> {
@@ -454,10 +482,21 @@ fn follow_command(path: &Path) -> String {
 fn log_tail(path: &Path) -> Option<String> {
     const LINES: usize = 5;
     const WIDTH: usize = 240;
+    const MAX_TAIL_BYTES: u64 = 64 * 1024;
 
-    let bytes = std::fs::read(path).ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let start = length.saturating_sub(MAX_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity((length - start) as usize);
+    file.take(MAX_TAIL_BYTES).read_to_end(&mut bytes).ok()?;
     let clean = sanitize_terminal_output(&bytes);
     let text = String::from_utf8_lossy(&clean);
+    let text = if start > 0 {
+        text.split_once('\n')?.1
+    } else {
+        text.as_ref()
+    };
     let tail: Vec<&str> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -537,6 +576,20 @@ mod tests {
     }
 
     #[test]
+    fn log_tail_reads_a_bounded_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("engine.log");
+        let mut contents = "x".repeat(70 * 1024);
+        contents.push_str("\none\ntwo\nthree\nfour\nfive\nsix\n");
+        std::fs::write(&log, contents).unwrap();
+
+        assert_eq!(
+            log_tail(&log).as_deref(),
+            Some("  two\n  three\n  four\n  five\n  six")
+        );
+    }
+
+    #[test]
     fn log_tail_strips_terminal_escape_sequences_from_existing_logs() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("engine.log");
@@ -565,6 +618,13 @@ mod tests {
         }
 
         assert_eq!(String::from_utf8(clean).unwrap(), "red visible café\n");
+    }
+
+    #[test]
+    fn terminal_sanitizer_reprocesses_invalid_utf8_and_strips_bidi_controls() {
+        let clean = sanitize_terminal_output(b"\xc3\x1b[31mred\x1b[0m \xe2\x80\xaespoof\n");
+
+        assert_eq!(String::from_utf8(clean).unwrap(), "red spoof\n");
     }
 
     #[cfg(unix)]
