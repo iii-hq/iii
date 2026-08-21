@@ -17,15 +17,6 @@ engine:
         config:
           bridge_url: ws://localhost:49198
 containers:
-  state:
-    worker: package://api.workers.iii.dev/state
-    version: "0.22.2"
-    config_name: state
-    config_override:
-      adapter:
-        name: bridge
-        config:
-          bridge_url: ws://localhost:49198
   pubsub:
     worker: package://api.workers.iii.dev/pubsub
     version: "0.21.2"
