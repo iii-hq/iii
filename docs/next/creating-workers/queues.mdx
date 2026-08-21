@@ -47,21 +47,10 @@ number of retries then you can use `TriggerAction.Enqueue` to place that operati
 
 ### Creating a Queue
 
-Queues are defined in the `queue` worker's config under `queue_configs`:
-
-```yaml
-- name: queue
-  config:
-    queue_configs:
-      email-jobs:
-        max_retries: 3
-        concurrency: 10
-        type: standard
-```
-
-The example uses the standard delivery mode with three attempts and up to ten jobs in flight. See
-the [queue worker configuration reference](https://workers.iii.dev/workers/queue) for every
-accepted field, default, and FIFO option.
+Create a named queue called `email-jobs` by following the
+[queue worker configuration reference](https://workers.iii.dev/workers/queue), then use that name
+when enqueueing functions below. The worker reference owns the accepted fields, defaults, and FIFO
+options.
 
 ### Enqueue functions
 
@@ -127,8 +116,8 @@ The engine runs the function once per message, passing the published `data` as t
 Returning normally acknowledges the message; throwing nacks it, so it is retried and eventually
 dead-lettered.
 
-1. In a worker, register the consumer function and subscribe it to the topic. If you do not have a
-   worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
+In a worker, register the consumer function and subscribe it to the topic. If you do not have a
+worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -221,7 +210,7 @@ dead-lettered.
   </Tab>
 </Tabs>
 
-2. Add the worker to start it:
+Add the worker to start it:
 
 ```bash
 iii trigger -n dev compose::add worker=./email-worker
@@ -300,8 +289,8 @@ trigger with a `fifo` queue:
 
 These commands list both kinds of queue. A pub/sub topic appears once a function subscribes to it,
 and shows `broker_type: "builtin"`. (Publishing to a topic that nothing subscribes to does not
-register it, so there is nothing to inspect.) A named queue appears as soon as its `queue_configs`
-entry is defined, and shows `broker_type: "function_queue"`.
+register it, so there is nothing to inspect.) A configured named queue appears with
+`broker_type: "function_queue"`.
 
 List every topic (this inspects the `emails` topic from above):
 
@@ -315,7 +304,7 @@ iii trigger engine::queue::list_topics
 
 Get stats for the topic (`depth` is messages waiting for the consumer, `dlq_depth` is
 dead-lettered). A topic whose consumer keeps up sits at `depth: 0`. For a named queue,
-`consumer_count` reports its configured `concurrency` slots (`10` for `email-jobs`):
+`consumer_count` reports its active delivery slots:
 
 ```bash
 iii trigger engine::queue::topic_stats topic=emails
