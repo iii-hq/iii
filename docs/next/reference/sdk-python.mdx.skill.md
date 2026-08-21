@@ -48,7 +48,7 @@ register_worker(address: str | None = None, options: InitOptions | None = None) 
       Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
     </ParamField>
     <ParamField body="namespace" type="str | None">
-      Namespace this worker belongs to. Falls back to the ``III_NAMESPACE`` env var; when neither is set the engine applies ``default``. It scopes more than the registration: the worker and its functions register here, and everything the worker does afterwards follows it -- ``trigger`` resolves its target here and ``register_trigger`` binds here, unless the call names another namespace.
+      Namespace this worker belongs to. Falls back to the ``III_NAMESPACE`` env var; when neither is set the engine applies ``default``. The worker and its functions register here; ordinary ``trigger`` targets and ``register_trigger`` bindings also inherit it unless the call names another namespace. Implicit calls to engine-owned ``engine::*`` functions resolve in ``default``; pass an explicit namespace to override that behavior.
     </ParamField>
     <ParamField body="otel" type="OtelConfig | dict[str, Any] | None">
       OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable.
@@ -660,7 +660,7 @@ Configuration options passed to ``register_worker``.
 | `enable_metrics_reporting` | `bool` | No | Enable worker metrics via OpenTelemetry. Default ``True``. |
 | `headers` | `dict[str, str] \| None` | No | - |
 | `invocation_timeout_ms` | `int` | No | Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``. |
-| `namespace` | `str \| None` | No | Namespace this worker belongs to. Falls back to the ``III_NAMESPACE`` env var; when neither is set the engine applies ``default``. It scopes more than the registration: the worker and its functions register here, and everything the worker does afterwards follows it -- ``trigger`` resolves its target here and ``register_trigger`` binds here, unless the call names another namespace. |
+| `namespace` | `str \| None` | No | Namespace this worker belongs to. Falls back to the ``III_NAMESPACE`` env var; when neither is set the engine applies ``default``. The worker and its functions register here; ordinary ``trigger`` targets and ``register_trigger`` bindings also inherit it unless the call names another namespace. Implicit calls to engine-owned ``engine::*`` functions resolve in ``default``; pass an explicit namespace to override that behavior. |
 | `otel` | `OtelConfig \| dict[str, Any] \| None` | No | OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable. |
 | `reconnection_config` | `ReconnectionConfig \| None` | No | WebSocket reconnection behavior. |
 | `telemetry` | [`TelemetryOptions`](#telemetryoptions) \| None | No | Internal worker metadata reported to the engine. |

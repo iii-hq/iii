@@ -758,6 +758,11 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
         let _ = std::fs::remove_file(&temp);
         return Err(ComposeError::Io { path: temp, source });
     }
+    if let Err(source) = file.sync_all() {
+        drop(file);
+        let _ = std::fs::remove_file(&temp);
+        return Err(ComposeError::Io { path: temp, source });
+    }
     drop(file);
     std::fs::rename(&temp, path).map_err(|source| {
         let _ = std::fs::remove_file(&temp);

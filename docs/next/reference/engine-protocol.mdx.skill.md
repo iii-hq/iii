@@ -14,7 +14,8 @@
 
 <Note>
   Observability introspection (traces, logs, metrics, sampling rules, alerts, rollups) is owned
-  end-to-end by the iii-observability worker.
+  end-to-end by the iii-observability worker. The engine injects this worker automatically; do not
+  declare it in `config.yaml`, `engine.workers`, or `containers`.
 </Note>
 
 ## Connection ports

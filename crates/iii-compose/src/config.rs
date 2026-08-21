@@ -271,7 +271,7 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
 
     let url = match raw.url {
         Some(url) if url.trim().is_empty() => return Err(ComposeError::InvalidManagedEngineUrl),
-        Some(url) => url,
+        Some(url) => url.trim().to_string(),
         None => DEFAULT_MANAGED_ENGINE_URL.to_string(),
     };
 

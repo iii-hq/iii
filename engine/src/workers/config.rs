@@ -201,9 +201,12 @@ impl EngineConfig {
     }
 }
 
+fn worker_type_of(name: &str) -> &str {
+    name.split('#').next().unwrap_or(name)
+}
+
 fn migration_guidance(name: &str) -> String {
-    let worker_type = name.split('#').next().unwrap_or(name);
-    let guidance = match worker_type {
+    let guidance = match worker_type_of(name) {
         "iii-http" | "http" => "move to worker-compose.yaml as 'http'",
         "iii-cron" | "cron" => "move to worker-compose.yaml as 'cron'",
         "iii-queue" | "queue" => "move to worker-compose.yaml as 'queue'",
@@ -455,7 +458,7 @@ impl WorkerEntry {
     /// instance suffixes like `iii-http#1`, this strips the `#N` and returns
     /// the base name `iii-http`.
     pub fn worker_type(&self) -> &str {
-        self.name.split('#').next().unwrap_or(&self.name)
+        worker_type_of(&self.name)
     }
 
     /// Creates a module instance from this entry

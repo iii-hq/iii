@@ -158,6 +158,14 @@ fn rejects_blank_managed_engine_url() {
 }
 
 #[test]
+fn trims_managed_engine_url() {
+    let file = parse("engine:\n  url: '  ws://127.0.0.1:50123  '\n  workers: {}\ncontainers: {}\n")
+        .expect("surrounding URL whitespace should be normalized");
+
+    assert_eq!(file.engine.unwrap().url, "ws://127.0.0.1:50123");
+}
+
+#[test]
 fn rejects_malformed_engine_worker_instance_keys() {
     for name in ["iii-worker-manager#", "iii-worker-manager#one#two"] {
         assert_eq!(
