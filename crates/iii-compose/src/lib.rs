@@ -29,6 +29,7 @@ pub mod error;
 pub mod hooks;
 pub mod interpolate;
 pub mod lifecycle;
+mod managed_engine;
 pub mod manifest;
 pub mod name;
 pub mod namespace;
@@ -40,7 +41,7 @@ pub mod report;
 pub mod spawn;
 pub mod state;
 
-pub use cli::{ComposeCli, ComposeCommand, ComposeSub};
+pub use cli::{ComposeCli, ComposeCommand, ComposeSub, EngineOwnership};
 pub use config::{ComposeFile, Container, WorkerSource};
 pub use error::{ComposeError, Result};
 pub use manifest::{StartSpec, ValidationReport};
@@ -60,6 +61,20 @@ pub fn validate_project(
 /// Entry point behind `iii compose`. Returns the process exit code, matching
 /// the other `iii` subcommands.
 pub async fn run(cli: ComposeCli) -> i32 {
+    run_with_config(
+        cli,
+        std::path::PathBuf::from(managed_engine::DEFAULT_ENGINE_CONFIG),
+    )
+    .await
+}
+
+/// Runs compose with the engine config selected by the root `iii` CLI.
+///
+/// The compose crate deliberately does not parse or create this file. A
+/// managed engine receives the path and follows the same startup behavior as
+/// a manually launched `iii`, including creating the starter file when it is
+/// absent and stdin is not interactive.
+pub async fn run_with_config(cli: ComposeCli, engine_config: std::path::PathBuf) -> i32 {
     let command = match cli.plan() {
         Ok(command) => command,
         Err(err) => return report_error(&err),
@@ -69,8 +84,17 @@ pub async fn run(cli: ComposeCli) -> i32 {
         ComposeCommand::Serve {
             engine_url,
             daemon_namespace,
+            engine_ownership,
             start,
-        } => match serve(engine_url, daemon_namespace, start).await {
+        } => match serve(
+            engine_url,
+            daemon_namespace,
+            engine_ownership,
+            engine_config,
+            start,
+        )
+        .await
+        {
             Ok(()) => 0,
             Err(err) => report_error(&err),
         },
@@ -86,7 +110,46 @@ pub async fn run(cli: ComposeCli) -> i32 {
 async fn serve(
     engine_url: String,
     daemon_namespace: String,
+    engine_ownership: EngineOwnership,
+    engine_config: std::path::PathBuf,
     start: Option<std::path::PathBuf>,
+) -> Result<()> {
+    use colored::Colorize;
+
+    let managed_engine = match engine_ownership {
+        EngineOwnership::Managed => {
+            let engine =
+                managed_engine::ManagedEngine::start(engine_config, &daemon_namespace).await?;
+            println!("engine {}", "started".green());
+            println!("  {} {}", "pid:".dimmed(), engine.pid());
+            println!(
+                "  {} {}",
+                "config:".dimmed(),
+                engine.config_path().display()
+            );
+            println!("  {} {}", "logs:".dimmed(), engine.log_path().display());
+            println!("  {} {}", "follow logs:".dimmed(), engine.follow_command());
+            println!();
+            Some(engine)
+        }
+        EngineOwnership::External => None,
+    };
+
+    let result = serve_daemon(engine_url, daemon_namespace, start, managed_engine.as_ref()).await;
+
+    if let Some(engine) = &managed_engine {
+        println!("{}", "stopping engine...".dimmed());
+        engine.stop_with_default_grace().await;
+    }
+
+    result
+}
+
+async fn serve_daemon(
+    engine_url: String,
+    daemon_namespace: String,
+    start: Option<std::path::PathBuf>,
+    managed_engine: Option<&managed_engine::ManagedEngine>,
 ) -> Result<()> {
     use colored::Colorize;
 
@@ -100,8 +163,14 @@ async fn serve(
     // Bounded, because not being connected yet is not a failure: a daemon
     // started before its engine waits and reconnects, and should say it is
     // there rather than sit silent until the engine appears.
-    const ACCEPTED_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
-    let deadline = tokio::time::Instant::now() + ACCEPTED_WITHIN;
+    const EXTERNAL_ACCEPTED_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
+    const MANAGED_READY_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+    let accepted_within = if managed_engine.is_some() {
+        MANAGED_READY_WITHIN
+    } else {
+        EXTERNAL_ACCEPTED_WITHIN
+    };
+    let deadline = tokio::time::Instant::now() + accepted_within;
     while tokio::time::Instant::now() < deadline {
         if let Some(error) = daemon.fatal_error() {
             daemon.abandon().await;
@@ -110,7 +179,24 @@ async fn serve(
         if daemon.engine().is_connected() {
             break;
         }
+        if let Some(engine) = managed_engine
+            && let process::Outcome::Exited(status) = engine.poll()
+        {
+            daemon.shutdown().await;
+            return Err(engine_exited(engine, status).await);
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    if let Some(engine) = managed_engine
+        && !daemon.engine().is_connected()
+    {
+        daemon.shutdown().await;
+        return Err(ComposeError::EngineReadinessTimeout {
+            engine_url: daemon.engine_url.clone(),
+            seconds: accepted_within.as_secs(),
+            tail: engine.log_tail(),
+        });
     }
 
     println!("compose {}", "serving".green());
@@ -161,11 +247,17 @@ async fn serve(
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
     #[cfg(unix)]
-    let mut terminated = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|err| ComposeError::SpawnFailed {
-            container: "<daemon>".to_string(),
-            message: format!("could not listen for SIGTERM: {err}"),
-        })?;
+    let mut terminated =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(terminated) => terminated,
+            Err(err) => {
+                daemon.shutdown().await;
+                return Err(ComposeError::SpawnFailed {
+                    container: "<daemon>".to_string(),
+                    message: format!("could not listen for SIGTERM: {err}"),
+                });
+            }
+        };
 
     loop {
         #[cfg(unix)]
@@ -186,6 +278,17 @@ async fn serve(
             break;
         }
 
+        if let Some(engine) = managed_engine
+            && let process::Outcome::Exited(status) = engine.poll()
+        {
+            println!(
+                "{}",
+                "managed engine exited; stopping every project...".dimmed()
+            );
+            daemon.shutdown().await;
+            return Err(engine_exited(engine, status).await);
+        }
+
         if let Some(error) = daemon.fatal_error() {
             // Not `shutdown`: children recorded under these ids may belong to
             // the daemon that already holds them.
@@ -197,6 +300,17 @@ async fn serve(
     println!("{}", "stopping every project...".dimmed());
     daemon.shutdown().await;
     Ok(())
+}
+
+async fn engine_exited(
+    engine: &managed_engine::ManagedEngine,
+    status: std::process::ExitStatus,
+) -> ComposeError {
+    engine.finish_logging().await;
+    ComposeError::EngineExited {
+        code: status.code().unwrap_or(-1),
+        tail: engine.log_tail(),
+    }
 }
 
 /// A registration rejection, as the thing it always is in practice.

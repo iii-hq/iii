@@ -250,6 +250,31 @@ pub enum ComposeError {
     #[error("engine call {function} failed: {message}")]
     EngineCallFailed { function: String, message: String },
 
+    #[error("managed engine could not start: {message}")]
+    EngineSpawnFailed { message: String },
+
+    #[error(
+        "managed engine exited with {code}{}",
+        match .tail {
+            Some(tail) => format!(". It last said:\n{tail}"),
+            None => String::new(),
+        }
+    )]
+    EngineExited { code: i32, tail: Option<String> },
+
+    #[error(
+        "managed engine at {engine_url} was not ready after {seconds}s{}",
+        match .tail {
+            Some(tail) => format!(". It last said:\n{tail}"),
+            None => String::new(),
+        }
+    )]
+    EngineReadinessTimeout {
+        engine_url: String,
+        seconds: u64,
+        tail: Option<String>,
+    },
+
     #[error(
         "container '{container}' registered in '{expected}', but its function '{function}' \
          landed in '{found_in}': the function registrations reached the engine before the \
@@ -366,6 +391,12 @@ pub enum ComposeError {
     )]
     DaemonAlreadyServing { engine_url: String, detail: String },
 
+    #[error(
+        "another managed compose invocation already owns namespace '{namespace}'. \
+         Stop it, wait for it to finish, or choose a different --namespace"
+    )]
+    DaemonNamespaceTaken { namespace: String },
+
     /// The id is the daemon's namespace *and* its state directory, so it is
     /// checked at parse time: the alternative is a daemon that starts, answers
     /// nothing an operator can address, and fails at its first write.
@@ -431,6 +462,9 @@ impl ComposeError {
             Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
             Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
+            Self::EngineSpawnFailed { .. } => "ENGINE_SPAWN_FAILED",
+            Self::EngineExited { .. } => "ENGINE_EXITED",
+            Self::EngineReadinessTimeout { .. } => "ENGINE_STARTUP_TIMEOUT",
             Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",
             Self::ReadinessTimeout { .. } => "STARTUP_TIMEOUT",
             Self::WorkerIgnoredNamespace { .. } => "WORKER_IGNORED_NAMESPACE",
@@ -444,6 +478,7 @@ impl ComposeError {
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
+            Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",
             Self::InvalidNamespace { .. } => "INVALID_NAMESPACE",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
             Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",

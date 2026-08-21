@@ -5,7 +5,7 @@
 //! starts holding a project or holding nothing.
 
 use clap::Parser;
-use iii_compose::{ComposeCli, ComposeCommand};
+use iii_compose::{ComposeCli, ComposeCommand, EngineOwnership};
 
 /// Mirrors how the engine mounts the subcommand, so parsing is exercised
 /// through the same shape the real binary uses.
@@ -175,21 +175,45 @@ fn a_project_namespace_still_comes_from_the_file_or_default() {
 
 #[test]
 fn bare_compose_starts_holding_nothing() {
-    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose"]).plan().unwrap();
+    let ComposeCommand::Serve {
+        start,
+        engine_ownership,
+        ..
+    } = parse(&["iii", "compose"]).plan().unwrap();
     assert_eq!(
         start, None,
         "a bare daemon learns about a project from a call"
     );
+    assert_eq!(engine_ownership, EngineOwnership::External);
 }
 
 #[test]
 fn up_names_the_file_in_the_current_directory() {
     // The point of the command: in a project directory, one word starts it.
-    let ComposeCommand::Serve { start, .. } = parse(&["iii", "compose", "up"]).plan().unwrap();
+    let ComposeCommand::Serve {
+        start,
+        engine_ownership,
+        ..
+    } = parse(&["iii", "compose", "up"]).plan().unwrap();
     assert_eq!(
         start.as_deref(),
         Some(std::path::Path::new("worker-compose.yaml"))
     );
+    assert_eq!(engine_ownership, EngineOwnership::Managed);
+}
+
+#[test]
+fn up_can_leave_engine_ownership_to_the_operator() {
+    let ComposeCommand::Serve {
+        start,
+        engine_ownership,
+        ..
+    } = parse(&["iii", "compose", "up", "--no-engine"])
+        .plan()
+        .unwrap();
+
+    assert!(start.is_some());
+    assert_eq!(engine_ownership, EngineOwnership::External);
 }
 
 #[test]

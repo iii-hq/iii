@@ -6,20 +6,20 @@
 
 //! `iii compose` command surface.
 //!
-//! `iii compose` connects to an engine and serves `compose::*` in the
-//! foreground; everything an operator does to a project goes through `iii
-//! trigger` from there, naming the project with `file=`.
+//! Bare `iii compose` connects to an existing engine and serves `compose::*`
+//! in the foreground; everything an operator does to a project goes through
+//! `iii trigger` from there, naming the project with `file=`.
 //!
-//! `iii compose up` is the same daemon with the first call already made. A
-//! daemon that serves nothing is not what an operator wants in a project
-//! directory: they want the project running, and the daemon is how it stays
-//! running. Two commands to reach one state is a step that exists only because
-//! of how compose is built.
+//! `iii compose up` is the same daemon with the first call already made and a
+//! managed engine started first by default. A daemon that serves nothing is
+//! not what an operator wants in a project directory: they want the project
+//! running, and the daemon is how it stays running. `--no-engine` keeps the
+//! external-engine workflow for an engine the operator already owns.
 //!
-//! It never backgrounds itself. That is the shape a process supervisor already
-//! wants, and it hands log rotation and restart-on-failure to systemd, launchd
-//! or a shell redirect rather than to a rotation policy compose would have to
-//! grow. Argument parsing stays separated from execution
+//! The compose process never backgrounds itself; only the managed engine child
+//! does. That is the shape a process supervisor already wants, and it hands
+//! restart-on-failure for compose to systemd, launchd or a shell redirect.
+//! Argument parsing stays separated from execution
 //! ([`ComposeCli::plan`]) so the resolved invocation is testable without
 //! touching a socket.
 
@@ -65,13 +65,27 @@ pub struct ComposeCli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ComposeSub {
-    /// Serve, with one project brought up first.
+    /// Start an engine, then serve with one project brought up first.
     Up {
         /// The compose file. Defaults to `./worker-compose.yaml`, the same
         /// fallback `compose::up` uses when a call names no file.
         #[arg(short = 'f', long, value_name = "PATH")]
         file: Option<PathBuf>,
+
+        /// Connect to an engine that is already running instead of starting
+        /// and stopping one with this compose invocation.
+        #[arg(long)]
+        no_engine: bool,
     },
+}
+
+/// Who owns the engine lifecycle for this invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineOwnership {
+    /// Compose starts the engine and stops it after every project is down.
+    Managed,
+    /// The operator owns the engine; compose only connects to it.
+    External,
 }
 
 /// What an invocation resolved to, after the flag combination is checked.
@@ -81,6 +95,7 @@ pub enum ComposeCommand {
     Serve {
         engine_url: String,
         daemon_namespace: String,
+        engine_ownership: EngineOwnership,
         /// A project to bring up before the first call arrives. `None` is a
         /// daemon that starts holding nothing.
         start: Option<PathBuf>,
@@ -94,14 +109,24 @@ impl ComposeCli {
 
         // A missing `--file` is not "no file": it is the same fallback a call
         // with no `file=` gets, the compose file in the working directory.
-        let start = self.command.as_ref().map(|ComposeSub::Up { file }| {
+        let start = self.command.as_ref().map(|ComposeSub::Up { file, .. }| {
             file.clone()
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_COMPOSE_FILE))
         });
+        let engine_ownership = match &self.command {
+            Some(ComposeSub::Up {
+                no_engine: false, ..
+            }) => EngineOwnership::Managed,
+            Some(ComposeSub::Up {
+                no_engine: true, ..
+            })
+            | None => EngineOwnership::External,
+        };
 
         Ok(ComposeCommand::Serve {
             engine_url: self.engine_url(),
             daemon_namespace,
+            engine_ownership,
             start,
         })
     }
