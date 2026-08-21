@@ -391,6 +391,12 @@ pub enum ComposeError {
     )]
     DaemonAlreadyServing { engine_url: String, detail: String },
 
+    #[error(
+        "another managed compose invocation already owns namespace '{namespace}'. \
+         Stop it, wait for it to finish, or choose a different --namespace"
+    )]
+    DaemonNamespaceTaken { namespace: String },
+
     /// The id is the daemon's namespace *and* its state directory, so it is
     /// checked at parse time: the alternative is a daemon that starts, answers
     /// nothing an operator can address, and fails at its first write.
@@ -472,6 +478,7 @@ impl ComposeError {
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
+            Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",
             Self::InvalidNamespace { .. } => "INVALID_NAMESPACE",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
             Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",

@@ -28,6 +28,7 @@ pub const DEFAULT_ENGINE_CONFIG: &str = "config.yaml";
 const ENGINE_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// Number of old engine log segments retained beside `engine.log`.
 const ENGINE_LOG_ARCHIVES: usize = 3;
+const ENGINE_LOCK_FILE: &str = "engine.lock";
 
 /// The engine process owned by one foreground compose invocation.
 pub struct ManagedEngine {
@@ -35,6 +36,7 @@ pub struct ManagedEngine {
     logs: LogCapture,
     config_path: PathBuf,
     log_path: PathBuf,
+    _namespace_lock: Option<NamespaceLock>,
 }
 
 impl ManagedEngine {
@@ -45,8 +47,20 @@ impl ManagedEngine {
             std::env::current_exe().map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not locate the current iii executable: {err}"),
             })?;
-        let log_path = engine_log_path(&StateStore::root()?, daemon_namespace);
-        Self::spawn_with_paths(&executable, &config_path.into(), &log_path).await
+        let state_root = StateStore::root()?;
+        let namespace_dir = state_root.join(daemon_namespace);
+        let namespace = daemon_namespace.to_string();
+        let namespace_lock =
+            tokio::task::spawn_blocking(move || NamespaceLock::acquire(&namespace_dir, &namespace))
+                .await
+                .map_err(|source| ComposeError::EngineSpawnFailed {
+                    message: format!("could not claim the managed engine namespace: {source}"),
+                })??;
+        let log_path = engine_log_path(&state_root, daemon_namespace);
+        let mut engine =
+            Self::spawn_with_paths(&executable, &config_path.into(), &log_path).await?;
+        engine._namespace_lock = Some(namespace_lock);
+        Ok(engine)
     }
 
     async fn spawn_with_paths(
@@ -94,6 +108,7 @@ impl ManagedEngine {
             logs,
             config_path: config_path.to_path_buf(),
             log_path: log_path.to_path_buf(),
+            _namespace_lock: None,
         })
     }
 
@@ -141,6 +156,56 @@ impl ManagedEngine {
     /// Lets the output readers flush the final bytes after the child exits.
     pub async fn finish_logging(&self) {
         let _ = tokio::time::timeout(Duration::from_secs(2), self.logs.wait()).await;
+    }
+}
+
+/// Cross-process ownership of one managed engine namespace.
+///
+/// The lock file persists, but the kernel lock is released with this guard or
+/// when the process exits, so a crash cannot strand the namespace.
+struct NamespaceLock {
+    _lock: fslock::LockFile,
+}
+
+impl NamespaceLock {
+    fn acquire(namespace_dir: &Path, namespace: &str) -> Result<Self> {
+        std::fs::create_dir_all(namespace_dir).map_err(|source| ComposeError::Io {
+            path: namespace_dir.to_path_buf(),
+            source,
+        })?;
+        owner_only(namespace_dir).map_err(|source| ComposeError::Io {
+            path: namespace_dir.to_path_buf(),
+            source,
+        })?;
+
+        let path = namespace_dir.join(ENGINE_LOCK_FILE);
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&path).map_err(|source| ComposeError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        owner_only(&path).map_err(|source| ComposeError::Io {
+            path: path.clone(),
+            source,
+        })?;
+
+        let mut lock = fslock::LockFile::open(&path).map_err(|source| ComposeError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        match lock.try_lock_with_pid() {
+            Ok(true) => Ok(Self { _lock: lock }),
+            Ok(false) => Err(ComposeError::DaemonNamespaceTaken {
+                namespace: namespace.to_string(),
+            }),
+            Err(source) => Err(ComposeError::Io { path, source }),
+        }
     }
 }
 
@@ -541,12 +606,65 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        use std::{io::Write as _, os::unix::fs::PermissionsExt};
+
+        let staging = path.with_extension("tmp");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&staging)
+            .unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::rename(staging, path).unwrap();
+    }
+
     #[test]
     fn engine_log_lives_under_the_daemon_namespace() {
         assert_eq!(
             engine_log_path(Path::new("/state"), "blue-whale"),
             Path::new("/state/blue-whale/engine.log")
         );
+    }
+
+    #[test]
+    fn concurrent_managed_engines_cannot_claim_the_same_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace_dir = dir.path().join("orders");
+        std::fs::create_dir(&namespace_dir).unwrap();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let attempted = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut handles = Vec::new();
+
+        for _ in 0..2 {
+            let namespace_dir = namespace_dir.clone();
+            let start = std::sync::Arc::clone(&start);
+            let attempted = std::sync::Arc::clone(&attempted);
+            handles.push(std::thread::spawn(move || {
+                start.wait();
+                let claim = NamespaceLock::acquire(&namespace_dir, "orders");
+                let acquired = claim.is_ok();
+                attempted.wait();
+                acquired
+            }));
+        }
+
+        start.wait();
+        attempted.wait();
+        let acquired = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|acquired| *acquired)
+            .count();
+
+        assert_eq!(acquired, 1);
+        NamespaceLock::acquire(&namespace_dir, "orders")
+            .expect("the namespace lock must be released with its owner");
     }
 
     #[cfg(unix)]
@@ -680,18 +798,14 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn engine_receives_config_and_captures_both_output_streams() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake iii");
         let config = dir.path().join("project config.yaml");
         let log = dir.path().join("engine.log");
-        std::fs::write(
+        write_executable(
             &script,
             "#!/bin/sh\nprintf 'args:%s\\n' \"$*\"\nprintf '\\033[31mengine stdout\\033[0m\\n'\nprintf '\\033]2;forged title\\007engine stderr\\n' >&2\nexit 7\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
 
         let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
             .await
@@ -723,20 +837,16 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn engine_log_rotates_before_it_can_grow_without_bound() {
-        use std::os::unix::fs::PermissionsExt;
-
         const EXPECTED_LIMIT: u64 = 10 * 1024 * 1024;
 
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("noisy-iii");
         let config = dir.path().join("config.yaml");
         let log = dir.path().join("engine.log");
-        std::fs::write(
+        write_executable(
             &script,
             "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=11 2>/dev/null | tr '\\000' x\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
 
         let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
             .await
@@ -764,18 +874,14 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn stopping_the_engine_stops_its_process_group() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-iii");
         let config = dir.path().join("config.yaml");
         let log = dir.path().join("engine.log");
-        std::fs::write(
+        write_executable(
             &script,
             "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
 
         let engine = ManagedEngine::spawn_with_paths(&script, &config, &log)
             .await
