@@ -753,8 +753,8 @@ impl TriggerRegistry {
                 base,
                 worker_name.cyan().bold(),
                 format!(
-                    "iii trigger -n {} compose::add worker={}",
-                    trigger.home_namespace, worker_name
+                    "iii trigger -n <compose-daemon-namespace> compose::add worker={}",
+                    worker_name
                 )
                 .green()
                 .bold()
@@ -1717,10 +1717,16 @@ mod tests {
             assert_eq!(known_trigger_type_provider(trigger_type), Some(worker_name));
 
             let msg = TriggerRegistry::pending_trigger_warning(&make_trigger("t1", trigger_type));
-            let expected_hint = format!("iii trigger -n default compose::add worker={worker_name}");
+            let expected_hint = format!(
+                "iii trigger -n <compose-daemon-namespace> compose::add worker={worker_name}"
+            );
             assert!(
                 msg.contains(&expected_hint),
                 "Expected hint with '{expected_hint}', got: {msg}"
+            );
+            assert!(
+                !msg.contains("iii trigger -n default"),
+                "worker namespace must not be presented as the Compose daemon namespace: {msg}"
             );
             assert!(!msg.contains("iii worker"), "legacy command leaked: {msg}");
         }

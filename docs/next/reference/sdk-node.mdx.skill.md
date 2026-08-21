@@ -735,6 +735,13 @@ self-describing.
 
 #### RegistrationRejectedError
 
+Fatal error surfaced when the engine rejects this worker's identity because
+another live worker owns the same `(namespace, worker_name)`, or when an
+unknown rejection code is received. The SDK stops and does not reconnect.
+A `FUNCTION_NAMESPACE_CONFLICT` is non-fatal and is logged instead of being
+surfaced through this class. The wire fields identify the contested
+registration and its current owner.
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `code` | `string` | Yes | - |
@@ -747,13 +754,7 @@ self-describing.
 
 #### RegistrationRejectedInit
 
-Fatal error surfaced when the engine rejects this worker's registration with
-a `registrationrejected` message: another live worker already owns this
-registration identity in the target `namespace`. The
-engine closes the connection on rejection, so this is terminal -- the SDK
-stops the worker and does not reconnect. Carries the wire fields
-(`code`, `namespace`, `worker_name` or `function_id`, `owner_worker_id`) so callers can tell
-exactly which identity collided and with whom.
+Fields used to construct a RegistrationRejectedError.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1171,7 +1172,7 @@ registered or unregistered.
 | `function_id` | `string` | Yes | Function to invoke when the trigger fires. |
 | `id` | `string` | Yes | Trigger instance ID. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
-| `namespace` | `string` | No | Namespace the trigger's target `function_id` resolves in. A provider that<br />stores this config and later calls `trigger()` must pass this namespace, or<br />it fires in `default`. Absent means the engine's default namespace. |
+| `namespace` | `string` | No | Resolved namespace the trigger's target `function_id` uses. When the<br />registration omitted it, the registering SDK fills this from its worker's<br />namespace. A provider that later calls `trigger()` must pass it through. |
 
 ---
 

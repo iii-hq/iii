@@ -551,7 +551,7 @@ context is forwarded to the middleware.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `namespaces` | `HashMap<String, Vec<String>>` | Yes | Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. A value<br />is an exact function ID or a wildcard, in either the bare (`svc::*`) or<br />the `match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Leave it empty to scope nothing: the<br />session declares any namespace, and only `allowed_functions` and<br />`expose_functions` apply. |
+| `namespaces` | `HashMap<String, Vec<String>>` | Yes | Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. A value<br />is an exact function ID or a wildcard, in either the bare (`svc::*`) or<br />the `match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Leave it empty to add no namespace-scoped<br />grants: the session may declare any namespace, and only<br />`allowed_functions` and `expose_functions` apply. |
 | `allowed_functions` | `Vec<String>` | Yes | Additional function IDs to allow beyond the `expose_functions` config,<br />in the `default` namespace only. Put per-namespace grants in<br />`AuthResult::namespaces`. |
 | `forbidden_functions` | `Vec<String>` | Yes | Function IDs to deny even if they match `expose_functions`.<br />Takes precedence over allowed. |
 | `allowed_trigger_types` | `Option<Vec<String>>` | No | Trigger type IDs the worker may register triggers for.<br />When `None`, all types are allowed. |

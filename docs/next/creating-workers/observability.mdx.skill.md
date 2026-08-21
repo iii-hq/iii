@@ -89,9 +89,16 @@ it handles a call. Built-in `engine::*` functions are not traced by default (set
 `III_OTEL_TRACE_BUILTINS=true` to include them), so call a worker function first to produce a trace.
 The [sandbox](./sandboxes) worker's `sandbox::run` is an easy one to start with:
 
-```bash
-# engine.workers must include iii-sandbox before startup
+```yaml worker-compose.yaml
+engine:
+  workers:
+    iii-sandbox: {}
+```
 
+Start this file with `iii compose up` before calling the sandbox function. `iii-sandbox` is an
+engine-owned exception, so it belongs under the top-level `engine.workers`, not under `containers`.
+
+```bash
 # run something to produce a trace
 iii trigger sandbox::run image=python lang=python code='print(1)'
 

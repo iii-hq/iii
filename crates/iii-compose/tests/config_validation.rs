@@ -150,6 +150,14 @@ containers:
 }
 
 #[test]
+fn rejects_blank_managed_engine_url() {
+    for url in ["", "   "] {
+        let text = format!("engine:\n  url: {url:?}\n  workers: {{}}\ncontainers: {{}}\n");
+        assert_eq!(code(&text), "INVALID_MANAGED_ENGINE_URL");
+    }
+}
+
+#[test]
 fn rejects_malformed_engine_worker_instance_keys() {
     for name in ["iii-worker-manager#", "iii-worker-manager#one#two"] {
         assert_eq!(

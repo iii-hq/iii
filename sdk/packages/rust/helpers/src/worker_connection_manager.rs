@@ -32,9 +32,9 @@ pub struct AuthResult {
     /// the `match("svc::*")` spelling.
     ///
     /// The keys are also the namespaces the session may declare on
-    /// `engine::workers::register`. Leave it empty to scope nothing: the
-    /// session declares any namespace, and only `allowed_functions` and
-    /// `expose_functions` apply.
+    /// `engine::workers::register`. Leave it empty to add no namespace-scoped
+    /// grants: the session may declare any namespace, and only
+    /// `allowed_functions` and `expose_functions` apply.
     #[serde(default)]
     pub namespaces: HashMap<String, Vec<String>>,
     /// Additional function IDs to allow beyond the `expose_functions` config,

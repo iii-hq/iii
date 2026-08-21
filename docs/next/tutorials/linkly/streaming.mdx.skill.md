@@ -26,6 +26,35 @@ engine:
 mkdir -p click-streamer/src
 ```
 
+Create the worker manifest and package metadata:
+
+```yaml click-streamer/iii.worker.yaml
+name: click-streamer
+scripts:
+  start: pnpm start
+```
+
+```json click-streamer/package.json
+{
+  "name": "click-streamer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.21.4",
+    "@iii-dev/helpers": "0.21.4",
+    "tsx": "^4.22.3"
+  }
+}
+```
+
+```bash
+cd click-streamer && pnpm install && cd ..
+```
+
 ## Broadcast clicks in real time
 
 We'll continue to keep `link` decoupled by having it announce that a click happened, and
@@ -68,7 +97,7 @@ worker.registerFunction(
 
 Now write the `click-streamer` worker. It subscribes to `link.clicked` and broadcasts each click to
 a `clicks` stream with `stream::set`. A `stream::set` both stores the item and pushes it to every
-WebSocket subscribed to that stream and group. Replace the generated `click-streamer/src/index.ts`:
+WebSocket subscribed to that stream and group. Create `click-streamer/src/index.ts`:
 
 ```typescript click-streamer/src/index.ts
 import { registerWorker } from "iii-sdk";

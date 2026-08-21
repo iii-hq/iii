@@ -167,7 +167,7 @@ traces and `logs_exporter: both` for logs.
 | `name`             | string      | Required. Unique alert rule name.                                                                       |
 | `metric`           | string      | Required. Metric name to monitor (e.g., `iii.invocations.error`).                                       |
 | `threshold`        | number      | Required. Threshold value.                                                                              |
-| `operator`         | string      | Comparison operator: `>`, `>=`, `<`, `<=`, `==`, `!=`. Defaults to `>`.                                 |
+| `operator`         | string      | Comparison operator: `greaterthan`, `greaterthanorequal`, `lessthan`, `lessthanorequal`, `equal`, `notequal`. Defaults to `greaterthan`. |
 | `window_seconds`   | number      | Time window in seconds for metric evaluation. Defaults to `60`.                                         |
 | `cooldown_seconds` | number      | Minimum interval between alert fires. Defaults to `60`.                                                 |
 | `enabled`          | boolean     | Whether the alert rule is active. Defaults to `true`.                                                   |

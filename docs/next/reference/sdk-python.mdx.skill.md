@@ -32,7 +32,7 @@ register_worker(address: str | None = None, options: InitOptions | None = None) 
   <Tab title="Parameters">
 
 <ParamField body="address" type="str | None">
-  WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
+  WebSocket URL of the III engine (e.g. ``ws://localhost:49134``). When omitted, resolves from ``III_URL`` and then ``DEFAULT_ENGINE_URL``.
 </ParamField>
 
 <ParamField body="options" type="InitOptions | None">
@@ -741,7 +741,8 @@ Factory for creating trigger actions used with ``trigger()``.
 
 Routes the invocation through a named queue for async processing.
 
-Requires the ``queue`` worker in ``worker-compose.yaml``.
+Requires the ``queue`` worker in ``worker-compose.yaml`` and a matching
+entry under that worker's ``queue_configs``.
 Without it the trigger rejects with ``enqueue_error`` (no queue provider).
 
 | Name | Type | Required | Description |
@@ -1334,7 +1335,7 @@ registered or unregistered.
 | `function_id` | `str` | Yes | Function to invoke when the trigger fires. |
 | `id` | `str` | Yes | Trigger instance ID. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
-| `namespace` | `str \| None` | No | - |
+| `namespace` | `str \| None` | No | Resolved namespace the target function uses. Current SDKs fill an omitted registration value from the registering worker's namespace; ``None`` is the legacy/default case. |
 
 ---
 

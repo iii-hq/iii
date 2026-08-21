@@ -126,8 +126,9 @@ returns no `namespaces` keeps the behaviour it had.
 ## Migration checklist
 
 - [ ] Drain and delete pre-0.23 RabbitMQ subscriber and dead-letter queues (Step 1)
-- [ ] Confirm the engine logged each legacy queue migration on startup (Step 2)
-- [ ] Recover each queue that the legacy migration skipped because its name contains `@` (Step 2)
+- [ ] Stop publishers and drain active `iii-queue` jobs before the upgrade (Step 2)
+- [ ] Back up the queue data and preserve its `file_path` or broker settings (Step 2)
+- [ ] Rename the queue configuration id from `iii-queue` to `queue` (Step 2)
 - [ ] Raise `registration_namespace_grace_ms` if workers land in `default` unexpectedly (Step 3)
 - [ ] Rename `engine::*` function ids registered by namespaced workers (Step 4)
 - [ ] Add `namespace:` to `expose_functions` rules for namespaced workers (Step 5)

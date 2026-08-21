@@ -114,7 +114,7 @@ fn worker_subcommand_is_rejected() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unrecognized subcommand") || stderr.contains("Usage: iii"),
+        stderr.contains("unrecognized subcommand") && stderr.contains("worker"),
         "worker should be rejected by the root CLI, got: {stderr}"
     );
 }
@@ -234,6 +234,11 @@ fn old_install_command_is_not_valid() {
         !output.status.success(),
         "\"iii install\" should not be valid"
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") && stderr.contains("install"),
+        "install should be rejected by the root CLI, got: {stderr}"
+    );
 }
 
 #[test]
@@ -246,12 +251,22 @@ fn old_uninstall_command_is_not_valid() {
         !output.status.success(),
         "\"iii uninstall\" should not be valid"
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") && stderr.contains("uninstall"),
+        "uninstall should be rejected by the root CLI, got: {stderr}"
+    );
 }
 
 #[test]
 fn old_list_command_is_not_valid() {
     let output = iii_bin().arg("list").output().expect("failed to execute");
     assert!(!output.status.success(), "\"iii list\" should not be valid");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") && stderr.contains("list"),
+        "list should be rejected by the root CLI, got: {stderr}"
+    );
 }
 
 #[test]
@@ -261,6 +276,11 @@ fn old_info_command_is_not_valid() {
         .output()
         .expect("failed to execute");
     assert!(!output.status.success(), "\"iii info\" should not be valid");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unrecognized subcommand") && stderr.contains("info"),
+        "info should be rejected by the root CLI, got: {stderr}"
+    );
 }
 
 #[test]

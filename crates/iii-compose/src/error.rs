@@ -43,6 +43,9 @@ pub enum ComposeError {
     #[error("engine.workers.{worker} must be a YAML mapping. Use {{}} to keep the worker defaults")]
     InvalidEngineWorkerConfig { worker: String },
 
+    #[error("engine.url must not be blank when it is set")]
+    InvalidManagedEngineUrl,
+
     #[error(
         "worker-compose.yaml has no engine section. Pass --engine <ws-url> or set III_URL to \
          connect this Compose invocation to an existing engine"
@@ -489,6 +492,7 @@ impl ComposeError {
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
+            Self::InvalidManagedEngineUrl => "INVALID_MANAGED_ENGINE_URL",
             Self::EngineUrlRequired => "ENGINE_URL_REQUIRED",
             Self::EngineUrlConflictsWithManaged => "ENGINE_URL_CONFLICTS_WITH_MANAGED",
             Self::EngineSectionRequiresManagedStart { .. } => {

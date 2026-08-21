@@ -32,15 +32,7 @@ export class InvocationError extends Error {
   }
 }
 
-/**
- * Fatal error surfaced when the engine rejects this worker's registration with
- * a `registrationrejected` message: another live worker already owns this
- * registration identity in the target `namespace`. The
- * engine closes the connection on rejection, so this is terminal -- the SDK
- * stops the worker and does not reconnect. Carries the wire fields
- * (`code`, `namespace`, `worker_name` or `function_id`, `owner_worker_id`) so callers can tell
- * exactly which identity collided and with whom.
- */
+/** Fields used to construct a {@link RegistrationRejectedError}. */
 export type RegistrationRejectedInit = {
   code: string
   namespace: string
@@ -49,6 +41,14 @@ export type RegistrationRejectedInit = {
   owner_worker_id: string
 }
 
+/**
+ * Fatal error surfaced when the engine rejects this worker's identity because
+ * another live worker owns the same `(namespace, worker_name)`, or when an
+ * unknown rejection code is received. The SDK stops and does not reconnect.
+ * A `FUNCTION_NAMESPACE_CONFLICT` is non-fatal and is logged instead of being
+ * surfaced through this class. The wire fields identify the contested
+ * registration and its current owner.
+ */
 export class RegistrationRejectedError extends Error {
   public readonly code: string
   public readonly namespace: string

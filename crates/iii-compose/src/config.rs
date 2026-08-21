@@ -269,10 +269,14 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
         workers.insert(name, config);
     }
 
+    let url = match raw.url {
+        Some(url) if url.trim().is_empty() => return Err(ComposeError::InvalidManagedEngineUrl),
+        Some(url) => url,
+        None => DEFAULT_MANAGED_ENGINE_URL.to_string(),
+    };
+
     Ok(EngineSpec {
-        url: raw
-            .url
-            .unwrap_or_else(|| DEFAULT_MANAGED_ENGINE_URL.to_string()),
+        url,
         registration_namespace_grace_ms: raw.registration_namespace_grace_ms,
         workers,
     })

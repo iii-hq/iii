@@ -80,7 +80,7 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, Error>
       Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
     </ParamField>
     <ParamField body="namespace" type="Option<String>">
-      Namespace the trigger's target function resolves in. `None` means the engine's default namespace, independent of this connection's namespace.
+      Namespace the trigger's target function resolves in. `None` inherits this worker's namespace; name another namespace, including `default`, to bind the trigger elsewhere.
     </ParamField>
     <ParamField body="trigger_namespace" type="Option<String>">
       Namespace to find the trigger type's provider in. `None` asks the engine to resolve it: this worker's namespace first, the engine's own second. Naming one is strict.
@@ -839,7 +839,7 @@ Errors returned by the III SDK.
 | `Handler` | `(String)` | Yes | - |
 | `Serde` | `(String)` | Yes | - |
 | `WebSocket` | `(String)` | Yes | - |
-| `RegistrationRejected` | `{ code: String, namespace: String, worker_name: Option<String>, function_id: Option<String>, owner_worker_id: String }` | Yes | The engine rejected this worker's registration because another live<br />worker already holds the name (or an exported function id) in the same<br />namespace. Fatal: the SDK stops and does not reconnect. |
+| `RegistrationRejected` | `{ code: String, namespace: String, worker_name: Option<String>, function_id: Option<String>, owner_worker_id: String }` | Yes | Fatal registration rejection: another live worker already holds this<br />worker name in the namespace, or the engine sent an unknown rejection<br />code. The SDK stops and does not reconnect. A<br />`FUNCTION_NAMESPACE_CONFLICT` is non-fatal, is logged, and does not<br />produce this error. |
 | `invocation_error` | fn() -&gt; Option&lt;[`InvocationError`](#invocationerror)&gt; | Yes | If this is a remote invocation failure (`Error::Remote`), return its structured form. Returns `None` for transport/serde/handler errors. |
 
 ---
@@ -942,7 +942,7 @@ the engine's own second.
 | `function_id` | `String` | Yes | ID of the function this trigger invokes when it fires. |
 | `config` | `Value` | Yes | Trigger-type-specific configuration, matching the shape the trigger type expects. |
 | `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
-| `namespace` | `Option<String>` | No | Namespace the trigger's target function resolves in. `None` means the<br />engine's default namespace, independent of this connection's namespace. |
+| `namespace` | `Option<String>` | No | Namespace the trigger's target function resolves in. `None` inherits<br />this worker's namespace; name another namespace, including `default`,<br />to bind the trigger elsewhere. |
 | `trigger_namespace` | `Option<String>` | No | Namespace to find the trigger type's provider in. `None` asks the<br />engine to resolve it: this worker's namespace first, the engine's own<br />second. Naming one is strict. |
 
 ---
@@ -1263,7 +1263,7 @@ registered or unregistered.
 | `function_id` | `String` | Yes | Function to invoke when the trigger fires. |
 | `config` | `Value` | Yes | Trigger-specific configuration. |
 | `metadata` | `Option<Value>` | No | Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. |
-| `namespace` | `Option<String>` | No | Namespace the trigger's target `function_id` resolves in. A provider that<br />stores this config and later calls `trigger()` must pass this namespace,<br />or it will fire in `default`. `None` means the engine's default namespace. |
+| `namespace` | `Option<String>` | No | Resolved namespace the trigger's target `function_id` uses. Current SDKs<br />fill an omitted registration value from the registering worker's<br />namespace. A provider that stores this config and later calls<br />`trigger()` must pass it through; `None` is the legacy/default case. |
 
 ---
 

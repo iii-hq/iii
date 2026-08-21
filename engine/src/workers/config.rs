@@ -202,7 +202,8 @@ impl EngineConfig {
 }
 
 fn migration_guidance(name: &str) -> String {
-    let guidance = match name {
+    let worker_type = name.split('#').next().unwrap_or(name);
+    let guidance = match worker_type {
         "iii-http" | "http" => "move to worker-compose.yaml as 'http'",
         "iii-cron" | "cron" => "move to worker-compose.yaml as 'cron'",
         "iii-queue" | "queue" => "move to worker-compose.yaml as 'queue'",
@@ -1309,7 +1310,7 @@ mod tests {
         let path = dir.path().join("config.yaml");
         std::fs::write(
             &path,
-            "workers:\n  - name: iii-http\n  - name: state\n  - name: iii-bridge\n  - name: custom-worker\nmodules:\n  - name: iii-exec\n  - name: iii-observability\n",
+            "workers:\n  - name: iii-http\n  - name: iii-http#1\n  - name: state\n  - name: iii-bridge\n  - name: custom-worker\nmodules:\n  - name: iii-exec\n  - name: iii-observability\n",
         )
         .unwrap();
 
@@ -1322,6 +1323,10 @@ mod tests {
         );
         assert!(
             message.contains("'iii-http' -> move to worker-compose.yaml as 'http'"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'iii-http#1' -> move to worker-compose.yaml as 'http'"),
             "{message}"
         );
         assert!(

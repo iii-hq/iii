@@ -11,6 +11,22 @@ The `queue` worker decouples producers from consumers: a function publishes a me
 topic and returns right away, and any function subscribed to that topic processes the message in the
 background, with retries and a dead-letter queue (DLQ) for messages that keep failing.
 
+## Before adding the worker
+
+`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
+running in separate terminals before using any of the commands below. If this project does not have
+a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
+
+```bash
+# terminal 1
+iii --config config.yaml
+
+# terminal 2, from the directory that contains worker-compose.yaml
+iii compose --namespace dev --engine ws://127.0.0.1:49134
+```
+
+Run the remaining commands from a third terminal in that same project directory:
+
 ```bash
 iii trigger -n dev compose::add worker=queue
 ```

@@ -64,7 +64,7 @@ Create a TypeScript worker directory inside the project. This worker will handle
 retrieving short links:
 
 ```bash
-mkdir -p link/src
+mkdir -p link/src && touch link/src/index.ts
 ```
 
 ### Configure the entrypoints
@@ -72,9 +72,8 @@ mkdir -p link/src
 A worker is a self-contained service. Here, the `link` worker is a Node package but it could be any
 language or runtime.
 
-`link/iii.worker.yaml` is the manifest that describes how the worker builds and runs itself: the
-command to install dependencies and the command to start. The default manifest will work for our
-purposes.
+`link/iii.worker.yaml` is the manifest that describes how the worker runs itself. Create it with
+the following content:
 
 ```yaml iii.worker.yaml
 name: link
@@ -126,8 +125,8 @@ cd link && pnpm install && cd ..
 pasting one large file at once.
 
 <Info>
-  `index.ts` will already contain some example code. Replace it with the first snippet below, then
-  append each later snippet to the end of the file.
+  The command above created an empty `index.ts`. Add the first snippet below, then append each later
+  snippet to the end of the file.
 </Info>
 
 #### Open the connection to the engine

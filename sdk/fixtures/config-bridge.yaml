@@ -11,7 +11,7 @@ engine:
       port: 49197
     iii-stream:
       port: 3114
-      host: 0.0.0.0
+      host: 127.0.0.1
       adapter:
         name: bridge
         config:

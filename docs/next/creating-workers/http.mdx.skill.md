@@ -3,6 +3,22 @@
 
 The `http` worker turns your functions into REST routes exposed as HTTP endpoints.
 
+## Before adding the worker
+
+`compose::add` is served by a running Compose daemon. Keep the engine and a daemon for this project
+running in separate terminals before using any of the commands below. If this project does not have
+a Compose file yet, create `worker-compose.yaml` containing `containers: {}` first.
+
+```bash
+# terminal 1
+iii --config config.yaml
+
+# terminal 2, from the directory that contains worker-compose.yaml
+iii compose --namespace dev --engine ws://127.0.0.1:49134
+```
+
+Run the remaining commands from a third terminal in that same project directory:
+
 ```bash
 iii trigger -n dev compose::add worker=http
 ```
@@ -20,13 +36,7 @@ The http worker exposes an `http` trigger type that binds a function to an HTTP 
 function then runs on every matching request. Here is the full path from a running engine to a live
 endpoint.
 
-1. Start the engine, if it isn't already running:
-
-```bash
-iii --config config.yaml
-```
-
-2. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
+1. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
    not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
    source. The
    handler receives the request (`body`, `headers`, method) and its return value becomes the
@@ -132,7 +142,7 @@ iii --config config.yaml
   </Tab>
 </Tabs>
 
-3. Add the worker to Compose, pointing at its directory:
+2. Add the worker to Compose, pointing at its directory:
 
 ```bash
 iii trigger -n dev compose::add worker=./my-worker

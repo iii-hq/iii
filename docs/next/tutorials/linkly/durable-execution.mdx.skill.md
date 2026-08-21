@@ -214,12 +214,24 @@ Create a Python worker the same way you created the `link` worker in Chapter 1. 
 `analytics/src/main.py` entrypoint and an `iii.worker.yaml` manifest.
 
 ```bash
-mkdir -p analytics/src
+mkdir -p analytics/src && touch analytics/src/main.py
+```
+
+Create its manifest. The install step supplies the SDK, observability helper, and source watcher
+inside the worker runtime:
+
+```yaml analytics/iii.worker.yaml
+name: analytics
+runtime:
+  base_image: docker.io/iiidev/python:latest
+scripts:
+  install: pip install iii-sdk==0.21.4 iii-helpers==0.21.4 watchfiles
+  start: watchfiles 'python src/main.py'
 ```
 
 ### Subscribe to link.created events
 
-Replace the example `src/main.py` with this one that subscribes to `link.created` events and keeps
+Create `analytics/src/main.py` with this code, which subscribes to `link.created` events and keeps
 count of every time that a new short link is created:
 
 <Accordion title="analytics/src/main.py">
@@ -283,20 +295,6 @@ print("Analytics worker started")
 ```
 
 </Accordion>
-
-### Configure the worker
-
-The existing worker manifest at `analytics/iii.worker.yaml` will work for our purposes:
-
-```yaml iii.worker.yaml
-name: analytics
-runtime:
-  # Base OCI image used as the worker rootfs.
-  base_image: docker.io/iiidev/python:latest
-scripts:
-  install: pip install -e .
-  start: watchfiles 'python src/main.py'
-```
 
 Analytics keeps its counts in its own database, so the `link` worker never has to know it exists.
 Add an `analytics` database to the `database` worker's config file, alongside the `primary` one from

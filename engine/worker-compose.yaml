@@ -45,7 +45,9 @@ containers:
       default_timeout: 30000
       concurrency_request_limit: 1024
       cors:
-        allowed_origins: ["*"]
+        allowed_origins:
+          - http://localhost:3000
+          - http://localhost:5173
         allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
   pubsub:
     worker: package://api.workers.iii.dev/pubsub

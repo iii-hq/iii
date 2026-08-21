@@ -1213,7 +1213,7 @@ middleware.
 | `context` | `Record<string, unknown>` | No | Arbitrary context forwarded to the middleware function on every invocation. Defaults to `{}` if omitted. |
 | `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
 | `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
-| `namespaces` | `Record<string, string[]>` | No | Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an<br />exact function ID or a wildcard, in either the bare (`svc::*`) or the<br />`match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Omit to scope nothing: the session declares any<br />namespace, and only `allowed_functions` and `expose_functions` apply. |
+| `namespaces` | `Record<string, string[]>` | No | Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an<br />exact function ID or a wildcard, in either the bare (`svc::*`) or the<br />`match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Omit this map to add no namespace-scoped<br />grants: the session may declare any namespace, and only<br />`allowed_functions` and `expose_functions` apply. |
 
 ---
 

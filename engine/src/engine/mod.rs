@@ -1857,11 +1857,10 @@ impl Engine {
                                                      `TriggerAction::Enqueue` routes through the \
                                                      `{}` provider, which the standalone queue \
                                                      worker registers. Add it with \
-                                                     `iii trigger -n {} compose::add worker=queue`. \
+                                                     `iii trigger -n <compose-daemon-namespace> \
+                                                     compose::add worker=queue`. \
                                                      (underlying: {})",
-                                                    ENQUEUE_PROVIDER_FUNCTION_ID,
-                                                    target_namespace,
-                                                    err.message
+                                                    ENQUEUE_PROVIDER_FUNCTION_ID, err.message
                                                 )
                                             } else {
                                                 err.to_string()
@@ -4533,10 +4532,15 @@ mod tests {
                 assert!(error.message.contains("engine::queue::enqueue"));
                 // DX: the fail-closed error must tell the user how to fix it.
                 assert!(
-                    error
-                        .message
-                        .contains("iii trigger -n default compose::add worker=queue"),
+                    error.message.contains(
+                        "iii trigger -n <compose-daemon-namespace> compose::add worker=queue"
+                    ),
                     "expected install guidance, got: {}",
+                    error.message
+                );
+                assert!(
+                    !error.message.contains("iii trigger -n default"),
+                    "target function namespace must not be presented as the Compose daemon namespace: {}",
                     error.message
                 );
             }

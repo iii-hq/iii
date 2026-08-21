@@ -45,7 +45,9 @@ class AuthResult(BaseModel):
     Attributes:
         namespaces: Grants scoped to one namespace each, e.g. ``{"orders": ["svc::*"]}``.
             The keys are also the namespaces the session may declare on
-            ``engine::workers::register``. Leave empty to scope nothing.
+            ``engine::workers::register``. Leave empty to add no namespace-scoped
+            grants. The session may declare any namespace, and only ``allowed_functions``
+            and ``expose_functions`` apply.
         allowed_functions: Additional function IDs to allow beyond ``expose_functions``,
             in the ``default`` namespace only. Put per-namespace grants in ``namespaces``.
         forbidden_functions: Function IDs to deny even if they match ``expose_functions``.
@@ -61,9 +63,11 @@ class AuthResult(BaseModel):
     namespaces: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
-            "Grants scoped to one namespace each, e.g. ``{\"orders\": [\"svc::*\"]}``. A value is an "
-            "exact function ID or a wildcard, bare or in the ``match(\"...\")`` spelling. The keys "
-            "are also the namespaces the session may declare on ``engine::workers::register``."
+            'Grants scoped to one namespace each, e.g. ``{"orders": ["svc::*"]}``. A value is an '
+            'exact function ID or a wildcard, bare or in the ``match("...")`` spelling. The keys '
+            "are also the namespaces the session may declare on ``engine::workers::register``. "
+            "Leave empty to add no namespace-scoped grants: the session may declare any namespace, "
+            "and only ``allowed_functions`` and ``expose_functions`` apply."
         ),
     )
     allowed_functions: list[str] = Field(
@@ -141,6 +145,8 @@ class OnTriggerRegistrationInput(BaseModel):
         function_id: ID of the function this trigger is bound to.
         config: Trigger-specific configuration.
         metadata: Arbitrary metadata attached to the trigger.
+        namespace: Namespace the trigger target resolves in. It is the explicit
+            registration value, or ``default`` when the registration omitted it.
         context: Auth context from ``AuthResult.context`` for this session.
     """
 
@@ -184,6 +190,8 @@ class OnFunctionRegistrationInput(BaseModel):
         function_id: ID of the function being registered.
         description: Human-readable description of the function.
         metadata: Arbitrary metadata attached to the function.
+        namespace: Namespace the function registers in. It is the explicit
+            registration value, or ``default`` when the registration omitted it.
         context: Auth context from ``AuthResult.context`` for this session.
     """
 

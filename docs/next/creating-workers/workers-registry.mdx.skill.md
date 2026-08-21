@@ -64,7 +64,7 @@ Use a bundle when:
 }
 ```
 
-The engine GETs `archive_url`, streams the bytes through a SHA-256 hasher, and compares against
+Compose GETs `archive_url`, streams the bytes through a SHA-256 hasher, and compares against
 `sha256`. Mismatches abort the install and delete the downloaded blob immediately.
 
 ### Archive layout

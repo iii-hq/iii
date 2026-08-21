@@ -180,6 +180,7 @@ class III:
 
     Args:
         address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
+            When omitted, resolves from ``III_URL`` and then ``DEFAULT_ENGINE_URL``.
         options: Optional configuration. See ``InitOptions``.
 
     Examples:
@@ -1705,7 +1706,8 @@ def register_worker(address: str | None = None, options: InitOptions | None = No
     ``add_connection_state_listener`` to observe the actual transition.
 
     Args:
-        address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
+        address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``). When omitted,
+            resolves from ``III_URL`` and then ``DEFAULT_ENGINE_URL``.
         options: Optional configuration for worker name, timeouts, reconnection, and OTel.
 
     Returns:
