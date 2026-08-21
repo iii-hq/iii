@@ -61,11 +61,9 @@ rewrite. The engine handles serialization and routing.
 
 ## Built for Agents
 
-Most agent harnesses solve one slice of the problem: a chat loop, a tool-calling sandbox, a chained
-workflow. iii is not a harness for agents. Instead it functions better than a harness because it is
-the same runtime the whole system already runs on. This makes iii inherently agentic. In iii an
-agent is a worker and can (with permission) act on every part of the system, not inside a runtime
-created separately for agents.
+iii gives agents the same runtime the whole system already runs on. This makes iii inherently
+agentic. In iii an agent is a worker and can, with permission, act on every part of the system
+through the shared system runtime.
 
 Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is
 triggers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
@@ -83,8 +81,7 @@ what compounds: easier to onboard, cheaper to prompt, faster to extend, simpler 
 
 ## Getting Started
 
-The best way to understand iii is to try it. Install the engine and follow the Quickstart to create
-your first iii-powered project.
+Install the engine and follow the Quickstart to create your first iii-powered project.
 
 <CardGroup cols={2}>
   <Card title="Install" href="./install" icon="download">
