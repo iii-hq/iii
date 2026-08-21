@@ -145,14 +145,14 @@ WantedBy=multi-user.target
 
 ## The `compose::*` functions
 
-All eight functions accept the same payload.
+All functions accept the same payload.
 
 | Field       | Type   | Description                                                                       |
 | ----------- | ------ | --------------------------------------------------------------------------------- |
 | `file`      | string | Which project: the path to its compose file.                                      |
 | `container` | string | Restricts the operation to one container and the containers it depends on.        |
 | `namespace` | string | Which daemon the caller believed they were reaching. A guard, see below.          |
-| `worker`    | string | `compose::add` only: the worker to declare. Ignored by the rest.                  |
+| `worker`    | string | The worker used by `add`, `remove`, `restart`, and `update`.                      |
 
 A project is its compose file, and nothing else names one. The same file reached twice is the same
 project however it was spelled, so there is no second identity to keep in sync and no way to point
@@ -173,6 +173,7 @@ one at the wrong file.
 | `compose::list`     | nothing   | The daemon name, its namespace, its pid, and every project it holds.           |
 | `compose::validate` | `file`    | A validation report.                                                           |
 | `compose::add`      | `file`, `worker` | What the edit did, and the `down` and `up` that followed.               |
+| `compose::remove`   | `file`, `worker` | The worker removed, and the `down` and `up` that followed.              |
 | `compose::restart`  | `file`, `worker` | The `down` and the `up`, or one container's restart.                    |
 | `compose::update`   | `file`, `worker` | Both versions, and the restart that followed.                           |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
@@ -219,6 +220,7 @@ iii trigger compose::status --namespace dev file=./worker-compose.yaml
 iii trigger compose::down   --namespace dev file=./worker-compose.yaml
 iii trigger compose::list   --namespace dev
 iii trigger compose::add    --namespace dev file=./worker-compose.yaml worker=state
+iii trigger compose::remove --namespace dev file=./worker-compose.yaml worker=state
 iii trigger compose::restart --namespace dev file=./worker-compose.yaml
 iii trigger compose::stop   --namespace dev
 ```
@@ -237,6 +239,15 @@ did not change.
 `compose::validate` answers for a file and holds nothing: a CI job that only ever validates leaves
 the daemon owning nothing. Validation is offline, so `package://` containers are reported under
 `deferred_packages` instead of being resolved.
+
+### Removing a worker
+
+`compose::remove worker=state` removes only the named container from the compose file and restarts
+the whole project. It does not resolve or rewrite the dependency graph. It does not remove workers
+that were added with this worker, and it leaves other containers' `depends_on` fields unchanged.
+
+If the remaining file has an invalid dependency, the removal stays in the file and the restart
+reports that validation error. Edit or remove the stale dependency before the next `up`.
 
 ### Restarting one worker
 

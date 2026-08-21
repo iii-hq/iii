@@ -50,9 +50,10 @@ pub struct ComposeRequest {
     /// The worker a call is about.
     ///
     /// `compose::add` and `compose::update` read a spec: `name`,
-    /// `name@version`, or a path. `compose::restart` reads a container key,
-    /// where it is the spelling for `container` — an operator naming a worker
-    /// should not have to know which of the two words this call wanted.
+    /// `name@version`, or a path. `compose::remove` and `compose::restart` read
+    /// a container key, where it is the spelling for `container` — an operator
+    /// naming a worker should not have to know which of the two words this call
+    /// wanted.
     pub worker: Option<String>,
 }
 
@@ -69,6 +70,7 @@ pub fn register(daemon: &Arc<Daemon>) {
         ("stop", Operation::Stop),
         ("validate", Operation::Validate),
         ("add", Operation::Add),
+        ("remove", Operation::Remove),
         ("restart", Operation::Restart),
         ("update", Operation::Update),
     ] {
@@ -96,6 +98,7 @@ enum Operation {
     Stop,
     Validate,
     Add,
+    Remove,
     Restart,
     Update,
 }
@@ -139,6 +142,13 @@ async fn dispatch(
         },
         Operation::Add => match daemon
             .add(file.as_deref(), request.worker.as_deref(), operation_id())
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(err) => Err(compose_error(&err)),
+        },
+        Operation::Remove => match daemon
+            .remove(file.as_deref(), request.worker.as_deref(), operation_id())
             .await
         {
             Ok(result) => Ok(result),
