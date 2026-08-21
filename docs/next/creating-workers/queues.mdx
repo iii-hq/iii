@@ -12,7 +12,7 @@ topic and returns right away, and any function subscribed to that topic processe
 background, with retries and a dead-letter queue (DLQ) for messages that keep failing.
 
 ```bash
-iii worker add queue
+iii trigger -n dev compose::add worker=queue
 ```
 
 <Note>
@@ -115,12 +115,7 @@ Returning normally acknowledges the message; throwing nacks it, so it is retried
 dead-lettered.
 
 1. In a worker, register the consumer function and subscribe it to the topic. If you do not have a
-   worker yet, scaffold one with [`iii worker init`](./workers#scaffold-a-new-worker), then edit its
-   source:
-
-```bash
-iii worker init email-worker --language typescript
-```
+   worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -216,7 +211,7 @@ iii worker init email-worker --language typescript
 2. Add the worker to start it:
 
 ```bash
-iii worker add ./email-worker
+iii trigger -n dev compose::add worker=./email-worker
 ```
 
 ### Publishing a message

@@ -40,6 +40,26 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Default teardown grace between the polite stop and the forced kill.
 pub const DEFAULT_STOP_TIMEOUT: Duration = crate::process::DEFAULT_STOP_GRACE;
 
+pub const DEFAULT_MANAGED_ENGINE_URL: &str = "ws://127.0.0.1:49134";
+
+pub const CONFIGURABLE_ENGINE_WORKERS: &[&str] = &[
+    "configuration",
+    "iii-worker-manager",
+    "iii-http-functions",
+    "iii-stream",
+    "iii-sandbox",
+];
+
+/// Engine worker map keys may carry the engine's existing `#instance`
+/// suffix so a strict YAML map can still represent more than one configured
+/// instance of the same worker type.
+pub fn engine_worker_type(name: &str) -> &str {
+    name.split('#').next().unwrap_or(name)
+}
+
+const INJECTED_ENGINE_WORKERS: &[&str] =
+    &["iii-engine-functions", "iii-telemetry", "iii-observability"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerSource {
     /// `package://<registry-host>/<name>`
@@ -96,6 +116,13 @@ pub struct Container {
     pub startup_timeout: Duration,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineSpec {
+    pub url: String,
+    pub registration_namespace_grace_ms: Option<u64>,
+    pub workers: BTreeMap<String, serde_yaml::Value>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ComposeFile {
     /// The namespace this project registers in, when it declares one. Nothing
@@ -110,6 +137,9 @@ pub struct ComposeFile {
     pub startup_timeout: Duration,
     /// Grace between the polite stop and the forced kill, project-wide.
     pub stop_timeout: Duration,
+    /// Present when this Compose invocation owns the engine process. Absent
+    /// projects must connect to an externally managed engine.
+    pub engine: Option<EngineSpec>,
     pub containers: IndexMap<String, Container>,
 }
 
@@ -164,7 +194,7 @@ impl ComposeFile {
                 message: err.to_string(),
             })?;
 
-        if raw.containers.is_empty() {
+        if raw.containers.is_empty() && raw.engine.is_none() {
             return Err(ComposeError::EmptyContainers);
         }
 
@@ -190,6 +220,7 @@ impl ComposeFile {
             DEFAULT_STARTUP_TIMEOUT,
         )?;
         let stop_timeout = file_duration("stop_timeout", &raw.stop_timeout, DEFAULT_STOP_TIMEOUT)?;
+        let engine = raw.engine.map(validate_engine).transpose()?;
 
         let mut containers = IndexMap::with_capacity(raw.containers.len());
         for (key, raw_container) in &raw.containers {
@@ -205,6 +236,7 @@ impl ComposeFile {
             base_dir,
             startup_timeout,
             stop_timeout,
+            engine,
             containers,
         };
         dag::validate_dependencies(&file)?;
@@ -215,6 +247,35 @@ impl ComposeFile {
     pub fn start_order(&self) -> Result<Vec<String>> {
         dag::topo_order(self)
     }
+}
+
+fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
+    let mut workers = BTreeMap::new();
+    for (name, config) in raw.workers {
+        let worker_type = engine_worker_type(&name);
+        let valid_instance = !name.contains('#')
+            || name
+                .split_once('#')
+                .is_some_and(|(_, instance)| !instance.is_empty() && !instance.contains('#'));
+        if INJECTED_ENGINE_WORKERS.contains(&worker_type) {
+            return Err(ComposeError::EngineWorkerIsInjected { worker: name });
+        }
+        if !valid_instance || !CONFIGURABLE_ENGINE_WORKERS.contains(&worker_type) {
+            return Err(ComposeError::UnsupportedEngineWorker { worker: name });
+        }
+        if !matches!(config, serde_yaml::Value::Mapping(_)) {
+            return Err(ComposeError::InvalidEngineWorkerConfig { worker: name });
+        }
+        workers.insert(name, config);
+    }
+
+    Ok(EngineSpec {
+        url: raw
+            .url
+            .unwrap_or_else(|| DEFAULT_MANAGED_ENGINE_URL.to_string()),
+        registration_namespace_grace_ms: raw.registration_namespace_grace_ms,
+        workers,
+    })
 }
 
 fn validate_container(
@@ -483,8 +544,21 @@ struct RawComposeFile {
     startup_timeout: Option<String>,
     #[serde(default)]
     stop_timeout: Option<String>,
-    #[serde(deserialize_with = "deserialize_unique_map")]
+    #[serde(default)]
+    engine: Option<RawEngineSpec>,
+    #[serde(default, deserialize_with = "deserialize_unique_map")]
     containers: IndexMap<String, RawContainer>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEngineSpec {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    registration_namespace_grace_ms: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_unique_map")]
+    workers: IndexMap<String, serde_yaml::Value>,
 }
 
 /// YAML mappings tolerate duplicate keys by keeping the last one, which would

@@ -12,12 +12,16 @@ links.
 ## Add the workers
 
 `iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
-worker to manage the streaming, so scaffold it the same way you scaffolded `link` in Chapter 1, and
-`analytics` in Chapter 4:
+worker to manage the streaming, so create it the same way you created `link` in Chapter 1 and
+`analytics` in Chapter 4. `iii-stream` is engine-owned, so enable it in `config.yaml`:
+
+```yaml config.yaml
+workers:
+  - name: iii-stream
+```
 
 ```bash
-iii worker add iii-stream
-iii worker init click-streamer --language typescript
+mkdir -p click-streamer/src
 ```
 
 ## Broadcast clicks in real time
@@ -101,7 +105,7 @@ logger.info("click-streamer ready");
 Register it with your project:
 
 ```bash
-iii worker add ./click-streamer
+iii trigger -n linkly compose::add worker=./click-streamer
 ```
 
 The browser you build in Chapter 7 subscribes to `clicks`/`all` and counts those broadcasts live.

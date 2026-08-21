@@ -14,19 +14,12 @@ use std::path::Path;
 
 use iii_clap_docs::{Delegated, PageMeta};
 
-/// The `console`, `cloud`, and `worker` subcommands are passthrough stubs
+/// The `console` and `cloud` subcommands are passthrough stubs
 /// here (a bare `Vec<String>`); their real command trees live in the
 /// dispatched binaries. Link to those binaries' own sections of the
 /// combined page instead of rendering an empty `[ARGS]...` section.
 fn delegated() -> BTreeMap<String, Delegated> {
     let mut map = BTreeMap::new();
-    map.insert(
-        "worker".to_string(),
-        Delegated {
-            link: Some("#iii-worker".to_string()),
-            note: "Manage workers (add, remove, list, info).".to_string(),
-        },
-    );
     map.insert(
         "console".to_string(),
         Delegated {
@@ -68,11 +61,11 @@ pub fn run(cmd: clap::Command, out: Option<&Path>) -> anyhow::Result<()> {
     let meta = PageMeta {
         title: "CLI reference".to_string(),
         description: "Every flag, argument, and subcommand of the iii CLI, including iii \
-                      worker and iii console, generated from the CLI definitions in source."
+                      console, generated from the CLI definitions in source."
             .to_string(),
         owner: "devrel".to_string(),
-        intro: "Reference for the `iii` binary and the `iii worker` and `iii console` \
-                runtimes it dispatches to. Running `iii` with no subcommand starts the \
+        intro: "Reference for the `iii` binary and the `iii console` runtime it dispatches \
+                to. Running `iii` with no subcommand starts the \
                 engine. The same information is available from the binaries themselves via \
                 `iii --help` and `iii <subcommand> --help`. For a guided overview, see \
                 [CLI](../using-iii/cli)."

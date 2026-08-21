@@ -4,12 +4,9 @@
 Every call in a iii system passes through the engine: function invocations, trigger firings, and
 channel messages all flow across it. Because every worker communicates through the engine, it can
 trace work as it moves from one worker to the next, giving you observability across the whole system
-without each worker instrumenting itself. The `iii-observability` worker turns that information into
-OpenTelemetry traces, metrics, and logs:
-
-```bash
-iii worker add iii-observability
-```
+without each worker instrumenting itself. The automatically supplied `iii-observability` worker
+turns that information into OpenTelemetry traces, metrics, and logs. Do not declare it in either
+`config.yaml` or `worker-compose.yaml`.
 
 <Note>
   This page is a quick tour. For the complete configuration and the full list of query functions,
@@ -93,8 +90,7 @@ it handles a call. Built-in `engine::*` functions are not traced by default (set
 The [sandbox](./sandboxes) worker's `sandbox::run` is an easy one to start with:
 
 ```bash
-# add the sandbox worker if you don't have it yet
-iii worker add iii-sandbox
+# engine.workers must include iii-sandbox before startup
 
 # run something to produce a trace
 iii trigger sandbox::run image=python lang=python code='print(1)'

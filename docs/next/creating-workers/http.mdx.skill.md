@@ -5,7 +5,7 @@ The `http` worker exposes your functions as HTTP endpoints, turning a function i
 without standing up a separate web server.
 
 ```bash
-iii worker add http
+iii trigger -n dev compose::add worker=http
 ```
 
 <Note>
@@ -28,14 +28,10 @@ iii --config config.yaml
 ```
 
 2. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
-   not have a worker yet, scaffold one with
-   [`iii worker init`](./workers#scaffold-a-new-worker), then edit its source. The
+   not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
+   source. The
    handler receives the request (`body`, `headers`, method) and its return value becomes the
    response:
-
-```bash
-iii worker init my-worker --language typescript
-```
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -137,10 +133,10 @@ iii worker init my-worker --language typescript
   </Tab>
 </Tabs>
 
-3. Add the worker to start it, pointing at its directory:
+3. Add the worker to Compose, pointing at its directory:
 
 ```bash
-iii worker add ./my-worker
+iii trigger -n dev compose::add worker=./my-worker
 ```
 
 For path patterns, request and response shapes, and the other configuration options, see the

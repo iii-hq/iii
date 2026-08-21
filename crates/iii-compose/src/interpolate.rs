@@ -24,7 +24,8 @@
 //! `$PWD` or `$III_WORKER_NAME` before the shell sees them would break the one
 //! field most likely to hold them.
 //!
-//! `config_override` is not expanded at all. That block is not compose's
+//! `config_override` and `engine.workers` are not expanded at all. Those
+//! blocks are not compose's
 //! language: it is data compose carries to the configuration worker, which
 //! resolves `${VAR}` references of its own at read time — that is how a secret
 //! is stored as a reference rather than as a value. Expanding one here would
@@ -52,11 +53,21 @@ pub fn expand_tree(
     path: &Path,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<()> {
+    expand_tree_at(value, path, lookup, 0, false)
+}
+
+fn expand_tree_at(
+    value: &mut serde_yaml::Value,
+    path: &Path,
+    lookup: &dyn Fn(&str) -> Option<String>,
+    depth: usize,
+    in_engine: bool,
+) -> Result<()> {
     match value {
         serde_yaml::Value::String(text) => *text = expand(text, path, lookup)?,
         serde_yaml::Value::Sequence(items) => {
             for item in items {
-                expand_tree(item, path, lookup)?;
+                expand_tree_at(item, path, lookup, depth + 1, in_engine)?;
             }
         }
         serde_yaml::Value::Mapping(entries) => {
@@ -64,10 +75,17 @@ pub fn expand_tree(
                 // Keys are identities — a container name, a variable name — and
                 // an operator naming one from the environment is not a thing
                 // compose supports.
-                if key.as_str() == Some(NOT_OURS) {
+                let key = key.as_str();
+                if key == Some(NOT_OURS) || (in_engine && key == Some("workers")) {
                     continue;
                 }
-                expand_tree(entry, path, lookup)?;
+                expand_tree_at(
+                    entry,
+                    path,
+                    lookup,
+                    depth + 1,
+                    depth == 0 && key == Some("engine"),
+                )?;
             }
         }
         _ => {}
@@ -306,6 +324,21 @@ mod tests {
             ),
             "${ALSO_LEFT}",
             "including below the first level"
+        );
+    }
+
+    #[test]
+    fn engine_worker_configs_keep_references_for_the_engine_parser() {
+        let mut value: serde_yaml::Value = serde_yaml::from_str(
+            "engine:\n  url: ${ENGINE_URL:-ws://localhost:49134}\n  workers:\n    iii-worker-manager:\n      port: ${PORT:49134}\n",
+        )
+        .unwrap();
+        expand_tree(&mut value, Path::new("worker-compose.yaml"), &env(&[])).unwrap();
+
+        assert_eq!(value["engine"]["url"], "ws://localhost:49134");
+        assert_eq!(
+            value["engine"]["workers"]["iii-worker-manager"]["port"],
+            "${PORT:49134}"
         );
     }
 

@@ -302,10 +302,10 @@ impl Default for WorkerMetadata {
         Self {
             runtime: "rust".to_string(),
             version: SDK_VERSION.to_string(),
-            // III_WORKER_NAME carries the config.yaml entry name for managed
-            // workers (set by iii-worker at spawn). Engine truth (`iii worker
-            // status`/`list`) matches connections by name, so the managed
-            // identity must win over the hostname:pid fallback.
+            // III_WORKER_NAME carries the orchestrator-assigned name (set by
+            // iii-worker for engine-managed workers). The engine matches live
+            // registrations by name, so that identity must win over the
+            // hostname:pid fallback.
             name: std::env::var("III_WORKER_NAME")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -3332,14 +3332,14 @@ mod tests {
             "function_id": "fn-1",
             "error": {
                 "code": "trigger_type_not_found",
-                "message": "Trigger type \"http\" not found — worker iii-http is missing. Run: iii worker add iii-http",
+                "message": "Trigger type \"http\" not found — worker http is missing. Run: iii trigger -n default compose::add worker=http",
             },
         })
         .to_string();
 
         iii.handle_message(&payload).unwrap();
 
-        assert!(logs_contain("iii worker add iii-http"));
+        assert!(logs_contain("compose::add worker=http"));
         assert!(logs_contain("trig-1"));
     }
 

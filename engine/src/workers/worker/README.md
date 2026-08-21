@@ -1,14 +1,9 @@
 # iii-worker-manager
 
-Mandatory engine worker that opens WebSocket listeners for SDK workers to connect to. The first `iii-worker-manager` entry in `iii-config.yaml` sets the main engine port (default `49134`); additional entries start independent listeners — typically a public RBAC listener with its own auth, middleware, and registration hooks. Channel WebSocket endpoints are mounted on every listener at `/ws/channels/{channel_id}`.
-
-## Install
-
-```bash
-iii worker add iii-worker-manager
-```
-
-Resolves from the worker registry at [workers.iii.dev](https://workers.iii.dev/).
+Mandatory engine worker that opens WebSocket listeners for SDK workers to connect to. The first
+`iii-worker-manager` entry sets the main engine port (default `49134`); `#instance` entries start
+independent listeners, typically a public RBAC listener. Channel WebSocket endpoints are mounted
+on every listener at `/ws/channels/{channel_id}`.
 
 ## Skills
 
@@ -21,15 +16,14 @@ npx skills add iii-hq/iii --full-depth --skill iii-worker-manager
 ## Sample Configuration
 
 ```yaml
-workers:
-  # Main engine port — internal worker-to-worker traffic.
-  - name: iii-worker-manager
-    config:
+engine:
+  workers:
+    # Main engine port — internal worker-to-worker traffic.
+    iii-worker-manager:
       port: 49134
 
-  # Public RBAC listener — auth, middleware, and gated registration.
-  - name: iii-worker-manager
-    config:
+    # Public RBAC listener — auth, middleware, and gated registration.
+    "iii-worker-manager#rbac":
       host: 0.0.0.0
       port: 49135
       middleware_function_id: my-project::middleware-function

@@ -152,7 +152,7 @@ impl ReloadManager {
     /// This fixes the class of bugs where the engine's `running` list
     /// believes a worker is up but its detached VM / child process has died
     /// or been reaped out of band — most commonly via
-    /// `iii worker add --force`, which wipes the managed dir and rewrites
+    /// a forced managed-worker reinstall, which wipes the managed dir and rewrites
     /// config.yaml with a structurally identical entry, leaving diff with
     /// nothing to do.
     ///

@@ -42,9 +42,9 @@ Need a queue? Add a worker. Need real-time streaming, scheduling, sandboxing, ob
 agent, a CRM integration, a browser tab participating as a worker? Add a worker. Some workers are
 deterministic code. Some are stochastic agents.
 
-`iii worker add` is the npm moment for systems. What installs is not a library. It is a complete
-running service. A queue worker. A sandbox worker. A classifier. One command, complete capability,
-immediately available to every other worker in the system.
+`compose::add` is the npm moment for systems. What it declares is not a library. It is a complete
+running service: a queue worker, a classifier, or any other project capability, immediately
+available to every other worker in the system and recorded in `worker-compose.yaml`.
 
 ## Same Contract, Both Sides
 

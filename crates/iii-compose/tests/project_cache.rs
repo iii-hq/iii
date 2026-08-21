@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use iii_compose::daemon::Daemon;
+use iii_compose::daemon::{Daemon, EnginePolicy};
 
 /// Enough concurrent callers that the window between the cache miss and the
 /// insert is hit, rather than hoping two tasks interleave.
@@ -43,6 +43,7 @@ fn daemon() -> Arc<Daemon> {
     Daemon::start(
         "ws://127.0.0.1:1/ws".to_string(),
         format!("cache-test-{}", std::process::id()),
+        EnginePolicy::External,
     )
 }
 
@@ -120,4 +121,74 @@ async fn a_load_that_failed_is_retried_rather_than_cached() {
     // the error the daemon happened to see first.
     std::fs::write(&file, COMPOSE).unwrap();
     assert!(daemon.project(&file).await.is_ok());
+}
+
+#[tokio::test]
+async fn external_daemon_rejects_a_project_that_tries_to_own_an_engine() {
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+
+    let err = match daemon().project(&file).await {
+        Err(err) => err,
+        Ok(_) => panic!("external daemon must reject engine ownership"),
+    };
+    assert_eq!(err.code(), "ENGINE_SECTION_REQUIRES_MANAGED_START");
+}
+
+#[tokio::test]
+async fn managed_daemon_requires_restart_when_its_owner_engine_section_changes() {
+    isolate_state();
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let policy = EnginePolicy::managed(&initial).unwrap();
+    std::fs::write(
+        &file,
+        "engine:\n  workers:\n    iii-stream: { port: 3112 }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-change-test-{}", std::process::id()),
+        policy,
+    );
+    let err = match daemon.project(&file).await {
+        Err(err) => err,
+        Ok(_) => panic!("changed engine section must require a restart"),
+    };
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+}
+
+#[tokio::test]
+async fn managed_daemon_rejects_a_second_engine_owner() {
+    isolate_state();
+    let tmp = project_dir();
+    let owner = tmp.path().join("owner.yaml");
+    let other = tmp.path().join("other.yaml");
+    let text = "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n";
+    std::fs::write(&owner, text).unwrap();
+    std::fs::write(&other, text).unwrap();
+    let initial = iii_compose::ComposeFile::load(&owner).unwrap();
+
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-owner-test-{}", std::process::id()),
+        EnginePolicy::managed(&initial).unwrap(),
+    );
+    let err = match daemon.project(&other).await {
+        Err(err) => err,
+        Ok(_) => panic!("a second file must not own the same engine"),
+    };
+    assert_eq!(err.code(), "ENGINE_ALREADY_OWNED");
 }

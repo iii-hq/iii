@@ -1274,8 +1274,8 @@ impl EngineFunctionsWorker {
                 // Attribute by resolved owner NAME — the same index
                 // `engine::triggers::list` uses — so the two surfaces cannot
                 // disagree. Id-based attribution diverged whenever several
-                // connections shared one worker name (e.g. a stale
-                // `iii-worker-ops` daemon reconnecting next to a fresh one):
+                // connections shared one worker name (e.g. a stale worker
+                // reconnecting next to a fresh one):
                 // the name resolved to one connection's id while the trigger
                 // type stayed pinned to another, and the type silently
                 // vanished from `workers::info`.

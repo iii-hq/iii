@@ -2,27 +2,27 @@
 name: configuration
 description: >-
   Schema-validated, reactive registry for named configuration entries — the
-  migration target for per-worker config blocks currently in engine/config.yaml.
+  runtime configuration surface used by engine and Compose workers.
 ---
 
 # configuration
 
 The `configuration` worker is a server-side registry of named entries. Every entry has an id (e.g. `iii-stream`, `billing-service`), a human-readable name and description, a JSON Schema describing the value shape, and a JSON value validated against that schema. Workers call `configuration::register` once at startup to declare their schema and `configuration::set` to publish values; consumers call `configuration::get` / `configuration::list` to read and bind a `configuration` trigger to react to changes without polling.
 
-The default `fs` adapter persists one YAML file per id under `./config` and watches the directory for external edits, so manual edits to those files surface as `configuration:updated` events the same way SDK calls do. The `bridge` adapter delegates to a remote engine and re-broadcasts its events into the local fan-out — the function surface is identical across adapters. The worker is enabled by default in `engine/config.yaml`.
+The default `fs` adapter persists one YAML file per id under `./config` and watches the directory for external edits, so manual edits surface as `configuration:updated` events. The `bridge` adapter delegates to a remote engine. The worker is engine-owned and may be configured at `engine.workers.configuration`.
 
 A per-id TTL (off by default) cleans up entries whose last subscriber trigger has unregistered, scoped to the lifecycle of ephemeral workers that come and go without an explicit teardown step.
 
 ## When to Use
 
-- A worker is migrating its block out of `engine/config.yaml` and needs a typed, observable surface other workers can read and validate against.
+- A worker needs a typed, observable configuration surface other workers can read and validate against.
 - Two workers need to agree on the same configuration values without one polling the other or hardcoding a path on disk.
 - An operator should be able to edit a single YAML file (or the remote control plane) and have the change propagate to every subscriber without a worker restart.
 - A worker comes and goes (sandboxes, ephemeral consumers) and its configuration should be cleaned up automatically when no one is left subscribing.
 
 ## Boundaries
 
-- Not a general-purpose key/value store — every entry must have a registered JSON Schema. Use `iii-state` for free-form values.
+- Not a general-purpose key/value store — every entry must have a registered JSON Schema. Use the standalone `state` worker for free-form values.
 - No partial-update surface; `set` always replaces the whole value. Build the new value client-side and ship it in one call.
 - The `bridge` adapter cannot delete entries on the remote engine; cleanup over the bridge happens via TTL or directly on the source engine.
 - Schemas are not version-checked across re-registrations — re-registering with an incompatible schema simply replaces it. Coordinate schema migrations out-of-band.

@@ -11,10 +11,10 @@ worker stays focused on single links.
 
 ## Add the worker
 
-Scaffold the importer the same way you scaffolded `link` in Chapter 1:
+Create the importer directory the same way you created `link` in Chapter 1:
 
 ```bash
-iii worker init bulk-importer --language typescript
+mkdir -p bulk-importer/src
 ```
 
 ## Import a CSV over a channel
@@ -60,7 +60,7 @@ logger.info("bulk-importer ready");
 Register it with your project:
 
 ```bash
-iii worker add ./bulk-importer
+iii trigger -n linkly compose::add worker=./bulk-importer
 ```
 
 ## See it work

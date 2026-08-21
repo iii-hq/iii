@@ -40,11 +40,10 @@ are two common paths:
 | Task | Use |
 | --- | --- |
 | Create your own worker | Write SDK code that calls `registerWorker`, `registerFunction`, and `registerTrigger` |
-| Add an existing capability | Browse `https://workers.iii.dev/`, then run `iii worker add <name>` |
-| Pin a worker version | `iii worker add <name>@<version>` |
-| Add an OCI worker | `iii worker add ghcr.io/org/worker:tag` |
-| Add a local worker during development | `iii worker add ./workers/my-worker` |
-| Replay installed workers | Commit `iii.lock`, then run `iii worker sync` |
+| Add an existing capability | Browse `https://workers.iii.dev/`, then call `compose::add worker=<name>` |
+| Pin a worker version | `compose::add worker=<name>@<version>` |
+| Declare a local worker | Add `worker: path://./workers/my-worker` under `containers:` |
+| Reproduce a project | Commit the exact versions in `worker-compose.yaml` |
 
 The public worker registry at `workers.iii.dev` is for installable workers such as HTTP, state,
 queue, pub/sub, cron, observability, sandbox, database, shell, console, and other capability

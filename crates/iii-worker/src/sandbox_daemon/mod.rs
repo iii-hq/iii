@@ -113,8 +113,7 @@ use crate::sandbox_daemon::errors::SandboxErrorWire;
 pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()> {
     // FIRST statement, before any await: snapshot spawn-time facts for the
     // engine-death watch (see crate::daemon_exit). Without it this daemon had
-    // the same orphan leak as worker-manager-daemon — worse, an orphaned
-    // sandbox-daemon keeps live libkrun VMs around.
+    // An orphaned sandbox-daemon keeps live libkrun VMs around.
     let exit_watch = crate::daemon_exit::ExitWatch::arm_at_startup();
 
     tracing::info!(url = %engine_url, "connecting to III engine");

@@ -75,7 +75,7 @@ def redact_and_truncate(
 
     Args:
         value: Value to redact and serialize.
-        max_bytes: Optional cap on the serialized byte length; unset or <= 0 means no cap.
+        max_bytes: Optional cap on the serialized byte length; unset, zero, or negative means no cap.
     """
     redacted = redact(value)
     try:

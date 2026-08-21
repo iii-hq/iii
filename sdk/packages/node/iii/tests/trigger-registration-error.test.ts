@@ -55,7 +55,7 @@ describe('trigger registration error surfacing', () => {
         error: {
           code: 'trigger_type_not_found',
           message:
-            'Trigger type "http" not found — worker iii-http is missing. Run: iii worker add iii-http',
+            'Trigger type "http" not found — worker http is missing. Run: iii trigger -n default compose::add worker=http',
         },
       }),
     )
@@ -65,7 +65,7 @@ describe('trigger registration error surfacing', () => {
     const formatted = spy.mock.calls.map((args) => args.join(' ')).join('\n')
     expect(formatted).toContain('trig-1')
     expect(formatted).toContain('http')
-    expect(formatted).toContain('iii worker add iii-http')
+    expect(formatted).toContain('compose::add worker=http')
     spy.mockRestore()
   })
 

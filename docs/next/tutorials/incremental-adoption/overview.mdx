@@ -15,9 +15,10 @@ runs on iii without ever needing a full cutover.
 
 ## Prerequisites
 
-- A running iii engine ([install](../../install), then run `iii` in a scratch directory and let it
-  create a `config.yaml`, then add the workers each step needs with `iii worker add`; see
-  [Default configuration](../../using-iii/engine#default-configuration)).
+- A running iii engine and Compose daemon ([install](../../install), then create `config.yaml` and
+  `worker-compose.yaml`; add the workers each step needs with `compose::add`; see
+  [Default configuration](../../using-iii/engine#default-configuration) and
+  [Compose](../../using-iii/compose)).
 - An existing service you want to migrate, reachable over HTTP.
 - The SDK for the language your service is written in (TypeScript, Python, or Rust).
 

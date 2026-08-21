@@ -18,10 +18,8 @@ to gate those connections, so scaffold it the same way you scaffolded `link` in 
 </Note>
 
 ```bash
-iii worker init auth --language typescript
+mkdir -p auth/src
 ```
-
-{/* TODO(validation): `iii worker add iii-worker-manager` is being added to the registry; re-verify once the command works end-to-end. */}
 
 ## Run two listeners
 
@@ -101,7 +99,7 @@ travels in a query parameter because browsers cannot send custom WebSocket heade
 Register it with your project:
 
 ```bash
-iii worker add ./auth
+iii trigger -n linkly compose::add worker=./auth
 ```
 
 ## Add a server-initiated delete
