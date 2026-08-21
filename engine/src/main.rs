@@ -401,10 +401,15 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::project::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        // Compose owns its own lifecycle and never builds an engine: it is a
-        // client of one, exactly like any other worker.
+        // Compose owns its own lifecycle. `up` starts a managed engine unless
+        // --no-engine was selected; the root config flag is the engine child's
+        // config path, just as it is on the ordinary serve path.
         Some(Commands::Compose(args)) => {
-            let exit_code = iii_compose::run(args.clone()).await;
+            let exit_code = iii_compose::run_with_config(
+                args.clone(),
+                std::path::PathBuf::from(config_path_of(&cli_args)),
+            )
+            .await;
             std::process::exit(exit_code);
         }
         // Handled before telemetry above.
@@ -902,11 +907,21 @@ mod tests {
     /// before a call can reach it.
     #[test]
     fn compose_up_reaches_the_subcommand() {
-        let cli = Cli::try_parse_from(["iii", "compose", "up", "-n", "dev"]).expect("should parse");
+        let cli = Cli::try_parse_from(["iii", "compose", "up", "-n", "dev", "--no-engine"])
+            .expect("should parse");
         match cli.command {
             Some(Commands::Compose(args)) => {
                 assert_eq!(args.ns.as_deref(), Some("dev"));
-                assert!(args.command.is_some(), "up should reach the subcommand");
+                assert!(
+                    matches!(
+                        args.command,
+                        Some(iii_compose::ComposeSub::Up {
+                            no_engine: true,
+                            ..
+                        })
+                    ),
+                    "up --no-engine should reach the subcommand"
+                );
             }
             _ => panic!("expected Compose subcommand"),
         }
@@ -1058,6 +1073,16 @@ mod tests {
         assert_eq!(envs[0].0, "III_CONFIG_PATH");
         assert!(std::path::Path::new(&envs[0].1).is_absolute());
         assert!(envs[0].1.ends_with("foo.yaml"));
+    }
+
+    #[test]
+    fn compose_uses_the_root_engine_config_selection() {
+        let explicit =
+            Cli::try_parse_from(["iii", "--config", "custom.yaml", "compose", "up"]).unwrap();
+        let default = Cli::try_parse_from(["iii", "compose", "up"]).unwrap();
+
+        assert_eq!(config_path_of(&explicit), "custom.yaml");
+        assert_eq!(config_path_of(&default), "config.yaml");
     }
 
     #[test]

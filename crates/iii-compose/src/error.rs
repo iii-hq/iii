@@ -250,6 +250,31 @@ pub enum ComposeError {
     #[error("engine call {function} failed: {message}")]
     EngineCallFailed { function: String, message: String },
 
+    #[error("managed engine could not start: {message}")]
+    EngineSpawnFailed { message: String },
+
+    #[error(
+        "managed engine exited with {code}{}",
+        match .tail {
+            Some(tail) => format!(". It last said:\n{tail}"),
+            None => String::new(),
+        }
+    )]
+    EngineExited { code: i32, tail: Option<String> },
+
+    #[error(
+        "managed engine at {engine_url} was not ready after {seconds}s{}",
+        match .tail {
+            Some(tail) => format!(". It last said:\n{tail}"),
+            None => String::new(),
+        }
+    )]
+    EngineReadinessTimeout {
+        engine_url: String,
+        seconds: u64,
+        tail: Option<String>,
+    },
+
     #[error(
         "container '{container}' registered in '{expected}', but its function '{function}' \
          landed in '{found_in}': the function registrations reached the engine before the \
@@ -431,6 +456,9 @@ impl ComposeError {
             Self::ConfigFetchFailed { .. } => "CONFIG_FETCH_FAILED",
             Self::ConfigPublishFailed { .. } => "CONFIG_PUBLISH_FAILED",
             Self::EngineCallFailed { .. } => "ENGINE_CALL_FAILED",
+            Self::EngineSpawnFailed { .. } => "ENGINE_SPAWN_FAILED",
+            Self::EngineExited { .. } => "ENGINE_EXITED",
+            Self::EngineReadinessTimeout { .. } => "ENGINE_STARTUP_TIMEOUT",
             Self::FunctionsInWrongNamespace { .. } => "FUNCTIONS_IN_WRONG_NAMESPACE",
             Self::ReadinessTimeout { .. } => "STARTUP_TIMEOUT",
             Self::WorkerIgnoredNamespace { .. } => "WORKER_IGNORED_NAMESPACE",
