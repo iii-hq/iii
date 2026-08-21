@@ -104,10 +104,18 @@
     margin:0 auto;
     display:grid;
     grid-template-columns: 1fr 1fr;
-    gap:64px;
-    align-items:start;
+    column-gap:64px;
+    row-gap:40px;
+    align-items:stretch;
   }
-  .hero-left{ min-width:0; }
+  /* Row 1 holds the headline block and the viz, so the viz spans exactly from
+     the top of the headline to the bottom of the subheadline. Row 2 is the
+     copy, which runs under the viz in the left column only. */
+  .hero-head{ grid-column:1; grid-row:1; min-width:0; }
+  /* The copy sits beside the headline, in the slot the viz used to hold. */
+  .hero-copy{ grid-column:2; grid-row:1; min-width:0; }
+  .hero-copy > .hero-sub:first-child{ margin-top:0; }
+  .hero-left{ grid-column:1; grid-row:2; min-width:0; }
   .hero-eyebrow{
     display:inline-flex; align-items:center; gap:10px;
     margin:0 0 28px;
@@ -136,24 +144,56 @@
   }
   .hero-headline .line{ display:block; }
   .hero-headline .mute{ color:var(--ink-faint); }
+  .hero-headline .accent{ color:var(--accent); }
   .hero-headline .desc{
     display:inline-block;
     color:var(--accent);
     transition: opacity .4s ease, transform .4s ease;
     will-change: opacity, transform;
   }
+  /* Second carousel on the same headline — keeps the single-accent look by
+     rotating in ink rather than a second orange word. */
+  .hero-headline .desc.plain{ color:var(--ink); }
   .hero-headline .desc.is-anim{
     opacity:0;
     transform: translateY(14px);
   }
 
+  /* Subheader: the same four stacked lines, sized under the headline. */
+  .hero-subhead{
+    font-family:'Chivo Mono', ui-monospace, monospace;
+    font-weight:500;
+    font-size: clamp(20px, 2.1vw, 28px);
+    line-height:1.15;
+    letter-spacing:-0.01em;
+    color:var(--ink);
+    margin:28px 0 0;
+    text-transform:lowercase;
+  }
+  .hero-subhead .line{ display:block; }
+  .hero-subhead .mute{ color:var(--ink-faint); }
+  .hero-subhead .accent{ color:var(--accent); }
+  .hero-subhead .desc{
+    display:inline-block;
+    /* Reserves the longest verb in the rotation ("discover"), so the words
+       after it never shift. Chivo Mono, so 1ch is one glyph. */
+    min-width:8ch;
+    color:var(--accent);
+    transition: opacity .4s ease, transform .4s ease;
+    will-change: opacity, transform;
+  }
+  .hero-subhead .desc.is-anim{
+    opacity:0;
+    transform: translateY(10px);
+  }
+
   .hero-sub{
     font-family:'Chivo Mono', ui-monospace, monospace;
     font-weight:400;
-    font-size:14px;
+    font-size:18px;
     line-height:1.7;
     color:var(--ink-faint);
-    max-width:46ch;
+    max-width:58ch;
     text-wrap:pretty;
     margin:40px 0 0;
   }
@@ -168,10 +208,11 @@
     max-width:100%;
     min-width:0;
     display:flex;
-    flex-direction:column;
+    /* One row: the buttons on the left, the email signup pushed to the right. */
+    flex-direction:row;
     flex-wrap:nowrap;
-    gap:20px;
-    align-items:flex-start;
+    gap:24px;
+    align-items:center;
   }
   /* Reference solid + ghost buttons */
   .cta-get-started{
@@ -408,8 +449,15 @@
     display:grid;
     grid-template-rows: auto 1fr auto;
     min-width:0;
-    align-self:start;
     position:relative;
+  }
+  /* Hidden for now: the hero copy holds this column instead. The panel and its
+     engine stay in place for when it comes back. */
+  .hero-viz-fit{
+    display:none;
+    grid-column:2; grid-row:1 / span 2;
+    align-self:start;
+    min-width:0;
   }
   @media (min-width: 881px){
     .hero-viz:not([data-design="triptych"]){
@@ -457,7 +505,8 @@
 
   .hero-viz-canvas{
     position:relative;
-    aspect-ratio: 5 / 4;
+    /* Matches the drawing's 400 x 118 viewBox. */
+    aspect-ratio: 200 / 59;
     width:100%;
     overflow:hidden;
   }
@@ -579,8 +628,9 @@
     font-family:'Chivo Mono', ui-monospace, monospace;
   }
   .hv-complex-chart{
+    /* preserveAspectRatio="none": the curves stretch to whatever box they get. */
     width:100%;
-    height:80px;
+    height:56px;
     display:block;
     overflow:visible;
   }
@@ -738,9 +788,9 @@
     max-width:240px;
   }
   .hero-cta .cta-email{
-    width:100%;
-    max-width:min(100%, 420px);
-    flex:none;
+    /* Sits right after the buttons and takes the rest of the row. */
+    max-width:min(100%, 480px);
+    flex:1 1 380px;
   }
   .email-row{
     position:relative;
@@ -792,9 +842,14 @@
 
   @media (max-width: 880px){
     .hero{ padding:60px 18px 72px; }
-    .hero-inner{ grid-template-columns: 1fr; gap:48px; }
+    .hero-inner{ grid-template-columns: 1fr; column-gap:48px; row-gap:40px; }
+    /* One column: the blocks stack in source order and the panel runs at its
+       natural size again. */
+    .hero-head, .hero-copy, .hero-left, .hero-viz-fit{ grid-column:1; grid-row:auto; }
     .hero-headline{ letter-spacing:-0.02em; }
-    .hero-cta{ gap:28px; }
+    /* Narrow: back to a stack, the email under the buttons. */
+    .hero-cta{ flex-direction:column; align-items:flex-start; gap:28px; }
+    .hero-cta .cta-email{ flex:none; }
     .hero-viz{ min-width:0; max-width:100%; overflow:hidden; }
     .hero-viz-canvas{ overflow:hidden; max-width:100%; }
     .hero-viz-head .label{ display:none; }
