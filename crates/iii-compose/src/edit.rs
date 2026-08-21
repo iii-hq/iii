@@ -220,19 +220,25 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
 /// used to refuse the edit. The following project restart reports any problem
 /// in the resulting declaration.
 pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
-    let lines: Vec<&str> = text.lines().collect();
+    // Keep terminators in the slices. Rebuilding from `str::lines()` would
+    // silently turn every surviving CRLF into LF.
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let containers = find_containers(&lines)?;
     let indent = entry_indent(&lines, &containers);
     let Some(entry) = find_entry(&lines, &containers, &indent, key) else {
         return Ok(None);
     };
 
-    let mut out: Vec<String> = lines[..entry.start]
-        .iter()
-        .map(|line| line.to_string())
-        .collect();
-    out.extend(lines[entry.end..].iter().map(|line| line.to_string()));
-    Ok(Some(join(&out, text)))
+    let start = lines[..entry.start].iter().map(|line| line.len()).sum();
+    let end = start
+        + lines[entry.clone()]
+            .iter()
+            .map(|line| line.len())
+            .sum::<usize>();
+    let mut out = String::with_capacity(text.len() - (end - start));
+    out.push_str(&text[..start]);
+    out.push_str(&text[end..]);
+    Ok(Some(out))
 }
 
 /// Keeps the file's final newline as it was: adding one to a file without it,
@@ -785,6 +791,17 @@ containers:
     #[test]
     fn removing_an_unknown_entry_changes_nothing() {
         assert_eq!(remove_container(FILE, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn removing_preserves_crlf_in_the_surviving_bytes() {
+        let text = "containers:\r\n  keep:\r\n    worker: path://./keep\r\n  remove:\r\n    worker: path://./remove\r\n  after:\r\n    worker: path://./after\r\n";
+        let expected = "containers:\r\n  keep:\r\n    worker: path://./keep\r\n  after:\r\n    worker: path://./after\r\n";
+
+        assert_eq!(
+            remove_container(text, "remove").unwrap().as_deref(),
+            Some(expected)
+        );
     }
 
     #[test]

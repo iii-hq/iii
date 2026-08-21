@@ -149,6 +149,24 @@ async fn start_daemon_named(port: u16, daemon_namespace: &str) -> Arc<Daemon> {
     daemon
 }
 
+/// Registers the readiness identity for a test child process.
+fn register_test_worker(port: u16, namespace: &str, name: &str) -> iii_sdk::IIIClient {
+    let mut metadata = iii_sdk::iii::WorkerMetadata {
+        name: name.to_string(),
+        ..Default::default()
+    };
+    metadata.namespace = Some(namespace.to_string());
+
+    register_worker(
+        &format!("ws://127.0.0.1:{port}"),
+        InitOptions {
+            metadata: Some(metadata),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+    )
+}
+
 const TWO_WORKERS: &str = r#"
 namespace: orders
 startup_timeout: 2s
@@ -327,7 +345,7 @@ async fn remove_edits_only_the_named_worker_and_restarts_the_project() {
         tmp.path(),
         r#"
 namespace: removal
-startup_timeout: 100ms
+startup_timeout: 3s
 stop_timeout: 100ms
 containers:
   keep:
@@ -342,21 +360,51 @@ containers:
         &["keep", "discard"],
     );
 
-    let result = call(
+    // The path workers are ordinary long-running child processes. Register
+    // their readiness identities after compose has taken its baseline, so the
+    // project becomes active before removal begins.
+    let up = call(
+        port,
+        "compose::up",
+        json!({ "file": file.to_str().unwrap() }),
+    );
+    let ready = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        (
+            register_test_worker(port, "removal", "keep"),
+            register_test_worker(port, "removal", "discard"),
+        )
+    };
+    let (up, (keep, discard)) = tokio::join!(up, ready);
+    let up = up.expect("compose::up should answer");
+    assert_eq!(up["status"], "ok", "project did not start: {up}");
+
+    // Let the engine release the readiness identities. The child processes
+    // remain active and are the processes remove must stop during its down.
+    keep.shutdown_async().await;
+    discard.shutdown_async().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let remove = call(
         port,
         "compose::remove",
         json!({
             "file": file.to_str().unwrap(),
             "worker": "discard",
         }),
-    )
-    .await
-    .expect("compose::remove should answer");
+    );
+    let ready = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        register_test_worker(port, "removal", "keep")
+    };
+    let (result, keep) = tokio::join!(remove, ready);
+    let result = result.expect("compose::remove should answer");
 
+    assert_eq!(result["status"], "ok", "{result}");
     assert_eq!(result["container"], "discard", "{result}");
     assert_eq!(result["changed"], true, "{result}");
-    assert!(result["down"].is_object(), "down was not run: {result}");
-    assert!(result["up"].is_object(), "up was not run: {result}");
+    assert_eq!(result["down"]["status"], "ok", "{result}");
+    assert_eq!(result["up"]["status"], "ok", "{result}");
 
     let edited = std::fs::read_to_string(&file).expect("read edited compose file");
     assert!(
@@ -368,6 +416,7 @@ containers:
         "named worker survived: {edited}"
     );
 
+    keep.shutdown_async().await;
     daemon.shutdown().await;
 }
 

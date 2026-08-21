@@ -57,6 +57,10 @@ pub struct Daemon {
     /// their own. Two `Project::open` calls on one file both adopt the same
     /// surviving children, and the loser of the insert is still handed out.
     projects: Mutex<BTreeMap<PathBuf, Arc<OnceCell<Arc<Project>>>>>,
+    /// Serialises read-edit-write-restart operations for each compose file.
+    /// Different projects can still change in parallel, while two edits to one
+    /// file cannot overwrite each other after reading the same source text.
+    mutations: Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>,
     /// Set by `compose::stop`. The serve loop reads it and leaves through the
     /// same path a SIGTERM takes, so a remote stop and a local one cannot
     /// diverge in what they tear down.
@@ -84,6 +88,7 @@ impl Daemon {
             engine_url,
             engine,
             projects: Mutex::new(BTreeMap::new()),
+            mutations: Mutex::new(BTreeMap::new()),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
         });
 
@@ -224,6 +229,7 @@ impl Daemon {
         // after the things it calls.
         let wanted = self.expand(&asked).await?;
 
+        let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
@@ -396,6 +402,7 @@ impl Daemon {
             });
         };
 
+        let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
@@ -495,6 +502,7 @@ impl Daemon {
         };
 
         let path = self.resolve_file(file)?;
+        let _mutation = self.lock_mutation(path).await;
         let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
             source,
@@ -590,6 +598,20 @@ impl Daemon {
     async fn forget(&self, file: &Path) {
         let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
         self.projects.lock().await.remove(&key);
+    }
+
+    /// Acquires the mutation lock for one canonical compose-file path.
+    async fn lock_mutation(&self, file: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        let lock = {
+            let mut mutations = self.mutations.lock().await;
+            Arc::clone(
+                mutations
+                    .entry(key)
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        lock.lock_owned().await
     }
 
     /// Takes a project down.
@@ -720,13 +742,16 @@ pub const DAEMON_WORKER_NAME: &str = "compose";
 /// with no copy of what it said before. The rename is atomic within a
 /// filesystem, so a reader sees the old file or the new one.
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
-    let temp = path.with_extension("compose-edit-tmp");
+    let temp = path.with_extension(format!("compose-edit-{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&temp, text).map_err(|source| ComposeError::Io {
         path: temp.clone(),
         source,
     })?;
-    std::fs::rename(&temp, path).map_err(|source| ComposeError::Io {
-        path: path.to_path_buf(),
-        source,
+    std::fs::rename(&temp, path).map_err(|source| {
+        let _ = std::fs::remove_file(&temp);
+        ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
     })
 }
