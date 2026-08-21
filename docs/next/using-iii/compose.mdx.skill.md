@@ -44,22 +44,36 @@ compose serving
 </Warning>
 
 `SIGINT` and `SIGTERM` both stop the daemon and take every project down with it. `compose::stop`
-does the same over the engine.
+does the same over the engine. When `up` owns the engine, every project and worker stops before the
+engine process is stopped.
 
 ### Starting a project with the daemon
 
-`iii compose up` serves and brings one project up, without waiting for a call to name it.
+`iii compose up` starts an engine in the background, waits for it to be ready, and then serves and
+brings one project up without waiting for a call to name it. The compose daemon stays in the
+foreground so it can supervise both the project and the engine.
 
 ```text
-iii compose up [-f, --file <PATH>]
+iii compose up [-f, --file <PATH>] [--no-engine]
 ```
 
 `--file` defaults to `./worker-compose.yaml`, the same fallback a `compose::*` call gets when it
 names no file. The daemon then stays in the foreground and serves, so every other operation is a
 `compose::*` call as usual.
 
+The managed engine uses `./config.yaml`, or the path selected before the subcommand with
+`iii --config <PATH> compose up`. If the file does not exist, the engine creates its standard
+minimal `workers: []` config. This is the same startup contract as running `iii` manually, so config
+reload and `iii worker add` continue to operate on a real project file.
+
 ```text
 $ iii compose up -n orders
+engine started
+  pid: 42042
+  config: config.yaml
+  logs: /home/me/.iii/compose/orders/engine.log
+  follow logs: tail -f '/home/me/.iii/compose/orders/engine.log'
+
 compose serving
   engine: ws://127.0.0.1:49134
   namespace: orders
@@ -69,14 +83,26 @@ compose serving
 up: 1 of 1 changed in 250ms
 ```
 
+The active engine log rotates at 10 MiB. Compose keeps `engine.log.1` through `engine.log.3`, so one
+namespace uses at most about 40 MiB for engine logs. The printed follow command keeps reading the
+active `engine.log` across rotations.
+
 A project that does not start ends the command with `PROJECT_DID_NOT_START`. Rollback has already
 stopped whatever came up, so there is nothing left to supervise.
 
+Use `--no-engine` when the engine is already running. In that mode compose only connects to
+`--engine`, `III_URL`, or the default address, and never stops that external process.
+
+```bash
+iii compose up --no-engine --engine ws://127.0.0.1:49134
+```
+
 ### Running it in the background
 
-Compose never backgrounds itself. It serves in the foreground and writes to stdout, which is the
-shape every process supervisor already expects, and it leaves log rotation and restart-on-failure
-to something that already does both.
+Compose never backgrounds itself. Even when `up` runs its managed engine in the background, the
+compose daemon serves in the foreground and writes its own output to stdout. This is the shape every
+process supervisor already expects, and it leaves log rotation and restart-on-failure to something
+that already does both.
 
 For a quick session, a shell redirect is enough:
 
