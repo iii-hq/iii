@@ -102,10 +102,10 @@ logger.info("auth worker ready");
 A real deployment would look the token up in a session store; the shape stays the same. The token
 travels in a query parameter because browsers cannot send custom WebSocket headers.
 
-Register it with your project:
+The Compose daemon exposes `compose::add`. Target the daemon serving the `linkly` namespace:
 
 ```bash
-iii trigger -n linkly compose::add worker=./auth
+iii trigger compose::add --namespace linkly worker=./auth
 ```
 
 ## Add a server-initiated delete

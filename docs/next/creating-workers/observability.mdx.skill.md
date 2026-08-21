@@ -112,7 +112,7 @@ iii trigger engine::traces::tree trace_id=$TID
 
 ## Health and clearing
 
-Check engine health, or clear stored telemetry while developing:
+Check engine health, or clear stored observability data while developing:
 
 ```bash
 # overall health status
@@ -138,5 +138,5 @@ iii trigger engine::traces::list | jq '.total'
 
 ## Seeing it in the console
 
-The [console](../using-iii/console) renders this telemetry visually, traces, logs, and metrics for a running
+The [console](../using-iii/console) renders this observability data visually, traces, logs, and metrics for a running
 system, so you usually do not query the functions above by hand during development.

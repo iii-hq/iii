@@ -421,7 +421,7 @@ getAddress() => string
 
 ### getConnectionState
 
-The current WebSocket connection state. `'failed'` is terminal — it follows
+The current WebSocket connection state. `'failed'` is terminal: it follows
 a fatal registration rejection (see getFatalError). Mirrors the
 Python/Rust SDKs' `get_connection_state()`.
 

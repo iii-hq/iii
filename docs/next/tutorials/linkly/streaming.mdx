@@ -16,11 +16,13 @@ links.
 
 `iii-stream` is how we will send clicks to clients in Chapter 7. We'll make a new `click-streamer`
 worker to manage the streaming, so create it the same way you created `link` in Chapter 1 and
-`analytics` in Chapter 4. `iii-stream` is engine-owned, so enable it in `config.yaml`:
+`analytics` in Chapter 4. `iii-stream` must start with the engine, so declare it in the Compose
+engine configuration:
 
-```yaml config.yaml
-workers:
-  - name: iii-stream
+```yaml worker-compose.yaml
+engine:
+  workers:
+    iii-stream: {}
 ```
 
 ```bash
