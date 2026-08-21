@@ -742,11 +742,21 @@ pub const DAEMON_WORKER_NAME: &str = "compose";
 /// with no copy of what it said before. The rename is atomic within a
 /// filesystem, so a reader sees the old file or the new one.
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
+    let permissions = std::fs::metadata(path)
+        .map_err(|source| ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .permissions();
     let temp = path.with_extension(format!("compose-edit-{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temp, text).map_err(|source| ComposeError::Io {
-        path: temp.clone(),
-        source,
-    })?;
+    if let Err(source) = std::fs::write(&temp, text) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(ComposeError::Io { path: temp, source });
+    }
+    if let Err(source) = std::fs::set_permissions(&temp, permissions) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(ComposeError::Io { path: temp, source });
+    }
     std::fs::rename(&temp, path).map_err(|source| {
         let _ = std::fs::remove_file(&temp);
         ComposeError::Io {
@@ -754,4 +764,26 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
             source,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_the_source_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path, "before\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_atomically(&path, "after\n").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    }
 }

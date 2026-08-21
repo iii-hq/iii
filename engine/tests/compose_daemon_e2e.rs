@@ -167,6 +167,34 @@ fn register_test_worker(port: u16, namespace: &str, name: &str) -> iii_sdk::IIIC
     )
 }
 
+/// Waits until every child has crossed an explicit process-start barrier.
+async fn wait_for_start_markers(paths: &[&std::path::Path]) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if paths.iter().all(|path| path.exists()) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("children did not reach their start barriers");
+}
+
+/// Waits for the engine to observe a worker registration or its removal.
+async fn wait_for_worker_state(daemon: &Daemon, namespace: &str, name: &str, registered: bool) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if daemon.engine().is_registered(namespace, name).await.ok() == Some(registered) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("worker {namespace}/{name} did not reach registered={registered}"));
+}
+
 const TWO_WORKERS: &str = r#"
 namespace: orders
 startup_timeout: 2s
@@ -341,6 +369,8 @@ async fn remove_edits_only_the_named_worker_and_restarts_the_project() {
     let daemon = start_daemon(port).await;
 
     let tmp = tempfile::tempdir().unwrap();
+    let keep_started = tmp.path().join("workers/keep/started");
+    let discard_started = tmp.path().join("workers/discard/started");
     let file = project(
         tmp.path(),
         r#"
@@ -351,29 +381,30 @@ containers:
   keep:
     worker: path://./workers/keep
     scripts:
-      run: "sleep 30"
+      run: "touch started && sleep 30"
   discard:
     worker: path://./workers/discard
     scripts:
-      run: "sleep 30"
+      run: "touch started && sleep 30"
 "#,
         &["keep", "discard"],
     );
 
-    // The path workers are ordinary long-running child processes. Register
-    // their readiness identities after compose has taken its baseline, so the
-    // project becomes active before removal begins.
+    // Each child creates its marker only after compose has captured the
+    // readiness baseline and spawned it. Registration therefore cannot race
+    // with baseline capture.
     let up = call(
         port,
         "compose::up",
         json!({ "file": file.to_str().unwrap() }),
     );
     let ready = async {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        (
-            register_test_worker(port, "removal", "keep"),
-            register_test_worker(port, "removal", "discard"),
-        )
+        wait_for_start_markers(&[keep_started.as_path(), discard_started.as_path()]).await;
+        let keep = register_test_worker(port, "removal", "keep");
+        let discard = register_test_worker(port, "removal", "discard");
+        wait_for_worker_state(&daemon, "removal", "keep", true).await;
+        wait_for_worker_state(&daemon, "removal", "discard", true).await;
+        (keep, discard)
     };
     let (up, (keep, discard)) = tokio::join!(up, ready);
     let up = up.expect("compose::up should answer");
@@ -383,7 +414,11 @@ containers:
     // remain active and are the processes remove must stop during its down.
     keep.shutdown_async().await;
     discard.shutdown_async().await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_worker_state(&daemon, "removal", "keep", false).await;
+    wait_for_worker_state(&daemon, "removal", "discard", false).await;
+
+    // The next marker can only come from the process started by remove's up.
+    std::fs::remove_file(&keep_started).expect("remove first keep start marker");
 
     let remove = call(
         port,
@@ -394,8 +429,10 @@ containers:
         }),
     );
     let ready = async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        register_test_worker(port, "removal", "keep")
+        wait_for_start_markers(&[keep_started.as_path()]).await;
+        let keep = register_test_worker(port, "removal", "keep");
+        wait_for_worker_state(&daemon, "removal", "keep", true).await;
+        keep
     };
     let (result, keep) = tokio::join!(remove, ready);
     let result = result.expect("compose::remove should answer");
