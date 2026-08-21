@@ -15,6 +15,9 @@ The daemon is itself a worker. It registers under the name `compose` in a namesp
 exposes the `compose::*` functions there, so every project operation is a normal
 [trigger](./triggers), addressed to one daemon with `--namespace`.
 
+`iii compose` is intentionally a verbless top-level daemon command, analogous to `iii console`.
+The `up` subcommand is the convenience path that also starts a project and, by default, its engine.
+
 ## The daemon
 
 ```text
