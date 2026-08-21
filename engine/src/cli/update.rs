@@ -240,7 +240,7 @@ pub async fn update_binary(
         && *actual >= latest_version
     {
         // Sync state to match reality so future checks are fast
-        state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
+        state.record_install(spec.name, actual.clone(), platform::asset_name(spec));
         return Ok(UpdateResult::AlreadyUpToDate {
             binary: spec.name.to_string(),
             version: actual.clone(),
@@ -248,19 +248,19 @@ pub async fn update_binary(
     }
 
     // Find asset for current platform
-    let asset_name = platform::asset_name(spec.name);
+    let asset_name = platform::asset_name(spec);
     let asset = github::find_asset(&release, &asset_name).ok_or_else(|| {
         UpdateError::Github(IiiGithubError::Network(
             super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
-                platform: platform::current_target().to_string(),
+                platform: platform::release_target(spec).to_string(),
             },
         ))
     })?;
 
     // Find checksum asset in release (separate asset, not appended URL)
     let checksum_url = if spec.has_checksum {
-        let checksum_name = platform::checksum_asset_name(spec.name);
+        let checksum_name = platform::checksum_asset_name(spec);
         github::find_asset(&release, &checksum_name).map(|a| a.browser_download_url.clone())
     } else {
         None
@@ -351,25 +351,25 @@ pub async fn self_update(
     if let Some(ref actual) = detected_version
         && *actual >= latest_version
     {
-        state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
+        state.record_install(spec.name, actual.clone(), platform::asset_name(spec));
         return Ok(UpdateResult::AlreadyUpToDate {
             binary: spec.name.to_string(),
             version: actual.clone(),
         });
     }
 
-    let asset_name = platform::asset_name(spec.name);
+    let asset_name = platform::asset_name(spec);
     let asset = github::find_asset(&release, &asset_name).ok_or_else(|| {
         UpdateError::Github(IiiGithubError::Network(
             super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
-                platform: platform::current_target().to_string(),
+                platform: platform::release_target(spec).to_string(),
             },
         ))
     })?;
 
     let checksum_url = if spec.has_checksum {
-        let checksum_name = platform::checksum_asset_name(spec.name);
+        let checksum_name = platform::checksum_asset_name(spec);
         github::find_asset(&release, &checksum_name).map(|a| a.browser_download_url.clone())
     } else {
         None
