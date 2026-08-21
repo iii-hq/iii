@@ -197,6 +197,7 @@ impl TraceDiskStore {
         })?;
         configure_connection(&mut connection)
             .map_err(|err| database_error(&database_path, "initialization", err))?;
+        ensure_incremental_vacuum(&mut connection, &database_path)?;
         set_private_permissions(&database_path, false)?;
 
         let epoch = read_epoch(&connection).unwrap_or(0);
@@ -1202,39 +1203,38 @@ fn ensure_capacity(
     let epoch = store.epoch.load(Ordering::Acquire) as i64;
     let mut candidate_statement = connection
         .prepare(
-            "SELECT trace_id, approx_bytes FROM trace_meta
+            "SELECT trace_id FROM trace_meta
              WHERE epoch = ?1 ORDER BY last_ingest_ns ASC, trace_id ASC",
         )
         .map_err(|err| database_error(&store.database_path, "eviction preparation", err))?;
-    let mut candidates = candidate_statement
-        .query_map(params![epoch], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .map_err(|err| database_error(&store.database_path, "eviction candidate query", err))?;
-    let mut deleted = Vec::new();
-    let mut remaining = current;
-    while let Some((candidate, candidate_bytes)) = candidates
-        .next()
-        .transpose()
+    let candidates: Vec<String> = candidate_statement
+        .query_map(params![epoch], |row| row.get::<_, String>(0))
+        .map_err(|err| database_error(&store.database_path, "eviction candidate query", err))?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|err| database_error(&store.database_path, "eviction candidate read", err))?
-    {
-        if protected.contains(&candidate) {
-            continue;
-        }
-        remaining = remaining.saturating_sub(candidate_bytes.max(0) as u64);
-        deleted.push(candidate);
-        if remaining <= target {
-            break;
-        }
-    }
-    drop(candidates);
+        .into_iter()
+        .filter(|candidate| !protected.contains(candidate))
+        .collect();
     drop(candidate_statement);
 
-    if !deleted.is_empty() {
+    // Evict oldest-first in bounded batches, re-measuring the DIRECTORY after
+    // each batch. `approx_bytes` accounting undercounts real file usage
+    // (indexes, attribute rows, free pages), so an accounting-driven pass can
+    // delete the entire archive while the file never shrinks. The measured
+    // size is the only ground truth here — and a batch that frees no bytes
+    // even after a full-VACUUM fallback means deleting more history cannot
+    // help, so the remaining traces are kept.
+    const EVICTION_BATCH_TRACES: usize = 64;
+    let mut measured = current;
+    let mut vacuum_fallback_used = false;
+    for chunk in candidates.chunks(EVICTION_BATCH_TRACES) {
+        if measured.saturating_add(incoming_bytes) <= target {
+            break;
+        }
         let tx = connection.transaction().map_err(|err| {
             database_error(&store.database_path, "eviction transaction start", err)
         })?;
-        for trace_id in &deleted {
+        for trace_id in chunk {
             tx.execute(
                 "DELETE FROM span_attributes WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
@@ -1256,11 +1256,47 @@ fn ensure_capacity(
         tx.commit().map_err(|err| {
             database_error(&store.database_path, "eviction transaction commit", err)
         })?;
+        // Vacuum BEFORE the checkpoint: in WAL mode the freed pages land in
+        // the write-ahead log, and only the checkpoint that follows returns
+        // them to the filesystem. The reverse order leaves the main file at
+        // full size until some unrelated later checkpoint.
         let _ =
-            connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;");
+            connection.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);");
+        let mut now_measured = directory_size(&store.directory).unwrap_or(measured);
+        if now_measured >= measured {
+            // No physical progress: free pages are not returning to the
+            // filesystem (e.g. a database that predates the incremental
+            // auto_vacuum migration). Try one full VACUUM; if the file still
+            // does not shrink, stop evicting instead of wiping the archive.
+            if vacuum_fallback_used {
+                break;
+            }
+            vacuum_fallback_used = true;
+            if let Err(error) = connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+            {
+                tracing::warn!(%error, "trace eviction full-VACUUM fallback failed");
+            }
+            now_measured = directory_size(&store.directory).unwrap_or(now_measured);
+            if now_measured >= measured {
+                measured = now_measured;
+                break;
+            }
+        }
+        measured = now_measured;
     }
 
-    let measured = directory_size(&store.directory).unwrap_or(current);
+    // Deleting rows can show phantom "progress" (a truncated WAL) while the
+    // main file never shrinks. If the directory is still over the cap after
+    // the last batch, spend the one full VACUUM before concluding failure.
+    if !vacuum_fallback_used
+        && measured.saturating_add(incoming_bytes) > max_bytes.saturating_add(tolerance)
+    {
+        if let Err(error) = connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);") {
+            tracing::warn!(%error, "trace eviction full-VACUUM fallback failed");
+        }
+    }
+
+    let measured = directory_size(&store.directory).unwrap_or(measured);
     if measured.saturating_add(incoming_bytes) > max_bytes.saturating_add(tolerance) {
         return Err(format!(
             "trace storage limit reached: {} bytes used, limit {} bytes, tolerance {} bytes",
@@ -1303,7 +1339,7 @@ fn clear_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> R
             [],
         )
         .map_err(|err| database_error(&store.database_path, "clear dropped-count update", err))?;
-    let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;");
+    let _ = connection.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);");
     store.record_success();
     Ok(())
 }
@@ -1349,7 +1385,7 @@ fn retain_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> 
                 database_error(&store.database_path, "retention metadata delete", err)
             })?;
     }
-    let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;");
+    let _ = connection.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);");
     let result = ensure_capacity(store, connection, 0, &[]);
     if result.is_ok() {
         store.record_success();
@@ -1357,13 +1393,47 @@ fn retain_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> 
     result
 }
 
+/// `PRAGMA auto_vacuum` only takes effect on a database created under it; on
+/// a pre-existing file it stays a header wish until a full VACUUM rewrites
+/// the database. Without this migration `PRAGMA incremental_vacuum` is a
+/// silent no-op: evictions delete rows but the file never shrinks, so a
+/// lowered disk cap deletes ever more history while `directory_size` stays
+/// over the limit. The mode is probed through a FRESH connection — on a
+/// connection that already issued the pragma, `PRAGMA auto_vacuum` reports
+/// the pending wish, not the file header. Runs once per database; a VACUUM
+/// of a large legacy file can take a while, which is still better than
+/// unbounded history loss.
+fn ensure_incremental_vacuum(
+    connection: &mut Connection,
+    database_path: &Path,
+) -> Result<(), String> {
+    const INCREMENTAL: i64 = 2;
+    let mode: i64 = Connection::open(database_path)
+        .and_then(|probe| probe.query_row("PRAGMA auto_vacuum", [], |row| row.get(0)))
+        .map_err(|err| format!("cannot read trace database auto_vacuum mode: {err}"))?;
+    if mode == INCREMENTAL {
+        return Ok(());
+    }
+    tracing::info!(
+        previous_mode = mode,
+        "migrating trace database to incremental auto_vacuum (one-time VACUUM)"
+    );
+    connection
+        .execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+        .map_err(|err| format!("cannot migrate trace database to incremental vacuum: {err}"))
+}
+
+// `auto_vacuum` MUST precede `journal_mode=WAL`: switching the journal mode
+// initializes the database header, and auto_vacuum declared after that point
+// is a silent no-op on the file (while reading the pragma back on the same
+// connection still reports the wished value).
 fn configure_connection(connection: &mut Connection) -> Result<(), String> {
     connection
         .execute_batch(
-            "PRAGMA journal_mode=WAL;
+            "PRAGMA auto_vacuum=INCREMENTAL;
+             PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA foreign_keys=ON;
-             PRAGMA auto_vacuum=INCREMENTAL;
              PRAGMA busy_timeout=1000;
              CREATE TABLE IF NOT EXISTS storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS spans (
@@ -1547,6 +1617,100 @@ mod tests {
             trace_state: None,
             pending: false,
         }
+    }
+
+    /// A database created before the incremental auto_vacuum pragma keeps
+    /// mode NONE forever unless a full VACUUM rewrites it; without the
+    /// migration every `incremental_vacuum` is a silent no-op and evicted
+    /// space never returns to the filesystem.
+    #[test]
+    fn legacy_database_without_incremental_vacuum_is_migrated_on_open() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let database_path = directory.path().join("traces.sqlite3");
+        {
+            let legacy = Connection::open(&database_path).expect("create legacy database");
+            legacy
+                .execute_batch(
+                    "CREATE TABLE storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+                )
+                .expect("create legacy schema");
+            let mode: i64 = legacy
+                .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+                .expect("read legacy vacuum mode");
+            assert_eq!(mode, 0, "legacy fixture must start without auto_vacuum");
+        }
+
+        let config = test_config(directory.path());
+        let store = TraceDiskStore::open(&config).expect("open trace store over legacy file");
+        let probe = Connection::open(&database_path).expect("open probe connection");
+        let mode: i64 = probe
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .expect("read migrated vacuum mode");
+        assert_eq!(mode, 2, "open must migrate the database to incremental");
+        store.shutdown();
+    }
+
+    /// Shrinking the disk cap below the current physical size must evict
+    /// oldest traces until the FILE fits again — measured on disk, not by
+    /// row accounting — keep the newest history, and leave the archive
+    /// healthy for the next write.
+    #[test]
+    fn cap_shrink_evicts_oldest_shrinks_file_and_recovers() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let mut config = test_config(directory.path());
+        config.max_disk_bytes = 512 * 1024 * 1024;
+        let store = TraceDiskStore::open(&config).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(512, 64 * 1024 * 1024));
+        store.attach_hot_storage(&hot);
+
+        // ~24 MiB of history across distinct traces, oldest ingested first.
+        for index in 0..24 {
+            let mut span = test_span(&format!("trace-{index:02}"), "span", "bulk");
+            span.attributes = vec![("payload".to_string(), "x".repeat(1024 * 1024))];
+            hot.add_spans(vec![span]);
+            store.flush().expect("persist bulk trace");
+        }
+        let before = directory_size(directory.path()).expect("measure populated directory");
+        assert!(
+            before > 16 * 1024 * 1024,
+            "fixture must outgrow the new cap"
+        );
+
+        // Shrink the cap far below the populated size, then land a fresh
+        // write: capacity enforcement must evict old traces and succeed.
+        let shrunk = TraceStorageConfig {
+            max_disk_bytes: 8 * 1024 * 1024,
+            ..test_config(directory.path())
+        };
+        store.update_limits(&shrunk);
+        let mut fresh = test_span("trace-fresh", "span", "fresh");
+        fresh.attributes = vec![("payload".to_string(), "y".repeat(64 * 1024))];
+        hot.add_spans(vec![fresh]);
+        store
+            .flush()
+            .expect("write after cap shrink must evict and succeed");
+
+        let after = directory_size(directory.path()).expect("measure evicted directory");
+        assert!(
+            after < before / 2,
+            "eviction must return space to the filesystem ({before} -> {after})"
+        );
+        assert_eq!(store.status().archive, "healthy");
+
+        let survivors = store.get_spans().expect("read survivors");
+        assert!(
+            survivors.iter().any(|span| span.trace_id == "trace-fresh"),
+            "the fresh trace must survive"
+        );
+        assert!(
+            !survivors.is_empty(),
+            "eviction must not wipe the entire archive"
+        );
+        assert!(
+            !survivors.iter().any(|span| span.trace_id == "trace-00"),
+            "the oldest trace must be evicted first"
+        );
+        store.shutdown();
     }
 
     #[test]
