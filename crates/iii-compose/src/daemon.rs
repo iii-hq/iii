@@ -742,6 +742,8 @@ pub const DAEMON_WORKER_NAME: &str = "compose";
 /// with no copy of what it said before. The rename is atomic within a
 /// filesystem, so a reader sees the old file or the new one.
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+
     let permissions = std::fs::metadata(path)
         .map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
@@ -749,14 +751,21 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
         })?
         .permissions();
     let temp = path.with_extension(format!("compose-edit-{}.tmp", uuid::Uuid::new_v4()));
-    if let Err(source) = std::fs::write(&temp, text) {
+    let mut file = open_private_temp(&temp).map_err(|source| ComposeError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    if let Err(source) = file.set_permissions(permissions) {
+        drop(file);
         let _ = std::fs::remove_file(&temp);
         return Err(ComposeError::Io { path: temp, source });
     }
-    if let Err(source) = std::fs::set_permissions(&temp, permissions) {
+    if let Err(source) = file.write_all(text.as_bytes()) {
+        drop(file);
         let _ = std::fs::remove_file(&temp);
         return Err(ComposeError::Io { path: temp, source });
     }
+    drop(file);
     std::fs::rename(&temp, path).map_err(|source| {
         let _ = std::fs::remove_file(&temp);
         ComposeError::Io {
@@ -764,6 +773,18 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
             source,
         }
     })
+}
+
+/// Creates an empty, collision-safe staging file, with mode 0600 on Unix.
+fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 #[cfg(test)]
@@ -785,5 +806,19 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_staging_file_is_private_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.staging");
+
+        let file = open_private_temp(&path).unwrap();
+
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

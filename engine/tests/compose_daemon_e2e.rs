@@ -195,6 +195,21 @@ async fn wait_for_worker_state(daemon: &Daemon, namespace: &str, name: &str, reg
     .unwrap_or_else(|_| panic!("worker {namespace}/{name} did not reach registered={registered}"));
 }
 
+fn operation_containers(operation: &Value) -> Vec<&str> {
+    let mut names = operation["containers"]
+        .as_array()
+        .expect("operation should report containers")
+        .iter()
+        .map(|container| {
+            container["container"]
+                .as_str()
+                .expect("container result should have a name")
+        })
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
+}
+
 const TWO_WORKERS: &str = r#"
 namespace: orders
 startup_timeout: 2s
@@ -369,6 +384,7 @@ async fn remove_edits_only_the_named_worker_and_restarts_the_project() {
     let daemon = start_daemon(port).await;
 
     let tmp = tempfile::tempdir().unwrap();
+    let foundation_started = tmp.path().join("workers/foundation/started");
     let keep_started = tmp.path().join("workers/keep/started");
     let discard_started = tmp.path().join("workers/discard/started");
     let file = project(
@@ -378,8 +394,13 @@ namespace: removal
 startup_timeout: 3s
 stop_timeout: 100ms
 containers:
+  foundation:
+    worker: path://./workers/foundation
+    scripts:
+      run: "touch started && sleep 30"
   keep:
     worker: path://./workers/keep
+    depends_on: [foundation]
     scripts:
       run: "touch started && sleep 30"
   discard:
@@ -387,7 +408,7 @@ containers:
     scripts:
       run: "touch started && sleep 30"
 "#,
-        &["keep", "discard"],
+        &["foundation", "keep", "discard"],
     );
 
     // Each child creates its marker only after compose has captured the
@@ -399,25 +420,36 @@ containers:
         json!({ "file": file.to_str().unwrap() }),
     );
     let ready = async {
-        wait_for_start_markers(&[keep_started.as_path(), discard_started.as_path()]).await;
-        let keep = register_test_worker(port, "removal", "keep");
+        wait_for_start_markers(&[foundation_started.as_path(), discard_started.as_path()]).await;
+        let foundation = register_test_worker(port, "removal", "foundation");
         let discard = register_test_worker(port, "removal", "discard");
-        wait_for_worker_state(&daemon, "removal", "keep", true).await;
+        wait_for_worker_state(&daemon, "removal", "foundation", true).await;
         wait_for_worker_state(&daemon, "removal", "discard", true).await;
-        (keep, discard)
+        wait_for_start_markers(&[keep_started.as_path()]).await;
+        let keep = register_test_worker(port, "removal", "keep");
+        wait_for_worker_state(&daemon, "removal", "keep", true).await;
+        (foundation, keep, discard)
     };
-    let (up, (keep, discard)) = tokio::join!(up, ready);
+    let (up, (foundation, keep, discard)) = tokio::join!(up, ready);
     let up = up.expect("compose::up should answer");
     assert_eq!(up["status"], "ok", "project did not start: {up}");
+    assert_eq!(
+        operation_containers(&up),
+        vec!["discard", "foundation", "keep"],
+        "initial up used the wrong worker set: {up}"
+    );
 
     // Let the engine release the readiness identities. The child processes
     // remain active and are the processes remove must stop during its down.
+    foundation.shutdown_async().await;
     keep.shutdown_async().await;
     discard.shutdown_async().await;
+    wait_for_worker_state(&daemon, "removal", "foundation", false).await;
     wait_for_worker_state(&daemon, "removal", "keep", false).await;
     wait_for_worker_state(&daemon, "removal", "discard", false).await;
 
-    // The next marker can only come from the process started by remove's up.
+    // The next markers can only come from processes started by remove's up.
+    std::fs::remove_file(&foundation_started).expect("remove first foundation start marker");
     std::fs::remove_file(&keep_started).expect("remove first keep start marker");
 
     let remove = call(
@@ -429,12 +461,15 @@ containers:
         }),
     );
     let ready = async {
+        wait_for_start_markers(&[foundation_started.as_path()]).await;
+        let foundation = register_test_worker(port, "removal", "foundation");
+        wait_for_worker_state(&daemon, "removal", "foundation", true).await;
         wait_for_start_markers(&[keep_started.as_path()]).await;
         let keep = register_test_worker(port, "removal", "keep");
         wait_for_worker_state(&daemon, "removal", "keep", true).await;
-        keep
+        (foundation, keep)
     };
-    let (result, keep) = tokio::join!(remove, ready);
+    let (result, (foundation, keep)) = tokio::join!(remove, ready);
     let result = result.expect("compose::remove should answer");
 
     assert_eq!(result["status"], "ok", "{result}");
@@ -442,6 +477,11 @@ containers:
     assert_eq!(result["changed"], true, "{result}");
     assert_eq!(result["down"]["status"], "ok", "{result}");
     assert_eq!(result["up"]["status"], "ok", "{result}");
+    assert_eq!(
+        operation_containers(&result["up"]),
+        vec!["foundation", "keep"],
+        "restart used the wrong worker set: {result}"
+    );
 
     let edited = std::fs::read_to_string(&file).expect("read edited compose file");
     assert!(
@@ -449,10 +489,15 @@ containers:
         "kept worker was removed: {edited}"
     );
     assert!(
+        edited.contains("    depends_on: [foundation]"),
+        "retained dependency changed: {edited}"
+    );
+    assert!(
         !edited.contains("  discard:"),
         "named worker survived: {edited}"
     );
 
+    foundation.shutdown_async().await;
     keep.shutdown_async().await;
     daemon.shutdown().await;
 }
