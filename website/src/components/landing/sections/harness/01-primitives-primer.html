@@ -1,0 +1,42 @@
+<!-- PRIMITIVES PRIMER — sits between the hero and the feature blocks. The hero
+     above it, and every feature block below it, talks in workers, triggers,
+     and functions; a visitor arriving from another harness has never seen those
+     words used this way, so this block defines them once, up front, and says
+     what they buy: every part of an application interoperating with no
+     integration work. The "primitives, not features" block near the bottom of
+     HarnessFeatures.astro is the ARGUMENT for that design — this is the
+     DEFINITION, and it comes first because the rest of the page depends on it.
+     Reuses .hz-grid/.hz-cell (with 3 cells, cell 3 drops the right border and
+     all three drop the bottom one, so the row needs no extra CSS). -->
+<section class="hz-section hz-body" id="primitives" aria-label="The three iii primitives">
+  <header class="hz-section-head">
+    <h2 class="hz-section-title">
+      <span class="accent">three primitives.</span>
+      <span class="mute">the whole abstraction, in one screen.</span>
+    </h2>
+  </header>
+
+  <div class="hz-lede">
+    <p class="hz-emph">every part of a system on iii — your services, your database, a nightly job, a browser tab, the agent itself — is described with the same three things. that's the abstraction, and it's why every part of an application interoperates with <span class="accent">zero integration work.</span></p>
+    <p>never seen iii before? this is the entire vocabulary:</p>
+  </div>
+
+  <div class="hz-grid">
+    <div class="hz-cell">
+      <h3>worker <span class="accent">·</span> hosts work</h3>
+      <p>any process that connects to the engine: a python script, a node service, a rust binary, a browser tab, an HTTP API you already run — or the harness on this page. it connects and publishes what it can do.</p>
+    </div>
+    <div class="hz-cell">
+      <h3>function <span class="accent">·</span> does work</h3>
+      <p>one named capability a worker exposes, with a typed schema — <code>payments::charge::record</code>. the id is the entire contract: a caller never learns where it runs or what language it's written in.</p>
+    </div>
+    <div class="hz-cell">
+      <h3>trigger <span class="accent">·</span> causes work</h3>
+      <p>the reason a function runs: a schedule, a state change, an HTTP request, an event from another worker. it's registered engine-side, so it fires whether or not anyone — or any agent — is watching.</p>
+    </div>
+  </div>
+
+  <div class="hz-lede">
+    <p>so nothing here needs glue. a function registered a second ago is already callable by every worker and every agent on the engine, and any trigger can cause it — no adapter, no client library per integration, no integration ticket. queues, sandboxes, sub-agents, observability, your business logic: all of it is these three, composed.</p>
+  </div>
+</section>

@@ -1,0 +1,131 @@
+---
+// ENGINE ARTICLE — the single-column, blog-style walkthrough of iii's
+// architecture (/engine). Unlike /harness (a comparative landing page, two
+// columns, one feature per screen) this is one long column of prose that
+// leads with the same harness pitch as /harness's hero, then explains the
+// engine underneath it — the primitives, the protocol, the registry, and
+// the harness worker — in reading order, the way a blog post would. It's an
+// Astro component rather than a raw fragment for the same reason
+// HarnessFeatures is: the one console break needs a real <HarnessConsole>
+// element.
+import HarnessConsole from '../../HarnessConsole.astro'
+---
+
+<article class="en-article">
+  <header class="en-hero">
+    <p class="en-eyebrow">the harness <span class="dot"></span></p>
+    <h1 class="en-title">there are many agent harnesses. this one runs on a live engine.</h1>
+  </header>
+
+  <div class="en-hero-video">
+    <iframe
+      src="https://player.mux.com/rpdfLwndjoEJhD02jpgFQvMoKb3400uEPV00aBVNUTn8QY"
+      class="en-hero-video-frame"
+      style="width: 100%; border: none; aspect-ratio: 53/30;"
+      allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+      allowfullscreen
+    ></iframe>
+  </div>
+
+  <section class="en-section" id="harness">
+    <h2>the harness</h2>
+    <p>most harnesses let you work on your system, but every time you need to make a change you need to rebuild context from scratch because the harness sits on the outside.</p>
+    <p>iii is different. with iii, the harness is just one part of the backend. workers, triggers, and functions on <strong>one protocol</strong>, so the agent builds on what's already running instead of recreating it every session.</p>
+    <p>what makes that possible is what's underneath it: one engine, built from three primitives. here's how it works.</p>
+  </section>
+
+  <section class="en-section" id="primitives">
+    <h2>the iii engine primitives: worker, function, trigger</h2>
+    <p>everything iii runs on reduces to three things. a <strong>worker</strong> hosts work. a <strong>function</strong> does it. a <strong>trigger</strong> causes it. that's the whole vocabulary — nothing in iii is a fourth kind of thing.</p>
+    <p>think of it like react's component model, but for traditional and agentic services — a minimal, common mental model for building systems instead of a different shape for every service you stand up. less cognitive complexity, fewer tokens spent describing the system, and something that's easier to reason about and scale, because everything you're looking at is one of the same three things.</p>
+
+    <div class="en-primitives-row">
+      <div class="en-prim">
+        <p class="en-prim-name">worker</p>
+        <p class="en-prim-doc">something hosts work</p>
+        <p class="en-prim-eg">any process that connects to the engine — a python script, a rust binary, an HTTP service you already run, a browser tab, the harness itself. it connects and publishes what it can do.</p>
+      </div>
+      <div class="en-prim">
+        <p class="en-prim-name">function</p>
+        <p class="en-prim-doc">something does it</p>
+        <p class="en-prim-eg">one named capability a worker exposes, with a typed schema. the id is the entire contract — a caller never learns where it runs or what language it's written in.</p>
+      </div>
+      <div class="en-prim">
+        <p class="en-prim-name">trigger</p>
+        <p class="en-prim-doc">something causes it</p>
+        <p class="en-prim-eg">the reason a function runs: a schedule, a state change, an HTTP request, an event from another worker. registered engine-side, so it fires with no one watching.</p>
+      </div>
+    </div>
+
+    <p>keeping the vocabulary that small is what buys interoperability nobody has to build. every part of an application — a service you already run, a database, a nightly job, a browser tab, an agent — enters the system as one of those three shapes, so all of it can already reach all the rest: any worker can call any function the moment it registers, and any trigger can cause any of them. no adapters, no client library per pair of services, no integration work. the interop comes from the shape, not from the wiring.</p>
+
+    <p>everything after this section is those same three seen from a different angle. the protocol is how anything at all can speak them; the live surface is the list of the ones running right now; the registry is how you install more; and the harness is a worker with functions and triggers like any other. that last one is why an agent here can extend the system it's running inside instead of only describing it.</p>
+  </section>
+
+  <section class="en-section" id="protocol">
+    <h2>protocol</h2>
+    <p>the primitives are only useful if anything can speak them. the iii protocol allows any runtime, language, process, endpoint, browser, or device to become a worker and expose its functions and reactive triggers through the same typed interface.</p>
+    <p>a python process, a browser tab, an existing HTTP service, a Rust binary — none of them need to agree on a framework. they only need to agree on the protocol. that's what makes "everything is a worker" true in practice and not just in theory.</p>
+  </section>
+
+  <section class="en-section" id="surface">
+    <h2>live system surface</h2>
+    <p>as workers connect, their functions and triggers become part of a live, typed catalog that the rest of the system can immediately discover and use. nothing has to be pre-declared, documented separately, or kept in sync by hand — the catalog <em>is</em> the system, as it exists right now.</p>
+    <p>developers and agents operate against that same model. there's no separate "agent view" of the system that can drift from the real one — an agent querying what's available sees exactly what a developer would see, because it's the same registry answering both.</p>
+  </section>
+
+  <section class="en-section" id="connections">
+    <h2>worker connection + communication management</h2>
+    <p>underneath the catalog, the engine manages worker connections, discovery, routing, serialization, and communication — the plumbing every distributed system needs and every team ends up half-building themselves.</p>
+    <p>workers can connect, disconnect, and change while the system is running. a worker restarting doesn't take down the functions and triggers around it; it reconnects, re-registers, and the rest of the system keeps calling it exactly as before.</p>
+  </section>
+
+  <div class="en-console-break">
+    <HarnessConsole
+      status="8% · 19k/1.0M"
+      triggers="1 trigger registered"
+      workers={[{ label: 'http' }, { label: 'state' }, { label: 'database' }, { label: 'queue' }, { label: 'fraud-check', on: true }]}
+    >
+      <div class="hc-line hc-prompt"><span class="ghost">$ </span>install the fraud-check worker</div>
+      <div class="hc-line hc-muted">found fraud-check in the registry · python · 2 functions, 1 trigger</div>
+      <div class="hc-fn"><div class="sig">fraud::score {'{'} charge_id, amount, signals {'}'}</div><div class="doc">Score a charge 0–1 before settle</div></div>
+      <div class="hc-fn"><div class="sig">fraud::review::queue {'{'} score {'}'}</div><div class="doc">Route high-risk charges to review</div></div>
+      <div class="hc-worker"><span class="dot"></span><span class="name">fraud-check</span><span class="kind">python</span><span class="tag">LIVE</span></div>
+      <div class="hc-line hc-ok">installed · connected · already part of the catalog</div>
+    </HarnessConsole>
+  </div>
+
+  <section class="en-section" id="registry">
+    <h2>the registry</h2>
+    <p>npm, but for running services instead of libraries. install a worker and its capabilities become part of the live system — not a dependency in a lockfile, an actual process joining the engine with its functions and triggers immediately callable.</p>
+    <p>that's the difference between installing a library and installing a worker: a library gives you code you call. a worker gives you a running thing everything else on the engine can call, the moment it connects.</p>
+  </section>
+
+  <section class="en-section" id="harness-worker">
+    <h2>the harness worker</h2>
+    <p>the harness itself is just a worker — one with dependencies on several other workers. that's the whole trick: it doesn't sit outside the system looking in, it's a participant with the same registry access as everything else.</p>
+    <p>that's what gives an agent an always up-to-date view of the system it's operating in. it can discover the functions and triggers available right now, use them, compose them into new capability, and extend the system with new workers and capabilities — all through the same protocol everything else already speaks.</p>
+  </section>
+
+  <section class="en-section en-total" id="in-total">
+    <h2>in total, this provides</h2>
+    <div class="en-total-grid">
+      <div class="en-total-item">
+        <p class="en-total-name">live composability</p>
+        <p class="en-total-doc">functions and triggers already running compose into new capability without anyone wiring them together by hand.</p>
+      </div>
+      <div class="en-total-item">
+        <p class="en-total-name">live extensibility</p>
+        <p class="en-total-doc">register a worker and it's callable by everything else on the engine — no reload, no rebuild, no restart.</p>
+      </div>
+      <div class="en-total-item">
+        <p class="en-total-name">live discoverability</p>
+        <p class="en-total-doc">the registry and the live catalog mean every function and trigger is visible, with schemas, and always current.</p>
+      </div>
+      <div class="en-total-item">
+        <p class="en-total-name">live observability</p>
+        <p class="en-total-doc">the harness worker's view of the system is the system's actual state, not a snapshot that can drift from it.</p>
+      </div>
+    </div>
+  </section>
+</article>
