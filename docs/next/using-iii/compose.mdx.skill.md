@@ -88,7 +88,8 @@ up: 1 of 1 changed in 250ms
 
 The active engine log rotates at 10 MiB. Compose keeps `engine.log.1` through `engine.log.3`, so one
 namespace uses at most about 40 MiB for engine logs. The printed follow command keeps reading the
-active `engine.log` across rotations.
+active `engine.log` across rotations. Compose strips terminal control sequences before persisting
+the engine output.
 
 A project that does not start ends the command with `PROJECT_DID_NOT_START`. Rollback has already
 stopped whatever came up, so there is nothing left to supervise.

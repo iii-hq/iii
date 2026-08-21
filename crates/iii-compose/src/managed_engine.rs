@@ -59,7 +59,10 @@ impl ManagedEngine {
             path: parent.to_path_buf(),
             source,
         })?;
-        owner_only(parent);
+        owner_only(parent).map_err(|source| ComposeError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
 
         let log = RotatingLog::open(log_path, ENGINE_LOG_MAX_BYTES, ENGINE_LOG_ARCHIVES).map_err(
             |source| ComposeError::Io {
@@ -152,8 +155,8 @@ impl LogCapture {
 /// stdout. Readers keep draining even if disk writes fail, avoiding a full pipe
 /// that would otherwise stall the engine itself.
 fn capture_output(output: ChildOutput, log: RotatingLog) -> LogCapture {
-    let (chunks_tx, mut chunks_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-    for stream in [
+    let (chunks_tx, mut chunks_rx) = tokio::sync::mpsc::channel::<(usize, Vec<u8>)>(64);
+    for (stream_id, stream) in [
         output
             .stdout
             .map(|stream| Box::new(stream) as Box<dyn tokio::io::AsyncRead + Unpin + Send>),
@@ -163,13 +166,19 @@ fn capture_output(output: ChildOutput, log: RotatingLog) -> LogCapture {
     ]
     .into_iter()
     .flatten()
+    .enumerate()
     {
         let chunks_tx = chunks_tx.clone();
         tokio::spawn(async move {
             let mut stream = stream;
             let mut buffer = vec![0_u8; 8 * 1024];
             while let Ok(read) = stream.read(&mut buffer).await {
-                if read == 0 || chunks_tx.send(buffer[..read].to_vec()).await.is_err() {
+                if read == 0
+                    || chunks_tx
+                        .send((stream_id, buffer[..read].to_vec()))
+                        .await
+                        .is_err()
+                {
                     break;
                 }
             }
@@ -180,8 +189,11 @@ fn capture_output(output: ChildOutput, log: RotatingLog) -> LogCapture {
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
     tokio::task::spawn_blocking(move || {
         let mut log = Some(log);
-        while let Some(chunk) = chunks_rx.blocking_recv() {
+        let mut sanitizers = [TerminalSanitizer::default(), TerminalSanitizer::default()];
+        while let Some((stream_id, chunk)) = chunks_rx.blocking_recv() {
+            let chunk = sanitizers[stream_id].sanitize(&chunk);
             if let Some(sink) = log.as_mut()
+                && !chunk.is_empty()
                 && sink.write_bounded(&chunk).is_err()
             {
                 log = None;
@@ -194,6 +206,115 @@ fn capture_output(output: ChildOutput, log: RotatingLog) -> LogCapture {
     });
 
     LogCapture(done_rx)
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum TerminalState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    Osc,
+    OscEscape,
+    ControlString,
+    ControlStringEscape,
+}
+
+/// Removes terminal control sequences while preserving ordinary UTF-8 output.
+///
+/// State is retained across pipe reads because an ANSI/OSC sequence or a UTF-8
+/// scalar can be split at any byte boundary. Unterminated control strings stay
+/// suppressed, which fails closed instead of letting their payload reach a
+/// terminal through `tail -f` or an error summary.
+#[derive(Debug, Default)]
+struct TerminalSanitizer {
+    state: TerminalState,
+    utf8: Vec<u8>,
+    utf8_expected: usize,
+}
+
+impl TerminalSanitizer {
+    fn sanitize(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut clean = Vec::with_capacity(bytes.len());
+
+        for &byte in bytes {
+            if self.state == TerminalState::Ground && !self.utf8.is_empty() {
+                self.utf8.push(byte);
+                if self.utf8.len() == self.utf8_expected {
+                    if let Ok(text) = std::str::from_utf8(&self.utf8)
+                        && text.chars().all(|character| !character.is_control())
+                    {
+                        clean.extend_from_slice(&self.utf8);
+                    }
+                    self.utf8.clear();
+                    self.utf8_expected = 0;
+                }
+                continue;
+            }
+
+            match self.state {
+                TerminalState::Ground => match byte {
+                    0x1b => self.state = TerminalState::Escape,
+                    b'\n' | b'\t' | 0x20..=0x7e => clean.push(byte),
+                    0xc2..=0xdf => self.start_utf8(byte, 2),
+                    0xe0..=0xef => self.start_utf8(byte, 3),
+                    0xf0..=0xf4 => self.start_utf8(byte, 4),
+                    _ => {}
+                },
+                TerminalState::Escape => {
+                    self.state = match byte {
+                        0x1b => TerminalState::Escape,
+                        b'[' => TerminalState::Csi,
+                        b']' => TerminalState::Osc,
+                        b'P' | b'X' | b'^' | b'_' => TerminalState::ControlString,
+                        _ => TerminalState::Ground,
+                    };
+                }
+                TerminalState::Csi => {
+                    if byte == 0x1b {
+                        self.state = TerminalState::Escape;
+                    } else if (0x40..=0x7e).contains(&byte) {
+                        self.state = TerminalState::Ground;
+                    }
+                }
+                TerminalState::Osc => match byte {
+                    0x07 => self.state = TerminalState::Ground,
+                    0x1b => self.state = TerminalState::OscEscape,
+                    _ => {}
+                },
+                TerminalState::OscEscape => {
+                    self.state = match byte {
+                        b'\\' => TerminalState::Ground,
+                        0x1b => TerminalState::OscEscape,
+                        _ => TerminalState::Osc,
+                    };
+                }
+                TerminalState::ControlString => {
+                    if byte == 0x1b {
+                        self.state = TerminalState::ControlStringEscape;
+                    }
+                }
+                TerminalState::ControlStringEscape => {
+                    self.state = match byte {
+                        b'\\' => TerminalState::Ground,
+                        0x1b => TerminalState::ControlStringEscape,
+                        _ => TerminalState::ControlString,
+                    };
+                }
+            }
+        }
+
+        clean
+    }
+
+    fn start_utf8(&mut self, byte: u8, expected: usize) {
+        self.utf8.push(byte);
+        self.utf8_expected = expected;
+    }
+}
+
+fn sanitize_terminal_output(bytes: &[u8]) -> Vec<u8> {
+    TerminalSanitizer::default().sanitize(bytes)
 }
 
 struct RotatingLog {
@@ -213,9 +334,22 @@ impl RotatingLog {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let file = options.open(path)?;
-        owner_only(path);
-        let size = file.metadata()?.len();
+        let mut file = options.open(path)?;
+        owner_only(path)?;
+        let mut size = file.metadata()?.len();
+        if size > 0 && size < max_bytes {
+            file.seek(SeekFrom::Start(0))?;
+            let mut existing = Vec::with_capacity(size as usize);
+            file.read_to_end(&mut existing)?;
+            let clean = sanitize_terminal_output(&existing);
+            if clean != existing {
+                file.set_len(0)?;
+                file.seek(SeekFrom::Start(0))?;
+                file.write_all(&clean)?;
+                file.flush()?;
+                size = clean.len() as u64;
+            }
+        }
         let mut log = Self {
             path: path.to_path_buf(),
             file,
@@ -267,19 +401,20 @@ impl RotatingLog {
                 options.mode(0o600);
             }
             let mut archive_file = options.open(&archive)?;
-            owner_only(&archive);
+            owner_only(&archive)?;
 
             let start = self.size.saturating_sub(self.max_bytes);
             self.file.seek(SeekFrom::Start(start))?;
             let mut remaining = self.max_bytes.min(self.size);
             let mut buffer = [0_u8; 8 * 1024];
+            let mut sanitizer = TerminalSanitizer::default();
             while remaining > 0 {
                 let limit = remaining.min(buffer.len() as u64) as usize;
                 let count = self.file.read(&mut buffer[..limit])?;
                 if count == 0 {
                     break;
                 }
-                archive_file.write_all(&buffer[..count])?;
+                archive_file.write_all(&sanitizer.sanitize(&buffer[..count]))?;
                 remaining -= count as u64;
             }
             archive_file.flush()?;
@@ -320,7 +455,9 @@ fn log_tail(path: &Path) -> Option<String> {
     const LINES: usize = 5;
     const WIDTH: usize = 240;
 
-    let text = std::fs::read_to_string(path).ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    let clean = sanitize_terminal_output(&bytes);
+    let text = String::from_utf8_lossy(&clean);
     let tail: Vec<&str> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -341,17 +478,19 @@ fn log_tail(path: &Path) -> Option<String> {
 }
 
 #[cfg(unix)]
-fn owner_only(path: &Path) {
+fn owner_only(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let _ = std::fs::set_permissions(
+    std::fs::set_permissions(
         path,
         std::fs::Permissions::from_mode(if path.is_dir() { 0o700 } else { 0o600 }),
-    );
+    )
 }
 
 #[cfg(not(unix))]
-fn owner_only(_path: &Path) {}
+fn owner_only(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -397,6 +536,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn log_tail_strips_terminal_escape_sequences_from_existing_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("engine.log");
+        std::fs::write(
+            &log,
+            "\u{1b}[31mred\u{1b}[0m\n\u{1b}]2;forged title\u{7}visible\n",
+        )
+        .unwrap();
+
+        assert_eq!(log_tail(&log).as_deref(), Some("  red\n  visible"));
+    }
+
+    #[test]
+    fn terminal_sanitizer_tracks_escape_and_utf8_state_across_chunks() {
+        let mut sanitizer = TerminalSanitizer::default();
+        let mut clean = Vec::new();
+        for chunk in [
+            b"\x1b[3".as_slice(),
+            b"1mred\x1b".as_slice(),
+            b"[0m \x1b]2;forged".as_slice(),
+            b" title\x1b".as_slice(),
+            b"\\visible caf\xc3".as_slice(),
+            b"\xa9\n".as_slice(),
+        ] {
+            clean.extend(sanitizer.sanitize(chunk));
+        }
+
+        assert_eq!(String::from_utf8(clean).unwrap(), "red visible café\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_an_existing_log_hardens_its_permissions() {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("engine.log");
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o644)
+            .open(&log)
+            .unwrap();
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let _log = RotatingLog::open(&log, ENGINE_LOG_MAX_BYTES, ENGINE_LOG_ARCHIVES).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(log).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn engine_receives_config_and_captures_both_output_streams() {
@@ -408,7 +602,7 @@ mod tests {
         let log = dir.path().join("engine.log");
         std::fs::write(
             &script,
-            "#!/bin/sh\nprintf 'args:%s\\n' \"$*\"\nprintf 'engine stderr\\n' >&2\nexit 7\n",
+            "#!/bin/sh\nprintf 'args:%s\\n' \"$*\"\nprintf '\\033[31mengine stdout\\033[0m\\n'\nprintf '\\033]2;forged title\\007engine stderr\\n' >&2\nexit 7\n",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -430,6 +624,14 @@ mod tests {
             output.contains("engine stderr"),
             "stderr missing from {output:?}"
         );
+        assert!(
+            output.contains("engine stdout"),
+            "stdout missing from {output:?}"
+        );
+        assert!(
+            !output.contains('\u{1b}') && !output.contains("forged title"),
+            "terminal escape sequence was persisted in {output:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -445,7 +647,7 @@ mod tests {
         let log = dir.path().join("engine.log");
         std::fs::write(
             &script,
-            "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=11 2>/dev/null\n",
+            "#!/bin/sh\ndd if=/dev/zero bs=1048576 count=11 2>/dev/null | tr '\\000' x\n",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
