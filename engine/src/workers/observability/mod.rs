@@ -5360,7 +5360,11 @@ mod tests {
         assert!(t3_spans.is_empty());
     }
 
+    // Serial: eviction protects dirty spans whenever the GLOBAL archive is
+    // attached (`evict_to_capacity` consults it), so this must not overlap
+    // the `#[serial]` archive tests.
     #[test]
+    #[serial]
     fn test_span_storage_eviction() {
         let storage = otel::InMemorySpanStorage::new(3);
         let span1 = make_span("t1", "s1", None, "first", "svc", 100, 200, "ok", vec![]);
@@ -6290,7 +6294,9 @@ mod tests {
     // Span storage: eviction updates secondary index correctly
     // =========================================================================
 
+    // Serial: same global-archive sensitivity as `test_span_storage_eviction`.
     #[test]
+    #[serial]
     fn test_span_storage_eviction_index_integrity() {
         let storage = otel::InMemorySpanStorage::new(2);
 

@@ -66,6 +66,21 @@ const INTERNAL_SPAN_PREDICATE_SQL: &str = "EXISTS (
       )
 )";
 
+/// Return freed pages to the filesystem. `PRAGMA incremental_vacuum` is a
+/// lazy statement that only releases pages as its (empty) result rows are
+/// stepped — running it through `execute_batch` frees roughly one page —
+/// so it must be drained to completion, and the WAL checkpointed after it
+/// so the shrunken image reaches the main file.
+fn reclaim_free_pages(connection: &Connection) -> rusqlite::Result<()> {
+    let mut vacuum = connection.prepare("PRAGMA incremental_vacuum")?;
+    let mut rows = vacuum.query([])?;
+    while rows.next()?.is_some() {}
+    drop(rows);
+    drop(vacuum);
+    connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    Ok(())
+}
+
 fn database_error(database_path: &Path, operation: &str, error: impl std::fmt::Display) -> String {
     format!(
         "trace storage {operation} failed for '{}': {error}",
@@ -1189,6 +1204,15 @@ fn ensure_capacity(
         return Ok(());
     }
 
+    // Reclaim the write-ahead log before deleting anything: accumulated WAL
+    // frames count toward the measured directory but represent no history,
+    // and reclaiming them alone can put the directory back under the cap.
+    let _ = reclaim_free_pages(connection);
+    let current = directory_size(&store.directory).unwrap_or(current);
+    if current.saturating_add(incoming_bytes) <= ((max_bytes as f64) * CAP_HIGH_WATERMARK) as u64 {
+        return Ok(());
+    }
+
     let mut protected: HashSet<String> = batch.iter().map(|span| span.trace_id.clone()).collect();
     if let Some(hot) = store
         .hot
@@ -1203,38 +1227,72 @@ fn ensure_capacity(
     let epoch = store.epoch.load(Ordering::Acquire) as i64;
     let mut candidate_statement = connection
         .prepare(
-            "SELECT trace_id FROM trace_meta
+            "SELECT trace_id, approx_bytes FROM trace_meta
              WHERE epoch = ?1 ORDER BY last_ingest_ns ASC, trace_id ASC",
         )
         .map_err(|err| database_error(&store.database_path, "eviction preparation", err))?;
-    let candidates: Vec<String> = candidate_statement
-        .query_map(params![epoch], |row| row.get::<_, String>(0))
+    let candidates: Vec<(String, u64)> = candidate_statement
+        .query_map(params![epoch], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|err| database_error(&store.database_path, "eviction candidate query", err))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| database_error(&store.database_path, "eviction candidate read", err))?
         .into_iter()
-        .filter(|candidate| !protected.contains(candidate))
+        .filter(|(candidate, _)| !protected.contains(candidate))
+        .map(|(candidate, bytes)| (candidate, bytes.max(0) as u64))
         .collect();
     drop(candidate_statement);
 
-    // Evict oldest-first in bounded batches, re-measuring the DIRECTORY after
-    // each batch. `approx_bytes` accounting undercounts real file usage
-    // (indexes, attribute rows, free pages), so an accounting-driven pass can
-    // delete the entire archive while the file never shrinks. The measured
-    // size is the only ground truth here — and a batch that frees no bytes
-    // even after a full-VACUUM fallback means deleting more history cannot
-    // help, so the remaining traces are kept.
-    const EVICTION_BATCH_TRACES: usize = 64;
+    // Evict oldest-first in batches sized by the estimated excess,
+    // re-measuring the DIRECTORY after each batch. `approx_bytes` undercounts
+    // real file usage (indexes, attribute rows, free pages), so it only
+    // SIZES a batch — never decides success: an accounting-driven pass can
+    // delete the entire archive while the file never shrinks. Undercounting
+    // means a batch tends to free less than the remaining excess, so the
+    // loop converges from below instead of overshooting past the watermark
+    // and destroying more history than the cap requires. A batch that frees
+    // no bytes even after the one full-VACUUM fallback means deleting more
+    // history cannot help, so the remaining traces are kept.
+    let mut next_candidate = 0usize;
+    let mut remaining_approx: u64 = candidates.iter().map(|(_, bytes)| *bytes).sum();
     let mut measured = current;
     let mut vacuum_fallback_used = false;
-    for chunk in candidates.chunks(EVICTION_BATCH_TRACES) {
-        if measured.saturating_add(incoming_bytes) <= target {
+    while next_candidate < candidates.len() {
+        let occupied = measured.saturating_add(incoming_bytes);
+        if occupied <= target {
             break;
         }
+        // Aim each batch at HALF the remaining excess, translated into
+        // `approx_bytes` currency: the file carries a real-bytes-per-
+        // approx-byte overhead (attribute rows, indexes, page slack), so the
+        // measured excess is scaled down by the current physical/approx
+        // ratio before sizing the batch. Halving converges from above in a
+        // few measured iterations instead of overshooting the low watermark
+        // and destroying more history than the cap requires.
+        let excess = occupied.saturating_sub(target);
+        let scale = if remaining_approx > 0 {
+            (measured as f64 / remaining_approx as f64).max(1.0)
+        } else {
+            f64::MAX
+        };
+        let batch_goal = ((excess as f64 / 2.0 / scale) as u64).max(64 * 1024);
+        let mut chunk: Vec<&str> = Vec::new();
+        let mut chunk_approx = 0u64;
+        while next_candidate < candidates.len() {
+            let (candidate, approx_bytes) = &candidates[next_candidate];
+            chunk.push(candidate.as_str());
+            chunk_approx = chunk_approx.saturating_add(*approx_bytes);
+            next_candidate += 1;
+            if chunk_approx >= batch_goal {
+                break;
+            }
+        }
+        remaining_approx = remaining_approx.saturating_sub(chunk_approx);
         let tx = connection.transaction().map_err(|err| {
             database_error(&store.database_path, "eviction transaction start", err)
         })?;
-        for trace_id in chunk {
+        for trace_id in &chunk {
             tx.execute(
                 "DELETE FROM span_attributes WHERE epoch = ?1 AND trace_id = ?2",
                 params![epoch, trace_id],
@@ -1260,8 +1318,7 @@ fn ensure_capacity(
         // the write-ahead log, and only the checkpoint that follows returns
         // them to the filesystem. The reverse order leaves the main file at
         // full size until some unrelated later checkpoint.
-        let _ =
-            connection.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);");
+        let _ = reclaim_free_pages(connection);
         let mut now_measured = directory_size(&store.directory).unwrap_or(measured);
         if now_measured >= measured {
             // No physical progress: free pages are not returning to the
@@ -1290,10 +1347,9 @@ fn ensure_capacity(
     // the last batch, spend the one full VACUUM before concluding failure.
     if !vacuum_fallback_used
         && measured.saturating_add(incoming_bytes) > max_bytes.saturating_add(tolerance)
+        && let Err(error) = connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
     {
-        if let Err(error) = connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);") {
-            tracing::warn!(%error, "trace eviction full-VACUUM fallback failed");
-        }
+        tracing::warn!(%error, "trace eviction full-VACUUM fallback failed");
     }
 
     let measured = directory_size(&store.directory).unwrap_or(measured);
@@ -1339,7 +1395,7 @@ fn clear_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> R
             [],
         )
         .map_err(|err| database_error(&store.database_path, "clear dropped-count update", err))?;
-    let _ = connection.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);");
+    let _ = reclaim_free_pages(connection);
     store.record_success();
     Ok(())
 }
@@ -1385,7 +1441,7 @@ fn retain_database(store: &Arc<TraceDiskStore>, connection: &mut Connection) -> 
                 database_error(&store.database_path, "retention metadata delete", err)
             })?;
     }
-    let _ = connection.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);");
+    let _ = reclaim_free_pages(connection);
     let result = ensure_capacity(store, connection, 0, &[]);
     if result.is_ok() {
         store.record_success();
@@ -1709,6 +1765,10 @@ mod tests {
         assert!(
             !survivors.iter().any(|span| span.trace_id == "trace-00"),
             "the oldest trace must be evicted first"
+        );
+        assert!(
+            survivors.iter().any(|span| span.trace_id == "trace-23"),
+            "the newest historical trace must be preserved, not overshot"
         );
         store.shutdown();
     }
