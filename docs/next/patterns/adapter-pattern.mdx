@@ -43,11 +43,6 @@ Create the worker:
 import { registerWorker } from "iii-sdk";
 import XTwitterScraper from "x-twitter-scraper";
 
-type SearchInput = {
-  query: string;
-  limit?: number;
-};
-
 type SearchErrorCode =
   | "invalid_input"
   | "authentication_failed"
@@ -70,16 +65,30 @@ function failure(code: SearchErrorCode, retryable = false): SearchOutput {
 }
 
 function createSearchHandler(searchTweets: SearchTweets) {
-  return async (input: SearchInput): Promise<SearchOutput> => {
-    const query = input.query?.trim();
-    const limit = input.limit ?? 20;
-
-    if (!query || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+  return async (input: unknown): Promise<SearchOutput> => {
+    if (typeof input !== "object" || input === null || Array.isArray(input)) {
       return failure("invalid_input");
     }
 
+    const candidate = input as Record<string, unknown>;
+    const query = candidate.query;
+    const limit = candidate.limit ?? 20;
+
+    if (
+      typeof query !== "string" ||
+      typeof limit !== "number" ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    ) {
+      return failure("invalid_input");
+    }
+
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) return failure("invalid_input");
+
     try {
-      return { ok: true, data: await searchTweets({ q: query, limit }) };
+      return { ok: true, data: await searchTweets({ q: normalizedQuery, limit }) };
     } catch (error) {
       if (error instanceof XTwitterScraper.AuthenticationError) {
         return failure("authentication_failed");
@@ -140,6 +149,9 @@ worker.registerFunction(
   },
 );
 ```
+
+`request_format` documents the input for iii tooling. It does not validate values before the SDK
+invokes the handler, so the handler accepts `unknown` and checks every field at runtime.
 
 Run the worker with both environment variables set. Then invoke the adapter like any iii function:
 
