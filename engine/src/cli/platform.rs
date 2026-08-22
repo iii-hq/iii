@@ -285,6 +285,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_data_dir_opt_agrees_with_data_dir() {
         // Wherever the platform dirs resolve, the option-returning variant
         // must agree with data_dir(). When they don't resolve it is None,

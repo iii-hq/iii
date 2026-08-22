@@ -2809,6 +2809,7 @@ dependencies = [
  "colored",
  "dirs 6.0.0",
  "flate2",
+ "fslock",
  "futures",
  "hex",
  "iii-sdk",

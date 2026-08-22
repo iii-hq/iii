@@ -50,7 +50,7 @@ iii compose [OPTIONS] [COMMAND]
 
 #### `iii compose up`
 
-Serve, with one project brought up first
+Start an engine, then serve with one project brought up first
 
 ```text
 iii compose up [OPTIONS]
@@ -59,6 +59,7 @@ iii compose up [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `-f, --file <PATH>` | The compose file. Defaults to `./worker-compose.yaml`, the same fallback `compose::up` uses when a call names no file |
+| `--no-engine` | Connect to an engine that is already running instead of starting and stopping one with this compose invocation |
 | `--engine <URL>` | Engine WebSocket address. Falls back to III_URL, then ws://127.0.0.1:49134 |
 | `-n, --namespace <NS>` | Namespace this daemon answers `compose::*` in. Several attach to one engine; this is what tells them apart |
 
