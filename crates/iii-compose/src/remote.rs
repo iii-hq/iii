@@ -251,19 +251,7 @@ struct SchemaResponse {
 pub fn register(daemon: &Arc<Daemon>) {
     let client = daemon.engine().client();
 
-    for (name, kind) in [
-        ("up", Operation::Up),
-        ("down", Operation::Down),
-        ("list", Operation::List),
-        ("status", Operation::Status),
-        ("stop", Operation::Stop),
-        ("validate", Operation::Validate),
-        ("add", Operation::Add),
-        ("remove", Operation::Remove),
-        ("restart", Operation::Restart),
-        ("update", Operation::Update),
-        ("schema", Operation::Schema),
-    ] {
+    for &(name, kind) in REGISTERED_OPERATIONS {
         let daemon = Arc::clone(daemon);
         let function = format!("compose::{name}");
         let guard_name = name.to_string();
@@ -291,6 +279,21 @@ enum Operation {
     Update,
     Schema,
 }
+
+/// Canonical list of functions exposed by the compose daemon.
+const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
+    ("up", Operation::Up),
+    ("down", Operation::Down),
+    ("list", Operation::List),
+    ("status", Operation::Status),
+    ("stop", Operation::Stop),
+    ("validate", Operation::Validate),
+    ("add", Operation::Add),
+    ("remove", Operation::Remove),
+    ("restart", Operation::Restart),
+    ("update", Operation::Update),
+    ("schema", Operation::Schema),
+];
 
 async fn dispatch(
     daemon: Arc<Daemon>,
@@ -641,23 +644,12 @@ mod tests {
 
     #[test]
     fn schema_table_covers_every_registered_operation() {
-        for operation in [
-            "compose::up",
-            "compose::down",
-            "compose::list",
-            "compose::status",
-            "compose::stop",
-            "compose::validate",
-            "compose::add",
-            "compose::remove",
-            "compose::restart",
-            "compose::update",
-            "compose::schema",
-        ] {
-            let (_, request, response) = schema_entry(operation);
+        for (name, _) in REGISTERED_OPERATIONS {
+            let operation = format!("compose::{name}");
+            let (_, request, response) = schema_entry(&operation);
             assert!(request.is_some(), "{operation} request schema missing");
             assert!(response.is_some(), "{operation} response schema missing");
-            assert!(!op_description(operation).is_empty());
+            assert!(!op_description(&operation).is_empty());
         }
     }
 
