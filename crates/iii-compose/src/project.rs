@@ -519,7 +519,7 @@ impl Project {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct ContainerStatus {
     pub container: String,
     pub state: ChildStatus,

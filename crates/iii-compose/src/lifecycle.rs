@@ -42,7 +42,7 @@ use crate::{
 
 /// Outcome of one `up` or `down`. The shape is the JSON that `compose::*`
 /// returns, so it is a contract: fields are added, never repurposed.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct OpResult {
     pub operation_id: String,
     pub status: OpStatus,
@@ -52,14 +52,14 @@ pub struct OpResult {
     pub containers: Vec<ContainerResult>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OpStatus {
     Ok,
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct ContainerResult {
     pub container: String,
     pub state: ChildStatus,
@@ -68,7 +68,7 @@ pub struct ContainerResult {
     pub error: Option<OpError>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct OpError {
     pub code: String,
     pub message: String,
