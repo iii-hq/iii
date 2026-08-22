@@ -147,6 +147,7 @@ All functions accept the same payload.
 | `container` | string | Restricts the operation to one container and the containers it depends on.        |
 | `namespace` | string | Which daemon the caller believed they were reaching. A guard, see below.          |
 | `worker`    | string | The worker used by `add`, `remove`, `restart`, and `update`.                      |
+| `function_id` | string | The function or file contract requested by `compose::schema`.                  |
 
 A project is its compose file, and nothing else names one. The same file reached twice is the same
 project however it was spelled, so there is no second identity to keep in sync and no way to point
@@ -171,9 +172,21 @@ one at the wrong file.
 | `compose::restart`  | `file`, `worker` | The `down` and the `up`, or one container's restart.                    |
 | `compose::update`   | `file`, `worker` | Both versions, and the restart that followed.                           |
 | `compose::stop`     | nothing   | The daemon name, its pid, and the projects it is about to stop.                |
+| `compose::schema`   | `function_id` | Request/response JSON Schemas, descriptions, timeouts, and retry safety.    |
 
 `file` is not required. Left out, it falls back to a `worker-compose.yaml` in the daemon's own
 working directory. `worker` has no fallback.
+
+`compose::schema` is read-only. With no `function_id`, it returns every `compose::*` contract.
+Pass a function id to return one contract. The pseudo-id `worker-compose.yaml` returns the file's
+JSON Schema as `request` and a complete small example as `response`. The same function schemas,
+descriptions, and metadata are also published through `engine::functions::info`.
+
+```bash
+iii trigger compose::schema --namespace dev
+iii trigger compose::schema --namespace dev function_id=compose::up
+iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
+```
 
 ### Adding a worker
 
@@ -216,6 +229,7 @@ iii trigger compose::list   --namespace dev
 iii trigger compose::add    --namespace dev file=./worker-compose.yaml worker=state
 iii trigger compose::remove --namespace dev file=./worker-compose.yaml worker=state
 iii trigger compose::restart --namespace dev file=./worker-compose.yaml
+iii trigger compose::schema --namespace dev function_id=compose::up
 iii trigger compose::stop   --namespace dev
 ```
 

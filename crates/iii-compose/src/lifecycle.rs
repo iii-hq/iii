@@ -42,7 +42,7 @@ use crate::{
 
 /// Outcome of one `up` or `down`. The shape is the JSON that `compose::*`
 /// returns, so it is a contract: fields are added, never repurposed.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct OpResult {
     pub operation_id: String,
     pub status: OpStatus,
@@ -52,14 +52,14 @@ pub struct OpResult {
     pub containers: Vec<ContainerResult>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OpStatus {
     Ok,
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct ContainerResult {
     pub container: String,
     pub state: ChildStatus,
@@ -68,7 +68,7 @@ pub struct ContainerResult {
     pub error: Option<OpError>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct OpError {
     pub code: String,
     pub message: String,
@@ -106,11 +106,26 @@ pub struct LifecycleCtx<'a> {
 /// whether it came up.
 type StartOutcome = (String, Duration, Result<(ChildRecord, Supervised)>);
 
-/// How many containers may start at once inside one wave.
+/// Environment variable that overrides how many containers may start at once.
+const MAX_PARALLEL_WORKERS_ENV: &str = "III_COMPOSE_MAX_PARALLEL_WORKERS";
+
+/// Default number of containers that may start at once inside one wave.
 ///
 /// Not unbounded: a wave can be the whole file, and each start may download an
 /// artefact, spawn a process, or boot a VM.
-const STARTS_AT_ONCE: usize = 8;
+const DEFAULT_MAX_PARALLEL_WORKERS: usize = 8;
+
+fn max_parallel_workers() -> usize {
+    let value = std::env::var(MAX_PARALLEL_WORKERS_ENV).ok();
+    parse_max_parallel_workers(value.as_deref())
+}
+
+fn parse_max_parallel_workers(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_PARALLEL_WORKERS)
+}
 
 /// Containers currently supervised by this daemon, keyed by container id.
 pub type Children = BTreeMap<String, Supervised>;
@@ -138,6 +153,7 @@ pub async fn up(
     let mut results: Vec<ContainerResult> = Vec::new();
     // Only what *this* operation started may be rolled back.
     let mut started: Vec<String> = Vec::new();
+    let max_parallel_workers = max_parallel_workers();
 
     // Everything this operation will touch, drawn before any of it moves, so an
     // operator sees the shape rather than a line at a time.
@@ -175,7 +191,7 @@ pub async fn up(
                 let outcome = start_one(ctx, &key).await;
                 (key, began.elapsed(), outcome)
             }))
-            .buffer_unordered(STARTS_AT_ONCE)
+            .buffer_unordered(max_parallel_workers)
             .collect()
             .await;
 
@@ -1012,6 +1028,28 @@ containers:
     fn an_unknown_target_is_rejected_before_anything_starts() {
         let err = plan_targets(&file(), Some("ghost")).unwrap_err();
         assert_eq!(err.code(), "UNKNOWN_CONTAINER");
+    }
+
+    #[test]
+    fn parallel_worker_limit_defaults_to_eight() {
+        assert_eq!(parse_max_parallel_workers(None), 8);
+    }
+
+    #[test]
+    fn parallel_worker_limit_accepts_a_positive_environment_value() {
+        assert_eq!(parse_max_parallel_workers(Some("16")), 16);
+        assert_eq!(parse_max_parallel_workers(Some(" 4 ")), 4);
+    }
+
+    #[test]
+    fn parallel_worker_limit_uses_the_default_for_invalid_values() {
+        for value in ["", "0", "many", "-1"] {
+            assert_eq!(
+                parse_max_parallel_workers(Some(value)),
+                DEFAULT_MAX_PARALLEL_WORKERS,
+                "{value:?} must not disable container startup"
+            );
+        }
     }
 
     #[test]

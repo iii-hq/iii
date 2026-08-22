@@ -57,7 +57,7 @@ pub fn project_slug(compose_path: &Path) -> String {
     format!("{readable}-{}", &digest[..8])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildStatus {
     /// Spawned, not yet visible in the engine.

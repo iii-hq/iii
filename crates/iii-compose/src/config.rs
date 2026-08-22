@@ -21,6 +21,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::{
@@ -576,7 +577,7 @@ pub fn parse_duration(value: &str) -> Option<Duration> {
     amount.checked_mul(factor_ms).map(Duration::from_millis)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawComposeFile {
     /// Optional: a project that names itself nowhere lands in `default`, the
@@ -595,10 +596,11 @@ struct RawComposeFile {
     #[serde(default)]
     engine: Option<RawEngineSpec>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
+    #[schemars(with = "BTreeMap<String, RawContainer>")]
     containers: IndexMap<String, RawContainer>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawEngineSpec {
     #[serde(default)]
@@ -606,6 +608,7 @@ struct RawEngineSpec {
     #[serde(default)]
     registration_namespace_grace_ms: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
+    #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     workers: IndexMap<String, serde_yaml::Value>,
 }
 
@@ -654,7 +657,7 @@ where
     deserializer.deserialize_map(UniqueMap(std::marker::PhantomData))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawContainer {
     worker: String,
@@ -665,12 +668,14 @@ struct RawContainer {
     #[serde(default)]
     config_name: Option<String>,
     #[serde(default)]
+    #[schemars(with = "Option<serde_json::Value>")]
     config_override: Option<serde_yaml::Value>,
     #[serde(default)]
     scripts: Option<RawScripts>,
     #[serde(default)]
     working_dir: Option<PathBuf>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
+    #[schemars(with = "BTreeMap<String, String>")]
     environment: IndexMap<String, String>,
     #[serde(default)]
     env_file: Vec<PathBuf>,
@@ -678,7 +683,7 @@ struct RawContainer {
     startup_timeout: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawScripts {
     #[serde(default)]
@@ -689,6 +694,24 @@ struct RawScripts {
     run: Option<String>,
     #[serde(default)]
     post_run: Option<String>,
+}
+
+/// JSON Schema for the operator-authored `worker-compose.yaml` document.
+///
+/// The deserialization types are the source of truth, so a field added to the
+/// parser also appears in `compose::schema` without a second hand-written
+/// contract to update.
+pub(crate) fn worker_compose_schema_json() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(RawComposeFile)).unwrap_or(serde_json::Value::Null)
+}
+
+/// A complete small project returned beside the file schema. The registry
+/// package is deferred by offline validation, so the example does not require
+/// a local worker directory to be useful.
+pub(crate) fn worker_compose_example_json() -> serde_json::Value {
+    serde_json::json!({
+        "worker-compose.yaml": "namespace: app\ncontainers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: 0.21.4\n"
+    })
 }
 
 #[cfg(test)]
@@ -738,5 +761,26 @@ containers:
             }
             other => panic!("expected a path source, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn worker_compose_schema_and_example_follow_the_parser() {
+        let schema = worker_compose_schema_json();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["engine"].is_object());
+        assert!(schema["properties"]["containers"].is_object());
+        assert!(
+            !schema["required"].as_array().is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|field| field.as_str() == Some("containers"))
+            }),
+            "engine-only managed projects must remain valid"
+        );
+
+        let example = worker_compose_example_json();
+        let text = example["worker-compose.yaml"].as_str().unwrap();
+        let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
+        assert!(parsed.containers.contains_key("state"));
     }
 }
