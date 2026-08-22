@@ -418,6 +418,7 @@ async fn dispatch(
     }
 }
 
+/// Serialize the generated root schema into the value carried over the wire.
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
@@ -484,10 +485,10 @@ fn op_metadata(function_id: &str) -> (u64, bool) {
         "compose::status" => (10_000, true),
         "compose::stop" => (30_000, false),
         "compose::validate" => (10_000, true),
-        "compose::add" => (600_000, true),
+        "compose::add" => (600_000, false),
         "compose::remove" => (600_000, true),
         "compose::restart" => (600_000, false),
-        "compose::update" => (600_000, true),
+        "compose::update" => (600_000, false),
         "compose::schema" | "worker-compose.yaml" => (10_000, true),
         _ => (30_000, false),
     }
@@ -496,6 +497,7 @@ fn op_metadata(function_id: &str) -> (u64, bool) {
 /// Every callable compose function plus the compose-file authoring contract.
 type SchemaTriple = (&'static str, Option<Value>, Option<Value>);
 
+/// Build every schema once and share it between registration and requests.
 fn schema_table() -> &'static [SchemaTriple] {
     static TABLE: std::sync::LazyLock<Vec<SchemaTriple>> = std::sync::LazyLock::new(|| {
         vec![
@@ -564,6 +566,7 @@ fn schema_table() -> &'static [SchemaTriple] {
     &TABLE
 }
 
+/// Select one schema when requested, or return the complete table.
 fn build_schema_response(filter: Option<&str>) -> SchemaResponse {
     let schemas = schema_table()
         .iter()
@@ -697,6 +700,12 @@ mod tests {
                 .iter()
                 .any(|entry| entry.function_id == "worker-compose.yaml")
         );
+    }
+
+    #[test]
+    fn unpinned_registry_edits_are_not_advertised_as_idempotent() {
+        assert_eq!(op_metadata("compose::add"), (600_000, false));
+        assert_eq!(op_metadata("compose::update"), (600_000, false));
     }
 
     #[test]
